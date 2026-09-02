@@ -9,8 +9,8 @@ Multi-tenant automation-tools SaaS — lead extraction, filtering, and email out
 
 ## Branches
 
-`main` is protected — no direct pushes, PR + review required. Work happens on dedicated branches:
-- `mailboxes-dev` — Task 4 (Mailboxes + Email Campaigns), assigned separately.
+`main` should never get direct pushes — PR + review only. **Note**: GitHub's branch-protection rules require a paid plan on a private repo, so this isn't technically enforced by the platform right now, just by process discipline. Work happens on dedicated branches:
+- `michael-dev` — Michael's general-purpose branch, for any task assigned to him (currently Task 4, Mailboxes + Email Campaigns; not tied to just that one task going forward).
 
 ## Security
 

@@ -4,7 +4,17 @@
 
 ## What exists already — read before touching anything
 
-`/Users/mikeolab/lead-extractor/app/server/automation_server.py` — the real, working extraction engine. **Do not rewrite this from scratch.** `AutomationManager.run_automation(query, params)` is already a plain, Streamlit-free function; the work here is adapting its *interface* and fixing the isolation gaps, not replacing its logic.
+**`worker/automation_server.py` in this repo** — the real, working extraction engine, already copied in and ready to edit (originally from a separate commercial desktop product, `lead-extractor`). `AutomationManager.run_automation(query, params)` is already a plain, Streamlit-free function; the work here is adapting its *interface* and fixing the isolation gaps, not replacing its logic. Also already copied in: `worker/extractors/{email,name,phone}_extractor.py`, `worker/filters/email_domain_rules.py`, `worker/utils/{pdf_logging,email_normalize}.py`.
+
+**This is a deliberately curated subset, not the full original product** — its commercial hardware-bound licensing system (`app/license/`, a hardcoded license-validation secret in its `app/config.py`) and its SQLite persistence layer (`app/database/db.py`, which pulled in that same `config.py`) were intentionally left out and must **not** be re-added or re-fetched from the original product. Import paths were already rewritten from `app.*` to `worker.*` to match this repo's layout. One line was deliberately commented out rather than fixed:
+
+```python
+# REMOVED for SpaceWorker Task 2: this worker is stateless per job (no DB writes
+# of its own — see TASK_02_EXTRACTION_WORKER.md). The original save_search/save_leads
+# calls further down this file need to be deleted, not just this import — search for
+# their call sites and remove them as part of building the new POST /jobs API wrapper.
+```
+**Find every call site of `save_search(...)`/`save_leads(...)` in `worker/automation_server.py` and delete them** (not stub them out with a no-op — remove the calls entirely) as part of this task. The exact line numbers as copied in (subject to shifting once you start editing — re-search if these drift): **270, 821, 1088, 1613, 1699, 1809, 1856, 1870, 1950, 2050.** Some of these assign a return value used later in the same function (e.g. `master_search_id = save_search(...)` at line 821, `saved_count = save_leads(...)` at 1699/1950) — read each surrounding function before deleting, since removing the call without checking whether its return value is referenced further down will leave a dangling variable reference. The new `POST /jobs`/`GET /jobs/{id}` API below is what returns leads to the caller; nothing in this worker should be writing to a database of its own.
 
 ## 1. Wrap it as a small job API (new file, e.g. `worker/api.py`, FastAPI or plain `aiohttp`)
 
