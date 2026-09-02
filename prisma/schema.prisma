@@ -1,0 +1,46 @@
+// SpaceWorker Prisma schema — own Postgres DB (database `spaceworker`) and own
+// dedicated Postgres role. Zero shared tables or connections with Vantra's DB.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                 String   @id @default(cuid())
+  email              String   @unique
+  passwordHash       String
+  emailVerified      Boolean  @default(false)
+  tier               Int      @default(0) // admin-settable only, see Task 3 — higher = higher queue priority
+  createdAt          DateTime @default(now())
+  verifications      VerificationCode[]
+}
+
+model VerificationCode {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+}
+
+model RateLimitEvent {
+  id        String   @id @default(cuid())
+  ip        String
+  kind      String
+  createdAt DateTime @default(now())
+  @@index([ip, kind, createdAt])
+}
+
+model AdminSetting {
+  id        String   @id @default("singleton")
+  updatedAt DateTime @updatedAt
+  // Task 3/4/5 each add fields here (wallet addresses, alert debounce timestamps, etc.)
+  // — keep this singleton-row pattern, don't create a second settings table later.
+}
