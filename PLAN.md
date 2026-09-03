@@ -283,3 +283,39 @@ Sketch only, to size the work — the real Prisma diff should be written once Mi
 1. **Waiting on Michael's pending push** before finalizing §4/§5 into an actual Cline/Michael task spec — his current unfinished work likely touches this exact area; rewriting the mailbox/campaign data model out from under an in-flight change would create a merge headache. Re-scope once it lands.
 2. **Waiting on Task 2 (extraction worker)** before sizing §3's OS-style dashboard — the "programs" list is thin (3 tools) until the extractor ships.
 3. Landing page (§2) and the nav/OS-framing dashboard fix (§3's bug half) have no blocking dependency and could be scoped independently if wanted before the above land.
+
+## Addendum 3 — A third, distinct pillar: the user-facing private/anonymous browser (NOT Task 2, NOT headless)
+
+**Status: captured 2026-09-03, researched, NOT scoped into a task spec yet — needs two real cost/tooling decisions from the user first (proxy provider, streaming tech).** This clarifies real confusion risk between three genuinely different things that all involve "a browser," easy to conflate:
+
+- **Task 2 (extraction worker)**: a Playwright/Chromium instance the *scraper* drives, headless, no visible UI — stays exactly as already scoped in `TASK_02_EXTRACTION_WORKER.md`. **Confirmed with the user: do not add any visible/streamed browser UI to Task 2** — same headless-only posture the existing lead-extractor app already uses; users never see this browser, they only see extracted results.
+- **Task 6 (browser profiles, Phase 1)**: persistent Chrome **profile directories** so Task 2's headless scraper can reuse cookies/sessions across a user's jobs. Backend infrastructure only, no user-facing browser — deployed and live, unchanged by this addendum.
+- **This addendum, a new third thing**: a genuinely **interactive, user-facing browser session** — the user actually sees and drives a real browser, streamed to them in the SpaceWorker dashboard, routed through a **dedicated/sticky IP** so their activity in it isn't linkable to their real network origin. This is the concrete form of the "SpaceWorker is a private browser platform" framing from Addendum 2 §1 — not a metaphor, an actual feature.
+
+### Research — how real "anti-detect"/private-browser products architect this ([sources below](#sources-3))
+
+Two separable layers, always used together in serious tools (GoLogin, AdsPower, Multilogin, and the newer cloud-native entrant GeeLark):
+
+1. **Fingerprint/session isolation** — one profile (cookies, localStorage, extensions, canvas/WebGL fingerprint) per user, never shared or reused across users. **This is exactly Task 6's existing persistent-profile-directory design** — the same `/mnt/browser-profiles/{userId}/` mechanism already built for Task 2's headless reuse is the correct foundation for this feature too, just launched **non-headless** (or headless-with-a-virtual-display) instead of fully headless, and reused for interactive sessions instead of scraper jobs. Task 6 does not need to be rebuilt — it needs a second consumer.
+2. **Dedicated/sticky IP per profile, via a proxy** — critically, "dedicated IP" in every real product in this space means a **sticky residential or mobile proxy IP** purchased from a proxy provider (Bright Data, Oxylabs, IPRoyal, Smartproxy, and similar), not literally provisioning unique network interfaces per user on our own infrastructure (infeasible on a shared VPS, and not how any competitor actually does it either). Two profiles sharing one IP get correlated regardless of how well their fingerprints differ — proxy assignment per profile is load-bearing, not optional polish.
+3. **Delivery mechanism — the newer, more relevant model**: GeeLark's cloud-phone approach (no local install — a real instance runs on the provider's own server, the user connects via **screen streaming with input forwarding** through a web dashboard) is architecturally the right model for SpaceWorker, since this needs to live *inside* the existing web dashboard, not ship as a separate downloadable desktop app the way GoLogin/AdsPower/Multilogin do. Concretely: a real Chrome/Chromium instance runs server-side (with a virtual display, e.g. Xvfb, since it needs to actually render pixels to stream — not the same as Task 2's fully headless mode), and its screen streams to the user's actual browser tab via WebRTC or VNC-over-websocket, with mouse/keyboard forwarded back — the same *category* of remote-interaction problem Vantra already solved for whole-device remote desktop via MeshCentral, just pointed at a single browser process instead of a whole OS.
+
+### Two real decisions needed before this can be scoped into a task spec (do not guess at either)
+
+1. **Proxy/IP provider.** This is a real, ongoing per-user cost (residential/mobile proxy bandwidth is priced per-GB or per-IP by every provider in this space) — needs the user to pick a provider and confirm the cost model fits SpaceWorker's pricing before any integration work starts. Not a free feature to add.
+2. **Streaming technology.** Candidates worth evaluating (not yet compared in depth): a self-hosted open-source browser-streaming server (e.g. Neko/`n.eko`, purpose-built for exactly this "stream one browser tab with input forwarding" problem, or Kasm Workspaces, a broader open-source remote-browser-isolation platform) vs. a lighter custom build on top of Chrome's own remote-debugging/CDP screencast protocol. Each has different resource cost (RAM/CPU per concurrent streamed session) and integration effort — needs a real spike/comparison before committing, not a guess.
+
+### Resource/scope reality check (say this plainly, not optimistically)
+
+Running a real, non-headless, screen-streamed browser per active user is **meaningfully heavier** than Task 2's headless scraping (a virtual display plus a streaming server per session, versus a scraper process that exits when its job finishes) — this is not "the same infrastructure, slightly repurposed," it's a genuinely bigger per-active-user resource commitment, and needs its own capacity planning (likely a small number of concurrent interactive sessions supported at launch, not unlimited) rather than assuming it fits on the same box for free once Task 2/6 exist.
+
+### Explicitly not started
+
+No Prisma model, no route, no UI sketch yet — this addendum is scoping-and-research only, deliberately, until the proxy-provider and streaming-tech decisions above are made. Once decided, this becomes its own task spec (likely its own `TASK_07_*.md`), sized and assigned separately from Task 2/3 (Cline/Michael's current backlog) — not bundled into either.
+
+### Sources {#sources-3}
+
+- [Antidetect browser proxy/fingerprint architecture, 2026](https://dataimpulse.com/blog/top-antidetect-browsers-of-2024/)
+- [Best proxies for antidetect browsers](https://blog.send.win/best-proxies-for-antidetect-browsers-2026/)
+- [GeeLark cloud-phone/cloud-browser architecture](https://www.geelark.com/product/antidetect-browser/)
+- [GeeLark remote control / streaming model](https://www.geelark.com/glossary/remote-control/)
