@@ -19,6 +19,7 @@ model User {
   mailboxes      Mailbox[]
   emailCampaigns EmailCampaign[]
   payments       Payment[]
+  browserProfiles BrowserProfile[]
 }
 
 model VerificationCode {
@@ -125,4 +126,17 @@ model PaymentVerificationAttempt {
   success   Boolean
   note      String?
   checkedAt DateTime @default(now())
+}
+
+model BrowserProfile {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  name       String
+  dirPath    String    // absolute path — never exposed to client
+  status     String    @default("idle") // "idle" | "in_use"
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+  @@unique([userId, name])
+  @@index([userId])
 }
