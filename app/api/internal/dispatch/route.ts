@@ -95,11 +95,31 @@ export async function POST(req: Request) {
           });
           results[`${lane}_dispatch`] = "worker_missing_jobid";
         } else {
-          await prisma.searchJob.update({
+          // The worker call above is a real network round trip — a concurrent
+          // stop request could have cancelled this SearchJob (status ->
+          // "failed") in that exact window, before workerJobId is ever
+          // recorded. If that happened, the stop route's own DELETE call
+          // already ran and found no workerJobId to cancel against, so the
+          // worker is now running a job nobody can reach — re-check status
+          // here, right before recording workerJobId, and immediately cancel
+          // the just-started worker job instead of recording it as live.
+          const current = await prisma.searchJob.findUnique({
             where: { id: claimed.searchJobId },
-            data: { workerJobId: data.jobId },
+            select: { status: true },
           });
-          results[`${lane}_dispatch`] = "dispatched";
+          if (current?.status !== "running") {
+            results[`${lane}_dispatch`] = "cancelled_before_assign";
+            void fetch(`${workerBase}/jobs/${data.jobId}`, {
+              method: "DELETE",
+              headers: { Authorization: `Bearer ${workerToken}` },
+            }).catch(() => {});
+          } else {
+            await prisma.searchJob.update({
+              where: { id: claimed.searchJobId },
+              data: { workerJobId: data.jobId },
+            });
+            results[`${lane}_dispatch`] = "dispatched";
+          }
         }
       } else {
         await prisma.searchJob.update({
