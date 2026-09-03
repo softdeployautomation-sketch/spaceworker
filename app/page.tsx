@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-export const metadata: Metadata = { title: "Home" };
+export const metadata: Metadata = { title: "SpaceWorker" };
 
 export default function HomePage() {
   return (
