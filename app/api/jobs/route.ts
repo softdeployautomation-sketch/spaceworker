@@ -36,10 +36,17 @@ export async function POST(req: Request) {
       ? (body.params as Record<string, unknown>)
       : {};
 
-  // Clamp maxResults server-side — the UI min/max is trivially bypassed via API.
-  const maxResults = typeof rawParams.maxResults === "number"
-    ? Math.min(Math.max(10, rawParams.maxResults), 200)
+  // Clamp maxResults server-side. Accept number or numeric string so a caller
+  // sending maxResults:"99999" doesn't silently bypass the 10–200 bound.
+  const rawMax = rawParams.maxResults;
+  const coercedMax =
+    typeof rawMax === "number" ? rawMax
+    : typeof rawMax === "string" && rawMax.trim() !== "" ? Number(rawMax)
     : undefined;
+  const maxResults =
+    coercedMax !== undefined && !isNaN(coercedMax)
+      ? Math.min(Math.max(10, coercedMax), 200)
+      : undefined;
   const params = maxResults !== undefined ? { ...rawParams, maxResults } : rawParams;
 
   if (!query) return NextResponse.json({ error: "query is required" }, { status: 400 });

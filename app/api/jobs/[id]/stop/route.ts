@@ -21,8 +21,9 @@ export async function POST(
     return NextResponse.json({ error: "Job is not stoppable" }, { status: 400 });
   }
 
-  // Cancel both the job and its queue entry atomically — without updating
-  // JobQueueEntry the dispatcher would re-pick the cancelled job on its next tick.
+  // Cancel both the job and its queue entry atomically. Use "cancelled" (not
+  // "dispatched") so callers can distinguish manually-cancelled entries from
+  // entries that were genuinely sent to the worker.
   await prisma.$transaction([
     prisma.searchJob.update({
       where: { id },
@@ -30,13 +31,20 @@ export async function POST(
     }),
     prisma.jobQueueEntry.updateMany({
       where: { searchJobId: id, status: "queued" },
-      data: { status: "dispatched" },
+      data: { status: "cancelled" },
     }),
   ]);
 
-  if (job.workerJobId && process.env.WORKER_BASE_URL) {
+  // Re-read workerJobId AFTER the transaction. The dispatcher may have set it
+  // in the window between our initial findFirst and the transaction committing,
+  // so using the pre-transaction value could leave the worker running orphaned.
+  const fresh = await prisma.searchJob.findUnique({
+    where: { id },
+    select: { workerJobId: true },
+  });
+  if (fresh?.workerJobId && process.env.WORKER_BASE_URL) {
     try {
-      await fetch(`${process.env.WORKER_BASE_URL}/jobs/${job.workerJobId}`, {
+      await fetch(`${process.env.WORKER_BASE_URL}/jobs/${fresh.workerJobId}`, {
         method: "DELETE",
         headers: { Authorization: `Bearer ${process.env.WORKER_AUTH_TOKEN}` },
       });

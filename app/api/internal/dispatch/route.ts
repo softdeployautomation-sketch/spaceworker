@@ -3,6 +3,12 @@ import { prisma } from "@/lib/prisma";
 
 const LANES = ["light", "heavy"] as const;
 
+// Stable integer IDs for PostgreSQL advisory locks — one per lane.
+// pg_advisory_xact_lock holds the lock until the transaction commits/rolls
+// back, so two concurrent dispatch calls for the same lane serialize
+// rather than racing through the count+claim sequence.
+const LANE_LOCK_ID: Record<string, number> = { light: 1001, heavy: 1002 };
+
 export async function POST(req: Request) {
   const auth = req.headers.get("authorization");
   if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
@@ -15,15 +21,6 @@ export async function POST(req: Request) {
 
   // Phase A: dispatch one queued job per idle lane
   for (const lane of LANES) {
-    const running = await prisma.searchJob.count({
-      where: { lane, status: "running" },
-    });
-
-    if (running > 0) {
-      results[`${lane}_dispatch`] = "lane_busy";
-      continue;
-    }
-
     // Guard worker config before touching the DB — avoids jobs stuck "running"
     // with no workerJobId when the env vars are missing.
     if (!workerBase || !workerToken) {
@@ -31,10 +28,17 @@ export async function POST(req: Request) {
       continue;
     }
 
-    // Atomically claim the highest-priority queued entry using an optimistic
-    // lock: findFirst picks the candidate, updateMany with the same id+status
-    // guard wins only if no concurrent dispatcher already claimed it.
+    // The lane-busy count and the row claim are inside one transaction guarded
+    // by a PostgreSQL advisory lock. This prevents two concurrent dispatch
+    // calls from each seeing running=0 independently and then each claiming a
+    // different queued entry — which would violate the single-concurrency
+    // invariant for each lane.
     const claimed = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LANE_LOCK_ID[lane]})`;
+
+      const running = await tx.searchJob.count({ where: { lane, status: "running" } });
+      if (running > 0) return "lane_busy" as const;
+
       const entry = await tx.jobQueueEntry.findFirst({
         where: { lane, status: "queued" },
         orderBy: [{ priorityTier: "desc" }, { createdAt: "asc" }],
@@ -46,7 +50,7 @@ export async function POST(req: Request) {
         where: { id: entry.id, status: "queued" },
         data: { status: "dispatched" },
       });
-      if (count === 0) return null; // another process claimed it first
+      if (count === 0) return null;
 
       await tx.searchJob.update({
         where: { id: entry.searchJobId },
@@ -54,6 +58,11 @@ export async function POST(req: Request) {
       });
       return entry;
     });
+
+    if (claimed === "lane_busy") {
+      results[`${lane}_dispatch`] = "lane_busy";
+      continue;
+    }
 
     if (!claimed) {
       results[`${lane}_dispatch`] = "queue_empty";
