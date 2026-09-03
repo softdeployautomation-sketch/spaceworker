@@ -18,6 +18,7 @@ model User {
   rateLimits     RateLimitEvent[]
   mailboxes      Mailbox[]
   emailCampaigns EmailCampaign[]
+  payments       Payment[]
 }
 
 model VerificationCode {
@@ -41,8 +42,11 @@ model RateLimitEvent {
 }
 
 model AdminSetting {
-  id        String   @id @default("singleton")
-  updatedAt DateTime @updatedAt
+  id           String   @id @default("singleton")
+  updatedAt    DateTime @updatedAt
+  btcWallet    String?
+  usdtWallet   String?
+  planPriceUsd Float    @default(9.99)
 }
 
 model Mailbox {
@@ -95,4 +99,30 @@ model EmailQueueItem {
   createdAt  DateTime      @default(now())
   @@index([campaignId, status])
   @@index([mailboxId, status])
+}
+
+model Payment {
+  id           String                       @id @default(cuid())
+  userId       String
+  user         User                         @relation(fields: [userId], references: [id])
+  kind         String                       // "btc" | "usdt_trc20"
+  amountUsd    Float
+  txHash       String                       @unique
+  toAddress    String
+  status       String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
+  autoApproved Boolean                      @default(false)
+  createdAt    DateTime                     @default(now())
+  updatedAt    DateTime                     @updatedAt
+  attempts     PaymentVerificationAttempt[]
+  @@index([userId])
+  @@index([status])
+}
+
+model PaymentVerificationAttempt {
+  id        String   @id @default(cuid())
+  paymentId String
+  payment   Payment  @relation(fields: [paymentId], references: [id])
+  success   Boolean
+  note      String?
+  checkedAt DateTime @default(now())
 }
