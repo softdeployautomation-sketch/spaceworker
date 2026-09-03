@@ -8,18 +8,19 @@ datasource db {
 }
 
 model User {
-  id             String   @id @default(cuid())
-  email          String   @unique
-  passwordHash   String
-  emailVerified  Boolean  @default(false)
-  tier           Int      @default(0)
-  createdAt      DateTime @default(now())
-  verifications  VerificationCode[]
-  rateLimits     RateLimitEvent[]
-  mailboxes      Mailbox[]
-  emailCampaigns EmailCampaign[]
-  payments       Payment[]
-  browserProfiles BrowserProfile[]
+  id               String             @id @default(cuid())
+  email            String             @unique
+  passwordHash     String
+  emailVerified    Boolean            @default(false)
+  tier             Int                @default(0)
+  createdAt        DateTime           @default(now())
+  verifications    VerificationCode[]
+  rateLimits       RateLimitEvent[]
+  mailboxes        Mailbox[]
+  emailCampaigns   EmailCampaign[]
+  payments         Payment[]
+  browserProfiles  BrowserProfile[]
+  browserSessions  BrowserSession[]
   notificationLogs NotificationLog[]
 }
 
@@ -40,6 +41,7 @@ model RateLimitEvent {
   userId    String?
   user      User?    @relation(fields: [userId], references: [id])
   createdAt DateTime @default(now())
+
   @@index([ip, kind, createdAt])
 }
 
@@ -52,9 +54,9 @@ model AdminSetting {
 }
 
 model Mailbox {
-  id                String    @id @default(cuid())
+  id                String           @id @default(cuid())
   userId            String
-  user              User      @relation(fields: [userId], references: [id])
+  user              User             @relation(fields: [userId], references: [id])
   label             String
   host              String
   port              Int
@@ -62,29 +64,31 @@ model Mailbox {
   encryptedPassword String
   passwordIv        String
   passwordTag       String
-  secure            Boolean   @default(true)
-  dailyLimit        Int       @default(40)
-  sentToday         Int       @default(0)
+  secure            Boolean          @default(true)
+  dailyLimit        Int              @default(40)
+  sentToday         Int              @default(0)
   sentTodayDate     String?
-  active            Boolean   @default(true)
+  active            Boolean          @default(true)
   lastTestedAt      DateTime?
   lastTestOk        Boolean?
-  createdAt         DateTime  @default(now())
+  createdAt         DateTime         @default(now())
   queueItems        EmailQueueItem[]
+
   @@index([userId])
 }
 
 model EmailCampaign {
-  id          String   @id @default(cuid())
+  id          String           @id @default(cuid())
   userId      String
-  user        User     @relation(fields: [userId], references: [id])
+  user        User             @relation(fields: [userId], references: [id])
   name        String
   subject     String
   bodyHtml    String
   searchJobId String?
-  status      String   @default("draft")
-  createdAt   DateTime @default(now())
+  status      String           @default("draft")
+  createdAt   DateTime         @default(now())
   items       EmailQueueItem[]
+
   @@index([userId])
 }
 
@@ -99,6 +103,7 @@ model EmailQueueItem {
   sentAt     DateTime?
   error      String?
   createdAt  DateTime      @default(now())
+
   @@index([campaignId, status])
   @@index([mailboxId, status])
 }
@@ -107,7 +112,7 @@ model Payment {
   id           String                       @id @default(cuid())
   userId       String
   user         User                         @relation(fields: [userId], references: [id])
-  kind         String                       // "btc" | "usdt_trc20"
+  kind         String // "btc" | "usdt_trc20"
   amountUsd    Float
   txHash       String                       @unique
   toAddress    String
@@ -116,6 +121,7 @@ model Payment {
   createdAt    DateTime                     @default(now())
   updatedAt    DateTime                     @updatedAt
   attempts     PaymentVerificationAttempt[]
+
   @@index([userId])
   @@index([status])
 }
@@ -130,28 +136,66 @@ model PaymentVerificationAttempt {
 }
 
 model BrowserProfile {
-  id         String    @id @default(cuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id])
-  name       String
-  dirPath    String    // absolute path — never exposed to client
-  status     String    @default("idle") // "idle" | "in_use"
-  lastUsedAt DateTime?
-  createdAt  DateTime  @default(now())
+  id               String           @id @default(cuid())
+  userId           String
+  user             User             @relation(fields: [userId], references: [id])
+  name             String
+  dirPath          String // absolute path — never exposed to client
+  status           String           @default("idle") // "idle" | "in_use"
+  // Per-profile BYO proxy settings (Task 7). host/scheme/username are plaintext;
+  // the combined "scheme://user:pass@host:port" connection string is stored
+  // AES-256-GCM encrypted in byoProxyAuth (same pattern as Mailbox's SMTP
+  // password). Only used when a session is started with proxyMode = "byo".
+  byoProxyHost     String?
+  byoProxyPort     Int?
+  byoProxyScheme   String? // "http" | "https" | "socks5" | "socks5h"
+  byoProxyUsername String?
+  byoProxyAuth     String? // encrypted device connection string — never exposed to client
+  lastUsedAt       DateTime?
+  createdAt        DateTime         @default(now())
+  sessions         BrowserSession[]
+
   @@unique([userId, name])
   @@index([userId])
 }
 
+model BrowserSession {
+  id               String         @id @default(cuid())
+  userId           String
+  user             User           @relation(fields: [userId], references: [id])
+  profileId        String
+  profile          BrowserProfile @relation(fields: [profileId], references: [id])
+  // "starting" | "running" | "stopped" | "failed"
+  status           String         @default("starting")
+  proxyMode        String         @default("free") // "free" | "byo"
+  exitNodeId       String? // which free exit node, when proxyMode = "free"
+  // Snapshot of the proxy actually routing this session — written at start time
+  // so an edit to a profile's BYO settings never silently changes a live route.
+  byoProxyHost     String?
+  byoProxyPort     Int?
+  byoProxyScheme   String?
+  byoProxyUsername String?
+  byoProxyAuth     String? // encrypted connection string, same scheme as BrowserProfile
+  // Tunnel/container id the browser subsystem reports back for this session.
+  containerId      String?
+  startedAt        DateTime?
+  endedAt          DateTime?
+  createdAt        DateTime       @default(now())
+
+  @@index([userId, status])
+  @@index([profileId])
+}
+
 model NotificationLog {
-  id           String    @id @default(cuid())
+  id           String   @id @default(cuid())
   userId       String? // null for admin-only notifications (no specific user)
   user         User?    @relation(fields: [userId], references: [id])
   eventType    String // e.g. "verification_code", "payment_pending", "payment_confirmed"
   channel      String // "email" | "telegram" — SpaceWorker is email-only for now, kept generic
   recipient    String // the email address or chat id actually targeted, for audit purposes
-  outcome      String    @default("sent") // "sent" | "failed"
+  outcome      String   @default("sent") // "sent" | "failed"
   errorMessage String? // populated when outcome is "failed"
-  createdAt    DateTime  @default(now())
+  createdAt    DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([eventType, createdAt])

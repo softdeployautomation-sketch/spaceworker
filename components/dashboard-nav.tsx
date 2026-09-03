@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import {
   Fingerprint,
+  Globe,
   LayoutDashboard,
   Mailbox,
   Megaphone,
@@ -52,6 +53,12 @@ export function DashboardNav({
       label: "Browser Profiles",
       icon: Fingerprint,
       active: pathname.startsWith("/dashboard/browser-profiles"),
+    },
+    {
+      href: "/dashboard/browser",
+      label: "Private Browser",
+      icon: Globe,
+      active: pathname.startsWith("/dashboard/browser"),
     },
     {
       href: "/dashboard/settings",

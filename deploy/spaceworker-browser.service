@@ -1,0 +1,21 @@
+# SpaceWorker interactive-browser subsystem (Task 7 Phase 1).
+# A SEPARATE process from the main app — owns the real Chrome/Neko footprint.
+# See browser-server/README.md for the Neko spike checklist + streaming contract.
+# Install: sudo cp spaceworker-browser.service /etc/systemd/system/
+
+[Unit]
+Description=SpaceWorker interactive browser subsystem
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/spaceworker
+# Runs the standalone browser server (browser-server/server.ts) via tsx.
+ExecStart=/usr/bin/npx tsx browser-server/server.ts
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/spaceworker/.env
+# Signals the subsystem to shut down cleanly; systemd hard-kills after 15s.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

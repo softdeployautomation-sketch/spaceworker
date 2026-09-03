@@ -17,6 +17,7 @@ Multi-tenant automation-tools SaaS — lead extraction, filtering, and email out
 | **4** | Mailboxes & Campaigns | Michael | ✅ Merged + deployed | Task 1 |
 | **5** | Billing & Admin | Michael | ✅ Merged + deployed | Task 1 |
 | **6** | Browser Profiles (Phase 1) | Michael | ✅ Merged + deployed | Task 1 |
+| **7** | Private Browser (Phase 1) | Cline | ✅ Code complete (build green); deploy-time Neko spike + systemd integration pending | Task 1, 6 |
 
 ### Task Descriptions
 
@@ -26,6 +27,7 @@ Multi-tenant automation-tools SaaS — lead extraction, filtering, and email out
 - **Task 4** (Mailboxes & Campaigns): AES-256-GCM encrypted SMTP credentials, multi-run campaigns, per-mailbox daily caps, systemd drain timer.
 - **Task 5** (Billing & Admin): Manual crypto payments (BTC/USDT-TRC20), admin panel (users/payments/wallets tabs), ±5% tolerance verification.
 - **Task 6** (Browser Profiles Phase 1): Per-user persistent Chrome profiles on shared hardware. Profiles persist across jobs (same user shares sessions/cookies); Phase 1.5 (post-funding) upgrades to per-VM isolation + IPs.
+- **Task 7** (Private Browser Phase 1): Interactive, user-facing browser sessions streamed into the dashboard — a real Chrome instance per user, reusing the Task 6 profile directories, routed through a free self-hosted exit node (or the user's own BYO proxy) so activity isn't linkable to their real IP. Shipping as its own `spaceworker-browser.service` process (the app itself stays browser-free). Includes a live IP checker, in-session location switcher, BYO credential form with test-connect, a 2–3 session concurrency cap, and an admin per-session kill switch.
 
 ### Live deployment
 

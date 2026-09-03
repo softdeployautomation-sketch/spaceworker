@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 type AdminUser = {
   id: string;
@@ -21,13 +21,14 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
+  { id: "sessions", label: "Browser Sessions" },
 ];
 
 function StatusBadge({ status }: { status: string }) {
@@ -81,6 +82,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
+        {tab === "sessions" && <SessionsTab />}
       </main>
     </div>
   );
@@ -588,6 +590,152 @@ function NotificationsTab() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+type AdminSession = {
+  id: string;
+  status: string;
+  proxyMode: string;
+  exitNodeId: string | null;
+  containerId: string | null;
+  userEmail: string;
+  profileName: string;
+  startedAt: string | null;
+  createdAt: string;
+};
+
+function SessionStatusBadge({ status }: { status: string }) {
+  const styles =
+    status === "running"
+      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+      : status === "starting"
+        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+        : status === "failed"
+          ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
+          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{status}</span>
+  );
+}
+
+function SessionsTab() {
+  const [sessions, setSessions] = useState<AdminSession[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [killingId, setKillingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/browser-sessions");
+      if (!res.ok) throw new Error("Failed to load sessions");
+      setSessions((await res.json()) as AdminSession[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load sessions");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function kill(id: string) {
+    if (!window.confirm("Kill this session? Its browser process will be terminated.")) return;
+    setKillingId(id);
+    try {
+      const res = await fetch(`/api/admin/browser-sessions/${id}/kill`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to kill session");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Network error");
+    } finally {
+      setKillingId(null);
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold tracking-tight">Browser Sessions</h2>
+        <button
+          onClick={load}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        >
+          Refresh
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        All interactive browser sessions. Kill stops one process without touching others.
+      </p>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {loading ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : sessions.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center dark:border-zinc-700 dark:bg-zinc-900">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">No browser sessions</p>
+        </div>
+      ) : (
+        <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">Profile</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Route</th>
+                <th className="px-4 py-3 font-medium">Started</th>
+                <th className="px-4 py-3 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {sessions.map((s) => (
+                <tr key={s.id}>
+                  <td className="px-4 py-3">{s.userEmail}</td>
+                  <td className="px-4 py-3">{s.profileName}</td>
+                  <td className="px-4 py-3">
+                    <SessionStatusBadge status={s.status} />
+                  </td>
+                  <td className="px-4 py-3">
+                    {s.proxyMode === "free"
+                      ? `Free · ${s.exitNodeId?.toUpperCase() ?? "—"}`
+                      : "BYO"}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {s.startedAt
+                      ? new Date(s.startedAt).toLocaleString()
+                      : new Date(s.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => kill(s.id)}
+                      disabled={killingId === s.id || (s.status !== "running" && s.status !== "starting")}
+                      title={
+                        s.status !== "running" && s.status !== "starting"
+                          ? "Session is not running"
+                          : "Kill this session's process"
+                      }
+                      className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                    >
+                      {killingId === s.id ? "Killing…" : "Kill"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
