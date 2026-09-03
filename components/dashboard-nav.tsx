@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
+import { LayoutDashboard, Search, Settings, type LucideIcon } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 
@@ -27,6 +27,12 @@ export function DashboardNav({
       label: "Overview",
       icon: LayoutDashboard,
       active: pathname === "/dashboard",
+    },
+    {
+      href: "/dashboard/extract",
+      label: "Extract",
+      icon: Search,
+      active: pathname.startsWith("/dashboard/extract"),
     },
     {
       href: "/dashboard/settings",

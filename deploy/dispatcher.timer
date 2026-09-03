@@ -1,0 +1,11 @@
+# Install: sudo cp dispatcher.timer /etc/systemd/system/ && sudo systemctl enable --now dispatcher.timer
+[Unit]
+Description=Run SpaceWorker job dispatcher every 10 seconds
+
+[Timer]
+OnBootSec=30sec
+OnUnitActiveSec=10sec
+Unit=dispatcher.service
+
+[Install]
+WantedBy=timers.target

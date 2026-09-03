@@ -20,6 +20,8 @@ model User {
   emailCampaigns EmailCampaign[]
   payments       Payment[]
   browserProfiles BrowserProfile[]
+  searchJobs    SearchJob[]
+  leads         Lead[]
 }
 
 model VerificationCode {
@@ -139,4 +141,48 @@ model BrowserProfile {
   createdAt  DateTime  @default(now())
   @@unique([userId, name])
   @@index([userId])
+}
+
+model SearchJob {
+  id          String         @id @default(cuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id])
+  query       String
+  params      Json
+  status      String         @default("queued")
+  lane        String
+  workerJobId String?
+  error       String?
+  createdAt   DateTime       @default(now())
+  queueEntry  JobQueueEntry?
+  leads       Lead[]
+  @@index([userId, createdAt])
+}
+
+model JobQueueEntry {
+  id           String    @id @default(cuid())
+  searchJobId  String    @unique
+  searchJob    SearchJob @relation(fields: [searchJobId], references: [id])
+  priorityTier Int
+  lane         String
+  status       String    @default("queued")
+  createdAt    DateTime  @default(now())
+  @@index([lane, status, priorityTier, createdAt])
+}
+
+model Lead {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id])
+  searchJobId  String
+  searchJob    SearchJob @relation(fields: [searchJobId], references: [id])
+  email        String?
+  phone        String?
+  contactName  String?
+  businessName String?
+  website      String?
+  sourceUrl    String?
+  snippet      String?
+  createdAt    DateTime  @default(now())
+  @@index([userId, searchJobId])
 }
