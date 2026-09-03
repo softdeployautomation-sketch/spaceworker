@@ -2,11 +2,50 @@ import "server-only";
 
 import { Resend } from "resend";
 
+import { db } from "./db";
 import { env } from "./env";
 
 // Sentinel value used in non-production .env to allow a successful local build
 // without a real Resend key. Treated as "not configured" at runtime.
 export const RESEND_PLACEHOLDER = "re_local_dev_placeholder";
+
+/**
+ * Append-only audit record of a real notification send attempt (Task 8).
+ * Additive by design: a failure to write the log row must never change the send
+ * outcome the caller observes. SpaceWorker only sends email today — the
+ * `channel` value is stored generically so a future Telegram integration can
+ * log into the same table without a schema change.
+ */
+async function recordNotificationLog(entry: {
+  eventType: string;
+  recipient: string;
+  channel: string;
+  outcome: "sent" | "failed";
+  errorMessage?: string | null;
+}): Promise<void> {
+  try {
+    // Best-effort link to the owning user — verification emails always target a
+    // registered account and the recipient email is the natural key.
+    const user = await db.user.findUnique({
+      where: { email: entry.recipient },
+      select: { id: true },
+    });
+    await db.notificationLog.create({
+      data: {
+        userId: user?.id ?? null,
+        eventType: entry.eventType,
+        channel: entry.channel,
+        recipient: entry.recipient,
+        outcome: entry.outcome,
+        errorMessage: entry.errorMessage ?? null,
+      },
+    });
+  } catch (err) {
+    // Logging is strictly additive — never let it fail (or change the outcome
+    // of) the actual send, which is what the caller depends on today.
+    console.error("Failed to write NotificationLog:", err);
+  }
+}
 
 // Thin wrapper around Resend — for SpaceWorker's OWN transactional email only
 // (signup/verification codes). Uses a SEPARATE Resend account/API key from
@@ -17,20 +56,45 @@ export async function sendEmail(opts: {
   subject: string;
   html: string;
 }): Promise<void> {
-  if (!env.resendApiKey || env.resendApiKey === RESEND_PLACEHOLDER) {
-    // No real Resend key configured (e.g. local build). Fail loudly so the
-    // caller can surface a helpful message, rather than leaking the raw error.
-    throw new Error("RESEND_API_KEY is not configured — cannot send email");
-  }
-  const resend = new Resend(env.resendApiKey);
-  const { error } = await resend.emails.send({
-    from: env.emailFrom,
-    to: [opts.to],
-    subject: opts.subject,
-    html: opts.html,
-  });
-  if (error) {
-    throw new Error(`Resend error: ${error.message}`);
+  // sendEmail is SpaceWorker's only transactional send path and is currently
+  // used exclusively for verification codes, so that is the eventType recorded.
+  // The call signature is deliberately unchanged — logging is additive.
+  const eventType = "verification_code";
+  const channel = "email";
+
+  let outcome: "sent" | "failed" = "sent";
+  let errorMessage: string | null = null;
+
+  try {
+    if (!env.resendApiKey || env.resendApiKey === RESEND_PLACEHOLDER) {
+      // No real Resend key configured (e.g. local build). Fail loudly so the
+      // caller can surface a helpful message, rather than leaking the raw error.
+      throw new Error("RESEND_API_KEY is not configured — cannot send email");
+    }
+    const resend = new Resend(env.resendApiKey);
+    const { error } = await resend.emails.send({
+      from: env.emailFrom,
+      to: [opts.to],
+      subject: opts.subject,
+      html: opts.html,
+    });
+    if (error) {
+      throw new Error(`Resend error: ${error.message}`);
+    }
+  } catch (err) {
+    outcome = "failed";
+    errorMessage = err instanceof Error ? err.message : String(err);
+    // Re-throw so the caller sees exactly the same behaviour it does today —
+    // logging alongside must not swallow or mangle the original failure.
+    throw err;
+  } finally {
+    await recordNotificationLog({
+      eventType,
+      recipient: opts.to,
+      channel,
+      outcome,
+      errorMessage,
+    });
   }
 }
 

@@ -20,6 +20,7 @@ model User {
   emailCampaigns EmailCampaign[]
   payments       Payment[]
   browserProfiles BrowserProfile[]
+  notificationLogs NotificationLog[]
 }
 
 model VerificationCode {
@@ -139,4 +140,19 @@ model BrowserProfile {
   createdAt  DateTime  @default(now())
   @@unique([userId, name])
   @@index([userId])
+}
+
+model NotificationLog {
+  id           String    @id @default(cuid())
+  userId       String? // null for admin-only notifications (no specific user)
+  user         User?    @relation(fields: [userId], references: [id])
+  eventType    String // e.g. "verification_code", "payment_pending", "payment_confirmed"
+  channel      String // "email" | "telegram" — SpaceWorker is email-only for now, kept generic
+  recipient    String // the email address or chat id actually targeted, for audit purposes
+  outcome      String    @default("sent") // "sent" | "failed"
+  errorMessage String? // populated when outcome is "failed"
+  createdAt    DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([eventType, createdAt])
 }

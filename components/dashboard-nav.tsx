@@ -3,7 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-import { LayoutDashboard, Settings, type LucideIcon } from "lucide-react";
+import {
+  Fingerprint,
+  LayoutDashboard,
+  Mailbox,
+  Megaphone,
+  Settings,
+  type LucideIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/cn";
 
@@ -27,6 +34,24 @@ export function DashboardNav({
       label: "Overview",
       icon: LayoutDashboard,
       active: pathname === "/dashboard",
+    },
+    {
+      href: "/dashboard/mailboxes",
+      label: "Mailboxes",
+      icon: Mailbox,
+      active: pathname.startsWith("/dashboard/mailboxes"),
+    },
+    {
+      href: "/dashboard/campaigns",
+      label: "Campaigns",
+      icon: Megaphone,
+      active: pathname.startsWith("/dashboard/campaigns"),
+    },
+    {
+      href: "/dashboard/browser-profiles",
+      label: "Browser Profiles",
+      icon: Fingerprint,
+      active: pathname.startsWith("/dashboard/browser-profiles"),
     },
     {
       href: "/dashboard/settings",
