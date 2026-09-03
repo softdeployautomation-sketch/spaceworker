@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from worker.extractors.email_extractor import extract_emails
+from extractors.email_extractor import extract_emails
 
 
 def _coerce_email_string(s: str) -> str | None:

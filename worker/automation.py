@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin
@@ -31,7 +30,19 @@ from urllib.parse import parse_qs, quote_plus, unquote, urljoin
 import requests
 from bs4 import BeautifulSoup
 
-from worker.extractors.name_extractor import extract_business_name as _extract_business_name
+# Relative imports — these resolve correctly when running from WorkingDirectory=.../worker
+# (the systemd deploy config). The 'worker.' prefix would raise ModuleNotFoundError there.
+from extractors.email_extractor import extract_emails as _extract_emails
+from extractors.phone_extractor import extract_phones as _extract_phones
+from extractors.name_extractor import (
+    extract_business_name as _extract_business_name,
+    extract_contact_names as _extract_contact_names,
+    extract_names_from_email as _extract_names_from_email,
+)
+from filters.email_domain_rules import (
+    email_matches_rules,
+    parse_email_domain_allowlist,
+)
 
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -39,16 +50,6 @@ BROWSER_USER_AGENT = (
 )
 
 REQUEST_TIMEOUT_SECONDS = 10
-
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-PHONE_RE = re.compile(
-    r"(?:(?:\+?1[-.\s]?)?(?:\(\d{3}\)|\d{3})[-.\s]?\d{3}[-.\s]?\d{4})"
-)
-
-ASSET_EXTENSION_RE = re.compile(
-    r"\.(?:png|jpe?g|gif|webp|svg|bmp|ico|css|js|json|xml|pdf|zip|tar|gz|mp4|mp3|avi|mov|woff2?|ttf|eot)$",
-    re.IGNORECASE,
-)
 
 AsyncCallable = Callable[[dict], Awaitable[None]]
 
@@ -167,41 +168,8 @@ async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchRes
     )
 
 
-def _clean_text(text: str) -> str:
-    return re.sub(r"\s+", " ", text).strip()
-
-
-def extract_emails(text: str) -> set[str]:
-    emails: set[str] = set()
-    for m in EMAIL_RE.finditer(text):
-        email = m.group(0).strip(".")
-        domain = email.split("@", 1)[1].lower()
-        if ASSET_EXTENSION_RE.search(domain):
-            continue
-        if "." not in domain:
-            continue
-        emails.add(email.lower())
-    return emails
-
-
-def extract_phones(text: str) -> set[str]:
-    phones: set[str] = set()
-    for m in PHONE_RE.finditer(text):
-        phones.add(_clean_text(m.group(0)))
-    return phones
-
-
-def extract_from_snippet(snippet: str) -> dict:
-    return {
-        "email": sorted(extract_emails(snippet)),
-        "phone": sorted(extract_phones(snippet)),
-    }
-
-
 def extract_lead_page(result: SearchResult) -> Optional[dict]:
-    """Fetch one result page and pull email/phone/business metadata."""
-    emails: set[str] = set()
-    phones: set[str] = set()
+    """Fetch one result page and extract email/phone/name metadata."""
     try:
         resp = requests.get(
             result.url,
@@ -209,16 +177,16 @@ def extract_lead_page(result: SearchResult) -> Optional[dict]:
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
-        page_text = resp.text
+        html = resp.text
     except Exception:
-        snippet_data = extract_from_snippet(result.snippet)
-        emails = set(snippet_data["email"])
-        phones = set(snippet_data["phone"])
+        # Page unreachable — fall back to snippet
+        emails = _extract_emails(result.snippet)
+        phones = _extract_phones(result.snippet)
         if not emails and not phones:
             return None
         return {
-            "email": sorted(emails)[:3],
-            "phone": sorted(phones)[:3],
+            "email": emails[:3],
+            "phone": phones[:3],
             "businessName": _extract_business_name(result.title, result.url, result.snippet),
             "contactName": None,
             "website": result.url,
@@ -226,25 +194,31 @@ def extract_lead_page(result: SearchResult) -> Optional[dict]:
             "snippet": result.snippet,
         }
 
-    soup = BeautifulSoup(page_text, "lxml")
-    emails = extract_emails(page_text)
-    phones = extract_phones(page_text)
+    soup = BeautifulSoup(html, "lxml")
+    page_text = soup.get_text(" ", strip=True)
+
+    # Use dedicated extractors — they handle mailto: links, junk-domain
+    # filtering, and false-extension removal so automation.py has no
+    # parallel implementations that could silently drift.
+    emails = _extract_emails(page_text, html)
+    phones = _extract_phones(page_text, html)
 
     if not emails and not phones:
         return None
 
-    mailtos: set[str] = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        if href.lower().startswith("mailto:"):
-            mailtos.update(extract_emails(href))
-    ordered_emails = sorted(mailtos) + sorted(emails - mailtos)
+    # Best-effort contact name: try structured patterns in page text first,
+    # then fall back to guessing from the email local-part.
+    contact_names = _extract_contact_names(page_text)
+    contact_name: Optional[str] = (
+        contact_names[0] if contact_names
+        else (_extract_names_from_email(emails[0]) if emails else None) or None
+    )
 
     return {
-        "email": ordered_emails[:3],
-        "phone": sorted(phones)[:3],
+        "email": emails[:3],
+        "phone": phones[:3],
         "businessName": _extract_business_name(result.title, result.url, result.snippet),
-        "contactName": None,
+        "contactName": contact_name,
         "website": result.url,
         "sourceUrl": result.url,
         "snippet": result.snippet,
@@ -268,11 +242,27 @@ async def run_automation(
             seen_urls.add(r.url)
             unique_results.append(r)
 
+    # Parse email domain allowlist once so all concurrent workers share it.
+    raw_domain_rules = params.get("emailDomains") or params.get("email_domains")
+    domain_rules = parse_email_domain_allowlist(str(raw_domain_rules)) if raw_domain_rules else None
+
     async def process_one(result: SearchResult) -> Optional[dict]:
         lead = await loop.run_in_executor(None, extract_lead_page, result)
-        if lead is not None:
-            await on_progress(lead)
+        if lead is None:
+            return None
+        # Filter at the point of emission so on_progress stream and final list
+        # stay in sync — leads that don't match are never stored or returned.
+        if domain_rules is not None and not domain_rules.is_empty():
+            lead_emails: list[str] = lead.get("email") or []
+            if not any(email_matches_rules(e, domain_rules) for e in lead_emails):
+                return None
+        await on_progress(lead)
         return lead
 
-    leads_raw = await asyncio.gather(*[process_one(r) for r in unique_results])
-    return [l for l in leads_raw if l is not None]
+    # return_exceptions=True so one failed page (malformed markup, name-extractor
+    # error, etc.) doesn't abort the entire batch — other results still land.
+    leads_raw = await asyncio.gather(
+        *[process_one(r) for r in unique_results],
+        return_exceptions=True,
+    )
+    return [l for l in leads_raw if isinstance(l, dict)]

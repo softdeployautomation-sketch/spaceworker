@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from worker.utils.email_normalize import normalize_email_cell_to_addresses
+from utils.email_normalize import normalize_email_cell_to_addresses
 
 # Reasonable hostname for site: / exact domain rules (no path, no port)
 _DOMAIN_LABEL = r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
