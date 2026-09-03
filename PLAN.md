@@ -203,3 +203,81 @@ Once this runs as its own systemd service(s) alongside Vantra/TRMM/MeshCentral o
 **New, explicitly Phase 1.5, not Phase 1**: per-user persistent browser profiles.
 
 Revised rough effort: the queue/lane/dispatcher work adds roughly 3–4 days on top of the original ~3-week estimate (mostly the `JobQueueEntry` model, the dispatcher loop, and wiring the lane choice into the extraction form) — call it **~3.5–4 weeks** for Phase 1 as now scoped.
+
+---
+
+## Addendum 2 — Product reframing (OS not "just automation"), real mailer-system research, landing page, dashboard fixes
+
+**Status: captured 2026-09-03 from live product feedback after using the deployed app, NOT yet scoped into task specs for Michael/Cline.** Michael has a pending push (an unfinished job, not yet up) that likely touches the mailbox/campaign area this addendum redesigns — deliberately holding off on final task specs for that part until his push lands, so the spec is written against what actually exists rather than needing an immediate rewrite. The rest of this addendum (landing page, dashboard nav/OS-framing, browser-profiles tab) has no such dependency and can be scoped independently.
+
+### 1. Product framing correction — SpaceWorker is a lightweight private-browser platform, not "an automation tool"
+
+The user's correction, verbatim in spirit: SpaceWorker isn't just lead-extraction-plus-email-automation — it's a **private browser running on lightweight infrastructure**, with automation as one capability riding alongside a growing set of others (Task 6's per-user persistent Chrome profile is the seed of this, not a side feature). This changes how the landing page should pitch the product (lead with "your own private browser workspace," automation as a feature under that, not the headline) and how the dashboard should be structured (see §3 — an OS-style home, not a two-card feature list).
+
+### 2. Landing page — needs a real design pass
+
+Current `app/page.tsx` is a bare title + description + two buttons (adequate for Task 1's scaffolding purpose, not for showing the product). This needs an actual design pass reflecting §1's repositioning — hero section pitching the private-browser-workspace framing, a feature grid once more features exist to show (currently just Mailboxes/Campaigns/Browser Profiles — thin, but real), no fabricated testimonials/pricing (no real customers yet, same discipline already applied to Vantra's landing page work). **Recommend doing this as a design-canvas pass** (mirroring how Vantra's V3 did its landing-page and device-detail-tab mockups before implementation) once the dashboard reframing in §3 is settled, since the landing page should reflect what the product actually looks like once logged in.
+
+### 3. Dashboard is not "explicit" enough — missing nav, OS-style framing
+
+Two concrete bugs plus one larger direction:
+
+- **Bug**: Task 6 (Browser Profiles) is deployed (`app/dashboard/browser-profiles/page.tsx` exists and works) but there is **no sidebar nav entry for it** — `components/dashboard-nav.tsx` only lists "Overview" and "Settings". Same gap for Mailboxes and Campaigns — they're only reachable via the two cards on the Overview page, not the sidebar. Fix: add Mailboxes, Campaigns, and Browser Profiles as real sidebar nav items (small, mechanical fix, not blocked on anything below).
+- **Direction**: the user wants the dashboard to open like an OS desktop/start screen — a menu-driven home showing available "programs" (Mailboxes, Campaigns, Browser, future tools), not a generic SaaS dashboard. This is a real design decision, not a one-line fix — needs a design-canvas pass (same recommendation as §2) once the tool roster is clearer (right now: Mailboxes, Campaigns, Browser Profiles, and eventually the lead extractor once Task 2 lands). Don't over-build this before Task 2/3 exist — an OS-style shell for 2–3 tools risks feeling empty; revisit sizing once the extractor is live.
+
+### 4. Mailer/campaign system — research findings and what a real BYO-SMTP sender needs
+
+Task 4 as originally built (`Mailbox` + `EmailCampaign` + `EmailQueueItem`) covers "connect one SMTP mailbox, send one fixed subject/body to a fixed list" — real cold-email tools (Instantly, Smartlead, Woodpecker, Reply.io — [sources below](#sources)) collect and automate considerably more. Research findings, then a prioritized cut.
+
+**What real tools collect/support (comprehensive, before prioritizing):**
+- **Recipient list**: CSV upload, not a plain email array — with arbitrary custom columns (first name, company, job title, industry, custom fields) available as merge variables in the template, not just `toEmail`.
+- **Template content**: subject **and** body support merge variables (`{{firstName}}`, `{{company}}`, etc.) and optionally **spintax** (`{Hi|Hello|Hey} {{firstName}}`) — each recipient gets one randomly-resolved variation, reducing exact-duplicate fingerprinting across a large send without changing the actual message/goal.
+- **Multiple senders per campaign, rotated across the send** — not just today's sequential multi-*run* model (Run 1 fully from Mailbox A, then Run 2 fully from Mailbox B) but true interleaved rotation across a single run's recipient list, spreading volume across mailboxes as it sends (this is the mechanism the user described as "switch between senders... without changing the goal").
+- **Multiple subject/body variants per campaign** (A/B or full rotation) — per the same "switch between subjects... without changing the goal" request. Real tools' A/B flow: send a small sample (~30%) with different variants, pick a winner by open-rate after a delay, send the remainder with the winner — a reasonable default if full manual control isn't wanted, but manual "just rotate evenly" should also be a supported mode since open-rate tracking needs a tracking pixel (privacy/deliverability tradeoff worth deciding deliberately, not assumed).
+- **Sending-account warmup** (gradual volume ramp-up on a newly-connected mailbox) — most tools run this for weeks before a mailbox is trusted for real campaign volume. Real infrastructure (a warmup network of other mailboxes exchanging emails to build reputation) — likely **out of scope for SpaceWorker's own Phase 1** (this product doesn't own a warmup pool), but worth at minimum warning the user in-product if a newly-connected mailbox is being used for full-volume sending on day one.
+- **Deliverability/inbox-placement monitoring via seed lists**: a set of real, monitored test mailboxes across major providers (Gmail, Outlook, Yahoo, iCloud) that periodically receive a copy of the live campaign message; an automated check (IMAP or provider API) reports which folder it landed in (inbox / spam / promotions) per provider.
+- **Bounce/complaint handling**: hard bounces (SMTP 5xx) remove the address from future sends immediately; soft bounces (4xx) retry with backoff; spam complaints (where visible, e.g. via a feedback-loop or via noticing a seed mailbox flags it) should reduce sending volume or pause, not just log-and-continue.
+
+**The automation behavior the user specifically asked for** (test-send-confirm, then monitor-and-pause-on-spam-signal) maps directly onto the seed-list pattern above:
+1. **Before a campaign's first real send**: send one test message via the connected mailbox to one or more of SpaceWorker's own monitored seed mailboxes (platform-provided, not the customer's — same reasoning as Vantra's own transactional-email account being separate from customer mailboxes). Poll the seed mailbox via IMAP after a short delay; confirm the message actually arrived (proves the SMTP credentials genuinely deliver, not just that `nodemailer.send()` didn't throw — a message can be "sent successfully" from the sender's point of view and still never arrive, per Task 4's original scope note that `verify()` only proves the SMTP handshake, not delivery). **User-confirmation mode**: surface this result to the user and require an explicit "yes, this delivered, proceed" click before the real campaign starts (safer default, matches "first it tries to send a first message to be sure it gets delivered, when user confirms... automation can go ahead"). **Fully-automated mode**: skip the manual click, just confirm arrival on the seed mailbox program­matically and proceed automatically — offer both, default to manual confirmation for a new/never-tested mailbox, allow automatic for a mailbox with a proven track record.
+2. **During the campaign**: after every N real sends (a configurable checkpoint, e.g. every 20–50), send another test message to a seed mailbox and check its placement (inbox vs. spam) the same way. If a checkpoint check lands in spam, **pause the campaign** (flip the run to a new `paused_deliverability` status, stop the drain from picking up more items from it) and surface a flag to the user — do not silently keep sending. Auto-resume is explicitly **not** proposed here (the user's own words leave room for "the automation... tries to make another judgment on what to change" — but deciding *what* to change algorithmically, e.g. swap sender vs. swap subject vs. slow down pacing, is a real judgment call that deserves a follow-up design pass, not guessed at in this addendum) — safe default: pause + notify, let the user (or a later, more deliberately-designed auto-remediation pass) decide the next step.
+3. **Seed mailboxes are SpaceWorker's own infrastructure**, not the customer's — likely 3–5 real accounts across Gmail/Outlook/Yahoo that the platform owns and polls via IMAP (`imapflow` or `node-imap`, whichever has better maintenance status at implementation time — check before picking). This is a real new operational dependency (accounts to create and maintain, IMAP polling infrastructure, credentials to store) — flag as a cost/effort item when this gets scoped into an actual task, not a free addition.
+
+**Proposed priority cut (nothing left as a silent "later" without saying so):**
+
+| Tier | Feature | Reasoning |
+|---|---|---|
+| **Must have (Phase 1 of this rework)** | CSV recipient list w/ custom merge variables | Table stakes — today's plain `toEmails: string[]` can't personalize at all. |
+| **Must have** | Multiple subject + multiple body variants per campaign, simple rotation (not full A/B open-rate automation) | Directly requested ("switch between subjects... html files"); rotation alone (round-robin or random) is far simpler than open-rate-driven A/B and delivers the "vary the surface, keep the goal" outcome without needing tracking pixels yet. |
+| **Must have** | True sender rotation within a single run (not just sequential multi-run) | Directly requested; reuses the existing per-mailbox daily-cap logic, just changes the drain's mailbox-selection strategy from "one run = one mailbox" to "round-robin across the run's assigned mailboxes." |
+| **Must have** | Test-send-then-confirm before first real send (manual-confirm mode) | Directly requested, and the cheaper of the two automation asks — needs one seed mailbox + one IMAP poll, not ongoing monitoring infrastructure. |
+| **Should have (Phase 1.5 of this rework)** | Checkpoint deliverability monitoring + auto-pause | Directly requested ("fully automated" variant) — needs the seed-mailbox *infrastructure* (multiple accounts, IMAP polling scheduler) that the must-have test-send only needs once; more operational cost, do after the simpler version is proven. |
+| **Should have** | Bounce handling (hard bounce → remove from list, soft bounce → retry w/ backoff) | Standard hygiene every real tool has; not explicitly requested but directly supports the "don't get flagged" goal — skipping it risks exactly the reputation damage the user is trying to avoid. |
+| **Nice to have, explicitly deferred** | Spintax within subject/body text (not just whole-variant swapping) | More surface-level variation than whole-variant rotation gives, but adds real UI/parsing complexity (spintax syntax, preview rendering) — defer until whole-variant rotation is shipped and proven insufficient. |
+| **Nice to have, explicitly deferred** | Open-rate-driven automatic A/B winner selection | Needs a tracking pixel (a real deliverability/privacy tradeoff to decide deliberately) and is strictly more complex than simple rotation — defer. |
+| **Explicitly out of scope** | Owning a warmup network/pool | Real infrastructure investment (a pool of mailboxes that must themselves stay healthy) disproportionate to this product's current stage — a mailbox's own warmup (if any) happens on the customer's side, outside SpaceWorker. |
+
+### 5. Data model implications (draft — do not finalize until Michael's pending push lands and this can be reconciled against it)
+
+Sketch only, to size the work — the real Prisma diff should be written once Michael's current state is known:
+- `EmailCampaign` needs a collection of subject/body **variants** (a new `CampaignVariant` model: `id, campaignId, subject, bodyHtml`) rather than the single `subject`/`bodyHtml` fields it has today, plus a `mailboxIds: String[]` or a join table for "which of the user's mailboxes are in this run's rotation."
+- `EmailQueueItem` needs recipient-level merge-variable storage (a `variables: Json` column, populated from the uploaded CSV's extra columns) and a `variantId`/`mailboxId` recording *which* variant/sender it was actually resolved to at send time (needed for later analysis — "did variant B convert better").
+- A new `SeedMailbox` model (platform-owned, not per-customer) for the seed/monitor accounts, and a `DeliverabilityCheck` model logging each checkpoint test (campaign, seed mailbox, folder result, timestamp) for audit/debugging — mirrors the existing `PaymentVerificationAttempt` audit-trail pattern already used in Task 5.
+- `EmailCampaign`/`CampaignRun` needs a `paused_deliverability` status distinct from today's `draft`/`queued`/`sending`/`done`.
+
+### Sources
+
+- [Instantly / Smartlead deliverability feature comparison](https://www.mailreach.co/blog/email-deliverability-tools)
+- [Cold email software rankings, 2026](https://smartreach.io/blog/best-cold-email-tools/)
+- [Spintax explained](https://instantly.ai/blog/spintax/)
+- [Cold email A/B testing mechanics](https://www.smartlead.ai/blog/cold-email-ab-testing)
+- [Spintax + dynamic variables at scale](https://outboundpros.io/blog/spintax-dynamic-variables-cold-email)
+- [Email seed lists explained](https://www.warmforge.ai/blog/email-seed-list)
+- [Seed list inbox-placement testing](https://www.rejoiner.com/resources/seed-list-testing)
+- [Seed list testing — when it helps](https://www.mailneo.co/blog/seed-list-deliverability-testing)
+
+### Next steps (not started — waiting on the items below)
+
+1. **Waiting on Michael's pending push** before finalizing §4/§5 into an actual Cline/Michael task spec — his current unfinished work likely touches this exact area; rewriting the mailbox/campaign data model out from under an in-flight change would create a merge headache. Re-scope once it lands.
+2. **Waiting on Task 2 (extraction worker)** before sizing §3's OS-style dashboard — the "programs" list is thin (3 tools) until the extractor ships.
+3. Landing page (§2) and the nav/OS-framing dashboard fix (§3's bug half) have no blocking dependency and could be scoped independently if wanted before the above land.
