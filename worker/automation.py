@@ -300,7 +300,12 @@ async def google_search(query: str, max_results: int, job_dir: str) -> list[Sear
 
 async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchResult]:
     engine = params.get("engine", "duckduckgo")
-    max_results = int(params.get("max_results", 10))
+    # Confirmed against the real caller (app/dashboard/extract/page.tsx sends
+    # `params: { engine, maxResults }`, camelCase) — the dispatcher's own
+    # `POST /api/jobs` clamps this server-side to 10-200 before it ever reaches
+    # here, so this worker-side max(1, min(..., 50)) is a second, independent
+    # bound, not the source of truth for the real limit.
+    max_results = int(params.get("maxResults", 10))
     max_results = max(1, min(max_results, 50))
 
     if engine == "google":

@@ -73,16 +73,13 @@ def _prune_old_jobs() -> None:
 class JobRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
-    # Both optional, for compatibility with two possible caller shapes:
-    #   {query, params: {lane, ...}}                (documented in TASK_02_EXTRACTION_WORKER.md;
-    #                                                 worker mints its own jobId)
-    #   {jobId, query, params, lane}                (caller mints and sends its own jobId, lane
-    #                                                 top-level)
-    # There is no Next.js dispatcher code committed anywhere in this repo yet (checked every
-    # branch: main, extraction-worker-dev, queue-and-lanes-dev, michael-dev, pr-5-review — only
-    # markdown task specs exist for Task 3's dispatcher), so which shape the real caller will use
-    # cannot be verified from this codebase. Accepting both is a deliberate hedge; flagged in the
-    # handoff report for a reviewer with visibility into the actual dispatcher to confirm.
+    # Confirmed against the real dispatcher (app/api/internal/dispatch/route.ts on
+    # the queue-and-lanes-dev branch — not on this branch, easy to miss if you only
+    # check the current one): it POSTs {jobId: <SearchJob.id>, query, params, lane}
+    # and reads back {jobId} from our response as the value it stores as
+    # SearchJob.workerJobId — so echoing back the same id the caller sent (rather
+    # than minting our own) is what keeps the two systems in one id space. `lane`
+    # is top-level in the real request, not nested under params.
     jobId: Optional[str] = Field(default=None, max_length=200)
     lane: Optional[str] = None
 
@@ -95,8 +92,8 @@ def require_token(authorization: Optional[str] = Header(None)) -> None:
 
 
 def get_lane(req: "JobRequest") -> str:
-    # Top-level `lane` (the caller-mints-jobId contract) takes precedence; fall back to
-    # `params.lane` (the documented TASK_02 contract) for compatibility with either shape.
+    # Real caller sends lane top-level; params.lane fallback kept only in case a
+    # future caller nests it there instead.
     lane = req.lane or req.params.get("lane")
     if lane not in LANES:
         raise HTTPException(status_code=400, detail="lane (or params.lane) must be 'light' or 'heavy'")
@@ -228,19 +225,17 @@ def _stop_job(job_id: str) -> dict:
     return {"ok": True}
 
 
-@app.post("/jobs/{job_id}/stop")
-async def stop_job(job_id: str) -> dict:
-    """Documented in TASK_02_EXTRACTION_WORKER.md as the stop verb."""
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str) -> dict:
+    """The real cancellation verb: app/api/jobs/[id]/stop/route.ts (on
+    queue-and-lanes-dev) calls DELETE /jobs/{workerJobId}, not POST .../stop."""
     return _stop_job(job_id)
 
 
-@app.delete("/jobs/{job_id}")
-async def delete_job(job_id: str) -> dict:
-    """Same cancellation as POST /jobs/{job_id}/stop, under the verb a caller that
-    treats a job as a REST resource (DELETE to cancel/remove it) would use instead.
-    Kept as an alias rather than a replacement since no dispatcher code exists yet
-    in this repo to confirm which verb the real Next.js caller sends — see the
-    JobRequest.jobId/lane comment above for the same caveat."""
+@app.post("/jobs/{job_id}/stop")
+async def stop_job(job_id: str) -> dict:
+    """Kept as an alias to DELETE above — not what the real dispatcher calls
+    today, but harmless to keep for any future caller that prefers this verb."""
     return _stop_job(job_id)
 
 
