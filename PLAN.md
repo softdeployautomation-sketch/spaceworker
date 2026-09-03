@@ -330,3 +330,39 @@ No Prisma model, no route, no UI sketch yet — implementation hasn't begun. Wha
 - [Best proxies for antidetect browsers](https://blog.send.win/best-proxies-for-antidetect-browsers-2026/)
 - [GeeLark cloud-phone/cloud-browser architecture](https://www.geelark.com/product/antidetect-browser/)
 - [GeeLark remote control / streaming model](https://www.geelark.com/glossary/remote-control/)
+
+---
+
+## Addendum 4 — Dashboard architecture: standalone tool tabs + a cross-cutting Automation tab, and the campaign-template automation system
+
+**Status: scoped 2026-09-03, NOT YET IMPLEMENTED.** Confirmed with the user as the real dashboard structure (supersedes Addendum 2 §3's open "OS-style home" question — the answer is: each tool is its own standalone tab, plus one more tab specifically for automation). This addendum also gives Addendum 2's mailer-system research (§4 there) its concrete product surface — read that section first, this builds directly on it rather than repeating it.
+
+### Dashboard structure — confirmed
+
+- **Every tool gets its own standalone tab**: Mailboxes, Campaigns, Browser Profiles, and (once it exists) the Lead Extractor — each a first-class nav destination, not nested under a generic "Overview." This is the fix already queued in Task 8 (Part A, sidebar nav) — that task's scope is correct, just now understood as the permanent structure, not a stopgap.
+- **A separate "Automation" tab**, distinct from the tool tabs — this is where autonomous/scheduled work lives: things that run on their own across or on top of the standalone tools, not a manual single-shot action a user clicks through in a tool's own tab. Explicitly has **sub-tabs per automation type** — "Campaigns" is the first (see below), with more added as future tools/automations are introduced. The user was explicit that this tab should be **extensible**: "users can create other automation with other tools we will introduce" — design the Automation tab's structure (a sub-tab list, not a single hardcoded view) with that in mind from the start, not as a single-purpose "campaign automation" screen that would need rearchitecting later.
+
+### The campaign-template automation system
+
+This is the concrete product shape for Addendum 2 §4's mailer research (recipient variables, subject/sender rotation, deliverability test-send-confirm) — a user doesn't hand-configure all of that from scratch; they pick a **pre-built template/flow** and fill in a small number of required parameters.
+
+**One described template, verbatim in intent**: a "mass ads" campaign flow that (a) first sends a test message and confirms it actually lands in the inbox before proceeding (Addendum 2's test-send-confirm mechanism), and (b) rotates both subject lines and sender mailboxes across the send (Addendum 2's "true in-run sender rotation" + subject-variant rotation, must-have tier). This is one template among what the user described as "a lot of template and campaign flows" to come — build the template *system* generically enough that this is the first instance, not a one-off hardcoded flow.
+
+**What a user fills in when selecting a template** (the confirmed minimum set):
+1. **Lead volume** — how many leads to generate/target for this campaign run. This is a direct dependency on the extraction worker (Task 2) — the template needs to either trigger a fresh extraction job for this volume or draw from an existing completed job's results; decide which (or support both) during implementation, don't assume.
+2. **Email filter/segment criteria** — what kind of leads to mass-send to (the targeting/segmentation layer on top of raw extracted leads — e.g. by domain type, by extracted category, whatever filtering dimensions the extraction data actually supports; check what's available in the `Lead` model, per Michael's Task 3 PR, before designing the filter UI around fields that may not exist).
+3. **SMTP senders, 2 or more, rotating** — the user's own example: admin@, contact@, support@ (three mailboxes), added to the template and rotated across the send. This is Addendum 2 §4's "true sender rotation within a single run" requirement, made concrete: the template's config UI needs a multi-select/add-mailbox picker (from the user's already-connected `Mailbox` rows), not a single mailbox dropdown.
+
+**AI integration point, confirmed as needed "in some of the parts"**: this is Addendum 2's seed-mailbox deliverability monitoring (test-send-confirm before the real send, periodic checkpoint monitoring for spam-folder placement, pause-on-bad-signal) — that's the "AI" component referenced here, not a separate, undefined AI feature. Build it as scoped in Addendum 2 §4, not as a new, looser "AI does something smart" black box.
+
+**Automation tab visibility, confirmed**: every campaign automation, whether scheduled for later or actively running right now, must show up in the Automation tab's Campaigns sub-tab — this is the one dashboard surface for "what autonomous work is currently happening or queued," across however many templates/flows exist. A `CampaignAutomation` (or similarly-named) record tying a template instance to its current status (scheduled/running/paused-on-bad-signal/done) is the natural backing model — this sub-tab is essentially a status view over that table, filtered to the current user.
+
+### Hard dependency, confirmed explicitly by the user — sequencing matters here
+
+**"Lead extractor needs to work perfectly and senders need to work out perfectly for the campaign template automation to work."** This is not a soft nice-to-have ordering preference — it's a stated hard dependency. Concretely:
+- **Task 2 (extraction worker) must be solid first.** As of this session, Michael's Task 2 PR (#4) has real, filed bugs (see the PR #4 review comment: a Python syntax bug breaking `/stop`, a URL-encoding bug, a crash-prone DDG link parser, unbounded worker memory growth, and — the significant one — a silent reimplementation that dropped the already-working name-extraction and domain-filtering logic instead of adapting the original engine per spec). None of the campaign-automation work above should start until Task 2 is actually fixed and re-verified, not just "merged."
+- **Senders (Task 4, mailboxes/campaigns) need to "work out perfectly"** — Task 4 is merged and deployed, but per the README's own outstanding-verification list, the mailbox SMTP-test and campaign-send/drain flows haven't been end-to-end verified against real data yet. Do that verification (already listed as outstanding in the README) before building sender-rotation automation on top of it — rotation logic compounds any latent bug in the single-sender path.
+
+### Explicitly not started
+
+No template schema, no `CampaignAutomation` model, no Automation-tab UI sketch yet — this addendum captures the confirmed product shape and its hard dependency ordering, not a ready-to-build spec. Sequence: (1) fix + re-verify Task 2, (2) verify Task 4's mailbox/campaign flows end-to-end (both already tracked elsewhere, not new work invented here), (3) *then* scope this into a real `TASK_09_CAMPAIGN_AUTOMATION.md` — building the template/automation layer on top of an unverified foundation would mean debugging two layers of bugs at once.
