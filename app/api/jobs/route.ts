@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 
@@ -30,10 +31,16 @@ export async function POST(req: Request) {
 
   const query = typeof body.query === "string" ? body.query.trim() : "";
   const lane = body.lane === "heavy" ? "heavy" : "light";
-  const params =
+  const rawParams =
     body.params && typeof body.params === "object" && !Array.isArray(body.params)
-      ? body.params
+      ? (body.params as Record<string, unknown>)
       : {};
+
+  // Clamp maxResults server-side — the UI min/max is trivially bypassed via API.
+  const maxResults = typeof rawParams.maxResults === "number"
+    ? Math.min(Math.max(10, rawParams.maxResults), 200)
+    : undefined;
+  const params = maxResults !== undefined ? { ...rawParams, maxResults } : rawParams;
 
   if (!query) return NextResponse.json({ error: "query is required" }, { status: 400 });
 
@@ -45,7 +52,7 @@ export async function POST(req: Request) {
 
   const job = await prisma.$transaction(async (tx) => {
     const searchJob = await tx.searchJob.create({
-      data: { userId: session.userId, query, params, lane, status: "queued" },
+      data: { userId: session.userId, query, params: params as Prisma.InputJsonValue, lane, status: "queued" },
     });
     await tx.jobQueueEntry.create({
       data: {

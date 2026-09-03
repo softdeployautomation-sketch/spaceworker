@@ -47,6 +47,7 @@ export default function ExtractPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const selectedJobRef = useRef<JobDetail | null>(null);
 
   const fetchJobs = useCallback(async () => {
     try {
@@ -62,16 +63,16 @@ export default function ExtractPage() {
     } catch {}
   }, []);
 
+  useEffect(() => { selectedJobRef.current = selectedJob; }, [selectedJob]);
+
   useEffect(() => {
     void fetchJobs();
     pollRef.current = setInterval(() => {
       void fetchJobs();
-      setSelectedJob((prev) => {
-        if (prev && (prev.status === "queued" || prev.status === "running")) {
-          void fetchJobDetail(prev.id);
-        }
-        return prev;
-      });
+      const cur = selectedJobRef.current;
+      if (cur && (cur.status === "queued" || cur.status === "running")) {
+        void fetchJobDetail(cur.id);
+      }
     }, 4000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchJobs, fetchJobDetail]);

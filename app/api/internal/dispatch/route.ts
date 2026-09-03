@@ -24,30 +24,39 @@ export async function POST(req: Request) {
       continue;
     }
 
-    const entry = await prisma.jobQueueEntry.findFirst({
-      where: { lane, status: "queued" },
-      orderBy: [{ priorityTier: "desc" }, { createdAt: "asc" }],
-      include: { searchJob: true },
-    });
-
-    if (!entry) {
-      results[`${lane}_dispatch`] = "queue_empty";
+    // Guard worker config before touching the DB — avoids jobs stuck "running"
+    // with no workerJobId when the env vars are missing.
+    if (!workerBase || !workerToken) {
+      results[`${lane}_dispatch`] = "no_worker_config";
       continue;
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.jobQueueEntry.update({
-        where: { id: entry.id },
+    // Atomically claim the highest-priority queued entry using an optimistic
+    // lock: findFirst picks the candidate, updateMany with the same id+status
+    // guard wins only if no concurrent dispatcher already claimed it.
+    const claimed = await prisma.$transaction(async (tx) => {
+      const entry = await tx.jobQueueEntry.findFirst({
+        where: { lane, status: "queued" },
+        orderBy: [{ priorityTier: "desc" }, { createdAt: "asc" }],
+        include: { searchJob: true },
+      });
+      if (!entry) return null;
+
+      const { count } = await tx.jobQueueEntry.updateMany({
+        where: { id: entry.id, status: "queued" },
         data: { status: "dispatched" },
       });
+      if (count === 0) return null; // another process claimed it first
+
       await tx.searchJob.update({
         where: { id: entry.searchJobId },
         data: { status: "running" },
       });
+      return entry;
     });
 
-    if (!workerBase || !workerToken) {
-      results[`${lane}_dispatch`] = "no_worker_config";
+    if (!claimed) {
+      results[`${lane}_dispatch`] = "queue_empty";
       continue;
     }
 
@@ -59,32 +68,40 @@ export async function POST(req: Request) {
           Authorization: `Bearer ${workerToken}`,
         },
         body: JSON.stringify({
-          jobId: entry.searchJob.id,
-          query: entry.searchJob.query,
-          params: entry.searchJob.params,
+          jobId: claimed.searchJob.id,
+          query: claimed.searchJob.query,
+          params: claimed.searchJob.params,
           lane,
         }),
       });
 
       if (res.ok) {
         const data = (await res.json()) as { jobId?: string };
-        if (data.jobId) {
+        if (!data.jobId) {
+          // Worker returned 200 but no jobId — treat as failure so the job
+          // doesn't get stuck "running" forever with nothing to poll.
           await prisma.searchJob.update({
-            where: { id: entry.searchJobId },
+            where: { id: claimed.searchJobId },
+            data: { status: "failed", error: "Worker returned no jobId" },
+          });
+          results[`${lane}_dispatch`] = "worker_missing_jobid";
+        } else {
+          await prisma.searchJob.update({
+            where: { id: claimed.searchJobId },
             data: { workerJobId: data.jobId },
           });
+          results[`${lane}_dispatch`] = "dispatched";
         }
-        results[`${lane}_dispatch`] = "dispatched";
       } else {
         await prisma.searchJob.update({
-          where: { id: entry.searchJobId },
+          where: { id: claimed.searchJobId },
           data: { status: "failed", error: `Worker rejected: ${res.status}` },
         });
         results[`${lane}_dispatch`] = `worker_error_${res.status}`;
       }
     } catch (err) {
       await prisma.searchJob.update({
-        where: { id: entry.searchJobId },
+        where: { id: claimed.searchJobId },
         data: { status: "failed", error: String(err) },
       });
       results[`${lane}_dispatch`] = "worker_unreachable";
