@@ -5,17 +5,20 @@ Pure API layer; all extraction logic lives in automation.py. Nothing here import
 from the Next.js app.
 
 - Bearer-token auth on every route (via WORKER_AUTH_TOKEN; required; no default).
-- Binds to 127.0.0.1 only — never reachable from outside the box..
+- Binds to 127.0.0.1 only — never reachable from outside the box.
 - Two lane semaphores ("light"/"heavy"), one concurrent job per lane.
 - Per-job state lives in a plain dict[jobId, JobState] — replaced the original
-  module-level singleton that held exactly one job globally..
-- Every job's temp directory is deleted unconditionally in a finally block..
+  module-level singleton that held exactly one job globally.
+- Every job's temp directory is deleted unconditionally in a finally block.
+- Completed jobs are pruned from JOBS after 1 hour to prevent unbounded growth.
 """
 
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
+import secrets
 import shutil
 import uuid
 from contextlib import asynccontextmanager
@@ -33,6 +36,7 @@ from automation import run_automation
 
 JOB_DIR_DEFAULT = "/tmp/spaceworker-jobs"
 LANES = ("light", "heavy")
+_JOB_TTL_SECONDS = 3600  # prune done/failed jobs after 1 hour
 
 
 @dataclass
@@ -42,11 +46,23 @@ class JobState:
     error: Optional[str] = None
     task: Optional[asyncio.Task] = None
     job_dir: str = ""
+    completed_at: Optional[datetime.datetime] = None
 
 
 # Per-job state only — keyed by jobId; never a single shared singleton.
-
 JOBS: dict[str, JobState] = {}
+
+
+def _prune_old_jobs() -> None:
+    now = datetime.datetime.utcnow()
+    stale = [
+        jid for jid, s in JOBS.items()
+        if s.status in ("done", "failed")
+        and s.completed_at is not None
+        and (now - s.completed_at).total_seconds() > _JOB_TTL_SECONDS
+    ]
+    for jid in stale:
+        JOBS.pop(jid, None)
 
 
 class JobRequest(BaseModel):
@@ -56,7 +72,8 @@ class JobRequest(BaseModel):
 
 def require_token(authorization: Optional[str] = Header(None)) -> None:
     token = os.getenv("WORKER_AUTH_TOKEN", "")
-    if not token or not authorization or authorization != f"Bearer {token}":
+    expected = f"Bearer {token}"
+    if not token or not authorization or not secrets.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
@@ -69,16 +86,11 @@ def get_lane(params: dict) -> str:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Refuse to start ifthe auth token is not set — never run unauthenticated.
     if not os.getenv("WORKER_AUTH_TOKEN"):
         raise RuntimeError("WORKER_AUTH_TOKEN is not set - refusing to start")
 
-    # Create the base job directory once at startup. Each job gets its own
-    # throwaway subdirectory under this, deleted unconditionally at job end.
     os.makedirs(os.getenv("WORKER_JOB_DIR", JOB_DIR_DEFAULT), exist_ok=True)
 
-    # Lane semaphores are created here, inside the running event loop -
-    # not at module level - so they belong to this loop.
     app.state.lanes = {
         "light": asyncio.Semaphore(1),
         "heavy": asyncio.Semaphore(1),
@@ -87,6 +99,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(dependencies=[Depends(require_token)], lifespan=lifespan)
+
+
 @app.post("/jobs", status_code=200)
 async def create_job(req: JobRequest, request: Request) -> dict:
     lane = get_lane(req.params)
@@ -130,6 +144,7 @@ async def create_job(req: JobRequest, request: Request) -> dict:
             state.status = "failed"
             state.error = str(e)
         finally:
+            state.completed_at = datetime.datetime.utcnow()
             shutil.rmtree(job_dir, ignore_errors=True)
             if acquired:
                 sem.release()
@@ -140,6 +155,7 @@ async def create_job(req: JobRequest, request: Request) -> dict:
 
 @app.get("/jobs/{job_id}")
 async def get_job(job_id: str) -> dict:
+    _prune_old_jobs()
     state = JOBS.get(job_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -158,8 +174,8 @@ async def stop_job(job_id: str) -> dict:
     if state.status != "running" or not state.task or state.task.done():
         raise HTTPException(status_code=400, detail="Job is not running")
     state.task.cancel()
-    # The task's finally block cleans up the temp directory regardless..
-    return {"ok": true}
+    state.completed_at = datetime.datetime.utcnow()
+    return {"ok": True}
 
 
 if __name__ == "__main__":
@@ -174,5 +190,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host=host,
-        port=int(os.getenv("WORKER_PORT", "8001"))
+        port=int(os.getenv("WORKER_PORT", "8001")),
     )
