@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 import os
+import re
 import secrets
 import shutil
 import uuid
@@ -36,7 +37,11 @@ from automation import run_automation
 
 JOB_DIR_DEFAULT = "/tmp/spaceworker-jobs"
 LANES = ("light", "heavy")
+# A caller-supplied jobId is joined directly into a filesystem path (job_dir) below —
+# restrict it to a safe charset so a caller can't path-traverse (e.g. jobId="../../etc").
+_SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 _JOB_TTL_SECONDS = 3600  # prune done/failed jobs after 1 hour
+_JOB_CLEANUP_INTERVAL_SECONDS = 300  # background prune cadence, independent of request traffic
 
 
 @dataclass
@@ -68,6 +73,18 @@ def _prune_old_jobs() -> None:
 class JobRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=500)
     params: dict[str, Any] = Field(default_factory=dict)
+    # Both optional, for compatibility with two possible caller shapes:
+    #   {query, params: {lane, ...}}                (documented in TASK_02_EXTRACTION_WORKER.md;
+    #                                                 worker mints its own jobId)
+    #   {jobId, query, params, lane}                (caller mints and sends its own jobId, lane
+    #                                                 top-level)
+    # There is no Next.js dispatcher code committed anywhere in this repo yet (checked every
+    # branch: main, extraction-worker-dev, queue-and-lanes-dev, michael-dev, pr-5-review — only
+    # markdown task specs exist for Task 3's dispatcher), so which shape the real caller will use
+    # cannot be verified from this codebase. Accepting both is a deliberate hedge; flagged in the
+    # handoff report for a reviewer with visibility into the actual dispatcher to confirm.
+    jobId: Optional[str] = Field(default=None, max_length=200)
+    lane: Optional[str] = None
 
 
 def require_token(authorization: Optional[str] = Header(None)) -> None:
@@ -77,11 +94,25 @@ def require_token(authorization: Optional[str] = Header(None)) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def get_lane(params: dict) -> str:
-    lane = params.get("lane")
+def get_lane(req: "JobRequest") -> str:
+    # Top-level `lane` (the caller-mints-jobId contract) takes precedence; fall back to
+    # `params.lane` (the documented TASK_02 contract) for compatibility with either shape.
+    lane = req.lane or req.params.get("lane")
     if lane not in LANES:
-        raise HTTPException(status_code=400, detail="params.lane must be 'light' or 'heavy'")
+        raise HTTPException(status_code=400, detail="lane (or params.lane) must be 'light' or 'heavy'")
     return lane
+
+
+async def _periodic_cleanup() -> None:
+    """Background prune loop — runs regardless of whether any client ever polls
+    GET /jobs/{id}, so a fire-and-forget caller that never polls to completion
+    still can't leak JOBS entries forever."""
+    try:
+        while True:
+            await asyncio.sleep(_JOB_CLEANUP_INTERVAL_SECONDS)
+            _prune_old_jobs()
+    except asyncio.CancelledError:
+        pass
 
 
 @asynccontextmanager
@@ -95,7 +126,15 @@ async def lifespan(app: FastAPI):
         "light": asyncio.Semaphore(1),
         "heavy": asyncio.Semaphore(1),
     }
-    yield
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(dependencies=[Depends(require_token)], lifespan=lifespan)
@@ -103,8 +142,20 @@ app = FastAPI(dependencies=[Depends(require_token)], lifespan=lifespan)
 
 @app.post("/jobs", status_code=200)
 async def create_job(req: JobRequest, request: Request) -> dict:
-    lane = get_lane(req.params)
-    job_id = str(uuid.uuid4())
+    lane = get_lane(req)
+
+    if req.jobId:
+        if not _SAFE_JOB_ID_RE.match(req.jobId):
+            raise HTTPException(
+                status_code=400,
+                detail="jobId must match ^[A-Za-z0-9_-]{1,200}$ (it's used as a filesystem directory name)",
+            )
+        if req.jobId in JOBS:
+            raise HTTPException(status_code=409, detail="jobId already exists")
+        job_id = req.jobId
+    else:
+        job_id = str(uuid.uuid4())
+
     job_dir = os.path.join(os.getenv("WORKER_JOB_DIR", JOB_DIR_DEFAULT), job_id)
     os.makedirs(job_dir, exist_ok=True)
 
@@ -166,8 +217,7 @@ async def get_job(job_id: str) -> dict:
     }
 
 
-@app.post("/jobs/{job_id}/stop")
-async def stop_job(job_id: str) -> dict:
+def _stop_job(job_id: str) -> dict:
     state = JOBS.get(job_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -176,6 +226,22 @@ async def stop_job(job_id: str) -> dict:
     state.task.cancel()
     state.completed_at = datetime.datetime.utcnow()
     return {"ok": True}
+
+
+@app.post("/jobs/{job_id}/stop")
+async def stop_job(job_id: str) -> dict:
+    """Documented in TASK_02_EXTRACTION_WORKER.md as the stop verb."""
+    return _stop_job(job_id)
+
+
+@app.delete("/jobs/{job_id}")
+async def delete_job(job_id: str) -> dict:
+    """Same cancellation as POST /jobs/{job_id}/stop, under the verb a caller that
+    treats a job as a REST resource (DELETE to cancel/remove it) would use instead.
+    Kept as an alias rather than a replacement since no dispatcher code exists yet
+    in this repo to confirm which verb the real Next.js caller sends — see the
+    JobRequest.jobId/lane comment above for the same caveat."""
+    return _stop_job(job_id)
 
 
 if __name__ == "__main__":
