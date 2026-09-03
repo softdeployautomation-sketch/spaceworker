@@ -8,6 +8,12 @@ const nextConfig: NextConfig = {
   // here — those are pure JS and if externalized the real npm "server-only"
   // resolves to its throwing index.js and breaks builds.
   serverExternalPackages: ["bcrypt", "@prisma/client"],
+  // Pin the workspace root explicitly — an unrelated package.json in the parent
+  // home directory otherwise confuses Turbopack's root inference, causing bogus
+  // "/ROOT/..." module resolution errors that abort the production build.
+  turbopack: {
+    root: __dirname,
+  },
 };
 
 export default nextConfig;

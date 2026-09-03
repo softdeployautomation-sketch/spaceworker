@@ -1,17 +1,20 @@
-import type { Metadata } from "next";
+import { getAdminSession } from "@/lib/admin-auth";
+import { prisma } from "@/lib/prisma";
+import { redirect } from "next/navigation";
+import AdminPanel from "./admin-panel";
 
-export const metadata: Metadata = { title: "Admin" };
+export default async function AdminPage() {
+  const isAdmin = await getAdminSession();
+  if (!isAdmin) redirect("/admin/login");
 
-export const dynamic = "force-dynamic";
+  const users = await prisma.user.findMany({
+    select: { id: true, email: true, tier: true, emailVerified: true, createdAt: true },
+    orderBy: { createdAt: "desc" },
+  });
 
-export default function AdminOverviewPage() {
   return (
-    <div>
-      <h1 className="text-2xl font-bold text-fg">Admin overview</h1>
-      <p className="mt-2 text-sm text-fg-muted">
-        Placeholder. Task 3/4/5 add the queue/lane controls, billing, and user
-        management here.
-      </p>
-    </div>
+    <AdminPanel
+      initialUsers={users.map((u) => ({ ...u, createdAt: u.createdAt.toISOString() }))}
+    />
   );
 }

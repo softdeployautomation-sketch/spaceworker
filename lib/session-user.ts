@@ -1,23 +1,19 @@
 import "server-only";
-import { cookies } from "next/headers";
-import { verifySession } from "./auth";
+
+import { getSession } from "./auth";
 import { db } from "./db";
 
-export async function getSessionToken(): Promise<string | null> {
-  const cookieStore = await cookies();
-  return cookieStore.get("sw_session")?.value || null;
-}
-
+/**
+ * Loads the current user from the session cookie with a fresh, authoritative
+ * DB read (rather than trusting the JWT payload alone). Returns null if there's
+ * no valid session or the user row no longer exists.
+ */
 export async function getCurrentUser() {
-  const token = await getSessionToken();
-  if (!token) return null;
-
-  const session = await verifySession(token);
+  const session = await getSession();
   if (!session) return null;
 
-  const user = await db.user.findUnique({
-    where: { id: session.userId },
-  });
+  const user = await db.user.findUnique({ where: { id: session.sub } });
+  if (!user) return null;
 
   return user;
 }

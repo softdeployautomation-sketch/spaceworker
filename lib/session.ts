@@ -1,10 +1,10 @@
 import "server-only";
-import { cookies } from "next/headers";
-import { verifySession } from "./auth";
+import { getSession as getAuthSession } from "./auth";
 
+// Thin adapter over lib/auth.ts's getSession() — kept for the routes that
+// expect a plain { userId } shape rather than the full SessionPayload.
 export async function getSession(): Promise<{ userId: string } | null> {
-  const cookieStore = await cookies(); // MUST await — async in Next.js 16
-  const token = cookieStore.get("sw_session")?.value;
-  if (!token) return null;
-  return verifySession(token);
+  const session = await getAuthSession();
+  if (!session) return null;
+  return { userId: session.sub };
 }
