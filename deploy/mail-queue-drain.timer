@@ -1,0 +1,11 @@
+# Install: sudo cp mail-queue-drain.timer /etc/systemd/system/ && sudo systemctl enable --now mail-queue-drain.timer
+[Unit]
+Description=Run SpaceWorker mail queue drain every minute
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+Unit=mail-queue-drain.service
+
+[Install]
+WantedBy=timers.target

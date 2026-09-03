@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(cuid())
+  email          String   @unique
+  passwordHash   String
+  emailVerified  Boolean  @default(false)
+  tier           Int      @default(0)
+  createdAt      DateTime @default(now())
+  verifications  VerificationCode[]
+  rateLimits     RateLimitEvent[]
+  mailboxes      Mailbox[]
+  emailCampaigns EmailCampaign[]
+}
+
+model VerificationCode {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  codeHash   String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  attempts   Int       @default(0)
+}
+
+model RateLimitEvent {
+  id        String   @id @default(cuid())
+  ip        String
+  kind      String
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+  @@index([ip, kind, createdAt])
+}
+
+model AdminSetting {
+  id        String   @id @default("singleton")
+  updatedAt DateTime @updatedAt
+}
+
+model Mailbox {
+  id                String    @id @default(cuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id])
+  label             String
+  host              String
+  port              Int
+  username          String
+  encryptedPassword String
+  passwordIv        String
+  passwordTag       String
+  secure            Boolean   @default(true)
+  dailyLimit        Int       @default(40)
+  sentToday         Int       @default(0)
+  sentTodayDate     String?
+  active            Boolean   @default(true)
+  lastTestedAt      DateTime?
+  lastTestOk        Boolean?
+  createdAt         DateTime  @default(now())
+  queueItems        EmailQueueItem[]
+  @@index([userId])
+}
+
+model EmailCampaign {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  name        String
+  subject     String
+  bodyHtml    String
+  searchJobId String?
+  status      String   @default("draft")
+  createdAt   DateTime @default(now())
+  items       EmailQueueItem[]
+  @@index([userId])
+}
+
+model EmailQueueItem {
+  id         String        @id @default(cuid())
+  campaignId String
+  campaign   EmailCampaign @relation(fields: [campaignId], references: [id])
+  mailboxId  String
+  mailbox    Mailbox       @relation(fields: [mailboxId], references: [id])
+  toEmail    String
+  status     String        @default("queued")
+  sentAt     DateTime?
+  error      String?
+  createdAt  DateTime      @default(now())
+  @@index([campaignId, status])
+  @@index([mailboxId, status])
+}
