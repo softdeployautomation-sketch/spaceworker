@@ -70,7 +70,11 @@ function buildNekoArgs(session: Session): string[] {
   const profileMount = `${session.profileDir}:/home/neko/.config/chromium`;
   // Neko passes browser args through its Chromium wrapper. The exact env name is
   // a spike-verification item on the VPS (older banners used NEKO_BROWSER_ARGS).
-  const browserArgs = `--proxy-server=${session.proxyServerValue} --user-data-dir=/home/neko/.config/chromium`;
+  // Empty proxyServerValue = direct connection (no exit node configured yet) —
+  // omit --proxy-server entirely rather than passing a broken/empty flag.
+  const browserArgs = session.proxyServerValue
+    ? `--proxy-server=${session.proxyServerValue} --user-data-dir=/home/neko/.config/chromium`
+    : `--user-data-dir=/home/neko/.config/chromium`;
   const args: string[] = [
     "run",
     "-d",
@@ -262,9 +266,10 @@ const server = createServer(async (req, res) => {
       if (url === "/sessions/start") {
         const userId = String(body.userId ?? "");
         const profileDir = String(body.profileDir ?? "");
+        // Empty proxyServerValue is valid — direct connection, no exit node.
         const proxyServerValue = String(body.proxyServerValue ?? "");
-        if (!userId || !profileDir || !proxyServerValue) {
-          json(res, 400, { error: "userId, profileDir and proxyServerValue are required" });
+        if (!userId || !profileDir) {
+          json(res, 400, { error: "userId and profileDir are required" });
           return;
         }
         const session: Session = {

@@ -29,7 +29,9 @@ function resolveProxy(
   profile: { byoProxyHost: string | null; byoProxyPort: number | null; byoProxyScheme: string | null; byoProxyUsername: string | null; byoProxyAuth: string | null }
 ): { arg: string; byoSnapshot: Record<string, string | number | null> } {
   if (proxyMode === "free") {
-    if (!exitNodeId) throw new Error("exitNodeId is required for the free route");
+    // No location picked (or none configured yet) — direct connection through
+    // the server's own IP rather than blocking the user from launching at all.
+    if (!exitNodeId) return { arg: "", byoSnapshot: {} };
     const node = getExitNode(exitNodeId);
     if (!node) throw new Error("Selected exit node is not configured");
     return {

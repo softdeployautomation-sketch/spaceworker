@@ -78,6 +78,55 @@ export default function BrowserSessionPanel({
   const [ipResult, setIpResult] = useState<
     Record<string, { ip?: string; error?: string }>
   >({});
+  // Location label is shown by default but can be hidden per-viewer's
+  // preference — persisted so it stays hidden across reloads.
+  const [showLocation, setShowLocation] = useState(true);
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("spaceworker-show-location");
+      if (stored !== null) setShowLocation(stored === "true");
+    } catch {
+      /* localStorage unavailable — default stays visible */
+    }
+  }, []);
+  function toggleShowLocation() {
+    setShowLocation((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("spaceworker-show-location", String(next));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  }
+
+  // First-time users have no profile yet — rather than sending them to a
+  // separate Browser Profiles tab before they can do anything, silently
+  // create one default profile so the launcher is immediately usable.
+  const [creatingDefaultProfile, setCreatingDefaultProfile] = useState(false);
+  const [defaultProfileError, setDefaultProfileError] = useState("");
+  useEffect(() => {
+    if (profiles.length > 0 || creatingDefaultProfile) return;
+    setCreatingDefaultProfile(true);
+    fetch("/api/browser-profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "My Browser" }),
+    })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setDefaultProfileError(data.error ?? "Couldn't create a browser profile.");
+          return;
+        }
+        setProfiles((prev) => [...prev, data]);
+        setSelectedProfileId(data.id);
+      })
+      .catch(() => setDefaultProfileError("Network error while creating a browser profile."))
+      .finally(() => setCreatingDefaultProfile(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profiles.length]);
 
   const [byoProfileId, setByoProfileId] = useState(
     () => initialPreset?.id ?? ""
@@ -127,16 +176,8 @@ export default function BrowserSessionPanel({
       setStartError("Choose a profile to launch.");
       return;
     }
-    if (proxyMode === "free" && exitNodes.length === 0) {
-      setStartError(
-        "No exit nodes are configured yet — add EXIT_NODE_US / EXIT_NODE_UK in the environment."
-      );
-      return;
-    }
-    if (proxyMode === "free" && !selectedNodeId) {
-      setStartError("Choose an exit location.");
-      return;
-    }
+    // No exit nodes configured, or none picked — fall through to a direct
+    // connection (server's own IP) rather than blocking launch entirely.
     setStarting(true);
     try {
       const res = await fetch("/api/browser-sessions", {
@@ -349,11 +390,19 @@ export default function BrowserSessionPanel({
                 the cloud even after you close this window.
               </p>
             </div>
-            {idleProfiles.length === 0 ? (
+            {creatingDefaultProfile ? (
               <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
-                No idle browser profiles available. Create one in the Browser
-                Profiles tab first (profiles currently in use by a session or job
-                aren&apos;t available).
+                Setting up your browser profile…
+              </p>
+            ) : defaultProfileError ? (
+              <p className="mt-3 text-sm text-red-600 dark:text-red-400">
+                {defaultProfileError}
+              </p>
+            ) : idleProfiles.length === 0 ? (
+              <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+                All your browser profiles are currently in use by another
+                session. Stop one below to free it up, or create another in
+                the Browser Profiles tab.
               </p>
             ) : (
               <>
@@ -389,7 +438,7 @@ export default function BrowserSessionPanel({
                   </label>
                 </div>
 
-                {proxyMode === "free" && (
+                {proxyMode === "free" && exitNodes.length > 0 && (
                   <label className="mt-4 flex flex-col gap-1 text-sm font-medium">
                     Exit location
                     <select
@@ -397,7 +446,7 @@ export default function BrowserSessionPanel({
                       onChange={(e) => setSelectedNodeId(e.target.value)}
                       className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                     >
-                      <option value="">Choose a location…</option>
+                      <option value="">Direct (server IP) — no location filtering</option>
                       {exitNodes.map((n) => (
                         <option key={n.id} value={n.id}>
                           {n.flag} {n.city}, {n.country}
@@ -405,6 +454,13 @@ export default function BrowserSessionPanel({
                       ))}
                     </select>
                   </label>
+                )}
+
+                {proxyMode === "free" && exitNodes.length === 0 && (
+                  <p className="mt-4 text-xs text-zinc-500 dark:text-zinc-400">
+                    No exit locations configured yet — this session will use a
+                    direct connection (the server&apos;s own IP).
+                  </p>
                 )}
 
                 {proxyMode === "byo" && (
@@ -435,13 +491,22 @@ export default function BrowserSessionPanel({
           <div className="mt-8">
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">Sessions</h2>
-              <button
-                type="button"
-                onClick={refresh}
-                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-              >
-                Refresh
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleShowLocation}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                >
+                  {showLocation ? "Hide location" : "Show location"}
+                </button>
+                <button
+                  type="button"
+                  onClick={refresh}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                >
+                  Refresh
+                </button>
+              </div>
             </div>
 
             {sessions.length === 0 ? (
@@ -469,11 +534,15 @@ export default function BrowserSessionPanel({
                           >
                             {STATUS_LABEL[s.status] ?? s.status}
                           </span>
-                          <span className="text-sm text-zinc-500 dark:text-zinc-400">
-                            {s.proxyMode === "free"
-                              ? `Free · ${s.exitNodeId?.toUpperCase() ?? "—"}`
-                              : "BYO proxy"}
-                          </span>
+                          {showLocation && (
+                            <span className="text-sm text-zinc-500 dark:text-zinc-400">
+                              {s.proxyMode === "free"
+                                ? s.exitNodeId
+                                  ? `Free · ${s.exitNodeId.toUpperCase()}`
+                                  : "Direct connection"
+                                : "BYO proxy"}
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-2">
                           {s.status === "running" && (

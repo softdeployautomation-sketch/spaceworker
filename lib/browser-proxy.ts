@@ -73,18 +73,28 @@ export function curlProxyValue(spec: ProxySpec, { withAuth }: { withAuth: boolea
  */
 export async function checkIpThroughProxy(spec: ProxySpec): Promise<string> {
   const value = curlProxyValue(spec, { withAuth: true });
+  return runIpifyCurl(["--proxy", value], "Proxy unreachable");
+}
+
+/** Direct (no-proxy) IP check — for a session with no exit node/BYO proxy
+ *  configured, showing the server's own real IP rather than throwing. */
+export async function checkDirectIp(): Promise<string> {
+  return runIpifyCurl([], "Direct connection unreachable");
+}
+
+async function runIpifyCurl(proxyArgs: string[], errorPrefix: string): Promise<string> {
   let out: string;
   try {
     const { stdout } = await execFileAsync("curl", [
       "-s",
       "--max-time", "15",
       "--connect-timeout", "10",
-      "--proxy", value,
+      ...proxyArgs,
       "https://api.ipify.org?format=json",
     ]);
     out = stdout;
   } catch (e) {
-    throw new Error(`Proxy unreachable: ${e instanceof Error ? e.message : "unknown"}`);
+    throw new Error(`${errorPrefix}: ${e instanceof Error ? e.message : "unknown"}`);
   }
   let ip: unknown;
   try {
