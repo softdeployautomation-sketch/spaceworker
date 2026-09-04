@@ -8,11 +8,15 @@ name: Build & Deploy
 # achieves the same "nothing ships without a deliberate human action"
 # guarantee without it.
 #
-# SpaceWorker runs TWO systemd services from this one deploy: `spaceworker`
-# (the Next.js app, needs the .next build) and `spaceworker-browser`
+# SpaceWorker runs THREE systemd services from this one deploy: `spaceworker`
+# (the Next.js app, needs the .next build), `spaceworker-browser`
 # (browser-server/server.ts, run directly via tsx — no build step, just needs
 # the raw source file present and the service restarted so it picks up any
-# change).
+# change), and `extraction-worker` (worker/*.py via its own venv — also no
+# build step, just needs the .py files present and the service restarted).
+# The worker's venv and worker/.env are NOT part of this repo (gitignored,
+# provisioned once on the VPS) — extracting worker/ only touches the .py
+# source files, leaving those alone.
 
 on:
   push:
@@ -90,7 +94,7 @@ jobs:
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker
 
       - name: Set up SSH
         run: |
@@ -103,7 +107,7 @@ jobs:
         run: |
           scp -i ~/.ssh/vps_key /tmp/deploy.tar.gz root@164.68.105.96:/tmp/spaceworker-ci-deploy.tar.gz
 
-      - name: Extract, migrate, restart both services
+      - name: Extract, migrate, restart all three services
         run: |
           ssh -i ~/.ssh/vps_key root@164.68.105.96 '
             set -e
@@ -115,9 +119,11 @@ jobs:
             sudo -u trmm npx prisma migrate deploy
             systemctl restart spaceworker
             systemctl restart spaceworker-browser
+            systemctl restart extraction-worker
             sleep 3
             systemctl is-active spaceworker
             systemctl is-active spaceworker-browser
+            systemctl is-active extraction-worker
             curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.instaweb.top/dashboard
           '
 
