@@ -25,6 +25,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
 import { resolve } from "path";
+import httpProxy from "http-proxy";
 
 const execFileAsync = promisify(execFile);
 
@@ -198,8 +199,46 @@ function publicSession(s: Session) {
   };
 }
 
+// Public browser-streaming proxy: nginx forwards ALL /browser/* traffic here
+// (one static location block, no dynamic per-session config needed) and this
+// process looks up the session's actual Neko container port from its own
+// in-memory registry, then proxies onward — both plain HTTP (Neko's web
+// assets) and the WebSocket upgrade (the real video/input stream). This path
+// is reached directly by the customer's browser via nginx and deliberately
+// does NOT require the internal Authorization bearer token the rest of this
+// API does — there is no way for an end-user's <iframe> to carry that header.
+const browserProxy = httpProxy.createProxyServer({ ws: true });
+browserProxy.on("error", (err, _req, res) => {
+  console.error("browser proxy error:", err);
+  if (res && "writeHead" in res && !res.headersSent) {
+    (res as ServerResponse).writeHead(502, { "Content-Type": "application/json" });
+    (res as ServerResponse).end(JSON.stringify({ error: "Session stream unavailable" }));
+  }
+});
+
+const BROWSER_PATH_RE = /^\/browser\/([a-z0-9]+)\//i;
+
+function sessionPortForProxyPath(url: string): number | null {
+  const m = BROWSER_PATH_RE.exec(url);
+  if (!m) return null;
+  const session = registry.get(m[1]);
+  if (!session || session.status !== "running" || !session.port) return null;
+  return session.port;
+}
+
 const server = createServer(async (req, res) => {
   const url = (req.url ?? "/").split("?")[0];
+
+  if (url.startsWith("/browser/")) {
+    const port = sessionPortForProxyPath(url);
+    if (port === null) {
+      json(res, 404, { error: "Session not found or not running" });
+      return;
+    }
+    browserProxy.web(req, res, { target: `http://127.0.0.1:${port}` });
+    return;
+  }
+
   if (!authorize(req)) {
     json(res, 401, { error: "Unauthorized" });
     return;
@@ -279,6 +318,18 @@ const server = createServer(async (req, res) => {
     }
   }
   json(res, 404, { error: "Not found" });
+});
+
+// Neko's real-time video/input stream is a WebSocket — proxy the upgrade the
+// same way as the plain-HTTP path above, keyed by the same sessionId lookup.
+server.on("upgrade", (req, socket, head) => {
+  const url = (req.url ?? "/").split("?")[0];
+  const port = sessionPortForProxyPath(url);
+  if (port === null) {
+    socket.destroy();
+    return;
+  }
+  browserProxy.ws(req, socket, head, { target: `http://127.0.0.1:${port}` });
 });
 
 server.listen(PORT, HOST, () => {
