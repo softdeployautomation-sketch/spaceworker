@@ -624,14 +624,27 @@ export default function BrowserSessionPanel({
                       )}
 
                       {s.status === "running" && (
-                        <div className="mt-4 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
-                          <iframe
-                            src={`/browser/${s.id}/`}
-                            title="Private browser session"
-                            allow="clipboard-read; clipboard-write; autoplay; fullscreen"
-                            className="h-full w-full border-0"
-                          />
-                        </div>
+                        <>
+                          <div className="mt-3 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                window.open(`/browser/${s.id}/`, "_blank", "noopener,noreferrer")
+                              }
+                              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                            >
+                              Open in new tab ↗
+                            </button>
+                          </div>
+                          <div className="mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
+                            <iframe
+                              src={`/browser/${s.id}/`}
+                              title="Private browser session"
+                              allow="clipboard-read; clipboard-write; autoplay; fullscreen"
+                              className="h-full w-full border-0"
+                            />
+                          </div>
+                        </>
                       )}
                     </div>
                   );
