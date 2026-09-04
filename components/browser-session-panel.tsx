@@ -1,6 +1,8 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { Globe } from "lucide-react";
+
 type Session = {
   id: string;
   status: string;
@@ -306,15 +308,20 @@ export default function BrowserSessionPanel({
 
   return (
     <div>
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Private Browser</h1>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            A real Chrome instance, isolated to your own profile and routed
-            through a proxy so your activity isn&apos;t linkable to your real IP.
-          </p>
+      {/* Window chrome (BrowserApp.design.html): title bar + dark frame. */}
+      <div className="overflow-hidden rounded-2xl border border-[#29314a] bg-[#0e1320] shadow-[0_40px_90px_-30px_rgba(0,0,0,0.7)]">
+        <div className="flex items-center gap-2.5 border-b border-[#1c2333] bg-[#131826] px-4 py-2.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-[#3f4759]" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#3f4759]" />
+          <span className="ml-2 text-[13px] font-semibold text-[#c3c9d6]">
+            Browser
+          </span>
+          <span className="ml-auto hidden text-[11px] text-[#6b7280] sm:inline">
+            Saved in the cloud — always on
+          </span>
         </div>
-      </div>
+
+        <div className="bg-[radial-gradient(60%_60%_at_50%_22%,rgba(99,102,241,0.09),transparent_60%),#0e1320] p-4 sm:p-6">
 
       {tier < 1 && (
         <div className="mt-6 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
@@ -325,8 +332,23 @@ export default function BrowserSessionPanel({
       {tier >= 1 && (
         <>
           {/* --- Session launcher --- */}
-          <div className="mt-6 max-w-3xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <h2 className="text-base font-semibold">Launch a session</h2>
+          <div className="mx-auto mt-6 max-w-3xl rounded-xl border border-[#252e45] bg-[#0f1420]/80 p-6">
+            <div className="text-center">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[#29314a] bg-[#1c2333]">
+                <Globe
+                  className="h-7 w-7 text-[#818cf8]"
+                  strokeWidth={1.8}
+                  aria-hidden="true"
+                />
+              </div>
+              <h2 className="mt-4 text-xl font-bold text-[#f4f5f7]">
+                Start your private browser
+              </h2>
+              <p className="mt-1 text-[13.5px] leading-relaxed text-[#9ca3af]">
+                Pick a profile and a location — your Chrome keeps running in
+                the cloud even after you close this window.
+              </p>
+            </div>
             {idleProfiles.length === 0 ? (
               <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
                 No idle browser profiles available. Create one in the Browser
@@ -649,6 +671,8 @@ export default function BrowserSessionPanel({
           )}
         </>
       )}
+        </div>
+      </div>
     </div>
   );
 }

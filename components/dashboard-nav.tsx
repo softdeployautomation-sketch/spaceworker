@@ -16,11 +16,39 @@ import {
 
 import { cn } from "@/lib/cn";
 
-interface NavItem {
+export interface NavItem {
   href: string;
   label: string;
   icon: LucideIcon;
   active: boolean;
+}
+
+// Single source of truth for every real nav destination. Both the dock and the
+// inline mobile nav row render from here so the two can never drift from each
+// other (or from the destinations each dashboard page actually implements).
+const NAV_ITEMS: Omit<NavItem, "active">[] = [
+  { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard/extract", label: "Extract", icon: Search },
+  { href: "/dashboard/mailboxes", label: "Mailboxes", icon: Mailbox },
+  { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
+  {
+    href: "/dashboard/browser-profiles",
+    label: "Browser Profiles",
+    icon: Fingerprint,
+  },
+  { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
+  { href: "/dashboard/settings", label: "Settings", icon: Settings },
+];
+
+export function useNavItems(): NavItem[] {
+  const pathname = usePathname();
+  return NAV_ITEMS.map((item) => ({
+    ...item,
+    active:
+      item.href === "/dashboard"
+        ? pathname === "/dashboard"
+        : pathname.startsWith(item.href),
+  }));
 }
 
 export function DashboardNav({
@@ -28,52 +56,7 @@ export function DashboardNav({
 }: {
   variant?: "sidebar" | "mobile";
 }) {
-  const pathname = usePathname();
-
-  const items: NavItem[] = [
-    {
-      href: "/dashboard",
-      label: "Overview",
-      icon: LayoutDashboard,
-      active: pathname === "/dashboard",
-    },
-    {
-      href: "/dashboard/extract",
-      label: "Extract",
-      icon: Search,
-      active: pathname.startsWith("/dashboard/extract"),
-    },
-    {
-      href: "/dashboard/mailboxes",
-      label: "Mailboxes",
-      icon: Mailbox,
-      active: pathname.startsWith("/dashboard/mailboxes"),
-    },
-    {
-      href: "/dashboard/campaigns",
-      label: "Campaigns",
-      icon: Megaphone,
-      active: pathname.startsWith("/dashboard/campaigns"),
-    },
-    {
-      href: "/dashboard/browser-profiles",
-      label: "Browser Profiles",
-      icon: Fingerprint,
-      active: pathname.startsWith("/dashboard/browser-profiles"),
-    },
-    {
-      href: "/dashboard/browser",
-      label: "Private Browser",
-      icon: Globe,
-      active: pathname.startsWith("/dashboard/browser"),
-    },
-    {
-      href: "/dashboard/settings",
-      label: "Settings",
-      icon: Settings,
-      active: pathname.startsWith("/dashboard/settings"),
-    },
-  ];
+  const items = useNavItems();
 
   const isMobile = variant === "mobile";
 
