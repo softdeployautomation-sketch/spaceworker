@@ -100,10 +100,25 @@ export async function POST(req: Request) {
       ? rawEmailDomains.trim().slice(0, 500)
       : undefined;
 
+  // Minimum-results auto-expansion: worker/automation.py reads
+  // params.minResults and, if the first search pass falls short, generates
+  // related query variants and keeps searching (bounded rounds/query count)
+  // until it's met. 0/absent disables expansion entirely.
+  const rawMinResults = rawParams.minResults;
+  const coercedMin =
+    typeof rawMinResults === "number" ? rawMinResults
+    : typeof rawMinResults === "string" && rawMinResults.trim() !== "" ? Number(rawMinResults)
+    : undefined;
+  const minResults =
+    coercedMin !== undefined && !isNaN(coercedMin) && coercedMin > 0
+      ? Math.min(coercedMin, 500)
+      : undefined;
+
   const params = {
     engine,
     ...(maxResults !== undefined ? { maxResults } : {}),
     ...(emailDomains !== undefined ? { emailDomains } : {}),
+    ...(minResults !== undefined ? { minResults } : {}),
     queries: uniqueQueries,
     template,
   };

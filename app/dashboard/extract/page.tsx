@@ -67,6 +67,9 @@ export default function ExtractPage() {
   const [emailDomainInput, setEmailDomainInput] = useState("");
   const [engine, setEngine] = useState<"ddg" | "google">("ddg");
   const [maxResults, setMaxResults] = useState(50);
+  // 0 = disabled (no auto-expansion) — the worker only expands terms when
+  // this is a positive number and the first pass falls short of it.
+  const [minResults, setMinResults] = useState(0);
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -152,6 +155,7 @@ export default function ExtractPage() {
     // patterns (e.g. "gmail.com, *.edu"). Only sent when at least one chip is present.
     const domains = emailDomains.map((t) => t.trim()).filter((t) => t.length > 0);
     const emailDomainParam = domains.length > 0 ? { emailDomains: domains.join(", ") } : {};
+    const minResultsParam = minResults > 0 ? { minResults } : {};
 
     setSubmitting(true);
     try {
@@ -161,7 +165,7 @@ export default function ExtractPage() {
         body: JSON.stringify({
           queries,
           template: "lead",
-          params: { engine, maxResults, ...emailDomainParam },
+          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam },
         }),
       });
       if (res.ok) {
@@ -335,6 +339,18 @@ export default function ExtractPage() {
                   value={maxResults}
                   onChange={(e) => setMaxResults(Number(e.target.value))}
                   className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Minimum leads:</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={500}
+                  value={minResults}
+                  onChange={(e) => setMinResults(Number(e.target.value))}
+                  className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
+                  title="If the search doesn't find this many leads, the worker automatically tries related terms (e.g. 'near me', 'company') until it does, or runs out of budget."
                 />
               </label>
             </div>

@@ -21,7 +21,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -29,7 +29,23 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
   { id: "sessions", label: "Browser Sessions" },
+  { id: "queue", label: "Search Queue" },
 ];
+
+type AdminQueueJob = {
+  id: string;
+  query: string;
+  template: string;
+  lane: string;
+  jobStatus: string;
+  queueStatus: string | null;
+  priorityTier: number | null;
+  workerJobId: string | null;
+  error: string | null;
+  leadCount: number;
+  userEmail: string;
+  createdAt: string;
+};
 
 function StatusBadge({ status }: { status: string }) {
   const styles =
@@ -83,6 +99,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "wallets" && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
+        {tab === "queue" && <QueueTab />}
       </main>
     </div>
   );
@@ -617,6 +634,168 @@ function SessionStatusBadge({ status }: { status: string }) {
           : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400";
   return (
     <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{status}</span>
+  );
+}
+
+function QueueJobStatusBadge({ status }: { status: string }) {
+  const styles =
+    status === "done"
+      ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+      : status === "running"
+        ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400"
+        : status === "failed"
+          ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
+          : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{status}</span>
+  );
+}
+
+function QueueTab() {
+  const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [dispatching, setDispatching] = useState(false);
+  const [dispatchResult, setDispatchResult] = useState<string>("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/queue");
+      if (!res.ok) throw new Error("Failed to load the queue");
+      setJobs((await res.json()) as AdminQueueJob[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load the queue");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function triggerDispatch() {
+    setDispatching(true);
+    setDispatchResult("");
+    try {
+      const res = await fetch("/api/admin/queue/dispatch", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setDispatchResult(`Failed: ${data.error ?? res.status}`);
+      } else {
+        setDispatchResult(JSON.stringify(data));
+        await load();
+      }
+    } catch {
+      setDispatchResult("Network error");
+    } finally {
+      setDispatching(false);
+    }
+  }
+
+  // A job "stuck" in the queue: still queued/dispatched but not making
+  // progress. Flags anything queued for more than 2 minutes so a stall like
+  // "the dispatcher/worker isn't running" is visually obvious, not just a
+  // long list to eyeball.
+  const STALL_MS = 2 * 60 * 1000;
+  const isStalled = (j: AdminQueueJob) =>
+    (j.jobStatus === "queued" || j.jobStatus === "running") &&
+    !j.error &&
+    Date.now() - new Date(j.createdAt).getTime() > STALL_MS &&
+    j.leadCount === 0;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold tracking-tight">Search Queue</h2>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={triggerDispatch}
+            disabled={dispatching}
+            className="rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+          >
+            {dispatching ? "Dispatching…" : "Trigger dispatch now"}
+          </button>
+          <button
+            onClick={load}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Every search job with its queue-claim state and lead count. A job stuck
+        "queued"/"running" for over 2 minutes with 0 leads and no error is
+        flagged — that shape usually means the dispatcher timer or the
+        extraction worker isn't actually running, not that the search itself
+        is slow.
+      </p>
+
+      {dispatchResult && (
+        <p className="mt-3 rounded-lg bg-zinc-100 p-2 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          {dispatchResult}
+        </p>
+      )}
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {loading ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : jobs.length === 0 ? (
+        <div className="mt-6 rounded-xl border border-dashed border-zinc-300 bg-white p-10 text-center dark:border-zinc-700 dark:bg-zinc-900">
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">No search jobs yet</p>
+        </div>
+      ) : (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">Query</th>
+                <th className="px-4 py-3 font-medium">Lane</th>
+                <th className="px-4 py-3 font-medium">Job status</th>
+                <th className="px-4 py-3 font-medium">Queue claim</th>
+                <th className="px-4 py-3 font-medium">Leads</th>
+                <th className="px-4 py-3 font-medium">Created</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {jobs.map((j) => (
+                <tr key={j.id} className={isStalled(j) ? "bg-red-50 dark:bg-red-950/30" : ""}>
+                  <td className="px-4 py-3">{j.userEmail}</td>
+                  <td className="px-4 py-3 max-w-xs truncate" title={j.query}>
+                    {j.query}
+                    {isStalled(j) && (
+                      <span className="ml-2 rounded-full bg-red-600 px-2 py-0.5 text-xs font-medium text-white">
+                        stalled
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">{j.lane}</td>
+                  <td className="px-4 py-3">
+                    <QueueJobStatusBadge status={j.jobStatus} />
+                    {j.error && (
+                      <p className="mt-1 max-w-xs truncate text-xs text-red-600 dark:text-red-400" title={j.error}>
+                        {j.error}
+                      </p>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {j.queueStatus ?? "—"}
+                  </td>
+                  <td className="px-4 py-3">{j.leadCount}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {new Date(j.createdAt).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

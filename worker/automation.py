@@ -185,18 +185,55 @@ NAV_RETRY_DELAY_SECONDS = 3
 async def _launch_persistent_context(playwright, profile_dir: str):
     """Launch a persistent Chromium context, falling back to system Chrome if the
     bundled Chromium binary is missing (ENOENT/spawn failure) — ported from the
-    original engine's browser-launch fallback (automation_server.py ~L642-662)."""
+    original engine's browser-launch fallback (automation_server.py ~L642-662).
+
+    Anti-detection hardening (added after DDG's own headless Chromium fallback
+    started hitting the same 'anomaly-modal' challenge the plain-HTTP path was
+    supposed to fall back FROM — confirmed via a real failed job): old-style
+    `headless=True` is a well-known, strongly fingerprintable signal (missing
+    GPU/plugin APIs a real browser has). `headless="new"` is Chromium's newer
+    headless mode, built specifically to be much closer to a real headed
+    browser and far less distinguishable. `navigator.webdriver` is patched to
+    undefined (the single most common automation-detection check) via an
+    init script, and a realistic desktop viewport/UA are set explicitly
+    rather than left at Playwright's own defaults. This is a mitigation, not
+    a guarantee — DDG's detection can still evolve, and a datacenter VPS IP
+    making automated requests is a separate risk this doesn't address."""
+    # NOTE: `headless="new"` is NOT valid here — Playwright's Python binding
+    # (confirmed against the actual pinned 1.44.0) requires headless to be a
+    # bool and throws "expected boolean, got string" otherwise, which would
+    # have broken this launch entirely (verified empirically before landing
+    # this fix, after an earlier draft got this wrong). The correct way to
+    # opt into Chromium's new headless mode at this Playwright version is the
+    # `--headless=new` command-line flag, with `headless=True` kept as-is —
+    # also verified empirically (a real launch + page.goto succeeded).
     launch_kwargs = dict(
         headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage"],
+        args=[
+            "--no-sandbox", "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled", "--headless=new",
+        ],
+        user_agent=BROWSER_USER_AGENT,
+        viewport={"width": 1366, "height": 768},
     )
+
+    async def _harden(context):
+        await context.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+        )
+        return context
+
     try:
-        return await playwright.chromium.launch_persistent_context(profile_dir, **launch_kwargs)
+        return await _harden(
+            await playwright.chromium.launch_persistent_context(profile_dir, **launch_kwargs)
+        )
     except Exception as e:
         err = str(e).lower()
         if "enoent" in err or "spawn" in err or "failed to launch" in err:
-            return await playwright.chromium.launch_persistent_context(
-                profile_dir, channel="chrome", **launch_kwargs
+            return await _harden(
+                await playwright.chromium.launch_persistent_context(
+                    profile_dir, channel="chrome", **launch_kwargs
+                )
             )
         raise
 
@@ -408,42 +445,55 @@ def extract_lead_page(result: SearchResult) -> list[dict]:
     return _build_leads(result, emails, phones, contact_names)
 
 
-async def run_automation(
-    query: str,
+# Minimum-results auto-expansion (Task: "keep adding related words until we
+# hit the minimum"). Deterministic, no external API/LLM dependency — appends
+# generic qualifier suffixes to each ORIGINAL base term to generate new search
+# variants, one suffix per round (so the outer loop's between-round "have we
+# hit the minimum yet" check actually has a chance to stop early instead of
+# every suffix being dumped into a single first round). Bounded on both axes
+# (rounds = len(_EXPANSION_SUFFIXES), and total query count) so a
+# never-satisfiable minimum (e.g. minResults=10000) can't loop indefinitely or
+# hammer the search engine.
+_EXPANSION_SUFFIXES = [" near me", " company", " services", " LLC"]
+MAX_EXPANSION_ROUNDS = len(_EXPANSION_SUFFIXES)
+MAX_TOTAL_QUERIES = 20
+
+
+def _expand_queries_for_round(base_terms: list[str], suffix: str, already_used: set[str]) -> list[str]:
+    """One round's worth of expansion: base_terms + this round's single
+    suffix, skipping anything already searched in an earlier round."""
+    expanded: list[str] = []
+    for term in base_terms:
+        candidate = f"{term}{suffix}"
+        if candidate not in already_used:
+            expanded.append(candidate)
+    return expanded
+
+
+async def _search_and_extract(
+    query_list: list[str],
     params: dict,
     job_dir: str,
     on_progress: AsyncCallable,
+    seen_urls: set[str],
+    domain_rules,
 ) -> list[dict]:
-    """Run a full extraction job: search then concurrent per-page extraction.
-
-    Multi-term support (Lead Extractor templates): when `params["queries"]` is a
-    non-empty list of strings (e.g. the chips a user adds — "plumber", "carpenter"),
-    every term is searched and the results are combined before dedup, so one job
-    genuinely searches across all of the user's "Find" items, not just the first.
-    A single query (legacy callers that send no `queries`) behaves exactly as
-    before, including failing if the search itself fails.
-    """
+    """One pass: search every term in query_list, dedup against the SHARED
+    seen_urls set (so a later expansion round never reprocesses a page an
+    earlier round already extracted), then extract leads concurrently.
+    Factored out of run_automation so the min-results loop can call this
+    once per expansion round without duplicating the search/extract logic."""
     loop = asyncio.get_event_loop()
 
-    raw_queries = params.get("queries")
-    if (
-        isinstance(raw_queries, list)
-        and len(raw_queries) > 0
-        and all(isinstance(q, str) and q.strip() for q in raw_queries)
-    ):
-        query_list: list[str] = [str(q).strip() for q in raw_queries]
-    else:
-        query_list = [query]
-
     if len(query_list) == 1:
-        # Single-query path: preserve the original failure semantics.
+        # Single-query path: preserve the original failure semantics — a solo
+        # query's own search failure propagates instead of being swallowed.
         results = await search_phase(query_list[0], params, job_dir)
     else:
-        # Multi-query path: a blocked/erroneous term shouldn't abort the whole job,
-        # so each term is isolated via return_exceptions and a failure just
-        # contributes zero results rather than crashing the job. Run concurrently
-        # rather than one term at a time — each search_phase call can take tens of
-        # seconds, so N terms sequentially would take roughly N times as long.
+        # Multi-query path: a blocked/erroneous term shouldn't abort the whole
+        # job, so each term is isolated via return_exceptions and a failure
+        # just contributes zero results rather than crashing the job. Run
+        # concurrently — each search_phase call can take tens of seconds.
         per_query_results = await asyncio.gather(
             *(search_phase(q, params, job_dir) for q in query_list),
             return_exceptions=True,
@@ -454,16 +504,11 @@ async def run_automation(
                 continue
             results.extend(r)
 
-    seen_urls: set[str] = set()
     unique_results: list[SearchResult] = []
     for r in results:
         if r.url not in seen_urls:
             seen_urls.add(r.url)
             unique_results.append(r)
-
-    # Parse email domain allowlist once so all concurrent workers share it.
-    raw_domain_rules = params.get("emailDomains") or params.get("email_domains")
-    domain_rules = parse_email_domain_allowlist(str(raw_domain_rules)) if raw_domain_rules else None
 
     async def process_one(result: SearchResult) -> list[dict]:
         leads = await loop.run_in_executor(None, extract_lead_page, result)
@@ -488,4 +533,80 @@ async def run_automation(
     for item in leads_per_result:
         if isinstance(item, list):
             all_leads.extend(item)
+    return all_leads
+
+
+async def run_automation(
+    query: str,
+    params: dict,
+    job_dir: str,
+    on_progress: AsyncCallable,
+) -> list[dict]:
+    """Run a full extraction job: search then concurrent per-page extraction.
+
+    Multi-term support (Lead Extractor templates): when `params["queries"]` is a
+    non-empty list of strings (e.g. the chips a user adds — "plumber", "carpenter"),
+    every term is searched and the results are combined before dedup, so one job
+    genuinely searches across all of the user's "Find" items, not just the first.
+    A single query (legacy callers that send no `queries`) behaves exactly as
+    before, including failing if the search itself fails.
+
+    Minimum-results auto-expansion: when `params["minResults"]` is a positive
+    number and the first pass yields fewer leads than that, generates related
+    query variants (see _expand_queries_for_round) one suffix at a time —
+    checking the minimum again between each round so it can stop as soon as
+    it's met, rather than always exhausting every suffix upfront — bounded by
+    MAX_EXPANSION_ROUNDS (= the number of suffixes available) and
+    MAX_TOTAL_QUERIES total queries. Leads accumulate across rounds (deduped
+    by URL via the shared seen_urls set); on_progress fires for every round's
+    leads as they're found, same as the single-pass behavior. Note: this
+    widens the search TERMS, not the underlying network path — if a search
+    engine is blocking the source IP/fingerprint outright (rather than
+    genuinely having few results for the term), expansion won't help, since
+    the new variants hit the same block.
+    """
+    raw_queries = params.get("queries")
+    if (
+        isinstance(raw_queries, list)
+        and len(raw_queries) > 0
+        and all(isinstance(q, str) and q.strip() for q in raw_queries)
+    ):
+        base_terms: list[str] = [str(q).strip() for q in raw_queries]
+    else:
+        base_terms = [query]
+
+    # Accepts int/float/numeric-string; floors decimals rather than silently
+    # disabling expansion for them (an earlier draft's str.isdigit() check
+    # rejected "10.5" entirely, since isdigit() is False for any decimal).
+    raw_min_results = params.get("minResults")
+    min_results: int | None = None
+    if isinstance(raw_min_results, (int, float, str)):
+        try:
+            min_results = int(float(raw_min_results))
+        except (ValueError, TypeError):
+            min_results = None
+
+    raw_domain_rules = params.get("emailDomains") or params.get("email_domains")
+    domain_rules = parse_email_domain_allowlist(str(raw_domain_rules)) if raw_domain_rules else None
+
+    seen_urls: set[str] = set()
+    used_queries: set[str] = set(base_terms)
+    all_leads: list[dict] = await _search_and_extract(
+        base_terms, params, job_dir, on_progress, seen_urls, domain_rules
+    )
+
+    if min_results is not None and min_results > 0:
+        for suffix in _EXPANSION_SUFFIXES:
+            if len(all_leads) >= min_results or len(used_queries) >= MAX_TOTAL_QUERIES:
+                break  # minimum met, or out of query budget — stop between rounds
+            budget = MAX_TOTAL_QUERIES - len(used_queries)
+            next_terms = _expand_queries_for_round(base_terms, suffix, used_queries)[:budget]
+            if not next_terms:
+                continue  # this suffix's variants were all already used; try the next one
+            used_queries.update(next_terms)
+            round_leads = await _search_and_extract(
+                next_terms, params, job_dir, on_progress, seen_urls, domain_rules
+            )
+            all_leads.extend(round_leads)
+
     return all_leads
