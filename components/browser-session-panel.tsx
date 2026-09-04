@@ -592,14 +592,16 @@ export default function BrowserSessionPanel({
                               )}
                             </>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => stop(s)}
-                            disabled={busyId === s.id}
-                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
-                          >
-                            {busyId === s.id ? "Stopping…" : "Stop"}
-                          </button>
+                          {(s.status === "running" || s.status === "starting") && (
+                            <button
+                              type="button"
+                              onClick={() => stop(s)}
+                              disabled={busyId === s.id}
+                              className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                            >
+                              {busyId === s.id ? "Stopping…" : "Stop"}
+                            </button>
+                          )}
                         </div>
                       </div>
 
