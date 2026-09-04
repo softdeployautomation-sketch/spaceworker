@@ -31,7 +31,11 @@ const execFileAsync = promisify(execFile);
 const PORT = Number(process.env.BROWSER_SERVER_PORT ?? 3401);
 const HOST = process.env.BROWSER_SERVER_BIND ?? "127.0.0.1";
 const TOKEN = process.env.BROWSER_SERVER_TOKEN;
-const NEKO_IMAGE = process.env.BROWSER_NEKO_IMAGE ?? "ghcr.io/m1k1o/neko:chromium";
+// Confirmed live on the VPS 2026-09-04: GHCR's current path is a nested repo
+// name (neko/chromium), not the old colon-tag form (neko:chromium) — the
+// latter is denied ("error from registry: denied") since that repo/tag no
+// longer resolves under m1k1o/neko directly.
+const NEKO_IMAGE = process.env.BROWSER_NEKO_IMAGE ?? "ghcr.io/m1k1o/neko/chromium:latest";
 const HOST_PUBLIC_IP = process.env.BROWSER_HOST_PUBLIC_IP ?? "";
 const EPR = process.env.BROWSER_NEKO_EPR ?? "52000-52100";
 const BASE_PORT = Number(process.env.BROWSER_SESSION_BASE_PORT ?? 32000);
