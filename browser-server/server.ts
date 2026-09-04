@@ -25,6 +25,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
 import { resolve } from "path";
+import { chmod, readdir, rm } from "fs/promises";
 import httpProxy from "http-proxy";
 
 const execFileAsync = promisify(execFile);
@@ -117,7 +118,37 @@ async function waitRunning(container: string): Promise<boolean> {
   return false;
 }
 
+// Chromium creates its own subdirectories/files inside the profile mount using
+// its own default (restrictive, owner-only) permissions — the one-time
+// chmod 777 applied when a profile is first created (lib/browser-profiles.ts)
+// only covers the top-level directory, not content Chromium writes afterward.
+// If a LATER container run happens to use a different effective uid (e.g. an
+// image update, or any host-side process touching the directory), those
+// owner-only subdirectories become unwritable, and Chromium crash-loops with
+// "mkdir ... Permission denied" (confirmed live via a diagnostic container run
+// on 2026-09-04). A killed/crashed container can also leave behind Chromium's
+// SingletonLock/-Cookie/-Socket files, which then make every future launch
+// fail with "profile appears to be in use by another Chromium process" even
+// though nothing is actually still running. Run before every start so a
+// profile heals itself regardless of how the previous session ended.
+async function cleanupProfileDir(profileDir: string): Promise<void> {
+  try {
+    await chmod(profileDir, 0o777);
+    const entries = await readdir(profileDir).catch(() => [] as string[]);
+    await Promise.all(
+      entries
+        .filter((name) => name.startsWith("Singleton"))
+        .map((name) => rm(`${profileDir}/${name}`, { force: true }).catch(() => {})),
+    );
+    await execFileAsync("chmod", ["-R", "777", profileDir]).catch(() => {});
+  } catch {
+    // Best-effort — a permission/lock problem this can't fix will still
+    // surface clearly via the container's own crash logs.
+  }
+}
+
 async function startInternal(session: Session): Promise<string> {
+  await cleanupProfileDir(session.profileDir);
   const entry = registry.get(session.sessionId);
   if (entry && entry.status === "running") {
     return entry.containerName ?? ""; // idempotent
@@ -159,6 +190,12 @@ async function stopInternal(sessionId: string, force: boolean): Promise<void> {
   if (entry.containerName) {
     await docker("rm", "-f", entry.containerName).catch(() => {});
   }
+  // Heal the profile on every stop too, not just on the next start — a
+  // service restart (systemctl restart spaceworker-browser) kills every live
+  // container out from under this process without ever calling stopInternal,
+  // which is exactly why startInternal ALSO cleans up defensively; this call
+  // covers the normal stop path so a clean stop never leaves stale locks.
+  await cleanupProfileDir(entry.profileDir);
   entry.pid = null;
   entry.containerName = null;
   entry.status = "stopped";
