@@ -1,0 +1,122 @@
+name: Build & Deploy
+
+# Same gating design as Vantra's workflow: push to main runs build/typecheck
+# automatically (fast CI feedback); the actual deploy only runs on a manual
+# workflow_dispatch trigger (Actions tab -> Run workflow), and depends on
+# (needs:) the build job passing first. GitHub's native environment
+# "required reviewers" gate needs a paid plan this repo doesn't have, so this
+# achieves the same "nothing ships without a deliberate human action"
+# guarantee without it.
+#
+# SpaceWorker runs TWO systemd services from this one deploy: `spaceworker`
+# (the Next.js app, needs the .next build) and `spaceworker-browser`
+# (browser-server/server.ts, run directly via tsx — no build step, just needs
+# the raw source file present and the service restarted so it picks up any
+# change).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Build
+        run: npm run build
+        env:
+          # Placeholder values only — `next build` collects page data for API
+          # routes, which eagerly imports lib/env.ts's required() checks.
+          # These never need to be real: plain server-side process.env reads
+          # are NOT inlined by Next.js (unlike NEXT_PUBLIC_* vars), so the
+          # deployed server reads the VPS's own real .env again at actual
+          # runtime — no real secret is ever baked into this CI build.
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_placeholder"
+          SESSION_SECRET: "ci-placeholder-secret"
+          RESEND_API_KEY: "ci-placeholder"
+          EMAIL_FROM: "noreply@example.com"
+          APP_BASE_URL: "https://ci-placeholder.invalid"
+
+  deploy:
+    name: Deploy to production (manual only)
+    needs: build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+          DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_placeholder"
+          SESSION_SECRET: "ci-placeholder-secret"
+          RESEND_API_KEY: "ci-placeholder"
+          EMAIL_FROM: "noreply@example.com"
+          APP_BASE_URL: "https://ci-placeholder.invalid"
+
+      - name: Package build artifact
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server
+
+      - name: Set up SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H 164.68.105.96 >> ~/.ssh/known_hosts
+
+      - name: Transfer build to VPS
+        run: |
+          scp -i ~/.ssh/vps_key /tmp/deploy.tar.gz root@164.68.105.96:/tmp/spaceworker-ci-deploy.tar.gz
+
+      - name: Extract, migrate, restart both services
+        run: |
+          ssh -i ~/.ssh/vps_key root@164.68.105.96 '
+            set -e
+            cd /opt/spaceworker
+            tar xzf /tmp/spaceworker-ci-deploy.tar.gz -C /opt/spaceworker
+            chown -R trmm:trmm /opt/spaceworker
+            rm -f /tmp/spaceworker-ci-deploy.tar.gz
+            npm rebuild || true
+            sudo -u trmm npx prisma migrate deploy
+            systemctl restart spaceworker
+            systemctl restart spaceworker-browser
+            sleep 3
+            systemctl is-active spaceworker
+            systemctl is-active spaceworker-browser
+            curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.instaweb.top/dashboard
+          '
+
+      - name: Clean up SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
