@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Mailbox,
   Megaphone,
+  Search,
   Settings,
   type LucideIcon,
 } from "lucide-react";
@@ -35,6 +36,12 @@ export function DashboardNav({
       label: "Overview",
       icon: LayoutDashboard,
       active: pathname === "/dashboard",
+    },
+    {
+      href: "/dashboard/extract",
+      label: "Extract",
+      icon: Search,
+      active: pathname.startsWith("/dashboard/extract"),
     },
     {
       href: "/dashboard/mailboxes",
