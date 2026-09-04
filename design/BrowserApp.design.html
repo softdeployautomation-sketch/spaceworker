@@ -1,0 +1,140 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>SpaceWorker Browser App — Design Reference</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #05070c; padding: 40px; }
+    a { color: #818cf8; }
+    .tab { transition: background .12s ease; cursor: pointer; }
+    .tab:hover { background: #1c2333; }
+    .state-label { color: #6b7280; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; margin: 0 0 12px; }
+  </style>
+</head>
+<body>
+
+<!-- ===== STATE 1: ACTIVE SESSION ===== -->
+<p class="state-label">State: active session</p>
+<div style="width:1160px; height:760px; background:#0b0f17; display:flex; align-items:center; justify-content:center; padding:40px; margin-bottom:60px;">
+  <div style="width:100%; height:100%; border-radius:14px; overflow:hidden; border:1px solid #29314a; box-shadow:0 40px 90px -30px rgba(0,0,0,0.6); display:flex; flex-direction:column; background:#0e1320;">
+
+    <!-- Title bar -->
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 16px; background:#131826; border-bottom:1px solid #1c2333;">
+      <span style="width:10px; height:10px; border-radius:999px; background:#3f4759;"></span>
+      <span style="width:10px; height:10px; border-radius:999px; background:#3f4759;"></span>
+      <span style="font-size:13px; color:#c3c9d6; font-weight:600; margin-left:6px;">Browser</span>
+      <span style="margin-left:auto; font-size:11px; color:#6b7280;">Saved in the cloud — always on</span>
+    </div>
+
+    <div style="display:flex; flex-direction:column; flex:1; min-height:0;">
+
+      <!-- Tab strip -->
+      <div style="display:flex; align-items:flex-end; gap:2px; padding:8px 10px 0; background:#0f1420;">
+        <div class="tab" style="display:flex; align-items:center; gap:8px; padding:9px 14px; border-radius:9px 9px 0 0; background:#0e1320; border:1px solid #29314a; border-bottom:none; font-size:12.5px; color:#e5e7eb; max-width:180px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Google Maps</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2" style="margin-left:4px;"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </div>
+        <div class="tab" style="display:flex; align-items:center; gap:8px; padding:9px 14px; border-radius:9px 9px 0 0; font-size:12.5px; color:#8b93a7; max-width:180px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Gmail</span>
+        </div>
+        <div class="tab" style="display:flex; align-items:center; gap:8px; padding:9px 14px; border-radius:9px 9px 0 0; font-size:12.5px; color:#8b93a7; max-width:180px;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg>
+          <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">New tab</span>
+        </div>
+        <div class="tab" style="display:flex; align-items:center; justify-content:center; width:30px; height:30px; border-radius:8px; color:#8b93a7; margin-left:4px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
+        </div>
+      </div>
+
+      <!-- Address / toolbar -->
+      <div style="display:flex; align-items:center; gap:10px; padding:9px 14px; background:#0e1320; border-bottom:1px solid #1c2333;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3f4759" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7280" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 4v5h-5"/></svg>
+        <div style="flex:1; display:flex; align-items:center; gap:8px; padding:7px 12px; border-radius:8px; background:#161c2b; border:1px solid #232a3b;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6ee7b7" stroke-width="2.4"><path d="M12 2 4 6v6c0 5 3.4 8.4 8 10 4.6-1.6 8-5 8-10V6z"/></svg>
+          <span style="font-size:12.5px; color:#c3c9d6;">maps.google.com/search/plumbers+chicago</span>
+        </div>
+
+        <!-- IP + location -->
+        <div style="display:flex; align-items:center; gap:6px; padding:6px 10px; border-radius:999px; background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.25);">
+          <span style="width:6px; height:6px; border-radius:999px; background:#34d399;"></span>
+          <span style="font-size:11.5px; color:#6ee7b7; font-weight:600;">185.24.xx.xx</span>
+          <span style="font-size:11px; color:#5fb896;">· Amsterdam</span>
+        </div>
+        <button style="display:flex; align-items:center; gap:5px; padding:6px 10px; border-radius:8px; background:#161c2b; border:1px solid #232a3b; color:#c3c9d6; font-size:11.5px; font-weight:600;">
+          Switch location
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+        </button>
+      </div>
+
+      <!-- Content area (mock page) -->
+      <div style="flex:1; min-height:0; background:#f4f5f7; padding:28px 36px; overflow:hidden;">
+        <div style="max-width:720px;">
+          <div style="height:26px; width:55%; border-radius:6px; background:#dfe1e8; margin-bottom:16px;"></div>
+          <div style="display:flex; gap:16px; margin-bottom:22px;">
+            <div style="height:34px; width:110px; border-radius:8px; background:#4f46e5;"></div>
+            <div style="height:34px; width:90px; border-radius:8px; background:#e5e7eb;"></div>
+          </div>
+          <div style="display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px;">
+            <div style="height:120px; border-radius:10px; background:#eceef3;"></div>
+            <div style="height:120px; border-radius:10px; background:#eceef3;"></div>
+            <div style="height:14px; width:80%; border-radius:5px; background:#dfe1e8;"></div>
+            <div style="height:14px; width:60%; border-radius:5px; background:#dfe1e8;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== STATE 2: NO SESSION YET (launch screen) ===== -->
+<p class="state-label">State: no session yet (launch screen)</p>
+<div style="width:1160px; height:760px; background:#0b0f17; display:flex; align-items:center; justify-content:center; padding:40px;">
+  <div style="width:100%; height:100%; border-radius:14px; overflow:hidden; border:1px solid #29314a; box-shadow:0 40px 90px -30px rgba(0,0,0,0.6); display:flex; flex-direction:column; background:#0e1320;">
+
+    <!-- Title bar -->
+    <div style="display:flex; align-items:center; gap:10px; padding:10px 16px; background:#131826; border-bottom:1px solid #1c2333;">
+      <span style="width:10px; height:10px; border-radius:999px; background:#3f4759;"></span>
+      <span style="width:10px; height:10px; border-radius:999px; background:#3f4759;"></span>
+      <span style="font-size:13px; color:#c3c9d6; font-weight:600; margin-left:6px;">Browser</span>
+      <span style="margin-left:auto; font-size:11px; color:#6b7280;">Saved in the cloud — always on</span>
+    </div>
+
+    <div style="flex:1; display:flex; align-items:center; justify-content:center; background:radial-gradient(60% 60% at 50% 30%, rgba(99,102,241,0.10), transparent 65%), #0e1320;">
+      <div style="width:380px; text-align:center;">
+        <div style="width:56px; height:56px; border-radius:16px; background:#1c2333; border:1px solid #29314a; display:flex; align-items:center; justify-content:center; margin:0 auto 22px;">
+          <svg width="27" height="27" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 4 6 4 9s-1.5 6.3-4 9c-2.5-2.7-4-6-4-9s1.5-6.3 4-9z"/></svg>
+        </div>
+        <h3 style="margin:0 0 8px; font-size:18px; font-weight:700; color:#f4f5f7;">Start your private browser</h3>
+        <p style="margin:0 0 26px; font-size:13.5px; line-height:1.6; color:#9ca3af;">Pick a profile and a location — your browser will keep running in the cloud even after you close this window.</p>
+
+        <div style="text-align:left; margin-bottom:14px;">
+          <label style="display:block; font-size:12px; font-weight:600; color:#c3c9d6; margin-bottom:6px;">Profile</label>
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:9px; background:#161c2b; border:1px solid #232a3b; font-size:13px; color:#e5e7eb;">
+            <span>My main profile</span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8b93a7" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+        </div>
+        <div style="text-align:left; margin-bottom:26px;">
+          <label style="display:block; font-size:12px; font-weight:600; color:#c3c9d6; margin-bottom:6px;">Location</label>
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; border-radius:9px; background:#161c2b; border:1px solid #232a3b; font-size:13px; color:#e5e7eb;">
+            <span style="display:flex; align-items:center; gap:8px;">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#818cf8" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.7 4 6 4 9s-1.5 6.3-4 9c-2.5-2.7-4-6-4-9s1.5-6.3 4-9z"/></svg>
+              Amsterdam (free)
+            </span>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8b93a7" stroke-width="2.5"><path d="m6 9 6 6 6-6"/></svg>
+          </div>
+          <a href="#" style="display:inline-block; margin-top:8px; font-size:12px; color:#818cf8; font-weight:600;">Use my own proxy instead</a>
+        </div>
+        <button style="width:100%; padding:12px; border-radius:10px; background:#4f46e5; color:#fff; font-size:14px; font-weight:600; border:none;">Launch browser</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

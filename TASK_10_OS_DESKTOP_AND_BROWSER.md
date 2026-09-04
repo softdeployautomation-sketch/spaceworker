@@ -2,7 +2,7 @@
 
 **Repo**: `/Users/mikeolab/spaceworker`. **Scope**: app code (Next.js/React) only, no infra/deploy changes — Claude has already handled the VPS side (Docker, Neko image, nginx, systemd) for the pieces that needed it.
 
-**Design reference**: a Claude Design canvas covers the full visual direction — landing page, OS desktop/dock shell (`Desktop.dc.html`), and the Browser app (`BrowserApp.dc.html`). Ask the user for the current canvas link if you don't have it.
+**Design reference**: `design/Desktop.design.html` and `design/BrowserApp.design.html` in this repo — static HTML mockups, open directly in a browser (no login/canvas link needed). `BrowserApp.design.html` shows both states (active session, no-session-yet launch screen) stacked in one file.
 
 This is the smaller, higher-priority half of what was originally one combined task — split out so it can be picked up and finished on its own without pulling in Lead Extractor/Mailer context. See `TASK_11_LEAD_EXTRACTOR_AND_MAILER.md` for the other half; the two don't depend on each other and can be worked in parallel by two different people.
 
