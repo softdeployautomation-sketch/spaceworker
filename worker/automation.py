@@ -414,9 +414,45 @@ async def run_automation(
     job_dir: str,
     on_progress: AsyncCallable,
 ) -> list[dict]:
-    """Run a full extraction job: search then concurrent per-page extraction."""
+    """Run a full extraction job: search then concurrent per-page extraction.
+
+    Multi-term support (Lead Extractor templates): when `params["queries"]` is a
+    non-empty list of strings (e.g. the chips a user adds — "plumber", "carpenter"),
+    every term is searched and the results are combined before dedup, so one job
+    genuinely searches across all of the user's "Find" items, not just the first.
+    A single query (legacy callers that send no `queries`) behaves exactly as
+    before, including failing if the search itself fails.
+    """
     loop = asyncio.get_event_loop()
-    results = await search_phase(query, params, job_dir)
+
+    raw_queries = params.get("queries")
+    if (
+        isinstance(raw_queries, list)
+        and len(raw_queries) > 0
+        and all(isinstance(q, str) and q.strip() for q in raw_queries)
+    ):
+        query_list: list[str] = [str(q).strip() for q in raw_queries]
+    else:
+        query_list = [query]
+
+    if len(query_list) == 1:
+        # Single-query path: preserve the original failure semantics.
+        results = await search_phase(query_list[0], params, job_dir)
+    else:
+        # Multi-query path: a blocked/erroneous term shouldn't abort the whole job,
+        # so each term is isolated via return_exceptions and a failure just
+        # contributes zero results rather than crashing the job. Run concurrently
+        # rather than one term at a time — each search_phase call can take tens of
+        # seconds, so N terms sequentially would take roughly N times as long.
+        per_query_results = await asyncio.gather(
+            *(search_phase(q, params, job_dir) for q in query_list),
+            return_exceptions=True,
+        )
+        results = []
+        for r in per_query_results:
+            if isinstance(r, Exception):
+                continue
+            results.extend(r)
 
     seen_urls: set[str] = set()
     unique_results: list[SearchResult] = []

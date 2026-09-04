@@ -84,30 +84,93 @@ model EmailCampaign {
   userId      String
   user        User             @relation(fields: [userId], references: [id])
   name        String
-  subject     String
-  bodyHtml    String
+  // Legacy single-value fields — kept for back-compat only; new campaigns write
+  // their content as 1+ CampaignVariant rows and leave these empty.
+  subject     String           @default("")
+  bodyHtml    String           @default("")
   searchJobId String?
-  status      String           @default("draft")
+  // "draft" | "pending_test_confirm" | "sending" | "done" | ...
+  // New campaigns start at "pending_test_confirm": a real send is gated behind the
+  // test-send-confirm step (the drain route only processes status "sending").
+  status      String           @default("pending_test_confirm")
+  // Which of the user's mailboxes this campaign's sends rotate across (true
+  // in-run sender rotation, replacing the old single `mailboxId` at creation).
+  mailboxIds  String[]         @default([])
   createdAt   DateTime         @default(now())
+  variants    CampaignVariant[]
+  checks      DeliverabilityCheck[]
   items       EmailQueueItem[]
 
   @@index([userId])
 }
 
-model EmailQueueItem {
-  id         String        @id @default(cuid())
+model CampaignVariant {
+  id         String           @id @default(cuid())
   campaignId String
-  campaign   EmailCampaign @relation(fields: [campaignId], references: [id])
+  campaign   EmailCampaign    @relation(fields: [campaignId], references: [id])
+  subject    String
+  bodyHtml   String
+  createdAt  DateTime         @default(now())
+  items      EmailQueueItem[]
+
+  @@index([campaignId])
+}
+
+model EmailQueueItem {
+  id         String           @id @default(cuid())
+  campaignId String
+  campaign   EmailCampaign    @relation(fields: [campaignId], references: [id])
+  // Assigned at queue-creation time via round-robin across the campaign's
+  // mailboxIds (true in-run rotation lives here, not in the drain route).
   mailboxId  String
-  mailbox    Mailbox       @relation(fields: [mailboxId], references: [id])
+  mailbox    Mailbox          @relation(fields: [mailboxId], references: [id])
+  // Which variant (subject/body) this recipient actually resolved to.
+  variantId  String?
+  variant    CampaignVariant? @relation(fields: [variantId], references: [id])
   toEmail    String
-  status     String        @default("queued")
+  // Per-recipient merge variables from the uploaded CSV (extra columns).
+  // { "firstName": "Ada", "company": "ACME", ... }
+  variables  Json?
+  status     String           @default("queued")
   sentAt     DateTime?
   error      String?
-  createdAt  DateTime      @default(now())
+  createdAt  DateTime         @default(now())
 
   @@index([campaignId, status])
   @@index([mailboxId, status])
+  @@index([variantId])
+}
+
+model SeedMailbox {
+  id                String   @id @default(cuid())
+  // Platform-owned deliverability seed account (typically only one row for v1).
+  label             String
+  host              String
+  port              Int
+  username          String   @unique
+  encryptedPassword String
+  passwordIv        String
+  passwordTag       String
+  secure            Boolean  @default(true)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  checks            DeliverabilityCheck[]
+}
+
+model DeliverabilityCheck {
+  id            String        @id @default(cuid())
+  campaignId    String
+  campaign      EmailCampaign @relation(fields: [campaignId], references: [id])
+  seedMailboxId String
+  seedMailbox   SeedMailbox   @relation(fields: [seedMailboxId], references: [id])
+  // "pending" | "delivered" | "failed"
+  status        String        @default("pending")
+  messageId     String?
+  error         String?
+  createdAt     DateTime      @default(now())
+  checkedAt     DateTime?
+
+  @@index([campaignId, createdAt])
 }
 
 model Payment {
@@ -208,6 +271,8 @@ model SearchJob {
   userId      String
   user        User           @relation(fields: [userId], references: [id])
   query       String
+  // Which template this search was created from: "lead" | "hr" | "plain" (extensible).
+  template    String         @default("lead")
   params      Json
   status      String         @default("queued")
   lane        String

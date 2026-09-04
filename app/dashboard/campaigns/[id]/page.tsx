@@ -7,33 +7,63 @@ type QueueItem = {
   id: string;
   campaignId: string;
   mailboxId: string;
+  mailbox?: { id: string; label: string; username: string } | null;
+  variantId: string | null;
+  variant?: { id: string; subject: string } | null;
   toEmail: string;
+  variables: Record<string, string> | null;
   status: string;
   sentAt: string | null;
   error: string | null;
   createdAt: string;
 };
 
-type Mailbox = {
+type Variant = {
   id: string;
-  label: string;
-  username: string;
+  subject: string;
+  bodyHtml: string;
+};
+
+type DeliverabilityCheck = {
+  id: string;
+  status: "pending" | "delivered" | "failed";
+  error: string | null;
+  checkedAt: string | null;
+  createdAt: string;
 };
 
 type CampaignDetail = {
   id: string;
   name: string;
-  subject: string;
-  bodyHtml: string;
-  searchJobId: string | null;
   status: string;
+  searchJobId: string | null;
   createdAt: string;
+  variants: Variant[];
+  checks: DeliverabilityCheck[];
   items: QueueItem[];
 };
 
 const PAGE_SIZE = 50;
 
+// Plain-text-only preview — this is a clamped 2-line snippet, not a rendered
+// email, so there's no value in rendering real HTML here (and doing so via
+// dangerouslySetInnerHTML would execute any script/markup a campaign's bodyHtml
+// happened to contain, a stored-XSS surface this page never had before).
+function stripHtml(html: string): string {
+  if (typeof document === "undefined") return html.replace(/<[^>]*>/g, " ");
+  const div = document.createElement("div");
+  div.innerHTML = html;
+  return div.textContent ?? "";
+}
+
 const STATUS_BADGES: Record<string, string> = {
+  pending_test_confirm: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
+  sending: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
+  done: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
+  draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+};
+
+const ITEM_STATUS_BADGES: Record<string, string> = {
   queued: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
   sent: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
   failed: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400",
@@ -43,28 +73,23 @@ export default function CampaignDetailPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
   const [campaign, setCampaign] = useState<CampaignDetail | null>(null);
-  const [mailboxes, setMailboxes] = useState<Record<string, Mailbox>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [page, setPage] = useState(0);
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
+  const [testBusy, setTestBusy] = useState(false);
+  const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
+  const [confirming, setConfirming] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     setError("");
     try {
-      const [campaignRes, mailboxesRes] = await Promise.all([
-        fetch(`/api/campaigns/${id}`),
-        fetch("/api/mailboxes"),
-      ]);
-      if (!campaignRes.ok) throw new Error("Failed to load campaign");
-      const data = (await campaignRes.json()) as CampaignDetail;
-      setCampaign(data);
-      if (mailboxesRes.ok) {
-        const mb = (await mailboxesRes.json()) as Mailbox[];
-        setMailboxes(Object.fromEntries(mb.map((m) => [m.id, m])));
-      }
+      const res = await fetch(`/api/campaigns/${id}`);
+      if (!res.ok) throw new Error("Failed to load campaign");
+      setCampaign((await res.json()) as CampaignDetail);
+      setTestResult(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load campaign");
     } finally {
@@ -73,8 +98,44 @@ export default function CampaignDetailPage() {
   }, [id]);
 
   useEffect(() => {
-    load();
+    void load();
   }, [load]);
+
+  async function sendTest() {
+    setTestBusy(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/test-send`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Test-send failed" });
+      } else {
+        setTestResult({ outcome: data.outcome ?? "failed", error: data.error });
+      }
+      void load();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error" });
+    } finally {
+      setTestBusy(false);
+    }
+  }
+
+  async function confirm() {
+    setConfirming(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/confirm-test`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't confirm the test send." });
+        return;
+      }
+      void load();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while confirming." });
+    } finally {
+      setConfirming(false);
+    }
+  }
 
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
@@ -93,6 +154,8 @@ export default function CampaignDetailPage() {
 
   const totalPages = Math.max(1, Math.ceil(campaign.items.length / PAGE_SIZE));
   const pageItems = campaign.items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const latestCheck = campaign.checks?.[0];
+  const awaitingConfirm = campaign.status === "pending_test_confirm";
 
   return (
     <div>
@@ -107,28 +170,79 @@ export default function CampaignDetailPage() {
             STATUS_BADGES[campaign.status] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
           }`}
         >
-          {campaign.status}
+          {campaign.status.replace("_", " ")}
         </span>
       </div>
 
-      <div className="mt-3 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 text-sm shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <p><span className="font-medium">Subject:</span> {campaign.subject}</p>
-        <p className="mt-1">
-          <span className="font-medium">Mailbox:</span>{" "}
-          {mailboxes[campaign.items[0]?.mailboxId ?? ""]
-            ? `${mailboxes[campaign.items[0].mailboxId].label} (${mailboxes[campaign.items[0].mailboxId].username})`
-            : "—"}
-        </p>
-        <p className="mt-1">
-          <span className="font-medium">Recipients:</span> {campaign.items.length}
-        </p>
+      {/* Test-send-confirm gate */}
+      {awaitingConfirm && (
+        <div className="mt-4 rounded-xl border border-violet-300 bg-violet-50 p-4 dark:border-violet-800 dark:bg-violet-950/20">
+          <h2 className="text-sm font-semibold text-violet-800 dark:text-violet-300">Test-send before the real send</h2>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+            A real send is blocked until we prove the connected SMTP actually delivers. Send one test message to
+            SpaceWorker's seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.
+          </p>
+
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void sendTest()}
+              disabled={testBusy}
+              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {testBusy ? "Sending test… this takes ~20s" : "Send test message"}
+            </button>
+            {(testResult?.outcome === "delivered" || latestCheck?.status === "delivered") && (
+              <button
+                type="button"
+                onClick={() => void confirm()}
+                disabled={confirming}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+              >
+                {confirming ? "Confirming…" : "Yes, delivered — confirm & start"}
+              </button>
+            )}
+          </div>
+
+          {latestCheck && (
+            <p className="mt-2 text-sm">
+              Latest check: <span className={`font-medium ${latestCheck.status === "delivered" ? "text-emerald-600" : "text-red-600"}`}>{latestCheck.status}</span>
+              {latestCheck.error ? <span className="text-zinc-500"> — {latestCheck.error}</span> : null}
+              {latestCheck.checkedAt ? <span className="text-zinc-400"> ({new Date(latestCheck.checkedAt).toLocaleString()})</span> : null}
+            </p>
+          )}
+        </div>
+      )}
+{/* Variants */}
+      <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Subject / body variants <span className="text-zinc-400">({campaign.variants.length})</span>
+        </h2>
+        {campaign.variants.length === 0 ? (
+          <p className="mt-2 text-sm text-zinc-400 dark:text-zinc-500">No variants on this legacy campaign.</p>
+        ) : (
+          <div className="mt-2 flex flex-col gap-2">
+            {campaign.variants.map((v) => (
+              <div key={v.id} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+                <p className="text-sm font-medium">{v.subject}</p>
+                <p className="mt-0.5 line-clamp-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  {stripHtml(v.bodyHtml)}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
-  <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      {/* Queue items */}
+      <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+            <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               <th className="px-4 py-3 font-medium">Recipient</th>
+              <th className="px-4 py-3 font-medium">Mailbox</th>
+              <th className="px-4 py-3 font-medium">Variant subject</th>
+              <th className="px-4 py-3 font-medium">Merge vars</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Sent at</th>
               <th className="px-4 py-3 font-medium">Error</th>
@@ -139,12 +253,17 @@ export default function CampaignDetailPage() {
               <Fragment key={item.id}>
                 <tr>
                   <td className="px-4 py-3">{item.toEmail}</td>
+                  <td className="px-4 py-3">{item.mailbox?.label ?? "—"}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{item.variant?.subject ?? "—"}</td>
+                  <td className="px-4 py-3 text-zinc-500 max-w-[220px] truncate dark:text-zinc-400">
+                    {item.variables && Object.keys(item.variables).length > 0
+                      ? Object.entries(item.variables).map(([k, v]) => `${k}=${v}`).join(", ")
+                      : "—"}
+                  </td>
                   <td className="px-4 py-3">
-                    <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-                        STATUS_BADGES[item.status] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
-                      }`}
-                    >
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
+                      ITEM_STATUS_BADGES[item.status] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                    }`}>
                       {item.status}
                     </span>
                   </td>
@@ -167,7 +286,7 @@ export default function CampaignDetailPage() {
                 </tr>
                 {openErrorId === item.id && item.error && (
                   <tr key={`${item.id}-error`} className="bg-red-50/50 dark:bg-red-950/20">
-                    <td colSpan={4} className="px-4 py-3">
+                    <td colSpan={7} className="px-4 py-3">
                       <pre className="whitespace-pre-wrap break-words font-mono text-xs text-red-700 dark:text-red-400">
                         {item.error}
                       </pre>
@@ -179,7 +298,7 @@ export default function CampaignDetailPage() {
           </tbody>
         </table>
       </div>
-  {campaign.items.length > PAGE_SIZE && (
+      {campaign.items.length > PAGE_SIZE && (
         <div className="mt-4 flex items-center justify-center gap-3 text-sm">
           <button
             type="button"
@@ -189,9 +308,7 @@ export default function CampaignDetailPage() {
           >
             Previous
           </button>
-          <span className="text-zinc-500 dark:text-zinc-400">
-            Page {page + 1} of {totalPages}
-          </span>
+          <span className="text-zinc-500 dark:text-zinc-400">Page {page + 1} of {totalPages}</span>
           <button
             type="button"
             onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}

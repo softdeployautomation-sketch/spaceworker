@@ -14,7 +14,17 @@ export async function GET(
 
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
-    include: { items: { orderBy: { createdAt: "asc" } } },
+    include: {
+      variants: { orderBy: { createdAt: "asc" } },
+      items: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          mailbox: { select: { id: true, label: true, username: true } } ,
+          variant: { select: { id: true, subject: true } },
+        },
+      },
+      checks: { orderBy: { createdAt: "desc" }, take: 10 },
+    },
   });
 
   if (!campaign) {
