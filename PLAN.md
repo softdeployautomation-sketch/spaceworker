@@ -366,3 +366,44 @@ This is the concrete product shape for Addendum 2 §4's mailer research (recipie
 ### Explicitly not started
 
 No template schema, no `CampaignAutomation` model, no Automation-tab UI sketch yet — this addendum captures the confirmed product shape and its hard dependency ordering, not a ready-to-build spec. Sequence: (1) fix + re-verify Task 2, (2) verify Task 4's mailbox/campaign flows end-to-end (both already tracked elsewhere, not new work invented here), (3) *then* scope this into a real `TASK_09_CAMPAIGN_AUTOMATION.md` — building the template/automation layer on top of an unverified foundation would mean debugging two layers of bugs at once.
+
+---
+
+## Addendum 5 — Lead Extractor is a template system, not one fixed search form (each template = its own automation)
+
+**Status: scoped 2026-09-04 from live design-review feedback, NOT YET IMPLEMENTED.** Captured explicitly per the user's instruction to write this down so it isn't lost — this changes the shape of Task 2/9 work, not just the UI.
+
+### The correction
+
+The Lead Extractor's search form was designed (and, in an earlier design pass, mocked up) as one fixed 3-field shape: Find / Location / Email-domain-filter. That's wrong on two counts:
+
+1. **"Find" is a list, not a single string.** A user should be able to add multiple search terms to ONE search — e.g. "plumber" as one entry, "carpenter" as a second — and the job runs across all of them, not just one term at a time. This applies to whichever template is active (see below), not just the Lead Search one.
+2. **The Find/Location/Domain shape is itself just ONE TEMPLATE** — call it **"Lead Search"** — among several the product needs. Confirmed templates so far:
+   - **Lead Search** — Find (multi-item list), Location, email-domain filter. The existing lead-gen use case (plumbers, carpenters, etc. in a given area).
+   - **HR / Recruiting** — a genuinely different shape: job titles (multi-item list, e.g. "Software Engineer"), Location, experience level (junior/mid/senior). This is the recruiting/candidate-search use case (the sibling `hr-recruitment-extractor` product on this machine is the closest existing reference for what this search actually needs — check its real query/filter shape before building this template's backend, don't design it from imagination).
+   - **Plain Search** — one freeform text box, no structured fields at all (e.g. "top SaaS companies hiring in Austin this quarter"). The escape hatch for a search that doesn't fit either structured template.
+   - More templates are expected later — the user's own framing is "a template for a certain kind of search," implying this list grows over time, not a closed set of 3.
+
+### The part that must not be missed: different templates need different automation systems, not one engine with different form fields
+
+This is the load-bearing architectural point, not a cosmetic UI grouping. **Lead-gen search and HR/recruiting search are genuinely different automation problems** — different target sites/data sources, different extraction logic (a business's public contact page looks nothing like a job posting or a candidate profile), likely different result shapes entirely (a `Lead` — business/email/phone/website — doesn't fit a candidate or a job posting). Do **not** build this as one search engine (today's DuckDuckGo/Google scraper, per Task 2) with the UI just relabeling which fields get concatenated into the same query string. Each template should be understood as owning its **own automation backend**, selected by which template the user picked — the current Task 2 extraction worker (DDG/Google + email/phone/name extraction, tuned for finding a business's contact info) is the correct, already-scoped engine for the **Lead Search** template specifically, not a generic engine every template reuses as-is.
+
+Concretely, this means:
+- **Task 2's worker stays scoped to Lead Search** — nothing about its current design (the DDG/Google search + email/phone/name extraction pipeline, per `TASK_02_EXTRACTION_WORKER.md` and its since-rebuilt implementation) needs to change to accommodate other templates. It's correct for what it does.
+- **HR/Recruiting needs its own, separate automation** — a new, distinct worker/pipeline (or a distinct mode within a shared worker process, implementation detail TBD at build time) tuned for finding candidates/job postings, not businesses. This is real new backend work, not a form-field remap. Do not attempt to shoehorn candidate search through the existing email/phone/domain-filter extraction logic built for finding a plumber's contact info.
+- **Plain Search** is the most open-ended — likely the one template where a more general-purpose approach (e.g., a broader web search + an LLM pass to structure whatever comes back) makes sense, since there's no fixed target data shape to extract against. Needs its own design pass when it's actually built — not scoped further here.
+- **The frontend implication**: `SearchJob`/whatever result model backs a search needs a `template` field (`"lead" | "hr" | "plain"`, extensible), and the multi-item "Find"/"Job titles" list needs to be modeled as a real array in `params`, not a single string — both are schema decisions to get right before Task 9 (campaign automation, per Addendum 4) starts assuming a single-template, single-term shape.
+
+### Design reference
+
+A design-canvas mockup of this (template picker + multi-item Find list for Lead Search, plus sketched HR and Plain Search variants) exists — ask Claude for the current design-canvas link if it's needed again; not re-pasted here since canvas links can be republished/updated independently of this plan doc.
+
+### Explicitly not started
+
+No `SearchJob.template` field, no HR automation backend, no Plain Search backend — this addendum is the architectural note so the multi-template, multi-automation shape isn't lost or accidentally built as "one engine, relabeled form" when Task 2/9 work actually starts. Sequence stays what Addendum 4 already set: fix Task 2, verify Task 4, then scope real template work — this addendum just makes sure that later scoping starts from the right shape (multiple templates, multiple backends) instead of the wrong one (one engine, cosmetic template switcher).
+
+---
+
+## Addendum 6 — Mailer needs subject rotation alongside sender rotation (confirmed, matches Addendum 2 §4)
+
+**Status: scoped 2026-09-04, NOT YET IMPLEMENTED — but not new scope.** This is a direct confirmation/re-statement of Addendum 2 §4's already-researched "must have" tier (multiple subject + multiple body variants per campaign, simple rotation) — flagging it again here because live design-review feedback specifically called out that the Mailer's UI needs to show **multiple subject lines rotating the same way multiple sending mailboxes already do** — i.e., a campaign should let a user add 2+ subject lines (not just 2+ senders) and rotate evenly across both dimensions during a send. No new decision here, just confirming the design work now reflects Addendum 2 §4's must-have tier and cross-referencing it so it doesn't get scoped as a smaller change than it actually is (it's the same `CampaignVariant`-shaped model change Addendum 2 §5 already sketched — a collection of subject/body variants, not a single `subject`/`bodyHtml` field pair — see that section for the actual data-model sketch).
