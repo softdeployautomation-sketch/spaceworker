@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Globe } from "lucide-react";
 
@@ -104,10 +104,17 @@ export default function BrowserSessionPanel({
   // First-time users have no profile yet — rather than sending them to a
   // separate Browser Profiles tab before they can do anything, silently
   // create one default profile so the launcher is immediately usable.
-  const [creatingDefaultProfile, setCreatingDefaultProfile] = useState(false);
+  // Initial state is derived from whether the SERVER already saw zero profiles,
+  // so the very first paint (before this effect has run) shows "setting up"
+  // rather than the unrelated "all profiles busy" message.
+  const [creatingDefaultProfile, setCreatingDefaultProfile] = useState(
+    () => initialProfiles.length === 0
+  );
   const [defaultProfileError, setDefaultProfileError] = useState("");
+  const defaultProfileAttemptedRef = useRef(false);
   useEffect(() => {
-    if (profiles.length > 0 || creatingDefaultProfile) return;
+    if (profiles.length > 0 || defaultProfileAttemptedRef.current) return;
+    defaultProfileAttemptedRef.current = true;
     setCreatingDefaultProfile(true);
     fetch("/api/browser-profiles", {
       method: "POST",
@@ -116,12 +123,24 @@ export default function BrowserSessionPanel({
     })
       .then(async (res) => {
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-          setDefaultProfileError(data.error ?? "Couldn't create a browser profile.");
+        if (res.ok) {
+          setProfiles((prev) => [...prev, data]);
+          pickByoProfile(data.id);
+          setSelectedProfileId(data.id);
           return;
         }
-        setProfiles((prev) => [...prev, data]);
-        setSelectedProfileId(data.id);
+        // Create can fail on the name-uniqueness constraint if another tab (or
+        // React Strict Mode's dev double-invoke) already created it — re-fetch
+        // rather than trusting the failure, so the user isn't stuck behind a
+        // stale error when a usable profile already exists.
+        const list = await fetch("/api/browser-profiles")
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => []);
+        if (Array.isArray(list) && list.length > 0) {
+          setProfiles(list);
+          return;
+        }
+        setDefaultProfileError(data.error ?? "Couldn't create a browser profile.");
       })
       .catch(() => setDefaultProfileError("Network error while creating a browser profile."))
       .finally(() => setCreatingDefaultProfile(false));
