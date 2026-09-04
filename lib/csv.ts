@@ -77,6 +77,45 @@ export function parseCsv(text: string): CsvRow[] {
   return rows;
 }
 
+/**
+ * Minimal-but-robust CSV writer, mirroring the parser's quoting discipline
+ * above (RFC 4180): a field is quoted only when it contains a comma,
+ * double-quote, newline, or surrounding whitespace (leading/trailing spaces
+ * are vulnerable to being trimmed by spreadsheet importers). Inside a quoted
+ * field a literal double-quote is escaped by doubling it ("" -> "), which is
+ * exactly the inverse of how `parseCsv` reads it back — so anything we export
+ * round-trips through the same parser losslessly, WITH ONE DELIBERATE
+ * EXCEPTION: a value starting with `=`, `+`, `-`, or `@` gets a leading `'`
+ * prefix (see below) to prevent spreadsheet formula injection on untrusted
+ * scraped content. That one case is intentionally lossy for `parseCsv` — the
+ * security property matters more here than exact re-import fidelity, and it's
+ * the same standard mitigation most real CSV exporters use.
+ *
+ * This is the encoder used for the lead CSV export (`/api/jobs/[id]/export.csv`).
+ */
+export function encodeCsvField(value: string): string {
+  // CSV/formula-injection guard (OWASP): a field whose exported value is
+  // scraped, untrusted web content (business name, snippet) could contain a
+  // spreadsheet formula (e.g. `=HYPERLINK(...)` or `=cmd|...`) that Excel/
+  // Sheets executes on open. Prefixing a leading apostrophe forces text
+  // interpretation — the standard mitigation, and it's the same trick many
+  // CSV exporters already use to stop phone numbers/zip codes from being
+  // auto-reformatted, so it costs nothing for legitimate data.
+  const neutralized = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  if (/[",\n\r]/.test(neutralized) || /^\s/.test(neutralized) || /\s$/.test(neutralized)) {
+    return `"${neutralized.replace(/"/g, '""')}"`;
+  }
+  return neutralized;
+}
+
+/**
+ * Encode one row of values as a single LF-terminated CSV line. `null`/`undefined`
+ * cell values become empty fields (matching how `parseCsv` reads blank columns).
+ */
+export function encodeCsvRow(values: Array<string | number | null | undefined>): string {
+  return values.map((v) => encodeCsvField(v == null ? "" : String(v))).join(",") + "\n";
+}
+
 function normalizeHeader(header: string): string {
   return header.trim().toLowerCase();
 }

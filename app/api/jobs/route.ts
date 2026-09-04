@@ -52,7 +52,11 @@ export async function POST(req: Request) {
   if (typeof body.query === "string" && body.query.trim()) {
     queryList.push(body.query.trim());
   }
-  const uniqueQueries = [...new Set(queryList)];
+  // Capped server-side too (defense in depth) — the Find x Location
+  // cross-multiply in the UI caps at 20, but this route has no way to know
+  // whether a request actually came from that UI.
+  const MAX_QUERIES = 20;
+  const uniqueQueries = [...new Set(queryList)].slice(0, MAX_QUERIES);
   if (uniqueQueries.length === 0) {
     return NextResponse.json({ error: "At least one search term is required" }, { status: 400 });
   }
@@ -86,9 +90,20 @@ export async function POST(req: Request) {
       ? Math.min(Math.max(10, coercedMax), 200)
       : undefined;
 
+  // Email-domain allowlist (Task 13): worker/automation.py reads
+  // params.emailDomains as a comma-separated string. This was previously
+  // dropped here — the client sent it, but nothing forwarded it into the
+  // stored params, so the whole filter silently did nothing.
+  const rawEmailDomains = rawParams.emailDomains;
+  const emailDomains =
+    typeof rawEmailDomains === "string" && rawEmailDomains.trim() !== ""
+      ? rawEmailDomains.trim().slice(0, 500)
+      : undefined;
+
   const params = {
     engine,
     ...(maxResults !== undefined ? { maxResults } : {}),
+    ...(emailDomains !== undefined ? { emailDomains } : {}),
     queries: uniqueQueries,
     template,
   };

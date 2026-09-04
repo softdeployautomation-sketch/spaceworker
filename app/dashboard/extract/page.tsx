@@ -61,6 +61,10 @@ export default function ExtractPage() {
   // Lead Search fields
   const [findTerms, setFindTerms] = useState<string[]>(["plumbers"]);
   const [findInput, setFindInput] = useState("");
+  const [location, setLocation] = useState<string[]>([]);
+  const [locationInput, setLocationInput] = useState("");
+  const [emailDomains, setEmailDomains] = useState<string[]>([]);
+  const [emailDomainInput, setEmailDomainInput] = useState("");
   const [engine, setEngine] = useState<"ddg" | "google">("ddg");
   const [maxResults, setMaxResults] = useState(50);
 
@@ -118,18 +122,47 @@ export default function ExtractPage() {
       return;
     }
 
-    const queries = findTerms.map((t) => t.trim()).filter((t) => t.length > 0);
-    if (queries.length === 0) {
+    const finds = findTerms.map((t) => t.trim()).filter((t) => t.length > 0);
+    if (finds.length === 0) {
       setFormError("Add at least one 'Find' term");
       return;
     }
+    const locs = location.map((t) => t.trim()).filter((t) => t.length > 0);
+
+    // Cross-multiply Find × Location so "plumbers","carpenters" × "Texas","USA"
+    // becomes ["plumbers in Texas","plumbers in USA","carpenters in Texas","carpenters in USA"].
+    // With no Location terms, fall back to just the Find terms unchanged (today's behavior).
+    // Capped at 20 — an uncapped cross-product (e.g. 10 Finds x 10 Locations = 100
+    // queries) fires that many concurrent searches at once (worker/automation.py
+    // runs the whole query list via asyncio.gather), which risks tripping
+    // DuckDuckGo/Google rate limits and starving other jobs on the same worker.
+    const MAX_QUERIES = 20;
+    const rawQueries: string[] =
+      locs.length === 0
+        ? finds
+        : finds.flatMap((f) => locs.map((l) => `${f} in ${l}`));
+    const queries = rawQueries.slice(0, MAX_QUERIES);
+    if (rawQueries.length > MAX_QUERIES) {
+      setFormError(
+        `That's ${rawQueries.length} searches (Find × Location) — only running the first ${MAX_QUERIES} to avoid rate limits. Try fewer terms per job.`
+      );
+    }
+
+    // Email domain allowlist: a comma-separated list of exact domains or *.suffix/.suffix
+    // patterns (e.g. "gmail.com, *.edu"). Only sent when at least one chip is present.
+    const domains = emailDomains.map((t) => t.trim()).filter((t) => t.length > 0);
+    const emailDomainParam = domains.length > 0 ? { emailDomains: domains.join(", ") } : {};
 
     setSubmitting(true);
     try {
       const res = await fetch("/api/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ queries, template: "lead", params: { engine, maxResults } }),
+        body: JSON.stringify({
+          queries,
+          template: "lead",
+          params: { engine, maxResults, ...emailDomainParam },
+        }),
       });
       if (res.ok) {
         void fetchJobs();
@@ -163,6 +196,64 @@ export default function ExtractPage() {
     setList(list.filter((_, i) => i !== index));
   }
 
+  // A labeled multi-chip column, matching the original Find column's visual treatment.
+  function chipColumn(opts: {
+    label: string;
+    placeholder: string;
+    help?: string;
+    optional?: boolean;
+    chips: string[];
+    setChips: (v: string[]) => void;
+    input: string;
+    setInput: (v: string) => void;
+  }) {
+    return (
+      <div className="rounded-lg border border-border p-3 flex flex-col gap-2">
+        <div className="flex items-center gap-1.5 text-sm font-medium">
+          <span>{opts.label}</span>
+          {opts.optional && <span className="text-xs font-normal text-fg-muted">(optional)</span>}
+        </div>
+        <div className="flex min-h-[28px] flex-wrap gap-2">
+          {opts.chips.length === 0 ? (
+            <span className="text-xs text-fg-muted/80">{opts.optional ? "None added" : "Nothing yet"}</span>
+          ) : (
+            opts.chips.map((term, i) => (
+              <span key={`${term}-${i}`} className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-sm text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                {term}
+                <button
+                  type="button"
+                  onClick={() => removeChip(opts.chips, opts.setChips, i)}
+                  className="text-brand-700 hover:text-red-600"
+                  aria-label={`Remove ${term}`}
+                >
+                  ×
+                </button>
+              </span>
+            ))
+          )}
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={opts.input}
+            onChange={(e) => opts.setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addChip(opts.chips, opts.setChips, opts.input, opts.setInput); }}
+            placeholder={opts.placeholder}
+            className="flex-1 rounded-lg border border-border bg-input px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+          />
+          <button
+            type="button"
+            onClick={() => addChip(opts.chips, opts.setChips, opts.input, opts.setInput)}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
+          >
+            Add
+          </button>
+        </div>
+        {opts.help && <p className="text-xs leading-snug text-fg-muted">{opts.help}</p>}
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col gap-6 p-6">
       <div>
@@ -192,37 +283,36 @@ export default function ExtractPage() {
         {/* --- Lead Search --- */}
         {template === "lead" && (
           <div className="flex flex-col gap-3">
-            <div className="flex flex-wrap gap-2">
-              {findTerms.map((term, i) => (
-                <span key={`${term}-${i}`} className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-sm text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
-                  {term}
-                  <button
-                    type="button"
-                    onClick={() => removeChip(findTerms, setFindTerms, i)}
-                    className="text-brand-700 hover:text-red-600"
-                    aria-label={`Remove ${term}`}
-                  >
-                    ×
-                  </button>
-                </span>
-              ))}
-            </div>
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={findInput}
-                onChange={(e) => setFindInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") addChip(findTerms, setFindTerms, findInput, setFindInput); }}
-                placeholder='Add "Find" terms, e.g. "carpenter", and press Enter to chip them'
-                className="flex-1 rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-              />
-              <button
-                type="button"
-                onClick={() => addChip(findTerms, setFindTerms, findInput, setFindInput)}
-                className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
-              >
-                Add
-              </button>
+            <div className="grid gap-3 md:grid-cols-3">
+              {chipColumn({
+                label: "Find",
+                placeholder: 'e.g. "plumber", press Enter',
+                help: "What you want to find — add as many as you like.",
+                chips: findTerms,
+                setChips: setFindTerms,
+                input: findInput,
+                setInput: setFindInput,
+              })}
+              {chipColumn({
+                label: "Location",
+                placeholder: 'e.g. "Texas" or "USA", press Enter',
+                help: 'Combines with Find for each search, e.g. "plumber in Texas".',
+                optional: true,
+                chips: location,
+                setChips: setLocation,
+                input: locationInput,
+                setInput: setLocationInput,
+              })}
+              {chipColumn({
+                label: "Email domain filter",
+                placeholder: 'e.g. "gmail.com" or "*.edu", press Enter',
+                help: "Only keep leads whose email matches any listed domain or suffix.",
+                optional: true,
+                chips: emailDomains,
+                setChips: setEmailDomains,
+                input: emailDomainInput,
+                setInput: setEmailDomainInput,
+              })}
             </div>
             <div className="flex gap-4 items-center text-sm">
               <label className="flex items-center gap-2">
@@ -389,9 +479,20 @@ export default function ExtractPage() {
                       <span> · {selectedJob.params.queries.length} terms</span>}
                   </p>
                 </div>
-                <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>
-                  {selectedJob.status}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>
+                    {selectedJob.status}
+                  </span>
+                  {selectedJob.leads.length > 0 && (
+                    <a
+                      href={`/api/jobs/${selectedJob.id}/export.csv`}
+                      download
+                      className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                    >
+                      Export CSV
+                    </a>
+                  )}
+                </div>
               </div>
               {selectedJob.error && (
                 <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
