@@ -55,6 +55,7 @@ jobs:
           RESEND_API_KEY: "ci-placeholder"
           EMAIL_FROM: "noreply@example.com"
           APP_BASE_URL: "https://ci-placeholder.invalid"
+          BROWSER_PROFILE_BASE_DIR: "/tmp/ci-placeholder-profiles"
 
   deploy:
     name: Deploy to production (manual only)
@@ -84,6 +85,7 @@ jobs:
           RESEND_API_KEY: "ci-placeholder"
           EMAIL_FROM: "noreply@example.com"
           APP_BASE_URL: "https://ci-placeholder.invalid"
+          BROWSER_PROFILE_BASE_DIR: "/tmp/ci-placeholder-profiles"
 
       - name: Package build artifact
         run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server
