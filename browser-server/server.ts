@@ -305,6 +305,16 @@ function sessionPortForProxyPath(url: string): number | null {
   return session.port;
 }
 
+// Neko serves its own web app rooted at "/" — it has no idea it's being
+// reached via our own "/browser/<sessionId>/" routing prefix. Forwarding
+// req.url to the container UNCHANGED (as this used to do) means Neko sees
+// e.g. "/browser/abc123/" and 404s, since it only knows about paths like
+// "/" or "/api/...". Strip our prefix before proxying so Neko sees exactly
+// the path it actually expects.
+function stripBrowserPrefix(url: string): string {
+  return url.replace(BROWSER_PATH_RE, "/") || "/";
+}
+
 const server = createServer(async (req, res) => {
   const url = (req.url ?? "/").split("?")[0];
 
@@ -314,6 +324,7 @@ const server = createServer(async (req, res) => {
       json(res, 404, { error: "Session not found or not running" });
       return;
     }
+    req.url = stripBrowserPrefix(req.url ?? "/");
     browserProxy.web(req, res, { target: `http://127.0.0.1:${port}` });
     return;
   }
@@ -409,6 +420,7 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
+  req.url = stripBrowserPrefix(req.url ?? "/");
   browserProxy.ws(req, socket, head, { target: `http://127.0.0.1:${port}` });
 });
 
