@@ -11,6 +11,9 @@ type Session = {
   byoUser: string | null;
   startedAt: string | null;
   createdAt: string;
+  // Carries Neko's ?usr=&pwd= auto-login query params (server-embedded — see
+  // lib/browser-session-serialize.ts) so its own login screen never appears.
+  connectUrl: string | null;
 };
 
 type Profile = {
@@ -637,13 +640,13 @@ export default function BrowserSessionPanel({
                         </p>
                       )}
 
-                      {s.status === "running" && (
+                      {s.status === "running" && s.connectUrl && (
                         <>
                           <div className="mt-3 flex justify-end">
                             <button
                               type="button"
                               onClick={() =>
-                                window.open(`/browser/${s.id}/`, "_blank", "noopener,noreferrer")
+                                window.open(s.connectUrl!, "_blank", "noopener,noreferrer")
                               }
                               className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
                             >
@@ -652,7 +655,7 @@ export default function BrowserSessionPanel({
                           </div>
                           <div className="mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
                             <iframe
-                              src={`/browser/${s.id}/`}
+                              src={s.connectUrl}
                               title="Private browser session"
                               allow="clipboard-read; clipboard-write; autoplay; fullscreen"
                               className="h-full w-full border-0"

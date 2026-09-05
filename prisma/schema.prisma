@@ -243,6 +243,10 @@ model BrowserSession {
   byoProxyAuth     String? // encrypted connection string, same scheme as BrowserProfile
   // Tunnel/container id the browser subsystem reports back for this session.
   containerId      String?
+  // Neko's per-session auto-generated login password (browser-server/server.ts) —
+  // embedded into connectUrl's ?pwd= query param so Neko's own login screen never
+  // shows; never returned as a bare field (see browser-session-serialize.ts).
+  nekoPassword     String?
   startedAt        DateTime?
   endedAt          DateTime?
   createdAt        DateTime       @default(now())

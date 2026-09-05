@@ -52,6 +52,13 @@ interface Session {
   port: number | null;
   status: string; // "starting" | "running" | "stopped"
   startedAt: number;
+  // Neko's own login gate (separate from our app's auth) — generated once
+  // per container and passed through so the frontend can auto-login via
+  // Neko's documented ?usr=&pwd= URL params instead of showing customers a
+  // login screen for a password they were never given (a real gap: this was
+  // previously generated fresh inside buildNekoArgs() and discarded
+  // immediately after building the docker args, never reaching the client).
+  nekoPassword: string | null;
 }
 
 const registry = new Map<string, Session>();
@@ -68,6 +75,7 @@ function containerName(sessionId: string): string {
 /** Docker/Neko launch — THE spike surface. Built as an arg array, never shell-joined. */
 function buildNekoArgs(session: Session): string[] {
   const password = randomBytes(9).toString("base64url");
+  session.nekoPassword = password; // stored so the frontend can auto-login — see Session.nekoPassword
   const profileMount = `${session.profileDir}:/home/neko/.config/chromium`;
   // Neko passes browser args through its Chromium wrapper. The exact env name is
   // a spike-verification item on the VPS (older banners used NEKO_BROWSER_ARGS).
@@ -275,6 +283,7 @@ function publicSession(s: Session) {
     port: s.port,
     status: s.status,
     startedAt: s.startedAt,
+    nekoPassword: s.nekoPassword,
   };
 }
 
@@ -368,6 +377,7 @@ const server = createServer(async (req, res) => {
           port: null,
           status: "starting",
           startedAt: Date.now(),
+          nekoPassword: null,
         };
         const container = await startInternal(session);
         const finalSession = registry.get(sessionId);
@@ -376,6 +386,7 @@ const server = createServer(async (req, res) => {
           containerName: finalSession?.containerName ?? null,
           port: finalSession?.port ?? null,
           containerId: container,
+          nekoPassword: finalSession?.nekoPassword ?? null,
         });
         return;
       }

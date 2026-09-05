@@ -2,6 +2,7 @@ import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { listExitNodes } from "@/lib/exit-nodes";
+import { connectUrlFor } from "@/lib/browser-session-serialize";
 import BrowserSessionPanel from "@/components/browser-session-panel";
 
 export default async function BrowserPage() {
@@ -24,7 +25,7 @@ export default async function BrowserPage() {
       orderBy: { createdAt: "asc" },
     }),
     prisma.browserSession.findMany({
-      where: { userId: session.userId },
+      where: { userId: session.userId, hiddenAt: null },
       select: {
         id: true,
         status: true,
@@ -32,6 +33,7 @@ export default async function BrowserPage() {
         exitNodeId: true,
         byoProxyUsername: true,
         containerId: true,
+        nekoPassword: true,
         startedAt: true,
         createdAt: true,
       },
@@ -66,6 +68,7 @@ export default async function BrowserPage() {
         byoUser: s.byoProxyUsername,
         startedAt: s.startedAt?.toISOString() ?? null,
         createdAt: s.createdAt.toISOString(),
+        connectUrl: s.status === "running" ? connectUrlFor(s.id, s.nekoPassword) : null,
       }))}
     />
   );

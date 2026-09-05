@@ -19,6 +19,7 @@ export interface RuntimeSession {
   containerName: string | null;
   port: number | null;
   status: string;
+  nekoPassword: string | null;
 }
 
 export type RuntimeResult =

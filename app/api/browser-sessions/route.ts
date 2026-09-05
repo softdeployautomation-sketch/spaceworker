@@ -207,13 +207,14 @@ export async function POST(req: Request) {
     );
   }
 
-  const data = runtimeStart.data as { containerId?: string } | undefined;
+  const data = runtimeStart.data as { containerId?: string; nekoPassword?: string | null } | undefined;
 
   const running = await prisma.browserSession.update({
     where: { id: created.id },
     data: {
       status: "running",
       containerId: data?.containerId ?? null,
+      nekoPassword: data?.nekoPassword ?? null,
       startedAt: new Date(),
     },
     select: SESSION_SAFE_SELECT,
