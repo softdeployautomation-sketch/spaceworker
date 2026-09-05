@@ -66,7 +66,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const sessions = await prisma.browserSession.findMany({
-    where: { userId: session.userId },
+    where: { userId: session.userId, hiddenAt: null },
     select: SESSION_SAFE_SELECT,
     orderBy: { createdAt: "desc" },
   });

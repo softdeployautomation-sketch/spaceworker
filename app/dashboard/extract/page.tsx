@@ -187,6 +187,23 @@ export default function ExtractPage() {
     if (selectedJob?.id === id) void fetchJobDetail(id);
   }
 
+  async function deleteJob(id: string) {
+    if (!window.confirm("Delete this job run and its leads? This can't be undone.")) return;
+    setFormError("");
+    try {
+      const res = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFormError(typeof data.error === "string" ? data.error : "Couldn't delete this job.");
+        return;
+      }
+      if (selectedJob?.id === id) setSelectedJob(null);
+      void fetchJobs();
+    } catch {
+      setFormError("Network error while deleting.");
+    }
+  }
+
   function addChip(list: string[], setList: (v: string[]) => void, input: string, setInput: (v: string) => void) {
     const term = input.trim();
     if (!term) return;
@@ -468,12 +485,19 @@ export default function ExtractPage() {
               </div>
               <div className="mt-1 flex items-center justify-between text-xs text-fg-muted">
                 <span>{job.template} · {job.lane} · {job._count?.leads ?? 0} leads</span>
-                {(job.status === "queued" || job.status === "running") && (
+                {(job.status === "queued" || job.status === "running") ? (
                   <button
                     onClick={(e) => { e.stopPropagation(); void stopJob(job.id); }}
                     className="text-red-500 hover:underline"
                   >
                     Stop
+                  </button>
+                ) : (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); void deleteJob(job.id); }}
+                    className="text-fg-muted hover:text-red-500 hover:underline"
+                  >
+                    Delete
                   </button>
                 )}
               </div>

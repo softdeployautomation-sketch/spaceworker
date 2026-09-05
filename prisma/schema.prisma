@@ -246,6 +246,11 @@ model BrowserSession {
   startedAt        DateTime?
   endedAt          DateTime?
   createdAt        DateTime       @default(now())
+  // Soft-delete: a customer "deleting" an ended session from their own
+  // history hides it from their list only — the row (and its proxyMode/
+  // exitNodeId/containerId/timestamps) stays intact for the admin audit
+  // endpoint, which has no other record of past sessions.
+  hiddenAt         DateTime?
 
   @@index([userId, status])
   @@index([profileId])

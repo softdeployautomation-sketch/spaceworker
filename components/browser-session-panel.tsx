@@ -602,6 +602,18 @@ export default function BrowserSessionPanel({
                               {busyId === s.id ? "Stopping…" : "Stop"}
                             </button>
                           )}
+                          {(s.status === "stopped" || s.status === "failed") && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (window.confirm("Remove this session from your history?")) void stop(s);
+                              }}
+                              disabled={busyId === s.id}
+                              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-black/5 hover:text-red-500 disabled:opacity-50 dark:hover:bg-white/5"
+                            >
+                              {busyId === s.id ? "Deleting…" : "Delete"}
+                            </button>
+                          )}
                         </div>
                       </div>
 

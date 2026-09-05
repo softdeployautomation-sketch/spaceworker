@@ -1,7 +1,24 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
 const LANES = ["light", "heavy"] as const;
+
+// A job can be deleted (DELETE /api/jobs/[id]) in the window between this
+// route claiming/dispatching it and a later update in an error-handling
+// path — Prisma throws P2025 ("record not found") for an update against a
+// row that's gone. That's a genuinely benign race here (nothing left to
+// update), not a real fault — swallowing it stops one job's mid-flight
+// deletion from throwing out of this whole dispatch tick and skipping every
+// other lane's dispatch + all of phase B's polling for that cycle.
+async function safeUpdateSearchJob(id: string, data: Parameters<typeof prisma.searchJob.update>[0]["data"]): Promise<void> {
+  try {
+    await prisma.searchJob.update({ where: { id }, data });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") return;
+    throw err;
+  }
+}
 
 // Stable integer IDs for PostgreSQL advisory locks — one per lane.
 // pg_advisory_xact_lock holds the lock until the transaction commits/rolls
@@ -89,10 +106,7 @@ export async function POST(req: Request) {
         if (!data.jobId) {
           // Worker returned 200 but no jobId — treat as failure so the job
           // doesn't get stuck "running" forever with nothing to poll.
-          await prisma.searchJob.update({
-            where: { id: claimed.searchJobId },
-            data: { status: "failed", error: "Worker returned no jobId" },
-          });
+          await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: "Worker returned no jobId" });
           results[`${lane}_dispatch`] = "worker_missing_jobid";
         } else {
           // The worker call above is a real network round trip — a concurrent
@@ -114,25 +128,16 @@ export async function POST(req: Request) {
               headers: { Authorization: `Bearer ${workerToken}` },
             }).catch(() => {});
           } else {
-            await prisma.searchJob.update({
-              where: { id: claimed.searchJobId },
-              data: { workerJobId: data.jobId },
-            });
+            await safeUpdateSearchJob(claimed.searchJobId, { workerJobId: data.jobId });
             results[`${lane}_dispatch`] = "dispatched";
           }
         }
       } else {
-        await prisma.searchJob.update({
-          where: { id: claimed.searchJobId },
-          data: { status: "failed", error: `Worker rejected: ${res.status}` },
-        });
+        await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: `Worker rejected: ${res.status}` });
         results[`${lane}_dispatch`] = `worker_error_${res.status}`;
       }
     } catch (err) {
-      await prisma.searchJob.update({
-        where: { id: claimed.searchJobId },
-        data: { status: "failed", error: String(err) },
-      });
+      await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: String(err) });
       results[`${lane}_dispatch`] = "worker_unreachable";
     }
   }
