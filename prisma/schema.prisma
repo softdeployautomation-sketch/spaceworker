@@ -283,10 +283,14 @@ model SearchJob {
   // Which template this search was created from: "lead" | "hr" | "plain" (extensible).
   template    String         @default("lead")
   params      Json
-  status      String         @default("queued")
+  status      String         @default("queued") // "queued" | "running" | "done" | "failed" | "paused"
   lane        String
   workerJobId String?
   error       String?
+  // Task 13 resumable jobs: non-null only while paused, holding enough to resume
+  // from the next unprocessed query instead of restarting (processedQueries,
+  // nextQueryIndex, seenUrls, foundLeads). Cleared when a paused job is resumed.
+  resumeState Json?
   createdAt   DateTime       @default(now())
   queueEntry  JobQueueEntry?
   leads       Lead[]

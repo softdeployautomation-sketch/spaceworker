@@ -34,7 +34,9 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Awaitable, Callable, Optional
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin
 
@@ -54,6 +56,7 @@ from filters.email_domain_rules import (
     email_matches_rules,
     parse_email_domain_allowlist,
 )
+from pypdf import PdfReader
 
 def is_rdp_session() -> bool:
     """Ported verbatim from the original lead-extractor engine's is_rdp_session().
@@ -87,6 +90,15 @@ BROWSER_USER_AGENT = (
 
 REQUEST_TIMEOUT_SECONDS = 10
 
+# Real-crawler (Task 13) defaults for the two user-configurable params, applied
+# worker-side when a job doesn't send them (the upstream API/clamp logic generally
+# forwards them, but this is the second, independent bound as with max_results).
+DEFAULT_PAGES_PER_QUERY = 5
+DEFAULT_MAX_DURATION_MINUTES = 30
+# Google's results pagination moves in blocks of 10 (start=0,10,20,...). If Google
+# ever changes this, only this constant needs touching.
+GOOGLE_RESULTS_PER_PAGE = 10
+
 AsyncCallable = Callable[[dict], Awaitable[None]]
 
 
@@ -95,6 +107,32 @@ class SearchResult:
     title: str
     url: str
     snippet: str
+
+
+@dataclass
+class AutomationResult:
+    """run_automation's return value (Task 13).
+
+    `status` is "done" when every query in the budget was processed (or the
+    minimum-results target was reached) and "paused" when the run stopped early at
+    a query boundary because of a manual pause or the max-duration deadline. When
+    paused, `resume_state` records enough to continue without restarting from
+    query #1 — see run_automation() for the shape.
+    """
+    leads: list[dict]
+    status: str  # "done" | "paused"
+    resume_state: Optional[dict] = None
+
+
+# Content-Type variants search engines actually serve PDFs under — the continuous
+# `application/pdf` is the overwhelmingly common one, but a HEAD check guards
+# against PDFs served without a `.pdf` URL.
+_PDF_CONTENT_TYPES = {
+    "application/pdf",
+    "application/x-pdf",
+    "application/acrobat",
+    "text/pdf",
+}
 
 
 def _decode_ddg_url(href: str) -> str:
@@ -310,10 +348,26 @@ async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: st
     return _parse_ddg_html(content, _DDG_URL, max_results)
 
 
-async def google_search(query: str, max_results: int, job_dir: str) -> list[SearchResult]:
-    """Playwright Google search with a per-job throwaway profile."""
+async def google_search(
+    query: str, max_results: int, job_dir: str, start: int = 0
+) -> tuple[list[SearchResult], bool]:
+    """Playwright Google search with a per-job throwaway profile.
+
+    `start` is Google's pagination offset (0,10,20,... — see
+    GOOGLE_RESULTS_PER_PAGE). Callers wanting more than one page should use
+    google_search_paginated() rather than driving this in a raw loop themselves.
+
+    Returns (results, has_next_page). has_next_page is read from Google's own
+    "Next" pagination control (`#pnnext`, or `a[aria-label]` containing "next"
+    on markup variants that drop that id) — NOT inferred from the parsed
+    organic-result count, which undercounts on pages with ads/"People also
+    ask"/knowledge panels squeezing out organic results below a full page's
+    worth even though more result pages genuinely exist.
+    """
     profile_dir = os.path.join(job_dir, "chrome-profile")
     url = "https://www.google.com/search?q=" + quote_plus(query)
+    if start > 0:
+        url += "&start=" + str(start)
     content = await _resilient_page_content(
         profile_dir, url, captcha_markers=("unusual traffic", "captcha"),
     )
@@ -332,7 +386,39 @@ async def google_search(query: str, max_results: int, job_dir: str) -> list[Sear
         results.append(SearchResult(title=title, url=url_, snippet=snippet))
         if len(results) >= max_results:
             break
-    return results[:max_results]
+    next_link = soup.select_one("#pnnext")
+    if next_link is None:
+        next_link = soup.select_one('a[aria-label*="ext" i]')
+    return results[:max_results], next_link is not None
+
+
+async def google_search_paginated(
+    query: str, max_results: int, pages_per_query: int, job_dir: str
+) -> list[SearchResult]:
+    """Drive Google's paged results over up to `pages_per_query` pages.
+
+    Google's pagination is a `start=` offset in multiples of 10
+    (GOOGLE_RESULTS_PER_PAGE) — request each page, dedup across pages by URL, and
+    stop once Google's own "Next" control is gone (confirmed real end-of-results,
+    not just a light page) or the caller's `max_results` cap has been reached.
+    Each page uses the shared per-job throwaway Chromium profile via
+    google_search() (no second browser-launch path introduced here).
+    """
+    seen_urls: set[str] = set()
+    all_results: list[SearchResult] = []
+    for page_index in range(max(1, pages_per_query)):
+        start = page_index * GOOGLE_RESULTS_PER_PAGE
+        page_results, has_next = await google_search(query, max_results, job_dir, start=start)
+        new_results: list[SearchResult] = []
+        for r in page_results:
+            if r.url in seen_urls:
+                continue
+            seen_urls.add(r.url)
+            new_results.append(r)
+        all_results.extend(new_results)
+        if not has_next or len(all_results) >= max_results:
+            break
+    return all_results[:max_results]
 
 
 async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchResult]:
@@ -346,7 +432,15 @@ async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchRes
     max_results = max(1, min(max_results, 50))
 
     if engine == "google":
-        return await google_search(query, max_results, job_dir)
+        # Real crawler (Task 13): visit multiple result pages per query, bounded
+        # independently the same way max_results is. pagesPerQuery is clamped
+        # upstream (1-20) but re-bounded here as the second check.
+        raw_pages = params.get("pagesPerQuery", DEFAULT_PAGES_PER_QUERY)
+        try:
+            pages_per_query = max(1, min(int(raw_pages), 20))
+        except (ValueError, TypeError):
+            pages_per_query = DEFAULT_PAGES_PER_QUERY
+        return await google_search_paginated(query, max_results, pages_per_query, job_dir)
 
     loop = asyncio.get_event_loop()
     try:
@@ -407,7 +501,15 @@ def _build_leads(
 
 
 def extract_lead_page(result: SearchResult) -> list[dict]:
-    """Fetch one result page and extract email/phone/name metadata as 0..N leads."""
+    """Fetch one result page and extract email/phone/name metadata as 0..N leads.
+
+    Note (Task 13): a page that can't be fetched OR that is genuinely empty of
+    extractable contact info yields zero leads — the old behavior of guessing an
+    email/phone/name from the search-results *snippet* when the real page had
+    nothing was producing junk leads (fake-looking names/phones pulled from an
+    unrelated page's bio text), which is exactly what this task's user flagged.
+    Task 13 verification requires "no snippet-derived guesses".
+    """
     try:
         resp = requests.get(
             result.url,
@@ -417,15 +519,8 @@ def extract_lead_page(result: SearchResult) -> list[dict]:
         resp.raise_for_status()
         html = resp.text
     except Exception:
-        # Page unreachable — fall back to snippet
-        emails = _extract_emails(result.snippet)
-        phones = _extract_phones(result.snippet)
-        contact_names = _extract_contact_names(result.snippet)
-        if emails and not contact_names:
-            # Best-effort: derive a name from each email's local-part, same fallback
-            # the original engine applies (automation_server.py ~L394-399).
-            contact_names = [n for n in (_extract_names_from_email(e) for e in emails) if n]
-        return _build_leads(result, emails, phones, contact_names)
+        # Page unreachable — produce no leads rather than guessing from the snippet.
+        return []
 
     soup = BeautifulSoup(html, "lxml")
     page_text = soup.get_text(" ", strip=True)
@@ -443,6 +538,111 @@ def extract_lead_page(result: SearchResult) -> list[dict]:
         contact_names = [n for n in (_extract_names_from_email(e) for e in emails) if n]
 
     return _build_leads(result, emails, phones, contact_names)
+
+
+def _is_pdf_result(result: SearchResult) -> bool:
+    """Cheap-reliable PDF detection before deciding which extractor to run.
+
+    Prefer the URL ending in `.pdf` (case-insensitive, ignoring a trailing query
+    string/path segment) first, then a HEAD request's Content-Type so PDFs served
+    without a `.pdf` URL are still caught. Some servers/CDNs reject or time out on
+    HEAD (405, connection reset) even for a real PDF — falling straight through to
+    "not a PDF" on any HEAD failure would silently route those into the HTML
+    extractor, which BeautifulSoup-parses raw PDF bytes as garbage text and finds
+    nothing. On a HEAD failure, fall back to a streamed GET, checked by
+    Content-Type first and by the `%PDF-` magic bytes if that's still ambiguous
+    (some servers mislabel PDFs as application/octet-stream) — closed immediately
+    either way, since the real extraction re-fetches in extract_lead_pdf().
+    """
+    path = result.url.lower().split("?", 1)[0].rstrip("/")
+    if path.endswith(".pdf"):
+        return True
+    try:
+        resp = requests.head(
+            result.url,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+            timeout=5,
+            allow_redirects=True,
+        )
+        content_type = resp.headers.get("Content-Type", "").lower().split(";")[0].strip()
+        if content_type in _PDF_CONTENT_TYPES:
+            return True
+        if content_type and content_type not in ("application/octet-stream", "binary/octet-stream"):
+            return False  # server gave an unambiguous non-PDF answer — trust it
+    except Exception:
+        pass  # HEAD unsupported/failed — fall through to a real GET below
+    try:
+        with requests.get(
+            result.url,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+            timeout=5,
+            stream=True,
+        ) as resp:
+            content_type = resp.headers.get("Content-Type", "").lower().split(";")[0].strip()
+            if content_type in _PDF_CONTENT_TYPES:
+                return True
+            magic = next(resp.iter_content(chunk_size=5), b"")
+            return magic == b"%PDF-"
+    except Exception:
+        return False
+
+
+def extract_lead_pdf(result: SearchResult) -> list[dict]:
+    """Download a PDF result, extract its text, and produce 0..N leads.
+
+    Reuses the exact same _build_leads/_extract_* pipeline extract_lead_page()
+    uses on HTML text — no parallel extraction implementation for PDF text. A PDF
+    that can't be fetched or parsed (corrupt/encrypted/scanned-image-only, or
+    pypdf unavailable) yields zero leads rather than crashing the job.
+    """
+    try:
+        resp = requests.get(
+            result.url,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        reader = PdfReader(BytesIO(resp.content))
+        if reader.is_encrypted:
+            return []
+        # Collect across all pages — try/except per page so one bad page doesn't
+        # discard the whole document's text.
+        page_texts: list[str] = []
+        for page in reader.pages:
+            try:
+                text = page.extract_text() or ""
+            except Exception:
+                text = ""
+            if text.strip():
+                page_texts.append(text)
+        pdf_text = "\n".join(page_texts)
+    except Exception:
+        return []
+
+    if not pdf_text.strip():
+        return []
+
+    emails = _extract_emails(pdf_text)
+    phones = _extract_phones(pdf_text)
+    contact_names = _extract_contact_names(pdf_text)
+    if emails and not contact_names:
+        contact_names = [n for n in (_extract_names_from_email(e) for e in emails) if n]
+    return _build_leads(result, emails, phones, contact_names)
+
+
+def _extract_result(result: SearchResult) -> list[dict]:
+    """Dispatch one search result to the right extractor (PDF vs real page).
+
+    Shared by _search_and_extract() for every result on every page — keeps the
+    PDF/HTML branching in exactly one place. Never guesses from the search snippet:
+    a result with no real extractable content (HTML or PDF) simply yields no leads.
+    """
+    try:
+        if _is_pdf_result(result):
+            return extract_lead_pdf(result)
+        return extract_lead_page(result)
+    except Exception:
+        return []
 
 
 # Minimum-results auto-expansion (Task: "keep adding related words until we
@@ -511,7 +711,9 @@ async def _search_and_extract(
             unique_results.append(r)
 
     async def process_one(result: SearchResult) -> list[dict]:
-        leads = await loop.run_in_executor(None, extract_lead_page, result)
+        # Dispatches PDF results to extract_lead_pdf and everything else to
+        # extract_lead_page — see _extract_result. Both reuse the same extract.
+        leads = await loop.run_in_executor(None, _extract_result, result)
         kept: list[dict] = []
         for lead in leads:
             # Filter at the point of emission so on_progress stream and final list
@@ -536,34 +738,65 @@ async def _search_and_extract(
     return all_leads
 
 
+def _build_ordered_queries(base_terms: list[str], min_results: int | None) -> list[str]:
+    """Deterministic full query budget: original base terms first, then one
+    expansion suffix across all base terms per round (the same "one suffix at a
+    time" cadence the previous between-round minimum check relied on), deduped and
+    capped at MAX_TOTAL_QUERIES. Expansion suffixes only appear when min_results is
+    set — mirroring the old "only expand when min_results > 0" gating. The caller's
+    loop then stops as soon as the minimum is reached instead of exhausting the
+    budget, preserving the early-stop behavior.
+    """
+    ordered: list[str] = []
+    used: set[str] = set()
+
+    def _add(terms: list[str]) -> None:
+        for t in terms:
+            if t not in used:
+                used.add(t)
+                ordered.append(t)
+
+    _add(base_terms)
+    if min_results is not None and min_results > 0:
+        for suffix in _EXPANSION_SUFFIXES:
+            _add(_expand_queries_for_round(base_terms, suffix, used))
+            if len(ordered) >= MAX_TOTAL_QUERIES:
+                break
+    return ordered[:MAX_TOTAL_QUERIES]
+
+
 async def run_automation(
     query: str,
     params: dict,
     job_dir: str,
     on_progress: AsyncCallable,
-) -> list[dict]:
-    """Run a full extraction job: search then concurrent per-page extraction.
+    should_stop: Optional[Callable[[], Awaitable[bool]]] = None,
+) -> AutomationResult:
+    """Run a full extraction job: search then per-result extraction.
 
     Multi-term support (Lead Extractor templates): when `params["queries"]` is a
     non-empty list of strings (e.g. the chips a user adds — "plumber", "carpenter"),
     every term is searched and the results are combined before dedup, so one job
     genuinely searches across all of the user's "Find" items, not just the first.
-    A single query (legacy callers that send no `queries`) behaves exactly as
-    before, including failing if the search itself fails.
 
-    Minimum-results auto-expansion: when `params["minResults"]` is a positive
-    number and the first pass yields fewer leads than that, generates related
-    query variants (see _expand_queries_for_round) one suffix at a time —
-    checking the minimum again between each round so it can stop as soon as
-    it's met, rather than always exhausting every suffix upfront — bounded by
-    MAX_EXPANSION_ROUNDS (= the number of suffixes available) and
-    MAX_TOTAL_QUERIES total queries. Leads accumulate across rounds (deduped
-    by URL via the shared seen_urls set); on_progress fires for every round's
-    leads as they're found, same as the single-pass behavior. Note: this
-    widens the search TERMS, not the underlying network path — if a search
-    engine is blocking the source IP/fingerprint outright (rather than
-    genuinely having few results for the term), expansion won't help, since
-    the new variants hit the same block.
+    Real crawler (Task 13): for each term, google_search_paginated (via
+    search_phase -> _search_and_extract) visits up to `pagesPerQuery` Google result
+    pages, and each result is either click-through-extracted from its real page
+    content (extract_lead_page) or, for PDFs, from the PDF's extracted text
+    (extract_lead_pdf). No snippet-metadata guessing.
+
+    Minimum-results auto-expansion: when `params["minResults"]` is a positive number,
+    _build_ordered_queries precomputes the ordered base+expansion query budget and
+    the loop stops as soon as the minimum is met; leads accumulate (deduped by URL
+    via the shared seen_urls set); on_progress fires for every lead as found.
+
+    Pause / max-duration (resumable jobs): the loop processes exactly one query per
+    iteration and checks `should_stop()` AND the wall-clock deadline ONLY at query
+    boundaries (never mid-query, matching the user's "pause means it stops at that
+    certain query"). When either fires, run_automation returns normally (not
+    raise/cancel) with status "paused" plus a resume_state payload so worker/api.py
+    can persist all leads found so far and a later resume continues from the next
+    unprocessed query instead of restarting from query #1.
     """
     raw_queries = params.get("queries")
     if (
@@ -589,24 +822,83 @@ async def run_automation(
     raw_domain_rules = params.get("emailDomains") or params.get("email_domains")
     domain_rules = parse_email_domain_allowlist(str(raw_domain_rules)) if raw_domain_rules else None
 
+    # Full deterministic query budget (base terms + expansion variants when a
+    # minimum is set) — the ordered list resume/nextQueryIndex index into.
+    ordered_queries = _build_ordered_queries(base_terms, min_results)
+
     seen_urls: set[str] = set()
-    used_queries: set[str] = set(base_terms)
-    all_leads: list[dict] = await _search_and_extract(
-        base_terms, params, job_dir, on_progress, seen_urls, domain_rules
-    )
+    all_leads: list[dict] = []
 
-    if min_results is not None and min_results > 0:
-        for suffix in _EXPANSION_SUFFIXES:
-            if len(all_leads) >= min_results or len(used_queries) >= MAX_TOTAL_QUERIES:
-                break  # minimum met, or out of query budget — stop between rounds
-            budget = MAX_TOTAL_QUERIES - len(used_queries)
-            next_terms = _expand_queries_for_round(base_terms, suffix, used_queries)[:budget]
-            if not next_terms:
-                continue  # this suffix's variants were all already used; try the next one
-            used_queries.update(next_terms)
-            round_leads = await _search_and_extract(
-                next_terms, params, job_dir, on_progress, seen_urls, domain_rules
+    # -- Resume hooks: skip queries already fully processed in a prior paused run
+    # and seed the URL dedup + found-lead count so a resumed job neither re-emits
+    # duplicates nor wrongly re-expands past the minimum it already reached.
+    resume_state = params.get("resumeState")
+    start_index = 0
+    prior_found = 0
+    if isinstance(resume_state, dict):
+        idx = resume_state.get("nextQueryIndex")
+        if isinstance(idx, int) and idx > 0:
+            start_index = min(idx, len(ordered_queries))
+        prior_found_raw = resume_state.get("foundLeads")
+        if isinstance(prior_found_raw, int) and prior_found_raw > 0:
+            prior_found = prior_found_raw
+        prior_seen = resume_state.get("seenUrls")
+        if isinstance(prior_seen, list):
+            for u in prior_seen:
+                if isinstance(u, str):
+                    seen_urls.add(u)
+
+    # -- Max-duration cap: wall-clock deadline checked at each query boundary
+    # (behaves exactly like a pause when hit, so a duration-capped job can still be
+    # resumed later rather than treated as a failure).
+    raw_duration = params.get("maxDurationMinutes")
+    max_duration_minutes = DEFAULT_MAX_DURATION_MINUTES
+    if isinstance(raw_duration, (int, float, str)):
+        try:
+            parsed = int(float(raw_duration))
+            if parsed > 0:
+                max_duration_minutes = parsed
+        except (ValueError, TypeError):
+            pass
+    deadline = time.monotonic() + max_duration_minutes * 60
+
+    paused = False
+    stopped_at = len(ordered_queries)
+
+    for qi in range(start_index, len(ordered_queries)):
+        term = ordered_queries[qi]
+        # Query-boundary stop checks — the ONLY place pause/deadline are observed.
+        if min_results is not None and min_results > 0 and prior_found + len(all_leads) >= min_results:
+            break  # minimum reached — normal completion
+        if should_stop is not None and await should_stop():
+            paused = True
+            stopped_at = qi
+            break
+        if time.monotonic() >= deadline:
+            paused = True
+            stopped_at = qi
+            break
+
+        try:
+            leads = await _search_and_extract(
+                [term], params, job_dir, on_progress, seen_urls, domain_rules
             )
-            all_leads.extend(round_leads)
+            all_leads.extend(leads)
+        except Exception:
+            # One bad query (search blocked, engine error) shouldn't abort the whole
+            # job — same isolation the old multi-query gather's return_exceptions
+            # provided. Resume state will happily skip a query that errored.
+            continue
 
-    return all_leads
+    if paused:
+        return AutomationResult(
+            leads=all_leads,
+            status="paused",
+            resume_state={
+                "processedQueries": ordered_queries[:stopped_at],
+                "nextQueryIndex": stopped_at,
+                "seenUrls": sorted(seen_urls),
+                "foundLeads": prior_found + len(all_leads),
+            },
+        )
+    return AutomationResult(leads=all_leads, status="done", resume_state=None)

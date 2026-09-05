@@ -114,11 +114,37 @@ export async function POST(req: Request) {
       ? Math.min(coercedMin, 500)
       : undefined;
 
+  // Real crawler (Task 13): pagesPerQuery = how many Google result pages to visit
+  // per query (1-20); maxDurationMinutes = wall-clock cap before the job pauses at
+  // a query boundary (1-120). Same clamp-and-conditionally-include convention as
+  // minResults above.
+  const rawPages = rawParams.pagesPerQuery;
+  const coercedPages =
+    typeof rawPages === "number" ? rawPages
+    : typeof rawPages === "string" && rawPages.trim() !== "" ? Number(rawPages)
+    : undefined;
+  const pagesPerQuery =
+    coercedPages !== undefined && !isNaN(coercedPages)
+      ? Math.min(Math.max(1, coercedPages), 20)
+      : undefined;
+
+  const rawDuration = rawParams.maxDurationMinutes;
+  const coercedDuration =
+    typeof rawDuration === "number" ? rawDuration
+    : typeof rawDuration === "string" && rawDuration.trim() !== "" ? Number(rawDuration)
+    : undefined;
+  const maxDurationMinutes =
+    coercedDuration !== undefined && !isNaN(coercedDuration)
+      ? Math.min(Math.max(1, coercedDuration), 120)
+      : undefined;
+
   const params = {
     engine,
     ...(maxResults !== undefined ? { maxResults } : {}),
     ...(emailDomains !== undefined ? { emailDomains } : {}),
     ...(minResults !== undefined ? { minResults } : {}),
+    ...(pagesPerQuery !== undefined ? { pagesPerQuery } : {}),
+    ...(maxDurationMinutes !== undefined ? { maxDurationMinutes } : {}),
     queries: uniqueQueries,
     template,
   };

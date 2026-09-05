@@ -46,23 +46,38 @@ _JOB_CLEANUP_INTERVAL_SECONDS = 300  # background prune cadence, independent of 
 
 @dataclass
 class JobState:
-    status: str  # "running" | "done" | "failed"
+    status: str  # "running" | "done" | "failed" | "paused"
     leads: list[dict] = field(default_factory=list)
     error: Optional[str] = None
     task: Optional[asyncio.Task] = None
     job_dir: str = ""
     completed_at: Optional[datetime.datetime] = None
+    # Task 13 resumable jobs: set by POST /jobs/{id}/pause and observed by
+    # run_automation()'s outer loop at each query boundary; resume_state holds the
+    # "start here" payload persisted by the dispatcher when the job pauses.
+    pause_requested: bool = False
+    resume_state: Optional[dict] = None
 
 
 # Per-job state only — keyed by jobId; never a single shared singleton.
 JOBS: dict[str, JobState] = {}
 
 
+async def _job_should_pause(state: JobState) -> bool:
+    """True once POST /jobs/{id}/pause has been called for this job. Awaitable so
+    run_automation()'s query-boundary check (`await should_stop()`) can await it."""
+    return state.pause_requested
+
+
 def _prune_old_jobs() -> None:
     now = datetime.datetime.utcnow()
+    # "paused" included alongside "done"/"failed" (Task 13) — a paused job the
+    # dispatcher never re-acks (see the explicit pop() in Phase B's paused
+    # branch) or that's simply never resumed would otherwise sit in memory
+    # forever, since only these three statuses ever stop being polled/touched.
     stale = [
         jid for jid, s in JOBS.items()
-        if s.status in ("done", "failed")
+        if s.status in ("done", "failed", "paused")
         and s.completed_at is not None
         and (now - s.completed_at).total_seconds() > _JOB_TTL_SECONDS
     ]
@@ -169,13 +184,21 @@ async def create_job(req: JobRequest, request: Request) -> dict:
             await sem.acquire()
             acquired = True
             try:
-                await run_automation(
+                result = await run_automation(
                     req.query,
                     req.params,
                     job_dir,
                     on_progress=on_progress,
+                    should_stop=lambda: _job_should_pause(state),
                 )
-                if state.status != "failed":
+                if result.status == "paused":
+                    # Paused (manual pause or max-duration cap): keep state.leads
+                    # and record the resumeState so the dispatcher can persist both
+                    # and a later resume continues from this point. Distinct from a
+                    # hard cancel (below), which discards the job.
+                    state.status = "paused"
+                    state.resume_state = result.resume_state
+                elif state.status != "failed":
                     state.status = "done"
             except asyncio.CancelledError:
                 state.status = "failed"
@@ -193,6 +216,10 @@ async def create_job(req: JobRequest, request: Request) -> dict:
             state.error = str(e)
         finally:
             state.completed_at = datetime.datetime.utcnow()
+            # NOTE (Task 13): shutil.rmtree only removes this job's throwaway
+            # browser profile dir, never state.leads — leads live in memory
+            # (state.leads) and are read by the dispatcher via GET /jobs/{id}, so
+            # a paused job's leads are safe here and are never lost to cleanup.
             shutil.rmtree(job_dir, ignore_errors=True)
             if acquired:
                 sem.release()
@@ -211,17 +238,32 @@ async def get_job(job_id: str) -> dict:
         "status": state.status,
         "leads": state.leads,
         "error": state.error,
+        # Task 13 resumable jobs — present only once a job has paused, so the
+        # dispatcher can persist it as SearchJob.resumeState.
+        **({"resumeState": state.resume_state} if state.resume_state is not None else {}),
     }
 
 
 def _stop_job(job_id: str) -> dict:
+    """Cancel (if actually running) and always forget this job's in-memory
+    state — used both as the real "stop a live job" verb and (Task 13) as the
+    dispatcher's post-persist cleanup call for a job it just read as "paused",
+    so a resumed job can be re-dispatched under the SAME id (Phase A always
+    dispatches with jobId == SearchJob.id, first run or resumed) without
+    hitting create_job()'s "jobId already exists" 409 against a stale entry
+    still sitting in JOBS. Previously this raised 400 for anything not
+    actively running, which is exactly the state a paused/done/failed job is
+    in — nothing here depends on that distinction (the two Next.js callers,
+    stop/route.ts and jobs/[id]/route.ts's DELETE, both fire-and-forget this
+    and don't branch on the response), so always succeeding is safe.
+    """
     state = JOBS.get(job_id)
     if state is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    if state.status != "running" or not state.task or state.task.done():
-        raise HTTPException(status_code=400, detail="Job is not running")
-    state.task.cancel()
-    state.completed_at = datetime.datetime.utcnow()
+    if state.status == "running" and state.task and not state.task.done():
+        state.task.cancel()
+        state.completed_at = datetime.datetime.utcnow()
+    JOBS.pop(job_id, None)
     return {"ok": True}
 
 
@@ -237,6 +279,22 @@ async def stop_job(job_id: str) -> dict:
     """Kept as an alias to DELETE above — not what the real dispatcher calls
     today, but harmless to keep for any future caller that prefers this verb."""
     return _stop_job(job_id)
+
+
+@app.post("/jobs/{job_id}/pause")
+async def pause_job(job_id: str) -> dict:
+    """Request a graceful pause (Task 13). Sets a flag the running
+    run_automation() task observes at its next query boundary (not mid-query);
+    the job then finishes context -> sets status "paused" and returns a
+    resumeState, so nothing found-so-far is lost. The dispatcher's next poll
+    picks up that paused status and persists the leads."""
+    state = JOBS.get(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if state.status != "running" or not state.task or state.task.done():
+        raise HTTPException(status_code=400, detail="Job is not running")
+    state.pause_requested = True
+    return {"ok": True}
 
 
 if __name__ == "__main__":

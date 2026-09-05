@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 
-type JobStatus = "queued" | "running" | "done" | "failed";
+type JobStatus = "queued" | "running" | "done" | "failed" | "paused";
 
 interface Job {
   id: string;
@@ -40,6 +40,7 @@ const STATUS_COLORS: Record<JobStatus, string> = {
   running: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
   done:    "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
   failed:  "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
+  paused:  "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200",
 };
 
 const TEMPLATES: { id: Template; label: string; description: string }[] = [
@@ -71,6 +72,10 @@ export default function ExtractPage() {
   // 0 = disabled (no auto-expansion) — the worker only expands terms when
   // this is a positive number and the first pass falls short of it.
   const [minResults, setMinResults] = useState(0);
+  // Real crawler (Task 13): how many Google result pages to crawl per query, and
+  // the wall-clock cap (minutes) before the job pauses at a query boundary.
+  const [pagesPerQuery, setPagesPerQuery] = useState(5);
+  const [maxDurationMinutes, setMaxDurationMinutes] = useState(30);
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -166,7 +171,7 @@ export default function ExtractPage() {
         body: JSON.stringify({
           queries,
           template: "lead",
-          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam },
+          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes },
         }),
       });
       if (res.ok) {
@@ -184,6 +189,23 @@ export default function ExtractPage() {
 
   async function stopJob(id: string) {
     await fetch(`/api/jobs/${id}/stop`, { method: "POST" });
+    void fetchJobs();
+    if (selectedJob?.id === id) void fetchJobDetail(id);
+  }
+
+  // Task 13 resume control: PATCH /api/jobs/[id] with {action:"pause"|"resume"}.
+  async function controlJob(id: string, action: "pause" | "resume") {
+    await fetch(`/api/jobs/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+    // Pause: the dispatcher's next poll turns it into a persisted "paused"
+    // state. Resume: the job goes back to "queued" immediately and Phase A's
+    // next tick dispatches it through the normal lane-concurrency claim
+    // (same path a brand-new job takes) — either way, refresh shortly after
+    // to pick up the transition rather than waiting on the 15s poll.
+    setTimeout(() => void fetchJobDetail(id), 1500);
     void fetchJobs();
     if (selectedJob?.id === id) void fetchJobDetail(id);
   }
@@ -371,6 +393,30 @@ export default function ExtractPage() {
                   title="If the search doesn't find this many leads, the worker automatically tries related terms (e.g. 'near me', 'company') until it does, or runs out of budget."
                 />
               </label>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Pages/query:</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={pagesPerQuery}
+                  onChange={(e) => setPagesPerQuery(Number(e.target.value))}
+                  className="w-16 rounded border border-border bg-input px-2 py-1 text-sm"
+                  title="How many Google result pages to crawl for each search term (1-20)."
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Max (min):</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={120}
+                  value={maxDurationMinutes}
+                  onChange={(e) => setMaxDurationMinutes(Number(e.target.value))}
+                  className="w-16 rounded border border-border bg-input px-2 py-1 text-sm"
+                  title="Maximum wall-clock run duration in minutes. The job pauses at a query boundary when this is reached and can be resumed later."
+                />
+              </label>
             </div>
           </div>
         )}
@@ -487,12 +533,22 @@ export default function ExtractPage() {
               <div className="mt-1 flex items-center justify-between text-xs text-fg-muted">
                 <span>{job.template} · {job.lane} · {job._count?.leads ?? 0} leads</span>
                 {(job.status === "queued" || job.status === "running") ? (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void stopJob(job.id); }}
-                    className="text-red-500 hover:underline"
-                  >
-                    Stop
-                  </button>
+                  <span className="flex items-center gap-3">
+                    {job.status === "running" && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); void controlJob(job.id, "pause"); }}
+                        className="text-amber-600 hover:underline dark:text-amber-400"
+                      >
+                        Pause
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void stopJob(job.id); }}
+                      className="text-red-500 hover:underline"
+                    >
+                      Stop
+                    </button>
+                  </span>
                 ) : (
                   <button
                     onClick={(e) => { e.stopPropagation(); void deleteJob(job.id); }}
@@ -524,6 +580,22 @@ export default function ExtractPage() {
                   <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>
                     {selectedJob.status}
                   </span>
+                  {selectedJob.status === "running" && (
+                    <button
+                      onClick={() => void controlJob(selectedJob.id, "pause")}
+                      className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-amber-600 hover:bg-black/5 dark:text-amber-400 dark:hover:bg-white/5"
+                    >
+                      Pause
+                    </button>
+                  )}
+                  {selectedJob.status === "paused" && (
+                    <button
+                      onClick={() => void controlJob(selectedJob.id, "resume")}
+                      className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500"
+                    >
+                      Resume
+                    </button>
+                  )}
                   {selectedJob.leads.length > 0 && (
                     <>
                       <a

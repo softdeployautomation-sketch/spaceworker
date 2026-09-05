@@ -20,6 +20,32 @@ async function safeUpdateSearchJob(id: string, data: Parameters<typeof prisma.se
   }
 }
 
+interface WorkerLead {
+  email?: string | null;
+  phone?: string | null;
+  contactName?: string | null;
+  businessName?: string | null;
+  website?: string | null;
+  sourceUrl?: string | null;
+  snippet?: string | null;
+}
+
+// Shared Lead-row mapping used by BOTH the "done" and "paused" Phase B branches —
+// keeps the two persistence paths identical instead of copy-pasting the mapping.
+function buildLeadRows(job: { userId: string; id: string }, leads: WorkerLead[]) {
+  return leads.map((l) => ({
+    userId: job.userId,
+    searchJobId: job.id,
+    email: l.email ?? null,
+    phone: l.phone ?? null,
+    contactName: l.contactName ?? null,
+    businessName: l.businessName ?? null,
+    website: l.website ?? null,
+    sourceUrl: l.sourceUrl ?? null,
+    snippet: l.snippet ?? null,
+  }));
+}
+
 // Stable integer IDs for PostgreSQL advisory locks — one per lane.
 // pg_advisory_xact_lock holds the lock until the transaction commits/rolls
 // back, so two concurrent dispatch calls for the same lane serialize
@@ -149,6 +175,7 @@ export async function POST(req: Request) {
 
   let completed = 0;
   let failed = 0;
+  let paused = 0;
 
   for (const job of runningJobs) {
     if (!workerBase || !workerToken || !job.workerJobId) continue;
@@ -162,27 +189,15 @@ export async function POST(req: Request) {
 
       const data = (await res.json()) as {
         status?: string;
-        leads?: Array<{
-          email?: string; phone?: string; contactName?: string;
-          businessName?: string; website?: string; sourceUrl?: string; snippet?: string;
-        }>;
+        leads?: WorkerLead[];
         error?: string;
+        resumeState?: unknown;
       };
 
       if (data.status === "done") {
         if (Array.isArray(data.leads) && data.leads.length > 0) {
           await prisma.lead.createMany({
-            data: data.leads.map((l) => ({
-              userId: job.userId,
-              searchJobId: job.id,
-              email: l.email ?? null,
-              phone: l.phone ?? null,
-              contactName: l.contactName ?? null,
-              businessName: l.businessName ?? null,
-              website: l.website ?? null,
-              sourceUrl: l.sourceUrl ?? null,
-              snippet: l.snippet ?? null,
-            })),
+            data: buildLeadRows(job, data.leads),
             skipDuplicates: true,
           });
         }
@@ -191,6 +206,34 @@ export async function POST(req: Request) {
           data: { status: "done" },
         });
         completed++;
+      } else if (data.status === "paused") {
+        // Task 13 resume: the worker stopped at a query boundary (manual pause or
+        // max-duration cap). Persist everything found so far with the SAME lead
+        // mapping as "done", then record the resumeState so a later resume can
+        // pick up where it left off instead of restarting from query #1.
+        if (Array.isArray(data.leads) && data.leads.length > 0) {
+          await prisma.lead.createMany({
+            data: buildLeadRows(job, data.leads),
+            skipDuplicates: true,
+          });
+        }
+        await safeUpdateSearchJob(job.id, {
+          status: "paused",
+          resumeState: data.resumeState != null && data.resumeState !== undefined
+            ? (data.resumeState as Prisma.InputJsonValue)
+            : Prisma.DbNull,
+        });
+        // Now that the leads/resumeState are safely in Postgres, tell the
+        // worker to forget this job rather than waiting on its 1hr TTL prune.
+        // This matters beyond memory hygiene: Phase A always dispatches with
+        // jobId == SearchJob.id (first run or resumed), so a stale paused
+        // entry still sitting in the worker's JOBS under that same id would
+        // make a later resume's re-dispatch 409 ("jobId already exists").
+        void fetch(`${workerBase}/jobs/${job.workerJobId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${workerToken}` },
+        }).catch(() => {});
+        paused++;
       } else if (data.status === "failed") {
         await prisma.searchJob.update({
           where: { id: job.id },
@@ -203,6 +246,6 @@ export async function POST(req: Request) {
     }
   }
 
-  results.phase_b = { completed, failed, checked: runningJobs.length };
+  results.phase_b = { completed, failed, paused, checked: runningJobs.length };
   return NextResponse.json(results);
 }
