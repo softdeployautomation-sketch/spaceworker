@@ -48,6 +48,21 @@ deploy-time spike.
 2. Install `deploy/spaceworker-browser.service`, add its env keys to the app's `.env`
    (`BROWSER_SERVER_URL`, `BROWSER_SERVER_TOKEN`, `BROWSER_SESSION_BASE_PORT`,
    `EXIT_NODE_US`, `EXIT_NODE_UK`), enable + start it.
+   - **`BROWSER_HOST_PUBLIC_IP` is required, not optional**, despite reading as
+     an `if (HOST_PUBLIC_IP)` conditional in `buildNekoArgs()` — set it to the
+     VPS's real public IP. Without it, Neko's WebRTC ICE candidates advertise
+     the container's internal Docker IP, which is unreachable from any real
+     client: the signaling WebSocket still connects fine, so the symptom is
+     Neko's own "connecting" splash spinning forever with no error at all, not
+     an obvious failure. Confirmed missing on the VPS and fixed 2026-09-05.
+   - `BROWSER_NEKO_EPR_BASE`/`BROWSER_NEKO_EPR_WIDTH` (defaults `52000`/`20`)
+     control the per-session WebRTC UDP port block — each concurrent session
+     gets its own non-overlapping range, published via `-p` in the same
+     `docker run` (needed alongside NAT1TO1 above — the ICE candidate being
+     reachable in principle still needs the actual port opened on the host).
+     Defaults comfortably cover `MAX_CONCURRENT_SESSIONS` (3); widen
+     `BROWSER_NEKO_EPR_WIDTH` only if a real WebRTC negotiation failure shows
+     Neko needs more ports than that per session.
 3. Register `spaceworker-browser.service` in Vantra's shared
    `lib/services-control.ts`/`CONTROLLABLE_UNITS` allowlist + sudoers (Claude's
    side, same pass already done for the other units) and the reverse-proxy map

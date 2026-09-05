@@ -192,6 +192,34 @@ export default function BrowserSessionPanel({
     return () => clearInterval(t);
   }, [refresh, hasActive]);
 
+  // Neko's own connect handshake (WebSocket + WebRTC ICE) takes a few seconds
+  // even once the container is confirmed "running" — showing its raw branded
+  // "connecting" splash for that window is confusing (looks stuck) and leaks
+  // an unrelated product's UI into ours. Load the iframe immediately in the
+  // background regardless (so it isn't wasted time), but cover it with our
+  // own placeholder until this grace window elapses, then reveal the real
+  // stream. Not a true readiness signal (Neko doesn't expose one to embed) —
+  // a fixed delay tuned to real observed connect time after the WebRTC fix.
+  const [readyIds, setReadyIds] = useState<Set<string>>(new Set());
+  const readyTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  useEffect(() => {
+    for (const s of sessions) {
+      if (s.status === "running" && s.connectUrl && !readyIds.has(s.id) && !readyTimers.current[s.id]) {
+        readyTimers.current[s.id] = setTimeout(() => {
+          setReadyIds((prev) => new Set(prev).add(s.id));
+          delete readyTimers.current[s.id];
+        }, 6000);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessions]);
+  useEffect(() => {
+    const timers = readyTimers.current;
+    return () => {
+      Object.values(timers).forEach(clearTimeout);
+    };
+  }, []);
+
   async function start() {
     setStartError("");
     if (!selectedProfileId) {
@@ -653,13 +681,21 @@ export default function BrowserSessionPanel({
                               Open in new tab ↗
                             </button>
                           </div>
-                          <div className="mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
+                          <div className="relative mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
                             <iframe
                               src={s.connectUrl}
                               title="Private browser session"
                               allow="clipboard-read; clipboard-write; autoplay; fullscreen"
                               className="h-full w-full border-0"
                             />
+                            {!readyIds.has(s.id) && (
+                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
+                                <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-white" />
+                                <p className="text-sm text-zinc-400">
+                                  Connecting your browser…
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </>
                       )}

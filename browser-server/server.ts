@@ -39,8 +39,16 @@ const TOKEN = process.env.BROWSER_SERVER_TOKEN;
 // longer resolves under m1k1o/neko directly.
 const NEKO_IMAGE = process.env.BROWSER_NEKO_IMAGE ?? "ghcr.io/m1k1o/neko/chromium:latest";
 const HOST_PUBLIC_IP = process.env.BROWSER_HOST_PUBLIC_IP ?? "";
-const EPR = process.env.BROWSER_NEKO_EPR ?? "52000-52100";
 const BASE_PORT = Number(process.env.BROWSER_SESSION_BASE_PORT ?? 32000);
+// WebRTC media (the actual video/audio stream) needs its own UDP port range —
+// distinct from Neko's single TCP signaling/web port (8080, mapped per-session
+// above). Each concurrent session needs a NON-overlapping range published to
+// the host, since `-p X-Y:X-Y/udp` binds those exact host ports — two
+// containers can't both publish 52000-52100. 20 ports/session comfortably
+// covers Neko's real usage and fits MAX_CONCURRENT_SESSIONS (3) inside the
+// documented default block with headroom.
+const EPR_BASE = Number(process.env.BROWSER_NEKO_EPR_BASE ?? 52000);
+const EPR_WIDTH = Number(process.env.BROWSER_NEKO_EPR_WIDTH ?? 20);
 
 interface Session {
   sessionId: string;
@@ -50,6 +58,7 @@ interface Session {
   pid: number | null;
   containerName: string | null;
   port: number | null;
+  eprRange: string | null; // "start-end" UDP range for this session's WebRTC media
   status: string; // "starting" | "running" | "stopped"
   startedAt: number;
   // Neko's own login gate (separate from our app's auth) — generated once
@@ -66,6 +75,15 @@ let portCursor = 0;
 
 function allocatePort(): number {
   return BASE_PORT + portCursor++;
+}
+
+// Same cursor as allocatePort() — one session's TCP web port and its UDP
+// media range are allocated together, so they stay in lockstep and never
+// drift out of sync across restarts.
+function allocateEprRange(): string {
+  const start = EPR_BASE + (portCursor - 1) * EPR_WIDTH;
+  const end = start + EPR_WIDTH - 1;
+  return `${start}-${end}`;
 }
 
 function containerName(sessionId: string): string {
@@ -90,15 +108,27 @@ function buildNekoArgs(session: Session): string[] {
     "--rm",
     "--name", session.containerName!,
     "-p", `${session.port}:8080`,
+    // WebRTC's actual media stream (not the signaling websocket, which rides
+    // the TCP port above) needs this UDP range PUBLISHED to the host, or
+    // Neko's ICE candidates have no path in from the internet at all — the
+    // symptom is Neko's own "connecting" splash spinning forever with no
+    // error, since the signaling connection succeeds fine and only the media
+    // stream silently never arrives. Confirmed missing here (2026-09-05):
+    // NEKO_EPR was previously set without a matching `-p` publish.
+    "-p", `${session.eprRange}:${session.eprRange}/udp`,
     "-v", profileMount,
     "-e", `NEKO_PASSWORD=${password}`,
     "-e", `NEKO_PASSWORD_ADMIN=${password}`,
     "-e", `NEKO_PROXY=default`,
     "-e", `NEKO_SCREEN=1280x720@30`,
-    "-e", `NEKO_EPR=${EPR}`,
+    "-e", `NEKO_EPR=${session.eprRange}`,
     "-e", `NEKO_BROWSER_ARGS=${browserArgs}`,
   ];
   if (HOST_PUBLIC_IP) {
+    // Without this, Neko advertises the container's internal Docker IP as its
+    // ICE candidate — unreachable from any real client, same silent-forever-
+    // spinner symptom as the missing `-p` above. Confirmed unset on the VPS
+    // (2026-09-05) — see browser-server/README.md for the required .env fix.
     args.push("-e", `NEKO_NAT1TO1=${HOST_PUBLIC_IP}`);
   }
   args.push(NEKO_IMAGE);
@@ -194,6 +224,7 @@ async function startInternal(session: Session): Promise<string> {
   session.pid = process.pid; // registry owner; real work lives in the docker container
   session.containerName = containerName(session.sessionId);
   session.port = allocatePort();
+  session.eprRange = allocateEprRange();
   session.status = "starting";
   registry.set(session.sessionId, session);
 
@@ -375,6 +406,7 @@ const server = createServer(async (req, res) => {
           pid: null,
           containerName: null,
           port: null,
+          eprRange: null,
           status: "starting",
           startedAt: Date.now(),
           nekoPassword: null,
