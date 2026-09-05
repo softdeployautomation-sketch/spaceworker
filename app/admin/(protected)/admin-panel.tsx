@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import type { ServiceState } from "@/lib/services-control";
 
 type AdminUser = {
   id: string;
@@ -21,7 +22,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -30,7 +31,13 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "notifications", label: "Notifications" },
   { id: "sessions", label: "Browser Sessions" },
   { id: "queue", label: "Search Queue" },
+  { id: "services", label: "Services" },
 ];
+
+// Import type only (server-only), not the runtime module — keeps this
+// client component's shape identical to the API's own type instead of a
+// hand-maintained duplicate that could silently drift from it.
+type AdminServiceState = ServiceState;
 
 type AdminQueueJob = {
   id: string;
@@ -100,6 +107,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
         {tab === "queue" && <QueueTab />}
+        {tab === "services" && <ServicesTab />}
       </main>
     </div>
   );
@@ -915,6 +923,178 @@ function SessionsTab() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function ServiceStateBadge({ activeState }: { activeState: string }) {
+  const styles =
+    activeState === "active"
+      ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300"
+      : activeState === "failed"
+        ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300"
+        : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400";
+  return (
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{activeState}</span>
+  );
+}
+
+const SERVICE_LABELS: Record<string, string> = {
+  "spaceworker-browser.service": "Browser subsystem (Neko/Chrome)",
+};
+
+function ServicesTab() {
+  const [services, setServices] = useState<AdminServiceState[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  // Per-unit, not a single scalar — a scalar would let one row's finally{}
+  // clear another row's busy flag mid-request if a second controllable unit
+  // is ever added and two actions overlap in flight.
+  const [pendingUnits, setPendingUnits] = useState<Set<string>>(new Set());
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/services");
+      if (!res.ok) throw new Error("Failed to load service state");
+      setServices((await res.json()) as AdminServiceState[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load service state");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function act(unit: string, action: "start" | "stop" | "restart") {
+    // Restart tears down every live container exactly like Stop does
+    // (systemd sends the same SIGTERM either way) — same warning for both.
+    if (
+      (action === "stop" || action === "restart") &&
+      !window.confirm(
+        `${action === "stop" ? "Stop" : "Restart"} the browser subsystem? Any interactive browser sessions currently open will be cut off. ${
+          action === "stop"
+            ? "It comes back on a VPS reboot but not automatically otherwise — you'll need to Start it again from here."
+            : "It will come back up on its own once the restart finishes."
+        }`
+      )
+    ) {
+      return;
+    }
+    setPendingUnits((prev) => new Set(prev).add(unit));
+    setError("");
+    try {
+      const res = await fetch("/api/admin/services", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ unit, action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Action failed");
+      } else {
+        await load();
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setPendingUnits((prev) => {
+        const next = new Set(prev);
+        next.delete(unit);
+        return next;
+      });
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold tracking-tight">Services</h2>
+        <button
+          onClick={load}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        >
+          Refresh
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Controls only the standalone browser subsystem — the interactive
+        Chrome/Neko sessions, not the main app or the extraction worker.
+        Stopping it frees the memory those Docker containers/processes use;
+        existing browser sessions are cut off immediately.
+      </p>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {loading ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">Service</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Memory</th>
+                <th className="px-4 py-3 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {services.map((s) => {
+                const busy = pendingUnits.has(s.unit);
+                const isActive = s.activeState === "active";
+                return (
+                  <tr key={s.unit}>
+                    <td className="px-4 py-3">{SERVICE_LABELS[s.unit] ?? s.unit}</td>
+                    <td className="px-4 py-3">
+                      <ServiceStateBadge activeState={s.activeState} />
+                      <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">{s.subState}</span>
+                    </td>
+                    <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                      {s.memoryMb !== null ? `${s.memoryMb} MB` : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
+                        {isActive ? (
+                          <button
+                            onClick={() => act(s.unit, "stop")}
+                            disabled={busy}
+                            className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                          >
+                            {busy ? "Working…" : "Stop"}
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => act(s.unit, "start")}
+                            disabled={busy}
+                            className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:opacity-50"
+                          >
+                            {busy ? "Working…" : "Start"}
+                          </button>
+                        )}
+                        <button
+                          onClick={() => act(s.unit, "restart")}
+                          disabled={busy}
+                          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                        >
+                          Restart
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+        Stopping does not survive a VPS reboot as "stopped" — a reboot brings it back.
+      </p>
     </div>
   );
 }

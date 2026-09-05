@@ -471,6 +471,29 @@ server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`browser subsystem listening on ${HOST}:${PORT}`);
 });
+
+// `docker run -d --rm` detaches containers into the Docker daemon's own
+// process tree — they are NOT children of this node process, so a plain
+// `systemctl stop`/`restart` (SIGTERM, no handler) previously killed this
+// process while leaving every live Neko/Chrome container running, orphaned,
+// still consuming exactly the RAM a stop is meant to free. This was already
+// half-acknowledged in stopInternal's own comment ("a service restart kills
+// every live container out from under this process") but nothing actually
+// tore them down — confirmed missing 2026-09-05, added for the new admin
+// Services-tab Stop control specifically, where "stop this to free memory"
+// needs to actually free the memory, not just block new sessions.
+async function shutdown(signal: string): Promise<void> {
+  // eslint-disable-next-line no-console
+  console.log(`${signal} received — tearing down ${registry.size} tracked container(s)`);
+  await Promise.all(
+    Array.from(registry.values())
+      .filter((s) => s.containerName)
+      .map((s) => docker("rm", "-f", s.containerName!).catch(() => {}))
+  );
+  process.exit(0);
+}
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("SIGINT", () => void shutdown("SIGINT"));
 /**
  * SPIKE CHECKLIST (before relying on the Neko path — run on the VPS):
  *  1. `docker run -d --rm -p 32001:8080 -e NEKO_PASSWORD=x -e NEKO_PROXY=default \
