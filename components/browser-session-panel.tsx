@@ -35,6 +35,27 @@ const STATUS_LABEL: Record<string, string> = {
   failed: "Failed",
 };
 
+// Neko renders the remote OS's cursor baked directly into the video stream,
+// but its own client doesn't hide the LOCAL cursor while hovering over that
+// video — so users see two: the real remote one in the pixels, plus the
+// host browser's own arrow on top. Confirmed no cursor-hiding logic exists in
+// Neko's shipped client JS/CSS (checked directly). The iframe is same-origin
+// (served through our own domain via the /browser/<id>/ proxy), so we can
+// reach into its document and fix this ourselves rather than waiting on
+// upstream — best-effort, wrapped in try/catch in case a future Neko version
+// changes its DOM shape or this ever isn't same-origin for some reason.
+function hideRemoteCursorDoubling(e: React.SyntheticEvent<HTMLIFrameElement>) {
+  try {
+    const doc = e.currentTarget.contentDocument;
+    if (!doc) return;
+    const style = doc.createElement("style");
+    style.textContent = "* { cursor: none !important; }";
+    doc.head.appendChild(style);
+  } catch {
+    /* cross-origin or blocked for some other reason — leave the default cursor */
+  }
+}
+
 function statusTone(status: string): string {
   if (status === "running")
     return "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400";
@@ -687,6 +708,7 @@ export default function BrowserSessionPanel({
                               title="Private browser session"
                               allow="clipboard-read; clipboard-write; autoplay; fullscreen"
                               className="h-full w-full border-0"
+                              onLoad={hideRemoteCursorDoubling}
                             />
                             {!readyIds.has(s.id) && (
                               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">

@@ -176,6 +176,7 @@ export async function POST(req: Request) {
   let completed = 0;
   let failed = 0;
   let paused = 0;
+  let liveUpdated = 0;
 
   for (const job of runningJobs) {
     if (!workerBase || !workerToken || !job.workerJobId) continue;
@@ -240,12 +241,27 @@ export async function POST(req: Request) {
           data: { status: "failed", error: data.error ?? "Worker reported failure" },
         });
         failed++;
+      } else if (Array.isArray(data.leads) && data.leads.length > 0) {
+        // Still "running" — the worker's on_progress callback (worker/api.py)
+        // already accumulates leads in memory as it finds them, and GET
+        // /jobs/{id} returns them regardless of status; previously they only
+        // reached Postgres once the job fully finished, so the extract page's
+        // live count showed nothing until the very end even on a long,
+        // multi-page/PDF crawl. Persist what's been found so far on every
+        // tick instead — skipDuplicates (Lead's [searchJobId, sourceUrl]
+        // unique constraint) makes this a safe no-op for leads already
+        // inserted on a previous tick, so it's cheap to call every ~10s.
+        await prisma.lead.createMany({
+          data: buildLeadRows(job, data.leads),
+          skipDuplicates: true,
+        });
+        liveUpdated++;
       }
     } catch {
       // Skip — will retry on next tick
     }
   }
 
-  results.phase_b = { completed, failed, paused, checked: runningJobs.length };
+  results.phase_b = { completed, failed, paused, liveUpdated, checked: runningJobs.length };
   return NextResponse.json(results);
 }
