@@ -20,7 +20,7 @@
  * management layer around it (registry, kill, stop, restart) is ordinary
  * child_process code and needs no spike.
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "http";
+import { createServer, get as httpGet, type IncomingMessage, type ServerResponse } from "http";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
@@ -118,6 +118,36 @@ async function waitRunning(container: string): Promise<boolean> {
   return false;
 }
 
+// Docker's own "Running" state only means the container's entrypoint process
+// started — it says nothing about whether Neko's web/WebSocket server INSIDE
+// the container has actually finished booting (it launches Chromium first,
+// which can take several more seconds). Marking status "running" right after
+// waitRunning() — as this used to do — told the frontend to connect before
+// the stream was actually ready, surfacing as "Session stream unavailable"
+// (confirmed: the exact error text the httpProxy error handler below
+// returns) even though the session would have worked fine a few seconds
+// later. This polls the actual mapped port until Neko answers.
+function waitPortReady(port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    const deadline = Date.now() + timeoutMs;
+    const attempt = () => {
+      const req = httpGet({ host: "127.0.0.1", port, path: "/", timeout: 2000 }, (res) => {
+        res.resume(); // drain so the socket can close cleanly
+        resolvePromise(true);
+      });
+      req.on("error", () => {
+        if (Date.now() >= deadline) {
+          resolvePromise(false);
+        } else {
+          setTimeout(attempt, 500);
+        }
+      });
+      req.on("timeout", () => req.destroy());
+    };
+    attempt();
+  });
+}
+
 // Chromium creates its own subdirectories/files inside the profile mount using
 // its own default (restrictive, owner-only) permissions — the one-time
 // chmod 777 applied when a profile is first created (lib/browser-profiles.ts)
@@ -166,6 +196,14 @@ async function startInternal(session: Session): Promise<string> {
     }
     if (!(await waitRunning(session.containerName))) {
       throw new Error("container never reached running state");
+    }
+    // Container process is up, but Neko's own web server inside it may still
+    // be booting (Chromium startup) — wait for the actual stream port to
+    // answer before telling the frontend it's safe to connect. 20s budget:
+    // generous enough for a slow Chromium cold-start, short enough that a
+    // genuinely broken container still fails within a reasonable UI wait.
+    if (!(await waitPortReady(session.port, 20_000))) {
+      throw new Error("Neko's stream server never became reachable on its mapped port");
     }
     session.status = "running";
     registry.set(session.sessionId, session);
