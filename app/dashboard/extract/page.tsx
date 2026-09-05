@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 
 type JobStatus = "queued" | "running" | "done" | "failed";
@@ -524,16 +525,42 @@ export default function ExtractPage() {
                     {selectedJob.status}
                   </span>
                   {selectedJob.leads.length > 0 && (
-                    <a
-                      href={`/api/jobs/${selectedJob.id}/export.csv`}
-                      download
-                      className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
-                    >
-                      Export CSV
-                    </a>
+                    <>
+                      <a
+                        href={`/api/jobs/${selectedJob.id}/export.csv`}
+                        download
+                        className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        Export CSV
+                      </a>
+                      <a
+                        href={`/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1`}
+                        download
+                        className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        Emails only
+                      </a>
+                      <Link
+                        href={`/dashboard/campaigns?fromSearchJob=${selectedJob.id}`}
+                        className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500"
+                      >
+                        Create email campaign
+                      </Link>
+                    </>
                   )}
                 </div>
               </div>
+              {selectedJob.status === "done" &&
+                typeof selectedJob.params?.minResults === "number" &&
+                selectedJob.params.minResults > 0 &&
+                selectedJob.leads.length < selectedJob.params.minResults && (
+                  <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                    Found {selectedJob.leads.length} of your {selectedJob.params.minResults}-lead minimum. The
+                    worker tried a fixed set of related-term variations (e.g. "near me", "company") and ran out —
+                    it doesn't keep inventing new terms indefinitely. Try broader Find/Location terms, or a lower
+                    minimum, if you need more.
+                  </p>
+                )}
               {selectedJob.error && (
                 <p className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-900/20 dark:text-red-300">
                   {selectedJob.error}

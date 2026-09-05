@@ -76,18 +76,27 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  if (!parsed) {
-    return NextResponse.json({ error: "Upload a recipient CSV" }, { status: 400 });
+  if (!parsed && !searchJobId) {
+    return NextResponse.json(
+      { error: "Upload a recipient CSV or pick a Lead Extractor job" },
+      { status: 400 }
+    );
   }
-  if (parsed.recipients.length === 0) {
+  if (parsed && parsed.recipients.length === 0) {
     return NextResponse.json(
       { error: "No valid recipients in the CSV" },
       { status: 400 }
     );
   }
 
-  // Confirm every mailbox belongs to this user, and that searchJob (if provided)
-  // does too — the rotation below must never reference another user's rows.
+  // Confirm every mailbox belongs to this user, and that searchJob (if
+  // provided) does too — checked unconditionally, regardless of which
+  // recipient source is actually used below. A previous draft only checked
+  // ownership inside the "no CSV" branch, so a request supplying BOTH a csv
+  // AND a searchJobId for a job it didn't own would take the CSV recipient
+  // path (skipping this check entirely) while still persisting the other
+  // user's searchJobId onto EmailCampaign — a stored cross-tenant reference,
+  // even though the recipients themselves came from the (valid) CSV.
   const ownedMailboxes = await prisma.mailbox.findMany({
     where: { id: { in: mailboxIds }, userId: session.userId },
     select: { id: true },
@@ -96,12 +105,49 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "One or more mailboxes not found" }, { status: 400 });
   }
   if (searchJobId) {
-    const job = await prisma.searchJob.findFirst({
+    const owned = await prisma.searchJob.findFirst({
       where: { id: searchJobId, userId: session.userId },
       select: { id: true },
     });
-    if (!job) {
+    if (!owned) {
       return NextResponse.json({ error: "Search job not found" }, { status: 400 });
+    }
+  }
+
+  // Recipients come from EITHER an uploaded CSV OR a Lead Extractor job's own
+  // leads (never both — CSV wins if somehow both are given, matching the
+  // pre-existing precedence of "parsed" being computed from body.csv first).
+  // Using leads directly means the sender's recipient list is exactly the
+  // emails this app already extracted — no manual CSV export/re-upload
+  // round trip. Only the email + a couple of useful merge variables travel
+  // across; phone/website/snippet aren't relevant to sending an email.
+  let recipients: { email: string; variables: Record<string, unknown> }[];
+  if (parsed) {
+    recipients = parsed.recipients;
+  } else {
+    const leads = await prisma.lead.findMany({
+      where: { searchJobId: searchJobId!, userId: session.userId, email: { not: null } },
+      select: { email: true, contactName: true, businessName: true },
+    });
+    const seen = new Set<string>();
+    recipients = [];
+    for (const l of leads) {
+      const email = (l.email ?? "").trim();
+      if (!email || seen.has(email.toLowerCase())) continue;
+      seen.add(email.toLowerCase());
+      recipients.push({
+        // Preserve original casing, same as the CSV path (lib/csv.ts's
+        // parseRecipientsCsv) — lowercase only for the dedup comparison
+        // above, not for the stored/sent address.
+        email,
+        variables: { contactName: l.contactName ?? "", businessName: l.businessName ?? "" },
+      });
+    }
+    if (recipients.length === 0) {
+      return NextResponse.json(
+        { error: "That job has no leads with an email address." },
+        { status: 400 }
+      );
     }
   }
 
@@ -132,7 +178,6 @@ export async function POST(req: Request) {
       variantRows.push(row);
     }
 
-    const recipients = parsed.recipients;
     await tx.emailQueueItem.createMany({
       data: recipients.map((r, i) => ({
         campaignId: created.id,
@@ -147,7 +192,7 @@ export async function POST(req: Request) {
   });
 
   return NextResponse.json(
-    { campaign, recipientCount: parsed.recipients.length, rowErrors: parsed.errors },
+    { campaign, recipientCount: recipients.length, rowErrors: parsed?.errors ?? [] },
     { status: 201 }
   );
 }

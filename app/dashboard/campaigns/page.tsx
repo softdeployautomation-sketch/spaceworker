@@ -1,6 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 type Campaign = {
   id: string;
@@ -40,6 +40,14 @@ export default function CampaignsPage() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
   const router = useRouter();
+  const searchParams = useSearchParams();
+  // Arrived via "Create campaign from these leads" on the Lead Extractor page
+  // (?fromSearchJob=<id>) — recipients come from that job's own leads
+  // instead of a CSV upload, so the sender's list is exactly what this app
+  // already extracted, no manual export/re-upload round trip.
+  const fromSearchJobId = searchParams.get("fromSearchJob");
+  const [leadEmailCount, setLeadEmailCount] = useState<number | null>(null);
+  const [leadCountError, setLeadCountError] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -58,6 +66,29 @@ export default function CampaignsPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  // Arrived via "Create campaign from these leads" — open straight into the
+  // create modal and preview how many of that job's leads actually have an
+  // email (the only field this app sends), so the count doesn't come as a
+  // surprise on submit.
+  useEffect(() => {
+    if (!fromSearchJobId) return;
+    openNew();
+    setLeadCountError("");
+    setLeadEmailCount(null); // clear any previous job's count immediately, not just on this fetch's resolution
+    fetch(`/api/jobs/${fromSearchJobId}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((job: { leads?: Array<{ email?: string | null }> }) => {
+        const emails = new Set(
+          (job.leads ?? [])
+            .map((l) => (l.email ?? "").trim().toLowerCase())
+            .filter((e) => e.length > 0),
+        );
+        setLeadEmailCount(emails.size);
+      })
+      .catch(() => setLeadCountError("Couldn't load that job's leads."));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromSearchJobId]);
 
   function openNew() {
     setName("");
@@ -117,7 +148,11 @@ export default function CampaignsPage() {
     if (!name.trim()) { setFormError("Name is required"); return; }
     if (selectedMailboxIds.length === 0) { setFormError("Select at least one sending mailbox"); return; }
     if (variants.length === 0) { setFormError("Add at least one subject line and a body"); return; }
-    if (!csvContent.trim()) { setFormError("Upload a recipient CSV"); return; }
+    if (!fromSearchJobId && !csvContent.trim()) { setFormError("Upload a recipient CSV"); return; }
+    if (fromSearchJobId && (leadEmailCount === null || leadEmailCount === 0)) {
+      setFormError(leadEmailCount === 0 ? "That job has no leads with an email address." : "Still loading that job's leads — try again in a moment.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -128,7 +163,7 @@ export default function CampaignsPage() {
           name: name.trim(),
           mailboxIds: selectedMailboxIds,
           variants,
-          csv: csvContent,
+          ...(fromSearchJobId ? { searchJobId: fromSearchJobId } : { csv: csvContent }),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -299,16 +334,44 @@ export default function CampaignsPage() {
                 />
               </label>
 
-              <div className="flex flex-col gap-1 text-sm font-medium">
-                Recipient CSV <span className="text-xs text-zinc-400">— first row headers, one required <code>email</code> column</span>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  onChange={(e) => { const f = e.target.files?.[0]; if (f) void readCsv(f); }}
-                  className="text-sm"
-                />
-                {csvName && <span className="text-xs text-zinc-500">Selected: {csvName}</span>}
-              </div>
+              {fromSearchJobId ? (
+                <div className="flex flex-col gap-1 text-sm font-medium">
+                  Recipients
+                  {leadCountError ? (
+                    <p className="text-xs text-red-600 dark:text-red-400">{leadCountError}</p>
+                  ) : leadEmailCount === null ? (
+                    <p className="rounded-lg bg-zinc-100 px-3 py-2 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      Loading…
+                    </p>
+                  ) : leadEmailCount === 0 ? (
+                    <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-normal text-red-700 dark:bg-red-900/20 dark:text-red-300">
+                      That job has no leads with an email address — nothing to send to.
+                    </p>
+                  ) : (
+                    <p className="rounded-lg bg-emerald-50 px-3 py-2 text-xs font-normal text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                      Using {leadEmailCount} email{leadEmailCount === 1 ? "" : "s"} from this Lead Extractor job — no CSV needed.
+                    </p>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => { router.replace("/dashboard/campaigns"); setLeadEmailCount(null); setLeadCountError(""); }}
+                    className="mt-1 self-start text-xs text-zinc-500 underline-offset-2 hover:underline dark:text-zinc-400"
+                  >
+                    Use a CSV upload instead
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-1 text-sm font-medium">
+                  Recipient CSV <span className="text-xs text-zinc-400">— first row headers, one required <code>email</code> column</span>
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) void readCsv(f); }}
+                    className="text-sm"
+                  />
+                  {csvName && <span className="text-xs text-zinc-500">Selected: {csvName}</span>}
+                </div>
+              )}
 
               {formError && <p className="text-sm text-red-600 dark:text-red-400">{formError}</p>}
 
@@ -323,7 +386,13 @@ export default function CampaignsPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setModalOpen(false)}
+                  onClick={() => {
+                    setModalOpen(false);
+                    // Clear ?fromSearchJob so a later "New campaign" click
+                    // (with no navigation in between) doesn't reopen this
+                    // same locked "recipients from search job" mode.
+                    if (fromSearchJobId) router.replace("/dashboard/campaigns");
+                  }}
                   className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
                 >
                   Cancel
