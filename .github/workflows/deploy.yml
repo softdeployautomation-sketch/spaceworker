@@ -120,11 +120,6 @@ jobs:
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
             npm rebuild || true
             sudo -u trmm npx prisma migrate deploy
-            # worker/requirements.txt changes (e.g. Task 13's pypdf) need to land
-            # in the venv BEFORE extraction-worker restarts, or it crash-loops on
-            # ModuleNotFoundError — confirmed missing here 2026-09-05. Idempotent:
-            # near-instant no-op when nothing changed (pip reports "already
-            # satisfied" for everything).
             sudo -u trmm /opt/spaceworker/worker/venv/bin/pip install -q -r /opt/spaceworker/worker/requirements.txt
             systemctl restart spaceworker
             systemctl restart spaceworker-browser
