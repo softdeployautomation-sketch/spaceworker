@@ -193,6 +193,7 @@ export async function POST(req: Request) {
         leads?: WorkerLead[];
         error?: string;
         resumeState?: unknown;
+        currentStep?: string | null;
       };
 
       if (data.status === "done") {
@@ -241,7 +242,7 @@ export async function POST(req: Request) {
           data: { status: "failed", error: data.error ?? "Worker reported failure" },
         });
         failed++;
-      } else if (Array.isArray(data.leads) && data.leads.length > 0) {
+      } else {
         // Still "running" — the worker's on_progress callback (worker/api.py)
         // already accumulates leads in memory as it finds them, and GET
         // /jobs/{id} returns them regardless of status; previously they only
@@ -251,9 +252,30 @@ export async function POST(req: Request) {
         // tick instead — skipDuplicates (Lead's [searchJobId, sourceUrl]
         // unique constraint) makes this a safe no-op for leads already
         // inserted on a previous tick, so it's cheap to call every ~10s.
-        await prisma.lead.createMany({
-          data: buildLeadRows(job, data.leads),
-          skipDuplicates: true,
+        if (Array.isArray(data.leads) && data.leads.length > 0) {
+          await prisma.lead.createMany({
+            data: buildLeadRows(job, data.leads),
+            skipDuplicates: true,
+          });
+        }
+        // Task 14 live activity feed — persist the current step (also on ticks
+        // where no lead was added, so a zero-lead-so-far job still shows what
+        // it's doing). safeUpdateSearchJob (P2025-tolerant) so a job deleted
+        // mid-tick can't throw out of this whole poll loop. This is the SAME
+        // running branch as the lead createMany above — not a duplicate branch.
+        //
+        // Known limitation: results extract concurrently (asyncio.gather in
+        // _search_and_extract), so multiple on_step reports can race to
+        // overwrite state.current_step worker-side before this tick ever
+        // reads it — the URL shown here can be an arbitrary one of the batch,
+        // not necessarily the "last" one. Harmless (display-only, no effect
+        // on which leads get saved), just not fully deterministic.
+        // NOTE: this is the only branch that writes currentStep; the
+        // done/paused/failed branches below deliberately do NOT clear it, so
+        // the last-known step ("where did it get to") stays visible after the
+        // job stops rather than being wiped to null.
+        await safeUpdateSearchJob(job.id, {
+          currentStep: data.currentStep ?? null,
         });
         liveUpdated++;
       }

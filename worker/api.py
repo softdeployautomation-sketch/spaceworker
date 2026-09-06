@@ -57,6 +57,12 @@ class JobState:
     # "start here" payload persisted by the dispatcher when the job pauses.
     pause_requested: bool = False
     resume_state: Optional[dict] = None
+    # Task 14 live activity feed: the current crawler step as a short text string
+    # ("Searching: …", "Visiting page N …", "Reading a PDF at …"). Overwritten by
+    # the on_step callback as the job progresses, exactly like `status` is — no
+    # history of past steps is kept. Always present (defaults to "") so the
+    # extract page can render something even before the first tick reports a step.
+    current_step: str = ""
 
 
 # Per-job state only — keyed by jobId; never a single shared singleton.
@@ -177,6 +183,11 @@ async def create_job(req: JobRequest, request: Request) -> dict:
     async def on_progress(lead: dict) -> None:
         state.leads.append(lead)
 
+    async def on_step(text: str) -> None:
+        # Task 14 live activity feed — overwrite, don't append: current_step is a
+        # single live status line (like state.status), not an activity log.
+        state.current_step = text
+
     async def run_job() -> None:
         sem = app.state.lanes[lane]
         acquired = False
@@ -190,6 +201,7 @@ async def create_job(req: JobRequest, request: Request) -> dict:
                     job_dir,
                     on_progress=on_progress,
                     should_stop=lambda: _job_should_pause(state),
+                    on_step=on_step,
                 )
                 if result.status == "paused":
                     # Paused (manual pause or max-duration cap): keep state.leads
@@ -238,6 +250,9 @@ async def get_job(job_id: str) -> dict:
         "status": state.status,
         "leads": state.leads,
         "error": state.error,
+        # Task 14 live activity feed — always present (unlike resumeState), so a
+        # frontend can always render a "currently doing X" line for a live job.
+        "currentStep": state.current_step,
         # Task 13 resumable jobs — present only once a job has paused, so the
         # dispatcher can persist it as SearchJob.resumeState.
         **({"resumeState": state.resume_state} if state.resume_state is not None else {}),

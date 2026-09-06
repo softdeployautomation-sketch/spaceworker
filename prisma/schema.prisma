@@ -291,6 +291,12 @@ model SearchJob {
   // from the next unprocessed query instead of restarting (processedQueries,
   // nextQueryIndex, seenUrls, foundLeads). Cleared when a paused job is resumed.
   resumeState Json?
+  // Task 14 live activity feed: the worker's current crawler step ("Searching: …",
+  // "Visiting page N of Google results", "Reading a PDF at …"), written by the
+  // dispatcher's per-tick poll while the job runs. Nullable and additive — left as
+  // whatever the last "running" tick wrote after the job stops (done/paused/failed
+  // branches do NOT clear it), so "where did it get to" survives the job.
+  currentStep String?
   createdAt   DateTime       @default(now())
   queueEntry  JobQueueEntry?
   leads       Lead[]

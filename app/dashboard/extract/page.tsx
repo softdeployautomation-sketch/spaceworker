@@ -14,6 +14,9 @@ interface Job {
   lane: string;
   error?: string | null;
   createdAt: string;
+  // Task 14 live activity feed — the worker's current step, refreshed by the
+  // 4s poll while a job runs. null for jobs that never reported a step.
+  currentStep?: string | null;
   _count?: { leads: number };
 }
 
@@ -558,6 +561,14 @@ export default function ExtractPage() {
                   </button>
                 )}
               </div>
+              {/* Task 14 live activity feed — compact per-row step line, only while
+                  running and only when it has something to show; keeps the list
+                  scannable without surfacing stale text on finished jobs. */}
+              {job.status === "running" && job.currentStep?.trim() ? (
+                <p className="mt-0.5 truncate text-[11px] text-fg-muted/80" title={job.currentStep}>
+                  {job.currentStep}
+                </p>
+              ) : null}
             </div>
           ))}
         </div>
@@ -575,6 +586,14 @@ export default function ExtractPage() {
                     {Array.isArray(selectedJob.params?.queries) && selectedJob.params.queries.length > 1 &&
                       <span> · {selectedJob.params.queries.length} terms</span>}
                   </p>
+                  {/* Task 14 live activity feed — only while a job is running. A
+                      brand-new job's first tick may not have reported a step yet, so
+                      fall back to "Starting…" when currentStep is null/empty. */}
+                  {selectedJob.status === "running" && (
+                    <p className="mt-1 truncate text-xs text-fg-muted/80" title={selectedJob.currentStep ?? undefined}>
+                      Currently: {selectedJob.currentStep?.trim() ? selectedJob.currentStep : "Starting…"}
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>

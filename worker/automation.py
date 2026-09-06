@@ -101,6 +101,13 @@ GOOGLE_RESULTS_PER_PAGE = 10
 
 AsyncCallable = Callable[[dict], Awaitable[None]]
 
+# Task 14 live activity feed: a second, textual "current step" channel alongside
+# the per-lead on_progress callback — "Searching: …", "Visiting page N …", "Reading
+# a PDF at …". Async at the API boundary (matches on_progress); a plain sync adapter
+# is used where the step fires inside a run_in_executor thread.
+AsyncStepCallable = Callable[[str], Awaitable[None]]
+SyncStepCallable = Callable[[str], None]
+
 
 @dataclass
 class SearchResult:
@@ -393,7 +400,8 @@ async def google_search(
 
 
 async def google_search_paginated(
-    query: str, max_results: int, pages_per_query: int, job_dir: str
+    query: str, max_results: int, pages_per_query: int, job_dir: str,
+    on_step: Optional[AsyncStepCallable] = None,
 ) -> list[SearchResult]:
     """Drive Google's paged results over up to `pages_per_query` pages.
 
@@ -407,6 +415,10 @@ async def google_search_paginated(
     seen_urls: set[str] = set()
     all_results: list[SearchResult] = []
     for page_index in range(max(1, pages_per_query)):
+        # Task 14 live activity: expose which result page we're on so the UI can
+        # show a slow multi-page crawl is actually moving, not stalled.
+        if on_step is not None:
+            await on_step(f"Visiting page {page_index + 1} of Google results")
         start = page_index * GOOGLE_RESULTS_PER_PAGE
         page_results, has_next = await google_search(query, max_results, job_dir, start=start)
         new_results: list[SearchResult] = []
@@ -421,7 +433,8 @@ async def google_search_paginated(
     return all_results[:max_results]
 
 
-async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchResult]:
+async def search_phase(query: str, params: dict, job_dir: str,
+                       on_step: Optional[AsyncStepCallable] = None) -> list[SearchResult]:
     engine = params.get("engine", "duckduckgo")
     # Confirmed against the real caller (app/dashboard/extract/page.tsx sends
     # `params: { engine, maxResults }`, camelCase) — the dispatcher's own
@@ -440,7 +453,7 @@ async def search_phase(query: str, params: dict, job_dir: str) -> list[SearchRes
             pages_per_query = max(1, min(int(raw_pages), 20))
         except (ValueError, TypeError):
             pages_per_query = DEFAULT_PAGES_PER_QUERY
-        return await google_search_paginated(query, max_results, pages_per_query, job_dir)
+        return await google_search_paginated(query, max_results, pages_per_query, job_dir, on_step)
 
     loop = asyncio.get_event_loop()
     try:
@@ -630,16 +643,25 @@ def extract_lead_pdf(result: SearchResult) -> list[dict]:
     return _build_leads(result, emails, phones, contact_names)
 
 
-def _extract_result(result: SearchResult) -> list[dict]:
+def _extract_result(result: SearchResult,
+                    on_step: Optional[SyncStepCallable] = None) -> list[dict]:
     """Dispatch one search result to the right extractor (PDF vs real page).
 
     Shared by _search_and_extract() for every result on every page — keeps the
     PDF/HTML branching in exactly one place. Never guesses from the search snippet:
     a result with no real extractable content (HTML or PDF) simply yields no leads.
+
+    Task 14: `on_step` is a plain *sync* reporter (not the async on_step passed
+    around elsewhere) because this function runs in a run_in_executor thread and
+    therefore can't await; _search_and_extract() hands it a thread-safe adapter.
     """
     try:
         if _is_pdf_result(result):
+            if on_step is not None:
+                on_step(f"Reading a PDF at {result.url}")
             return extract_lead_pdf(result)
+        if on_step is not None:
+            on_step(f"Extracting a page at {result.url}")
         return extract_lead_page(result)
     except Exception:
         return []
@@ -677,25 +699,38 @@ async def _search_and_extract(
     on_progress: AsyncCallable,
     seen_urls: set[str],
     domain_rules,
+    on_step: Optional[AsyncStepCallable] = None,
 ) -> list[dict]:
     """One pass: search every term in query_list, dedup against the SHARED
     seen_urls set (so a later expansion round never reprocesses a page an
     earlier round already extracted), then extract leads concurrently.
     Factored out of run_automation so the min-results loop can call this
-    once per expansion round without duplicating the search/extract logic."""
+    once per expansion round without duplicating the search/extract logic.
+
+    Task 14: on_step (threaded the same way as on_progress — no different
+    plumbing) reports the current crawler step just before each search so the
+    UI's "Currently: …" line tracks what the job is doing right now.
+    """
     loop = asyncio.get_event_loop()
 
     if len(query_list) == 1:
         # Single-query path: preserve the original failure semantics — a solo
         # query's own search failure propagates instead of being swallowed.
-        results = await search_phase(query_list[0], params, job_dir)
+        if on_step is not None:
+            await on_step(f"Searching: {query_list[0]}")
+        results = await search_phase(query_list[0], params, job_dir, on_step)
     else:
         # Multi-query path: a blocked/erroneous term shouldn't abort the whole
         # job, so each term is isolated via return_exceptions and a failure
         # just contributes zero results rather than crashing the job. Run
         # concurrently — each search_phase call can take tens of seconds.
+        async def _search_one(q: str) -> list[SearchResult]:
+            if on_step is not None:
+                await on_step(f"Searching: {q}")
+            return await search_phase(q, params, job_dir, on_step)
+
         per_query_results = await asyncio.gather(
-            *(search_phase(q, params, job_dir) for q in query_list),
+            *(_search_one(q) for q in query_list),
             return_exceptions=True,
         )
         results = []
@@ -713,7 +748,15 @@ async def _search_and_extract(
     async def process_one(result: SearchResult) -> list[dict]:
         # Dispatches PDF results to extract_lead_pdf and everything else to
         # extract_lead_page — see _extract_result. Both reuse the same extract.
-        leads = await loop.run_in_executor(None, _extract_result, result)
+        # Task 14: _extract_result now also reports which result it's working on
+        # (PDF vs real page). It runs in an executor thread, so give it a plain
+        # *sync* adapter that schedules the async on_step back onto this job's
+        # event loop without blocking the extraction.
+        def report_step_sync(text: str) -> None:
+            if on_step is not None:
+                asyncio.run_coroutine_threadsafe(on_step(text), loop)
+
+        leads = await loop.run_in_executor(None, _extract_result, result, report_step_sync)
         kept: list[dict] = []
         for lead in leads:
             # Filter at the point of emission so on_progress stream and final list
@@ -771,6 +814,7 @@ async def run_automation(
     job_dir: str,
     on_progress: AsyncCallable,
     should_stop: Optional[Callable[[], Awaitable[bool]]] = None,
+    on_step: Optional[AsyncStepCallable] = None,
 ) -> AutomationResult:
     """Run a full extraction job: search then per-result extraction.
 
@@ -784,6 +828,14 @@ async def run_automation(
     pages, and each result is either click-through-extracted from its real page
     content (extract_lead_page) or, for PDFs, from the PDF's extracted text
     (extract_lead_pdf). No snippet-metadata guessing.
+
+    Task 14: `on_step` (optional) reports the current crawler step as a short
+    text string — "Searching: …", "Visiting page N …", "Reading a PDF at …",
+    "Extracting a page at …" — before each meaningful step so a long crawl reads
+    as alive in the UI. It's threaded exactly like on_progress
+    (run_automation -> _search_and_extract -> search_phase /
+    google_search_paginated / _extract_result); nothing here changes how leads
+    are found, extracted, or persisted.
 
     Minimum-results auto-expansion: when `params["minResults"]` is a positive number,
     _build_ordered_queries precomputes the ordered base+expansion query budget and
@@ -881,7 +933,7 @@ async def run_automation(
 
         try:
             leads = await _search_and_extract(
-                [term], params, job_dir, on_progress, seen_urls, domain_rules
+                [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step
             )
             all_leads.extend(leads)
         except Exception:

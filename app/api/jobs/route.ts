@@ -18,7 +18,7 @@ export async function GET() {
     where: { userId: session.userId },
     select: {
       id: true, query: true, template: true, params: true, status: true,
-      lane: true, error: true, createdAt: true,
+      lane: true, error: true, createdAt: true, currentStep: true,
       _count: { select: { leads: true } },
     },
     orderBy: { createdAt: "desc" },
