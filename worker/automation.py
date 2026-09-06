@@ -475,6 +475,25 @@ async def google_search_paginated(
     return all_results[:max_results]
 
 
+# Ported from the original desktop engine (automation_server.py ~L953-958),
+# confirmed as the actual reason it reliably surfaced PDFs: it does not wait for
+# an ordinary organic result to happen to be a PDF (which for a plain business-
+# directory query like "plumbers in texas" it almost never is) — it appends
+# `filetype:pdf` to the query ITSELF, so the search engine's own ranking returns
+# results that are overwhelmingly PDFs. Applied to both Google and DuckDuckGo
+# queries, exactly as the original does for its default (non-Reddit-only) mode.
+MAX_DDG_QUERY_CHARS = 420
+
+
+def _bias_query_toward_pdfs(query: str) -> str:
+    q = query.strip()
+    if "filetype:pdf" not in q.lower() and "filetype: pdf" not in q.lower():
+        q = f"{q} filetype:pdf"
+    if len(q) > MAX_DDG_QUERY_CHARS:
+        q = q[:MAX_DDG_QUERY_CHARS].strip()
+    return q
+
+
 async def search_phase(query: str, params: dict, job_dir: str,
                        on_step: Optional[AsyncStepCallable] = None) -> list[SearchResult]:
     engine = params.get("engine", "duckduckgo")
@@ -495,8 +514,9 @@ async def search_phase(query: str, params: dict, job_dir: str,
             pages_per_query = max(1, min(int(raw_pages), 20))
         except (ValueError, TypeError):
             pages_per_query = DEFAULT_PAGES_PER_QUERY
+        pdf_query = _bias_query_toward_pdfs(query)
         try:
-            return await google_search_paginated(query, max_results, pages_per_query, job_dir, on_step)
+            return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
         except _BlockedByCaptchaError:
             # Google is durably blocking this IP for this query (already retried
             # with backoff inside _resilient_page_content) — the original desktop
@@ -508,18 +528,19 @@ async def search_phase(query: str, params: dict, job_dir: str,
                 await on_step(f"Google blocked — falling back to DuckDuckGo for: {query}")
             loop = asyncio.get_event_loop()
             try:
-                return await loop.run_in_executor(None, duckduckgo_search_http, query, max_results)
+                return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
             except DDGBlockedError:
-                return await duckduckgo_search_playwright(query, max_results, job_dir)
+                return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
 
+    pdf_query = _bias_query_toward_pdfs(query)
     loop = asyncio.get_event_loop()
     try:
-        return await loop.run_in_executor(None, duckduckgo_search_http, query, max_results)
+        return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
     except DDGBlockedError:
         # Confirmed-real fallback (see duckduckgo_search_http docstring) — the
         # lightweight path is blocked for this request, so pay the Chromium cost
         # this one time rather than failing the whole job.
-        return await duckduckgo_search_playwright(query, max_results, job_dir)
+        return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
 
 
 def _build_leads(
