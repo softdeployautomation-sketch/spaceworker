@@ -74,14 +74,19 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        <div className="mx-auto flex max-w-6xl items-center px-6 py-4">
+        {/* flex-wrap + order lets the 7-tab nav drop to its own full-width,
+            horizontally-scrollable row on mobile (where it would otherwise
+            overflow) while staying exactly as a single inline row from md:
+            up — same reflow trick used elsewhere in this app rather than a
+            structural rewrite. */}
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
           <h1 className="text-lg font-semibold tracking-tight">SpaceWorker Admin</h1>
-          <nav className="ml-8 flex gap-1">
+          <nav className="order-3 flex w-full gap-1 overflow-x-auto md:order-none md:w-auto md:ml-8 md:overflow-visible">
             {TABS.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                className={`shrink-0 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
                   tab === t.id
                     ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
                     : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
@@ -162,7 +167,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
 
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
 
-      <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -282,7 +287,7 @@ function PaymentsTab() {
           <p className="text-sm text-zinc-500 dark:text-zinc-400">No payments pending review</p>
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -560,7 +565,7 @@ function NotificationsTab() {
           <p className="text-sm text-zinc-500 dark:text-zinc-400">No notifications logged</p>
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -873,7 +878,7 @@ function SessionsTab() {
           <p className="text-sm text-zinc-500 dark:text-zinc-400">No browser sessions</p>
         </div>
       ) : (
-        <div className="mt-6 overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">

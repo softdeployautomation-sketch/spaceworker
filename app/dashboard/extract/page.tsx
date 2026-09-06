@@ -367,7 +367,7 @@ export default function ExtractPage() {
                 setInput: setEmailDomainInput,
               })}
             </div>
-            <div className="flex gap-4 items-center text-sm">
+            <div className="flex flex-wrap gap-4 items-center text-sm">
               <label className="flex items-center gap-2">
                 <span className="text-fg-muted">Engine:</span>
                 <select
@@ -477,7 +477,7 @@ export default function ExtractPage() {
                 Add
               </button>
             </div>
-            <div className="flex gap-4 items-center text-sm">
+            <div className="flex flex-wrap gap-4 items-center text-sm">
               <label className="flex items-center gap-2">
                 <span className="text-fg-muted">Location:</span>
                 <input
@@ -531,10 +531,14 @@ export default function ExtractPage() {
         </div>
         {formError && <p className="text-sm text-red-600 dark:text-red-400">{formError}</p>}
       </div>
-{/* Job list + detail */}
-      <div className="flex flex-1 gap-4 overflow-hidden">
+{/* Job list + detail — stacked on mobile (capped-height scrollable list above
+    a full-width detail pane), side-by-side from md: up (original layout
+    unchanged). A fixed w-72 sidebar next to a flex-1 pane with no responsive
+    stacking would otherwise squeeze the detail pane to almost nothing on a
+    phone-width screen. */}
+      <div className="flex flex-1 flex-col gap-4 overflow-hidden md:flex-row">
         {/* Job list */}
-        <div className="w-72 flex-shrink-0 overflow-y-auto rounded-xl border border-border bg-card">
+        <div className="max-h-64 w-full flex-shrink-0 overflow-y-auto rounded-xl border border-border bg-card md:h-auto md:max-h-none md:w-72">
           {jobs.length === 0 && (
             <p className="p-4 text-sm text-fg-muted">No jobs yet. Submit a search above.</p>
           )}
