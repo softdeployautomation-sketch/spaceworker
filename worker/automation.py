@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass
@@ -225,6 +226,10 @@ def duckduckgo_search_http(query: str, max_results: int) -> list[SearchResult]:
 
 NAV_MAX_ATTEMPTS = 3
 NAV_RETRY_DELAY_SECONDS = 3
+# A soft, IP-based rate-throttle (as opposed to a hard CAPTCHA gate) can clear in
+# tens of seconds — 3s (NAV_RETRY_DELAY_SECONDS) retries against the exact same
+# throttle window are pointless. Not a fix for a durable IP-reputation block.
+CAPTCHA_BACKOFF_SECONDS = 20
 
 
 async def _launch_persistent_context(playwright, profile_dir: str):
@@ -263,9 +268,23 @@ async def _launch_persistent_context(playwright, profile_dir: str):
     )
 
     async def _harden(context):
-        await context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-        )
+        # webdriver undefined is the single most common check; plugins/languages/
+        # permissions are ported from the original desktop engine's own
+        # anti-detection script (automation_server.py ~L708-731) — a bare
+        # Playwright context otherwise reports zero plugins and a permissions API
+        # that behaves subtly differently from a real Chrome profile, both of
+        # which are cheap, real signals a fingerprinting check can key on.
+        await context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications'
+                    ? Promise.resolve({ state: Notification.permission })
+                    : originalQuery(parameters)
+            );
+        """)
         return context
 
     try:
@@ -283,20 +302,42 @@ async def _launch_persistent_context(playwright, profile_dir: str):
         raise
 
 
+class _BlockedByCaptchaError(Exception):
+    """A `captcha_markers` substring was found in the page — distinct from a plain
+    navigation/network error so the retry loop below can give this its own, much
+    longer backoff (a soft, IP-based rate-throttle can clear in tens of seconds;
+    a 3s retry against the exact same block is pointless)."""
+
+
 async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: tuple[str, ...]) -> str:
     """Navigate to `url` in a fresh per-job persistent Chromium context and return
     page.content(). Retries navigation up to NAV_MAX_ATTEMPTS times (transient network
     hiccups), and — if every attempt in the first context fails — recreates the
     context once and retries again, adapting the original engine's browser-launch
     fallback + "reload between batches" resilience pattern (automation_server.py
-    ~L642-662, ~L863-925) to this worker's single-query-per-job shape. Raises if any
-    `captcha_markers` substring (case-insensitive) is found in the page content —
-    no human is present on this headless server worker to solve a CAPTCHA (unlike the
-    original desktop engine's 60s wait-for-manual-solve loop), so fail fast instead.
+    ~L642-662, ~L863-925) to this worker's single-query-per-job shape.
+
+    On a CAPTCHA hit: the original desktop engine waits up to 60s for a HUMAN to
+    solve it in a visible browser window on the user's own (typically residential)
+    IP — there is no human and no window on this headless server worker, so that
+    exact mechanism cannot port over. What DOES port over, and is applied here: a
+    much longer backoff specifically for a captcha-marker match (CAPTCHA_BACKOFF_SECONDS,
+    not the short NAV_RETRY_DELAY_SECONDS used for ordinary network hiccups) on the
+    chance it's a soft, temporary rate-throttle rather than a hard block, plus a
+    small human-like delay before every navigation (real users don't hit search
+    pages back-to-back with zero delay). Neither of these can fix a durable
+    datacenter-IP reputation problem — confirmed live 2026-09-06 that this VPS's
+    IP gets captcha'd on the very first fresh-profile Google request — only a
+    cleaner exit IP (see lib/exit-nodes.ts) actually addresses that root cause.
     """
     from playwright.async_api import async_playwright
 
     async def _one_attempt(context) -> str:
+        # Human-like pacing before every navigation, not just retries — a bot
+        # hitting Google instantly, back-to-back, is itself a detectable signal
+        # the original engine avoids via its own `delay_between_actions` +
+        # explicit "human-like pause" sleeps around each search.
+        await asyncio.sleep(random.uniform(1.5, 3.5))
         page = await context.new_page()
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
@@ -304,7 +345,7 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
             lowered = content.lower()
             for marker in captcha_markers:
                 if marker.lower() in lowered:
-                    raise RuntimeError(f"blocked: '{marker}' marker present")
+                    raise _BlockedByCaptchaError(f"blocked: '{marker}' marker present")
             return content
         finally:
             try:
@@ -320,7 +361,8 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
             except Exception as e:
                 last_err = e
                 if attempt < NAV_MAX_ATTEMPTS:
-                    await asyncio.sleep(NAV_RETRY_DELAY_SECONDS)
+                    delay = CAPTCHA_BACKOFF_SECONDS if isinstance(e, _BlockedByCaptchaError) else NAV_RETRY_DELAY_SECONDS
+                    await asyncio.sleep(delay)
         raise last_err or RuntimeError("navigation failed")
 
     async with async_playwright() as p:
@@ -453,7 +495,22 @@ async def search_phase(query: str, params: dict, job_dir: str,
             pages_per_query = max(1, min(int(raw_pages), 20))
         except (ValueError, TypeError):
             pages_per_query = DEFAULT_PAGES_PER_QUERY
-        return await google_search_paginated(query, max_results, pages_per_query, job_dir, on_step)
+        try:
+            return await google_search_paginated(query, max_results, pages_per_query, job_dir, on_step)
+        except _BlockedByCaptchaError:
+            # Google is durably blocking this IP for this query (already retried
+            # with backoff inside _resilient_page_content) — the original desktop
+            # engine's own advice for exactly this case is "try DuckDuckGo instead"
+            # (it has no human here to solve the checkbox either, so this is the
+            # equivalent: don't fail the whole query, fall through to the other
+            # engine rather than returning zero results for it).
+            if on_step is not None:
+                await on_step(f"Google blocked — falling back to DuckDuckGo for: {query}")
+            loop = asyncio.get_event_loop()
+            try:
+                return await loop.run_in_executor(None, duckduckgo_search_http, query, max_results)
+            except DDGBlockedError:
+                return await duckduckgo_search_playwright(query, max_results, job_dir)
 
     loop = asyncio.get_event_loop()
     try:
