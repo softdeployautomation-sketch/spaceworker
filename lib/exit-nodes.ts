@@ -37,16 +37,15 @@ const METADATA: Array<Omit<ExitNode, "host" | "port"> & { envKey: string }> = [
     scheme: "socks5",
     envKey: "EXIT_NODE_UK",
   },
-  {
-    id: "sg",
-    city: "Singapore",
-    country: "Singapore",
-    countryCode: "SG",
-    flag: "🇸🇬",
-    scheme: "socks5",
-    envKey: "EXIT_NODE_SG",
-  },
 ];
+// Singapore was tried (ProtonVPN free tier via WireGuard) and briefly worked,
+// but degraded to consistently dropping real traffic within the same test
+// session despite a healthy WireGuard handshake throughout — confirmed live
+// 2026-09-06/07, a server-side quality issue on that specific free node, not
+// a bug in the split-tunnel setup (the identical mechanism is solid for the
+// US node below). Removed rather than left registered with a broken env var,
+// so a stale EXIT_NODE_SG set later doesn't silently resurrect a known-flaky
+// option. Re-add if a fresh Singapore (or other) config proves reliable.
 
 function parseEndpoint(raw: string): { host: string; port: number } | null {
   const m = /^[a-z0-9]+:\/\/([^:/]+):(\d+)$/i.exec(raw.trim());
