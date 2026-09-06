@@ -754,9 +754,20 @@ def _extract_result(result: SearchResult,
 # (rounds = len(_EXPANSION_SUFFIXES), and total query count) so a
 # never-satisfiable minimum (e.g. minResults=10000) can't loop indefinitely or
 # hammer the search engine.
-_EXPANSION_SUFFIXES = [" near me", " company", " services", " LLC"]
-MAX_EXPANSION_ROUNDS = len(_EXPANSION_SUFFIXES)
-MAX_TOTAL_QUERIES = 20
+_EXPANSION_SUFFIXES = [
+    " near me", " company", " services", " LLC", " inc", " corp",
+    " reviews", " contact", " directory", " listing", " association",
+    " board", " license", " licensed", " certified", " professional",
+    " local", " best", " top rated", " agency", " group", " office",
+    " team", " staff", " for hire", " hiring", " jobs", " careers",
+]
+# The real stopping condition for a minimum-driven job should be the duration
+# cap (up to 180 minutes / 3 hours — see app/api/jobs/route.ts), not running out
+# of a short, fixed list of variations. This ceiling exists only as a sane upper
+# bound (a job with many base terms times ~27 suffixes could otherwise generate
+# an enormous query list) — in practice the wall-clock deadline checked at every
+# query boundary is what actually stops a long minimum-driven run.
+MAX_TOTAL_QUERIES = 300
 
 
 def _expand_queries_for_round(base_terms: list[str], suffix: str, already_used: set[str]) -> list[str]:
@@ -994,6 +1005,21 @@ async def run_automation(
 
     paused = False
     stopped_at = len(ordered_queries)
+    # A single failed query (one bad page, a transient blip) is isolated below —
+    # correct to skip and keep going. But if the search engine is genuinely down
+    # for a stretch, every remaining query fails just as fast, and the loop would
+    # otherwise run to completion with almost nothing found and report "done" —
+    # a status that can never be resumed. CONSECUTIVE_FAILURE_PAUSE_THRESHOLD in a
+    # row is treated as "looks like an outage" instead: pause AT that query
+    # (not counted as processed, so resume retries it) so a later dispatcher
+    # tick can pick this job back up once the engine is reachable again, rather
+    # than silently finishing short.
+    CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 3
+    consecutive_failures = 0
+    # Distinguishes an outage-triggered pause (below) from a manual pause or the
+    # duration cap — only an outage pause is safe to auto-resume without a human
+    # looking at it (the other two are the user's own deliberate stop).
+    pause_reason: Optional[str] = None
 
     for qi in range(start_index, len(ordered_queries)):
         term = ordered_queries[qi]
@@ -1002,10 +1028,12 @@ async def run_automation(
             break  # minimum reached — normal completion
         if should_stop is not None and await should_stop():
             paused = True
+            pause_reason = "manual"
             stopped_at = qi
             break
         if time.monotonic() >= deadline:
             paused = True
+            pause_reason = "duration_cap"
             stopped_at = qi
             break
 
@@ -1014,10 +1042,32 @@ async def run_automation(
                 [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step
             )
             all_leads.extend(leads)
+            consecutive_failures = 0
         except Exception:
-            # One bad query (search blocked, engine error) shouldn't abort the whole
-            # job — same isolation the old multi-query gather's return_exceptions
-            # provided. Resume state will happily skip a query that errored.
+            consecutive_failures += 1
+            if consecutive_failures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD:
+                # Looks like a sustained outage, not one bad query — pause AT this
+                # query (do not advance past it) so a later resume retries it once
+                # the engine/network is reachable again, instead of silently
+                # burning through every remaining query and reporting "done".
+                # Note: the 1-2 queries immediately before this one (isolated
+                # failures under the threshold) were already skipped via continue
+                # and are NOT retried on resume — an accepted tradeoff, since
+                # re-queuing exactly which prior queries failed vs. succeeded
+                # would need extra state for marginal benefit over "resume picks
+                # back up close to where things broke."
+                paused = True
+                pause_reason = "outage"
+                stopped_at = qi
+                if on_step is not None:
+                    await on_step(
+                        f"{consecutive_failures} searches in a row failed — pausing, will retry automatically"
+                    )
+                break
+            # One isolated bad query (a single blocked/errored search) shouldn't
+            # abort the whole job — same isolation the old multi-query gather's
+            # return_exceptions provided. Resume state will happily skip a query
+            # that errored in isolation.
             continue
 
     if paused:
@@ -1029,6 +1079,7 @@ async def run_automation(
                 "nextQueryIndex": stopped_at,
                 "seenUrls": sorted(seen_urls),
                 "foundLeads": prior_found + len(all_leads),
+                "pauseReason": pause_reason,
             },
         )
     return AutomationResult(leads=all_leads, status="done", resume_state=None)

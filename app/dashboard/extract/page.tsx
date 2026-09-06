@@ -79,6 +79,12 @@ export default function ExtractPage() {
   // the wall-clock cap (minutes) before the job pauses at a query boundary.
   const [pagesPerQuery, setPagesPerQuery] = useState(5);
   const [maxDurationMinutes, setMaxDurationMinutes] = useState(30);
+  // Display-only preference, saved per job — extraction always captures every
+  // field regardless (business/contact/phone/website) so nothing is lost; this
+  // only controls which columns the results table renders for THIS job. Default
+  // matches the "the search we need is mostly emails for sending" ask: name +
+  // email, not the full business/phone/website table.
+  const [resultMode, setResultMode] = useState<"namesEmails" | "full" | "emailsOnly">("namesEmails");
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -174,7 +180,7 @@ export default function ExtractPage() {
         body: JSON.stringify({
           queries,
           template: "lead",
-          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes },
+          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes, resultMode },
         }),
       });
       if (res.ok) {
@@ -413,12 +419,25 @@ export default function ExtractPage() {
                 <input
                   type="number"
                   min={1}
-                  max={120}
+                  max={180}
                   value={maxDurationMinutes}
                   onChange={(e) => setMaxDurationMinutes(Number(e.target.value))}
                   className="w-16 rounded border border-border bg-input px-2 py-1 text-sm"
-                  title="Maximum wall-clock run duration in minutes. The job pauses at a query boundary when this is reached and can be resumed later."
+                  title="Maximum wall-clock run duration in minutes (up to 180 = 3 hours). The job pauses at a query boundary when this is reached and can be resumed later."
                 />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Results table:</span>
+                <select
+                  value={resultMode}
+                  onChange={(e) => setResultMode(e.target.value as typeof resultMode)}
+                  className="rounded border border-border bg-input px-2 py-1 text-sm"
+                  title="Which columns the results table shows for this search — doesn't affect what's extracted, just what's displayed."
+                >
+                  <option value="namesEmails">Names + Emails</option>
+                  <option value="emailsOnly">Emails only</option>
+                  <option value="full">Full details</option>
+                </select>
               </label>
             </div>
           </div>
@@ -647,9 +666,9 @@ export default function ExtractPage() {
                 selectedJob.leads.length < selectedJob.params.minResults && (
                   <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                     Found {selectedJob.leads.length} of your {selectedJob.params.minResults}-lead minimum. The
-                    worker tried a fixed set of related-term variations (e.g. "near me", "company") and ran out —
-                    it doesn't keep inventing new terms indefinitely. Try broader Find/Location terms, or a lower
-                    minimum, if you need more.
+                    worker tried a large set of related-term variations across the full time budget and still came
+                    up short — try broader Find/Location terms, a longer duration, or a lower minimum, if you need
+                    more.
                   </p>
                 )}
               {selectedJob.error && (
@@ -663,43 +682,63 @@ export default function ExtractPage() {
                     ? "Waiting for results…"
                     : "No leads found."}
                 </p>
-              ) : (
+              ) : (() => {
+                // Display-only — extraction always captured every field regardless
+                // of what this job's resultMode was set to at creation time.
+                // Falls back to "full" (the ORIGINAL, unconditional table shape),
+                // not the new "namesEmails" default — a job created before this
+                // feature shipped has no resultMode stored at all, and defaulting
+                // it to the new narrower view would silently hide columns that
+                // job always showed. Every job created through the form AFTER
+                // this change always has an explicit resultMode value already
+                // (namesEmails is the FORM's own default, a real stored value,
+                // not a display-time fallback), so this only ever applies to
+                // pre-existing jobs.
+                const mode = (selectedJob.params?.resultMode as string | undefined) ?? "full";
+                const showBusiness = mode === "full";
+                const showPhone = mode === "full";
+                const showWebsite = mode === "full";
+                const showContact = mode !== "emailsOnly";
+                return (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-fg-muted">
-                        <th className="pb-2 pr-3 font-medium">Business</th>
-                        <th className="pb-2 pr-3 font-medium">Contact</th>
+                        {showBusiness && <th className="pb-2 pr-3 font-medium">Business</th>}
+                        {showContact && <th className="pb-2 pr-3 font-medium">Name</th>}
                         <th className="pb-2 pr-3 font-medium">Email</th>
-                        <th className="pb-2 pr-3 font-medium">Phone</th>
-                        <th className="pb-2 font-medium">Website</th>
+                        {showPhone && <th className="pb-2 pr-3 font-medium">Phone</th>}
+                        {showWebsite && <th className="pb-2 font-medium">Website</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {selectedJob.leads.map((lead) => (
                         <tr key={lead.id} className="border-b border-border last:border-0">
-                          <td className="py-2 pr-3">{lead.businessName ?? "—"}</td>
-                          <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>
+                          {showBusiness && <td className="py-2 pr-3">{lead.businessName ?? "—"}</td>}
+                          {showContact && <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>}
                           <td className="py-2 pr-3">
                             {lead.email
                               ? <a href={`mailto:${lead.email}`} className="text-brand-600 hover:underline">{lead.email}</a>
                               : "—"}
                           </td>
-                          <td className="py-2 pr-3">{lead.phone ?? "—"}</td>
-                          <td className="py-2">
-                            {lead.website
-                              ? <a href={lead.website} target="_blank" rel="noopener noreferrer"
-                                  className="block max-w-[160px] truncate text-brand-600 hover:underline">
-                                  {lead.website}
-                                </a>
-                              : "—"}
-                          </td>
+                          {showPhone && <td className="py-2 pr-3">{lead.phone ?? "—"}</td>}
+                          {showWebsite && (
+                            <td className="py-2">
+                              {lead.website
+                                ? <a href={lead.website} target="_blank" rel="noopener noreferrer"
+                                    className="block max-w-[160px] truncate text-brand-600 hover:underline">
+                                    {lead.website}
+                                  </a>
+                                : "—"}
+                            </td>
+                          )}
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-              )}
+                );
+              })()}
             </div>
           )}
         </div>

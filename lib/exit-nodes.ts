@@ -37,6 +37,15 @@ const METADATA: Array<Omit<ExitNode, "host" | "port"> & { envKey: string }> = [
     scheme: "socks5",
     envKey: "EXIT_NODE_UK",
   },
+  {
+    id: "sg",
+    city: "Singapore",
+    country: "Singapore",
+    countryCode: "SG",
+    flag: "🇸🇬",
+    scheme: "socks5",
+    envKey: "EXIT_NODE_SG",
+  },
 ];
 
 function parseEndpoint(raw: string): { host: string; port: number } | null {

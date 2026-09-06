@@ -116,8 +116,16 @@ export async function POST(req: Request) {
 
   // Real crawler (Task 13): pagesPerQuery = how many Google result pages to visit
   // per query (1-20); maxDurationMinutes = wall-clock cap before the job pauses at
-  // a query boundary (1-120). Same clamp-and-conditionally-include convention as
-  // minResults above.
+  // a query boundary (1-180, i.e. up to 3 hours per the user's explicit ask —
+  // default stays 30 in the UI). Same clamp-and-conditionally-include convention
+  // as minResults above.
+  //
+  // Capacity note: each lane allows exactly ONE concurrent job platform-wide
+  // (see app/api/internal/dispatch/route.ts's advisory-lock claim) — a job that
+  // legitimately runs the full 3 hours occupies one of only two total slots for
+  // that whole window, queuing every other job in the same lane behind it.
+  // Acceptable for now at current volume; worth revisiting (more lanes, or a
+  // duration-aware lane) if a 3-hour job ever visibly blocks other users.
   const rawPages = rawParams.pagesPerQuery;
   const coercedPages =
     typeof rawPages === "number" ? rawPages
@@ -135,8 +143,18 @@ export async function POST(req: Request) {
     : undefined;
   const maxDurationMinutes =
     coercedDuration !== undefined && !isNaN(coercedDuration)
-      ? Math.min(Math.max(1, coercedDuration), 120)
+      ? Math.min(Math.max(1, coercedDuration), 180)
       : undefined;
+
+  // Display-only preference (which columns the results table renders) — never
+  // affects extraction, which always captures every field regardless. Validated
+  // against the fixed set the frontend actually offers; anything else silently
+  // falls back to the default rather than storing junk in params.
+  const RESULT_MODES = ["namesEmails", "full", "emailsOnly"] as const;
+  const rawResultMode = rawParams.resultMode;
+  const resultMode = RESULT_MODES.includes(rawResultMode as (typeof RESULT_MODES)[number])
+    ? (rawResultMode as (typeof RESULT_MODES)[number])
+    : "namesEmails";
 
   const params = {
     engine,
@@ -145,6 +163,7 @@ export async function POST(req: Request) {
     ...(minResults !== undefined ? { minResults } : {}),
     ...(pagesPerQuery !== undefined ? { pagesPerQuery } : {}),
     ...(maxDurationMinutes !== undefined ? { maxDurationMinutes } : {}),
+    resultMode,
     queries: uniqueQueries,
     template,
   };

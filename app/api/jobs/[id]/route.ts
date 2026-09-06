@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { resumeJob } from "@/lib/job-resume";
 
 export async function GET(
   _req: Request,
@@ -82,38 +82,19 @@ export async function PATCH(
   }
 
   if (action === "resume") {
-    if (job.status !== "paused" || !job.resumeState) {
+    // Shared with the dispatcher's Phase C auto-resume (outage-paused jobs) —
+    // see lib/job-resume.ts for why this MUST be the same compare-and-swap
+    // helper rather than two independent re-queue transactions: a human
+    // clicking Resume right as an outage cooldown elapses is a real race
+    // between this route and Phase C, and only a CAS on status="paused"
+    // prevents one of them from silently reverting an already-running job.
+    const outcome = await resumeJob(job.id);
+    if (outcome === "not_paused") {
       return NextResponse.json({ error: "Job is not paused" }, { status: 400 });
     }
-    // Re-queue through the SAME path a fresh job takes, rather than dispatching
-    // to the worker directly from here. Dispatching directly would bypass Phase
-    // A's advisory-lock + running-count check in app/api/internal/dispatch/route.ts
-    // — the single-concurrent-job-per-lane guarantee that whole mechanism exists
-    // to enforce — and could put two "running" jobs in one lane if something
-    // else is mid-dispatch into this lane right now. Merge resumeState into
-    // params (run_automation() already reads params.resumeState — see
-    // worker/automation.py) so Phase A's existing dispatch body, unchanged,
-    // carries it through automatically on its next tick.
-    const paramsForResume = {
-      ...(job.params as Record<string, unknown>),
-      resumeState: job.resumeState,
-    };
-    await prisma.$transaction([
-      prisma.searchJob.update({
-        where: { id: job.id },
-        data: {
-          status: "queued",
-          params: paramsForResume as Prisma.InputJsonValue,
-          resumeState: Prisma.DbNull,
-          workerJobId: null,
-          error: null,
-        },
-      }),
-      prisma.jobQueueEntry.update({
-        where: { searchJobId: job.id },
-        data: { status: "queued" },
-      }),
-    ]);
+    // "already_handled" (Phase C's auto-resume won the race a moment ago) is
+    // still a success from this caller's point of view — the job is resumed
+    // either way, just not because of THIS specific request.
     return NextResponse.json({ ok: true });
   }
 

@@ -291,6 +291,17 @@ model SearchJob {
   // from the next unprocessed query instead of restarting (processedQueries,
   // nextQueryIndex, seenUrls, foundLeads). Cleared when a paused job is resumed.
   resumeState Json?
+  // Set only when a job transitions to "paused" — the cooldown clock the
+  // dispatcher's auto-resume check (outage pauses only, see resumeState's
+  // pauseReason) uses to decide "enough time has passed, try again."
+  pausedAt    DateTime?
+  // How many times the dispatcher's Phase C has auto-resumed this job for an
+  // "outage" pause. Capped (see app/api/internal/dispatch/route.ts) so a
+  // durable, non-transient block (confirmed real for Google on this VPS —
+  // see worker/automation.py's CAPTCHA notes) can't thrash forever, repeatedly
+  // consuming its lane's only concurrency slot — after the cap it stays
+  // "paused" for a human to look at instead of auto-retrying indefinitely.
+  outageResumeCount Int @default(0)
   // Task 14 live activity feed: the worker's current crawler step ("Searching: …",
   // "Visiting page N of Google results", "Reading a PDF at …"), written by the
   // dispatcher's per-tick poll while the job runs. Nullable and additive — left as

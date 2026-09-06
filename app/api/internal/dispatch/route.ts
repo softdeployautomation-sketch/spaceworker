@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { resumeJob } from "@/lib/job-resume";
 
 const LANES = ["light", "heavy"] as const;
 
@@ -221,6 +222,7 @@ export async function POST(req: Request) {
         }
         await safeUpdateSearchJob(job.id, {
           status: "paused",
+          pausedAt: new Date(),
           resumeState: data.resumeState != null && data.resumeState !== undefined
             ? (data.resumeState as Prisma.InputJsonValue)
             : Prisma.DbNull,
@@ -285,5 +287,58 @@ export async function POST(req: Request) {
   }
 
   results.phase_b = { completed, failed, paused, liveUpdated, checked: runningJobs.length };
+
+  // Phase C: auto-resume jobs paused because the search engine looked down
+  // (worker/automation.py's consecutive-failure-pause — resumeState.pauseReason
+  // === "outage"), once a cooldown has passed. A manual pause or the duration
+  // cap ALSO leave status "paused", but those are the user's own deliberate
+  // stop and must never be silently resumed — only "outage" is safe to retry
+  // without a human looking at it, matching "pause when the server is down,
+  // continue when it's up" rather than sitting there forever waiting for
+  // someone to notice and click Resume.
+  //
+  // Uses the SAME resumeJob() the manual-resume PATCH route uses (not a second
+  // independent re-queue transaction) — a human clicking Resume right as this
+  // cooldown elapses is a real race, and only sharing one compare-and-swap
+  // helper (status="paused" guard) prevents one of the two callers from
+  // reverting an already-running job back to "queued" out from under the other.
+  //
+  // Capped via outageResumeCount: this VPS's Google egress is a CONFIRMED
+  // durable block (see worker/automation.py's CAPTCHA notes), not a transient
+  // one — without a cap, a job stuck against a durable block would auto-resume
+  // forever, repeatedly consuming its lane's only concurrency slot. After the
+  // cap it just stays "paused" for a human to look at.
+  const OUTAGE_RESUME_COOLDOWN_MS = 5 * 60 * 1000;
+  const MAX_OUTAGE_AUTO_RESUMES = 5;
+  let autoResumed = 0;
+  const cooldownCutoff = new Date(Date.now() - OUTAGE_RESUME_COOLDOWN_MS);
+  const candidates = await prisma.searchJob.findMany({
+    where: {
+      status: "paused",
+      pausedAt: { lte: cooldownCutoff },
+      outageResumeCount: { lt: MAX_OUTAGE_AUTO_RESUMES },
+    },
+  });
+  for (const job of candidates) {
+    const resumeState = job.resumeState as { pauseReason?: string } | null;
+    if (!resumeState || resumeState.pauseReason !== "outage") continue;
+    try {
+      const outcome = await resumeJob(job.id);
+      if (outcome === "resumed") {
+        // Best-effort, separate from the CAS transaction itself — an
+        // undercount here in a rare race is low-stakes (one fewer retry
+        // counted, never a correctness issue for the job's own data).
+        await prisma.searchJob.update({
+          where: { id: job.id },
+          data: { outageResumeCount: { increment: 1 } },
+        }).catch(() => {});
+        autoResumed++;
+      }
+    } catch {
+      // Skip — will retry on a later tick rather than aborting this whole phase
+    }
+  }
+  results.phase_c = { autoResumed, candidates: candidates.length };
+
   return NextResponse.json(results);
 }
