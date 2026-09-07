@@ -94,7 +94,10 @@ export default function BrowserSessionPanel({
     () => initialPreset?.id ?? ""
   );
   const [proxyMode, setProxyMode] = useState<"free" | "byo">("free");
-  const [selectedNodeId, setSelectedNodeId] = useState("");
+  // Defaults to the first configured exit node (not "Direct") — proxying is
+  // meant to be the primary experience here, not an opt-in extra a user has
+  // to remember to switch on before every session.
+  const [selectedNodeId, setSelectedNodeId] = useState(() => exitNodes[0]?.id ?? "");
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
 
@@ -193,12 +196,41 @@ export default function BrowserSessionPanel({
     [profiles]
   );
 
+  // Keeps the picker's selection valid as `profiles` gets refreshed (after
+  // starting a session, the just-used profile drops out of idleProfiles;
+  // after stopping one, it reappears) — auto-advances to the next available
+  // profile instead of leaving a stale/cleared selection the user has to
+  // manually re-pick every time.
+  useEffect(() => {
+    if (selectedProfileId && idleProfiles.some((p) => p.id === selectedProfileId)) return;
+    setSelectedProfileId(idleProfiles[0]?.id ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idleProfiles]);
+
   const refresh = useCallback(async () => {
     try {
       const res = await fetch("/api/browser-sessions");
       if (!res.ok) return;
       const data = (await res.json()) as Session[];
       setSessions(data);
+    } catch {
+      /* transient — ignore, user can refresh */
+    }
+  }, []);
+
+  // Starting a session flips its profile to "in_use" server-side, and
+  // stopping one flips it back to "idle" — but refresh() above only ever
+  // re-fetched sessions, never profiles, so this component's own `profiles`
+  // state (and therefore idleProfiles) went stale the moment either
+  // happened. A profile that just freed up after Stop stayed invisible in
+  // the picker until a full page reload re-fetched fresh initial data —
+  // exactly the "keeps asking to select a profile / needs a reload" bug.
+  const refreshProfiles = useCallback(async () => {
+    try {
+      const res = await fetch("/api/browser-profiles");
+      if (!res.ok) return;
+      const data = (await res.json()) as Profile[];
+      setProfiles(data);
     } catch {
       /* transient — ignore, user can refresh */
     }
@@ -267,8 +299,7 @@ export default function BrowserSessionPanel({
         );
         return;
       }
-      await refresh();
-      setSelectedProfileId("");
+      await Promise.all([refresh(), refreshProfiles()]);
     } catch {
       setStartError("Network error — please try again");
     } finally {
@@ -280,7 +311,7 @@ export default function BrowserSessionPanel({
     setBusyId(session.id);
     try {
       await fetch(`/api/browser-sessions/${session.id}`, { method: "DELETE" });
-      await refresh();
+      await Promise.all([refresh(), refreshProfiles()]);
     } finally {
       setBusyId(null);
     }
