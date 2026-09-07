@@ -1,11 +1,12 @@
 import type { ProxyScheme } from "./browser-proxy";
 
 /**
- * Free default tier — SpaceWorker's own self-hosted WireGuard/OpenVPN exit
- * nodes: small, cheap VPS instances in popular locations. The endpoint each node
- * exposes (its local SOCKS/HTTP proxy) is deploy-time config via env, so no fake
- * IPs are committed. Phase 1 ships two nodes (United States, United Kingdom);
- * provider/count list is a non-blocking follow-up the deployer owns.
+ * Free default tier — SpaceWorker's own self-hosted exit nodes. US and Canada
+ * are dedicated Fly.io Machines (microsocks over Fly's private 6PN WireGuard
+ * network, relayed IPv4<->IPv6 via socat on the VPS host since Docker's bridge
+ * network here has no IPv6 route) — confirmed reliable (stress-tested, no
+ * drops) unlike the free consumer-VPN nodes tried earlier. UK's endpoint is
+ * deploy-time config via env, so no fake IPs are committed.
  */
 export interface ExitNode {
   id: string;
@@ -27,6 +28,15 @@ const METADATA: Array<Omit<ExitNode, "host" | "port"> & { envKey: string }> = [
     flag: "🇺🇸",
     scheme: "socks5",
     envKey: "EXIT_NODE_US",
+  },
+  {
+    id: "ca",
+    city: "Toronto",
+    country: "Canada",
+    countryCode: "CA",
+    flag: "🇨🇦",
+    scheme: "socks5",
+    envKey: "EXIT_NODE_CA",
   },
   {
     id: "uk",
