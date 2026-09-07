@@ -228,33 +228,52 @@ async function startInternal(session: Session): Promise<string> {
   session.status = "starting";
   registry.set(session.sessionId, session);
 
-  try {
-    const id = await docker(...buildNekoArgs(session));
-    if (!id) {
-      throw new Error("docker did not return a container id");
+  // A proxied session's whole path (Chromium -> exit-node SOCKS proxy -> real
+  // WireGuard tunnel to a free-tier VPN server) has a real, confirmed-live
+  // failure mode that plain "direct connection" sessions never hit: the
+  // free-tier VPN node can have brief, intermittent stalls (verified
+  // 2026-09-07 — the exact same proxy address alternated between working and
+  // timing out seconds apart, no code or config change in between). If that
+  // stall happens to land inside this container's Chromium cold-start
+  // window, the whole session fails even though the proxy is fine moments
+  // later. One retry with a fresh container gives a second, independent
+  // window rather than failing outright on what's often a transient blip —
+  // this is NOT a fix for the underlying VPN node's reliability (that's a
+  // real, separate, ongoing limitation of the free tier), just resilience
+  // against the specific timing collision.
+  const MAX_LAUNCH_ATTEMPTS = session.proxyServerValue ? 2 : 1;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt++) {
+    try {
+      const id = await docker(...buildNekoArgs(session));
+      if (!id) {
+        throw new Error("docker did not return a container id");
+      }
+      if (!(await waitRunning(session.containerName))) {
+        throw new Error("container never reached running state");
+      }
+      // Container process is up, but Neko's own web server inside it may still
+      // be booting (Chromium startup) — wait for the actual stream port to
+      // answer before telling the frontend it's safe to connect. 20s budget:
+      // generous enough for a slow Chromium cold-start, short enough that a
+      // genuinely broken container still fails within a reasonable UI wait.
+      if (!(await waitPortReady(session.port, 20_000))) {
+        throw new Error("Neko's stream server never became reachable on its mapped port");
+      }
+      session.status = "running";
+      registry.set(session.sessionId, session);
+      return id;
+    } catch (e) {
+      lastErr = e;
+      // best-effort cleanup so a failed attempt never leaves an orphaned
+      // container behind, whether or not this was the last attempt
+      await docker("rm", "-f", session.containerName).catch(() => {});
     }
-    if (!(await waitRunning(session.containerName))) {
-      throw new Error("container never reached running state");
-    }
-    // Container process is up, but Neko's own web server inside it may still
-    // be booting (Chromium startup) — wait for the actual stream port to
-    // answer before telling the frontend it's safe to connect. 20s budget:
-    // generous enough for a slow Chromium cold-start, short enough that a
-    // genuinely broken container still fails within a reasonable UI wait.
-    if (!(await waitPortReady(session.port, 20_000))) {
-      throw new Error("Neko's stream server never became reachable on its mapped port");
-    }
-    session.status = "running";
-    registry.set(session.sessionId, session);
-    return id;
-  } catch (e) {
-    // best-effort cleanup so we never leave an orphaned container behind
-    await docker("rm", "-f", session.containerName).catch(() => {});
-    session.status = "stopped";
-    session.containerName = null;
-    registry.set(session.sessionId, session);
-    throw e;
   }
+  session.status = "stopped";
+  session.containerName = null;
+  registry.set(session.sessionId, session);
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
 async function stopInternal(sessionId: string, force: boolean): Promise<void> {
