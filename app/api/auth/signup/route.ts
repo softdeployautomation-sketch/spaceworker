@@ -13,6 +13,9 @@ const signupSchema = z.object({
     .string()
     .min(8, "Password must be at least 8 characters")
     .max(128, "Password must be at most 128 characters"),
+  acceptedTerms: z.literal(true, {
+    errorMap: () => ({ message: "You must agree to the Terms of Service to create an account." }),
+  }),
 });
 
 export async function POST(request: Request) {
@@ -50,7 +53,7 @@ export async function POST(request: Request) {
   const passwordHash = await hashPassword(parsed.password);
 
   const user = await db.user.create({
-    data: { email, passwordHash, emailVerified: false },
+    data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date() },
   });
 
   // Issue a 6-digit verification code (15-min expiry) and email it.

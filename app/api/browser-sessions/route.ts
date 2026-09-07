@@ -5,7 +5,13 @@ import { SESSION_SAFE_SELECT } from "@/lib/browser-session-safe-select";
 import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
-import { proxyServerValue as buildProxyArg, type ProxyScheme } from "@/lib/browser-proxy";
+import {
+  proxyServerValue as buildProxyArg,
+  checkIpThroughProxy,
+  checkDirectIp,
+  type ProxyScheme,
+  type ProxySpec,
+} from "@/lib/browser-proxy";
 
 // Phase 1 deliberate cap: 2–3 simultaneous interactive sessions, sized explicitly
 // around this number of concurrent Chrome/streaming processes on the shared box.
@@ -27,28 +33,24 @@ function resolveProxy(
   proxyMode: "free" | "byo",
   exitNodeId: string | null,
   profile: { byoProxyHost: string | null; byoProxyPort: number | null; byoProxyScheme: string | null; byoProxyUsername: string | null; byoProxyAuth: string | null }
-): { arg: string; byoSnapshot: Record<string, string | number | null> } {
+): { arg: string; spec: ProxySpec | null; byoSnapshot: Record<string, string | number | null> } {
   if (proxyMode === "free") {
     // No location picked (or none configured yet) — direct connection through
     // the server's own IP rather than blocking the user from launching at all.
-    if (!exitNodeId) return { arg: "", byoSnapshot: {} };
+    if (!exitNodeId) return { arg: "", spec: null, byoSnapshot: {} };
     const node = getExitNode(exitNodeId);
     if (!node) throw new Error("Selected exit node is not configured");
-    return {
-      arg: buildProxyArg({ scheme: node.scheme, host: node.host, port: node.port }),
-      byoSnapshot: {},
-    };
+    const spec: ProxySpec = { scheme: node.scheme, host: node.host, port: node.port };
+    return { arg: buildProxyArg(spec), spec, byoSnapshot: {} };
   }
   if (!profile.byoProxyHost || !profile.byoProxyPort || !profile.byoProxyScheme) {
     throw new Error("Add a BYO proxy to this profile first");
   }
   const scheme = profile.byoProxyScheme as ProxyScheme;
+  const spec: ProxySpec = { scheme, host: profile.byoProxyHost, port: profile.byoProxyPort };
   return {
-    arg: buildProxyArg({
-      scheme,
-      host: profile.byoProxyHost,
-      port: profile.byoProxyPort,
-    }),
+    arg: buildProxyArg(spec),
+    spec,
     byoSnapshot: {
       byoProxyHost: profile.byoProxyHost,
       byoProxyPort: profile.byoProxyPort,
@@ -130,7 +132,7 @@ export async function POST(req: Request) {
   }
 
   // Resolve the proxy route before touching anything else.
-  let resolved: { arg: string; byoSnapshot: Record<string, string | number | null> };
+  let resolved: { arg: string; spec: ProxySpec | null; byoSnapshot: Record<string, string | number | null> };
   try {
     resolved = resolveProxy(proxyMode, exitNodeId, profile);
   } catch (e) {
@@ -181,6 +183,16 @@ export async function POST(req: Request) {
     throw e;
   }
 
+  // Real "what's my IP" check through the actual route this session uses —
+  // an audit trail resilient to later exit-node config changes (unlike
+  // exitNodeId alone, which just points at whatever exit-nodes.ts says
+  // "us"/"ca"/etc. means TODAY). Fired concurrently with the container
+  // launch below so it adds no serial latency; best-effort — a failed
+  // check never blocks the session from starting.
+  const ipCheckPromise = (resolved.spec ? checkIpThroughProxy(resolved.spec) : checkDirectIp()).catch(
+    () => null,
+  );
+
   // Hand the process launch to the standalone browser subsystem.
   const runtimeStart = await browserRuntime.start({
     sessionId: created.id,
@@ -194,7 +206,10 @@ export async function POST(req: Request) {
     await prisma.$transaction([
       prisma.browserSession.update({
         where: { id: created.id },
-        data: { status: "failed", endedAt: new Date() },
+        // No info worth showing for a session that never even started —
+        // hide it from the customer's list immediately (they already got the
+        // error via this request's own response).
+        data: { status: "failed", endedAt: new Date(), hiddenAt: new Date() },
       }),
       prisma.browserProfile.update({
         where: { id: profile.id },
@@ -208,6 +223,7 @@ export async function POST(req: Request) {
   }
 
   const data = runtimeStart.data as { containerId?: string; nekoPassword?: string | null } | undefined;
+  const exitIpSnapshot = await ipCheckPromise;
 
   const running = await prisma.browserSession.update({
     where: { id: created.id },
@@ -216,6 +232,7 @@ export async function POST(req: Request) {
       containerId: data?.containerId ?? null,
       nekoPassword: data?.nekoPassword ?? null,
       startedAt: new Date(),
+      exitIpSnapshot,
     },
     select: SESSION_SAFE_SELECT,
   });

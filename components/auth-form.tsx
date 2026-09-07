@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useState } from "react";
 
 import { Button, Input, Label, Spinner } from "@/components/ui";
@@ -12,6 +13,7 @@ export function AuthForm(props: {
   const router = useRouter();
   const [email, setEmail] = useState(props.initialEmail ?? "");
   const [password, setPassword] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -25,7 +27,9 @@ export function AuthForm(props: {
       const res = await fetch(`/api/auth/${props.mode}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
+        body: JSON.stringify(
+          props.mode === "signup" ? { email, password, acceptedTerms } : { email, password },
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -88,7 +92,28 @@ export function AuthForm(props: {
           placeholder="••••••••"
         />
       </div>
-      <Button type="submit" disabled={submitting} className="w-full">
+      {props.mode === "signup" && (
+        <label className="flex items-start gap-2 text-sm text-fg-muted">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={acceptedTerms}
+            onChange={(e) => setAcceptedTerms(e.target.checked)}
+          />
+          <span>
+            I agree to the{" "}
+            <Link href="/terms" target="_blank" className="font-medium text-brand-600 hover:underline">
+              Terms of Service &amp; Acceptable Use Policy
+            </Link>
+            .
+          </span>
+        </label>
+      )}
+      <Button
+        type="submit"
+        disabled={submitting || (props.mode === "signup" && !acceptedTerms)}
+        className="w-full"
+      >
         {submitting && <Spinner />}
         {props.mode === "signup" ? "Create account" : "Sign in"}
       </Button>

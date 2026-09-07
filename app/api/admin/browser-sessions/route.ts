@@ -24,6 +24,7 @@ export async function GET() {
       status: r.status,
       proxyMode: r.proxyMode,
       exitNodeId: r.exitNodeId,
+      exitIpSnapshot: r.exitIpSnapshot,
       containerId: r.containerId,
       userEmail: r.user.email,
       profileName: r.profile.name,

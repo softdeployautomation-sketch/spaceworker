@@ -25,7 +25,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
 import { resolve } from "path";
-import { chmod, readdir, rm } from "fs/promises";
+import { chmod, mkdir, readdir, rm, writeFile } from "fs/promises";
 import httpProxy from "http-proxy";
 
 const execFileAsync = promisify(execFile);
@@ -90,18 +90,85 @@ function containerName(sessionId: string): string {
   return `spaceworker-browser-${sessionId}`;
 }
 
+// CONFIRMED LIVE 2026-09-07: NEKO_BROWSER_ARGS is NOT read by this image at
+// all — ghcr.io/m1k1o/neko/chromium bakes a FIXED, hardcoded Chromium command
+// line into /etc/neko/supervisord/chromium.conf at build time (loaded via
+// supervisord's `[include] files=/etc/neko/supervisord/*.conf`). Verified by
+// launching a real session with NEKO_BROWSER_ARGS set and inspecting the
+// actual running Chromium process's argv inside the container: no
+// --proxy-server flag anywhere, despite the container's own shell having
+// live, working connectivity to that exact proxy address. Every exit-node
+// selection has therefore been a silent no-op for real browsing traffic
+// since this feature was built — sessions always went direct.
+// Fix: generate a per-session copy of that same conf file with
+// --proxy-server appended, and bind-mount it over the image's built-in one
+// (supervisord reads whatever's on disk at container start, so a host-side
+// bind mount is sufficient — no image rebuild needed).
+const SESSION_TMP_DIR = resolve("browser-sessions-tmp");
+
+function chromiumConfDir(sessionId: string): string {
+  return `${SESSION_TMP_DIR}/${sessionId}`;
+}
+
+function buildChromiumSupervisorConf(proxyServerValue: string): string {
+  const commandLines = [
+    "command=/usr/bin/chromium",
+    "  --no-sandbox",
+    "  --window-position=0,0",
+    "  --display=%(ENV_DISPLAY)s",
+    "  --user-data-dir=/home/neko/.config/chromium",
+    "  --no-first-run",
+    "  --start-maximized",
+    "  --bwsi",
+    "  --force-dark-mode",
+    "  --disable-file-system",
+    "  --disable-gpu",
+    "  --disable-software-rasterizer",
+    "  --disable-dev-shm-usage",
+  ];
+  if (proxyServerValue) {
+    commandLines.push(`  --proxy-server=${proxyServerValue}`);
+  }
+  return [
+    "[program:chromium]",
+    'environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"',
+    ...commandLines,
+    "stopsignal=INT",
+    "autorestart=true",
+    "priority=800",
+    "user=%(ENV_USER)s",
+    "stdout_logfile=/var/log/neko/chromium.log",
+    "stdout_logfile_maxbytes=100MB",
+    "stdout_logfile_backups=10",
+    "redirect_stderr=true",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Writes this session's chromium.conf to a scratch dir and returns its host
+ * path, or null for a direct (no exit node) session — in which case nothing
+ * is mounted and the image's own built-in conf is used unchanged, keeping
+ * direct sessions byte-for-byte the same as before this fix.
+ */
+async function prepareChromiumConf(session: Session): Promise<string | null> {
+  if (!session.proxyServerValue) return null;
+  const dir = chromiumConfDir(session.sessionId);
+  await mkdir(dir, { recursive: true });
+  const confPath = `${dir}/chromium.conf`;
+  await writeFile(confPath, buildChromiumSupervisorConf(session.proxyServerValue), "utf8");
+  return confPath;
+}
+
+async function cleanupChromiumConf(sessionId: string): Promise<void> {
+  await rm(chromiumConfDir(sessionId), { recursive: true, force: true }).catch(() => {});
+}
+
 /** Docker/Neko launch — THE spike surface. Built as an arg array, never shell-joined. */
-function buildNekoArgs(session: Session): string[] {
+function buildNekoArgs(session: Session, chromiumConfPath: string | null): string[] {
   const password = randomBytes(9).toString("base64url");
   session.nekoPassword = password; // stored so the frontend can auto-login — see Session.nekoPassword
   const profileMount = `${session.profileDir}:/home/neko/.config/chromium`;
-  // Neko passes browser args through its Chromium wrapper. The exact env name is
-  // a spike-verification item on the VPS (older banners used NEKO_BROWSER_ARGS).
-  // Empty proxyServerValue = direct connection (no exit node configured yet) —
-  // omit --proxy-server entirely rather than passing a broken/empty flag.
-  const browserArgs = session.proxyServerValue
-    ? `--proxy-server=${session.proxyServerValue} --user-data-dir=/home/neko/.config/chromium`
-    : `--user-data-dir=/home/neko/.config/chromium`;
   const args: string[] = [
     "run",
     "-d",
@@ -122,8 +189,10 @@ function buildNekoArgs(session: Session): string[] {
     "-e", `NEKO_PROXY=default`,
     "-e", `NEKO_SCREEN=1280x720@30`,
     "-e", `NEKO_EPR=${session.eprRange}`,
-    "-e", `NEKO_BROWSER_ARGS=${browserArgs}`,
   ];
+  if (chromiumConfPath) {
+    args.push("-v", `${chromiumConfPath}:/etc/neko/supervisord/chromium.conf:ro`);
+  }
   if (HOST_PUBLIC_IP) {
     // Without this, Neko advertises the container's internal Docker IP as its
     // ICE candidate — unreachable from any real client, same silent-forever-
@@ -228,6 +297,8 @@ async function startInternal(session: Session): Promise<string> {
   session.status = "starting";
   registry.set(session.sessionId, session);
 
+  const chromiumConfPath = await prepareChromiumConf(session);
+
   // A proxied session's whole path (Chromium -> exit-node SOCKS proxy -> real
   // WireGuard tunnel to a free-tier VPN server) has a real, confirmed-live
   // failure mode that plain "direct connection" sessions never hit: the
@@ -245,7 +316,7 @@ async function startInternal(session: Session): Promise<string> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt++) {
     try {
-      const id = await docker(...buildNekoArgs(session));
+      const id = await docker(...buildNekoArgs(session, chromiumConfPath));
       if (!id) {
         throw new Error("docker did not return a container id");
       }
@@ -273,6 +344,7 @@ async function startInternal(session: Session): Promise<string> {
   session.status = "stopped";
   session.containerName = null;
   registry.set(session.sessionId, session);
+  await cleanupChromiumConf(session.sessionId);
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
@@ -281,11 +353,13 @@ async function stopInternal(sessionId: string, force: boolean): Promise<void> {
   if (!entry) {
     // unknown locally — clean anything we may have half-launched
     await docker("rm", "-f", containerName(sessionId)).catch(() => {});
+    await cleanupChromiumConf(sessionId);
     return;
   }
   if (entry.containerName) {
     await docker("rm", "-f", entry.containerName).catch(() => {});
   }
+  await cleanupChromiumConf(sessionId);
   // Heal the profile on every stop too, not just on the next start — a
   // service restart (systemctl restart spaceworker-browser) kills every live
   // container out from under this process without ever calling stopInternal,

@@ -28,7 +28,10 @@ export async function POST(
   await prisma.$transaction([
     prisma.browserSession.update({
       where: { id: row.id },
-      data: { status: "stopped", endedAt: new Date() },
+      // Same as the customer-facing stop route: no info worth showing for a
+      // stopped session, so hide it from their list immediately. Admin's own
+      // audit endpoint has no hiddenAt filter, so the record isn't lost.
+      data: { status: "stopped", endedAt: new Date(), hiddenAt: new Date() },
     }),
     prisma.browserProfile.updateMany({
       where: { id: row.profileId },

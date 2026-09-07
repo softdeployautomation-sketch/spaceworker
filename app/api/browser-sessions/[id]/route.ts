@@ -66,7 +66,12 @@ export async function DELETE(
   await prisma.$transaction([
     prisma.browserSession.update({
       where: { id: row.id },
-      data: { status: "stopped", endedAt: new Date() },
+      // A stopped session carries no info worth showing again (no leads/
+      // results tied to it, unlike a search job) — hide it from the
+      // customer's own list the moment it ends, same as the manual
+      // hide-on-second-DELETE branch above. The admin audit endpoint has no
+      // hiddenAt filter, so the full history is still there if ever needed.
+      data: { status: "stopped", endedAt: new Date(), hiddenAt: new Date() },
     }),
     prisma.browserProfile.updateMany({
       where: { id: row.profileId, userId: session.userId },

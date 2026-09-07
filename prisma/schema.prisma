@@ -13,6 +13,9 @@ model User {
   passwordHash     String
   emailVerified    Boolean            @default(false)
   tier             Int                @default(0)
+  // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
+  // account created before this field existed, not that they never agreed.
+  acceptedTermsAt  DateTime?
   createdAt        DateTime           @default(now())
   verifications    VerificationCode[]
   rateLimits       RateLimitEvent[]
@@ -234,6 +237,14 @@ model BrowserSession {
   status           String         @default("starting")
   proxyMode        String         @default("free") // "free" | "byo"
   exitNodeId       String? // which free exit node, when proxyMode = "free"
+  // Real public IP this session actually egressed through, observed live via
+  // a "what's my IP" check at session-start time — NOT re-derived from
+  // exitNodeId + the current exit-nodes.ts config, since that mapping can
+  // (and has) changed over time. This is the field an abuse/legal inquiry
+  // about a specific real-world IP actually needs; exitNodeId alone can't
+  // answer "what IP was this session really seen as" after a later config
+  // change. Null if the live check failed — never blocks session launch.
+  exitIpSnapshot   String?
   // Snapshot of the proxy actually routing this session — written at start time
   // so an edit to a profile's BYO settings never silently changes a live route.
   byoProxyHost     String?
