@@ -92,7 +92,17 @@ def _prune_old_jobs() -> None:
 
 
 class JobRequest(BaseModel):
-    query: str = Field(..., min_length=1, max_length=500)
+    # This is a display/fallback field only — run_automation() uses
+    # params["queries"] (the real multi-term list) whenever it's present, and
+    # only falls back to this single string when it's not. The dispatcher
+    # (app/api/internal/dispatch/route.ts) sends it as ALL of a job's search
+    # terms joined with " | " for the job list's display label, so a tight
+    # max_length here rejects legitimate multi-term jobs outright: confirmed
+    # live, a 20-term job produced a >500-char joined string and got a 422
+    # before the search even started, with no indication why. Generous cap
+    # (not unbounded) just to keep a pathological payload from being stored
+    # forever, not because this length is ever load-bearing for search logic.
+    query: str = Field(..., min_length=1, max_length=20000)
     params: dict[str, Any] = Field(default_factory=dict)
     # Confirmed against the real dispatcher (app/api/internal/dispatch/route.ts on
     # the queue-and-lanes-dev branch — not on this branch, easy to miss if you only

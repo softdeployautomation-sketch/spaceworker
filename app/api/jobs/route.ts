@@ -54,9 +54,11 @@ export async function POST(req: Request) {
     queryList.push(body.query.trim());
   }
   // Capped server-side too (defense in depth) — the Find x Location
-  // cross-multiply in the UI caps at 20, but this route has no way to know
-  // whether a request actually came from that UI.
-  const MAX_QUERIES = 20;
+  // cross-multiply in the UI caps at 300 (matching worker/automation.py's own
+  // MAX_TOTAL_QUERIES ceiling on the total query budget one job will ever
+  // process), but this route has no way to know whether a request actually
+  // came from that UI.
+  const MAX_QUERIES = 300;
   const uniqueQueries = [...new Set(queryList)].slice(0, MAX_QUERIES);
   if (uniqueQueries.length === 0) {
     return NextResponse.json({ error: "At least one search term is required" }, { status: 400 });

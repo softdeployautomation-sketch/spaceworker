@@ -168,11 +168,17 @@ export default function ExtractPage() {
     // Cross-multiply Find × Location so "plumbers","carpenters" × "Texas","USA"
     // becomes ["plumbers in Texas","plumbers in USA","carpenters in Texas","carpenters in USA"].
     // With no Location terms, fall back to just the Find terms unchanged (today's behavior).
-    // Capped at 20 — an uncapped cross-product (e.g. 10 Finds x 10 Locations = 100
-    // queries) fires that many concurrent searches at once (worker/automation.py
-    // runs the whole query list via asyncio.gather), which risks tripping
-    // DuckDuckGo/Google rate limits and starving other jobs on the same worker.
-    const MAX_QUERIES = 20;
+    // Capped at 300, matching worker/automation.py's own MAX_TOTAL_QUERIES ceiling on
+    // the total query budget it will ever process for one job — raising this past
+    // 300 would just mean the extra terms get silently dropped deeper in the
+    // pipeline with no warning surfaced here, so this is the real usable ceiling,
+    // not an arbitrary UI restriction. (Previously capped at 20 based on a stale
+    // assumption that queries fire concurrently via asyncio.gather; confirmed by
+    // reading the current worker code that run_automation's main loop processes
+    // exactly one query at a time, sequentially, with its own pause/resume and
+    // wall-clock deadline — there's no concurrent-firing rate-limit risk from a
+    // longer query list, it just makes one job take longer.)
+    const MAX_QUERIES = 300;
     const rawQueries: string[] =
       locs.length === 0
         ? finds
@@ -180,7 +186,7 @@ export default function ExtractPage() {
     const queries = rawQueries.slice(0, MAX_QUERIES);
     if (rawQueries.length > MAX_QUERIES) {
       setFormError(
-        `That's ${rawQueries.length} searches (Find × Location) — only running the first ${MAX_QUERIES} to avoid rate limits. Try fewer terms per job.`
+        `That's ${rawQueries.length} searches (Find × Location) — only running the first ${MAX_QUERIES} per job. Split the rest into another job.`
       );
     }
 
