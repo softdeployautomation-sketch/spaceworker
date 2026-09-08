@@ -5,6 +5,7 @@ import { DashboardNav } from "@/components/dashboard-nav";
 import { DesktopBackground } from "@/components/desktop-background";
 import { Dock } from "@/components/dock";
 import { LogoutButton } from "@/components/logout-button";
+import { MenuBar } from "@/components/menu-bar";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface ShellProps {
@@ -30,18 +31,10 @@ export function Shell({ children }: ShellProps) {
           <Link href="/dashboard" className="flex items-center gap-2">
             <LogoMark />
             <span className="font-display text-[12.5px] font-bold text-fg">
-              SpaceWorker
+              SpaceWorker OS
             </span>
           </Link>
-          <span className="hidden text-[12.5px] text-fg-muted md:inline">
-            File
-          </span>
-          <span className="hidden text-[12.5px] text-fg-muted md:inline">
-            Window
-          </span>
-          <span className="hidden text-[12.5px] text-fg-muted md:inline">
-            Help
-          </span>
+          <MenuBar />
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <DesktopClock />

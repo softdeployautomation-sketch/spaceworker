@@ -44,7 +44,7 @@ export default function DashboardPage() {
         />
         <div className="relative">
           <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
-            Welcome back to SpaceWorker
+            Welcome back to SpaceWorker OS
           </h1>
           <p className="mt-2 max-w-xl text-sm text-[#ab9a86] sm:text-[15px]">
             Your automation desktop. Find leads, keep your identity clean, and
