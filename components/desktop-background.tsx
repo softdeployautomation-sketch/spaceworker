@@ -9,8 +9,7 @@ export function DesktopBackground() {
       className="pointer-events-none fixed inset-0 z-0 overflow-hidden"
       style={{
         perspective: "1400px",
-        background:
-          "radial-gradient(60% 50% at 18% 8%, rgba(99,102,241,0.18), transparent 60%), radial-gradient(50% 45% at 85% 85%, rgba(99,102,241,0.12), transparent 60%), linear-gradient(160deg, #0d1220 0%, #080b12 75%)",
+        background: "var(--desktop-bg-gradient)",
       }}
     >
       <Panel

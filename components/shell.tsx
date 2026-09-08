@@ -18,21 +18,21 @@ export function Shell({ children }: ShellProps) {
       <DesktopBackground />
 
       {/* OS menu bar */}
-      <header className="fixed inset-x-0 top-0 z-40 flex h-8 items-center justify-between border-b border-[#1c2333] bg-[#0b0f17]/90 px-3 backdrop-blur md:px-4">
+      <header className="fixed inset-x-0 top-0 z-40 flex h-8 items-center justify-between border-b border-border bg-bg/90 px-3 backdrop-blur md:px-4">
         <div className="flex items-center gap-4">
           <Link href="/dashboard" className="flex items-center gap-2">
             <LogoMark />
-            <span className="text-[12.5px] font-bold text-[#f4f5f7]">
+            <span className="text-[12.5px] font-bold text-fg">
               SpaceWorker
             </span>
           </Link>
-          <span className="hidden text-[12.5px] text-[#8b93a7] md:inline">
+          <span className="hidden text-[12.5px] text-fg-muted md:inline">
             File
           </span>
-          <span className="hidden text-[12.5px] text-[#8b93a7] md:inline">
+          <span className="hidden text-[12.5px] text-fg-muted md:inline">
             Window
           </span>
-          <span className="hidden text-[12.5px] text-[#8b93a7] md:inline">
+          <span className="hidden text-[12.5px] text-fg-muted md:inline">
             Help
           </span>
         </div>
@@ -49,7 +49,7 @@ export function Shell({ children }: ShellProps) {
       <div className="relative z-10 mx-auto max-w-6xl px-4 pb-8 pt-14 md:pb-32">
         {/* Inline nav row on small screens (the dock is the desktop nav). */}
         <div className="md:hidden">
-          <div className="flex overflow-x-auto rounded-xl border border-[#232a3b] bg-[#0d1320]/70 px-2 py-2 backdrop-blur">
+          <div className="flex overflow-x-auto rounded-xl border border-border bg-bg-elevated/70 px-2 py-2 backdrop-blur">
             <DashboardNav variant="mobile" />
           </div>
         </div>

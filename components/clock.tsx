@@ -23,9 +23,9 @@ export function DesktopClock() {
   return (
     <div className="flex items-center gap-3 text-xs">
       {date && (
-        <span className="hidden text-[#8b93a7] md:inline">{date}</span>
+        <span className="hidden text-fg-muted md:inline">{date}</span>
       )}
-      <span className="font-semibold text-[#e5e7eb] tabular-nums">{time}</span>
+      <span className="font-semibold text-fg tabular-nums">{time}</span>
     </div>
   );
 }

@@ -36,6 +36,15 @@
   --fg-muted: #6b7280;
   --border: #e5e7eb;
   color-scheme: light;
+  /* Desktop ambient background gradient (components/desktop-background.tsx) —
+     a CSS var so a purely-decorative fixed-inset element can be theme-aware
+     without needing client-side JS to read the .dark class. This was
+     previously hardcoded dark in the component's inline style, which is why
+     the light theme never actually looked light: this gradient covers the
+     entire viewport behind every page. */
+  --desktop-bg-gradient: radial-gradient(60% 50% at 18% 8%, rgba(99, 102, 241, 0.10), transparent 60%),
+    radial-gradient(50% 45% at 85% 85%, rgba(99, 102, 241, 0.07), transparent 60%),
+    linear-gradient(160deg, #eef1f8 0%, #f9fafb 75%);
 }
 
 .dark {
@@ -45,6 +54,9 @@
   --fg-muted: #9ca3af;
   --border: #232a3b;
   color-scheme: dark;
+  --desktop-bg-gradient: radial-gradient(60% 50% at 18% 8%, rgba(99, 102, 241, 0.18), transparent 60%),
+    radial-gradient(50% 45% at 85% 85%, rgba(99, 102, 241, 0.12), transparent 60%),
+    linear-gradient(160deg, #0d1220 0%, #080b12 75%);
 }
 
 body {

@@ -12,7 +12,8 @@ export type RateLimitKind =
   | "login"
   | "resend-code"
   | "verify"
-  | "admin-login";
+  | "admin-login"
+  | "change-password";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -38,6 +39,7 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   ],
   verify: [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   "admin-login": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  "change-password": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {
