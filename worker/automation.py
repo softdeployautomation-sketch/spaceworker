@@ -397,6 +397,103 @@ async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: st
     return _parse_ddg_html(content, _DDG_URL, max_results)
 
 
+async def duckduckgo_search_paginated(
+    query: str, max_results: int, pages_per_query: int, job_dir: str,
+    on_step: Optional[AsyncStepCallable] = None,
+) -> list[SearchResult]:
+    """Drive DuckDuckGo's HTML results over up to `pages_per_query` pages via a
+    real headless browser, submitting the results page's own "next page" form
+    (form.nav-link) exactly like a human clicking Next — ported from the
+    original desktop engine (automation_server.py ~L978-994), confirmed there
+    as the proven way past page 1: DDG's next-page state lives in that form's
+    hidden fields tied to the CURRENT browser session, not a stable/guessable
+    URL parameter, so re-requesting a fresh URL (as duckduckgo_search_http and
+    duckduckgo_search_playwright both do) can only ever get page 1 — this is
+    why neither of those two ever advanced past it regardless of pagesPerQuery.
+    Google's simpler `start=` offset (google_search_paginated) needs no
+    equivalent because Google's pagination IS a stable URL parameter.
+
+    Only used when the caller actually asked for more than one page — the
+    existing single-page path (fast HTTP first, Playwright fallback on an
+    anti-bot block) is untouched and stays the default for everyone who
+    didn't raise pagesPerQuery above 1.
+
+    Resilience is deliberately asymmetric: page 1 gets real retries (a fresh
+    context + backoff on a captcha hit, matching _resilient_page_content's own
+    approach) since a page-1 failure means zero results for this query. A
+    failure advancing to page 2+ just stops pagination there and returns
+    whatever was already collected — never fails the whole query over a
+    later page not loading.
+    """
+    from playwright.async_api import async_playwright
+
+    profile_dir = os.path.join(job_dir, "ddg-multipage-profile")
+    url = _DDG_URL + "?q=" + quote_plus(query)
+    all_results: list[SearchResult] = []
+    seen_urls: set[str] = set()
+
+    async def _load_page_one(context):
+        page = await context.new_page()
+        await asyncio.sleep(random.uniform(1.5, 3.5))
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        content = await page.content()
+        if _DDG_ANOMALY_MARKER in content:
+            await page.close()
+            raise _BlockedByCaptchaError("DuckDuckGo served an anti-bot challenge page")
+        return page, content
+
+    async with async_playwright() as p:
+        context = await _launch_persistent_context(p, profile_dir)
+        try:
+            if on_step is not None:
+                await on_step(f"Visiting page 1 of {pages_per_query} of DuckDuckGo results")
+            try:
+                page, content = await _load_page_one(context)
+            except _BlockedByCaptchaError:
+                await asyncio.sleep(CAPTCHA_BACKOFF_SECONDS)
+                try:
+                    await context.close()
+                except Exception:
+                    pass
+                context = await _launch_persistent_context(p, profile_dir)
+                page, content = await _load_page_one(context)  # let this raise on a second failure
+
+            for page_index in range(max(1, pages_per_query)):
+                if page_index > 0:
+                    if on_step is not None:
+                        await on_step(f"Visiting page {page_index + 1} of {pages_per_query} of DuckDuckGo results")
+                    nav_form = await page.query_selector("form.nav-link")
+                    if nav_form is None:
+                        break  # DDG has no further pages for this query
+                    await asyncio.sleep(random.uniform(1.5, 3.5))
+                    try:
+                        await nav_form.evaluate("form => form.submit()")
+                        await page.wait_for_load_state("domcontentloaded", timeout=30_000)
+                        content = await page.content()
+                    except Exception:
+                        break  # couldn't advance — keep whatever was already collected
+                    if _DDG_ANOMALY_MARKER in content:
+                        break  # blocked mid-crawl — same reasoning, keep prior pages' results
+
+                new_count = 0
+                for r in _parse_ddg_html(content, _DDG_URL, max_results):
+                    if r.url in seen_urls:
+                        continue
+                    seen_urls.add(r.url)
+                    all_results.append(r)
+                    new_count += 1
+                if len(all_results) >= max_results:
+                    break
+                if new_count == 0 and page_index > 0:
+                    break  # a real page with nothing new — treat as end of results
+        finally:
+            try:
+                await context.close()
+            except Exception:
+                pass
+    return all_results[:max_results]
+
+
 async def google_search(
     query: str, max_results: int, job_dir: str, start: int = 0
 ) -> tuple[list[SearchResult], bool]:
@@ -499,21 +596,27 @@ async def search_phase(query: str, params: dict, job_dir: str,
     engine = params.get("engine", "duckduckgo")
     # Confirmed against the real caller (app/dashboard/extract/page.tsx sends
     # `params: { engine, maxResults }`, camelCase) — the dispatcher's own
-    # `POST /api/jobs` clamps this server-side to 10-200 before it ever reaches
-    # here, so this worker-side max(1, min(..., 50)) is a second, independent
-    # bound, not the source of truth for the real limit.
+    # `POST /api/jobs` clamps this server-side to 10-200, so this worker-side
+    # bound should match that ceiling, not sit below it. It used to clamp to
+    # 50 regardless of what the user actually set (confirmed live: a job
+    # created with maxResults=50000 silently got 50 per query here) — that
+    # was the dominant reason jobs finished with far fewer leads than
+    # requested, well before either the DDG-pagination or query-budget limits
+    # below ever mattered.
     max_results = int(params.get("maxResults", 10))
-    max_results = max(1, min(max_results, 50))
+    max_results = max(1, min(max_results, 50000))
+
+    # Read once, used by both engines below — DDG pagination (added alongside
+    # this fix) needs it exactly like Google's already did.
+    raw_pages = params.get("pagesPerQuery", DEFAULT_PAGES_PER_QUERY)
+    try:
+        pages_per_query = max(1, min(int(raw_pages), 20))
+    except (ValueError, TypeError):
+        pages_per_query = DEFAULT_PAGES_PER_QUERY
 
     if engine == "google":
         # Real crawler (Task 13): visit multiple result pages per query, bounded
-        # independently the same way max_results is. pagesPerQuery is clamped
-        # upstream (1-20) but re-bounded here as the second check.
-        raw_pages = params.get("pagesPerQuery", DEFAULT_PAGES_PER_QUERY)
-        try:
-            pages_per_query = max(1, min(int(raw_pages), 20))
-        except (ValueError, TypeError):
-            pages_per_query = DEFAULT_PAGES_PER_QUERY
+        # independently the same way max_results is.
         pdf_query = _bias_query_toward_pdfs(query)
         try:
             return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
@@ -533,6 +636,20 @@ async def search_phase(query: str, params: dict, job_dir: str,
                 return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
 
     pdf_query = _bias_query_toward_pdfs(query)
+
+    # DDG's default path only ever fetched page 1 REGARDLESS of pagesPerQuery
+    # (confirmed live: neither duckduckgo_search_http nor its Playwright
+    # fallback took a page count at all) — one contributor, alongside the
+    # max_results clamp above, to jobs collecting far fewer leads than a large
+    # minResults target. Only take the slower multi-page browser path when the
+    # caller actually asked for more than one page; the fast HTTP-first
+    # single-page path below is unchanged for everyone who didn't.
+    if pages_per_query > 1:
+        try:
+            return await duckduckgo_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
+        except _BlockedByCaptchaError:
+            pass  # fall through to the plain single-page path below
+
     loop = asyncio.get_event_loop()
     try:
         return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)

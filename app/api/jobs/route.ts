@@ -83,6 +83,12 @@ export async function POST(req: Request) {
 
   // Clamp maxResults server-side. Accept number or numeric string. Google runs in
   // the heavy lane (it needs a real browser); DDG is the light lane.
+  // Ceiling raised 200 -> 50000: 200 was silently chopping down a user-set
+  // value (e.g. 50000) with no indication anywhere, and worker/automation.py's
+  // own independent clamp used to be even lower (50) — both fixed together.
+  // This number is a theoretical ceiling only; no single search page will
+  // ever return anywhere near it, so raising it doesn't change real behavior
+  // except no longer lying about what was actually requested.
   const rawMax = rawParams.maxResults;
   const coercedMax =
     typeof rawMax === "number" ? rawMax
@@ -90,7 +96,7 @@ export async function POST(req: Request) {
     : undefined;
   const maxResults =
     coercedMax !== undefined && !isNaN(coercedMax)
-      ? Math.min(Math.max(10, coercedMax), 200)
+      ? Math.min(Math.max(10, coercedMax), 50000)
       : undefined;
 
   // Email-domain allowlist (Task 13): worker/automation.py reads
@@ -107,6 +113,13 @@ export async function POST(req: Request) {
   // params.minResults and, if the first search pass falls short, generates
   // related query variants and keeps searching (bounded rounds/query count)
   // until it's met. 0/absent disables expansion entirely.
+  // Ceiling raised 500 -> 50000: confirmed a user requesting minResults=30000
+  // got silently rounded down to 500 with no indication why, then the job
+  // legitimately (if confusingly) reported "done" once the actual, much
+  // smaller 500-target's query/page budget was exhausted. The worker already
+  // reports an honest "found X of your Y-lead minimum, ran out of budget"
+  // message when it falls short (see extract/page.tsx) — that's the correct
+  // way to communicate a shortfall, not silently changing what Y was.
   const rawMinResults = rawParams.minResults;
   const coercedMin =
     typeof rawMinResults === "number" ? rawMinResults
@@ -114,7 +127,7 @@ export async function POST(req: Request) {
     : undefined;
   const minResults =
     coercedMin !== undefined && !isNaN(coercedMin) && coercedMin > 0
-      ? Math.min(coercedMin, 500)
+      ? Math.min(coercedMin, 50000)
       : undefined;
 
   // Real crawler (Task 13): pagesPerQuery = how many Google result pages to visit

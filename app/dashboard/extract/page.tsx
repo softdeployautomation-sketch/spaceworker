@@ -89,10 +89,10 @@ export default function ExtractPage() {
   const [emailDomains, setEmailDomains] = useState<string[]>([]);
   const [emailDomainInput, setEmailDomainInput] = useState("");
   const [engine, setEngine] = useState<"ddg" | "google">("ddg");
-  const [maxResults, setMaxResults] = useState(50);
+  const [maxResults, setMaxResults] = useState(50000);
   // 0 = disabled (no auto-expansion) — the worker only expands terms when
   // this is a positive number and the first pass falls short of it.
-  const [minResults, setMinResults] = useState(0);
+  const [minResults, setMinResults] = useState(500);
   // Real crawler (Task 13): how many Google result pages to crawl per query, and
   // the wall-clock cap (minutes) before the job pauses at a query boundary.
   const [pagesPerQuery, setPagesPerQuery] = useState(5);
@@ -408,7 +408,7 @@ export default function ExtractPage() {
                 <input
                   type="number"
                   min={10}
-                  max={200}
+                  max={50000}
                   value={maxResults}
                   onChange={(e) => setMaxResults(Number(e.target.value))}
                   className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
@@ -419,7 +419,7 @@ export default function ExtractPage() {
                 <input
                   type="number"
                   min={0}
-                  max={500}
+                  max={50000}
                   value={minResults}
                   onChange={(e) => setMinResults(Number(e.target.value))}
                   className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
