@@ -260,6 +260,45 @@ export default function ExtractPage() {
     }
   }
 
+  // Loads a past run's search back into the form so it can be edited (add/
+  // remove terms, change settings) and resubmitted as a brand-new job — the
+  // original job itself is untouched. params.queries holds the actual
+  // Find x Location cross-product that was searched (already combined into
+  // strings like "plumbers in Texas" by the time it's stored), not the
+  // original separate Find/Location chips — so those combined strings load
+  // straight into the Find column and Location is left empty. That's a
+  // faithful reload (resubmitting produces the exact same query list), it
+  // just can't reconstruct which parts were originally "Find" vs "Location."
+  function loadJobIntoForm(job: Job) {
+    const p = job.params ?? {};
+    const queries = Array.isArray(p.queries)
+      ? p.queries.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+      : [];
+    setTemplate((job.template === "hr" || job.template === "plain" ? job.template : "lead") as Template);
+    setFindTerms(queries.length > 0 ? queries : [job.query]);
+    setFindInput("");
+    setLocation([]);
+    setLocationInput("");
+    const domainsRaw = typeof p.emailDomains === "string" ? p.emailDomains : "";
+    setEmailDomains(
+      domainsRaw
+        .split(",")
+        .map((d) => d.trim())
+        .filter((d) => d.length > 0),
+    );
+    setEmailDomainInput("");
+    setEngine(p.engine === "google" ? "google" : "ddg");
+    if (typeof p.maxResults === "number") setMaxResults(p.maxResults);
+    setMinResults(typeof p.minResults === "number" ? p.minResults : 0);
+    if (typeof p.pagesPerQuery === "number") setPagesPerQuery(p.pagesPerQuery);
+    if (typeof p.maxDurationMinutes === "number") setMaxDurationMinutes(p.maxDurationMinutes);
+    if (p.resultMode === "namesEmails" || p.resultMode === "full" || p.resultMode === "emailsOnly") {
+      setResultMode(p.resultMode);
+    }
+    setFormError("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
   function addChip(list: string[], setList: (v: string[]) => void, input: string, setInput: (v: string) => void) {
     const term = input.trim();
     if (!term) return;
@@ -599,6 +638,13 @@ export default function ExtractPage() {
                 <span>{job.template} · {job.lane} · {job._count?.leads ?? 0} leads</span>
                 {(job.status === "queued" || job.status === "running") ? (
                   <span className="flex items-center gap-3">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); loadJobIntoForm(job); }}
+                      className="text-brand-600 hover:underline dark:text-brand-400"
+                      title="Load this run's search into the form above"
+                    >
+                      Load
+                    </button>
                     {job.status === "running" && (
                       <button
                         onClick={(e) => { e.stopPropagation(); void controlJob(job.id, "pause"); }}
@@ -615,12 +661,21 @@ export default function ExtractPage() {
                     </button>
                   </span>
                 ) : (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); void deleteJob(job.id); }}
-                    className="text-fg-muted hover:text-red-500 hover:underline"
-                  >
-                    Delete
-                  </button>
+                  <span className="flex items-center gap-3">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); loadJobIntoForm(job); }}
+                      className="text-brand-600 hover:underline dark:text-brand-400"
+                      title="Load this run's search into the form above"
+                    >
+                      Load
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void deleteJob(job.id); }}
+                      className="text-fg-muted hover:text-red-500 hover:underline"
+                    >
+                      Delete
+                    </button>
+                  </span>
                 )}
               </div>
               {/* Task 14 live activity feed — compact per-row step line, only while
