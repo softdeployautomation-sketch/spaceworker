@@ -138,7 +138,7 @@ export async function POST(req: Request) {
         } else {
           // The worker call above is a real network round trip — a concurrent
           // stop request could have cancelled this SearchJob (status ->
-          // "failed") in that exact window, before workerJobId is ever
+          // "stopped") in that exact window, before workerJobId is ever
           // recorded. If that happened, the stop route's own DELETE call
           // already ran and found no workerJobId to cancel against, so the
           // worker is now running a job nobody can reach — re-check status
@@ -276,8 +276,17 @@ export async function POST(req: Request) {
         // done/paused/failed branches below deliberately do NOT clear it, so
         // the last-known step ("where did it get to") stays visible after the
         // job stops rather than being wiped to null.
+        //
+        // Task 15 stall detection: currentStepAt only moves forward when the
+        // step text actually changed from what's already stored (`job` here
+        // is the pre-tick row fetched above, so job.currentStep is the prior
+        // value) -- re-stamping it on every tick regardless of content would
+        // make a genuinely stuck job (same step, tick after tick) look fresh
+        // forever, which is exactly the case this exists to catch.
+        const nextStep = data.currentStep ?? null;
         await safeUpdateSearchJob(job.id, {
-          currentStep: data.currentStep ?? null,
+          currentStep: nextStep,
+          ...(nextStep !== job.currentStep ? { currentStepAt: new Date() } : {}),
         });
         liveUpdated++;
       }

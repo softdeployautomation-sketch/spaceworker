@@ -24,10 +24,14 @@ export async function POST(
   // Cancel both the job and its queue entry atomically. Use "cancelled" (not
   // "dispatched") so callers can distinguish manually-cancelled entries from
   // entries that were genuinely sent to the worker.
+  //
+  // "stopped" is deliberately distinct from "failed" -- a user clicking Stop
+  // is not an error, and showing it as one (as this used to) made every
+  // manually-stopped job look like a crash.
   await prisma.$transaction([
     prisma.searchJob.update({
       where: { id },
-      data: { status: "failed", error: "Cancelled by user" },
+      data: { status: "stopped", error: null },
     }),
     prisma.jobQueueEntry.updateMany({
       where: { searchJobId: id, status: "queued" },

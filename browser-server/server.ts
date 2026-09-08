@@ -136,28 +136,42 @@ function chromiumConfDir(sessionId: string): string {
 }
 
 function buildChromiumSupervisorConf(proxyServerValue: string): string {
-  const commandLines = [
-    "command=/usr/bin/chromium",
-    "  --no-sandbox",
-    "  --window-position=0,0",
-    "  --display=%(ENV_DISPLAY)s",
-    "  --user-data-dir=/home/neko/.config/chromium",
-    "  --no-first-run",
-    "  --start-maximized",
-    "  --bwsi",
-    "  --force-dark-mode",
-    "  --disable-file-system",
-    "  --disable-gpu",
-    "  --disable-software-rasterizer",
-    "  --disable-dev-shm-usage",
+  // CONFIRMED LIVE 2026-09-08: if Chromium exits uncleanly on its very first
+  // launch inside a fresh container for ANY reason, it leaves its own
+  // SingletonLock/-Cookie/-Socket behind. supervisord's `autorestart=true`
+  // then relaunches it immediately, Chromium sees ITS OWN stale lock from
+  // the previous attempt, refuses to start ("profile appears to be in use by
+  // another Chromium process"), and this repeats forever -- a permanent
+  // crash-loop for the rest of that container's life, with no session ever
+  // actually coming up (Neko has nothing to show, so the viewer just sees
+  // its own connecting/loading state indefinitely). The Node-side
+  // cleanupProfileDir() only runs BEFORE the container starts -- it has no
+  // visibility into supervisord's internal restart loop once the container
+  // is already up. Fix: wrap the launch in a shell one-liner that clears
+  // those exact lock files immediately before every single attempt,
+  // including supervisord's own internal restarts, not just the first one.
+  const flags = [
+    "--no-sandbox",
+    "--window-position=0,0",
+    "--display=%(ENV_DISPLAY)s",
+    "--user-data-dir=/home/neko/.config/chromium",
+    "--no-first-run",
+    "--start-maximized",
+    "--bwsi",
+    "--force-dark-mode",
+    "--disable-file-system",
+    "--disable-gpu",
+    "--disable-software-rasterizer",
+    "--disable-dev-shm-usage",
   ];
   if (proxyServerValue) {
-    commandLines.push(`  --proxy-server=${proxyServerValue}`);
+    flags.push(`--proxy-server=${proxyServerValue}`);
   }
+  const launchCmd = `rm -f /home/neko/.config/chromium/Singleton* && exec /usr/bin/chromium ${flags.join(" ")}`;
   return [
     "[program:chromium]",
     'environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"',
-    ...commandLines,
+    `command=/bin/sh -c "${launchCmd}"`,
     "stopsignal=INT",
     "autorestart=true",
     "priority=800",

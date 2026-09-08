@@ -19,6 +19,7 @@ export async function GET() {
     select: {
       id: true, query: true, template: true, params: true, status: true,
       lane: true, error: true, createdAt: true, currentStep: true,
+      currentStepAt: true,
       _count: { select: { leads: true } },
     },
     orderBy: { createdAt: "desc" },

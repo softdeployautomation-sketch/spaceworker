@@ -294,7 +294,7 @@ model SearchJob {
   // Which template this search was created from: "lead" | "hr" | "plain" (extensible).
   template    String         @default("lead")
   params      Json
-  status      String         @default("queued") // "queued" | "running" | "done" | "failed" | "paused"
+  status      String         @default("queued") // "queued" | "running" | "done" | "failed" | "paused" | "stopped"
   lane        String
   workerJobId String?
   error       String?
@@ -319,6 +319,12 @@ model SearchJob {
   // whatever the last "running" tick wrote after the job stops (done/paused/failed
   // branches do NOT clear it), so "where did it get to" survives the job.
   currentStep String?
+  // Task 15 stall detection: when currentStep's VALUE last actually changed
+  // (not just when the dispatcher last polled — a poll that returns the same
+  // step text again is exactly the "no real progress" case this needs to
+  // catch, so re-stamping on every tick regardless of content would hide the
+  // one thing this field exists to detect).
+  currentStepAt DateTime?
   createdAt   DateTime       @default(now())
   queueEntry  JobQueueEntry?
   leads       Lead[]

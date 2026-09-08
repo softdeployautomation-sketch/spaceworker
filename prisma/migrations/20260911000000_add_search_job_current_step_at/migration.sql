@@ -1,0 +1,1 @@
+ALTER TABLE "SearchJob" ADD COLUMN "currentStepAt" TIMESTAMP(3);

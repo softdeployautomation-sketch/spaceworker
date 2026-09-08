@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 
-type JobStatus = "queued" | "running" | "done" | "failed" | "paused";
+type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
 
 interface Job {
   id: string;
@@ -17,6 +17,9 @@ interface Job {
   // Task 14 live activity feed — the worker's current step, refreshed by the
   // 4s poll while a job runs. null for jobs that never reported a step.
   currentStep?: string | null;
+  // Task 15 stall detection — when currentStep's value last actually
+  // changed (not just when the dispatcher last polled).
+  currentStepAt?: string | null;
   _count?: { leads: number };
 }
 
@@ -44,7 +47,22 @@ const STATUS_COLORS: Record<JobStatus, string> = {
   done:    "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200",
   failed:  "bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-200",
   paused:  "bg-purple-100 text-purple-800 dark:bg-purple-900/40 dark:text-purple-200",
+  // Distinct from "failed" — a user-initiated stop is not an error.
+  stopped: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
 };
+
+// Task 15 stall detection. 5 minutes is deliberately generous — long enough
+// that a slow PDF download, a CAPTCHA backoff (worker/automation.py's
+// CAPTCHA_BACKOFF_SECONDS=20), or the human-pacing delay between page loads
+// (1.5-3.5s each, but compounding across a slow query) never look like a
+// stall, while still catching an actually-stuck worker within a reasonable
+// wait.
+const STALL_THRESHOLD_MS = 5 * 60 * 1000;
+
+function isStalled(job: Pick<Job, "status" | "currentStepAt">): boolean {
+  if (job.status !== "running" || !job.currentStepAt) return false;
+  return Date.now() - new Date(job.currentStepAt).getTime() > STALL_THRESHOLD_MS;
+}
 
 const TEMPLATES: { id: Template; label: string; description: string }[] = [
   { id: "lead", label: "Lead Search", description: "Find businesses and their contact info" },
@@ -538,7 +556,14 @@ export default function ExtractPage() {
     phone-width screen. */}
       <div className="flex flex-1 flex-col gap-4 overflow-hidden md:flex-row">
         {/* Job list */}
-        <div className="max-h-64 w-full flex-shrink-0 overflow-y-auto rounded-xl border border-border bg-card md:h-auto md:max-h-none md:w-72">
+        {/* Task 15: max-h-none on desktop here used to remove any real height
+            bound, and the Shell layout this page sits in doesn't establish a
+            fixed viewport-height context either -- so this list (and the
+            leads pane below) just grew the whole page instead of scrolling
+            internally. A viewport-relative max-h works regardless of what
+            the ancestor chain does, without touching Shell (which every
+            other page also uses, some of which want normal page growth). */}
+        <div className="max-h-64 w-full flex-shrink-0 overflow-y-auto rounded-xl border border-border bg-card md:h-auto md:max-h-[70vh] md:w-72">
           {jobs.length === 0 && (
             <p className="p-4 text-sm text-fg-muted">No jobs yet. Submit a search above.</p>
           )}
@@ -552,8 +577,16 @@ export default function ExtractPage() {
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="truncate text-sm font-medium">{job.query}</span>
-                <span className={`flex-shrink-0 rounded px-1.5 py-0.5 text-xs font-medium ${STATUS_COLORS[job.status]}`}>
-                  {job.status}
+                <span className="flex flex-shrink-0 items-center gap-1">
+                  {isStalled(job) && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-amber-500"
+                      title="May be stalled — no progress in over 5 minutes"
+                    />
+                  )}
+                  <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${STATUS_COLORS[job.status]}`}>
+                    {job.status}
+                  </span>
                 </span>
               </div>
               <div className="mt-1 flex items-center justify-between text-xs text-fg-muted">
@@ -596,7 +629,7 @@ export default function ExtractPage() {
           ))}
         </div>
 {/* Lead detail */}
-        <div className="flex-1 overflow-y-auto rounded-xl border border-border bg-card">
+        <div className="max-h-[70vh] flex-1 overflow-y-auto rounded-xl border border-border bg-card">
           {!selectedJob ? (
             <p className="p-6 text-sm text-fg-muted">Select a job to view leads.</p>
           ) : (
@@ -613,9 +646,16 @@ export default function ExtractPage() {
                       brand-new job's first tick may not have reported a step yet, so
                       fall back to "Starting…" when currentStep is null/empty. */}
                   {selectedJob.status === "running" && (
-                    <p className="mt-1 truncate text-xs text-fg-muted/80" title={selectedJob.currentStep ?? undefined}>
-                      Currently: {selectedJob.currentStep?.trim() ? selectedJob.currentStep : "Starting…"}
-                    </p>
+                    <>
+                      <p className="mt-1 truncate text-xs text-fg-muted/80" title={selectedJob.currentStep ?? undefined}>
+                        Currently: {selectedJob.currentStep?.trim() ? selectedJob.currentStep : "Starting…"}
+                      </p>
+                      {isStalled(selectedJob) && (
+                        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                          This may be stalled — no progress in over 5 minutes.
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
                 <div className="flex items-center gap-2">
