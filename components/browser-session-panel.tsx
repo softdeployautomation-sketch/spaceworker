@@ -451,20 +451,23 @@ export default function BrowserSessionPanel({
 
   return (
     <div>
-      {/* Window chrome (BrowserApp.design.html): title bar + dark frame. */}
-      <div className="overflow-hidden rounded-2xl border border-[#29314a] bg-[#0e1320] shadow-[0_40px_90px_-30px_rgba(0,0,0,0.7)]">
-        <div className="flex items-center gap-2.5 border-b border-[#1c2333] bg-[#131826] px-4 py-2.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#3f4759]" />
-          <span className="h-2.5 w-2.5 rounded-full bg-[#3f4759]" />
-          <span className="ml-2 text-[13px] font-semibold text-[#c3c9d6]">
+      {/* Window chrome: a real OS-style title bar (macOS/Linux traffic-light
+          dots) framing the whole panel — this "window" holds the actual
+          browser session, so it earns the chrome literally, not decoratively. */}
+      <div className="overflow-hidden rounded-2xl border border-border bg-bg-elevated shadow-[0_40px_90px_-30px_rgba(0,0,0,0.35)] dark:shadow-[0_40px_90px_-30px_rgba(0,0,0,0.7)]">
+        <div className="flex items-center gap-2.5 border-b border-border bg-bg px-4 py-2.5">
+          <span className="h-2.5 w-2.5 rounded-full bg-[#ef4444]/70" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#eab308]/70" />
+          <span className="h-2.5 w-2.5 rounded-full bg-[#22c55e]/70" />
+          <span className="ml-2 font-display text-[13px] font-semibold text-fg">
             Browser
           </span>
-          <span className="ml-auto hidden text-[11px] text-[#6b7280] sm:inline">
+          <span className="ml-auto hidden text-[11px] text-fg-muted sm:inline">
             Saved in the cloud — always on
           </span>
         </div>
 
-        <div className="bg-[radial-gradient(60%_60%_at_50%_22%,rgba(99,102,241,0.09),transparent_60%),#0e1320] p-4 sm:p-6">
+        <div className="bg-[radial-gradient(60%_60%_at_50%_22%,rgba(184,114,26,0.08),transparent_60%)] bg-bg p-4 sm:p-6 dark:bg-[radial-gradient(60%_60%_at_50%_22%,rgba(234,165,61,0.10),transparent_60%),var(--bg)]">
 
       {tier < 1 && (
         <div className="mt-6 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
@@ -475,19 +478,19 @@ export default function BrowserSessionPanel({
       {tier >= 1 && (
         <>
           {/* --- Session launcher --- */}
-          <div className="mx-auto mt-6 max-w-3xl rounded-xl border border-[#252e45] bg-[#0f1420]/80 p-6">
+          <div className="mx-auto mt-6 max-w-3xl rounded-xl border border-border bg-bg-elevated/80 p-6">
             <div className="text-center">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-[#29314a] bg-[#1c2333]">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-bg">
                 <Globe
-                  className="h-7 w-7 text-[#818cf8]"
+                  className="h-7 w-7 text-brand-600 dark:text-brand-400"
                   strokeWidth={1.8}
                   aria-hidden="true"
                 />
               </div>
-              <h2 className="mt-4 text-xl font-bold text-[#f4f5f7]">
+              <h2 className="mt-4 font-display text-xl font-bold text-fg">
                 Start your private browser
               </h2>
-              <p className="mt-1 text-[13.5px] leading-relaxed text-[#9ca3af]">
+              <p className="mt-1 text-[13.5px] leading-relaxed text-fg-muted">
                 Pick a profile and a location — your Chrome keeps running in
                 the cloud even after you close this window.
               </p>

@@ -20,9 +20,16 @@ export function Shell({ children }: ShellProps) {
       {/* OS menu bar */}
       <header className="fixed inset-x-0 top-0 z-40 flex h-8 items-center justify-between border-b border-border bg-bg/90 px-3 backdrop-blur md:px-4">
         <div className="flex items-center gap-4">
+          {/* Traffic-light window controls — decorative, matching a real
+              desktop OS's window chrome (this "window" is the whole app). */}
+          <div className="hidden items-center gap-[6px] md:flex" aria-hidden="true">
+            <span className="h-[11px] w-[11px] rounded-full bg-[#ef4444]/70" />
+            <span className="h-[11px] w-[11px] rounded-full bg-[#eab308]/70" />
+            <span className="h-[11px] w-[11px] rounded-full bg-[#22c55e]/70" />
+          </div>
           <Link href="/dashboard" className="flex items-center gap-2">
             <LogoMark />
-            <span className="text-[12.5px] font-bold text-fg">
+            <span className="font-display text-[12.5px] font-bold text-fg">
               SpaceWorker
             </span>
           </Link>
@@ -72,7 +79,7 @@ function LogoMark() {
       fill="none"
       aria-hidden="true"
     >
-      <rect x="2" y="2" width="20" height="20" rx="6" fill="#818cf8" />
+      <rect x="2" y="2" width="20" height="20" rx="6" fill="#eaa53d" />
     </svg>
   );
 }

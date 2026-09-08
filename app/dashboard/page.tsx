@@ -30,21 +30,23 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      {/* Welcome window */}
-      <section className="relative overflow-hidden rounded-2xl border border-[#29314a] bg-gradient-to-br from-[#111a2e] to-[#0d1220] p-6 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.7)] sm:p-8">
+      {/* Welcome window — a deliberately dark "featured" panel regardless of
+          the app's own light/dark setting, same as a real OS's spotlight
+          card; every other surface below is theme-aware. */}
+      <section className="relative overflow-hidden rounded-2xl border border-[#352a1e] bg-gradient-to-br from-[#241c14] to-[#17130f] p-6 shadow-[0_20px_50px_-20px_rgba(0,0,0,0.7)] sm:p-8">
         <div
           aria-hidden
-          className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-brand-600/20 blur-3xl"
+          className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-brand-500/20 blur-3xl"
         />
         <div
           aria-hidden
-          className="pointer-events-none absolute -bottom-28 -left-16 h-64 w-64 rounded-full bg-indigo-900/30 blur-3xl"
+          className="pointer-events-none absolute -bottom-28 -left-16 h-64 w-64 rounded-full bg-brand-900/30 blur-3xl"
         />
         <div className="relative">
-          <h1 className="text-2xl font-bold tracking-tight text-white sm:text-3xl">
+          <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
             Welcome back to SpaceWorker
           </h1>
-          <p className="mt-2 max-w-xl text-sm text-[#9ca3af] sm:text-[15px]">
+          <p className="mt-2 max-w-xl text-sm text-[#ab9a86] sm:text-[15px]">
             Your automation desktop. Find leads, keep your identity clean, and
             send outreach — all from one place.
           </p>
@@ -57,7 +59,7 @@ export default function DashboardPage() {
             </Link>
             <Link
               href="/dashboard/extract"
-              className="rounded-lg border border-[#29314a] bg-[#0d1320]/60 px-4 py-2 text-sm font-medium text-[#c3c9d6] transition-colors hover:bg-white/5"
+              className="rounded-lg border border-[#352a1e] bg-[#17130f]/60 px-4 py-2 text-sm font-medium text-[#e5d9c6] transition-colors hover:bg-white/5"
             >
               Extract leads
             </Link>
@@ -71,22 +73,22 @@ export default function DashboardPage() {
           <Link
             key={item.href}
             href={item.href}
-            className="group rounded-xl border border-[#252e45] bg-[#0f1420]/80 p-5 shadow-sm backdrop-blur transition-colors hover:border-[#3b4668] hover:bg-[#121a2b]"
+            className="group rounded-xl border border-border bg-bg-elevated p-5 shadow-sm backdrop-blur transition-colors hover:border-brand-500/70 hover:bg-bg"
           >
-            <div className="flex h-10 w-10 items-center justify-center rounded-[11px] border border-[#29314a] bg-gradient-to-b from-[#1c2333] to-[#161b26]">
+            <div className="flex h-10 w-10 items-center justify-center rounded-[11px] border border-border bg-bg">
               <item.icon
-                className="h-[20px] w-[20px] text-[#a5b4fc]"
+                className="h-[20px] w-[20px] text-brand-600 dark:text-brand-300"
                 strokeWidth={1.8}
                 aria-hidden="true"
               />
             </div>
-            <h2 className="mt-4 text-[15px] font-semibold text-white">
+            <h2 className="mt-4 font-display text-[15px] font-semibold text-fg">
               {item.label}
             </h2>
-            <p className="mt-1 text-[13px] leading-relaxed text-[#98a0b3]">
+            <p className="mt-1 text-[13px] leading-relaxed text-fg-muted">
               {DESCRIPTIONS[item.label] ?? "Open this tool."}
             </p>
-            <span className="mt-3 inline-block text-[12.5px] font-medium text-[#818cf8] opacity-0 transition-opacity group-hover:opacity-100">
+            <span className="mt-3 inline-block text-[12.5px] font-medium text-brand-600 opacity-0 transition-opacity group-hover:opacity-100 dark:text-brand-400">
               Open app →
             </span>
           </Link>

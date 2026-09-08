@@ -46,7 +46,7 @@ function DockIcon({ href, label, icon: Icon, active }: NavItem) {
         className={cn(
           "flex h-11 w-11 items-center justify-center rounded-[13px] border bg-gradient-to-b from-white to-gray-50 shadow-[0_10px_24px_-10px_rgba(0,0,0,0.15)] transition-transform duration-150 ease-out group-hover:-translate-y-2 dark:from-[#1c2333] dark:to-[#161b26] dark:shadow-[0_10px_24px_-10px_rgba(0,0,0,0.6)]",
           active
-            ? "border-[#4f46e5]/70 ring-1 ring-[#818cf8]/40"
+            ? "border-brand-600/70 ring-1 ring-brand-400/40"
             : "border-gray-200/70 dark:border-[#29314a]/70",
         )}
       >
@@ -54,8 +54,8 @@ function DockIcon({ href, label, icon: Icon, active }: NavItem) {
           className={cn(
             "h-[22px] w-[22px] transition-colors",
             active
-              ? "text-brand-600 dark:text-[#a5b4fc]"
-              : "text-gray-500 group-hover:text-brand-600 dark:text-[#8b93a7] dark:group-hover:text-[#a5b4fc]",
+              ? "text-brand-600 dark:text-brand-300"
+              : "text-gray-500 group-hover:text-brand-600 dark:text-[#8b93a7] dark:group-hover:text-brand-300",
           )}
           strokeWidth={1.8}
           aria-hidden="true"
@@ -66,7 +66,7 @@ function DockIcon({ href, label, icon: Icon, active }: NavItem) {
         className={cn(
           "h-1 w-1 rounded-full transition-colors",
           active
-            ? "bg-[#818cf8]"
+            ? "bg-brand-400"
             : "bg-transparent group-hover:bg-gray-300 dark:group-hover:bg-[#3f4759]",
         )}
         aria-hidden="true"
