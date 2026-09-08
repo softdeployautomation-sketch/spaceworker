@@ -254,6 +254,12 @@ export default function BrowserSessionPanel({
   // stream. Not a true readiness signal (Neko doesn't expose one to embed) —
   // a fixed delay tuned to real observed connect time after the WebRTC fix.
   const [readyIds, setReadyIds] = useState<Set<string>>(new Set());
+  // "Open in new tab" used to leave the embedded iframe's own connection alive
+  // too, so the session ended up with two independent live viewer connections
+  // fighting over the same remote desktop (double the WebRTC/render overhead,
+  // and confusing input focus). Tracking this per-session-id stops the
+  // embedded iframe once a session has been popped out into its own tab.
+  const [poppedOutIds, setPoppedOutIds] = useState<Set<string>>(new Set());
   const readyTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   useEffect(() => {
     for (const s of sessions) {
@@ -726,33 +732,62 @@ export default function BrowserSessionPanel({
                       {s.status === "running" && s.connectUrl && (
                         <>
                           <div className="mt-3 flex justify-end">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                window.open(s.connectUrl!, "_blank", "noopener,noreferrer")
-                              }
-                              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
-                            >
-                              Open in new tab ↗
-                            </button>
-                          </div>
-                          <div className="relative mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
-                            <iframe
-                              src={s.connectUrl}
-                              title="Private browser session"
-                              allow="clipboard-read; clipboard-write; autoplay; fullscreen"
-                              className="h-full w-full border-0"
-                              onLoad={hideRemoteCursorDoubling}
-                            />
-                            {!readyIds.has(s.id) && (
-                              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
-                                <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-white" />
-                                <p className="text-sm text-zinc-400">
-                                  Connecting your browser…
-                                </p>
-                              </div>
+                            {!poppedOutIds.has(s.id) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  window.open(s.connectUrl!, "_blank", "noopener,noreferrer");
+                                  // Stop the embedded connection now that a separate tab
+                                  // owns it — otherwise both stay live and fight over the
+                                  // same remote desktop.
+                                  setPoppedOutIds((prev) => new Set(prev).add(s.id));
+                                }}
+                                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                              >
+                                Open in new tab ↗
+                              </button>
                             )}
                           </div>
+                          {poppedOutIds.has(s.id) ? (
+                            <div className="mt-2 flex aspect-video w-full flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-zinc-300 bg-bg text-center dark:border-zinc-700">
+                              <p className="max-w-xs text-sm text-fg-muted">
+                                This session is open in its own tab — the embedded
+                                view is paused so only one connection controls the
+                                browser at a time.
+                              </p>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setPoppedOutIds((prev) => {
+                                    const next = new Set(prev);
+                                    next.delete(s.id);
+                                    return next;
+                                  })
+                                }
+                                className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                              >
+                                Reconnect here instead
+                              </button>
+                            </div>
+                          ) : (
+                            <div className="relative mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
+                              <iframe
+                                src={s.connectUrl}
+                                title="Private browser session"
+                                allow="clipboard-read; clipboard-write; autoplay; fullscreen"
+                                className="h-full w-full border-0"
+                                onLoad={hideRemoteCursorDoubling}
+                              />
+                              {!readyIds.has(s.id) && (
+                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
+                                  <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-white" />
+                                  <p className="text-sm text-zinc-400">
+                                    Connecting your browser…
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
