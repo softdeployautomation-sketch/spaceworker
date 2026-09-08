@@ -172,6 +172,27 @@ export async function POST(req: Request) {
     ? (rawResultMode as (typeof RESULT_MODES)[number])
     : "namesEmails";
 
+  // findTerms/locationTerms: the ORIGINAL, un-cross-multiplied Find/Location
+  // chips, stored purely so the dashboard's "Load" action can reconstruct the
+  // exact original split later — the worker never reads either field, only
+  // `queries` (the already-combined list) drives the actual search. Without
+  // this, loading a past 2-Find x 5-Location run back into the form flattened
+  // all 10 combined strings into the Find column alone (confirmed live —
+  // real user report). Same string-array sanitization as `queries` above,
+  // capped generously since these are pure display/reload metadata, not a
+  // real query budget.
+  function sanitizeStringArray(value: unknown, max: number): string[] {
+    if (!Array.isArray(value)) return [];
+    const out: string[] = [];
+    for (const v of value) {
+      if (typeof v === "string" && v.trim()) out.push(v.trim());
+      if (out.length >= max) break;
+    }
+    return out;
+  }
+  const findTerms = sanitizeStringArray(rawParams.findTerms, 300);
+  const locationTerms = sanitizeStringArray(rawParams.locationTerms, 300);
+
   const params = {
     engine,
     ...(maxResults !== undefined ? { maxResults } : {}),
@@ -181,6 +202,8 @@ export async function POST(req: Request) {
     ...(maxDurationMinutes !== undefined ? { maxDurationMinutes } : {}),
     resultMode,
     queries: uniqueQueries,
+    ...(findTerms.length > 0 ? { findTerms } : {}),
+    ...(locationTerms.length > 0 ? { locationTerms } : {}),
     template,
   };
   const displayQuery = uniqueQueries.length === 1 ? uniqueQueries[0] : uniqueQueries.join(" | ");

@@ -204,7 +204,12 @@ export default function ExtractPage() {
         body: JSON.stringify({
           queries,
           template: "lead",
-          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes, resultMode },
+          // findTerms/locationTerms are stored purely so a later "Load" can
+          // reconstruct the original Find/Location split exactly, rather than
+          // the flattened `queries` cross-product (e.g. 2 Finds x 5 Locations
+          // reloading as 10 separate Find chips instead of 2 + 5) — the worker
+          // itself never reads either field, only `queries`.
+          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes, resultMode, findTerms: finds, locationTerms: locs },
         }),
       });
       if (res.ok) {
@@ -260,24 +265,64 @@ export default function ExtractPage() {
     }
   }
 
+  // Attempts to un-cross-multiply a job's flat `queries` list back into its
+  // original Find x Location split, for jobs saved before findTerms/
+  // locationTerms were persisted directly (see the submit handler below).
+  // `queries` was built as finds.flatMap(f => locs.map(l => `${f} in ${l}`)),
+  // so a clean split exists iff every entry contains " in " and the
+  // recovered prefix/suffix sets form an EXACT cross product (their sizes
+  // multiply to the total count, and every combination is actually present)
+  // — anything short of that (a freeform term that happens to contain " in ",
+  // a partial/irregular list) bails out to null rather than guessing wrong.
+  function tryFactorQueries(queries: string[]): { finds: string[]; locations: string[] } | null {
+    const SEP = " in ";
+    if (queries.length < 2) return null;
+    const finds: string[] = [];
+    const locations: string[] = [];
+    const findsSeen = new Set<string>();
+    const locationsSeen = new Set<string>();
+    for (const q of queries) {
+      const idx = q.indexOf(SEP);
+      if (idx === -1) return null;
+      const find = q.slice(0, idx);
+      const loc = q.slice(idx + SEP.length);
+      if (!findsSeen.has(find)) { findsSeen.add(find); finds.push(find); }
+      if (!locationsSeen.has(loc)) { locationsSeen.add(loc); locations.push(loc); }
+    }
+    if (finds.length * locations.length !== queries.length) return null;
+    const querySet = new Set(queries);
+    for (const f of finds) {
+      for (const l of locations) {
+        if (!querySet.has(`${f}${SEP}${l}`)) return null;
+      }
+    }
+    return { finds, locations };
+  }
+
   // Loads a past run's search back into the form so it can be edited (add/
   // remove terms, change settings) and resubmitted as a brand-new job — the
-  // original job itself is untouched. params.queries holds the actual
-  // Find x Location cross-product that was searched (already combined into
-  // strings like "plumbers in Texas" by the time it's stored), not the
-  // original separate Find/Location chips — so those combined strings load
-  // straight into the Find column and Location is left empty. That's a
-  // faithful reload (resubmitting produces the exact same query list), it
-  // just can't reconstruct which parts were originally "Find" vs "Location."
+  // original job itself is untouched.
   function loadJobIntoForm(job: Job) {
     const p = job.params ?? {};
     const queries = Array.isArray(p.queries)
       ? p.queries.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
       : [];
+    const savedFinds = Array.isArray(p.findTerms)
+      ? p.findTerms.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+      : [];
+    const savedLocations = Array.isArray(p.locationTerms)
+      ? p.locationTerms.filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+      : [];
+    // Prefer the exact split this job actually saved; fall back to
+    // reconstructing it from `queries` for jobs created before that existed.
+    const factored = savedFinds.length > 0
+      ? { finds: savedFinds, locations: savedLocations }
+      : tryFactorQueries(queries);
+
     setTemplate((job.template === "hr" || job.template === "plain" ? job.template : "lead") as Template);
-    setFindTerms(queries.length > 0 ? queries : [job.query]);
+    setFindTerms(factored ? factored.finds : queries.length > 0 ? queries : [job.query]);
     setFindInput("");
-    setLocation([]);
+    setLocation(factored ? factored.locations : []);
     setLocationInput("");
     const domainsRaw = typeof p.emailDomains === "string" ? p.emailDomains : "";
     setEmailDomains(
