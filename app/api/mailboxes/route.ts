@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    password?: string; secure?: boolean; dailyLimit?: number;
+    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number;
   };
   try {
     body = await req.json();
@@ -39,6 +39,7 @@ export async function POST(req: Request) {
   const host = (body.host ?? "").trim();
   const port = Number(body.port ?? 587);
   const username = (body.username ?? "").trim();
+  const fromAddress = (body.fromAddress ?? "").trim();
   const password = body.password ?? "";
   const secure = body.secure !== undefined ? Boolean(body.secure) : true;
   const dailyLimit = Number(body.dailyLimit ?? 40);
@@ -58,6 +59,8 @@ export async function POST(req: Request) {
       host,
       port,
       username,
+      // Empty string -> null/unset: never store "".
+      fromAddress: fromAddress.length > 0 ? fromAddress : null,
       encryptedPassword: ciphertext,
       passwordIv: iv,
       passwordTag: tag,

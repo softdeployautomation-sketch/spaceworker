@@ -24,7 +24,7 @@ export async function PUT(
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    password?: string; secure?: boolean; dailyLimit?: number; active?: boolean;
+    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean;
   };
   try {
     body = await req.json();
@@ -37,6 +37,11 @@ export async function PUT(
   if (body.host !== undefined) data.host = String(body.host).trim();
   if (body.port !== undefined) data.port = Number(body.port);
   if (body.username !== undefined) data.username = String(body.username).trim();
+  if (body.fromAddress !== undefined) {
+    const fromAddress = String(body.fromAddress ?? "").trim();
+    // Empty string -> null/unset: never store "".
+    data.fromAddress = fromAddress.length > 0 ? fromAddress : null;
+  }
   if (body.secure !== undefined) data.secure = Boolean(body.secure);
   if (body.dailyLimit !== undefined) data.dailyLimit = Number(body.dailyLimit);
   if (body.active !== undefined) data.active = Boolean(body.active);

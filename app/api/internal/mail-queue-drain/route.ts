@@ -78,7 +78,7 @@ export async function POST(req: Request) {
           : renderMerge(item.campaign.bodyHtml, variables);
 
         await transport!.sendMail({
-          from: mailbox.username,
+          from: mailbox.fromAddress || mailbox.username,
           to: item.toEmail,
           subject,
           html,

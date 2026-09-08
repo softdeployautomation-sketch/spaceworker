@@ -10,6 +10,10 @@ export interface TransporterMailbox {
   encryptedPassword: string;
   passwordIv: string;
   passwordTag: string;
+  // The address to actually send AS. null/undefined means "same as username" —
+  // normal for every non-relay mailbox. Set it for a relay like Resend, where the
+  // SMTP login is a fixed account but mail is sent as a specific address.
+  fromAddress?: string | null;
 }
 
 /**

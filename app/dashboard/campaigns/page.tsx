@@ -16,6 +16,7 @@ type Mailbox = {
   label: string;
   host: string;
   username: string;
+  fromAddress: string | null;
 };
 
 const STATUS_BADGES: Record<string, string> = {
@@ -101,7 +102,7 @@ export default function CampaignsPage() {
     setModalOpen(true);
     fetch("/api/mailboxes")
       .then((res) => (res.ok ? res.json() : []))
-      .then((data) => setMailboxes((data as Mailbox[]).map((m) => ({ id: m.id, label: m.label, host: m.host, username: m.username }))))
+      .then((data) => setMailboxes((data as Mailbox[]).map((m) => ({ id: m.id, label: m.label, host: m.host, username: m.username, fromAddress: m.fromAddress }))))
       .catch(() => setMailboxes([]));
   }
 
@@ -291,7 +292,7 @@ export default function CampaignsPage() {
                             : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400"
                         }`}
                       >
-                        {m.label} — {m.username}
+                        {m.label} — {(m.fromAddress || m.username)}
                       </button>
                     );
                   })}

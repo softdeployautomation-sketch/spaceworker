@@ -42,7 +42,7 @@ export async function runTestSend(opts: {
   try {
     const transport = transporterForMailbox(opts.mailbox);
     await transport.sendMail({
-      from: opts.mailbox.username,
+      from: opts.mailbox.fromAddress || opts.mailbox.username,
       to: opts.seed.username,
       subject: `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
       html: renderMerge(opts.variant.bodyHtml, {}),

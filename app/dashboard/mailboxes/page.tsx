@@ -7,6 +7,7 @@ type Mailbox = {
   host: string;
   port: number;
   username: string;
+  fromAddress: string | null;
   secure: boolean;
   dailyLimit: number;
   sentToday: number;
@@ -22,6 +23,7 @@ type MailboxForm = {
   host: string;
   port: string;
   username: string;
+  fromAddress: string;
   password: string;
   secure: boolean;
   dailyLimit: string;
@@ -32,6 +34,7 @@ const EMPTY_FORM: MailboxForm = {
   host: "",
   port: "587",
   username: "",
+  fromAddress: "",
   password: "",
   secure: true,
   dailyLimit: "40",
@@ -92,6 +95,7 @@ export default function MailboxesPage() {
       host: m.host,
       port: String(m.port),
       username: m.username,
+      fromAddress: m.fromAddress ?? "",
       password: "",
       secure: m.secure,
       dailyLimit: String(m.dailyLimit),
@@ -118,6 +122,7 @@ export default function MailboxesPage() {
         secure: form.secure,
         dailyLimit: Math.max(1, dailyLimit),
       };
+      if (form.fromAddress.trim()) payload.fromAddress = form.fromAddress.trim();
       if (form.password.trim()) payload.password = form.password;
 
       const url = editing ? `/api/mailboxes/${editing.id}` : "/api/mailboxes";
@@ -238,7 +243,7 @@ export default function MailboxesPage() {
                   <div className="min-w-0">
                     <h2 className="truncate font-semibold">{m.label}</h2>
                     <p className="mt-0.5 truncate text-sm text-zinc-500 dark:text-zinc-400">
-                      {m.username} @ {m.host}:{m.port}
+                      {(m.fromAddress || m.username)} @ {m.host}:{m.port}
                     </p>
                   </div>
                   <span
@@ -384,6 +389,20 @@ export default function MailboxesPage() {
                   placeholder="you@example.com"
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
+              </label>
+
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                From address (optional)
+                <input
+                  type="text"
+                  value={form.fromAddress}
+                  onChange={(e) => setForm({ ...form, fromAddress: e.target.value })}
+                  placeholder="you@example.com"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                />
+                <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                  Leave blank for a normal email account — most providers send as whichever address you log in with. Only needed for a relay service like Resend, where you log in as a fixed account but want to send as a specific address.
+                </span>
               </label>
 
               <label className="flex flex-col gap-1 text-sm font-medium">

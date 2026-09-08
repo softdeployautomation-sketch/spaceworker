@@ -65,7 +65,12 @@ model Mailbox {
   label             String
   host              String
   port              Int
+  // SMTP AUTH username only, going forward. For a relay service like Resend this
+  // is the literal "resend" (password = API key), independent of the From address.
   username          String
+  // The address mail is actually sent AS. Nullable: null means "same as username",
+  // which is every existing mailbox's real-world behavior, so this is additive.
+  fromAddress       String?
   encryptedPassword String
   passwordIv        String
   passwordTag       String
