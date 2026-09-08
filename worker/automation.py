@@ -34,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -232,7 +233,33 @@ NAV_RETRY_DELAY_SECONDS = 3
 CAPTCHA_BACKOFF_SECONDS = 20
 
 
-async def _launch_persistent_context(playwright, profile_dir: str):
+def _get_exit_nodes() -> list[dict]:
+    """Python-side equivalent of lib/exit-nodes.ts's listExitNodes() — SpaceWorker's
+    own self-hosted SOCKS5 exit nodes (dedicated Fly.io Machines relayed onto this
+    host via microsocks/socat on 172.17.0.1, reachable from any host process).
+
+    Same env var names (EXIT_NODE_US / EXIT_NODE_CA / EXIT_NODE_UK) and same
+    `scheme://host:port` format as the Next.js side, so both halves of the app are
+    configured from one set of values on the box. Any node whose env var is unset is
+    skipped (matching listExitNodes()'s own filtering) — exactly like that side, we
+    still check UK in case it's added later, but only US+CA resolve today.
+
+    These are a LAST-RESORT fallback for when the worker's own IP is confirmed
+    blocked — never the default routing for ordinary requests.
+    """
+    nodes: list[dict] = []
+    for env_key, label in (("EXIT_NODE_US", "US"), ("EXIT_NODE_CA", "CA"), ("EXIT_NODE_UK", "UK")):
+        raw = os.environ.get(env_key, "").strip()
+        if not raw:
+            continue
+        m = re.match(r"^([a-z0-9]+)://([^:/]+):(\d+)$", raw, re.I)
+        if not m:
+            continue
+        nodes.append({"label": label, "scheme": m.group(1), "host": m.group(2), "port": int(m.group(3))})
+    return nodes
+
+
+async def _launch_persistent_context(playwright, profile_dir: str, proxy: Optional[dict] = None):
     """Launch a persistent Chromium context, falling back to system Chrome if the
     bundled Chromium binary is missing (ENOENT/spawn failure) — ported from the
     original engine's browser-launch fallback (automation_server.py ~L642-662).
@@ -266,6 +293,12 @@ async def _launch_persistent_context(playwright, profile_dir: str):
         user_agent=BROWSER_USER_AGENT,
         viewport={"width": 1366, "height": 768},
     )
+    if proxy is not None:
+        # Playwright's native SOCKS5 proxy support — used to route a blocked
+        # request through SpaceWorker's own exit nodes (lib/exit-nodes.ts) without
+        # needing any new Python dependency. For the common, direct-IP path proxy
+        # is None and this key is never set, so behavior is byte-for-byte unchanged.
+        launch_kwargs["proxy"] = {"server": f"{proxy['scheme']}://{proxy['host']}:{proxy['port']}"}
 
     async def _harden(context):
         # webdriver undefined is the single most common check; plugins/languages/
@@ -309,7 +342,7 @@ class _BlockedByCaptchaError(Exception):
     a 3s retry against the exact same block is pointless)."""
 
 
-async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: tuple[str, ...]) -> str:
+async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: tuple[str, ...], proxy: Optional[dict] = None) -> str:
     """Navigate to `url` in a fresh per-job persistent Chromium context and return
     page.content(). Retries navigation up to NAV_MAX_ATTEMPTS times (transient network
     hiccups), and — if every attempt in the first context fails — recreates the
@@ -366,7 +399,7 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
         raise last_err or RuntimeError("navigation failed")
 
     async with async_playwright() as p:
-        context = await _launch_persistent_context(p, profile_dir)
+        context = await _launch_persistent_context(p, profile_dir, proxy=proxy)
         try:
             try:
                 return await _try_with_context(context)
@@ -378,7 +411,7 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
                     await context.close()
                 except Exception:
                     pass
-                context = await _launch_persistent_context(p, profile_dir)
+                context = await _launch_persistent_context(p, profile_dir, proxy=proxy)
                 return await _try_with_context(context)
         finally:
             try:
@@ -387,13 +420,21 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
                 pass
 
 
-async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: str) -> list[SearchResult]:
+async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: str, proxy: Optional[dict] = None) -> list[SearchResult]:
     """Fallback DDG path via a real headless browser, used when the plain-HTTP path
     (duckduckgo_search_http) hits the anti-bot challenge. Same URL, same selectors —
-    just fetched through Chromium instead of `requests` for a more convincing fingerprint."""
-    profile_dir = os.path.join(job_dir, "ddg-profile")
+    just fetched through Chromium instead of `requests` for a more convincing fingerprint.
+
+    When `proxy` is a SpaceWorker exit node (see lib/exit-nodes.ts), the request is
+    routed through that node's SOCKS5 and a SEPARATE per-node throwaway profile
+    (`ddg-profile-us`/`ddg-profile-ca`) is used instead of the shared `ddg-profile` —
+    so cookies/session state from the direct-IP requests never leak into what
+    DuckDuckGo sees as a different visitor (and vice versa).
+    """
+    suffix = "" if proxy is None else "-" + proxy["label"].lower()
+    profile_dir = os.path.join(job_dir, "ddg-profile" + suffix)
     url = _DDG_URL + "?q=" + quote_plus(query)
-    content = await _resilient_page_content(profile_dir, url, captcha_markers=(_DDG_ANOMALY_MARKER,))
+    content = await _resilient_page_content(profile_dir, url, captcha_markers=(_DDG_ANOMALY_MARKER,), proxy=proxy)
     return _parse_ddg_html(content, _DDG_URL, max_results)
 
 
@@ -495,7 +536,7 @@ async def duckduckgo_search_paginated(
 
 
 async def google_search(
-    query: str, max_results: int, job_dir: str, start: int = 0
+    query: str, max_results: int, job_dir: str, start: int = 0, proxy: Optional[dict] = None
 ) -> tuple[list[SearchResult], bool]:
     """Playwright Google search with a per-job throwaway profile.
 
@@ -509,13 +550,20 @@ async def google_search(
     organic-result count, which undercounts on pages with ads/"People also
     ask"/knowledge panels squeezing out organic results below a full page's
     worth even though more result pages genuinely exist.
+
+    When `proxy` is a SpaceWorker exit node (see lib/exit-nodes.ts), the request
+    is routed through that node's SOCKS5 and a SEPARATE per-node throwaway profile
+    (`chrome-profile-us`/`chrome-profile-ca`) is used instead of the shared
+    `chrome-profile` — so cookies/session state from the direct-IP requests never
+    leak into what Google sees as a different visitor (and vice versa).
     """
-    profile_dir = os.path.join(job_dir, "chrome-profile")
+    suffix = "" if proxy is None else "-" + proxy["label"].lower()
+    profile_dir = os.path.join(job_dir, "chrome-profile" + suffix)
     url = "https://www.google.com/search?q=" + quote_plus(query)
     if start > 0:
         url += "&start=" + str(start)
     content = await _resilient_page_content(
-        profile_dir, url, captcha_markers=("unusual traffic", "captcha"),
+        profile_dir, url, captcha_markers=("unusual traffic", "captcha"), proxy=proxy,
     )
     soup = BeautifulSoup(content, "lxml")
     results: list[SearchResult] = []
@@ -540,7 +588,7 @@ async def google_search(
 
 async def google_search_paginated(
     query: str, max_results: int, pages_per_query: int, job_dir: str,
-    on_step: Optional[AsyncStepCallable] = None,
+    on_step: Optional[AsyncStepCallable] = None, proxy: Optional[dict] = None,
 ) -> list[SearchResult]:
     """Drive Google's paged results over up to `pages_per_query` pages.
 
@@ -559,7 +607,7 @@ async def google_search_paginated(
         if on_step is not None:
             await on_step(f"Visiting page {page_index + 1} of Google results")
         start = page_index * GOOGLE_RESULTS_PER_PAGE
-        page_results, has_next = await google_search(query, max_results, job_dir, start=start)
+        page_results, has_next = await google_search(query, max_results, job_dir, start=start, proxy=proxy)
         new_results: list[SearchResult] = []
         for r in page_results:
             if r.url in seen_urls:
@@ -589,6 +637,29 @@ def _bias_query_toward_pdfs(query: str) -> str:
     if len(q) > MAX_DDG_QUERY_CHARS:
         q = q[:MAX_DDG_QUERY_CHARS].strip()
     return q
+
+
+async def _duckduckgo_with_exit_nodes(pdf_query: str, max_results: int, job_dir: str) -> list[SearchResult]:
+    """Last resort after a direct-IP DDG attempt (HTTP + Playwright) is confirmed
+    blocked: cycle through SpaceWorker's own US/CA exit nodes until one gets
+    through. Raises DDGBlockedError only once every configured node has failed.
+
+    Catches Exception broadly, not just _BlockedByCaptchaError: a node can also
+    fail for a reason that has nothing to do with anti-bot blocking (its relay is
+    down, a SOCKS connection error, a navigation timeout) — _resilient_page_content
+    can raise any of those via `raise last_err or RuntimeError(...)`. Treating only
+    _BlockedByCaptchaError as "try the next node" meant one flaky node aborted the
+    entire fallback chain instead of moving on to the next one (found in review,
+    fixed before this ever ran against a real flaky node in production).
+    """
+    for node in _get_exit_nodes():
+        try:
+            return await duckduckgo_search_playwright(pdf_query, max_results, job_dir, proxy=node)
+        except Exception:
+            continue
+    raise DDGBlockedError(
+        "DuckDuckGo blocked this request on every available path (direct + all configured exit nodes)"
+    )
 
 
 async def search_phase(query: str, params: dict, job_dir: str,
@@ -622,18 +693,32 @@ async def search_phase(query: str, params: dict, job_dir: str,
             return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
         except _BlockedByCaptchaError:
             # Google is durably blocking this IP for this query (already retried
-            # with backoff inside _resilient_page_content) — the original desktop
-            # engine's own advice for exactly this case is "try DuckDuckGo instead"
-            # (it has no human here to solve the checkbox either, so this is the
-            # equivalent: don't fail the whole query, fall through to the other
-            # engine rather than returning zero results for it).
+            # with backoff inside _resilient_page_content). Before switching engines
+            # entirely, retry Google itself through SpaceWorker's own exit nodes —
+            # staying on the originally-requested engine is more aligned with intent
+            # than silently switching engines the moment a block is hit.
+            # Broad except, not just _BlockedByCaptchaError — a node can also fail
+            # for a reason unrelated to blocking (relay down, SOCKS connection
+            # error, navigation timeout); treating only a captcha hit as "try the
+            # next node" meant one flaky node aborted the whole loop instead of
+            # moving on (same fix as _duckduckgo_with_exit_nodes below).
+            for node in _get_exit_nodes():
+                try:
+                    return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step, proxy=node)
+                except Exception:
+                    continue
+            # Every exit node also blocked — existing behavior: fall back to DDG
+            # rather than failing the query outright.
             if on_step is not None:
                 await on_step(f"Google blocked — falling back to DuckDuckGo for: {query}")
             loop = asyncio.get_event_loop()
             try:
                 return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
             except DDGBlockedError:
-                return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
+                try:
+                    return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
+                except _BlockedByCaptchaError:
+                    return await _duckduckgo_with_exit_nodes(pdf_query, max_results, job_dir)
 
     pdf_query = _bias_query_toward_pdfs(query)
 
@@ -654,10 +739,16 @@ async def search_phase(query: str, params: dict, job_dir: str,
     try:
         return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
     except DDGBlockedError:
-        # Confirmed-real fallback (see duckduckgo_search_http docstring) — the
-        # lightweight path is blocked for this request, so pay the Chromium cost
-        # this one time rather than failing the whole job.
-        return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
+        try:
+            # Confirmed-real fallback (see duckduckgo_search_http docstring) — the
+            # lightweight path is blocked for this request, so pay the Chromium cost
+            # this one time rather than failing the whole job.
+            return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
+        except _BlockedByCaptchaError:
+            # The direct-IP Playwright path is durably blocked too — last resort:
+            # cycle through SpaceWorker's own exit nodes (route through a cleaner
+            # exit IP rather than giving up on the query outright).
+            return await _duckduckgo_with_exit_nodes(pdf_query, max_results, job_dir)
 
 
 def _build_leads(
