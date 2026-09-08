@@ -39,6 +39,31 @@ const TOKEN = process.env.BROWSER_SERVER_TOKEN;
 // longer resolves under m1k1o/neko directly.
 const NEKO_IMAGE = process.env.BROWSER_NEKO_IMAGE ?? "ghcr.io/m1k1o/neko/chromium:latest";
 const HOST_PUBLIC_IP = process.env.BROWSER_HOST_PUBLIC_IP ?? "";
+// TURN relay for WebRTC media — confirmed live 2026-09-08: STUN alone (the
+// only thing previously configured) lets two peers exchange candidates but
+// can't get media through when either side is behind a NAT that STUN can't
+// traverse (common on corporate/some mobile networks) — the exact "stuck on
+// Neko's connecting spinner, or the session silently drops to Neko's own
+// login screen on reconnect" symptom reported live. A TURN relay is the
+// standard fix: it gives both sides a guaranteed-reachable relay path when
+// direct/STUN-assisted connection fails. Optional — if unset, sessions still
+// work over STUN-only exactly as before (no regression for the common case).
+const TURN_HOST = process.env.BROWSER_TURN_HOST ?? "";
+const TURN_PORT = process.env.BROWSER_TURN_PORT ?? "3478";
+const TURN_USERNAME = process.env.BROWSER_TURN_USERNAME ?? "";
+const TURN_PASSWORD = process.env.BROWSER_TURN_PASSWORD ?? "";
+
+function buildIceServersJson(): string {
+  const servers: Array<Record<string, unknown>> = [{ urls: ["stun:stun.l.google.com:19302"] }];
+  if (TURN_HOST && TURN_USERNAME && TURN_PASSWORD) {
+    servers.push({
+      urls: [`turn:${TURN_HOST}:${TURN_PORT}`],
+      username: TURN_USERNAME,
+      credential: TURN_PASSWORD,
+    });
+  }
+  return JSON.stringify(servers);
+}
 const BASE_PORT = Number(process.env.BROWSER_SESSION_BASE_PORT ?? 32000);
 // WebRTC media (the actual video/audio stream) needs its own UDP port range —
 // distinct from Neko's single TCP signaling/web port (8080, mapped per-session
@@ -189,6 +214,8 @@ function buildNekoArgs(session: Session, chromiumConfPath: string | null): strin
     "-e", `NEKO_PROXY=default`,
     "-e", `NEKO_SCREEN=1280x720@30`,
     "-e", `NEKO_EPR=${session.eprRange}`,
+    "-e", `NEKO_WEBRTC_ICESERVERS_FRONTEND=${buildIceServersJson()}`,
+    "-e", `NEKO_WEBRTC_ICESERVERS_BACKEND=${buildIceServersJson()}`,
   ];
   if (chromiumConfPath) {
     args.push("-v", `${chromiumConfPath}:/etc/neko/supervisord/chromium.conf:ro`);
