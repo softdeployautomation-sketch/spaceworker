@@ -114,6 +114,20 @@ jobs:
         run: |
           ssh -i ~/.ssh/vps_key root@164.68.105.96 '
             set -e
+            # Stop the live services BEFORE touching any files on disk. The old
+            # version of this step extracted the new build directly on top of
+            # the still-running app (tar xzf straight into /opt/spaceworker,
+            # then npm rebuild, then only restarting at the very end) — any
+            # request landing in that multi-second window could read a
+            # half-overwritten file and 500 (confirmed live: this is exactly
+            # what produced a bcrypt native-module EISDIR crash mid-deploy on
+            # 2026-09-08). Stopping first trades a few extra seconds of planned
+            # downtime for never serving from a partially-written filesystem —
+            # an easy trade since this workflow only deploys on a deliberate
+            # manual dispatch, never automatically.
+            systemctl stop spaceworker
+            systemctl stop spaceworker-browser
+            systemctl stop extraction-worker
             cd /opt/spaceworker
             tar xzf /tmp/spaceworker-ci-deploy.tar.gz -C /opt/spaceworker
             chown -R trmm:trmm /opt/spaceworker
@@ -121,9 +135,9 @@ jobs:
             npm rebuild || true
             sudo -u trmm npx prisma migrate deploy
             sudo -u trmm /opt/spaceworker/worker/venv/bin/pip install -q -r /opt/spaceworker/worker/requirements.txt
-            systemctl restart spaceworker
-            systemctl restart spaceworker-browser
-            systemctl restart extraction-worker
+            systemctl start spaceworker
+            systemctl start spaceworker-browser
+            systemctl start extraction-worker
             sleep 3
             systemctl is-active spaceworker
             systemctl is-active spaceworker-browser
