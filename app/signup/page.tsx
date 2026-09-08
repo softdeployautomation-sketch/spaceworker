@@ -1,11 +1,17 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { AuthForm } from "@/components/auth-form";
+import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Create account" };
 
-export default function SignupPage() {
+export default async function SignupPage() {
+  // Same gap as app/login/page.tsx — an already-logged-in visitor shouldn't
+  // see a signup form.
+  if (await getSession()) redirect("/dashboard");
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-bg px-4">
       <Link href="/" className="mb-6 text-xl font-bold text-brand-600">
