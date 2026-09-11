@@ -748,9 +748,24 @@ MAX_DDG_QUERY_CHARS = 420
 
 
 def _bias_query_toward_pdfs(query: str) -> str:
+    """Confirmed directly against the standalone desktop extractor's own search
+    modes (app/search/ddg_search.py, SEARCH_MODES): plain "filetype:pdf" is its
+    "PDF Documents Only" mode, but its BEST-performing one for lead-gen is
+    "pdf_emails" -- "filetype:pdf intext:@", which specifically biases toward
+    PDFs that actually contain an "@" character (i.e., likely have real email
+    addresses in them), not just any PDF about the topic. `intext:@` can only
+    ever narrow toward MORE relevant results for a lead-extraction product --
+    a PDF with zero "@" in it has no email to find anyway, so this never
+    excludes anything actually useful. Live-confirmed 2026-09-11: this is very
+    likely the concrete reason the standalone reliably lands on rich, bulk
+    email-list documents (1500+ emails from its first PDF result) while plain
+    "filetype:pdf" alone can surface any PDF, including ones with no emails.
+    """
     q = query.strip()
     if "filetype:pdf" not in q.lower() and "filetype: pdf" not in q.lower():
         q = f"{q} filetype:pdf"
+    if "intext:@" not in q.lower():
+        q = f"{q} intext:@"
     if len(q) > MAX_DDG_QUERY_CHARS:
         q = q[:MAX_DDG_QUERY_CHARS].strip()
     return q
