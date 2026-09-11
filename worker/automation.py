@@ -1362,13 +1362,19 @@ async def run_automation(
     the loop stops as soon as the minimum is met; leads accumulate (deduped by URL
     via the shared seen_urls set); on_progress fires for every lead as found.
 
-    Pause / max-duration (resumable jobs): the loop processes exactly one query per
-    iteration and checks `should_stop()` AND the wall-clock deadline ONLY at query
-    boundaries (never mid-query, matching the user's "pause means it stops at that
-    certain query"). When either fires, run_automation returns normally (not
-    raise/cancel) with status "paused" plus a resume_state payload so worker/api.py
-    can persist all leads found so far and a later resume continues from the next
-    unprocessed query instead of restarting from query #1.
+    Pause / max-duration (resumable jobs): the loop processes queries in CONCURRENT
+    batches (QUERY_BATCH_SIZE at a time — Task 22) and checks `should_stop()` AND
+    the wall-clock deadline ONLY at batch boundaries (never mid-batch). This
+    deliberately trades per-query pause precision for meaningfully faster overall
+    throughput: up to QUERY_BATCH_SIZE queries may complete before the next check.
+    When either fires, run_automation returns normally (not raise/cancel) with
+    status "paused" plus a resume_state payload so worker/api.py can persist all
+    leads found so far and a later resume continues from the start of the next
+    unprocessed batch instead of restarting from query #1. `nextQueryIndex` is the
+    start of that batch (qi advances by len(batch) at a time); a resumed job may
+    rarely re-run one query caught mid-flight in an interrupted batch — safe because
+    the persisted seen_urls set prevents duplicate leads even if a URL is fetched
+    twice.
     """
     raw_queries = params.get("queries")
     if (
@@ -1437,14 +1443,15 @@ async def run_automation(
     paused = False
     stopped_at = len(ordered_queries)
     # A single failed query (one bad page, a transient blip) is isolated below —
-    # correct to skip and keep going. But if the search engine is genuinely down
-    # for a stretch, every remaining query fails just as fast, and the loop would
+    # correct to keep going. But if the search engine is genuinely down for a
+    # stretch, an entire batch of queries fails just as fast, and the loop would
     # otherwise run to completion with almost nothing found and report "done" —
-    # a status that can never be resumed. CONSECUTIVE_FAILURE_PAUSE_THRESHOLD in a
-    # row is treated as "looks like an outage" instead: pause AT that query
-    # (not counted as processed, so resume retries it) so a later dispatcher
-    # tick can pick this job back up once the engine is reachable again, rather
-    # than silently finishing short.
+    # a status that can never be resumed. CONSECUTIVE_FAILURE_PAUSE_THRESHOLD
+    # consecutive ENTIRELY-failed batches (every query in the batch errored,
+    # not just one) is treated as "looks like an outage" instead: pause AT that
+    # batch's start index (not counted as processed, so resume retries it) so a
+    # later dispatcher tick can pick this job back up once the engine is
+    # reachable again, rather than silently finishing short.
     CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 5
     consecutive_failures = 0
     # Distinguishes an outage-triggered pause (below) from a manual pause or the
@@ -1452,9 +1459,36 @@ async def run_automation(
     # looking at it (the other two are the user's own deliberate stop).
     pause_reason: Optional[str] = None
 
-    for qi in range(start_index, len(ordered_queries)):
-        term = ordered_queries[qi]
-        # Query-boundary stop checks — the ONLY place pause/deadline are observed.
+    # Task 22: process query variations in CONCURRENT BATCHES, not one at a
+    # time. The old loop searched + fully extracted each query variation strictly
+    # sequentially, so with a large minResults budget (up to MAX_TOTAL_QUERIES
+    # variations) the wall-clock deadline ran out after only a handful of queries
+    # no matter how many good variations were left to try — the confirmed
+    # throughput bottleneck. Reuse the exact concurrency pattern
+    # _search_and_extract already uses internally (a per-result asyncio.gather
+    # with return_exceptions): run QUERY_BATCH_SIZE query variations side by side
+    # and merge their leads. seen_urls stays a single shared set (already passed
+    # into every call and dedup-ed inside), so two concurrent queries that surface
+    # the same URL still only process it once between them.
+    QUERY_BATCH_SIZE = 5  # fixed constant for now — tunable by a future task
+
+    async def _run_one_query(term: str) -> list[dict] | Exception:
+        # Isolate each query in the batch so one blocked/errored query (a single
+        # bad search) contributes zero leads instead of aborting the whole batch
+        # — same isolation the old multi-query gather's return_exceptions gave.
+        try:
+            return await _search_and_extract(
+                [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step
+            )
+        except Exception as e:  # noqa: BLE001 — deliberately captured, converted below
+            return e
+
+    qi = start_index
+    while qi < len(ordered_queries):
+        # Stop checks — now observed at BATCH granularity, the ONLY place
+        # pause/deadline are checked. Up to QUERY_BATCH_SIZE queries may complete
+        # before the next check; a deliberate trade of pause-timing precision for
+        # meaningfully faster overall progress.
         if min_results is not None and min_results > 0 and prior_found + len(all_leads) >= min_results:
             break  # minimum reached — normal completion
         if should_stop is not None and await should_stop():
@@ -1468,38 +1502,39 @@ async def run_automation(
             stopped_at = qi
             break
 
-        try:
-            leads = await _search_and_extract(
-                [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step
-            )
-            all_leads.extend(leads)
-            consecutive_failures = 0
-        except Exception:
+        batch = ordered_queries[qi : qi + QUERY_BATCH_SIZE]
+        batch_results = await asyncio.gather(*(_run_one_query(t) for t in batch))
+
+        batch_failures = 0
+        for r in batch_results:
+            if isinstance(r, Exception):
+                batch_failures += 1
+            else:
+                all_leads.extend(r)
+
+        if batch_failures == len(batch):
+            # Every query in this batch failed — same "looks like an outage"
+            # reasoning as the old consecutive-failure check, just at batch
+            # granularity now. A whole batch failing outright is the signal; a
+            # single query failing within an otherwise-successful batch is NOT
+            # specially isolated/counted anymore — it just contributes no leads.
+            # Pause AT the start of this batch (do not advance past it) so resume
+            # retries all of it, rather than treating a full-batch wipeout as
+            # isolated per-query noise.
             consecutive_failures += 1
             if consecutive_failures >= CONSECUTIVE_FAILURE_PAUSE_THRESHOLD:
-                # Looks like a sustained outage, not one bad query — pause AT this
-                # query (do not advance past it) so a later resume retries it once
-                # the engine/network is reachable again, instead of silently
-                # burning through every remaining query and reporting "done".
-                # Note: the 1-2 queries immediately before this one (isolated
-                # failures under the threshold) were already skipped via continue
-                # and are NOT retried on resume — an accepted tradeoff, since
-                # re-queuing exactly which prior queries failed vs. succeeded
-                # would need extra state for marginal benefit over "resume picks
-                # back up close to where things broke."
                 paused = True
                 pause_reason = "outage"
                 stopped_at = qi
                 if on_step is not None:
                     await on_step(
-                        f"{consecutive_failures} searches in a row failed — pausing, will retry automatically"
+                        f"{consecutive_failures} batch(es) in a row failed entirely — pausing, will retry automatically"
                     )
                 break
-            # One isolated bad query (a single blocked/errored search) shouldn't
-            # abort the whole job — same isolation the old multi-query gather's
-            # return_exceptions provided. Resume state will happily skip a query
-            # that errored in isolation.
-            continue
+        else:
+            consecutive_failures = 0
+
+        qi += len(batch)
 
     if paused:
         return AutomationResult(
