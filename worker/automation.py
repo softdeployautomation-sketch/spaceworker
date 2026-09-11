@@ -32,6 +32,7 @@ The Google path (and the DDG fallback path) require Playwright browsers installe
 from __future__ import annotations
 
 import asyncio
+import itertools
 import os
 import random
 import re
@@ -1212,24 +1213,58 @@ _EXPANSION_SUFFIXES = [
     " nonprofit", " public records", " state filing", " tax exempt",
     " organization", " leadership", " team", " contacts page",
 ]
-# The real stopping condition for a minimum-driven job should be the duration
-# cap (up to 180 minutes / 3 hours — see app/api/jobs/route.ts), not running out
-# of a short, fixed list of variations. This ceiling exists only as a sane upper
-# bound (a job with many base terms times ~27 suffixes could otherwise generate
-# an enormous query list) — in practice the wall-clock deadline checked at every
-# query boundary is what actually stops a long minimum-driven run.
-MAX_TOTAL_QUERIES = 300
+
+# Task 23: once every single-suffix round above is exhausted, keep generating
+# genuinely new query text by combining PAIRS of suffixes instead of stopping.
+# Precomputed once (28 suffixes -> C(28,2) = 378 pairs) rather than recomputed
+# per call — cheap either way at this size, but this makes the deterministic
+# ordering explicit and reusable. This is what lets a long, high-minResults
+# job keep inventing new variations for its FULL allotted duration instead of
+# running out of ideas early — see _round_queries and the real bug this fixes,
+# documented on MAX_TOTAL_QUERIES_SAFETY_CEILING below.
+_SUFFIX_PAIR_INDICES = list(itertools.combinations(range(len(_EXPANSION_SUFFIXES)), 2))
+
+# NOT a design target — a pure safety valve against a pathological input
+# (e.g. hundreds of base terms) blowing up memory/CPU. The PREVIOUS constant
+# here (MAX_TOTAL_QUERIES = 300) was a real, confirmed bug: once Task 22's
+# batching made per-query processing fast, a real minResults=5000 job with 20
+# base terms exhausted that entire 300-query budget in under 10 minutes out of
+# a 30-minute allowance and reported "done" — reading like success but
+# actually meaning "ran out of pre-generated query text with 20+ minutes and
+# the target still nowhere close." The wall-clock deadline and min_results
+# check (both still enforced every batch, see the main loop below) are the
+# REAL stopping conditions now; this ceiling should essentially never be hit
+# by a normal job (20 base terms alone yield 20 + 20*28 + 20*378 ≈ 8,160
+# distinct combinations before this ceiling would even matter).
+MAX_TOTAL_QUERIES_SAFETY_CEILING = 20000
 
 
-def _expand_queries_for_round(base_terms: list[str], suffix: str, already_used: set[str]) -> list[str]:
-    """One round's worth of expansion: base_terms + this round's single
-    suffix, skipping anything already searched in an earlier round."""
-    expanded: list[str] = []
-    for term in base_terms:
-        candidate = f"{term}{suffix}"
-        if candidate not in already_used:
-            expanded.append(candidate)
-    return expanded
+def _round_queries(base_terms: list[str], round_index: int) -> list[str]:
+    """Generate the raw candidate query strings for one expansion round, in an
+    order determined ONLY by `round_index` — this determinism is what lets a
+    resumed job regenerate the exact same continuing sequence from a bare
+    `nextQueryIndex` integer, with no need to separately persist which
+    suffixes/pairs were already tried.
+
+    Round 0: the original base terms, unmodified.
+    Rounds 1..len(_EXPANSION_SUFFIXES): base_terms + ONE single suffix.
+    Rounds after that: base_terms + a PAIR of two different suffixes, cycling
+    through _SUFFIX_PAIR_INDICES in order.
+    Returns [] once round_index runs past every pair combination too — the
+    caller (_grow_queries) treats that as truly nothing left to generate.
+    """
+    n = len(_EXPANSION_SUFFIXES)
+    if round_index == 0:
+        return list(base_terms)
+    if round_index <= n:
+        suffix = _EXPANSION_SUFFIXES[round_index - 1]
+        return [f"{t}{suffix}" for t in base_terms]
+    pair_idx = round_index - n - 1
+    if pair_idx >= len(_SUFFIX_PAIR_INDICES):
+        return []
+    i, j = _SUFFIX_PAIR_INDICES[pair_idx]
+    combined_suffix = f"{_EXPANSION_SUFFIXES[i]}{_EXPANSION_SUFFIXES[j]}"
+    return [f"{t}{combined_suffix}" for t in base_terms]
 
 
 async def _search_and_extract(
@@ -1345,31 +1380,6 @@ async def _search_and_extract(
     return all_leads
 
 
-def _build_ordered_queries(base_terms: list[str], min_results: int | None) -> list[str]:
-    """Deterministic full query budget: original base terms first, then one
-    expansion suffix across all base terms per round (the same "one suffix at a
-    time" cadence the previous between-round minimum check relied on), deduped and
-    capped at MAX_TOTAL_QUERIES. Expansion suffixes only appear when min_results is
-    set — mirroring the old "only expand when min_results > 0" gating. The caller's
-    loop then stops as soon as the minimum is reached instead of exhausting the
-    budget, preserving the early-stop behavior.
-    """
-    ordered: list[str] = []
-    used: set[str] = set()
-
-    def _add(terms: list[str]) -> None:
-        for t in terms:
-            if t not in used:
-                used.add(t)
-                ordered.append(t)
-
-    _add(base_terms)
-    if min_results is not None and min_results > 0:
-        for suffix in _EXPANSION_SUFFIXES:
-            _add(_expand_queries_for_round(base_terms, suffix, used))
-            if len(ordered) >= MAX_TOTAL_QUERIES:
-                break
-    return ordered[:MAX_TOTAL_QUERIES]
 
 
 async def run_automation(
@@ -1402,9 +1412,17 @@ async def run_automation(
     are found, extracted, or persisted.
 
     Minimum-results auto-expansion: when `params["minResults"]` is a positive number,
-    _build_ordered_queries precomputes the ordered base+expansion query budget and
-    the loop stops as soon as the minimum is met; leads accumulate (deduped by URL
-    via the shared seen_urls set); on_progress fires for every lead as found.
+    `_grow_queries` (below) LAZILY extends the query list on demand via
+    `_round_queries` — single-suffix rounds, then paired-suffix rounds once
+    those run out — instead of precomputing a small, fixed-size budget up
+    front. The loop stops as soon as the minimum is met, the deadline is hit,
+    or (extremely rarely — thousands of combinations deep) generation
+    genuinely runs out; leads accumulate (deduped by URL via the shared
+    seen_urls set); on_progress fires for every lead as found. This replaced
+    an old fixed 300-query cap that was a real, confirmed bug (Task 23): once
+    Task 22's batching made per-query processing fast, jobs exhausted that
+    cap in a fraction of their allotted duration and reported "done" with
+    the target nowhere close and most of the time budget still unused.
 
     Pause / max-duration (resumable jobs): the loop processes queries in CONCURRENT
     batches (QUERY_BATCH_SIZE at a time — Task 22) and checks `should_stop()` AND
@@ -1444,9 +1462,52 @@ async def run_automation(
     raw_domain_rules = params.get("emailDomains") or params.get("email_domains")
     domain_rules = parse_email_domain_allowlist(str(raw_domain_rules)) if raw_domain_rules else None
 
-    # Full deterministic query budget (base terms + expansion variants when a
-    # minimum is set) — the ordered list resume/nextQueryIndex index into.
-    ordered_queries = _build_ordered_queries(base_terms, min_results)
+    # Task 23: ordered_queries now grows LAZILY on demand (see _grow_queries)
+    # instead of being fully precomputed up front — the list starts empty and
+    # is extended just-in-time, round by round via _round_queries, only as far
+    # as the main loop (or resume) actually needs at any given moment.
+    ordered_queries: list[str] = []
+    _used_queries: set[str] = set()
+    _next_round = 0
+    _expansion_enabled = min_results is not None and min_results > 0
+
+    def _grow_queries(target_len: int) -> None:
+        """Extend `ordered_queries` (deduped) until it has at least
+        `target_len` entries, generation genuinely runs out, or the safety
+        ceiling is hit. When expansion is disabled (no minResults set), only
+        round 0 — the bare base terms — is ever generated, matching the old
+        "expansion suffixes only appear when min_results is set" gating —
+        and, since this is called repeatedly as the main loop advances,
+        that round-0-only limit must hold on EVERY call, not just the
+        first: `_next_round` is nonlocal/persistent, so checking "is this
+        round 0" only within a single call's loop (as an earlier version of
+        this function did) let rounds 1, 2, 3... keep being generated on
+        every SUBSEQUENT call once `_next_round` had already advanced past
+        0 — a real bug caught by this task's own test suite before it
+        shipped. Branching on `_expansion_enabled` up front avoids that
+        entirely: the disabled path only ever touches round 0, once, no
+        matter how many times or with what target_len it's called."""
+        nonlocal _next_round
+        if not _expansion_enabled:
+            if _next_round == 0:
+                for c in _round_queries(base_terms, 0):
+                    if c not in _used_queries:
+                        _used_queries.add(c)
+                        ordered_queries.append(c)
+                _next_round = 1
+            return
+        target_len = min(target_len, MAX_TOTAL_QUERIES_SAFETY_CEILING)
+        while len(ordered_queries) < target_len:
+            candidates = _round_queries(base_terms, _next_round)
+            _next_round += 1
+            if not candidates:
+                break  # every combination this generator can produce is exhausted
+            for c in candidates:
+                if c not in _used_queries:
+                    _used_queries.add(c)
+                    ordered_queries.append(c)
+            if len(ordered_queries) >= MAX_TOTAL_QUERIES_SAFETY_CEILING:
+                break
 
     seen_urls: set[str] = set()
     all_leads: list[dict] = []
@@ -1460,6 +1521,7 @@ async def run_automation(
     if isinstance(resume_state, dict):
         idx = resume_state.get("nextQueryIndex")
         if isinstance(idx, int) and idx > 0:
+            _grow_queries(idx)  # regenerate the same deterministic sequence up to idx
             start_index = min(idx, len(ordered_queries))
         prior_found_raw = resume_state.get("foundLeads")
         if isinstance(prior_found_raw, int) and prior_found_raw > 0:
@@ -1485,7 +1547,7 @@ async def run_automation(
     deadline = time.monotonic() + max_duration_minutes * 60
 
     paused = False
-    stopped_at = len(ordered_queries)
+    stopped_at = start_index  # only meaningful if a pause path below overwrites it
     # A single failed query (one bad page, a transient blip) is isolated below —
     # correct to keep going. But if the search engine is genuinely down for a
     # stretch, an entire batch of queries fails just as fast, and the loop would
@@ -1505,10 +1567,10 @@ async def run_automation(
 
     # Task 22: process query variations in CONCURRENT BATCHES, not one at a
     # time. The old loop searched + fully extracted each query variation strictly
-    # sequentially, so with a large minResults budget (up to MAX_TOTAL_QUERIES
-    # variations) the wall-clock deadline ran out after only a handful of queries
-    # no matter how many good variations were left to try — the confirmed
-    # throughput bottleneck. Reuse the exact concurrency pattern
+    # sequentially, so with a large minResults budget the wall-clock deadline
+    # ran out after only a handful of queries no matter how many good
+    # variations were left to try — the confirmed throughput bottleneck. Reuse
+    # the exact concurrency pattern
     # _search_and_extract already uses internally (a per-result asyncio.gather
     # with return_exceptions): run QUERY_BATCH_SIZE query variations side by side
     # and merge their leads. seen_urls stays a single shared set (already passed
@@ -1528,7 +1590,7 @@ async def run_automation(
             return e
 
     qi = start_index
-    while qi < len(ordered_queries):
+    while True:
         # Stop checks — now observed at BATCH granularity, the ONLY place
         # pause/deadline are checked. Up to QUERY_BATCH_SIZE queries may complete
         # before the next check; a deliberate trade of pause-timing precision for
@@ -1546,7 +1608,15 @@ async def run_automation(
             stopped_at = qi
             break
 
+        # Task 23: grow the query list on demand rather than looping over a
+        # precomputed one — this is what lets the job keep inventing new
+        # query text for as long as the deadline/target above allow, instead
+        # of stopping the moment a small fixed list runs out.
+        _grow_queries(qi + QUERY_BATCH_SIZE)
         batch = ordered_queries[qi : qi + QUERY_BATCH_SIZE]
+        if not batch:
+            break  # genuinely nothing left to generate — normal completion, not a pause
+
         batch_results = await asyncio.gather(*(_run_one_query(t) for t in batch))
 
         batch_failures = 0
