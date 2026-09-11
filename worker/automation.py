@@ -143,6 +143,12 @@ _PDF_CONTENT_TYPES = {
     "text/pdf",
 }
 
+# Task 17: a result's own page can link out to many documents; bound how many
+# embedded-PDF links we follow per page rather than pulling them all (each is a
+# separate GET + pypdf parse). Not user-configurable this pass — a fixed,
+# reasonable default is enough; revisit only if real usage shows 3 is too low.
+_MAX_EMBEDDED_PDFS_PER_PAGE = 3
+
 
 def _decode_ddg_url(href: str) -> str:
     """DDG result <a> hrefs are redirect links. Decode the real destination URL."""
@@ -822,7 +828,21 @@ def extract_lead_page(result: SearchResult) -> list[dict]:
         return []
 
     soup = BeautifulSoup(html, "lxml")
-    page_text = soup.get_text(" ", strip=True)
+
+    # Task 17: combine the page's own visible text with the text of any PDFs the
+    # page links out to (filings, licenses, rosters, brochures), then extract
+    # from the one combined blob — exactly like the page-alone handling today.
+    # A page can link to many documents; _find_embedded_pdf_links caps how many
+    # we follow. A PDF that fails to fetch/parse contributes nothing. Note the
+    # raw `html` passed to the extractors below is still *this page's* HTML, not
+    # the PDF's — only the plain-text path benefits from the PDF text, which is
+    # correct since a PDF has no mailto: links to speak of.
+    combined_text_parts = [soup.get_text(" ", strip=True)]
+    for pdf_url in _find_embedded_pdf_links(soup, result.url):
+        pdf_text = _fetch_pdf_text(pdf_url)
+        if pdf_text.strip():
+            combined_text_parts.append(pdf_text)
+    page_text = "\n".join(combined_text_parts)
 
     # Use dedicated extractors — they handle mailto: links, junk-domain
     # filtering, and false-extension removal so automation.py has no
@@ -886,24 +906,22 @@ def _is_pdf_result(result: SearchResult) -> bool:
         return False
 
 
-def extract_lead_pdf(result: SearchResult) -> list[dict]:
-    """Download a PDF result, extract its text, and produce 0..N leads.
-
-    Reuses the exact same _build_leads/_extract_* pipeline extract_lead_page()
-    uses on HTML text — no parallel extraction implementation for PDF text. A PDF
-    that can't be fetched or parsed (corrupt/encrypted/scanned-image-only, or
-    pypdf unavailable) yields zero leads rather than crashing the job.
+def _fetch_pdf_text(url: str) -> str:
+    """Download a PDF and return its extracted text, or \"\" on any failure
+    (unreachable, corrupt, encrypted, scanned-image-only, or pypdf unavailable).
+    Shared by extract_lead_pdf (a result that IS a PDF) and extract_lead_page's
+    new embedded-PDF-link following (a result whose PAGE links to a PDF).
     """
     try:
         resp = requests.get(
-            result.url,
+            url,
             headers={"User-Agent": BROWSER_USER_AGENT},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         resp.raise_for_status()
         reader = PdfReader(BytesIO(resp.content))
         if reader.is_encrypted:
-            return []
+            return ""
         # Collect across all pages — try/except per page so one bad page doesn't
         # discard the whole document's text.
         page_texts: list[str] = []
@@ -914,10 +932,49 @@ def extract_lead_pdf(result: SearchResult) -> list[dict]:
                 text = ""
             if text.strip():
                 page_texts.append(text)
-        pdf_text = "\n".join(page_texts)
+        return "\n".join(page_texts)
     except Exception:
-        return []
+        return ""
 
+
+def _find_embedded_pdf_links(
+    soup: "BeautifulSoup",
+    base_url: str,
+    limit: int = _MAX_EMBEDDED_PDFS_PER_PAGE,
+) -> list[str]:
+    """Scan a parsed page for <a href> links pointing at a PDF (case-insensitive,
+    ignoring a trailing query string), resolve each to an absolute URL via the
+    existing _absolute_url(), dedupe, and cap at `limit` — a page can link to
+    many documents; bound the extra cost rather than following all of them.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for a in soup.select("a[href]"):
+        href = a.get("href") or ""
+        path = href.lower().split("?", 1)[0].rstrip("/")
+        if not path.endswith(".pdf"):
+            continue
+        abs_url = _absolute_url(href, base_url)
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        found.append(abs_url)
+        if len(found) >= limit:
+            break
+    return found
+
+
+def extract_lead_pdf(result: SearchResult) -> list[dict]:
+    """Download a PDF result, extract its text, and produce 0..N leads.
+
+    Reuses the exact same _build_leads/_extract_* pipeline extract_lead_page()
+    uses on HTML text — no parallel extraction implementation for PDF text. A PDF
+    that can't be fetched or parsed (corrupt/encrypted/scanned-image-only, or
+    pypdf unavailable) yields zero leads rather than crashing the job. The actual
+    PDF-to-text work lives in the shared _fetch_pdf_text() helper (Task 17), so
+    this is a thin wrapper over that + the shared extraction sequence.
+    """
+    pdf_text = _fetch_pdf_text(result.url)
     if not pdf_text.strip():
         return []
 
