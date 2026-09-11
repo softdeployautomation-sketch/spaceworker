@@ -79,6 +79,20 @@ def extract_emails(text: str, html: str = "") -> list[str]:
     cleaned = []
     for email in emails:
         email = email.lower().strip().rstrip(".")
+        # A real email's local-part can never start with "." (RFC 5321/5322) --
+        # confirmed live from real extracted output (".574@hotmail.com",
+        # ".perez@gmail.com"): adjacent source-text punctuation (a bullet point,
+        # a list number, an ellipsis) bleeds into the regex match as a leading
+        # dot, since the character class legitimately allows "." WITHIN a local
+        # part and has no way to know it's actually the FIRST character. Strip
+        # any leading dots from the local-part specifically -- recovers the
+        # real email underneath rather than silently keeping an invalid one or
+        # discarding a genuine lead outright.
+        if "@" in email:
+            local, _, domain_part = email.partition("@")
+            local = local.lstrip(".")
+            if local:
+                email = f"{local}@{domain_part}"
 
         # Skip junk domains
         domain = email.split("@")[-1] if "@" in email else ""
