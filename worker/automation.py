@@ -1154,19 +1154,39 @@ def _extract_result(result: SearchResult,
 
 # Minimum-results auto-expansion (Task: "keep adding related words until we
 # hit the minimum"). Deterministic, no external API/LLM dependency — appends
-# generic qualifier suffixes to each ORIGINAL base term to generate new search
+# qualifier suffixes to each ORIGINAL base term to generate new search
 # variants, one suffix per round (so the outer loop's between-round "have we
 # hit the minimum yet" check actually has a chance to stop early instead of
 # every suffix being dumped into a single first round). Bounded on both axes
 # (rounds = len(_EXPANSION_SUFFIXES), and total query count) so a
 # never-satisfiable minimum (e.g. minResults=10000) can't loop indefinitely or
 # hammer the search engine.
+#
+# Ported directly from the standalone Lead Extractor's real, proven live
+# automation loop (app/server/automation_server.py's DDG_QUERY_VARIATIONS —
+# NOT the separate, unused-by-that-flow app/search/ddg_search.py SEARCH_MODES
+# module). Confirmed by reading the standalone's actual extraction path
+# (extract_from_pdf reads every page of a PDF via pdfplumber, same as this
+# file's own unbounded _fetch_pdf_text, and uses the identical email regex/
+# filter logic already in this file's extractors/email_extractor.py) that the
+# real gap producing "1500 emails from one PDF" vs. single-digit leads here
+# was never extraction depth — it was query targeting. The suffixes below
+# (previously generic single-business qualifiers like " near me"/" LLC") are
+# replaced with the standalone's real list, which deliberately hunts for
+# BULK multi-email documents (rosters, membership/staff directories, board
+# lists) rather than one business's single contact page. Every one of these
+# still gets `filetype:pdf`+`intext:@`-biased by _bias_query_toward_pdfs()
+# below, exactly like the standalone force-appends `filetype:pdf` to every
+# query in its own loop.
 _EXPANSION_SUFFIXES = [
-    " near me", " company", " services", " LLC", " inc", " corp",
-    " reviews", " contact", " directory", " listing", " association",
-    " board", " license", " licensed", " certified", " professional",
-    " local", " best", " top rated", " agency", " group", " office",
-    " team", " staff", " for hire", " hiring", " jobs", " careers",
+    " directory", " roster", " members", " membership",
+    " board of directors", " committee", " officers", " chapter",
+    " email directory", " staff directory", " contact list",
+    " member directory", " phone directory", " directory contact",
+    " annual report", " meeting minutes", " registration form",
+    " volunteers", " club", " association", " foundation",
+    " nonprofit", " public records", " state filing", " tax exempt",
+    " organization", " leadership", " team", " contacts page",
 ]
 # The real stopping condition for a minimum-driven job should be the duration
 # cap (up to 180 minutes / 3 hours — see app/api/jobs/route.ts), not running out
