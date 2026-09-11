@@ -1,6 +1,8 @@
 # Task 20 — Browser-driven, click-through search discovery (alternative to raw HTML parsing)
 
-**Status: ready to consider, real tradeoffs below — read before assigning.** Written 2026-09-11, based on directly reading the standalone extractor's FastAPI/WebSocket server (`lead-extractor-windows-build.zip`, `app/server/automation_server.py`, its `AutomationManager` class).
+**Status: VALIDATED, DO NOT IMPLEMENT (2026-09-11).** The validation step this doc asked for was run before any port was attempted, exactly per the gate below — real result: browser-driven discovery performed *worse*, not better. Across repeated tries on real lead-gen queries, plain-HTTP raw-HTML parsing reliably returned real results (12 result anchors, 3/3 tries, resolving to real reachable businesses) while headless Chromium got a stripped DDG anti-bot page 3/3 tries (0 results) — a different block-page format than `_DDG_ANOMALY_MARKER` even recognizes, which was itself a real, separate bug now fixed (see `worker/automation.py`'s `_DDG_BLOCK_MARKERS`). The likely mechanism: DDG's bot-detection is tuned against exactly what a headless browser looks like, so appearing "more like a real browser" made things worse here, not better. Caveat: tested from a residential IP, not the VPS's datacenter IP, so absolute block rates will differ in production — but the mechanism (plain HTTP outperforming headless Chromium against this specific target) is the signal that matters, and there's no reason to expect it reverses on a different IP. Do not assign this task. Kept below for the record.
+
+Written 2026-09-11, based on directly reading the standalone extractor's FastAPI/WebSocket server (`lead-extractor-windows-build.zip`, `app/server/automation_server.py`, its `AutomationManager` class).
 
 ## What this actually is (correcting an earlier assumption in this project)
 

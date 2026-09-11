@@ -218,6 +218,18 @@ class DDGBlockedError(Exception):
 
 _DDG_URL = "https://html.duckduckgo.com/html/"
 _DDG_ANOMALY_MARKER = "anomaly-modal"  # DDG's actual CAPTCHA challenge div class
+# A second, DIFFERENT block-page DDG serves specifically to headless/automated
+# browsers (confirmed live 2026-09-11, via a real Task 20 validation test: 3/3
+# headless-Chromium requests got this page, 0/3 got the anomaly-modal one) --
+# a stripped error page, not the CAPTCHA modal, so the marker above alone
+# silently missed it and would have returned zero results with no indication
+# why. Checked as a tuple everywhere _DDG_ANOMALY_MARKER was checked alone.
+_DDG_BLOCK_MARKERS = (_DDG_ANOMALY_MARKER, "if this persists, please email us")
+
+
+def _is_ddg_block_page(content: str) -> bool:
+    lowered = content.lower()
+    return any(marker in lowered for marker in _DDG_BLOCK_MARKERS)
 
 
 def _parse_ddg_html(html: str, base_url: str, max_results: int) -> list[SearchResult]:
@@ -266,8 +278,18 @@ def duckduckgo_search_http(query: str, max_results: int) -> list[SearchResult]:
         headers={"User-Agent": BROWSER_USER_AGENT},
         timeout=20,
     )
+    # 403/429 from DDG's plain-HTTP endpoint is a block/rate-limit response, not a
+    # generic server error -- confirmed live 2026-09-11 (a real 403 was hit
+    # mid-testing). Previously this went straight to resp.raise_for_status(),
+    # raising a plain requests.HTTPError that neither of search_phase()'s two
+    # `except DDGBlockedError:` handlers catch, so the Playwright/exit-node
+    # fallback chain never ran -- the query just silently counted as one
+    # generic failure toward run_automation's consecutive-failure pause instead
+    # of getting the same graceful fallback a content-marker-detected block gets.
+    if resp.status_code in (403, 429):
+        raise DDGBlockedError(f"DuckDuckGo returned HTTP {resp.status_code} (rate-limited/blocked)")
     resp.raise_for_status()
-    if _DDG_ANOMALY_MARKER in resp.text:
+    if _is_ddg_block_page(resp.text):
         raise DDGBlockedError("DuckDuckGo served an anti-bot challenge page")
     return _parse_ddg_html(resp.text, _DDG_URL, max_results)
 
@@ -522,7 +544,7 @@ async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: st
     suffix = "" if proxy is None else "-" + proxy["label"].lower()
     profile_dir = os.path.join(job_dir, "ddg-profile" + suffix)
     url = _DDG_URL + "?q=" + quote_plus(query)
-    content = await _resilient_page_content(profile_dir, url, captcha_markers=(_DDG_ANOMALY_MARKER,), proxy=proxy)
+    content = await _resilient_page_content(profile_dir, url, captcha_markers=_DDG_BLOCK_MARKERS, proxy=proxy)
     return _parse_ddg_html(content, _DDG_URL, max_results)
 
 
@@ -566,7 +588,7 @@ async def duckduckgo_search_paginated(
         await asyncio.sleep(random.uniform(1.5, 3.5))
         await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         content = await page.content()
-        if _DDG_ANOMALY_MARKER in content:
+        if _is_ddg_block_page(content):
             await page.close()
             raise _BlockedByCaptchaError("DuckDuckGo served an anti-bot challenge page")
         return page, content
@@ -601,7 +623,7 @@ async def duckduckgo_search_paginated(
                         content = await page.content()
                     except Exception:
                         break  # couldn't advance — keep whatever was already collected
-                    if _DDG_ANOMALY_MARKER in content:
+                    if _is_ddg_block_page(content):
                         break  # blocked mid-crawl — same reasoning, keep prior pages' results
 
                 new_count = 0
