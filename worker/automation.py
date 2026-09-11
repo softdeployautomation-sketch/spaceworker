@@ -40,7 +40,7 @@ import time
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Awaitable, Callable, Optional
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -149,6 +149,47 @@ _PDF_CONTENT_TYPES = {
 # reasonable default is enough; revisit only if real usage shows 3 is too low.
 _MAX_EMBEDDED_PDFS_PER_PAGE = 3
 
+# Task 18: same-domain contact/about-style links on a result page are followed and
+# their text folded into the extraction blob -- many real sites keep contact info on
+# a /contact or /about sub-page, not the page that shows up in search results. The
+# standalone desktop extractor's proven "Deep search" behavior. Not user-configurable
+# this pass -- a fixed, reasonable default is enough; revisit only if real usage
+# shows 5 is too low.
+_MAX_CONTACT_LINKS_PER_PAGE = 5
+_CONTACT_LINK_KEYWORDS = [
+    "contact", "about", "team", "staff", "people", "leadership",
+    "our-team", "about-us", "contact-us", "get-in-touch", "meet",
+    "directory", "management", "who-we-are",
+]
+
+
+def _find_contact_links(soup: "BeautifulSoup", base_url: str, limit: int = _MAX_CONTACT_LINKS_PER_PAGE) -> list[str]:
+    """Find same-domain contact/about-style links on a page -- ported directly
+    from the standalone desktop extractor's deep_scraper.py (_find_contact_links),
+    confirmed as its real, working "Deep search" behavior. Checks BOTH the href
+    and the link's visible text against the keyword list, and only follows links
+    on the SAME domain as base_url -- never leaves the business's own site.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    base_netloc = urlparse(base_url).netloc
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = a.get_text(strip=True)
+        combined = f"{href} {text}".lower()
+        if not any(kw in combined for kw in _CONTACT_LINK_KEYWORDS):
+            continue
+        abs_url = _absolute_url(href, base_url)
+        if urlparse(abs_url).netloc != base_netloc:
+            continue
+        if abs_url in seen:
+            continue
+        seen.add(abs_url)
+        found.append(abs_url)
+        if len(found) >= limit:
+            break
+    return found
+
 
 def _decode_ddg_url(href: str) -> str:
     """DDG result <a> hrefs are redirect links. Decode the real destination URL."""
@@ -237,6 +278,13 @@ NAV_RETRY_DELAY_SECONDS = 3
 # tens of seconds — 3s (NAV_RETRY_DELAY_SECONDS) retries against the exact same
 # throttle window are pointless. Not a fix for a durable IP-reputation block.
 CAPTCHA_BACKOFF_SECONDS = 20
+
+# Task 18 #4: a bounded, best-effort reCAPTCHA v2 checkbox solve. These bounds
+# keep the whole solve effectively constant-time per attempt, so one stubborn
+# page can't exceed the existing NAV_MAX_ATTEMPTS / backoff budget for its query.
+CAPTCHA_CHECKBOX_SELECTOR = ".recaptcha-checkbox-border"
+CAPTCHA_SOLVE_SETTLE_SECONDS = 4.0   # allow the verify spinners to settle
+CAPTCHA_SOLVE_ATTEMPTS = 2           # one real click + one re-check after a wait
 
 
 def _get_exit_nodes() -> list[dict]:
@@ -348,6 +396,34 @@ class _BlockedByCaptchaError(Exception):
     a 3s retry against the exact same block is pointless)."""
 
 
+async def _try_solve_recaptcha(page) -> bool:
+    """Best-effort, bounded reCAPTCHA v2 checkbox solve on a live async Page
+    (Playwright async_api, matching _resilient_page_content).
+
+    Returns True only when the checkbox challenge has actually cleared. Raises
+    nothing; a page that stays challenged, or that throws off an image-grid /
+    freeform challenge, simply returns False so the caller falls through to the
+    existing 'blocked' -> skip fallback. Deliberately does NOT attempt image-grid
+    / multi-select classification (fragile, IP-dependent, expensive).
+    """
+    try:
+        for _ in range(CAPTCHA_SOLVE_ATTEMPTS):
+            checkbox = page.locator(CAPTCHA_CHECKBOX_SELECTOR).first
+            if not await checkbox.count():
+                return False                    # not a checkbox challenge — not solvable here
+            await checkbox.click()
+            await page.wait_for_timeout(int(CAPTCHA_SOLVE_SETTLE_SECONDS * 1000))
+            still = await page.locator(CAPTCHA_CHECKBOX_SELECTOR).count()
+            grid = await page.locator(".rc-anchor-container, .fbc-imageselect").count()
+            if (not still) and (not grid):
+                return True                     # checkbox gone AND no grid = cleared
+            if grid:
+                return False                    # an image-grid appeared — not solvable here
+        return False
+    except Exception:
+        return False
+
+
 async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: tuple[str, ...], proxy: Optional[dict] = None) -> str:
     """Navigate to `url` in a fresh per-job persistent Chromium context and return
     page.content(). Retries navigation up to NAV_MAX_ATTEMPTS times (transient network
@@ -384,6 +460,12 @@ async def _resilient_page_content(profile_dir: str, url: str, captcha_markers: t
             lowered = content.lower()
             for marker in captcha_markers:
                 if marker.lower() in lowered:
+                    # Task 18 #4: actually TRY to clear the (widget-level) challenge
+                    # first — clicking a reCAPTCHA v2 checkbox a real user would clear
+                    # in ~1s. Only fall through to 'blocked' when it can't be solved.
+                    if await _try_solve_recaptcha(page):
+                        content = await page.content()  # re-read after a successful solve
+                        break
                     raise _BlockedByCaptchaError(f"blocked: '{marker}' marker present")
             return content
         finally:
@@ -805,7 +887,7 @@ def _build_leads(
     return []
 
 
-def extract_lead_page(result: SearchResult) -> list[dict]:
+def extract_lead_page(result: SearchResult, on_step: Optional[SyncStepCallable] = None) -> list[dict]:
     """Fetch one result page and extract email/phone/name metadata as 0..N leads.
 
     Note (Task 13): a page that can't be fetched OR that is genuinely empty of
@@ -829,19 +911,35 @@ def extract_lead_page(result: SearchResult) -> list[dict]:
 
     soup = BeautifulSoup(html, "lxml")
 
-    # Task 17: combine the page's own visible text with the text of any PDFs the
-    # page links out to (filings, licenses, rosters, brochures), then extract
-    # from the one combined blob — exactly like the page-alone handling today.
-    # A page can link to many documents; _find_embedded_pdf_links caps how many
-    # we follow. A PDF that fails to fetch/parse contributes nothing. Note the
-    # raw `html` passed to the extractors below is still *this page's* HTML, not
-    # the PDF's — only the plain-text path benefits from the PDF text, which is
-    # correct since a PDF has no mailto: links to speak of.
     combined_text_parts = [soup.get_text(" ", strip=True)]
+
+    # Task 18: follow same-domain contact/about pages -- the standalone
+    # extractor's proven "Deep search" behavior. Many real sites don't have
+    # contact info on the page that shows up in search results.
+    contact_links = _find_contact_links(soup, result.url)
+    if on_step is not None and contact_links:
+        on_step(f"Found {len(contact_links)} contact page(s) on {result.url}")
+    for link in contact_links:
+        if on_step is not None:
+            on_step(f"Visiting contact page: {link}")
+        try:
+            sub_resp = requests.get(link, headers={"User-Agent": BROWSER_USER_AGENT}, timeout=REQUEST_TIMEOUT_SECONDS)
+            sub_resp.raise_for_status()
+            sub_text = BeautifulSoup(sub_resp.text, "lxml").get_text(" ", strip=True)
+            combined_text_parts.append(sub_text)
+        except Exception:
+            continue  # one bad sub-page doesn't stop the rest
+
+    # Task 17: embedded PDF links (unchanged from the existing implementation)
     for pdf_url in _find_embedded_pdf_links(soup, result.url):
+        if on_step is not None:
+            on_step(f"Opening PDF: {pdf_url}")
         pdf_text = _fetch_pdf_text(pdf_url)
         if pdf_text.strip():
+            if on_step is not None:
+                on_step(f"Extracted {len(pdf_text)} characters from PDF")
             combined_text_parts.append(pdf_text)
+
     page_text = "\n".join(combined_text_parts)
 
     # Use dedicated extractors — they handle mailto: links, junk-domain
@@ -1005,7 +1103,7 @@ def _extract_result(result: SearchResult,
             return extract_lead_pdf(result)
         if on_step is not None:
             on_step(f"Extracting a page at {result.url}")
-        return extract_lead_page(result)
+        return extract_lead_page(result, on_step)
     except Exception:
         return []
 
@@ -1279,7 +1377,7 @@ async def run_automation(
     # (not counted as processed, so resume retries it) so a later dispatcher
     # tick can pick this job back up once the engine is reachable again, rather
     # than silently finishing short.
-    CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 3
+    CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 5
     consecutive_failures = 0
     # Distinguishes an outage-triggered pause (below) from a manual pause or the
     # duration cap — only an outage pause is safe to auto-resume without a human

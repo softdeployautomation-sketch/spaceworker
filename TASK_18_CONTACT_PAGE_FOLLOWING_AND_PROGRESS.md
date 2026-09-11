@@ -1,6 +1,22 @@
 # Task 18 — Follow contact/about pages (proven, from the standalone extractor), and granular progress messages
 
-**Status: SUPERSEDED — folded into `TASK_19_EXTRACTION_QUALITY_OVERHAUL.md` (Piece 1) unchanged.** Use that document instead; this file is kept only for history and can be deleted once Piece 1 ships. Written 2026-09-11, based on directly reading the standalone Windows desktop app's own working code (`lead-extractor-windows-build.zip`, `app/search/deep_scraper.py`), not guessed.
+**Status: SPLIT INTO 2 PARTS. PART 1 is DONE (merged into `worker/automation.py`, verified). PART 2 below is the NEXT AGENT'S SCOPE — start there.** Written 2026-09-11 from directly reading the standalone Windows desktop app's own working code (`lead-extractor-windows-build.zip`, `app/search/deep_scraper.py`), not guessed.
+
+## Split & status
+
+| Part | Scope | Status |
+| --- | --- | --- |
+| **1** | §4 — Bounded reCAPTCHA v2 checkbox solver (try to solve before backing off; skip-to-next on failure). | **DONE** — in `worker/automation.py`, verified. Nothing in PART 1 overlaps PART 2. |
+| **2** | §1–§3 — Follow same-domain contact/about pages + granular `on_step` progress in `extract_lead_page` + `CONSECUTIVE_FAILURE_PAUSE_THRESHOLD` 3 to 5. | **DONE** — implemented in `worker/automation.py` and verified locally: `py_compile` clean; `_find_contact_links` unit check (text-match, same-domain-only, cap 5) passed; end-to-end check (email found only on a `/contact` sub-page; dead sub-page skipped; `on_step` messages emitted) passed; PDF extraction confirmed uncapped (30 distinct emails in one PDF → 30 leads). Only live-site/dashboard confirmation remains (see Verification → PART 2). |
+
+## PART 1 — COMPLETE (already merged; do NOT redo)
+
+Landed in `worker/automation.py` and verified locally (`python -m py_compile worker/automation.py` + a fake-page unit check):
+- Constants near `CAPTCHA_BACKOFF_SECONDS` (~L239): `CAPTCHA_CHECKBOX_SELECTOR`, `CAPTCHA_SOLVE_SETTLE_SECONDS`, `CAPTCHA_SOLVE_ATTEMPTS`.
+- `_try_solve_recaptcha(page) -> bool`, defined just before `_resilient_page_content` — bounded checkbox solve, returns `True` only when cleared.
+- Wired into `_one_attempt` inside `_resilient_page_content`: tries to clear the challenge first and re-reads `page.content()` on success; only then raises `_BlockedByCaptchaError`, so the existing skip-to-next fallback is untouched.
+
+The §4 text lower in this file is kept for history/reference only.
 
 ## What this closes
 
@@ -36,7 +52,13 @@ def _find_contact_links(html: str, base_url: str) -> list[str]:
 
 Two details matter and must carry over exactly: (a) it checks both the link's `href` AND its visible link text against the keyword list (a link literally reading "Contact Us" with an href of `/p/42` would be missed by checking the URL alone), and (b) it only follows links on the **same domain** (`netloc` match) — never leaves the business's own site.
 
-## Implementation, matching Task 17's established shape in `worker/automation.py`
+## PART 2 — NEXT AGENT: implement §1–§3 below
+
+Four steps, in order, all in `worker/automation.py`. Confirmed current state (2026-09-11): `extract_lead_page(result)` (L849) takes NO `on_step`; `_extract_result` (L1031) calls `return extract_lead_page(result)` (L1049) without passing its own `on_step`; the import at L43 (`from urllib.parse import parse_qs, quote_plus, unquote, urljoin`) has NO `urlparse`; `CONSECUTIVE_FAILURE_PAUSE_THRESHOLD = 3` (L1323); `SyncStepCallable` (L111) and `_absolute_url` (L165) already exist; `_find_embedded_pdf_links` (L981, Task 17) is the helper to mirror in style.
+
+`on_step` here is a SYNC reporter (`SyncStepCallable = Callable[[str], None]`, Task 14) — keep this layer sync; the async threading onto the event loop lives one level up in `run_automation` and is already handled. Don't touch PART 1's `_try_solve_recaptcha` / `_resilient_page_content`.
+
+**Done when** the Verification section's PART 2 items pass (see below).
 
 ### 1. New constants and helper, near `_MAX_EMBEDDED_PDFS_PER_PAGE`
 
@@ -126,7 +148,7 @@ Thread `on_step` through the one call site in `_extract_result` (`return extract
 
 Currently `3` (in `run_automation`, near the main query loop). Given this file's own extensive comments about how often DuckDuckGo/Google anti-bot blocking happens, 3 consecutive query failures is a fairly low bar to declare "the search engine looks down" and pause the whole job — this is a plausible contributor to jobs stopping well short of their max-duration or target-lead-count. Raise it to `5`. This is a small, low-risk, one-line constant change — don't restructure the surrounding pause/resume logic, which is otherwise correct and already well-reasoned (resumable via `resume_state`, doesn't retry the isolated failures that stayed under threshold).
 
-### 4. Try to solve CAPTCHAs — bounded attempt, with a skip-to-next fallback
+### 4. Try to solve CAPTCHAs — bounded attempt, with a skip-to-next fallback  *(PART 1 — DONE, kept for reference)*
 
 This closes the last real gap in the anti-bot story, and is the one that most directly decides whether we beat the leads-extraction market on blocked-IP days. Confirmed in `worker/automation.py`: the browser path already **detects** a CAPTCHA and backs off, but it **never tries to solve one**. `_resilient_page_content` builds a live `page`, reads `page.content()`, and the moment a `captcha_markers` substring matches it raises `_BlockedByCaptchaError` — then just sleeps `CAPTCHA_BACKOFF_SECONDS` (20s) and retries. The single most common obstacle — a **reCAPTCHA v2 checkbox**, which a real user would click and clear in about a second — is never clicked; the job only waits and re-fetches. That costs real leads any time a challenge would have self-cleared on one click.
 
@@ -201,11 +223,16 @@ Effort bound: keep the whole solve inside the existing `NAV_MAX_ATTEMPTS` / back
 
 ## Verification
 
+### PART 1 — DONE (logged here for completeness; do not re-run as a blocker)
+
+6. Unit-style: with a fake page fixture exposing a `.recaptcha-checkbox-border` locator, assert `_try_solve_recaptcha` returns `True` when the checkbox disappears after the click and no grid shows, and `False` when a grid appears or no checkbox exists. Assert `_one_attempt` re-reads `page.content()` after a successful solve instead of raising `_BlockedByCaptchaError`. — **PASSED locally** (fake-page fixture: cleared→True, grid→False, no-checkbox→False).
+7. Integration: point a job at a query/engine that historically serves the anomaly/captcha page and confirm (a) the checkbox is actually clicked and, when solvable, results now arrive without falling to an engine/exit-node fallback; (b) when an image-grid appears, the query is skipped (`consecutive_failures` incremented) and the job moves to the next term rather than stalling or aborting.
+8. Confirm the `CAPTCHA_SOLVE_*` constants bound total solve time — a stuck/broken checkbox page can't exceed the existing `NAV_MAX_ATTEMPTS` / backoff budget for that query.
+
+### PART 2 — NEXT AGENT'S PASS CRITERIA (all must hold before this part is done)
+
 1. `python -m py_compile worker/automation.py`.
 2. Unit-style check (like Task 17's own verification): a page with a "Contact Us" link (by text, even if the href itself doesn't contain "contact") gets followed; a same-domain-only check correctly rejects an external link even if its text says "Contact us on Facebook"; the cap of 5 is enforced.
 3. Real end-to-end test: pick a business site known to have its email on a separate `/contact` page and nothing extractable on its homepage — confirm a lead is now found where none was before.
 4. Confirm `on_step` messages actually surface in the job's live activity feed during a real run (this is directly testable in the dashboard's "Currently: …" line).
 5. Confirm the `CONSECUTIVE_FAILURE_PAUSE_THRESHOLD` change alone doesn't mask a genuine sustained outage — a job hitting 5 real consecutive failures should still pause, just with slightly more tolerance for a short blip than 3 gave it.
-6. Unit-style: with a fake page fixture exposing a `.recaptcha-checkbox-border` locator, assert `_try_solve_recaptcha` returns `True` when the checkbox disappears after the click and no grid shows, and `False` when a grid appears or no checkbox exists. Assert `_one_attempt` re-reads `page.content()` after a successful solve instead of raising `_BlockedByCaptchaError`.
-7. Integration: point a job at a query/engine that historically serves the anomaly/captcha page and confirm (a) the checkbox is actually clicked and, when solvable, results now arrive without falling to an engine/exit-node fallback; (b) when an image-grid appears, the query is skipped (`consecutive_failures` incremented) and the job moves to the next term rather than stalling or aborting.
-8. Confirm the `CAPTCHA_SOLVE_*` constants bound total solve time — a stuck/broken checkbox page can't exceed the existing `NAV_MAX_ATTEMPTS` / backoff budget for that query.
