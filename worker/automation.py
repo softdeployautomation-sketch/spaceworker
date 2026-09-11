@@ -92,6 +92,13 @@ BROWSER_USER_AGENT = (
 
 REQUEST_TIMEOUT_SECONDS = 10
 
+# Generous but FINITE cap on one result's total processing time (main page
+# fetch, plus its PDF-detection HEAD/GET fallback, plus any embedded-PDF/
+# contact-page sub-fetches) -- well above REQUEST_TIMEOUT_SECONDS to allow for
+# a legitimate multi-request sequence, far below the 10+ minute real hang this
+# was written to fix. See process_one()'s own comment for the full story.
+PER_RESULT_HARD_TIMEOUT_SECONDS = 60
+
 # Real-crawler (Task 13) defaults for the two user-configurable params, applied
 # worker-side when a job doesn't send them (the upstream API/clamp logic generally
 # forwards them, but this is the second, independent bound as with max_results).
@@ -1230,7 +1237,31 @@ async def _search_and_extract(
             if on_step is not None:
                 asyncio.run_coroutine_threadsafe(on_step(text), loop)
 
-        leads = await loop.run_in_executor(None, _extract_result, result, report_step_sync)
+        # Hard per-result timeout: asyncio.gather() (below) has NO overall
+        # timeout of its own -- if even ONE result's extraction hangs
+        # indefinitely (confirmed live 2026-09-11: a job stalled at 13 leads
+        # for 10+ minutes with zero progress, last known to be on a slow
+        # government site's page), the ENTIRE batch never completes, even
+        # though every other result may have finished in seconds. requests'
+        # own timeout=REQUEST_TIMEOUT_SECONDS doesn't always bound this (DNS
+        # resolution in particular isn't reliably covered by it on every
+        # platform), so this wraps the WHOLE per-result call in a generous but
+        # finite asyncio-level cap. Note the real limitation: this stops the
+        # JOB from waiting on a stuck result, but cannot forcibly kill the
+        # underlying executor thread if it's truly hung (Python's thread pool
+        # has no cancellation mechanism) -- that one thread may stay stuck in
+        # the background. Accepted tradeoff: an occasional leaked thread is far
+        # better than the whole job (and the lane it's holding, blocking every
+        # other user's queued job too) freezing indefinitely.
+        try:
+            leads = await asyncio.wait_for(
+                loop.run_in_executor(None, _extract_result, result, report_step_sync),
+                timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            if on_step is not None:
+                await on_step(f"Skipped (timed out after {PER_RESULT_HARD_TIMEOUT_SECONDS}s): {result.url}")
+            return []
         kept: list[dict] = []
         for lead in leads:
             # Filter at the point of emission so on_progress stream and final list
