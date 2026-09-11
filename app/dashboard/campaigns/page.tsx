@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 
 type Campaign = {
@@ -255,7 +256,12 @@ export default function CampaignsPage() {
         </div>
       )}
 
-      {modalOpen && (
+      {modalOpen && typeof document !== "undefined" && createPortal(
+        // Portal to document.body — see the same fix + full rationale on
+        // components/modal.tsx and the mailboxes page: this page's content
+        // sits inside Shell's z-10 wrapper, a sibling (not an ancestor) of
+        // the app's z-30 Dock, so a nested z-50 here never actually competed
+        // against the Dock in the real stacking order.
         <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 dark:bg-black/70">
           <div className="mx-auto my-8 w-full max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-950">
             <h2 className="text-lg font-semibold">New campaign</h2>
@@ -401,7 +407,8 @@ export default function CampaignsPage() {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );

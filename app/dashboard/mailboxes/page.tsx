@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 
 type Mailbox = {
   id: string;
@@ -324,19 +325,27 @@ export default function MailboxesPage() {
           })}
         </div>
       )}
-  {modalOpen && (
+  {modalOpen && typeof document !== "undefined" && createPortal(
+        // Rendered via a portal to document.body, not in place — this page's
+        // content sits inside Shell's z-10 wrapper, a SIBLING of the app's
+        // z-30 Dock (the desktop-style bottom nav), not an ancestor of it. A
+        // nested z-50 only competes within its own stacking context, so this
+        // modal was rendering behind the Dock regardless of its own z-index —
+        // confirmed live via a screenshot showing the Dock's icons overlapping
+        // the modal's bottom edge. A portal escapes that ancestor entirely so
+        // z-50 is compared against the real global stacking order.
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-6 shadow-xl dark:bg-zinc-900">
+          <div className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-xl dark:bg-zinc-900">
             <h2 className="text-lg font-semibold">
               {editing ? "Edit mailbox" : "Add mailbox"}
             </h2>
-            <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
               {editing
                 ? "Leave the password blank to keep the current one."
                 : "Credentials are encrypted with AES-256-GCM before they are stored."}
             </p>
 
-            <div className="mt-5 flex flex-col gap-4">
+            <div className="mt-3 flex flex-col gap-2.5">
               <label className="flex flex-col gap-1 text-sm font-medium">
                 Label
                 <input
@@ -344,7 +353,7 @@ export default function MailboxesPage() {
                   value={form.label}
                   onChange={(e) => setForm({ ...form, label: e.target.value })}
                   placeholder="e.g. Sales outreach"
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
 
@@ -355,7 +364,7 @@ export default function MailboxesPage() {
                   value={form.host}
                   onChange={(e) => setForm({ ...form, host: e.target.value })}
                   placeholder="smtp.example.com"
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
 
@@ -366,7 +375,7 @@ export default function MailboxesPage() {
                     type="number"
                     value={form.port}
                     onChange={(e) => setForm({ ...form, port: e.target.value })}
-                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                    className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-sm font-medium">
@@ -375,7 +384,7 @@ export default function MailboxesPage() {
                     type="number"
                     value={form.dailyLimit}
                     onChange={(e) => setForm({ ...form, dailyLimit: e.target.value })}
-                    className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                    className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                   />
                 </label>
               </div>
@@ -387,7 +396,7 @@ export default function MailboxesPage() {
                   value={form.username}
                   onChange={(e) => setForm({ ...form, username: e.target.value })}
                   placeholder="you@example.com"
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
 
@@ -398,10 +407,10 @@ export default function MailboxesPage() {
                   value={form.fromAddress}
                   onChange={(e) => setForm({ ...form, fromAddress: e.target.value })}
                   placeholder="you@example.com"
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
-                <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
-                  Leave blank for a normal email account — most providers send as whichever address you log in with. Only needed for a relay service like Resend, where you log in as a fixed account but want to send as a specific address.
+                <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
+                  Leave blank for a normal account. Only needed for a relay service like Resend where you send as a different address than you log in with.
                 </span>
               </label>
 
@@ -412,7 +421,7 @@ export default function MailboxesPage() {
                   value={form.password}
                   onChange={(e) => setForm({ ...form, password: e.target.value })}
                   placeholder={editing ? "Leave blank to keep current" : "SMTP password"}
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
 
@@ -427,9 +436,9 @@ export default function MailboxesPage() {
               </label>
             </div>
 
-            {formError && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{formError}</p>}
+            {formError && <p className="mt-2.5 text-sm text-red-600 dark:text-red-400">{formError}</p>}
 
-            <div className="mt-6 flex gap-2">
+            <div className="mt-4 flex gap-2">
               <button
                 type="button"
                 onClick={save}
@@ -447,7 +456,8 @@ export default function MailboxesPage() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
