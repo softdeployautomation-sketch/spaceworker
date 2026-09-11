@@ -40,6 +40,7 @@ import shutil
 import sys
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Awaitable, Callable, Optional
@@ -101,6 +102,32 @@ REQUEST_TIMEOUT_SECONDS = 10
 # a legitimate multi-request sequence, far below the 10+ minute real hang this
 # was written to fix. See process_one()'s own comment for the full story.
 PER_RESULT_HARD_TIMEOUT_SECONDS = 60
+
+# Task 22/24: a DEDICATED, generously-sized thread pool for search dispatch and
+# per-result extraction (PDF download + parse, page fetch), used everywhere
+# below instead of the implicit default executor (`run_in_executor(None, ...)`).
+# Confirmed live to be the dominant remaining bottleneck after every other
+# fix this session: this box has only 4 CPUs, so Python's default executor
+# sizing (`min(32, cpu_count+4)`) caps out at just 8 worker threads. Task 22's
+# query-level batching (QUERY_BATCH_SIZE concurrent queries) STACKS on top of
+# each query's own existing per-result concurrency (every result on one
+# query's search already runs concurrently) -- one real batch can submit 100+
+# extraction tasks at once, all sharing that same 8-thread pool. Verified
+# directly: running one query in isolation (no concurrent siblings) got 1969
+# leads in 78s -- close to the standalone's 2493 for the identical query --
+# while the same query bundled into a real 5-wide batch got a small fraction
+# of that, with many "Skipped (timed out after 60s)" entries on exactly the
+# biggest, richest documents (the ones that take longest to download). The
+# 60s-per-result timeout is measured from dispatch, not from when a thread
+# actually starts the work -- a task stuck 55s deep in an 8-thread queue times
+# out even if its own real download+parse would only take a few seconds.
+# These tasks are I/O-bound (network download) with moderate CPU parsing on
+# top, not CPU-bound number-crunching, so a much larger pool is safe on a
+# 4-CPU box -- confirmed live, CPU usage stayed well under 50% even under the
+# heaviest tested load. 128 comfortably covers a full batch's realistic
+# result count (QUERY_BATCH_SIZE=5 x ~25 typical results/query) without
+# queueing delay dominating the timeout budget.
+_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=128, thread_name_prefix="extract")
 
 # Real-crawler (Task 13) defaults for the two user-configurable params, applied
 # worker-side when a job doesn't send them (the upstream API/clamp logic generally
@@ -915,7 +942,7 @@ async def search_phase(query: str, params: dict, job_dir: str,
                 await on_step(f"Google blocked — falling back to DuckDuckGo for: {query}")
             loop = asyncio.get_event_loop()
             try:
-                return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
+                return await loop.run_in_executor(_EXTRACTION_EXECUTOR, duckduckgo_search_http, pdf_query, max_results)
             except DDGBlockedError:
                 try:
                     return await duckduckgo_search_playwright(pdf_query, max_results, job_dir)
@@ -939,7 +966,7 @@ async def search_phase(query: str, params: dict, job_dir: str,
 
     loop = asyncio.get_event_loop()
     try:
-        return await loop.run_in_executor(None, duckduckgo_search_http, pdf_query, max_results)
+        return await loop.run_in_executor(_EXTRACTION_EXECUTOR, duckduckgo_search_http, pdf_query, max_results)
     except DDGBlockedError:
         try:
             # Confirmed-real fallback (see duckduckgo_search_http docstring) — the
@@ -1394,7 +1421,7 @@ async def _search_and_extract(
         # other user's queued job too) freezing indefinitely.
         try:
             leads = await asyncio.wait_for(
-                loop.run_in_executor(None, _extract_result, result, report_step_sync),
+                loop.run_in_executor(_EXTRACTION_EXECUTOR, _extract_result, result, report_step_sync),
                 timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
