@@ -36,8 +36,10 @@ import itertools
 import os
 import random
 import re
+import shutil
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Awaitable, Callable, Optional
@@ -548,12 +550,29 @@ async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: st
     (`ddg-profile-us`/`ddg-profile-ca`) is used instead of the shared `ddg-profile` —
     so cookies/session state from the direct-IP requests never leak into what
     DuckDuckGo sees as a different visitor (and vice versa).
+
+    Task 22/24: `profile_dir` gets a fresh uuid suffix EVERY call — Task 22 made
+    run_automation call this (and its siblings below) up to QUERY_BATCH_SIZE times
+    CONCURRENTLY within one job, but this function's profile_dir used to be a
+    single fixed path per job_dir. Confirmed live: 5 concurrent calls sharing one
+    profile directory means Chromium's persistent-context lock on that directory
+    lets only ONE of them actually launch — the other 4 fail immediately with
+    "BrowserType.launch_persistent_context: Target page, context or browser has
+    been closed", contributing zero leads every single batch. A unique dir per
+    call removes the contention entirely; the (unproven, and now moot) benefit of
+    a shared profile — carrying DDG session/cookie state between different query
+    variations — isn't worth silently discarding 80% of every batch's work for.
+    Removed again after use so a long job's many queries don't leave hundreds of
+    throwaway Chromium profiles on disk.
     """
     suffix = "" if proxy is None else "-" + proxy["label"].lower()
-    profile_dir = os.path.join(job_dir, "ddg-profile" + suffix)
+    profile_dir = os.path.join(job_dir, "ddg-profile" + suffix + "-" + uuid.uuid4().hex[:10])
     url = _DDG_URL + "?q=" + quote_plus(query)
-    content = await _resilient_page_content(profile_dir, url, captcha_markers=_DDG_BLOCK_MARKERS, proxy=proxy)
-    return _parse_ddg_html(content, _DDG_URL, max_results)
+    try:
+        content = await _resilient_page_content(profile_dir, url, captcha_markers=_DDG_BLOCK_MARKERS, proxy=proxy)
+        return _parse_ddg_html(content, _DDG_URL, max_results)
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 async def duckduckgo_search_paginated(
@@ -592,7 +611,16 @@ async def duckduckgo_search_paginated(
     """
     from playwright.async_api import async_playwright
 
-    profile_dir = os.path.join(job_dir, "ddg-multipage-profile")
+    # Task 22/24: unique per call, not a fixed job-wide path — see the same
+    # fix's rationale on duckduckgo_search_playwright above. This function is
+    # the PRIMARY search path whenever pagesPerQuery > 1, which is exactly the
+    # case Task 22's batching runs up to QUERY_BATCH_SIZE of concurrently, so
+    # this collision was live in production, not theoretical: confirmed via a
+    # 5-concurrent-call test sharing one profile_dir that 4 of 5 failed
+    # immediately with "Target page, context or browser has been closed."
+    # Removed again in the `finally` below so a long job's many queries don't
+    # leave hundreds of throwaway Chromium profiles on disk.
+    profile_dir = os.path.join(job_dir, "ddg-multipage-profile-" + uuid.uuid4().hex[:10])
     url = _DDG_URL + "?q=" + quote_plus(query)
     all_results: list[SearchResult] = []
     seen_urls: set[str] = set()
@@ -607,74 +635,77 @@ async def duckduckgo_search_paginated(
             raise _BlockedByCaptchaError("DuckDuckGo served an anti-bot challenge page")
         return page, content
 
-    async with async_playwright() as p:
-        context = await _launch_persistent_context(p, profile_dir)
-        try:
-            if on_step is not None:
-                await on_step(f"Visiting page 1 of {pages_per_query} of DuckDuckGo results")
+    try:
+        async with async_playwright() as p:
+            context = await _launch_persistent_context(p, profile_dir)
             try:
-                page, content = await _load_page_one(context)
-            except _BlockedByCaptchaError:
-                await asyncio.sleep(CAPTCHA_BACKOFF_SECONDS)
+                if on_step is not None:
+                    await on_step(f"Visiting page 1 of {pages_per_query} of DuckDuckGo results")
+                try:
+                    page, content = await _load_page_one(context)
+                except _BlockedByCaptchaError:
+                    await asyncio.sleep(CAPTCHA_BACKOFF_SECONDS)
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+                    context = await _launch_persistent_context(p, profile_dir)
+                    page, content = await _load_page_one(context)  # let this raise on a second failure
+
+                for page_index in range(max(1, pages_per_query)):
+                    if page_index > 0:
+                        if on_step is not None:
+                            await on_step(f"Visiting page {page_index + 1} of {pages_per_query} of DuckDuckGo results")
+                        # Confirmed live by dumping DDG's real page-1 DOM: the "nav-link"
+                        # class sits on the wrapping <div>, not the <form> itself
+                        # (`<div class="nav-link"><form action="/html/" method="post">...`)
+                        # — the previous `form.nav-link` selector could never match
+                        # anything, so nav_form was always None and every query silently
+                        # capped at page 1's ~10 results regardless of pagesPerQuery.
+                        nav_form = await page.query_selector("div.nav-link form")
+                        if nav_form is None:
+                            break  # DDG has no further pages for this query
+                        await asyncio.sleep(random.uniform(1.5, 3.5))
+                        try:
+                            # Confirmed live: racing page.content() against
+                            # wait_for_load_state("domcontentloaded") right after
+                            # form.submit() throws "Unable to retrieve content
+                            # because the page is navigating and changing the
+                            # content" — a real, reproducible race, not a rare
+                            # flake — because the two aren't actually tied to the
+                            # same navigation event. expect_navigation() waits on
+                            # the navigation itself (the one form.submit() causes)
+                            # before content() ever runs, which a live test
+                            # confirmed reliably returns page 2's real, distinct
+                            # results instead of racing into this exception on
+                            # every single attempt.
+                            async with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000):
+                                await nav_form.evaluate("form => form.submit()")
+                            content = await page.content()
+                        except Exception:
+                            break  # couldn't advance — keep whatever was already collected
+                        if _is_ddg_block_page(content):
+                            break  # blocked mid-crawl — same reasoning, keep prior pages' results
+
+                    new_count = 0
+                    for r in _parse_ddg_html(content, _DDG_URL, max_results):
+                        if r.url in seen_urls:
+                            continue
+                        seen_urls.add(r.url)
+                        all_results.append(r)
+                        new_count += 1
+                    if len(all_results) >= max_results:
+                        break
+                    if new_count == 0 and page_index > 0:
+                        break  # a real page with nothing new — treat as end of results
+            finally:
                 try:
                     await context.close()
                 except Exception:
                     pass
-                context = await _launch_persistent_context(p, profile_dir)
-                page, content = await _load_page_one(context)  # let this raise on a second failure
-
-            for page_index in range(max(1, pages_per_query)):
-                if page_index > 0:
-                    if on_step is not None:
-                        await on_step(f"Visiting page {page_index + 1} of {pages_per_query} of DuckDuckGo results")
-                    # Confirmed live by dumping DDG's real page-1 DOM: the "nav-link"
-                    # class sits on the wrapping <div>, not the <form> itself
-                    # (`<div class="nav-link"><form action="/html/" method="post">...`)
-                    # — the previous `form.nav-link` selector could never match
-                    # anything, so nav_form was always None and every query silently
-                    # capped at page 1's ~10 results regardless of pagesPerQuery.
-                    nav_form = await page.query_selector("div.nav-link form")
-                    if nav_form is None:
-                        break  # DDG has no further pages for this query
-                    await asyncio.sleep(random.uniform(1.5, 3.5))
-                    try:
-                        # Confirmed live: racing page.content() against
-                        # wait_for_load_state("domcontentloaded") right after
-                        # form.submit() throws "Unable to retrieve content
-                        # because the page is navigating and changing the
-                        # content" — a real, reproducible race, not a rare
-                        # flake — because the two aren't actually tied to the
-                        # same navigation event. expect_navigation() waits on
-                        # the navigation itself (the one form.submit() causes)
-                        # before content() ever runs, which a live test
-                        # confirmed reliably returns page 2's real, distinct
-                        # results instead of racing into this exception on
-                        # every single attempt.
-                        async with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000):
-                            await nav_form.evaluate("form => form.submit()")
-                        content = await page.content()
-                    except Exception:
-                        break  # couldn't advance — keep whatever was already collected
-                    if _is_ddg_block_page(content):
-                        break  # blocked mid-crawl — same reasoning, keep prior pages' results
-
-                new_count = 0
-                for r in _parse_ddg_html(content, _DDG_URL, max_results):
-                    if r.url in seen_urls:
-                        continue
-                    seen_urls.add(r.url)
-                    all_results.append(r)
-                    new_count += 1
-                if len(all_results) >= max_results:
-                    break
-                if new_count == 0 and page_index > 0:
-                    break  # a real page with nothing new — treat as end of results
-        finally:
-            try:
-                await context.close()
-            except Exception:
-                pass
-    return all_results[:max_results]
+        return all_results[:max_results]
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
 
 
 async def google_search(
@@ -699,14 +730,28 @@ async def google_search(
     `chrome-profile` — so cookies/session state from the direct-IP requests never
     leak into what Google sees as a different visitor (and vice versa).
     """
+    # Task 22/24: unique per call — same fix and rationale as
+    # duckduckgo_search_playwright/duckduckgo_search_paginated above (Task 22's
+    # batching runs this concurrently across a batch's queries when
+    # engine=="google", and a shared profile_dir means Chromium's persistent-
+    # context lock lets only one concurrent caller through). Safe with zero
+    # continuity loss here specifically: unlike DDG, Google's own pagination
+    # already uses a stable `start=` URL parameter rather than session state
+    # (see this function's own docstring above), so each page/call never
+    # needed to share a profile with any other call in the first place.
+    # Removed again after use so a long job doesn't accumulate throwaway
+    # Chromium profiles on disk.
     suffix = "" if proxy is None else "-" + proxy["label"].lower()
-    profile_dir = os.path.join(job_dir, "chrome-profile" + suffix)
+    profile_dir = os.path.join(job_dir, "chrome-profile" + suffix + "-" + uuid.uuid4().hex[:10])
     url = "https://www.google.com/search?q=" + quote_plus(query)
     if start > 0:
         url += "&start=" + str(start)
-    content = await _resilient_page_content(
-        profile_dir, url, captcha_markers=("unusual traffic", "captcha"), proxy=proxy,
-    )
+    try:
+        content = await _resilient_page_content(
+            profile_dir, url, captcha_markers=("unusual traffic", "captcha"), proxy=proxy,
+        )
+    finally:
+        shutil.rmtree(profile_dir, ignore_errors=True)
     soup = BeautifulSoup(content, "lxml")
     results: list[SearchResult] = []
     for el in soup.select("div.g, div[data-hveid]"):
