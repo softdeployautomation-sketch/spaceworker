@@ -1,6 +1,6 @@
 # Task 18 — Follow contact/about pages (proven, from the standalone extractor), and granular progress messages
 
-**Status: ready to implement.** Written 2026-09-11, based on directly reading the standalone Windows desktop app's own working code (`lead-extractor-windows-build.zip`, `app/search/deep_scraper.py`), not guessed.
+**Status: SUPERSEDED — folded into `TASK_19_EXTRACTION_QUALITY_OVERHAUL.md` (Piece 1) unchanged.** Use that document instead; this file is kept only for history and can be deleted once Piece 1 ships. Written 2026-09-11, based on directly reading the standalone Windows desktop app's own working code (`lead-extractor-windows-build.zip`, `app/search/deep_scraper.py`), not guessed.
 
 ## What this closes
 
