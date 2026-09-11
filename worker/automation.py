@@ -561,10 +561,16 @@ async def duckduckgo_search_paginated(
 ) -> list[SearchResult]:
     """Drive DuckDuckGo's HTML results over up to `pages_per_query` pages via a
     real headless browser, submitting the results page's own "next page" form
-    (form.nav-link) exactly like a human clicking Next — ported from the
-    original desktop engine (automation_server.py ~L978-994), confirmed there
-    as the proven way past page 1: DDG's next-page state lives in that form's
-    hidden fields tied to the CURRENT browser session, not a stable/guessable
+    (inside a `<div class="nav-link">` wrapper — see the selector fix note at
+    its query_selector call below) exactly like a human clicking Next —
+    adapted from the original desktop engine (automation_server.py ~L978-994).
+    That engine's own selector (`form.nav-link`) turns out to have the same
+    bug this one did: confirmed live by dumping DDG's real page-1 DOM that the
+    `nav-link` class sits on the wrapping `<div>`, never on the `<form>`
+    itself, so neither engine's version of this selector could ever have
+    matched anything — this was NOT a proven-working mechanism being ported,
+    despite the original docstring's claim. DDG's next-page state lives in
+    that form's hidden fields tied to the CURRENT browser session, not a stable/guessable
     URL parameter, so re-requesting a fresh URL (as duckduckgo_search_http and
     duckduckgo_search_playwright both do) can only ever get page 1 — this is
     why neither of those two ever advanced past it regardless of pagesPerQuery.
@@ -620,13 +626,31 @@ async def duckduckgo_search_paginated(
                 if page_index > 0:
                     if on_step is not None:
                         await on_step(f"Visiting page {page_index + 1} of {pages_per_query} of DuckDuckGo results")
-                    nav_form = await page.query_selector("form.nav-link")
+                    # Confirmed live by dumping DDG's real page-1 DOM: the "nav-link"
+                    # class sits on the wrapping <div>, not the <form> itself
+                    # (`<div class="nav-link"><form action="/html/" method="post">...`)
+                    # — the previous `form.nav-link` selector could never match
+                    # anything, so nav_form was always None and every query silently
+                    # capped at page 1's ~10 results regardless of pagesPerQuery.
+                    nav_form = await page.query_selector("div.nav-link form")
                     if nav_form is None:
                         break  # DDG has no further pages for this query
                     await asyncio.sleep(random.uniform(1.5, 3.5))
                     try:
-                        await nav_form.evaluate("form => form.submit()")
-                        await page.wait_for_load_state("domcontentloaded", timeout=30_000)
+                        # Confirmed live: racing page.content() against
+                        # wait_for_load_state("domcontentloaded") right after
+                        # form.submit() throws "Unable to retrieve content
+                        # because the page is navigating and changing the
+                        # content" — a real, reproducible race, not a rare
+                        # flake — because the two aren't actually tied to the
+                        # same navigation event. expect_navigation() waits on
+                        # the navigation itself (the one form.submit() causes)
+                        # before content() ever runs, which a live test
+                        # confirmed reliably returns page 2's real, distinct
+                        # results instead of racing into this exception on
+                        # every single attempt.
+                        async with page.expect_navigation(wait_until="domcontentloaded", timeout=30_000):
+                            await nav_form.evaluate("form => form.submit()")
                         content = await page.content()
                     except Exception:
                         break  # couldn't advance — keep whatever was already collected
