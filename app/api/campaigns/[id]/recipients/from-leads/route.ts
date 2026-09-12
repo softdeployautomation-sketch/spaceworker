@@ -39,7 +39,7 @@ export async function POST(
   // we can't prove belongs to this user reads as 404, not 403.
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
-    select: { id: true, mailboxIds: true },
+    select: { id: true, mailboxIds: true, rotateEvery: true },
   });
   if (!campaign) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -131,6 +131,12 @@ export async function POST(
     mailboxIds: campaign.mailboxIds,
     variantRows: variants,
     recipients: fresh,
+    // Continue this campaign's rotation cadence (Task 26, Piece 5b): same
+    // rotateEvery, and offset by the number of items already on the roster so a
+    // batch added later picks up exactly where previous sends left off instead of
+    // restarting mailbox/variant assignment at slot 0.
+    rotateEvery: campaign.rotateEvery,
+    offsetIndex: existingRows.length,
   });
   const { count } = await prisma.emailQueueItem.createMany({ data: rows });
 

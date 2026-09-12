@@ -10,6 +10,7 @@ type Mailbox = {
   username: string;
   fromAddress: string | null;
   secure: boolean;
+  allowInsecure: boolean;
   dailyLimit: number;
   sentToday: number;
   sentTodayDate: string | null;
@@ -19,6 +20,30 @@ type Mailbox = {
   createdAt: string;
 };
 
+// Task 26, Piece 5a — real-world SMTP security as three explicit choices instead
+// of the old single ambiguous "Use TLS" checkbox. Each maps to a conventional
+// default port (STILL editable after, for nonstandard providers), and the send
+// path enforces the correct TLS negotiation per choice.
+type SecurityMode = "starttls" | "implicit" | "none";
+
+const SECURITY_OPTIONS: { value: SecurityMode; label: string; hint: string; port: string }[] = [
+  { value: "starttls", label: "STARTTLS (recommended)", hint: "port 587 — plaintext first, then upgrade", port: "587" },
+  { value: "implicit", label: "Implicit TLS / SSL", hint: "port 465 — TLS from the first byte", port: "465" },
+  { value: "none", label: "None (unencrypted)", hint: "port 25 — self-hosted/internal relays only", port: "25" },
+];
+
+// The `secure` (implicit TLS) of the eventual Mailbox row is derived from the port
+// (465 => true) exactly like the send path, so the form and a real send agree.
+function securityToPayload(mode: SecurityMode, port: number): { secure: boolean; allowInsecure: boolean } {
+  return { secure: port === 465, allowInsecure: mode === "none" };
+}
+
+function modeForMailbox(m: Mailbox): SecurityMode {
+  if (m.allowInsecure) return "none";
+  if (m.port === 465) return "implicit";
+  return "starttls";
+}
+
 type MailboxForm = {
   label: string;
   host: string;
@@ -26,7 +51,7 @@ type MailboxForm = {
   username: string;
   fromAddress: string;
   password: string;
-  secure: boolean;
+  securityMode: SecurityMode;
   dailyLimit: string;
 };
 
@@ -37,7 +62,7 @@ const EMPTY_FORM: MailboxForm = {
   username: "",
   fromAddress: "",
   password: "",
-  secure: true,
+  securityMode: "starttls",
   dailyLimit: "40",
 };
 
@@ -63,6 +88,9 @@ export default function MailboxesPage() {
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
+  // Task 26, Piece 5a — live pre-save connection test in the Add/Edit modal.
+  const [testConnecting, setTestConnecting] = useState(false);
+  const [testConnResult, setTestConnResult] = useState<{ ok: boolean; error?: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,6 +114,7 @@ export default function MailboxesPage() {
     setEditing(null);
     setForm(EMPTY_FORM);
     setFormError("");
+    setTestConnResult(null);
     setModalOpen(true);
   }
 
@@ -98,10 +127,11 @@ export default function MailboxesPage() {
       username: m.username,
       fromAddress: m.fromAddress ?? "",
       password: "",
-      secure: m.secure,
+      securityMode: modeForMailbox(m),
       dailyLimit: String(m.dailyLimit),
     });
     setFormError("");
+    setTestConnResult(null);
     setModalOpen(true);
   }
 
@@ -115,12 +145,14 @@ export default function MailboxesPage() {
         setFormError("Label, host, username and a valid port are required");
         return;
       }
+      const { secure, allowInsecure } = securityToPayload(form.securityMode, port);
       const payload: Record<string, unknown> = {
         label: form.label.trim(),
         host: form.host.trim(),
         port,
         username: form.username.trim(),
-        secure: form.secure,
+        secure,
+        allowInsecure,
         dailyLimit: Math.max(1, dailyLimit),
       };
       if (form.fromAddress.trim()) payload.fromAddress = form.fromAddress.trim();
@@ -144,6 +176,35 @@ export default function MailboxesPage() {
       setFormError(e instanceof Error ? e.message : "Failed to save mailbox");
     } finally {
       setSaving(false);
+    }
+  }
+
+  // Task 26, Piece 5a — pre-save connection test. POSTs the CURRENT form values
+  // (nothing persisted) to /api/mailboxes/test-connection, which verifies against
+  // the same transport logic a real send uses. Lets the user catch a bad
+  // host/port/credentials/TLS-config immediately, before saving.
+  async function testConnection() {
+    setFormError("");
+    setTestConnResult(null);
+    const port = Number(form.port);
+    if (!form.host.trim() || !form.username.trim() || !form.password.trim() || !Number.isInteger(port) || port <= 0) {
+      setTestConnResult({ ok: false, error: "Enter a host, port, username and password first." });
+      return;
+    }
+    const { secure, allowInsecure } = securityToPayload(form.securityMode, port);
+    setTestConnecting(true);
+    try {
+      const res = await fetch("/api/mailboxes/test-connection", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host: form.host.trim(), port, username: form.username.trim(), password: form.password, secure, allowInsecure }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setTestConnResult({ ok: Boolean(data.ok), error: typeof data.error === "string" ? data.error : undefined });
+    } catch {
+      setTestConnResult({ ok: false, error: "Network error" });
+    } finally {
+      setTestConnecting(false);
     }
   }
 
@@ -428,15 +489,51 @@ export default function MailboxesPage() {
                 </span>
               </label>
 
-              <label className="flex items-center gap-2 text-sm font-medium">
-                <input
-                  type="checkbox"
-                  checked={form.secure}
-                  onChange={(e) => setForm({ ...form, secure: e.target.checked })}
-                  className="h-4 w-4"
-                />
-                Use TLS (secure connection)
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Security
+                <select
+                  value={form.securityMode}
+                  onChange={(e) => {
+                    const value = e.target.value as SecurityMode;
+                    const option = SECURITY_OPTIONS.find((o) => o.value === value);
+                    // Choosing a security mode pre-fills the conventional port for it
+                    // (still editable after, for nonstandard providers).
+                    setForm({ ...form, securityMode: value, port: option ? option.port : form.port });
+                  }}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                >
+                  {SECURITY_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>{o.label} — {o.hint}</option>
+                  ))}
+                </select>
+                {form.securityMode === "none" ? (
+                  <span className="text-xs font-normal leading-snug text-amber-600 dark:text-amber-400">
+                    ⚠ Unencrypted — real SMTP providers essentially never need this; it exists for self-hosted/internal relays only.
+                  </span>
+                ) : (
+                  <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
+                    The send is always encrypted; this only picks how the connection negotiates it.
+                  </span>
+                )}
               </label>
+
+              <div className="mt-1 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void testConnection()}
+                  disabled={testConnecting}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                >
+                  {testConnecting ? "Testing…" : "Test connection"}
+                </button>
+                {testConnResult && (
+                  <span
+                    className={`text-xs ${testConnResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+                  >
+                    {testConnResult.ok ? "✓ Connection OK" : `✗ ${testConnResult.error ?? "Failed"}`}
+                  </span>
+                )}
+              </div>
             </div>
 
             {formError && <p className="mt-2.5 text-sm text-red-600 dark:text-red-400">{formError}</p>}

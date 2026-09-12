@@ -58,6 +58,9 @@ export default function CampaignsPage() {
   const [selectedMailboxIds, setSelectedMailboxIds] = useState<string[]>([]);
   const [subjects, setSubjects] = useState<string[]>([""]);
   const [sharedBody, setSharedBody] = useState("");
+  // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
+  // before the rotation advances (clamped server-side to [1, 1000]; default 1).
+  const [rotateEvery, setRotateEvery] = useState("1");
   const [csvName, setCsvName] = useState("");
   const [csvContent, setCsvContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -268,6 +271,7 @@ export default function CampaignsPage() {
           name: name.trim(),
           mailboxIds: selectedMailboxIds,
           variants,
+          rotateEvery: Number(rotateEvery) || 1,
           ...(fromSearchJobId
             ? { searchJobId: fromSearchJobId }
             : recipientSource === "leads"
@@ -436,6 +440,19 @@ export default function CampaignsPage() {
                   )}
                 </div>
               </div>
+
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Rotate every N emails
+                <span className="text-xs text-zinc-400">— send N recipients from one mailbox/subject before moving to the next (1 = every recipient)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={rotateEvery}
+                  onChange={(e) => setRotateEvery(e.target.value)}
+                  className="w-32 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                />
+              </label>
 
               <label className="flex flex-col gap-1 text-sm font-medium">
                 Body <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc. from your CSV columns'}</span>

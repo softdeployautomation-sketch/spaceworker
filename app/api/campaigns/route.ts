@@ -40,6 +40,7 @@ export async function POST(req: Request) {
     csv?: string;
     searchJobId?: string;
     leadIds?: unknown;
+    rotateEvery?: unknown;
   };
   try {
     body = await req.json();
@@ -71,6 +72,11 @@ export async function POST(req: Request) {
       }
     }
   }
+  // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
+  // before the rotation advances. Clamped server-side like every other numeric
+  // knob in this app (see maxResults/minResults in app/api/jobs/route.ts); no
+  // realistic campaign needs >1000 emails between rotations.
+  const rotateEvery = Math.max(1, Math.min(1000, Math.floor(Number(body.rotateEvery ?? 1))));
 
   const parsed = typeof body.csv === "string" && body.csv.trim() !== ""
     ? parseRecipientsCsv(body.csv)
@@ -208,6 +214,7 @@ export async function POST(req: Request) {
         bodyHtml: "",
         status: "pending_test_confirm",
         mailboxIds,
+        rotateEvery,
         searchJobId,
       },
     });
@@ -221,7 +228,7 @@ export async function POST(req: Request) {
     }
 
     await tx.emailQueueItem.createMany({
-      data: buildQueueItemRows({ campaignId: created.id, mailboxIds, variantRows, recipients }),
+      data: buildQueueItemRows({ campaignId: created.id, mailboxIds, variantRows, recipients, rotateEvery }),
     });
 
     return created;

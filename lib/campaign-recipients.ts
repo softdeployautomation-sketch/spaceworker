@@ -14,20 +14,40 @@ export interface RecipientInput {
   variables: Record<string, unknown>;
 }
 
+// Task 26, Piece 5b — `rotateEvery` (EmailCampaign.rotateEvery, default 1) controls
+// how many consecutive recipients share the SAME mailbox + subject variant before
+// the rotation advances to the next: recipient i gets
+//   mailboxIds[floor(i / rotateEvery) % len]   and   variantRows[floor(i / rotateEvery) % len]
+// Default 1 reproduces the original per-recipient rotation exactly (non-breaking).
+// `offsetIndex` lets the from-leads add-to-existing route continue the rotation at
+// the campaign's current item count instead of restarting at 0, so a batch added
+// later keeps rotating seamlessly across the whole roster.
 export function buildQueueItemRows(opts: {
   campaignId: string;
   mailboxIds: string[];
   variantRows: { id: string }[];
   recipients: RecipientInput[];
+  rotateEvery?: number;
+  offsetIndex?: number;
 }): Prisma.EmailQueueItemCreateManyInput[] {
   const { campaignId, mailboxIds, variantRows, recipients } = opts;
-  return recipients.map((r, i) => ({
-    campaignId,
-    mailboxId: mailboxIds[i % mailboxIds.length],
-    variantId: variantRows[i % variantRows.length].id,
-    toEmail: r.email,
-    variables: r.variables as Prisma.InputJsonValue,
-  }));
+  const rotateEvery = Math.max(1, Math.floor(opts.rotateEvery ?? 1));
+  const offsetIndex = Math.max(0, Math.floor(opts.offsetIndex ?? 0));
+  return recipients.map((r, i) => {
+    // Recipients (i + offsetIndex) across the whole roster; `rotateEvery` consecutive
+    // recipients share the SAME mailbox AND subject variant (block rotation), then the
+    // next `rotateEvery` move to the next pair — exactly the plan's
+    // floor(i/rotateEvery) % len formula for both mailboxIds and variantRows.
+    const slot = Math.floor((i + offsetIndex) / rotateEvery) % mailboxIds.length;
+    const variantSlot = Math.floor((i + offsetIndex) / rotateEvery) % variantRows.length;
+    return {
+      campaignId,
+      mailboxId: mailboxIds[slot],
+      variantId: variantRows[variantSlot].id,
+      toEmail: r.email,
+      variables: r.variables as Prisma.InputJsonValue,
+    };
+  });
 }
 
 // The merge variables carried across for a Lead-derived recipient — mirrors the

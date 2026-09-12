@@ -75,6 +75,12 @@ model Mailbox {
   passwordIv        String
   passwordTag       String
   secure            Boolean          @default(true)
+  // Task 26, Piece 5a — explicit opt-in ONLY for the "None (port 25, unencrypted
+  // relay)" security mode. Default false: the send path then ALWAYS enforces TLS
+  // (requireTLS), even on port 587/25, so the old ambiguous "Use TLS checkbox" can
+  // never silently pick the wrong handshake again. `secure` itself is derived from
+  // port (port 465 => implicit TLS) at write time, not from this flag.
+  allowInsecure      Boolean          @default(false)
   dailyLimit        Int              @default(40)
   sentToday         Int              @default(0)
   sentTodayDate     String?
@@ -104,6 +110,11 @@ model EmailCampaign {
   // Which of the user's mailboxes this campaign's sends rotate across (true
   // in-run sender rotation, replacing the old single `mailboxId` at creation).
   mailboxIds  String[]         @default([])
+  // Task 26, Piece 5b — how many recipients share a mailbox/subject before the
+  // rotation advances to the next. Default 1 = old per-recipient rotation
+  // (non-breaking). Clamped server-side to [1, 1000]. Stored so the from-leads
+  // add-to-existing route can keep rotating on the same cadence.
+  rotateEvery Int              @default(1)
   createdAt   DateTime         @default(now())
   variants    CampaignVariant[]
   checks      DeliverabilityCheck[]

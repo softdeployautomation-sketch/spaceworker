@@ -24,7 +24,7 @@ export async function PUT(
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean;
+    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean; allowInsecure?: boolean;
   };
   try {
     body = await req.json();
@@ -42,7 +42,15 @@ export async function PUT(
     // Empty string -> null/unset: never store "".
     data.fromAddress = fromAddress.length > 0 ? fromAddress : null;
   }
-  if (body.secure !== undefined) data.secure = Boolean(body.secure);
+  // Task 26, Piece 5a — `secure` is derived from the (possibly new) port, never a
+  // checkbox: 465 => implicit TLS, anything else => STARTTLS. allowInsecure is the
+  // explicit plaintext opt-out for the "None" mode and is stored independently. A
+  // save that changes port/security always recomputes secure from the resolved port.
+  if (body.port !== undefined || body.allowInsecure !== undefined) {
+    const resolvedPort = body.port !== undefined ? Number(body.port) : existing.port;
+    data.secure = resolvedPort === 465;
+  }
+  if (body.allowInsecure !== undefined) data.allowInsecure = Boolean(body.allowInsecure);
   if (body.dailyLimit !== undefined) data.dailyLimit = Number(body.dailyLimit);
   if (body.active !== undefined) data.active = Boolean(body.active);
   if (body.password !== undefined && String(body.password).length > 0) {

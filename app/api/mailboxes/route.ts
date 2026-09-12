@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number;
+    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; allowInsecure?: boolean;
   };
   try {
     body = await req.json();
@@ -41,8 +41,13 @@ export async function POST(req: Request) {
   const username = (body.username ?? "").trim();
   const fromAddress = (body.fromAddress ?? "").trim();
   const password = body.password ?? "";
-  const secure = body.secure !== undefined ? Boolean(body.secure) : true;
   const dailyLimit = Number(body.dailyLimit ?? 40);
+  // Task 26, Piece 5a — `secure` (implicit TLS) is DERIVED from port, never taken
+  // from a checkbox: 465 => implicit TLS, anything else => STARTTLS (enforced
+  // server-side). allowInsecure is the only explicit plaintext opt-out, for the
+  // "None" mode, and is stored as its own column.
+  const secure = port === 465;
+  const allowInsecure = body.allowInsecure !== undefined ? Boolean(body.allowInsecure) : false;
 
   if (!label || !host || !username || !password || !Number.isInteger(port) || port <= 0) {
     return NextResponse.json(
@@ -65,6 +70,7 @@ export async function POST(req: Request) {
       passwordIv: iv,
       passwordTag: tag,
       secure,
+      allowInsecure,
       dailyLimit,
     },
     select: MAILBOX_SAFE_SELECT,
