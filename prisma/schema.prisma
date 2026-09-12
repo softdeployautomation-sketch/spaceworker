@@ -361,6 +361,24 @@ model Lead {
   sourceUrl    String?
   snippet      String?
   createdAt    DateTime  @default(now())
-  @@unique([searchJobId, sourceUrl])
+  // Was @@unique([searchJobId, sourceUrl]) -- a REAL, confirmed root-cause bug
+  // (Task 25): that constraint means at most ONE lead can ever be saved per
+  // page/PDF per job, no matter how many distinct emails extraction actually
+  // finds there. Confirmed live: a real membership-directory PDF containing
+  // 105 unique emails reliably extracts all 105 (verified directly against
+  // the worker's own extract_lead_pdf), yet the SAME job's persisted leads
+  // showed exactly 1 row for that URL -- app/api/internal/dispatch/route.ts's
+  // `prisma.lead.createMany({ ..., skipDuplicates: true })` silently dropped
+  // the other 104 as "duplicates" purely because they shared a sourceUrl,
+  // regardless of having entirely different emails. This is almost certainly
+  // the dominant reason every real job all session undercounted so
+  // severely relative to what search/extraction/concurrency fixes proved
+  // was actually being found -- none of those fixes could matter once the
+  // database was discarding the results before they ever reached the UI.
+  // The corrected constraint keeps the original's real purpose (never save
+  // the exact same email twice from the same page, e.g. across a paused/
+  // resumed job re-visiting a URL) while allowing the many distinct emails a
+  // single rich document legitimately contains.
+  @@unique([searchJobId, sourceUrl, email])
   @@index([userId, searchJobId])
 }

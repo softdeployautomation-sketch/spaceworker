@@ -251,9 +251,12 @@ export async function POST(req: Request) {
         // reached Postgres once the job fully finished, so the extract page's
         // live count showed nothing until the very end even on a long,
         // multi-page/PDF crawl. Persist what's been found so far on every
-        // tick instead — skipDuplicates (Lead's [searchJobId, sourceUrl]
-        // unique constraint) makes this a safe no-op for leads already
-        // inserted on a previous tick, so it's cheap to call every ~10s.
+        // tick instead — skipDuplicates (Lead's [searchJobId, sourceUrl, email]
+        // unique constraint — widened from [searchJobId, sourceUrl] alone,
+        // which silently capped every page/PDF at ONE saved lead regardless
+        // of how many distinct emails it actually contained, see Task 25)
+        // makes this a safe no-op for leads already inserted on a previous
+        // tick, so it's cheap to call every ~10s.
         if (Array.isArray(data.leads) && data.leads.length > 0) {
           await prisma.lead.createMany({
             data: buildLeadRows(job, data.leads),
