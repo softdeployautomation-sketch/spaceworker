@@ -19,6 +19,7 @@ export async function GET(
         select: {
           id: true, email: true, phone: true, contactName: true,
           businessName: true, website: true, sourceUrl: true, snippet: true, createdAt: true,
+          validationStatus: true, validationError: true, validatedAt: true,
         },
         orderBy: { createdAt: "asc" },
       },

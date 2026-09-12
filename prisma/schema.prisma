@@ -361,6 +361,13 @@ model Lead {
   sourceUrl    String?
   snippet      String?
   createdAt    DateTime  @default(now())
+  // Task 26, Piece 3 — email deliverability validation. "unchecked" (the default)
+  // means never validated; "valid" means both a syntactically-correct address and
+  // an MX-record-bearing domain (see lib/email-validator.ts); "invalid" carries a
+  // validationError explaining why. Additive and nullable-safe for existing rows.
+  validationStatus String   @default("unchecked") // "unchecked" | "valid" | "invalid"
+  validationError  String?
+  validatedAt      DateTime?
   // Was @@unique([searchJobId, sourceUrl]) -- a REAL, confirmed root-cause bug
   // (Task 25): that constraint means at most ONE lead can ever be saved per
   // page/PDF per job, no matter how many distinct emails extraction actually

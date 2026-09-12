@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
+import { Badge } from "@/components/ui";
 
 type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
 
@@ -33,6 +35,10 @@ interface Lead {
   sourceUrl?: string | null;
   snippet?: string | null;
   createdAt: string;
+  // Task 26, Piece 3 — email deliverability validation.
+  validationStatus?: string | null; // "unchecked" | "valid" | "invalid"
+  validationError?: string | null;
+  validatedAt?: string | null;
 }
 
 interface JobDetail extends Job {
@@ -64,6 +70,27 @@ function isStalled(job: Pick<Job, "status" | "currentStepAt">): boolean {
   return Date.now() - new Date(job.currentStepAt).getTime() > STALL_THRESHOLD_MS;
 }
 
+// Task 26, Piece 1 — compact leads UI. A job's raw `query` is the cross-multiplied,
+// "|"-joined list (e.g. "foo in usa | foo in usa 2025_2026 | …"), which runs hundreds
+// of characters for a real multi-term run. Every job's params stores exactly what the
+// user typed (findTerms/locationTerms), so reconstruct the compact human summary from
+// those and fall back to the query's first pipe-segment only for jobs created before
+// that field existed. The FULL query is still surfaced as a title tooltip at each call
+// site — we stop it consuming layout width, we don't destroy the information.
+function summarizeQuery(job: Pick<Job, "query" | "params">): string {
+  const findTerms = Array.isArray(job.params?.findTerms) ? (job.params.findTerms as string[]) : null;
+  const locationTerms = Array.isArray(job.params?.locationTerms) ? (job.params.locationTerms as string[]) : null;
+  if (findTerms && findTerms.length > 0) {
+    const findLabel = findTerms.length === 1 ? findTerms[0] : `${findTerms[0]} +${findTerms.length - 1}`;
+    if (locationTerms && locationTerms.length > 0) {
+      const locLabel = locationTerms.length === 1 ? locationTerms[0] : `${locationTerms.length} locations`;
+      return `${findLabel} in ${locLabel}`;
+    }
+    return findLabel;
+  }
+  return job.query.split(" | ")[0];
+}
+
 const TEMPLATES: { id: Template; label: string; description: string }[] = [
   { id: "lead", label: "Lead Search", description: "Find businesses and their contact info" },
   { id: "hr", label: "HR / Recruiting", description: "Find candidates / job postings" },
@@ -77,6 +104,35 @@ export default function ExtractPage() {
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
+
+  // Task 26, Piece 2 — lead merging. selectedIds is the Set of lead ids checked
+  // in the results table's checkbox column; when 2+ are selected a floating bar
+  // appears and opens the merge modal, whose field values are pre-filled from the
+  // first non-empty value across the selected leads (and are editable before the
+  // merge is confirmed).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set<string>());
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
+  const [mergeEmail, setMergeEmail] = useState("");
+  const [mergePhone, setMergePhone] = useState("");
+  const [mergeContact, setMergeContact] = useState("");
+  const [mergeBusiness, setMergeBusiness] = useState("");
+  const [mergeWebsite, setMergeWebsite] = useState("");
+
+  // Task 26, Piece 3 — lead upload (import .csv/.txt/.json/.xlsx into a new job)
+  // and per-job batch email validation. Both are additive UI on the existing job
+  // list + leads table: an upload just creates a "done" job, validation writes
+  // validationStatus on the Lead rows.
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadDone, setUploadDone] = useState<{ jobId: string; imported: number; fileName: string } | null>(null);
+  const dragDepthRef = useRef(0);
+  const [dragging, setDragging] = useState(false);
+
+  const [validateBusy, setValidateBusy] = useState(false);
+  const [validateMessage, setValidateMessage] = useState<string | null>(null);
 
   // Current template + per-template field state.
   const [template, setTemplate] = useState<Template>("lead");
@@ -116,6 +172,17 @@ export default function ExtractPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedJobRef = useRef<JobDetail | null>(null);
 
+  // Task 26, Piece 1 — auto-scroll to the newest lead while a job runs. The leads
+  // table's scroll container is `leadsScrollRef`. prevLeadCountRef tracks how many
+  // leads we've already revealed so we only scroll on GROWTH (not every 4s poll
+  // tick); prevJobIdRef resets that baseline when a different job is selected so
+  // simply opening a finished job doesn't yank the view; userScrolledUpRef lets a
+  // user reviewing history opt out (cleared once they return near the bottom).
+  const leadsScrollRef = useRef<HTMLDivElement | null>(null);
+  const prevLeadCountRef = useRef(0);
+  const prevJobIdRef = useRef<string | null>(null);
+  const userScrolledUpRef = useRef(false);
+
   const fetchJobs = useCallback(async () => {
     try {
       const res = await fetch("/api/jobs");
@@ -143,6 +210,34 @@ export default function ExtractPage() {
     }, 4000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchJobs, fetchJobDetail]);
+
+  // Task 26, Piece 1 — auto-scroll the leads table to the newest lead. Only fires
+  // when the count INCREASES and the user hasn't scrolled up to read history, so
+  // a manual review isn't yanked back down by an unrelated re-render.
+  useEffect(() => {
+    const id = selectedJob?.id ?? null;
+    const count = selectedJob?.leads.length ?? 0;
+    if (id !== prevJobIdRef.current) {
+      prevJobIdRef.current = id;
+      prevLeadCountRef.current = count;
+      userScrolledUpRef.current = false;
+      return;
+    }
+    if (count > prevLeadCountRef.current && !userScrolledUpRef.current && leadsScrollRef.current) {
+      leadsScrollRef.current.scrollTo({ top: leadsScrollRef.current.scrollHeight, behavior: "smooth" });
+    }
+    prevLeadCountRef.current = count;
+  }, [selectedJob?.id, selectedJob?.leads.length]);
+
+  // Track whether the user has scrolled up to read earlier leads. "At the bottom"
+  // is judged with a 40px tolerance so landing on the final row counts as being
+  // at the newest lead even if it isn't the very last pixel.
+  function handleLeadsScroll() {
+    const el = leadsScrollRef.current;
+    if (!el) return;
+    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+    userScrolledUpRef.current = !atBottom;
+  }
 
   async function submitJob() {
     setFormError("");
@@ -262,6 +357,143 @@ export default function ExtractPage() {
       void fetchJobs();
     } catch {
       setFormError("Network error while deleting.");
+    }
+  }
+
+  // Task 26, Piece 2 — merge helpers. toggleSelected flips one lead's checkbox in
+  // the selection Set (writer, not mutator, so we always hand React a new Set).
+  function toggleSelected(id: string) {
+    const next = new Set(selectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelectedIds(next);
+  }
+
+  // Opens the merge modal, pre-filling each field from the FIRST non-empty value
+  // found across the currently-selected leads (so the user can edit it if the
+  // auto-pick guessed the wrong source's value).
+  function openMergeModal() {
+    const selected = (selectedJob?.leads ?? []).filter((l) => selectedIds.has(l.id));
+    const pick = (get: (l: Lead) => string | null | undefined) =>
+      selected
+        .map((l) => get(l))
+        .find((v) => v && v.trim().length > 0) ?? "";
+    setMergeEmail(pick((l) => l.email));
+    setMergePhone(pick((l) => l.phone));
+    setMergeContact(pick((l) => l.contactName));
+    setMergeBusiness(pick((l) => l.businessName));
+    setMergeWebsite(pick((l) => l.website));
+    setMergeError("");
+    setMergeOpen(true);
+  }
+
+  // Confirms the merge: POSTs the selected ids + chosen values to the new route,
+  // then re-fetches the job detail so the single new row replaces the merged-away
+  // ones (optional-manual-action weight, not a hot path — re-fetch is fine).
+  async function confirmMerge() {
+    if (!selectedJob) return;
+    const selected = selectedJob.leads.filter((l) => selectedIds.has(l.id));
+    if (selected.length < 2) return;
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      const res = await fetch("/api/leads/merge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          leadIds: selected.map((l) => l.id),
+          merged: {
+            email: mergeEmail,
+            phone: mergePhone,
+            contactName: mergeContact,
+            businessName: mergeBusiness,
+            website: mergeWebsite,
+          },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMergeError(typeof data.error === "string" ? data.error : "Merge failed.");
+        return;
+      }
+      setMergeOpen(false);
+      setSelectedIds(new Set());
+      // Re-fetch so the new merged row appears (and the merged-away rows vanish).
+      void fetchJobDetail(selectedJob.id);
+      void fetchJobs();
+    } catch {
+      setMergeError("Network error while merging.");
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
+  // Task 26, Piece 3 — lead import (uploads become a new "done" job in the same
+  // list) and batch validation. Both are deliberately thin: they call the new
+  // routes, then re-fetch whatever changed to drive the existing UI.
+  function openUploadModal() {
+    setUploadBusy(false);
+    setUploadError("");
+    setUploadDone(null);
+    setUploadOpen(true);
+  }
+
+  async function performUpload(file?: File | null) {
+    if (!file || uploadBusy) return;
+    // Client-side guard mirrors the server's 20MB cap so a huge file fails fast
+    // without a round-trip.
+    if (file.size > 20 * 1024 * 1024) {
+      setUploadError("File is larger than the 20MB limit.");
+      return;
+    }
+    setUploadError("");
+    setUploadBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/leads/upload", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setUploadError(typeof data.error === "string" ? data.error : "Upload failed.");
+        return;
+      }
+      setUploadDone({
+        jobId: typeof data.jobId === "string" ? data.jobId : "",
+        imported: typeof data.imported === "number" ? data.imported : 0,
+        fileName: file.name,
+      });
+      // Refresh the job list and jump straight to the freshly-uploaded job so the
+      // imported leads (and their new "Validate all" button) are visible at once.
+      void fetchJobs();
+      if (typeof data.jobId === "string" && data.jobId) void fetchJobDetail(data.jobId);
+    } catch {
+      setUploadError("Network error while uploading.");
+    } finally {
+      setUploadBusy(false);
+    }
+  }
+
+  // Validates every currently-unchecked lead in the selected job (syntax + MX),
+  // then re-fetches so the status pills in the table update in place.
+  async function validateAll() {
+    if (!selectedJob || validateBusy) return;
+    setValidateBusy(true);
+    setValidateMessage(null);
+    try {
+      const res = await fetch(`/api/jobs/${selectedJob.id}/validate`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setValidateMessage(
+          typeof data.error === "string" ? `Validation failed: ${data.error}` : "Validation failed.",
+        );
+        return;
+      }
+      setValidateMessage(`${data.valid ?? 0} valid, ${data.invalid ?? 0} invalid`);
+      void fetchJobDetail(selectedJob.id);
+    } catch {
+      setValidateMessage("Network error while validating.");
+    } finally {
+      setValidateBusy(false);
     }
   }
 
@@ -417,9 +649,21 @@ export default function ExtractPage() {
 
   return (
     <div className="flex h-full flex-col gap-6 p-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Extract Leads</h1>
-        <p className="mt-1 text-sm text-fg-muted">Pick a search template and extract structured results.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Extract Leads</h1>
+          <p className="mt-1 text-sm text-fg-muted">Pick a search template and extract structured results.</p>
+        </div>
+        {/* Task 26, Piece 3 — bulk import entry point. Uploads land as a new "done"
+            job in the SAME list below, so the imported leads reuse the existing
+            table (and its new validate/merge actions). */}
+        <button
+          type="button"
+          onClick={openUploadModal}
+          className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+        >
+          Import leads
+        </button>
       </div>
 
       {/* Template picker */}
@@ -660,13 +904,13 @@ export default function ExtractPage() {
           {jobs.map((job) => (
             <div
               key={job.id}
-              onClick={() => void fetchJobDetail(job.id)}
+              onClick={() => { setSelectedIds(new Set()); void fetchJobDetail(job.id); }}
               className={`cursor-pointer border-b border-border p-3 last:border-0 hover:bg-black/5 dark:hover:bg-white/5 ${
                 selectedJob?.id === job.id ? "bg-brand-50 dark:bg-brand-900/20" : ""
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{job.query}</span>
+                <span className="truncate text-sm font-medium" title={job.query}>{summarizeQuery(job)}</span>
                 <span className="flex flex-shrink-0 items-center gap-1">
                   {isStalled(job) && (
                     <span
@@ -742,27 +986,16 @@ export default function ExtractPage() {
             <div className="flex flex-col gap-4 p-4">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h2 className="font-semibold">{selectedJob.query}</h2>
+                  <h2 className="font-semibold" title={selectedJob.query}>{summarizeQuery(selectedJob)}</h2>
                   <p className="mt-0.5 text-xs text-fg-muted">
                     {selectedJob.template} template · {selectedJob.lane} lane · {selectedJob.leads.length} leads
                     {Array.isArray(selectedJob.params?.queries) && selectedJob.params.queries.length > 1 &&
                       <span> · {selectedJob.params.queries.length} terms</span>}
                   </p>
-                  {/* Task 14 live activity feed — only while a job is running. A
-                      brand-new job's first tick may not have reported a step yet, so
-                      fall back to "Starting…" when currentStep is null/empty. */}
-                  {selectedJob.status === "running" && (
-                    <>
-                      <p className="mt-1 truncate text-xs text-fg-muted/80" title={selectedJob.currentStep ?? undefined}>
-                        Currently: {selectedJob.currentStep?.trim() ? selectedJob.currentStep : "Starting…"}
-                      </p>
-                      {isStalled(selectedJob) && (
-                        <p className="mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">
-                          This may be stalled — no progress in over 5 minutes.
-                        </p>
-                      )}
-                    </>
-                  )}
+                  {/* Task 26, Piece 1 — the live activity feed + stalled warning moved
+                      BELOW the leads table (next to the auto-scroll) so the newest
+                      lead and the step that just found it are visible together without
+                      scrolling. See the block rendered after the table/empty-state. */}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>
@@ -806,7 +1039,21 @@ export default function ExtractPage() {
                       >
                         Create email campaign
                       </Link>
+                      {/* Task 26, Piece 3 — batch email validation (syntax + MX).
+                          Only shows once there are leads; disabled while the request
+                          is in flight and while there's nothing unchecked to do. */}
+                      <button
+                        type="button"
+                        onClick={() => void validateAll()}
+                        disabled={validateBusy || !selectedJob.leads.some((l) => !l.validationStatus || l.validationStatus === "unchecked")}
+                        className="rounded-lg border border-brand-500 px-3 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-400 dark:hover:bg-brand-900/40"
+                      >
+                        {validateBusy ? "Validating…" : "Validate all"}
+                      </button>
                     </>
+                  )}
+                  {validateMessage && (
+                    <p className="mt-2 text-xs text-fg-muted">{validateMessage}</p>
                   )}
                 </div>
               </div>
@@ -849,21 +1096,53 @@ export default function ExtractPage() {
                 const showPhone = mode === "full";
                 const showWebsite = mode === "full";
                 const showContact = mode !== "emailsOnly";
+                // "Emails only" is a promise about the RESULT SET, not just which
+                // columns are visible — a lead with no email is useless in this
+                // mode (every other field is already hidden) and previously still
+                // rendered as a row of bare "—" placeholders. Filter it out of
+                // what's actually displayed/scrolled/merge-selectable rather than
+                // just hiding its columns.
+                const visibleLeads = mode === "emailsOnly"
+                  ? selectedJob.leads.filter((lead) => lead.email)
+                  : selectedJob.leads;
                 return (
-                <div className="overflow-x-auto">
+                <div
+                  ref={leadsScrollRef}
+                  onScroll={handleLeadsScroll}
+                  className="max-h-[50vh] overflow-x-auto overflow-y-auto"
+                >
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-fg-muted">
+                        {/* Task 26, Piece 2 — merge selection checkbox column. */}
+                        <th className="w-6 pb-2" aria-label="Select">
+                          <span className="sr-only">Select</span>
+                        </th>
                         {showBusiness && <th className="pb-2 pr-3 font-medium">Business</th>}
                         {showContact && <th className="pb-2 pr-3 font-medium">Name</th>}
                         <th className="pb-2 pr-3 font-medium">Email</th>
                         {showPhone && <th className="pb-2 pr-3 font-medium">Phone</th>}
                         {showWebsite && <th className="pb-2 font-medium">Website</th>}
+                        {/* Task 26, Piece 3 — validation status pill. */}
+                        <th className="pb-2 pl-2 font-medium">Status</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {selectedJob.leads.map((lead) => (
-                        <tr key={lead.id} className="border-b border-border last:border-0">
+                      {visibleLeads.map((lead) => (
+                        <tr
+                          key={lead.id}
+                          className="animate-[fadeInUp_0.15s_ease-out] border-b border-border last:border-0"
+                        >
+                          {/* Task 26, Piece 2 — merge selection checkbox. */}
+                          <td className="py-2 pr-2">
+                            <input
+                              type="checkbox"
+                              checked={selectedIds.has(lead.id)}
+                              onChange={() => toggleSelected(lead.id)}
+                              aria-label={`Select ${lead.businessName ?? lead.contactName ?? lead.email ?? "lead"}`}
+                              className="h-4 w-4 cursor-pointer"
+                            />
+                          </td>
                           {showBusiness && <td className="py-2 pr-3">{lead.businessName ?? "—"}</td>}
                           {showContact && <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>}
                           <td className="py-2 pr-3">
@@ -882,6 +1161,17 @@ export default function ExtractPage() {
                                 : "—"}
                             </td>
                           )}
+                          {/* Task 26, Piece 3 — validation status pill (green Valid /
+                              red Invalid / grey — for unchecked). */}
+                          <td className="py-2 pl-2">
+                            {lead.validationStatus === "valid" ? (
+                              <Badge tone="success">Valid</Badge>
+                            ) : lead.validationStatus === "invalid" ? (
+                              <Badge tone="danger" title={lead.validationError || undefined}>Invalid</Badge>
+                            ) : (
+                              <span className="text-fg-muted">—</span>
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -889,10 +1179,250 @@ export default function ExtractPage() {
                 </div>
                 );
               })()}
+              {/* Task 26, Piece 2 — merge action bar. Sticky to the bottom of the
+                  leads pane (not the whole page) so it stays visible while the
+                  table scrolls, and only appears once 2+ leads are selected. */}
+              {selectedIds.size >= 2 && (
+                <div className="sticky bottom-0 z-10 flex items-center gap-3 rounded-lg border border-brand-500 bg-brand-50 px-3 py-2 dark:bg-brand-900/40">
+                  <span className="text-sm font-medium text-brand-700 dark:text-brand-300">
+                    {selectedIds.size} leads selected
+                  </span>
+                  <button
+                    onClick={openMergeModal}
+                    className="ml-auto rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
+                  >
+                    Merge {selectedIds.size} leads
+                  </button>
+                </div>
+              )}
+              {/* Task 26, Piece 1 — live activity feed, relocated UNDER the leads
+                  table (it used to sit in the detail-pane header above). key-ing on
+                  currentStep remounts the line only when the text actually changes,
+                  which replays the fadeInUp crossfade instead of snapping. */}
+              {selectedJob.status === "running" && (
+                <>
+                  <p
+                    key={selectedJob.currentStep ?? "starting"}
+                    className="animate-[fadeInUp_0.15s_ease-out] mt-1 truncate text-xs text-fg-muted/80"
+                    title={selectedJob.currentStep ?? undefined}
+                  >
+                    Currently: {selectedJob.currentStep?.trim() ? selectedJob.currentStep : "Starting…"}
+                  </p>
+                  {isStalled(selectedJob) && (
+                    <p className="animate-[fadeInUp_0.15s_ease-out] mt-1 text-xs font-medium text-amber-600 dark:text-amber-400">
+                      This may be stalled — no progress in over 5 minutes.
+                    </p>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
       </div>
+
+      {/* Task 26, Piece 2 — merge modal. createPortal to document.body so it
+          renders above the app's stacking contexts (same fix as the campaigns /
+          mailboxes modals); the selected leads are shown read-only alongside the
+          editable, pre-filled merge fields. */}
+      {mergeOpen && typeof document !== "undefined" && selectedJob && createPortal(
+        (() => {
+          const selected = selectedJob.leads.filter((l) => selectedIds.has(l.id));
+          return (
+            <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 dark:bg-black/70">
+              <div className="mx-auto my-8 w-full max-w-2xl rounded-xl border border-border bg-card p-6 dark:bg-zinc-950">
+                <h2 className="text-lg font-semibold">Merge {selected.length} leads</h2>
+                <p className="mt-1 text-xs text-fg-muted">
+                  The leads below are combined into one row. The fields start pre-filled from
+                  each value found, but you can change any of them before confirming.
+                </p>
+
+                {selected.length === 0 ? (
+                  <p className="mt-4 text-sm text-fg-muted">
+                    No leads selected any more — close this dialog and pick leads first.
+                  </p>
+                ) : (
+                  <>
+                    {/* Selected sources, read-only — so the user can see exactly
+                        which rows are being collapsed into the one new row. */}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {selected.map((l) => (
+                        <span
+                          key={l.id}
+                          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-black/5 px-3 py-1 text-xs dark:bg-white/5"
+                        >
+                          {l.businessName ?? l.contactName ?? (l.email || "Lead")}
+                          <span className="text-fg-muted">· {l.email ?? "no email"}</span>
+                        </span>
+                      ))}
+                    </div>
+
+                    {/* Editable merge fields, one per Lead column. */}
+                    <div className="mt-4 grid grid-cols-1 gap-3">
+                      {[
+                        { label: "Email", value: mergeEmail, set: setMergeEmail, required: true },
+                        { label: "Business name", value: mergeBusiness, set: setMergeBusiness },
+                        { label: "Contact name", value: mergeContact, set: setMergeContact },
+                        { label: "Phone", value: mergePhone, set: setMergePhone },
+                        { label: "Website", value: mergeWebsite, set: setMergeWebsite },
+                      ].map((f) => (
+                        <label key={f.label} className="flex flex-col gap-1 text-sm font-medium">
+                          {f.label}
+                          {f.required && <span className="text-xs text-red-500">*</span>}
+                          <input
+                            type="text"
+                            value={f.value}
+                            onChange={(e) => f.set(e.target.value)}
+                            className="rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-normal outline-none focus:ring-2 focus:ring-brand-500"
+                          />
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {mergeError && (
+                  <p className="mt-3 text-sm text-red-600 dark:text-red-400">{mergeError}</p>
+                )}
+
+                <div className="mt-4 flex justify-end gap-2">
+                  <button
+                    onClick={() => setMergeOpen(false)}
+                    disabled={mergeBusy}
+                    className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-fg hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => void confirmMerge()}
+                    disabled={mergeBusy || selected.length < 2}
+                    className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                  >
+                    {mergeBusy ? "Merging…" : "Confirm merge"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
+
+      {/* Task 26, Piece 3 — import-leads dialog. A dropzone (click or drag & drop)
+          that posts the file to /api/leads/upload and then jumps to the new job. */}
+      {uploadOpen && typeof document !== "undefined" && createPortal(
+        (() => {
+          const accent = dragging
+            ? "border-brand-500 bg-brand-50 dark:bg-brand-900/30"
+            : "border-border hover:bg-black/5 dark:hover:bg-white/5";
+          return (
+            <div
+              className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 dark:bg-black/70"
+              onClick={() => setUploadOpen(false)}
+              role="dialog"
+              aria-modal="true"
+              aria-label="Import leads"
+            >
+              <div
+                className="mx-auto my-8 w-full max-w-lg rounded-xl border border-border bg-card p-6 dark:bg-zinc-950"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-start justify-between">
+                  <h2 className="text-lg font-semibold">Import leads</h2>
+                  <button
+                    type="button"
+                    onClick={() => setUploadOpen(false)}
+                    aria-label="Close"
+                    className="rounded p-1 text-fg-muted hover:bg-black/5 hover:text-fg-muted dark:hover:bg-white/5"
+                  >
+                    ×
+                  </button>
+                </div>
+                <p className="mt-1 text-xs text-fg-muted">
+                  Upload a .csv, .tsv, .txt, .json or .xls/.xlsx file. Rows with no
+                  recognizable email are dropped; everything else is imported as-is
+                  (run “Validate all” afterwards to check deliverability).
+                </p>
+
+                <label
+                  onDragOver={(e) => e.preventDefault()}
+                  onDragEnter={(e) => { e.preventDefault(); dragDepthRef.current += 1; setDragging(true); }}
+                  onDragLeave={() => {
+                    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+                    if (dragDepthRef.current === 0) setDragging(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    dragDepthRef.current = 0;
+                    setDragging(false);
+                    const f = e.dataTransfer.files?.[0];
+                    if (f) void performUpload(f);
+                  }}
+                  className={`mt-4 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-6 py-10 text-center text-sm transition-colors ${accent}`}
+                >
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept=".txt,.csv,.tsv,.json,.xls,.xlsx"
+                    disabled={uploadBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void performUpload(f);
+                      // Allow picking the same file again for a second attempt.
+                      e.target.value = "";
+                    }}
+                  />
+                  <span className="font-medium">
+                    {uploadBusy ? "Uploading…" : "Click to choose a file, or drag & drop here"}
+                  </span>
+                  <span className="text-xs text-fg-muted">Max 20MB · .csv .tsv .txt .json .xls .xlsx</span>
+                </label>
+
+                {uploadDone && (
+                  <div className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                    Imported {uploadDone.imported} lead{uploadDone.imported === 1 ? "" : "s"} from{" "}
+                    <span className="font-medium">{uploadDone.fileName}</span>. It shows up as a new
+                    “done” job in the list — open it to validate.
+                    <div className="mt-2 flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUploadOpen(false);
+                          if (uploadDone.jobId) void fetchJobDetail(uploadDone.jobId);
+                        }}
+                        className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700"
+                      >
+                        View imported leads
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setUploadDone(null)}
+                        className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                      >
+                        Import another
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {uploadError && (
+                  <p className="mt-3 text-sm text-red-600 dark:text-red-400">{uploadError}</p>
+                )}
+
+                <div className="mt-4 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setUploadOpen(false)}
+                    className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })(),
+        document.body,
+      )}
     </div>
   );
 }

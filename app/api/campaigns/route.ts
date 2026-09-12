@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
+import { buildQueueItemRows, leadToRecipient } from "@/lib/campaign-recipients";
 
 interface VariantInput {
   subject?: string;
@@ -39,6 +39,7 @@ export async function POST(req: Request) {
     variants?: VariantInput[];
     csv?: string;
     searchJobId?: string;
+    leadIds?: unknown;
   };
   try {
     body = await req.json();
@@ -56,6 +57,20 @@ export async function POST(req: Request) {
         .filter((v) => v.subject.length > 0 && v.bodyHtml.trim().length > 0)
     : [];
   const searchJobId = body.searchJobId ? String(body.searchJobId).trim() : null;
+  // Task 26, Piece 4 — third recipient source: an explicit list of validated Lead
+  // ids (created atomically with the campaign). Dedup the raw list up front.
+  const leadIdRaw = Array.isArray(body.leadIds) ? body.leadIds : [];
+  const leadIds: string[] = [];
+  {
+    const seen = new Set<string>();
+    for (const v of leadIdRaw) {
+      const id = typeof v === "string" ? v.trim() : String(v ?? "").trim();
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        leadIds.push(id);
+      }
+    }
+  }
 
   const parsed = typeof body.csv === "string" && body.csv.trim() !== ""
     ? parseRecipientsCsv(body.csv)
@@ -76,9 +91,9 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  if (!parsed && !searchJobId) {
+  if (!parsed && !searchJobId && leadIds.length === 0) {
     return NextResponse.json(
-      { error: "Upload a recipient CSV or pick a Lead Extractor job" },
+      { error: "Upload a recipient CSV, pick a Lead Extractor job, or select leads to send to" },
       { status: 400 }
     );
   }
@@ -114,16 +129,41 @@ export async function POST(req: Request) {
     }
   }
 
-  // Recipients come from EITHER an uploaded CSV OR a Lead Extractor job's own
-  // leads (never both — CSV wins if somehow both are given, matching the
-  // pre-existing precedence of "parsed" being computed from body.csv first).
-  // Using leads directly means the sender's recipient list is exactly the
-  // emails this app already extracted — no manual CSV export/re-upload
-  // round trip. Only the email + a couple of useful merge variables travel
-  // across; phone/website/snippet aren't relevant to sending an email.
+  // Recipients come from ONE of three sources (never a blend):
+  //   1. an uploaded CSV (existing, unchanged),
+  //   2. an explicit list of validated Lead ids (Task 26, Piece 4 — the create
+  //      flow's "Pick from my leads" source),
+  //   3. a Lead Extractor job's own leads (legacy ?fromSearchJob deep link).
+  // Precedence is CSV > leadIds > searchJobId, matching the original "parsed wins"
+  // rule. For the lead sources only the email + a few merge variables travel
+  // across. Note the deliberate asymmetry: the explicit leadIds path restricts to
+  // this user's VALID leads (validation is the whole point — never send to an
+  // unchecked/invalid address), while the legacy searchJobId path is untouched and
+  // still sends every email-bearing lead, so the deep link keeps its old behavior.
   let recipients: { email: string; variables: Record<string, unknown> }[];
   if (parsed) {
     recipients = parsed.recipients;
+  } else if (leadIds.length > 0) {
+    // Server-side copy of the picker's filter: only this user's VALID leads are
+    // eligible, so a hand-crafted leadId list can't smuggle in a bad address.
+    const leads = await prisma.lead.findMany({
+      where: { id: { in: leadIds }, userId: session.userId, validationStatus: "valid" },
+      select: { email: true, businessName: true, contactName: true, phone: true, website: true },
+    });
+    const seen = new Set<string>();
+    recipients = [];
+    for (const l of leads) {
+      const r = leadToRecipient(l);
+      if (!r || seen.has(r.email.toLowerCase())) continue;
+      seen.add(r.email.toLowerCase());
+      recipients.push({ email: r.email, variables: r.variables });
+    }
+    if (recipients.length === 0) {
+      return NextResponse.json(
+        { error: "None of the selected leads are valid and yours." },
+        { status: 400 }
+      );
+    }
   } else {
     const leads = await prisma.lead.findMany({
       where: { searchJobId: searchJobId!, userId: session.userId, email: { not: null } },
@@ -156,7 +196,9 @@ export async function POST(req: Request) {
   // campaign's single send spreads each recipient across the selected senders and
   // variants (the drain route then still respects each mailbox's dailyLimit when it
   // actually sends). Recorded as variantId/mailboxId per item for later "did
-  // variant B convert better" analysis and per-send debugging.
+  // variant B convert better" analysis and per-send debugging. The indexing lives
+  // in the shared lib/campaign-recipients.ts helper so the from-leads add-to-existing
+  // route assigns the exact same rotation.
   const campaign = await prisma.$transaction(async (tx) => {
     const created = await tx.emailCampaign.create({
       data: {
@@ -179,13 +221,7 @@ export async function POST(req: Request) {
     }
 
     await tx.emailQueueItem.createMany({
-      data: recipients.map((r, i) => ({
-        campaignId: created.id,
-        mailboxId: mailboxIds[i % mailboxIds.length],
-        variantId: variantRows[i % variantRows.length].id,
-        toEmail: r.email,
-        variables: r.variables as Prisma.InputJsonValue,
-      })),
+      data: buildQueueItemRows({ campaignId: created.id, mailboxIds, variantRows, recipients }),
     });
 
     return created;

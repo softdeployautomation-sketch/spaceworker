@@ -20,6 +20,27 @@ type Mailbox = {
   fromAddress: string | null;
 };
 
+// Task 26, Piece 4 — "Pick from my leads" recipient picker data (GET /api/leads/selectable).
+type PickerJob = {
+  id: string;
+  query: string;
+  template: string;
+  params: Record<string, unknown> | null;
+  totalCount: number;
+  validCount: number;
+};
+type PickerLead = {
+  id: string;
+  email: string | null;
+  businessName: string | null;
+  contactName: string | null;
+  searchJobId: string;
+};
+type PickerData = {
+  jobs: PickerJob[];
+  leads: PickerLead[];
+};
+
 const STATUS_BADGES: Record<string, string> = {
   draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
   pending_test_confirm: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
@@ -50,6 +71,15 @@ export default function CampaignsPage() {
   const fromSearchJobId = searchParams.get("fromSearchJob");
   const [leadEmailCount, setLeadEmailCount] = useState<number | null>(null);
   const [leadCountError, setLeadCountError] = useState("");
+
+  // Task 26, Piece 4 — "Pick from my leads" recipient source state.
+  const [recipientSource, setRecipientSource] = useState<"csv" | "leads">("csv");
+  const [pickerData, setPickerData] = useState<PickerData | null>(null);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerError, setPickerError] = useState("");
+  const [pickerJobId, setPickerJobId] = useState("");
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -100,11 +130,76 @@ export default function CampaignsPage() {
     setCsvName("");
     setCsvContent("");
     setFormError("");
+    // Task 26, Piece 4 — reset the picker's transient state on each open (the
+    // fetched /api/leads/selectable payload is cached so revisits don't re-fetch).
+    setRecipientSource("csv");
+    setPickerJobId("");
+    setPickerSearch("");
+    setSelectedLeadIds([]);
+    setPickerError("");
     setModalOpen(true);
     fetch("/api/mailboxes")
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => setMailboxes((data as Mailbox[]).map((m) => ({ id: m.id, label: m.label, host: m.host, username: m.username, fromAddress: m.fromAddress }))))
       .catch(() => setMailboxes([]));
+  }
+
+  // Task 26, Piece 4 — load the picker's data (jobs + all of this user's valid
+  // leads) on first use, then keep the payload cached for the rest of the session.
+  async function loadPicker() {
+    if (pickerLoading) return;
+    setPickerLoading(true);
+    setPickerError("");
+    try {
+      const res = await fetch("/api/leads/selectable");
+      if (!res.ok) throw new Error("Failed to load your leads");
+      setPickerData((await res.json()) as PickerData);
+    } catch (e) {
+      setPickerError(e instanceof Error ? e.message : "Failed to load your leads");
+    } finally {
+      setPickerLoading(false);
+    }
+  }
+
+  function chooseSource(src: "csv" | "leads") {
+    setRecipientSource(src);
+    setFormError("");
+    if (src === "leads" && !pickerData && !pickerLoading) void loadPicker();
+  }
+
+  function toggleLead(id: string) {
+    setSelectedLeadIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  }
+
+  // The leads currently visible in the picker (job filter × free-text search).
+  const visibleLeads: PickerLead[] = (pickerData?.leads ?? []).filter((l) => {
+    if (pickerJobId && l.searchJobId !== pickerJobId) return false;
+    const q = pickerSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      (l.email ?? "").toLowerCase().includes(q) ||
+      (l.businessName ?? "").toLowerCase().includes(q) ||
+      (l.contactName ?? "").toLowerCase().includes(q)
+    );
+  });
+
+  function selectAllVisible() {
+    const ids = new Set(selectedLeadIds);
+    visibleLeads.forEach((l) => ids.add(l.id));
+    setSelectedLeadIds([...ids]);
+  }
+
+  function selectNoneVisible() {
+    const visibleIds = new Set(visibleLeads.map((l) => l.id));
+    setSelectedLeadIds((prev) => prev.filter((x) => !visibleIds.has(x)));
+  }
+
+  function selectAllValid() {
+    const all = new Set(selectedLeadIds);
+    (pickerData?.leads ?? []).forEach((l) => all.add(l.id));
+    setSelectedLeadIds([...all]);
   }
 
   function toggleMailbox(id: string) {
@@ -150,9 +245,17 @@ export default function CampaignsPage() {
     if (!name.trim()) { setFormError("Name is required"); return; }
     if (selectedMailboxIds.length === 0) { setFormError("Select at least one sending mailbox"); return; }
     if (variants.length === 0) { setFormError("Add at least one subject line and a body"); return; }
-    if (!fromSearchJobId && !csvContent.trim()) { setFormError("Upload a recipient CSV"); return; }
-    if (fromSearchJobId && (leadEmailCount === null || leadEmailCount === 0)) {
-      setFormError(leadEmailCount === 0 ? "That job has no leads with an email address." : "Still loading that job's leads — try again in a moment.");
+    // Task 26, Piece 4 — the source-dependent validity checks. The locked
+    // ?fromSearchJob mode keeps its old "loaded job, has emails" check.
+    if (fromSearchJobId) {
+      if (leadEmailCount === null || leadEmailCount === 0) {
+        setFormError(leadEmailCount === 0 ? "That job has no leads with an email address." : "Still loading that job's leads — try again in a moment.");
+        return;
+      }
+    } else if (recipientSource === "leads") {
+      if (selectedLeadIds.length === 0) { setFormError("Select at least one lead to send to"); return; }
+    } else if (!csvContent.trim()) {
+      setFormError("Upload a recipient CSV");
       return;
     }
 
@@ -165,7 +268,11 @@ export default function CampaignsPage() {
           name: name.trim(),
           mailboxIds: selectedMailboxIds,
           variants,
-          ...(fromSearchJobId ? { searchJobId: fromSearchJobId } : { csv: csvContent }),
+          ...(fromSearchJobId
+            ? { searchJobId: fromSearchJobId }
+            : recipientSource === "leads"
+              ? { leadIds: selectedLeadIds }
+              : { csv: csvContent }),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -266,7 +373,7 @@ export default function CampaignsPage() {
           <div className="mx-auto my-8 w-full max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-950">
             <h2 className="text-lg font-semibold">New campaign</h2>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              Senders and subject lines rotate evenly in-run; recipients come from a CSV. You'll confirm a
+              Senders and subject lines rotate evenly in-run; recipients come from a CSV or your validated leads. You'll confirm a
               one-message test-send before the real send is allowed.
             </p>
 <div className="mt-4 flex flex-col gap-4">
@@ -341,6 +448,28 @@ export default function CampaignsPage() {
                 />
               </label>
 
+              {!fromSearchJobId && (
+                <div className="flex flex-col gap-1 text-sm font-medium">
+                  Recipient source <span className="text-xs text-zinc-400">— a CSV, or leads you have already extracted and validated</span>
+                  <div className="mt-1 inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+                    {(["csv", "leads"] as const).map((src) => (
+                      <button
+                        key={src}
+                        type="button"
+                        onClick={() => chooseSource(src)}
+                        className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                          recipientSource === src
+                            ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                            : "text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                        }`}
+                      >
+                        {src === "leads" ? "Pick from my leads" : "Upload a CSV"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {fromSearchJobId ? (
                 <div className="flex flex-col gap-1 text-sm font-medium">
                   Recipients
@@ -366,6 +495,85 @@ export default function CampaignsPage() {
                   >
                     Use a CSV upload instead
                   </button>
+                </div>
+              ) : recipientSource === "leads" ? (
+                <div className="flex flex-col gap-2 text-sm font-medium">
+                  Pick from my leads <span className="text-xs text-zinc-400">— only <em>valid</em> leads are selectable</span>
+                  {pickerLoading ? (
+                    <p className="rounded-lg bg-zinc-100 px-3 py-2 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      Loading your leads…
+                    </p>
+                  ) : pickerError ? (
+                    <p className="text-xs text-red-600 dark:text-red-400">{pickerError}</p>
+                  ) : !pickerData || pickerData.leads.length === 0 ? (
+                    <p className="rounded-lg bg-zinc-100 px-3 py-2 text-xs font-normal text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      No validated leads yet — open a job on the Extract page and run “Validate all,” then return here.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap items-end gap-3">
+                        <label className="flex flex-col gap-1 text-xs font-medium">
+                          Source job
+                          <select
+                            value={pickerJobId}
+                            onChange={(e) => setPickerJobId(e.target.value)}
+                            className="w-56 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                          >
+                            <option value="">All jobs</option>
+                            {pickerData.jobs.map((j) => (
+                              <option key={j.id} value={j.id}>
+                                {j.query}{j.template === "upload" ? " (upload)" : ""} — {j.validCount} valid{j.validCount === 0 ? " · none" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="flex flex-col gap-1 text-xs font-medium">
+                          Search email / business
+                          <input
+                            type="text"
+                            value={pickerSearch}
+                            onChange={(e) => setPickerSearch(e.target.value)}
+                            placeholder="Filter…"
+                            className="w-48 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-2">
+                        <button type="button" onClick={selectAllVisible} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
+                          Select all visible ({visibleLeads.length})
+                        </button>
+                        <button type="button" onClick={selectNoneVisible} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
+                          Clear visible
+                        </button>
+                        <button type="button" onClick={selectAllValid} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
+                          Select all valid across everything ({pickerData.leads.length})
+                        </button>
+                      </div>
+                      <p className="text-sm font-semibold">
+                        {selectedLeadIds.length} recipient{selectedLeadIds.length === 1 ? "" : "s"} selected
+                      </p>
+                      <div className="max-h-[220px] overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                        {visibleLeads.length === 0 ? (
+                          <p className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">No leads match this filter.</p>
+                        ) : (
+                          <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                            {visibleLeads.map((l) => (
+                              <li key={l.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedLeadIds.includes(l.id)}
+                                  onChange={() => toggleLead(l.id)}
+                                  className="h-4 w-4 accent-zinc-900"
+                                />
+                                <span className="font-medium">{l.email ?? "—"}</span>
+                                <span className="text-xs text-zinc-500 dark:text-zinc-400">{l.businessName ?? ""}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1 text-sm font-medium">

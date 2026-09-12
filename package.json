@@ -26,6 +26,7 @@
     "react-dom": "19.2.4",
     "resend": "^4",
     "server-only": "0.0.1",
+    "xlsx": "^0.18.5",
     "zod": "^3"
   },
   "devDependencies": {

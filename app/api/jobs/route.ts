@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 
-const TEMPLATES = ["lead", "hr", "plain"] as const;
+const TEMPLATES = ["lead", "hr", "plain", "upload"] as const;
 type Template = (typeof TEMPLATES)[number];
 
 function isTemplate(value: unknown): value is Template {
@@ -65,6 +65,15 @@ export async function POST(req: Request) {
   }
 
   const template = isTemplate(body.template) ? body.template : "lead";
+  if (template === "upload") {
+    // Uploads are only ever created by POST /api/leads/upload, never through the
+    // normal job-creation endpoint — reject loud instead of silently running the
+    // lead engine (or storing a bogus "upload" job with no rows).
+    return NextResponse.json(
+      { error: "Uploads can't be submitted as searches — use the lead import tool instead." },
+      { status: 400 }
+    );
+  }
   if (template !== "lead") {
     // HR/Plain Search have no automation backend yet (per PLAN.md Addendum 5 they
     // need their own pipeline, not this lead engine). Refuse to run the lead engine
