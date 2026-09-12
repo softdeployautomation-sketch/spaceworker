@@ -1,12 +1,23 @@
 # Task 26 — Leads dashboard redesign, merge, email validator + upload, and a leads→mailer automation plan
 
-**Status: ready to implement, four independent pieces.** Written 2026-09-12, based on directly reading the current `app/dashboard/extract/page.tsx` (897 lines), the current `Lead`/`SearchJob` Prisma models, and the standalone Lead Extractor's own proven validator (`app/lead_manager/validator.py`) and file-uploader (`app/lead_manager/uploader.py`) — Piece 3 below ports their actual logic, not a guess at what "validation" should mean.
+**Status: Pieces 1 and 2 IMPLEMENTED and verified (2026-09-12). Pieces 3–5 ready — start with Piece 3.** Written 2026-09-12, based on directly reading the current `app/dashboard/extract/page.tsx` (897 lines), the current `Lead`/`SearchJob` Prisma models, and the standalone Lead Extractor's own proven validator (`app/lead_manager/validator.py`) and file-uploader (`app/lead_manager/uploader.py`) — Piece 3 below ports their actual logic, not a guess at what "validation" should mean. Piece 5 added 2026-09-12 after live user feedback on the mailboxes/campaigns UI.
 
-Pieces are independent and can be built/shipped in any order, but 1 is the fastest win and 3 is a prerequisite for 4's "extracted + validated" selection filter.
+Pieces are independent and can be built/shipped in any order, but 1 is the fastest win and 3 is a prerequisite for 4's "extracted + validated" selection filter. Piece 5's two halves (5a mailbox testing, 5b rotation batch size) are also independent of everything else and of each other.
 
 ---
 
 ## Piece 1 — Compact leads UI: hide the full query, auto-scroll to newest lead, activity log under the list, motion
+
+### ✅ IMPLEMENTED (2026-09-12) — what changed & where, for the handoff
+
+All Piece 1 changes landed in **`app/dashboard/extract/page.tsx` + `app/globals.css`**. Verified: `npx tsc --noEmit` exits 0, `npm run build` succeeds, and the built CSS contains both `.animate-\[fadeInUp_0.15s_ease-out\]{animation:.15s ease-out fadeInUp}` and `@keyframes fadeInUp{…}`.
+
+- **1a (compact query)** — added module-level `summarizeQuery(job)` right after `isStalled(...)`. It reads `job.params.findTerms` / `job.params.locationTerms` (field names confirmed in the submit handler and `app/api/jobs/route.ts`) and falls back to `job.query.split(" | ")[0]` for pre-`findTerms` jobs. Both call sites now render `summarizeQuery(...)` with the **full raw query moved into a `title=` tooltip**: the job-list row (`{job.query}` → `{summarizeQuery(job)}`) and the detail-pane `<h2>`.
+- **1b (activity log moved)** — removed the `Currently:` + stalled-warning block from the detail-pane header (under the `<h2>`); re-rendered the identical `selectedJob.status === "running"` block **below the leads table / empty-state**, still inside the `flex flex-col gap-4 p-4` container, right after the `})()}` that closes the table branch. The per-row caption in the job list was left untouched, as planned.
+- **1c (auto-scroll)** — new component refs `leadsScrollRef`, `prevLeadCountRef`, `prevJobIdRef`, `userScrolledUpRef`. A `useEffect` (deps `[selectedJob?.id, selectedJob?.leads.length]`) scrolls to bottom **only when the lead count grows AND the user hasn't scrolled up**; it re-baselines when a different job is opened (so opening a finished job doesn't yank to the bottom) and clears the scrolled-up flag on job switch. `handleLeadsScroll` (wired via `onScroll` on the scroll container) sets `userScrolledUpRef` using a 40px bottom tolerance (~"back at the bottom"). The leads table was re-wrapped from `<div className="overflow-x-auto">` to a ref'd `<div ref={leadsScrollRef} onScroll={handleLeadsScroll} className="max-h-[50vh] overflow-x-auto overflow-y-auto">` so it has its own bounded vertical scroll area (nested inside the pane's 70vh outer scroll), letting `scrollTo` land on the newest row.
+- **1d (motion, pure-CSS — no new dependency)** — added `@keyframes fadeInUp { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }` to `app/globals.css`, and put `animate-[fadeInUp_0.15s_ease-out]` on **every** leads-table `<tr>` unconditionally. That's not a mistake: a CSS animation only replays when the element is inserted or its animation value CHANGES, and the class string is constant across re-renders — so existing rows fade in once at mount while a genuinely-new row animates in when it's first added to the DOM. This avoids any per-row "am I new?" tracking (which this repo's strict `react-hooks/refs` + `set-state-in-effect` lint rules reject — refs can't be read during render, and setState can't run synchronously in an effect). The relocated `Currently:` `<p>` is `key`-ed on `currentStep` and carries the same animation class, so it crossfades when the step text changes instead of snapping.
+
+**Handoff note for Piece 2:** the original line numbers cited below (669, 745, 754–765, 853–889, 891…) are all STALE — the ~120 lines of Piece 1 code (helper + refs + effects + restructured table) shifted everything down. Locate by **string search**, not line number: `summarizeQuery`, `leadsScrollRef`, `handleLeadsScroll`, and the relocated `Currently:` block. Also note this repo lints cleanly EXCEPT one pre-existing `react-hooks/set-state-in-effect` error on the untouched 4s-poll effect — don't "fix" it as part of Piece 2.
 
 ### The problems, confirmed by reading the current code
 
@@ -68,6 +79,16 @@ Either way: the activity-log line's text change (as `currentStep` updates) shoul
 ---
 
 ## Piece 2 — Merge leads
+
+### ✅ IMPLEMENTED (2026-09-12) — what changed & where, for the handoff
+
+All Piece 2 changes landed in **`app/api/leads/merge/route.ts`** (new) + **`app/dashboard/extract/page.tsx`**. Verified: `npx tsc --noEmit` exits 0, `npm run build` succeeds (new route registered as `/api/leads/merge`), and `npx eslint` on both files is clean EXCEPT the same single pre-existing `react-hooks/set-state-in-effect` error on the untouched 4s-poll effect in `page.tsx` (still NOT to be "fixed" in this pass).
+
+- **API route `app/api/leads/merge/route.ts`** — `POST { leadIds: string[] (>=2), merged: { email, phone, contactName, businessName, website, sourceUrl?, snippet? } }`. Auth-gated via the standard `getSession()` → 401. Loads all source leads in one `findMany`, then: any missing/non-owned id → **404** (the app's "don't leak existence" convention), any mixed-`searchJobId` → **400** with a clear "come from different jobs and can't be merged" message. Runs a `prisma.$transaction(async tx => …)` that **`deleteMany`s the source rows FIRST, then `create`s the merged row** (delete-before-create is deliberate: the `@@unique([searchJobId, sourceUrl, email])` constraint from Task 25 means the merged email, usually one of the sources' OWN, would collide with that same source row if we created first). Wraps everything in a try/catch mapping a Postgres `P2002` to a friendly 409 "A lead with this email already exists in this job…" instead of a raw 500. Returns the new lead.
+- **`page.tsx` UI** — new checkbox column (leftmost `<th>` + per-`<tr>` checkbox) backed by a `Set<string>` `selectedIds` state (`toggleSelected` writer, `Set<string>()` explicit-typed). A sticky-to-pane action bar (`sticky bottom-0 z-10 …`) appears only when **2+** are selected, showing "N leads selected · Merge N leads". Clicking opens a `createPortal` modal (to `document.body`, same fix as the campaigns/mailboxes modals) that lists the selected sources read-only and shows the 5 editable merge fields (email/business/contact/phone/website) **pre-filled from the FIRST non-empty value across the selected leads** (`openMergeModal`). `confirmMerge` POSTs, closes the modal + clears the selection on success, and re-fetches the job detail + job list so the single new row replaces the merged-away ones.
+- Selection is cleared on job switch (in the job-list row's onClick) so a new job doesn't inherit a stale selection.
+
+**Handoff note for Piece 3:** the original line numbers in this doc are STALE again — Piece 1's ~120 lines and Piece 2's ~90 more shifted `page.tsx` considerably (it's now ~1170 lines). There is NO `components/modal.tsx` in this repo; the modal pattern is an inline `createPortal` (see `app/dashboard/campaigns/page.tsx` line ~259 and `app/dashboard/mailboxes/page.tsx` line ~328), which is what Piece 2 reused. Locate by **string search**, not line number: `toggleSelected`, `openMergeModal`, `confirmMerge`, `selectedIds`, `/api/leads/merge`. The pre-existing `set-state-in-effect` error on the 4s-poll effect remains and should stay untouched.
 
 ### The feature
 
@@ -231,12 +252,57 @@ Today, `variables` is populated from a CSV upload's non-email columns (confirmed
 
 ---
 
+## Piece 5 — Mailbox connection testing + security options, and campaign rotation batch size
+
+### Context: a real bug already fixed, and two real UX gaps found alongside it
+
+While setting up a real mailbox for live testing, a genuine bug surfaced and was fixed directly (not part of this piece's remaining work, documented here for continuity): `lib/mailer-send.ts`'s `transporterForMailbox` and the mailbox "Test" route both passed the stored `secure` checkbox value straight into nodemailer's `secure` option, which means *implicit* TLS — correct only for port 465. A real Brevo SMTP relay account on port 587 (STARTTLS, like Gmail and most providers) failed with `SSL routines:tls_validate_record_header:wrong version number` — the classic "sent a TLS handshake to a server expecting plaintext-first" symptom. **Already fixed and deployed**: `secure` is now derived from the port (`port === 465`), with `requireTLS: true` otherwise, and the "Test" route now calls the shared `transporterForMailbox` instead of duplicating its own (buggy) transport construction. Piece 5 is the two follow-on UX gaps the user asked for while hitting that bug:
+
+### 5a. Test a mailbox's connection BEFORE saving it, and expose real security options
+
+**Confirmed current state**: `components/add-device-modal.tsx` doesn't exist in this repo (that's a Vantra component name — this app's actual file is the inline form in `app/dashboard/mailboxes/page.tsx`, lines ~327+ per Piece 1's own handoff notes, already using a `createPortal` modal). The form collects Label/Host/Port/Daily limit/Username/From address/Password/"Use TLS" checkbox, then POSTs straight to `POST /api/mailboxes` (create) with no verification step — a wrong host/port/password/security combo is only discovered AFTER saving, via the existing post-save "Test" button on the mailbox card.
+
+**The fix**:
+1. New route `app/api/mailboxes/test-connection/route.ts`, `POST { host, port, secure, username, password }` (all raw, unsaved values — nothing in the DB yet). Auth-gated (session required, same as every route). Builds a transport with the SAME corrected logic as `transporterForMailbox` (derive `secure`/`requireTLS` from `port === 465`, not from a client-sent boolean — a client could still send a `secure` flag for the UI's own display purposes, but the SERVER must decide the actual negotiation style from the port, matching the already-fixed real transporter and preventing this exact bug from being reintroduced through a second code path). Calls `transport.verify()`, returns `{ ok, error }` — same shape as the existing post-save test route. **Never persists anything** — this is a pure connectivity check on values still sitting in the open form.
+2. In the Add Mailbox form: add a "Test connection" button (secondary/outline style, matching the existing Cancel/Add button row) that POSTs the CURRENT form field values to this new route and shows the same inline result UI the mailbox card already uses for its post-save test (a green check + "Connected" or a red X + the error message) — reuse that exact presentation, don't invent a second one. Enabled once Host/Port/Username/Password are all non-empty; disabled with a tooltip otherwise. This does not block "Add mailbox" — a user can still save without testing first (the post-save test button already covers that case), it just lets them catch a bad config immediately instead of after saving.
+3. **Security options, replacing the single ambiguous "Use TLS" checkbox**: since the bug above was fundamentally "one checkbox conflating two independent things (encrypt at all vs. which handshake style)," replace it with a small `Select` offering the three real-world options a user actually needs, each pre-filling the Port field with the conventional default (editable after, in case a provider is nonstandard):
+   - **"STARTTLS (recommended — port 587)"** → sets port to 587 if empty, stores `secure: false` (still always encrypted via `requireTLS` server-side, per the fix above — this label is about *when* the encryption kicks in, not whether it happens)
+   - **"Implicit TLS / SSL (port 465)"** → sets port to 465 if empty, stores `secure: true`
+   - **"None (port 25, unencrypted — not recommended)"** → sets port to 25 if empty, stores `secure: false`, `requireTLS: false` (needs a corresponding non-forcing branch server-side: only force `requireTLS` when NOT explicitly "none" — thread a genuine `allowInsecure` flag through `transporterForMailbox`/the Mailbox model rather than inferring "no TLS wanted" purely from port 25, since port 25 relays sometimes DO support STARTTLS). Show a small inline warning icon/text next to this option — real providers essentially never require this, it exists for self-hosted/internal relays only.
+   Store the resolved `secure` (and new `allowInsecure` boolean, default `false`) on the `Mailbox` row exactly as today — no schema rename needed, `secure` already exists; add one migration for `allowInsecure Boolean @default(false)` and thread it through `transporterForMailbox`'s TLS-decision (`requireTLS: !implicitTls && !mailbox.allowInsecure`).
+
+### 5b. Campaign rotation batch size — "how many emails before it rotates subject/mailbox"
+
+**Confirmed current state**: `app/api/campaigns/route.ts`'s queue-creation loop (~line 184-185) assigns `mailboxId: mailboxIds[i % mailboxIds.length]` and `variantId: variantRows[i % variantRows.length].id` — this rotates on EVERY recipient (`i`), i.e. batch size is hardcoded to 1. There is no field anywhere (request body, `EmailCampaign` model) controlling this.
+
+**The fix**:
+1. Schema: add `rotateEvery Int @default(1)` to `EmailCampaign` (migration additive, safe default preserves today's exact behavior for existing/未-updated campaigns).
+2. `app/api/campaigns/route.ts`'s `POST` body gains `rotateEvery?: number`, clamped `Math.max(1, Math.min(1000, Math.floor(...)))` (defensive bound — no realistic campaign needs more than 1000 emails between rotations, matching the general "clamp everything server-side" convention already used throughout this app, e.g. `maxResults`/`minResults` in `app/api/jobs/route.ts`). Store on the created `EmailCampaign` row.
+3. The rotation formula changes from `i % mailboxIds.length` / `i % variantRows.length` to `Math.floor(i / rotateEvery) % mailboxIds.length` / `Math.floor(i / rotateEvery) % variantRows.length` — recipients `0..rotateEvery-1` all get the first mailbox/variant, the next `rotateEvery` get the second, etc., wrapping around. `rotateEvery: 1` (the default) reproduces today's exact per-recipient rotation, so this is non-breaking for anyone not using the new field.
+4. UI (`app/dashboard/campaigns/page.tsx`'s "New campaign" form): add a labeled number input "Rotate every N emails" (default value 1, min 1) near the existing Sending mailboxes / Subject lines fields — short helper text: "Send N emails from one mailbox/subject before moving to the next." Wire into the existing campaign-creation POST body.
+
+### Note: "select validated / merged leads for the mailer" is already Piece 4 — no new design needed
+
+Re-reading the ask against the plan already written above: Piece 4's "Pick from my leads" picker (scoped to `validationStatus: "valid"`, filterable by source job) already covers exactly this — a merged lead (Piece 2) is just a normal `Lead` row afterward, so once it's validated (Piece 3) it's automatically selectable through Piece 4's picker with no extra work. **Piece 4 has not been implemented yet** — this is a reminder to actually build it (it's the piece that turns "we have leads" into "leads can reach the mailer"), not a sign anything about its design needs to change.
+
+### "Ready for AI automation linking" — a design note, not a new build
+
+The user asked that the system be "ready" for a future AI-driven automation layer (e.g., an agent that decides when to validate a batch, merge duplicates, or enroll leads into a campaign) — NOT a request to build that orchestration now (Piece 4 already explicitly defers a fully-automatic no-human-step pipeline as future work, and that reasoning still holds). What "ready" concretely means for Pieces 3–5, and should be kept true rather than actively built: every mutating action (validate a job's leads, merge N leads, add leads-by-id to a campaign, test a mailbox) is already a plain authenticated REST endpoint with a typed JSON body/response — the same shape whether a human clicks a button or a future service calls it programmatically. Nothing in Pieces 3–5 should be built as UI-only client-side logic with no server route behind it (e.g., don't compute a merge client-side and PATCH raw fields — go through `/api/leads/merge` as designed) — that's the one concrete discipline this note asks Cline to hold to, since it's what "AI-automatable later" actually depends on architecturally. No new endpoint, webhook, or agent-facing API is part of this pass.
+
+### Verification (Piece 5)
+
+1. 5a: enter a real mailbox's correct host/port/username/password with each of the three security options, click "Test connection" before saving, confirm success; enter a deliberately wrong password, confirm the pre-save test fails with a clear message and does NOT save the mailbox. Confirm choosing "STARTTLS (port 587)" and saving reproduces the now-fixed real-world case (a real Brevo or Gmail account) working end-to-end, unlike before this fix.
+2. 5b: create a campaign with 2 mailboxes, 2 subject variants, `rotateEvery: 3`, and 10 recipients; confirm queue items 0-2 get mailbox/variant index 0, items 3-5 get index 1, items 6-8 index 0 again, item 9 index 1 (i.e. `floor(i/3) % 2`). Confirm a campaign created with `rotateEvery` omitted (or old campaigns created before this migration) still rotates every single recipient exactly as today.
+
+---
+
 ## Explicitly out of scope, all pieces
 
 - SMTP-handshake or send-a-real-test-email style validation (the standalone doesn't do this either — MX-record checking is the proven, fast, reliable approach being ported).
 - Fuzzy/similarity-based automatic duplicate detection (the standalone's `is_similar_email` exists but isn't wired into any UI there either) — merging stays a manual, user-initiated action for v1.
 - Any change to the existing CSV-upload path already used by campaigns.
 - A fully automatic (no human click) leads→mailer pipeline — see Piece 4's explicit deferral.
+- Any AI agent/orchestration layer itself — Piece 5's "ready for AI automation linking" note is an architectural discipline (plain REST endpoints behind every mutation), not a new agent-facing API or webhook.
 
 ## Verification checklist (all pieces)
 
@@ -244,4 +310,5 @@ Today, `variables` is populated from a CSV upload's non-email columns (confirmed
 2. Piece 2: select 3 leads from the same job with overlapping data, merge them, confirm exactly 1 new row exists with the chosen field values and the 3 originals are gone; attempt a merge across two different jobs and confirm it's rejected with a clear error.
 3. Piece 3: upload a small `.csv` with mixed valid/garbage emails, confirm the parse count and permissive import (garbage rows with no email dropped, everything else kept), run "Validate all," confirm the valid/invalid split matches manual inspection (test at least one domain with genuinely no MX records, e.g. a typo'd domain, to confirm the "invalid" path actually triggers, not just the happy path).
 4. Piece 4: run the 3-step verification under Piece 4 itself above.
-5. Full regression: confirm the existing job-list/detail flow (pause/resume/stop/export CSV) still works unchanged after Piece 1's layout changes.
+5. Piece 5: run the 2-step verification under Piece 5 itself above.
+6. Full regression: confirm the existing job-list/detail flow (pause/resume/stop/export CSV) still works unchanged after Piece 1's layout changes, and the existing mailbox post-save "Test" button + CSV-based campaign creation both still work unchanged after Piece 5's additions.
