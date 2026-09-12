@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
-import { decryptSecret } from "@/lib/mailbox-crypto";
-import nodemailer from "nodemailer";
+import { transporterForMailbox } from "@/lib/mailer-send";
 
 export async function POST(
   _req: Request,
@@ -24,17 +23,7 @@ export async function POST(
   let ok = false;
   let error: string | undefined;
   try {
-    const password = decryptSecret(
-      mailbox.encryptedPassword,
-      mailbox.passwordIv,
-      mailbox.passwordTag
-    );
-    const transport = nodemailer.createTransport({
-      host: mailbox.host,
-      port: mailbox.port,
-      secure: mailbox.secure,
-      auth: { user: mailbox.username, pass: password },
-    });
+    const transport = transporterForMailbox(mailbox);
     await transport.verify();
     ok = true;
   } catch (e) {
