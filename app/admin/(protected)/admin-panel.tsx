@@ -23,7 +23,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -33,6 +33,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "sessions", label: "Browser Sessions" },
   { id: "queue", label: "Search Queue" },
   { id: "services", label: "Services" },
+  { id: "templates", label: "Campaign Templates" },
 ];
 
 // Import type only (server-only), not the runtime module — keeps this
@@ -114,6 +115,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "sessions" && <SessionsTab />}
         {tab === "queue" && <QueueTab />}
         {tab === "services" && <ServicesTab />}
+        {tab === "templates" && <CampaignTemplatesTab />}
       </main>
     </div>
   );
@@ -1119,6 +1121,222 @@ function ServicesTab() {
       <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
         Stopping does not survive a VPS reboot as "stopped" — a reboot brings it back.
       </p>
+    </div>
+  );
+}
+type AdminTemplate = {
+  id: string;
+  name: string;
+  createdAt: string;
+  variants: { id: string; subject: string; bodyHtml: string }[];
+};
+
+// Task 28, item 5 — admin authoring of "ready-made" campaign templates (the
+// "Ready-made templates" group in the Automations builder). Templates are just
+// EmailCampaign rows owned by the SYSTEM_TEMPLATES_USER_EMAIL account, with
+// subject/body in CampaignVariant rows; the builder clones them per run.
+function CampaignTemplatesTab() {
+  const confirm = useConfirm();
+  const [templates, setTemplates] = useState<AdminTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [variantRows, setVariantRows] = useState<{ subject: string; bodyHtml: string }[]>([
+    { subject: "", bodyHtml: "" },
+  ]);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/campaign-templates");
+      if (!res.ok) throw new Error("Failed to load campaign templates");
+      setTemplates((await res.json()) as AdminTemplate[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load campaign templates");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+async function createTemplate() {
+    const trimmed = name.trim();
+    const variants = variantRows
+      .map((v) => ({ subject: v.subject.trim(), bodyHtml: v.bodyHtml.trim() }))
+      .filter((v) => v.subject.length > 0 && v.bodyHtml.length > 0);
+    if (!trimmed) return setError("Name is required");
+    if (variants.length === 0) return setError("At least one subject/body variant is required");
+
+    setSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/campaign-templates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: trimmed, variants }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Create failed");
+      } else {
+        setName("");
+        setVariantRows([{ subject: "", bodyHtml: "" }]);
+        await load();
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteTemplate(id: string) {
+    if (!(await confirm({
+      title: "Delete this ready-made template?",
+      description:
+        "Existing automations that reference it become dangling (their next run fails gracefully). This cannot be undone.",
+      confirmLabel: "Delete",
+    }))) {
+      return;
+    }
+    setDeletingId(id);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/campaign-templates/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(typeof data.error === "string" ? data.error : "Delete failed");
+      } else {
+        await load();
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold tracking-tight">Ready-made campaign templates</h2>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Author the "Ready-made templates" group shown in the Automations builder. A template is
+        a system-owned EmailCampaign with subject/body variants; every automation run clones it
+        into its own campaign. Requires&nbsp;<code className="rounded bg-zinc-100 px-1 py-0.5 text-xs dark:bg-zinc-800">SYSTEM_TEMPLATES_USER_EMAIL</code>&nbsp;to be set.
+      </p>
+
+      {/* Create form */}
+      <div className="mt-5 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="px-4 py-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">New template</div>
+        <div className="px-4 py-4">
+          <div className="space-y-3">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Template name"
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            {variantRows.map((row, i) => (
+              <div key={i} className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-2 dark:border-zinc-800">
+                <input
+                  value={row.subject}
+                  onChange={(e) => setVariantRows((prev) => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], subject: e.target.value };
+                    return next;
+                  })}
+                  placeholder={`Subject line ${i + 1}`}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+                />
+                <textarea
+                  value={row.bodyHtml}
+                  onChange={(e) => setVariantRows((prev) => {
+                    const next = [...prev];
+                    next[i] = { ...next[i], bodyHtml: e.target.value };
+                    return next;
+                  })}
+                  placeholder="Body (HTML)"
+                  rows={4}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+                />
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setVariantRows((prev) => (prev.length <= 1 ? prev : prev.filter((_, idx) => idx !== i)))}
+                    disabled={variantRows.length <= 1}
+                    className="rounded-lg border border-zinc-300 px-3 py-1 text-xs text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={() => setVariantRows((prev) => [...prev, { subject: "", bodyHtml: "" }])}
+              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            >
+              + Add subject/body variant
+            </button>
+            <button
+              onClick={createTemplate}
+              disabled={saving}
+              className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {saving ? "Creating…" : "Create template"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+{loading ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">Name</th>
+                <th className="px-4 py-3 font-medium">Variants</th>
+                <th className="px-4 py-3 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {templates.map((t) => (
+                <tr key={t.id}>
+                  <td className="px-4 py-3 font-medium text-zinc-800 dark:text-zinc-200">{t.name}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {t.variants.length === 0 ? "—" : t.variants.map((v) => `"${v.subject}"`).join(", ")}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => deleteTemplate(t.id)}
+                      disabled={deletingId === t.id}
+                      className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                    >
+                      {deletingId === t.id ? "Deleting…" : "Delete"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {templates.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-4 py-6 text-zinc-500 dark:text-zinc-400">
+                    No ready-made templates yet. Create one above.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

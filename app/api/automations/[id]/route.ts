@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { usableTemplateWhere } from "@/lib/campaign-templates";
 
 // Task 27, Part B — edit / pause-resume / delete a saved automation.
 // Editing re-runs the same hard gate as create (template + >=1 mailbox), so an
@@ -84,7 +85,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!name) return NextResponse.json({ error: "Name is required" }, { status: 400 });
 
   const template = await prisma.emailCampaign.findFirst({
-    where: { id: campaignTemplateId, userId: session.userId },
+    where: await usableTemplateWhere(campaignTemplateId, session.userId),
     select: { id: true, _count: { select: { variants: true } } },
   });
   if (!template || template._count.variants === 0) {

@@ -48,18 +48,22 @@ async function recordNotificationLog(entry: {
 }
 
 // Thin wrapper around Resend — for SpaceWorker's OWN transactional email only
-// (signup/verification codes). Uses a SEPARATE Resend account/API key from
-// Vantra's. Task 4's cold-outreach sending uses each customer's own SMTP and
-// must never touch this account.
+// (signup/verification codes, plus an internal automation-needs-confirmation
+// alert). Uses a SEPARATE Resend account/API key from Vantra's. Task 4's
+// cold-outreach sending uses each customer's own SMTP and must never touch this
+// account.
 export async function sendEmail(opts: {
   to: string;
   subject: string;
   html: string;
+  // Event type recorded on the NotificationLog audit row. Defaults to
+  // "verification_code" (its original, and still most common, caller); other
+  // internal senders (e.g. automation_needs_confirmation) pass their own so the
+  // audit log names what actually happened instead of every row reading as a
+  // verification email.
+  eventType?: string;
 }): Promise<void> {
-  // sendEmail is SpaceWorker's only transactional send path and is currently
-  // used exclusively for verification codes, so that is the eventType recorded.
-  // The call signature is deliberately unchanged — logging is additive.
-  const eventType = "verification_code";
+  const eventType = opts.eventType ?? "verification_code";
   const channel = "email";
 
   let outcome: "sent" | "failed" = "sent";

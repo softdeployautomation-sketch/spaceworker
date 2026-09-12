@@ -97,7 +97,7 @@ jobs:
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy
 
       - name: Set up SSH
         run: |
@@ -143,6 +143,40 @@ jobs:
             systemctl is-active spaceworker-browser
             systemctl is-active extraction-worker
             curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.instaweb.top/dashboard
+          '
+
+      - name: Install systemd timer units (mail-queue-drain, dispatcher, payment-verify, automations-sweep)
+        run: |
+          # Ship ONLY these four oneshot-curl units from the repo's deploy/ to the
+          # VPS (that's how the mail-queue drain originally got there manually,
+          # and how this would otherwise silently never ship automations-sweep).
+          # Deliberately an explicit name list, NOT a `deploy/*.service` glob:
+          # deploy/ also holds extraction-worker.service and
+          # spaceworker-browser.service, which are the ACTUAL long-running app
+          # services managed separately by the deploy step above — the repo's
+          # copies of those two are stale reference/template files (literal
+          # %WORKER_AUTH_TOKEN%/"/path/to/..." placeholders, never filled in),
+          # not what is really running. A blanket glob would silently overwrite
+          # the VPS's real, manually-configured unit files with those broken
+          # templates — inert until the next restart/reboot, then a real outage.
+          # Substitutes the real INTERNAL_BEARER_TOKEN from the VPS .env, then
+          # (re)starts every timer so a new tracker is picked up on deploy.
+          # Idempotent — safe to re-run.
+          ssh -i ~/.ssh/vps_key root@164.68.105.96 '
+            set -e
+            INTERNAL=$(grep ^INTERNAL_BEARER_TOKEN= /opt/spaceworker/.env | head -n1 | cut -d= -f2-)
+            if [ -z "$INTERNAL" ]; then echo "WARNING: INTERNAL_BEARER_TOKEN not found in .env" >&2; fi
+            for name in mail-queue-drain dispatcher payment-verify automations-sweep; do
+              cp "/opt/spaceworker/deploy/$name.service" /etc/systemd/system/
+              cp "/opt/spaceworker/deploy/$name.timer" /etc/systemd/system/
+              sed -i "s|%INTERNAL_BEARER_TOKEN%|${INTERNAL}|g" "/etc/systemd/system/$name.service"
+            done
+            systemctl daemon-reload
+            for t in mail-queue-drain dispatcher payment-verify automations-sweep; do
+              systemctl enable "$t.timer" 2>/dev/null || true
+              systemctl restart "$t.timer" 2>/dev/null || systemctl start "$t.timer" || true
+            done
+            systemctl is-active automations-sweep.timer || true
           '
 
       - name: Clean up SSH key

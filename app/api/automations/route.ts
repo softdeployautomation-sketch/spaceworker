@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { usableTemplateWhere } from "@/lib/campaign-templates";
 
 // Task 27, Part B — list + create saved CampaignAutomation configs.
 // The HARD GATE from Task 09 is enforced here at CREATE time, not at run time:
@@ -68,9 +69,12 @@ export async function POST(req: Request) {
 
   if (!name) return NextResponse.json({ error: "Name is required" }, { status: 400 });
 
-  // ---- HARD GATE #1: campaign template must exist and be the user's own ----
+  // ---- HARD GATE #1: campaign template must exist, be usable by this user, and
+  // have variants. Usable = the user's own (tier a) OR a system-owned ready-made
+  // template (tier b) — see lib/campaign-templates.ts. Owners are not exposed to
+  // each other's templates; ready-made ones are owned by the system account.
   const template = await prisma.emailCampaign.findFirst({
-    where: { id: campaignTemplateId, userId: session.userId },
+    where: await usableTemplateWhere(campaignTemplateId, session.userId),
     select: { id: true, _count: { select: { variants: true } } },
   });
   if (!template || template._count.variants === 0) {

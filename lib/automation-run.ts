@@ -4,6 +4,9 @@ import { createSearchJob } from "@/lib/create-search-job";
 import { buildSearchQueries } from "@/lib/build-search-queries";
 import { createCampaign } from "@/lib/campaign-create";
 import { leadToRecipient, type RecipientInput } from "@/lib/campaign-recipients";
+import { sendEmail } from "@/lib/email";
+import { env } from "@/lib/env";
+import { usableTemplateWhere } from "@/lib/campaign-templates";
 
 // Task 27, Part B — the run orchestrator shared by POST /api/automations/[id]/run
 // and the internal daily sweep. There is deliberately NO new extraction or send
@@ -52,23 +55,77 @@ async function resolveRunRecipients(
 }
 
 async function loadTemplateCampaign(campaignTemplateId: string, userId: string) {
+  // Tier (a): the user's own campaign. Tier (b): a system-owned ready-made
+  // template (identical clone via createCampaign — this function only needs to
+  // LOCATE it, ownership/authoring is the picker's concern).
   return prisma.emailCampaign.findFirst({
-    where: { id: campaignTemplateId, userId },
+    where: await usableTemplateWhere(campaignTemplateId, userId),
     include: { variants: { orderBy: { createdAt: "asc" }, select: { subject: true, bodyHtml: true } } },
   });
 }
 
-// Best-effort in-app alert: writes a NotificationLog row so the dashboard can
-// surface "this daily automation needs your confirmation." Real external email
-// delivery is a handoff follow-up (see plan) — the row is the audit + in-app
-// signal that should never fail the run itself.
-async function notifyNeedsConfirmation(runId: string, userId: string, automationName: string) {
-  void runId;
-  await prisma.notificationLog
-    .create({
-      data: { userId, eventType: "automation_needs_confirmation", channel: "email", recipient: automationName, outcome: "sent" },
-    })
-    .catch(() => {});
+// Real external notification when a daily run reaches needs_confirmation. Sends
+// SpaceWorker's OWN transactional email (lib/email.ts sendEmail — the same
+// separate Resend account used for verification codes, never the customer SMTP)
+// to the automation owner and records an accurate audit row via sendEmail's
+// internal recordNotificationLog. Best-effort by design: a notification failure
+// must never fail the run itself, so the send is wrapped and any error is
+// swallowed (sendEmail already logged the failed attempt as outcome:"failed"
+// for the audit trail).
+async function notifyNeedsConfirmation(runId: string, automation: AutomationShape) {
+  // Thread the real recipient through: the owner's verified email, looked up via
+  // automation.userId -> User.email (the function no longer hardcodes an
+  // in-app-only row that falsely claimed outcome:"sent").
+  const user = await prisma.user.findUnique({
+    where: { id: automation.userId },
+    select: { email: true },
+  });
+  if (!user?.email) return; // no reachable owner — the run's state is the signal
+
+  const runLink = `${env.appBaseUrl}/dashboard/automations/${automation.id}/runs/${runId}`;
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: `SpaceWorker: "${automation.name}" needs your confirmation`,
+      html: automationNeedsConfirmationEmailHtml(automation.name, runLink),
+      eventType: "automation_needs_confirmation",
+    });
+  } catch {
+    // Best-effort — swallow; sendEmail already recorded the failure to
+    // NotificationLog (outcome:"failed") and must not block the run.
+  }
+}
+
+function automationNeedsConfirmationEmailHtml(automationName: string, runLink: string): string {
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">SpaceWorker automations</p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Your daily automation <strong>${escapeHtml(automationName)}</strong> has finished extracting leads and is
+        waiting on your approval before anything is sent. No email has gone out yet.
+      </p>
+      <p style="margin:0 0 16px;">
+        <a href="${escapeHtml(runLink)}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;border-radius:8px;padding:12px 18px;font-size:14px;font-weight:600;">Review &amp; confirm this run</a>
+      </p>
+      <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:0;">
+        If this wasn't you or you didn't expect it, you can pause the automation from the Automations tab. This is a
+        SpaceWorker system notification sent via our own transactional email account.
+      </p>
+    </div>
+  </body>
+</html>`;
+}
+
+// Minimal HTML-escaping so an automation name / link can't inject markup into
+// the notification email.
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 // Advance a run whose extraction SearchJob is done into its send phase.
@@ -108,7 +165,7 @@ async function processSendPhase(
         extractionCompletedAt: new Date(),
       },
     });
-    await notifyNeedsConfirmation(runId, automation.userId, automation.name);
+    await notifyNeedsConfirmation(runId, automation);
     return;
   }
 

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
-import { buildQueueItemRows, leadToRecipient } from "@/lib/campaign-recipients";
+import { leadToRecipient } from "@/lib/campaign-recipients";
+import { createCampaign } from "@/lib/campaign-create";
 
 interface VariantInput {
   subject?: string;
@@ -205,37 +206,30 @@ export async function POST(req: Request) {
   // variant B convert better" analysis and per-send debugging. The indexing lives
   // in the shared lib/campaign-recipients.ts helper so the from-leads add-to-existing
   // route assigns the exact same rotation.
-  const campaign = await prisma.$transaction(async (tx) => {
-    const created = await tx.emailCampaign.create({
-      data: {
-        userId: session.userId,
-        name,
-        subject: "",
-        bodyHtml: "",
-        status: "pending_test_confirm",
-        mailboxIds,
-        rotateEvery,
-        searchJobId,
-      },
-    });
-
-    const variantRows: { id: string; subject: string; bodyHtml: string }[] = [];
-    for (const v of variants) {
-      const row = await tx.campaignVariant.create({
-        data: { campaignId: created.id, subject: v.subject, bodyHtml: v.bodyHtml },
-      });
-      variantRows.push(row);
-    }
-
-    await tx.emailQueueItem.createMany({
-      data: buildQueueItemRows({ campaignId: created.id, mailboxIds, variantRows, recipients, rotateEvery }),
-    });
-
-    return created;
+  //
+  // Shared, not duplicated: createCampaign() (lib/campaign-create.ts) is the ONE
+  // transaction that makes an EmailCampaign + its CampaignVariant rows + its queue
+  // roster, and the automation run's send phase already calls it. This route used
+  // to inline its own copy of that transaction — two versions that could silently
+  // drift — now it only owns the recipient resolution above and hands off the
+  // already-resolved list.
+  const created = await createCampaign({
+    userId: session.userId,
+    name,
+    mailboxIds,
+    variants,
+    recipients,
+    rotateEvery,
+    searchJobId,
   });
 
+  // Response shape kept compatible with the Campaigns page: the frontend reads
+  // only data.campaign.id (app/dashboard/campaigns/page.tsx), but we preserve the
+  // recipientCount and rowErrors fields the route always returned. createCampaign()
+  // returns { campaign: { id }, recipientCount, byMailbox } — the narrower campaign
+  // object is all the UI needs (confirmed by grepping POST /api/campaigns usage).
   return NextResponse.json(
-    { campaign, recipientCount: recipients.length, rowErrors: parsed?.errors ?? [] },
+    { campaign: created.campaign, recipientCount: created.recipientCount, rowErrors: parsed?.errors ?? [] },
     { status: 201 }
   );
 }

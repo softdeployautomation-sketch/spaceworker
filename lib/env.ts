@@ -31,6 +31,12 @@ export const env = {
   // "open"). Checked at the call site in lib/admin-auth.
   adminToken: process.env.ADMIN_TOKEN ?? "",
 
+  // Task 28, item 5 — the account whose EmailCampaign rows are surfaced as
+  // "ready-made campaign templates". OPTIONAL: when unset there are no
+  // ready-made templates and only the user's own campaigns can be automation
+  // templates (today's behaviour).
+  systemTemplatesUserEmail: process.env.SYSTEM_TEMPLATES_USER_EMAIL ?? "",
+
   port: number("PORT", 3400),
 };
 

@@ -84,6 +84,9 @@ export default function AutomationsPage() {
   const confirm = useConfirm();
   const [automations, setAutomations] = useState<Automation[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignOption[]>([]);
+  // Task 28, item 5 — system-owned "ready-made" campaign templates, listed as a
+  // second group in the template picker (empty when the feature isn't configured).
+  const [templates, setTemplates] = useState<CampaignOption[]>([]);
   const [mailboxes, setMailboxes] = useState<MailboxOption[]>([]);
   const [uploadJobs, setUploadJobs] = useState<UploadJobOption[]>([]);
   const [loading, setLoading] = useState(true);
@@ -109,14 +112,16 @@ export default function AutomationsPage() {
   async function loadAll() {
     try {
       setLoading(true);
-      const [autoRes, campRes, mbRes, jobsRes] = await Promise.all([
+      const [autoRes, campRes, templRes, mbRes, jobsRes] = await Promise.all([
         fetch("/api/automations"),
         fetch("/api/campaigns"),
+        fetch("/api/automations/templates"),
         fetch("/api/mailboxes"),
         fetch("/api/jobs"),
       ]);
       if (autoRes.ok) setAutomations(await autoRes.json());
       if (campRes.ok) setCampaigns(await campRes.json());
+      if (templRes.ok) setTemplates(await templRes.json());
       if (mbRes.ok) setMailboxes(await mbRes.json());
       if (jobsRes.ok) {
         const jobs = (await jobsRes.json()) as (UploadJobOption & { template: string })[];
@@ -434,14 +439,27 @@ export default function AutomationsPage() {
               <Label>Campaign template</Label>
               <Select value={campaignTemplateId} onChange={(e) => setCampaignTemplateId(e.target.value)}>
                 <option value="">Select a template…</option>
-                {campaigns.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.variants.length} variant{c.variants.length === 1 ? "" : "s"})
-                  </option>
-                ))}
+                {campaigns.length > 0 && (
+                  <optgroup label="My campaigns">
+                    {campaigns.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.variants.length} variant{c.variants.length === 1 ? "" : "s"})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {templates.length > 0 && (
+                  <optgroup label="Ready-made templates">
+                    {templates.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.variants.length} variant{c.variants.length === 1 ? "" : "s"})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </Select>
               <p className="mt-2 text-xs text-fg-muted">
-                Each run clones this template's subject/body into its own campaign — build one first on the Campaigns tab.
+                Each run clones this template's subject/body into its own campaign. Build your own on the Campaigns tab, or pick a ready-made one.
               </p>
             </div>
           )}

@@ -1,0 +1,13 @@
+# Install: sudo cp automations-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now automations-sweep.timer
+[Unit]
+Description=Run SpaceWorker automations sweep every hour
+
+# Hourly cadence — daily automations only need hour-granularity, unlike the
+# mail-queue drain's per-minute tick.
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1h
+Unit=automations-sweep.service
+
+[Install]
+WantedBy=timers.target
