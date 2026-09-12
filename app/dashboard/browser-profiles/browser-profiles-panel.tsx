@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import { useConfirm } from "@/components/confirm-provider";
 
 type Profile = {
   id: string;
@@ -27,6 +28,7 @@ export default function BrowserProfilesPanel({
   tier: number;
   initialProfiles: Profile[];
 }) {
+  const confirm = useConfirm();
   const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
@@ -65,7 +67,11 @@ export default function BrowserProfilesPanel({
 
   async function deleteProfile(p: Profile) {
     if (p.status === "in_use") return;
-    if (!window.confirm(`Delete profile "${p.name}"? This cannot be undone.`)) return;
+    if (!(await confirm({
+      title: `Delete profile "${p.name}"?`,
+      description: "This cannot be undone.",
+      confirmLabel: "Delete",
+    }))) return;
     setDeletingId(p.id);
     try {
       const res = await fetch(`/api/browser-profiles/${p.id}`, { method: "DELETE" });

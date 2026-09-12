@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
+import { useConfirm } from "@/components/confirm-provider";
 
 type AdminUser = {
   id: string;
@@ -816,6 +817,7 @@ function QueueTab() {
 }
 
 function SessionsTab() {
+  const confirm = useConfirm();
   const [sessions, setSessions] = useState<AdminSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -840,7 +842,11 @@ function SessionsTab() {
   }, [load]);
 
   async function kill(id: string) {
-    if (!window.confirm("Kill this session? Its browser process will be terminated.")) return;
+    if (!(await confirm({
+      title: "Kill this session?",
+      description: "Its browser process will be terminated.",
+      confirmLabel: "Kill",
+    }))) return;
     setKillingId(id);
     try {
       const res = await fetch(`/api/admin/browser-sessions/${id}/kill`, { method: "POST" });
@@ -959,6 +965,7 @@ const SERVICE_LABELS: Record<string, string> = {
 };
 
 function ServicesTab() {
+  const confirm = useConfirm();
   const [services, setServices] = useState<AdminServiceState[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -990,13 +997,15 @@ function ServicesTab() {
     // (systemd sends the same SIGTERM either way) — same warning for both.
     if (
       (action === "stop" || action === "restart") &&
-      !window.confirm(
-        `${action === "stop" ? "Stop" : "Restart"} the browser subsystem? Any interactive browser sessions currently open will be cut off. ${
+      !(await confirm({
+        title: `${action === "stop" ? "Stop" : "Restart"} the browser subsystem?`,
+        description: `Any interactive browser sessions currently open will be cut off. ${
           action === "stop"
             ? "It comes back on a VPS reboot but not automatically otherwise — you'll need to Start it again from here."
             : "It will come back up on its own once the restart finishes."
-        }`
-      )
+        }`,
+        confirmLabel: action === "stop" ? "Stop" : "Restart",
+      }))
     ) {
       return;
     }

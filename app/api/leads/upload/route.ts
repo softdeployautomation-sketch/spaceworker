@@ -61,55 +61,81 @@ export async function POST(req: Request) {
   }
 
   const now = new Date();
-  const job = await prisma.$transaction(async (tx) => {
-    const searchJob = await tx.searchJob.create({
-      data: {
-        userId: session.userId,
-        query: `Uploaded: ${fileName}`,
-        template: "upload",
-        params: {
+  // Bug fix (2026-09-12): this whole block had no try/catch, so any real-world
+  // Prisma error (duplicate email within the SAME file — see note below — a
+  // transient connection blip, etc.) threw all the way out unhandled, and Next
+  // returned a bare 500 with no `.error` field. The frontend's generic "Upload
+  // failed." fallback (only shown when a response has no parseable `.error`)
+  // is exactly what that produces — reported live as an unexplained upload
+  // failure. Wrapping this and returning the real message fixes both the
+  // silent-failure UX and gives a concrete error to act on if it recurs.
+  try {
+    const job = await prisma.$transaction(async (tx) => {
+      const searchJob = await tx.searchJob.create({
+        data: {
+          userId: session.userId,
+          query: `Uploaded: ${fileName}`,
           template: "upload",
-          fileName,
-          originalRowCount: parsed.leads.length,
-        } as Prisma.InputJsonValue,
-        status: "done",
-        lane: "light",
-        workerJobId: null,
+          params: {
+            template: "upload",
+            fileName,
+            originalRowCount: parsed.leads.length,
+          } as Prisma.InputJsonValue,
+          status: "done",
+          lane: "light",
+          workerJobId: null,
+        },
+        select: { id: true },
+      });
+
+      // NOTE: contrary to this route's original comment, `skipDuplicates` does
+      // NOT collapse same-email rows here — the unique constraint is
+      // (searchJobId, sourceUrl, email), and every uploaded row has
+      // sourceUrl: null; standard SQL treats each NULL as distinct from every
+      // other NULL for uniqueness purposes, so two rows with the same email
+      // and both a null sourceUrl do NOT violate the constraint and are NOT
+      // deduped by skipDuplicates. Dedup explicitly instead.
+      const seen = new Set<string>();
+      const rows = [];
+      for (const l of parsed.leads) {
+        const key = l.email.trim().toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        rows.push({
+          userId: session.userId,
+          searchJobId: searchJob.id,
+          email: l.email,
+          businessName: l.businessName ?? null,
+          contactName: l.contactName ?? null,
+          phone: l.phone ?? null,
+          website: l.website ?? null,
+          sourceUrl: null,
+          snippet: null,
+          validationStatus: "unchecked",
+          createdAt: now,
+        });
+      }
+
+      const { count } = await tx.lead.createMany({ data: rows, skipDuplicates: true });
+
+      return { searchJob, count };
+    });
+
+    return NextResponse.json(
+      {
+        jobId: job.searchJob.id,
+        imported: job.count,
+        requested: parsed.leads.length,
+        format: parsed.format,
+        messages: parsed.messages,
       },
-      select: { id: true },
-    });
-
-    // skipDuplicates mirrors the dispatcher's convention: the Lead unique
-    // constraint is (searchJobId, sourceUrl, email) and sourceUrl is always null
-    // for uploads, so duplicate emails within the one file collapse to a single row.
-    const { count } = await tx.lead.createMany({
-      data: parsed.leads.map((l) => ({
-        userId: session.userId,
-        searchJobId: searchJob.id,
-        email: l.email,
-        businessName: l.businessName ?? null,
-        contactName: l.contactName ?? null,
-        phone: l.phone ?? null,
-        website: l.website ?? null,
-        sourceUrl: null,
-        snippet: null,
-        validationStatus: "unchecked",
-        createdAt: now,
-      })),
-      skipDuplicates: true,
-    });
-
-    return { searchJob, count };
-  });
-
-  return NextResponse.json(
-    {
-      jobId: job.searchJob.id,
-      imported: job.count,
-      requested: parsed.leads.length,
-      format: parsed.format,
-      messages: parsed.messages,
-    },
-    { status: 201 },
-  );
+      { status: 201 },
+    );
+  } catch (e) {
+    console.error("[leads/upload] failed to save uploaded leads:", e);
+    return NextResponse.json(
+      { error: e instanceof Error ? `Couldn't save the uploaded leads: ${e.message}` : "Couldn't save the uploaded leads." },
+      { status: 500 },
+    );
+  }
 }

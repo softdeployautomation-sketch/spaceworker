@@ -1,11 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Badge } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
 import { timeAgo } from "@/lib/format-date";
+import { useConfirm } from "@/components/confirm-provider";
 
 type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
 
@@ -102,6 +104,7 @@ const TEMPLATES: { id: Template; label: string; description: string }[] = [
 const EXPERIENCE_LEVELS = ["", "Junior", "Mid", "Senior"];
 
 export default function ExtractPage() {
+  const confirm = useConfirm();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -216,6 +219,16 @@ export default function ExtractPage() {
     }, 4000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
   }, [fetchJobs, fetchJobDetail]);
+
+  // Deep link support (2026-09-12) — added so the Campaigns picker's "open this
+  // job on the Extract page" link (shown when a job hasn't been validated yet)
+  // actually lands on that job, instead of just the page.
+  const searchParams = useSearchParams();
+  const deepLinkJobId = searchParams.get("job");
+  useEffect(() => {
+    if (deepLinkJobId) void fetchJobDetail(deepLinkJobId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkJobId]);
 
   // Task 26, Piece 1 — auto-scroll the leads table to the newest lead. Only fires
   // when the count INCREASES and the user hasn't scrolled up to read history, so
@@ -350,7 +363,11 @@ export default function ExtractPage() {
   }
 
   async function deleteJob(id: string) {
-    if (!window.confirm("Delete this job run and its leads? This can't be undone.")) return;
+    if (!(await confirm({
+      title: "Delete this job run?",
+      description: "This deletes the job and its leads. This can't be undone.",
+      confirmLabel: "Delete",
+    }))) return;
     setFormError("");
     try {
       const res = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
@@ -505,17 +522,18 @@ export default function ExtractPage() {
   }
 
   // Task 26, Piece 7c — discard just the invalid leads in the selected job (after
-  // "Validate all" flags them). Lightweight window.confirm (this app's existing
-  // lightweight-confirm convention — see deleteJob); on success refetch the job
-  // detail so the table drops the deleted rows immediately, plus the job list so
-  // its lead counts stay right.
+  // "Validate all" flags them). On success refetch the job detail so the table
+  // drops the deleted rows immediately, plus the job list so its lead counts
+  // stay right.
   async function deleteInvalidLeads() {
     if (!selectedJob) return;
     const invalidCount = selectedJob.leads.filter((l) => l.validationStatus === "invalid").length;
     if (invalidCount === 0) return;
-    if (!window.confirm(
-      `Delete ${invalidCount} invalid lead${invalidCount === 1 ? "" : "s"} from this job? Valid and unchecked leads are kept.`,
-    )) return;
+    if (!(await confirm({
+      title: `Delete ${invalidCount} invalid lead${invalidCount === 1 ? "" : "s"}?`,
+      description: "Valid and unchecked leads in this job are kept.",
+      confirmLabel: "Delete",
+    }))) return;
     try {
       const res = await fetch(`/api/jobs/${selectedJob.id}/leads/delete-invalid`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
@@ -1088,15 +1106,26 @@ export default function ExtractPage() {
                   {(() => {
                     const vValid = selectedJob.leads.filter((l) => l.validationStatus === "valid").length;
                     const vInvalid = selectedJob.leads.filter((l) => l.validationStatus === "invalid").length;
-                    const vUntested = selectedJob.leads.filter((l) => !l.validationStatus || l.validationStatus === "unchecked").length;
+                    const untested = selectedJob.leads.filter((l) => !l.validationStatus || l.validationStatus === "unchecked");
+                    // Bug fix (2026-09-12): "unchecked" was one bucket for two very
+                    // different things — a lead with an email genuinely still
+                    // awaiting validation, vs. a lead with NO email at all, which
+                    // /api/jobs/[id]/validate deliberately skips forever (nothing to
+                    // check). Lumping them together read as "Validate all left most
+                    // of my leads unchecked" when really most of them just have no
+                    // email address to validate. Split the label so that's clear.
+                    const vNoEmail = untested.filter((l) => !l.email || l.email.trim().length === 0).length;
+                    const vPending = untested.length - vNoEmail;
                     if (vValid + vInvalid === 0) return null;
                     return (
                       <>
                         <span
-                          key={`${vValid}-${vInvalid}-${vUntested}`}
+                          key={`${vValid}-${vInvalid}-${vPending}-${vNoEmail}`}
                           className="animate-[fadeInUp_0.15s_ease-out] text-xs text-fg-muted"
                         >
-                          {vValid} valid · {vInvalid} invalid{vUntested > 0 ? ` · ${vUntested} unchecked` : ""}
+                          {vValid} valid · {vInvalid} invalid
+                          {vPending > 0 ? ` · ${vPending} pending validation` : ""}
+                          {vNoEmail > 0 ? ` · ${vNoEmail} no email (can't be validated)` : ""}
                         </span>
                         {/* Task 26, Piece 7c — "Delete N invalid", only while there
                             are invalid leads to remove. */}
@@ -1139,7 +1168,17 @@ export default function ExtractPage() {
                     ? "Waiting for results…"
                     : "No leads found."}
                 </p>
-              ) : (() => {
+              ) : (
+                <>
+                {/* Bug fix (2026-09-12): the merge action (Piece 2) only becomes
+                    visible once 2+ row checkboxes are checked, and nothing on
+                    screen said the checkboxes were there for that — reported
+                    twice as "no option to merge multiple leads" when the feature
+                    was actually present, just undiscoverable. */}
+                <p className="-mb-2 text-xs text-fg-muted">
+                  Check 2+ leads below to merge them into one, or use the header checkbox to select all.
+                </p>
+                {(() => {
                 // Display-only — extraction always captured every field regardless
                 // of what this job's resultMode was set to at creation time.
                 // Falls back to "full" (the ORIGINAL, unconditional table shape),
@@ -1264,6 +1303,8 @@ export default function ExtractPage() {
                 </div>
                 );
               })()}
+                </>
+              )}
               {/* Task 26, Piece 2 — merge action bar. Sticky to the bottom of the
                   leads pane (not the whole page) so it stays visible while the
                   table scrolls, and only appears once 2+ leads are selected. */}

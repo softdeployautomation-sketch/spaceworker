@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 
 import { timeAgo } from "@/lib/format-date";
+import { useConfirm } from "@/components/confirm-provider";
 
 type Mailbox = {
   id: string;
@@ -69,6 +70,7 @@ const EMPTY_FORM: MailboxForm = {
 };
 
 export default function MailboxesPanel() {
+  const confirm = useConfirm();
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -240,7 +242,11 @@ export default function MailboxesPanel() {
   }
 
   async function remove(m: Mailbox) {
-    if (!window.confirm(`Delete mailbox "${m.label}"? This cannot be undone.`)) return;
+    if (!(await confirm({
+      title: `Delete mailbox "${m.label}"?`,
+      description: "This cannot be undone.",
+      confirmLabel: "Delete",
+    }))) return;
     try {
       const res = await fetch(`/api/mailboxes/${m.id}`, { method: "DELETE" });
       if (res.ok) {

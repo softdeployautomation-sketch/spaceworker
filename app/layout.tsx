@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Sora, Karla, JetBrains_Mono } from "next/font/google";
 
 import { ToastProvider } from "@/components/toast";
+import { ConfirmProvider } from "@/components/confirm-provider";
 
 import "./globals.css";
 
@@ -42,7 +43,9 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-screen antialiased">
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          <ConfirmProvider>{children}</ConfirmProvider>
+        </ToastProvider>
       </body>
     </html>
   );

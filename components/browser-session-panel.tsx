@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Globe } from "lucide-react";
+import { useConfirm } from "@/components/confirm-provider";
 
 type Session = {
   id: string;
@@ -77,6 +78,7 @@ export default function BrowserSessionPanel({
   initialProfiles: Profile[];
   initialSessions: Session[];
 }) {
+  const confirm = useConfirm();
   const [profiles, setProfiles] = useState<Profile[]>(initialProfiles);
   const [sessions, setSessions] = useState<Session[]>(initialSessions);
 
@@ -698,7 +700,13 @@ export default function BrowserSessionPanel({
                             <button
                               type="button"
                               onClick={() => {
-                                if (window.confirm("Remove this session from your history?")) void stop(s);
+                                void (async () => {
+                                  if (await confirm({
+                                    title: "Remove this session?",
+                                    description: "This removes it from your history.",
+                                    confirmLabel: "Remove",
+                                  })) void stop(s);
+                                })();
                               }}
                               disabled={busyId === s.id}
                               className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:bg-black/5 hover:text-red-500 disabled:opacity-50 dark:hover:bg-white/5"

@@ -203,6 +203,13 @@ export default function CampaignsPage() {
     );
   });
 
+  // Bug fix (2026-09-12): `pickerData.leads` only ever contains VALID leads
+  // (see GET /api/leads/selectable), so choosing a job that hasn't been
+  // validated yet correctly shows 0 here — but the generic "No leads match
+  // this filter" message read as a stuck/broken total when a job with
+  // thousands of raw leads showed nothing. Surface the real cause instead.
+  const selectedJobMeta = pickerJobId ? pickerData?.jobs.find((j) => j.id === pickerJobId) ?? null : null;
+
   function selectAllVisible() {
     const ids = new Set(selectedLeadIds);
     visibleLeads.forEach((l) => ids.add(l.id));
@@ -613,7 +620,24 @@ export default function CampaignsPage() {
                       </p>
                       <div className="max-h-[220px] overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
                         {visibleLeads.length === 0 ? (
-                          <p className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">No leads match this filter.</p>
+                          selectedJobMeta && selectedJobMeta.validCount === 0 ? (
+                            // Bug fix (2026-09-12): this job showing 0 selectable leads
+                            // is correct — /api/leads/selectable only ever returns
+                            // validationStatus:"valid" leads, and this job hasn't been
+                            // validated yet — but the generic message below read as a
+                            // stuck/broken total when a job with thousands of raw leads
+                            // showed nothing. Say why, with a way to go fix it.
+                            <p className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
+                              {selectedJobMeta.totalCount} lead{selectedJobMeta.totalCount === 1 ? "" : "s"} in this job, but
+                              none validated yet. Open it on the{" "}
+                              <a href={`/dashboard/extract?job=${selectedJobMeta.id}`} className="underline">
+                                Extract page
+                              </a>{" "}
+                              and run &ldquo;Validate all,&rdquo; then come back here.
+                            </p>
+                          ) : (
+                            <p className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">No leads match this filter.</p>
+                          )
                         ) : (
                           <ul className="divide-y divide-zinc-100 dark:divide-zinc-800">
                             {visibleLeads.map((l) => (
