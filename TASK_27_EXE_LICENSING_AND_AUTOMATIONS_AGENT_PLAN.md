@@ -1,6 +1,8 @@
 # Task 27 — Licensed EXE distribution + Automations tab (manual builder + AI agent)
 
-**Status: PLANNING ONLY. Do not start building.** Per the user's own explicit sequencing: Task 26's manual tools (extract, validate, merge, mailboxes, campaigns) need to be solid first — this doc exists so the destination is clear and the dashboard/data model don't paint themselves into a corner, not as a green light. Two genuinely separate workstreams are covered here (Part A: EXE + licensing, Part B: Automations tab), tied together only by both depending on Task 26 being done and both landing on the same dashboard. Written 2026-09-12, grounded in the actual current code: the standalone Lead Extractor's real, working license system (`app/license/{generator,machine_id,validator}.py`), SpaceWorker's existing `Payment`/admin-review infrastructure (`prisma/schema.prisma`'s `Payment` model, `app/admin/`, `app/api/admin/payments/`), the current landing page (`app/page.tsx`), and the Piece 6 `Automations` placeholder (`app/dashboard/automations/page.tsx`).
+**Status: architecture decided 2026-09-12, ready to implement in sequence.** Every open question in both Parts (the 4-EXE local-runtime design, the licensing gate, the Channelry AI contract, Part B's always-test-send-confirm behavior) has been resolved by the owner directly — see "Decisions made 2026-09-12" in Part A and the reconciled Part B below. What's still gating is **Task 26's manual tools being fully verified**, specifically a real confirmed end-to-end mailer send (see "Where this stands against the dependency ordering" in Part B) — not a lack of a plan. Two genuinely separate workstreams are covered here (Part A: EXE + licensing, Part B: Automations tab), tied together only by both depending on Task 26 being done and both landing on the same dashboard. Written 2026-09-12, grounded in the actual current code: the standalone Lead Extractor's real, working license system (`app/license/{generator,machine_id,validator}.py`), SpaceWorker's existing `Payment`/admin-review infrastructure (`prisma/schema.prisma`'s `Payment` model, `app/admin/`, `app/api/admin/payments/`), the current landing page (`app/page.tsx`), and the Piece 6 `Automations` placeholder (`app/dashboard/automations/page.tsx`).
+
+**Updated 2026-09-12, same day, with the user's follow-up clarification on both parts** — see the "4 separate EXEs" note in Part A and the Task 09 reconciliation folded into Part B below. Both updates are additive to the original text above; nothing already-written was found to be wrong, only underspecified.
 
 ---
 
@@ -20,39 +22,72 @@ A visitor to the marketing landing page shouldn't have to sign up for the web Sa
 
 **What's genuinely new here, not in the existing system**: the standalone requires activation immediately (no free window) — SpaceWorker's ask adds a **1-day unlicensed trial** before the gate kicks in. This needs its own small addition: on first launch, write a local trial-start timestamp (same tier of tamper-resistance as the rest of this scheme — a determined user could reset it by editing a file, which is an accepted, known limitation of client-side-only licensing, not something to over-engineer around); the app runs normally until `now - trial_start > 24h`, then requires a valid key exactly like the standalone always has.
 
-## Open question — confirm before Cline builds anything (this is the one real fork in this whole Part)
+## DECIDED 2026-09-12 — full local reimplementation, reusing the actual dashboard UI
 
-**What does "the EXE" actually contain?** Two very different builds hide behind that word, and the right one changes scope by an order of magnitude:
+The wrapper-vs-native fork above is now resolved by the user directly, unambiguously in favor of **option 2, full local reimplementation** — confirmed in the user's own words: *"data storage is local for exe... the mailer just uses the ui of our spaceworker same with the lead extractor, i want the current ui also."* Two things pinned down at once: (1) each EXE stores its own data locally (no dependency on the shared Postgres/VPS for its core function), and (2) the UI is **the actual current SpaceWorker Next.js dashboard** (Extract, Mailboxes/Campaigns pages) running locally, not a separate simplified tool UI. This is a materially larger build than the "wrapper" default originally recommended — sized and architected below accordingly, not softened.
 
-1. **A thin desktop wrapper around the existing hosted dashboard** (Electron or Tauri shell pointing at `https://spaceworker.instaweb.top`, license-gated locally before the shell loads the page) — SpaceWorker's real extraction/automation work already runs server-side (`worker/automation.py` on the shared VPS, not client-side), so this is the natural fit: the EXE is a distribution/paywall mechanism for the same product, not a reimplementation. Days of work, not weeks.
-2. **A standalone local app reimplementing extraction/automation to run entirely on the buyer's own machine** (like Lead Extractor Pro genuinely does) — this would mean either porting `worker/automation.py`'s whole DDG/pagination/extraction pipeline to run locally (duplicating a lot of very recently, very hard-won correctness work — see Tasks 22-25 this session), or building a fundamentally different, disconnected product that happens to share a name. Weeks of work, and a real fork in the codebase going forward.
+### Architecture — one shared local runtime, four build targets
 
-Given the standalone Lead Extractor is already exactly option 2 and already sold separately, and SpaceWorker's whole architecture (shared VPS worker, wallet-billed usage, one Postgres database) is built around option 1's model — **the wrapper (option 1) is the recommended default** unless there's a specific reason SpaceWorker needs to run fully offline/local that hasn't come up yet. Don't build either until this is confirmed explicitly.
+**Shell**: Tauri wrapping the actual Next.js dashboard codebase (`app/`, `components/`) — reuse this account's own proven precedent (`~/faceless-channel-os` already ships a Tauri+Next.js desktop app) rather than evaluating packaging tools from scratch. No UI rewrite: the same React pages/components render, just served by a local Next.js server instead of the hosted one.
+
+**Local database**: SQLite instead of the shared Postgres, via a second Prisma schema (`prisma/schema.local.prisma`, `provider = "sqlite"`, same models, separate generated client) selected at build time via a `RUNTIME_MODE=local` flag; `lib/prisma.ts` picks the right client. **Real porting work, not a copy-paste**: SQLite has no native array column type, so every `String[]` field (`findTerms`, `locationTerms`, `mailboxIds`, etc. — several exist across `SearchJob`/`CampaignAutomation`) needs to become a JSON-encoded string column or a join table in the local schema specifically; audit every model for Postgres-only features (arrays, native `Json` behavior differences) before assuming the schema ports 1:1.
+
+**Local extraction engine** (Extractor EXE, and the shared/combined EXE): bundle the actual Python `worker/automation.py` pipeline — same Playwright-based DDG/pagination logic, same Tasks 22-25 bug fixes — as a local sidecar process the Next.js server spawns, instead of dispatching to the shared VPS job queue. This directly reuses Lead Extractor Pro's own proven packaging (Python + Playwright + bundled Chromium into one Windows EXE, ~290MB, already shipped and sold) rather than porting the pipeline to Node — don't rewrite working, hard-won logic into a new language for this.
+
+**Local mailer engine** (Mailer EXE, and the shared/combined EXE): port `lib/mailer-send.ts`/`lib/campaign-recipients.ts`'s send/rotation/queue logic into a local drain loop the Next.js server runs in-process (polling the LOCAL `EmailQueueItem` table, same rotation math, same SMTP transport code) instead of the hosted dispatcher's systemd service. This is genuinely new code (today's drain logic is written as a standalone systemd-triggered process against the shared DB, not a library callable in-process) — a bounded port, not a full rewrite, since the actual send/rotation logic itself is untouched.
+
+**Four build targets, one core**: build-time flags decide which dashboard routes and backends compile into a given EXE — they are not four separate codebases.
+- **Extractor**: Next.js UI (Extract page only — Mailboxes/Campaigns/Automations routes excluded from the build) + local SQLite + Python extraction sidecar.
+- **Mailer**: Next.js UI (Mailboxes/Campaigns pages only — Extract route excluded) + local SQLite + local mailer drain loop. Since the user wants "the current ui" for this too, it's the real Campaigns/Mailboxes management UI (not a stripped single-session tool) — a user can add mailboxes, build campaigns, and send to a CSV upload or a lead list without ever running the Extractor EXE.
+- **Combined "Lead and Mailer"**: both engines + both UI sections in one shell, one local database, one license file — the natural default most buyers will actually want, letting Extract-page leads flow straight into the same local Campaigns UI with no export/import step.
+- **Automation-enabled**: the combined build plus the Automations tab (Part B below) and its Channelry AI-relay call — the only one of the four with any network dependency for its core function (the AI reasoning step always calls out, per Part B's architecture note, regardless of how local everything else is).
+
+**Effort reality check**: this is genuinely weeks of work, not days — porting the extraction pipeline as a sidecar is de-risked by the Lead Extractor Pro precedent, but the SQLite schema fork, the new local mailer drain loop, and four coordinated build variants sharing one licensing gate is a substantial, first-of-its-kind packaging project for this codebase. **Recommended build order**: Extractor first (closest to an existing proven precedent), then Mailer (new local drain loop, but simpler surface than extraction), then the combined build (mostly integration work once both exist), then automation-enabled last (blocked on the Channelry AI contract regardless — see Part B).
 
 ## The purchase flow — reuses existing payment infrastructure, doesn't invent a new one
 
 **Confirmed current state**: SpaceWorker already has a real, working manual-crypto-payment system — `Payment` model (`kind: "btc"|"usdt_trc20"`, `amountUsd`, `txHash` unique, `toAddress`, `status: "pending"|"approved"|"flagged"|"rejected"`, `autoApproved`), `PaymentVerificationAttempt` audit trail, an admin panel (`app/admin/`) with a payments review route (`app/api/admin/payments/`), and `app/api/internal/payment-verify/` doing the actual on-chain verification. This is the exact infrastructure a "buy a license" flow needs — don't build a second payment system for it.
 
 **The flow**:
-1. Landing page gets a "Get the desktop app" (or "Buy tools") section/page, showing the EXE download + price, no login required to START the flow.
-2. Checkout collects an email (for delivering the license key — this is the ONE piece of identity needed, not a full account) and routes into the SAME BTC/USDT manual-verification flow already built, with a new `Payment.kind` value or a `product` field distinguishing "SpaceWorker Pro EXE license" from whatever else `Payment` rows represent today (check what `Payment` rows currently represent in this app before assuming — confirm during implementation, don't guess here).
-3. On admin-approval (the existing review action), the system **generates a real license key** server-side using the ported `generate_license_key` logic (Node/TypeScript port of `generator.py`'s exact scheme — HMAC-SHA256 over a base64 JSON payload, same format, so a future cross-tool validator could work identically whether the key came from this system or the old standalone's) with `days_valid` reflecting whatever the purchased plan actually buys (a real decision to make explicit at build time: one-time perpetual license vs. a term license — don't assume, ask), and emails it to the purchase email (reuse whatever email-sending mechanism this app already has for other transactional email — check before adding a second one).
+1. Landing page gets a "Get the desktop app" (or "Buy tools") section/page, showing all 4 EXE options + price, no login required to START the flow.
+2. Checkout collects an email (for delivering the license key — this is the ONE piece of identity needed, not a full account) and routes into the SAME BTC/USDT manual-verification flow already built, with a new `Payment.kind` value or a `product` field distinguishing which of the 4 EXE licenses was purchased from whatever else `Payment` rows represent today (check what `Payment` rows currently represent in this app before assuming — confirm during implementation, don't guess here).
+3. On admin-approval (the existing review action), the system **generates a real license key** server-side using the ported `generate_license_key` logic (Node/TypeScript port of `generator.py`'s exact scheme — HMAC-SHA256 over a base64 JSON payload, same format, so a future cross-tool validator could work identically whether the key came from this system or the old standalone's), embedding the purchase email as `licensee` in the payload, and emails the key to that same address (reuse whatever email-sending mechanism this app already has for other transactional email — check before adding a second one).
 4. No `machine_id` is bound server-side at issuance time (the server never sees the buyer's machine) — machine binding, if wanted, happens client-side at first activation inside the EXE itself (the EXE calls `get_machine_id()` locally and could optionally report it back to a "register this activation" endpoint, but the VALIDATION itself stays fully offline per the standalone's proven design — don't build a system that requires the EXE to phone home on every launch just to check a license, that defeats the point of an HMAC scheme built specifically to avoid that).
 5. Signup remains available as a clearly separate button/path alongside the buy-tools flow, exactly as today — this whole Part A is additive, not a replacement for anything in `app/signup`.
 
-## Explicitly out of scope for this plan (flag, don't decide here)
+## Licensing gate UI — one shared component across all 4 EXEs
 
-- The exact pricing/plan structure (one-time vs. subscription-like `days_valid` terms) — a real business decision, not an engineering one; note it needs to be made, don't invent a number.
-- Which specific "tools" are sold this way (just SpaceWorker, or multiple products bundled the way the existing Selar store already does) — out of scope until the wrapper-vs-native question above is answered, since it changes what's even being packaged.
-- Anti-piracy hardening beyond what the standalone already accepts as a reasonable baseline (HMAC + machine-binding, not real DRM) — matching the existing system's own risk tolerance, not a new, stricter bar.
+Per the user's explicit instruction ("just a gated email for activation and licensing page for all exe"): a single licensing/activation gate design, reused identically across all 4 build targets — not four separate license screens.
+
+- **First launch**: no gate at all — the app opens straight into the (build-appropriate) dashboard UI and silently starts the 24h local trial timer (per the "Confirmed: you've already built and shipped this exact mechanism once" section above). No email needed just to try it.
+- **Trial expired**: a single shared `<LicenseGate>` component (rendered by the Tauri shell before the dashboard mounts, same component compiled into all 4 builds) blocks the app with two fields — **license key** and **email** — and an "Activate" button. The email is checked against the `licensee` field embedded in the key's payload (light usability/anti-sharing check — "does this key belong to the account this person is typing," not a security boundary; matches the existing system's own accepted HMAC-not-DRM risk tolerance, don't build anything stronger than that). A "Buy a license" link/button on this same screen deep-links back to the landing page's buy-tools flow for a user who hasn't purchased yet.
+- **Which build the gate is compiled into** determines nothing about the gate itself — it's the exact same component/copy across Extractor, Mailer, Combined, and Automation-enabled; only the dashboard behind it differs.
+
+## Decisions made 2026-09-12 (previously flagged as business questions — owner-authorized to decide directly, no further wait needed)
+
+- **Pricing/plan structure**: one-time perpetual license per EXE tier (`days_valid` set far out, e.g. effectively unlimited — a term/subscription model can be layered on later without breaking the license format, since `expires_at` is already a field in the payload). Price itself (the actual dollar amount per tier) is still a pure business number to set at launch, not an engineering decision — pick it when building the landing page's buy-tools section, no need to block implementation on it.
+- **Which tools are sold this way**: exactly the 4 SpaceWorker EXE tiers already specified above (Extractor / Mailer / Combined / Automation-enabled) — not bundled with the separate Selar store's existing products; those stay on their own separate purchase flow.
+- **Anti-piracy hardening**: stays at the existing standalone's baseline (HMAC signature + optional machine-binding at activation, not real DRM) — no stricter bar for these 4 EXEs than what Lead Extractor Pro already accepts.
 
 ---
 
 # Part B — Automations tab: manual builder first, then an AI agent
 
+## Reconciled 2026-09-12 with the pre-existing `TASK_09_CAMPAIGN_AUTOMATION_AND_AGENT.md`
+
+The first draft of this Part (above the line, superseded below) modeled an "Automation" as a bare saved-job-template — reasonable as far as it went, but `TASK_09_CAMPAIGN_AUTOMATION_AND_AGENT.md` (written 2026-09-08, four days earlier, directly from the user's own description of the full end-to-end flow) already specced something considerably richer for the exact same feature: a `CampaignAutomation`/`CampaignAutomationRun` pair covering daily-or-manual triggers, a hard campaign+mailbox gate before a run is even allowed, a personal-uploaded-lead-list source alongside fresh extraction, always-on test-send-confirm, and a full run-summary/drill-down UI. That's the correct, more complete model — it was simply written before this doc existed and the two were never merged. **This section replaces the "manual automation builder" content below the reconciliation, folding Task 09's model in wholesale rather than leaving two conflicting specs in two files.** Task 09 itself should now be treated as superseded/absorbed by this section — don't build from it directly, it's kept only as the historical record of where this model came from.
+
+**What carries over unchanged from Task 09** (already correct, restated here so this doc is self-contained): the hard dependency ordering (extraction solid → mailbox/campaign send verified end-to-end → only then this layer — see "Where this stands against the dependency ordering" below for current status), the `CampaignAutomation`/`CampaignAutomationRun` two-table shape (config vs. one-row-per-execution), the manual/daily trigger split with a systemd-timer scheduler rather than an in-process one (matching this repo's existing dispatcher/queue-drain convention), the hard gate requiring a campaign AND at least one mailbox before an automation can be created (not just before it runs), the two-tier template system (build-your-own vs. ready-made "just needs lead volume + mailboxes" templates), the personal-lead-list source as a distinct ingestion path from extraction, the always-test-send-confirm question flagged as needing explicit confirmation, and the full run-summary/drill-down UI shape (duration by phase, leads extracted, emails sent by mailbox/variant, source indicator, per-run detail view).
+
+**What this doc adds on top of Task 09** (the parts Task 09 explicitly deferred to "its own pass," now addressed): the concrete Prisma shape reconciled against Task 26's actual shipped models (`SearchJob`/`Lead`/`EmailCampaign`/`EmailQueueItem`, not hypothetical ones), the AI-agent architecture and its REST-endpoint mapping, and the confirmation-gate design for the agent specifically (Task 09 flagged Channelry's Agent Decider System as "worth reviewing," this doc reviews it and applies it).
+
+### Where this stands against the dependency ordering
+
+Task 09's step 1 (extraction solid) and step 2 (mailbox/campaign send verified end-to-end) are both **substantially further along** than when Task 09 was written, per this session's own work: Task 26's five root-caused extraction bugs are fixed and a real job reached 7,000+ leads; the mailbox SMTP transport bug (secure/TLS derived from port) is fixed and deployed. **Neither is fully closed out**, though: a real, confirmed, end-to-end delivered test email through SpaceWorker's own send pipeline has not yet happened (the user was mid-troubleshooting Brevo IP-allowlisting as of the last mailbox-testing message) — that confirmation is the actual gate, not "the code looks right." Do not start building the automation layer below until that real send is confirmed.
+
 ## Sequencing, exactly as asked
 
-1. Build the **manual automation builder** first — a saved, reusable job configuration a user can re-run without re-entering every field. This alone needs to work well before anything conversational sits on top of it, since the agent's whole job is "fill this same form out correctly on the user's behalf," not a separate system.
+1. Build the **manual automation builder** first — a saved, campaign+mailbox-gated, re-runnable configuration a user can trigger manually or schedule daily. This alone needs to work well before anything conversational sits on top of it, since the agent's whole job is "fill this same form out correctly on the user's behalf," not a separate system.
 2. Add an **agent option beside it** on the same tab, once the manual path is proven.
 
 ## Manual automation builder
@@ -60,35 +95,89 @@ Given the standalone Lead Extractor is already exactly option 2 and already sold
 ### Data model
 
 ```prisma
-model Automation {
-  id             String   @id @default(cuid())
-  userId         String
-  user           User     @relation(fields: [userId], references: [id])
-  name           String
-  // The exact same params shape run_automation/POST /api/jobs already accepts —
-  // an Automation IS a saved job configuration, not a new parameter language.
-  template       String   @default("lead")
-  findTerms      String[]
-  locationTerms  String[]
-  params         Json     // engine, maxResults, minResults, pagesPerQuery,
-                           // maxDurationMinutes, resultMode, emailDomains — same
-                           // keys POST /api/jobs already reads from params today
-  lane           String   @default("light")
-  createdAt      DateTime @default(now())
-  lastRunAt      DateTime?
-  runCount       Int      @default(0)
+model CampaignAutomation {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id])
+  name              String
+
+  // Lead source — extraction (this automation's own saved find/location/params,
+  // the exact same params shape POST /api/jobs already accepts) OR a personal
+  // uploaded list, per Task 09's item 4. Never both for the same run.
+  leadSource        String   @default("extract") // "extract" | "personal_list"
+  findTerms         String[]
+  locationTerms     String[]
+  params            Json?    // engine, maxResults, minResults, pagesPerQuery,
+                              // maxDurationMinutes, resultMode, emailDomains — same
+                              // keys POST /api/jobs already reads today. Null when
+                              // leadSource is "personal_list".
+  personalListId    String?  // set when leadSource is "personal_list" — see the
+                              // upload-ingestion note below; reuses Task 26 Piece 3's
+                              // existing upload-as-SearchJob(template:"upload") path
+                              // rather than inventing a second lead-storage shape,
+                              // since that path already produces ordinary Lead rows.
+
+  // Campaign + mailbox — HARD GATE per Task 09: both required to even CREATE this
+  // row, not just to run it. Enforced in the create route, not just at run time.
+  campaignTemplateId String  // which EmailCampaign-shaped template this run uses —
+                              // see "two-tier template system" below
+  mailboxIds        String[] // must be non-empty at creation time
+
+  // Trigger
+  triggerMode       String   @default("manual") // "manual" | "daily"
+  scheduleHour      Int?     // 0-23, UTC — only meaningful when triggerMode is "daily"
+  scheduleEnabled   Boolean  @default(true) // lets a daily automation be paused
+                                             // without deleting its config
+
+  createdAt         DateTime @default(now())
+  lastRunAt         DateTime?
+  runCount          Int      @default(0)
+  runs              CampaignAutomationRun[]
 
   @@index([userId])
+  @@index([triggerMode, scheduleEnabled])
+}
+
+model CampaignAutomationRun {
+  id                    String   @id @default(cuid())
+  automationId          String
+  automation            CampaignAutomation @relation(fields: [automationId], references: [id])
+
+  startedAt             DateTime @default(now())
+  extractionCompletedAt DateTime?
+  completedAt           DateTime?
+  status                String   @default("running") // "running"|"done"|"failed"|"stopped"
+
+  leadSource            String   // snapshot of the automation's leadSource at run time
+  searchJobId           String?  // set when leadSource was "extract" (or the
+                                  // upload-derived SearchJob when "personal_list")
+  leadsExtracted        Int?     // null when not meaningful (personal-list runs still
+                                  // get a count via the uploaded SearchJob's lead count)
+  campaignId            String?  // the EmailCampaign this run actually created/queued
+  emailsSent            Int?
+  emailsSentByMailbox   Json?    // { [mailboxId]: count } — rotation visibility, per
+                                  // Task 09 item 5, computed from EmailQueueItem at
+                                  // completion rather than tracked incrementally
+  errorMessage          String?
+
+  @@index([automationId, startedAt])
 }
 ```
 
-Deliberately NOT a new job-execution path — an Automation is a **template**, `POST /api/automations/[id]/run` just re-derives the exact `queries`/`params` body `POST /api/jobs` already accepts (cross-multiplying `findTerms`×`locationTerms` the same way the Extract page's own form does today — confirm and reuse that exact cross-multiply function rather than re-deriving it) and calls the SAME job-creation code path. This is the concrete payoff of the "AI automation ready" discipline noted back in Task 26 Piece 4: because job creation was always a plain, reusable REST call, "save these settings and let me re-run them" required no changes to `worker/automation.py` or the dispatcher at all — only a new small CRUD layer on top.
+Deliberately NOT a new job-execution path for the extraction half — a `CampaignAutomation` re-derives the exact `queries`/`params` body `POST /api/jobs` already accepts (cross-multiplying `findTerms`×`locationTerms` the same way the Extract page's own form does today — confirm and reuse that exact cross-multiply function rather than re-deriving it) and calls the SAME job-creation code path, and for the send half it calls the SAME `buildQueueItemRows`/campaign-creation code path Task 26 Piece 4/5b already built (`lib/campaign-recipients.ts`, `POST /api/campaigns`). This is the concrete payoff of the "AI automation ready" discipline noted back in Task 26 Piece 4: because job creation and campaign creation were always plain, reusable REST/library calls, this whole layer is new CRUD + a small orchestrator, not new extraction or send logic.
+
+**Personal-lead-list ingestion**: reuses Task 26 Piece 3's existing `POST /api/leads/upload` path unchanged (creates a `SearchJob{template:"upload", status:"done"}` + real `Lead` rows) rather than inventing Task 09's speculative separate `PersonalLeadList` model — the upload path already produces exactly the shape a `CampaignAutomation` run needs (a `SearchJob` with `Lead` rows, validated the same way an extracted job's leads are). `CampaignAutomation.personalListId` stores that upload's `SearchJob.id`; a "personal_list" run skips the extraction phase entirely and jumps straight to campaign creation using the leads already on that job (respecting Task 26 Piece 3/7's validation-status filtering, same as any other job's leads).
+
+**Two-tier template system** (Task 09 item 2, made concrete against Task 26's actual `EmailCampaign`/`CampaignVariant` shape): tier (a) is a from-scratch campaign a user has already built themselves via the Campaigns tab (its `EmailCampaign.id` referenced directly as `campaignTemplateId`, cloned per-run rather than reused directly, so each automation run gets its own fresh `EmailCampaign`+`EmailQueueItem` set instead of appending to a shared one); tier (b) is a ready-made template — a `CampaignVariant` set with placeholder-only merge fields (no mailboxes chosen yet) that a user selects and then only supplies mailbox rotation for. Implementation-time decision, not designed further here: whether tier (b) templates are just `EmailCampaign` rows owned by a system/admin account that get cloned the same way tier (a) does, or a dedicated `CampaignTemplate` model — the cloning behavior is identical either way, so this doesn't block the schema above.
+
+**Always-test-send-confirm — DECIDED 2026-09-12**: take the user's literal wording ("it confirms the email delivers with the first test sending before going ahead always") at face value — **no skip option, ever, even for a mailbox with an established track record.** This is the safer default (a silently-broken mailbox on a daily automation would otherwise burn through a whole lead list undetected) and costs little: for the `triggerMode:"daily"` case specifically, this means a run that reaches the send phase pauses in a `"needs_confirmation"` status and notifies the user (reuse whatever notification channel Task 26/Vantra-pattern email/in-app alerting already exists in this app) rather than sending unattended — it is NOT fully "hands-off" end to end, only the extraction half is. State this plainly in the UI (a daily automation's card should say "sends require your confirmation" so this isn't a surprise) rather than implying full unattended operation.
 
 ### UI (`app/dashboard/automations/page.tsx`, replacing the Piece 6 placeholder)
 
-- List of saved Automations (name, find/location term summary via the same `summarizeQuery`-style compaction Task 26 Piece 1 already built — reuse it, don't write a second one), each with "Run now," "Edit," "Delete."
-- "New automation" opens essentially the SAME form the Extract page's job-creation flow already has (find/location chips, engine, min/max results, duration, domain filter, result mode) — reuse that form's fields/validation, just save-instead-of-submit. Concretely: consider whether the Extract page's existing create-job form component can be extracted into a shared component both pages render (Extract: "run once", Automations: "save for later, run anytime") rather than maintaining two copies of the same field set — Cline's call once it's looking at the actual current form's structure.
-- "Run now" calls `POST /api/automations/[id]/run`, which creates a real `SearchJob` (bumping `lastRunAt`/`runCount`) and redirects to `/dashboard/extract?job=<newJobId>` (or wherever the Extract page can deep-link to a specific job) so the user watches it the same way any other job runs — no separate "automation run" UI to build.
+- List of saved Automations (name, find/location term summary via the same `summarizeQuery`-style compaction Task 26 Piece 1 already built — reuse it, don't write a second one; trigger mode badge — "Manual" or "Daily at HH:00 UTC"; last-run status), each with "Run now," "Edit," "Pause/Resume" (for daily), "Delete."
+- "New automation" is a multi-step form: lead source (extract with the same find/location/engine/limits fields the Extract page's job-creation flow already has, reused not duplicated — or personal list, picking from existing uploaded jobs) → campaign template (tier a or b, per above) → mailbox rotation → trigger mode (manual, or daily + hour picker). The **hard gate is enforced here**: the form cannot be submitted without a valid campaign template AND at least one mailbox selected, matching Task 09's explicit "enforce at creation time" instruction.
+- "Run now" calls `POST /api/automations/[id]/run`, which creates a `CampaignAutomationRun` row, kicks off the extraction/upload-reuse phase, then the campaign-clone-and-queue phase, and redirects to a new **run detail page** (`/dashboard/automations/[id]/runs/[runId]`) rather than the plain Extract page — this is Task 09's run-summary/drill-down surface: duration (extraction phase / send phase / total, computed from `startedAt`/`extractionCompletedAt`/`completedAt`), leads extracted (or "personal list: N leads" when applicable), emails sent with the per-mailbox breakdown, and links through to the underlying `SearchJob` and `EmailCampaign` for full detail — not just the summary numbers.
+- Daily automations run via a systemd timer hitting a new `POST /api/internal/automations-sweep` (same `INTERNAL_BEARER_TOKEN` gate as the existing `retention-sweep` route, same "sibling of `app/api/internal/dispatch`" pattern) that finds `CampaignAutomation` rows with `triggerMode:"daily", scheduleEnabled:true` due for their `scheduleHour`, and creates a `CampaignAutomationRun` for each — not a long-lived in-process scheduler, matching this repo's existing dispatcher/queue-drain convention exactly.
 
 ## The AI agent
 
@@ -107,7 +196,7 @@ Re-reading the ask against the current codebase: almost everything the agent nee
 
 ### Architecture: routes through Channelry's Groq integration, confirmed direction from Task 26
 
-Per the direction already recorded in Task 26 (Piece 4's "ready for AI automation linking" note): SpaceWorker's agent is NOT going to stand up its own separate LLM provider/key management — it routes through Channelry's existing pooled Groq integration, with AI usage calculated per user. **This still needs its own confirmation pass before building** (not decided here, repeating the same flag from Task 26 deliberately since this is where it actually gets used): the exact API contract between SpaceWorker and Channelry's Groq integration, the auth/identification mechanism, and where the per-user usage ledger lives. Read Channelry's actual integration code directly before writing that contract down — don't let Cline guess at it.
+Per the direction already recorded in Task 26 (Piece 4's "ready for AI automation linking" note): SpaceWorker's agent is NOT going to stand up its own separate LLM provider/key management — it routes through Channelry's existing pooled Groq integration, with AI usage calculated per user. **The contract this needs is now grounded AND decided, not guessed**: `~/faceless-channel-os/CLINE_TASK_EXTERNAL_AI_INTEGRATION_SPACEWORKER_2026-09-12.md` (written 2026-09-12, after reading Channelry's real `worker-full.ts`) specifies the Channelry-side build — a new `external_clients` roster + `POST /external/ai-chat` relay endpoint (parallel to the existing internal `/internal/groq-chat`), reusing `llmChatRaw`'s pooled-key calling and `groqCostHundredthsCent`'s exact cost formula/units. Its three open decisions are now resolved (owner-authorized, same authority as this doc's other 2026-09-12 decisions — see that doc's own "Decisions made" section for the reasoning): attribution uses the `client_id`+nullable-`user_id`+`external_user_id` widening (option a), the relay supports `llmToolChat`'s tool-calling mode from day one (required — this agent's REST-mapping table above needs multi-step tool orchestration, not single-shot completions), and SpaceWorker's `external_clients` row starts with a $50/day pooled cap (well above any single Channelry user's $1/day default, since it aggregates every SpaceWorker user's agent usage under one client identity — admin-adjustable without a redeploy, raise it once real usage volume is visible). SpaceWorker's own side of this contract (the admin-panel section to configure/test the Channelry connection, storing the issued external-client key, calling `/external/ai-chat`) still needs to be built — the contract is settled, the SpaceWorker-side implementation is not yet written.
 
 ### UI shape
 
@@ -117,12 +206,49 @@ Per the direction already recorded in Task 26 (Piece 4's "ready for AI automatio
 
 ## Explicitly out of scope, Part B
 
-- Scheduled/trigger-based automation (cron-style "run this every Monday") — the placeholder text already on the current Automations page mentions this as a future idea; this plan only covers on-demand manual + agent-triggered runs, not a scheduler.
-- Any agent capability beyond leads-extraction-then-optionally-campaign — no broader "general assistant" scope creep into this specific tab.
-- Building the Groq/Channelry integration contract itself — flagged twice now (Task 26 and here) as needing its own dedicated pass grounded in Channelry's real code, not guessed at in either planning doc.
+- Anything beyond daily/manual scheduling (e.g. "every Monday," specific weekday/interval schedules) — the reconciled model above covers manual + once-a-day, per Task 09's exact ask; a richer cron-style schedule is a future extension of `CampaignAutomation.triggerMode`, not part of this pass.
+- Any agent capability beyond leads-extraction-then-optionally-campaign — no broader "general assistant" scope creep into this specific tab, and no "talk to other apps" (Mailboxes/Browser Profiles as their own agent-drivable surfaces) beyond what already falls out of the campaign flow — Task 09's broader "talk to other apps" framing is noted but not scoped here.
+- Actually building the Channelry-side `external_clients`/`POST /external/ai-chat` work — that's Channelry's own task doc's job (see the Architecture section above), not this repo's; this doc only needs to build SpaceWorker's consuming side once that contract's three open decisions are settled.
 
 ---
 
 ## How this fits with the currently-in-progress Task 26
 
-No conflict: Task 26's Automations-tab placeholder (Piece 6) is exactly the landing spot Part B replaces once built. Task 26's "AI automation ready" REST-endpoint discipline (Piece 4's note) is precisely what makes Part B's agent layer thin instead of a rewrite. Nothing in Part A touches Task 26's files at all — it's a fully separate distribution channel. **Recommended order once Task 26 is stable**: Part B's manual automation builder first (it's the smaller, more self-contained piece and directly extends what's already shipped), then the two open-architecture questions above (EXE wrapper-vs-native, Groq/Channelry contract) get their own confirmation passes before either Part A or the agent half of Part B starts.
+No conflict: Task 26's Automations-tab placeholder (Piece 6) is exactly the landing spot Part B replaces once built. Task 26's "AI automation ready" REST-endpoint discipline (Piece 4's note) is precisely what makes Part B's agent layer thin instead of a rewrite, and its already-shipped `buildQueueItemRows`/leads-picker code (Piece 4/5b) is exactly what `CampaignAutomation`'s send phase calls. Nothing in Part A touches Task 26's files at all — it's a fully separate distribution channel.
+
+**As of 2026-09-12, every open architecture question in this whole doc is now decided** (the 4-EXE local-reimplementation design in Part A, its licensing gate, and the Channelry AI-contract's three open items) — nothing left to confirm before implementation starts, only sequencing left to decide:
+
+1. **Confirm the real end-to-end mailer send** — the one piece of the original dependency ordering not yet closed (see "Where this stands against the dependency ordering" above). Still the actual gate for Part B's builder, code readiness aside.
+2. **Build Part B's manual `CampaignAutomation` builder** — the smallest fully-unblocked increment: no new architecture decisions needed, builds entirely on already-shipped, already-reviewed Task 26 code (job creation, `buildQueueItemRows`, the leads picker), self-contained to the existing Next.js/Postgres stack Cline already knows. Recommended **first hand-off**, precisely because it has zero remaining open questions and the smallest blast radius of everything left in this doc.
+3. **Build Part A's 4-EXE local runtime** — now fully decided, but the biggest, most novel undertaking in this doc (Tauri shell, SQLite schema fork, a new local mailer drain loop, 4 coordinated build variants, one shared licensing gate) and worth its own dedicated implementation pass with the build-order already specified above (Extractor → Mailer → Combined → Automation-enabled), not squeezed in alongside other work.
+4. **Build the Channelry-side `external_clients`/`POST /external/ai-chat` work** — decided, but touches a single 14,616-line production file handling real payments; hand off with the same PR-reviewed discipline already used for every other Channelry/Vantra external-collaborator handoff this session (small, reviewable diffs, reviewed before merge), not a first-thing-deployed rush.
+5. **Only then** the agent half of Part B, which depends on both 3's local runtime existing (for the automation-enabled EXE) and 4's contract being live.
+
+---
+
+# UPDATE 2026-09-12 — Part B manual `CampaignAutomation` builder is now implemented (sequencing item #2, "first hand-off")
+
+**Status: the manual builder is landed end-to-end and `tsc`-clean.** The schema + migration, the shared job/campaign helpers, the full automation API surface (CRUD + run + confirm + run-detail), the internal hourly sweep, and a functioning dashboard UI (list, multi-step create/edit, run-now/pause/resume/delete, run history, run drill-down) are in place, built entirely on already-shipped Task 26 code as designed. A continuation pass has since been layered on top that further polishes the UI (themed confirm dialog replacing `window.confirm`, richer run-detail page). This section records the verifiable state and exactly what the next agent should pick up.
+
+## What is in place (verified via `tsc --noEmit` = 0 errors)
+
+**Database** — `prisma/schema.prisma` now defines `CampaignAutomation` + `CampaignAutomationRun` (relation wired on `User`), matching the reconciled Part B model: lead source (`extract`|`personal_list`), hard-gated `campaignTemplateId` + `mailboxIds`, manual|daily trigger with `scheduleHour`/`scheduleEnabled`, and a per-run snapshot (`leadsExtracted`, `campaignId`, `emailsSent`, `emailsSentByMailbox`, phase timestamps, `errorMessage`). Hand-written migration at `prisma/migrations/20260912100000_add_campaign_automations/`. **The migration is written but NOT yet `prisma migrate deploy`-applied to the live DB — do that on the next deploy.**
+
+**Shared helpers** (the "reuse, don't duplicate" payoff):
+- `lib/build-search-queries.ts` — Find × Location cross-multiply, identical to the Extract page (capped at 300).
+- `lib/create-search-job.ts` — the single SearchJob+JobQueueEntry enqueue transaction; `POST /api/jobs` was refactored to call it.
+- `lib/campaign-create.ts` — the one campaign+variant+queue create transaction → send phase clones a template here.
+- `lib/automation-run.ts` — the orchestrator: `kickOffRun`, `processSendPhase` (manual clones+queues; daily stops at `needs_confirmation`), `confirmDailyRun`, `sweepCreateDueDailyRuns`, `sweepAdvanceFinishedRuns`.
+
+**API** — `app/api/automations/route.ts` (list + create, hard gate enforced server-side), `app/api/automations/[id]/route.ts` (edit re-gates, pause/resume, delete), `app/api/automations/[id]/run/route.ts` (run-now), `app/api/automations/[id]/runs/[runId]/route.ts` (drill-down), `.../runs/[runId]/confirm/route.ts` (daily send unlock), `app/api/internal/automations-sweep/route.ts` (hourly: creates due daily runs + advances finished runs; same `INTERNAL_BEARER_TOKEN` gate as siblings).
+
+**UI** — `app/dashboard/automations/page.tsx` (list + 5-step create/edit form), `app/dashboard/automations/[id]/page.tsx` (run history), `app/dashboard/automations/[id]/runs/[runId]/page.tsx` (drill-down with Confirm & send for daily runs).
+
+## What the next agent should do (in priority order)
+
+1. **Apply the migration + wire the scheduler.** Run `prisma migrate deploy` on the real DB. Add `deploy/automations-sweep.{service,timer}` mirroring `deploy/mail-queue-drain.{service,timer}` exactly (oneshot curl with `%INTERNAL_BEARER_TOKEN%` → `/api/internal/automations-sweep`), on an **hourly** cadence (`OnUnitActiveSec=1h`) so daily automations fire on their `scheduleHour`.
+2. **Refactor `POST /api/campaigns` to call `lib/campaign-create.ts`** — it currently inlines its own equivalent transaction; unifying removes the second implementation `campaign-create.ts` was written to prevent. Low risk, watch the return shape (create-campaign currently returns `{ campaign: { id }, recipientCount, byMailbox }`).
+3. **Real mailer confirmation is still the true gate for sends** (the always-test-send-confirm decision). Manual runs clone into a `pending_test_confirm` campaign, so the existing test-send→`confirm-test` flow already gates; but no confirmed end-to-end delivered send has been recorded — close that before relying on live sends.
+4. **External alert for daily `needs_confirmation` runs** — currently only a `NotificationLog` row is written (`automation_needs_confirmation`); wire a real Resend email using `lib/email.ts`'s existing channel.
+5. **Tier (b) ready-made templates are not built** — this ships tier (a) only (user clones one of their own `EmailCampaign`s). The implementation-time decision (system/admin-owned `EmailCampaign` rows vs. a `CampaignTemplate` model) is still open.
+6. **Still-gated/separate workstreams** from the plan are untouched and remain as before: Part A's 4-EXE local runtime, the Channelry-side `external_clients`/`POST /external/ai-chat` contract (SpaceWorker's consumer side of it too), and the agent half of Part B.

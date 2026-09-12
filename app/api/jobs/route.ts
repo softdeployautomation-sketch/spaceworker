@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { createSearchJob } from "@/lib/create-search-job";
 
 const TEMPLATES = ["lead", "hr", "plain", "upload"] as const;
 type Template = (typeof TEMPLATES)[number];
@@ -224,26 +225,13 @@ export async function POST(req: Request) {
   });
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const job = await prisma.$transaction(async (tx) => {
-    const searchJob = await tx.searchJob.create({
-      data: {
-        userId: session.userId,
-        query: displayQuery,
-        template,
-        params: params as Prisma.InputJsonValue,
-        lane: resolvedLane,
-        status: "queued",
-      },
-    });
-    await tx.jobQueueEntry.create({
-      data: {
-        searchJobId: searchJob.id,
-        priorityTier: user.tier,
-        lane: resolvedLane,
-        status: "queued",
-      },
-    });
-    return searchJob;
+  const job = await createSearchJob({
+    userId: session.userId,
+    query: displayQuery,
+    template,
+    params: params as Prisma.InputJsonValue,
+    lane: resolvedLane,
+    priorityTier: user.tier,
   });
 
   return NextResponse.json(job, { status: 201 });

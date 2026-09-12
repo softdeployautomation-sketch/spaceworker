@@ -27,6 +27,7 @@ model User {
   notificationLogs NotificationLog[]
   searchJobs       SearchJob[]
   leads            Lead[]
+  campaignAutomations CampaignAutomation[]
 }
 
 model VerificationCode {
@@ -399,4 +400,65 @@ model Lead {
   // single rich document legitimately contains.
   @@unique([searchJobId, sourceUrl, email])
   @@index([userId, searchJobId])
+}
+// Task 27, Part B — manual automation builder. A saved, re-runnable, gated
+// configuration a user can trigger manually or schedule daily.
+model CampaignAutomation {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  name               String
+
+  // Lead source — extraction (this automation's own saved find/location/params,
+  // the exact same param keys POST /api/jobs already reads) OR a personal
+  // uploaded list (personalListId = an upload SearchJob's id, template:"upload").
+  leadSource         String   @default("extract") // "extract" | "personal_list"
+  findTerms          String[] @default([])
+  locationTerms      String[] @default([])
+  params             Json?    // engine, maxResults, minResults, pagesPerQuery, resultMode, emailDomains
+  personalListId     String?  // set when leadSource is "personal_list"
+
+  // Campaign + mailbox — HARD GATE per Task 09: both required to even CREATE
+  // this row. campaignTemplateId references one of the user's OWN EmailCampaign
+  // rows (tier (a) template); each run clones it into a fresh EmailCampaign.
+  campaignTemplateId String
+  mailboxIds         String[] @default([])
+
+  // Trigger
+  triggerMode        String   @default("manual") // "manual" | "daily"
+  scheduleHour       Int?     // 0-23, UTC — only meaningful when daily
+  scheduleEnabled    Boolean  @default(true) // pause/resume a daily automation
+
+  createdAt          DateTime @default(now())
+  lastRunAt          DateTime?
+  runCount           Int      @default(0)
+  runs               CampaignAutomationRun[]
+
+  @@index([userId])
+  @@index([triggerMode, scheduleEnabled])
+}
+
+// One row per execution of a CampaignAutomation. Extraction runs async through
+// the normal SearchJob pipeline; an internal sweep advances a run from
+// extraction to the send phase once its SearchJob reaches a terminal state.
+model CampaignAutomationRun {
+  id                    String   @id @default(cuid())
+  automationId          String
+  automation            CampaignAutomation @relation(fields: [automationId], references: [id])
+
+  startedAt             DateTime @default(now())
+  extractionCompletedAt DateTime?
+  completedAt           DateTime?
+  // "running" | "needs_confirmation" | "done" | "failed" | "stopped"
+  status                String   @default("running")
+
+  leadSource            String   // snapshot of the automation's leadSource at run time
+  searchJobId           String?  // the SearchJob this run used
+  leadsExtracted        Int?     // number of VALIDATED leads eligible for sending
+  campaignId            String?  // the EmailCampaign this run created/queued
+  emailsSent            Int?     // recipients queued into the campaign at the send phase
+  emailsSentByMailbox   Json?    // { [mailboxId]: count } — rotation visibility
+  errorMessage          String?
+
+  @@index([automationId, startedAt])
 }
