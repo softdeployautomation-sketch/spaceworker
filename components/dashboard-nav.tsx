@@ -7,10 +7,10 @@ import {
   Fingerprint,
   Globe,
   LayoutDashboard,
-  Mailbox,
   Megaphone,
   Search,
   Settings,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -29,8 +29,8 @@ export interface NavItem {
 const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/extract", label: "Extract", icon: Search },
-  { href: "/dashboard/mailboxes", label: "Mailboxes", icon: Mailbox },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
+  { href: "/dashboard/automations", label: "Automations", icon: Zap },
   {
     href: "/dashboard/browser-profiles",
     label: "Browser Profiles",

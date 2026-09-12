@@ -83,3 +83,14 @@ body {
     transform: translateY(0);
   }
 }
+
+/* Task 26, Piece 7g — a tiny inline busy spinner for long-running actions (e.g.
+   "Validate all", DNS lookups aren't instant). Used via Tailwind's arbitrary-
+   animation utility `animate-[spin_0.8s_linear_infinite]` on a
+   rounded-full border-t-transparent ring. Defined here (like fadeInUp above) so
+   the keyframe is always emitted regardless of Tailwind purging. */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
+import MailboxesPanel from "@/components/mailboxes-panel";
 
 type Campaign = {
   id: string;
@@ -74,6 +75,20 @@ export default function CampaignsPage() {
   const fromSearchJobId = searchParams.get("fromSearchJob");
   const [leadEmailCount, setLeadEmailCount] = useState<number | null>(null);
   const [leadCountError, setLeadCountError] = useState("");
+
+  // Task 26, Piece 6 — the Mailboxes management UI now lives here as a second
+  // tab (it used to be its own /dashboard/mailboxes route). The active tab is
+  // driven by the URL (?tab=mailboxes) so that legacy route — which now just
+  // redirects here — and any deep link land on the right sub-view; the tab
+  // buttons themselves just navigate so the address bar stays meaningful.
+  const tab: "campaigns" | "mailboxes" =
+    searchParams.get("tab") === "mailboxes" ? "mailboxes" : "campaigns";
+  function switchTab(next: "campaigns" | "mailboxes") {
+    if (next === tab) return;
+    router.push(
+      next === "mailboxes" ? "/dashboard/campaigns?tab=mailboxes" : "/dashboard/campaigns",
+    );
+  }
 
   // Task 26, Piece 4 — "Pick from my leads" recipient source state.
   const [recipientSource, setRecipientSource] = useState<"csv" | "leads">("csv");
@@ -299,7 +314,34 @@ export default function CampaignsPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div className="flex items-center justify-between gap-3">
+      {/* Task 26, Piece 6 — page-level segment switcher. The Mailboxes management
+          UI was relocated here from its own /dashboard/mailboxes route and is
+          rendered intact via <MailboxesPanel /> when that tab is active. */}
+      <div className="mt-1 inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+        {([
+          { value: "campaigns", label: "Campaigns" },
+          { value: "mailboxes", label: "Mailboxes" },
+        ] as const).map((t) => (
+          <button
+            key={t.value}
+            type="button"
+            onClick={() => switchTab(t.value)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+              tab === t.value
+                ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                : "text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "mailboxes" ? (
+        <MailboxesPanel />
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Campaigns</h1>
           <p className="mt-1 text-sm text-fg-muted">
@@ -634,6 +676,8 @@ export default function CampaignsPage() {
           </div>
         </div>,
         document.body,
+      )}
+        </>
       )}
     </div>
   );

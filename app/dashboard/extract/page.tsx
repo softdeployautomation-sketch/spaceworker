@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
 import { Badge } from "@/components/ui";
+import { Dropdown } from "@/components/dropdown";
+import { timeAgo } from "@/lib/format-date";
 
 type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
 
@@ -132,7 +134,11 @@ export default function ExtractPage() {
   const [dragging, setDragging] = useState(false);
 
   const [validateBusy, setValidateBusy] = useState(false);
-  const [validateMessage, setValidateMessage] = useState<string | null>(null);
+  // Task 26, Piece 7a — the old `validateMessage` (a one-shot POST-response string)
+  // was replaced by a LIVE derived summary computed from the selected job's own leads
+  // on every render (see the actions row). This state now carries ONLY validation
+  // ERROR text; the success summary no longer needs persisting at all.
+  const [validateError, setValidateError] = useState<string | null>(null);
 
   // Current template + per-template field state.
   const [template, setTemplate] = useState<Template>("lead");
@@ -474,26 +480,53 @@ export default function ExtractPage() {
   }
 
   // Validates every currently-unchecked lead in the selected job (syntax + MX),
-  // then re-fetches so the status pills in the table update in place.
+  // then re-fetches so the status pills in the table update in place. The result
+  // summary is NOT set here anymore — Task 26, Piece 7a made it a live derived count
+  // from the re-fetched leads, so the success line and stale-state bug both vanish.
   async function validateAll() {
     if (!selectedJob || validateBusy) return;
     setValidateBusy(true);
-    setValidateMessage(null);
+    setValidateError(null);
     try {
       const res = await fetch(`/api/jobs/${selectedJob.id}/validate`, { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setValidateMessage(
+        setValidateError(
           typeof data.error === "string" ? `Validation failed: ${data.error}` : "Validation failed.",
         );
         return;
       }
-      setValidateMessage(`${data.valid ?? 0} valid, ${data.invalid ?? 0} invalid`);
       void fetchJobDetail(selectedJob.id);
     } catch {
-      setValidateMessage("Network error while validating.");
+      setValidateError("Network error while validating.");
     } finally {
       setValidateBusy(false);
+    }
+  }
+
+  // Task 26, Piece 7c — discard just the invalid leads in the selected job (after
+  // "Validate all" flags them). Lightweight window.confirm (this app's existing
+  // lightweight-confirm convention — see deleteJob); on success refetch the job
+  // detail so the table drops the deleted rows immediately, plus the job list so
+  // its lead counts stay right.
+  async function deleteInvalidLeads() {
+    if (!selectedJob) return;
+    const invalidCount = selectedJob.leads.filter((l) => l.validationStatus === "invalid").length;
+    if (invalidCount === 0) return;
+    if (!window.confirm(
+      `Delete ${invalidCount} invalid lead${invalidCount === 1 ? "" : "s"} from this job? Valid and unchecked leads are kept.`,
+    )) return;
+    try {
+      const res = await fetch(`/api/jobs/${selectedJob.id}/leads/delete-invalid`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setValidateError(typeof data.error === "string" ? data.error : "Couldn't delete invalid leads.");
+        return;
+      }
+      void fetchJobDetail(selectedJob.id);
+      void fetchJobs();
+    } catch {
+      setValidateError("Network error while deleting invalid leads.");
     }
   }
 
@@ -924,7 +957,7 @@ export default function ExtractPage() {
                 </span>
               </div>
               <div className="mt-1 flex items-center justify-between text-xs text-fg-muted">
-                <span>{job.template} · {job.lane} · {job._count?.leads ?? 0} leads</span>
+                <span>{job.template} · {job.lane} · {job._count?.leads ?? 0} leads · {timeAgo(job.createdAt)}</span>
                 {(job.status === "queued" || job.status === "running") ? (
                   <span className="flex items-center gap-3">
                     <button
@@ -988,7 +1021,7 @@ export default function ExtractPage() {
                 <div>
                   <h2 className="font-semibold" title={selectedJob.query}>{summarizeQuery(selectedJob)}</h2>
                   <p className="mt-0.5 text-xs text-fg-muted">
-                    {selectedJob.template} template · {selectedJob.lane} lane · {selectedJob.leads.length} leads
+                    {selectedJob.template} template · {selectedJob.lane} lane · {selectedJob.leads.length} leads · {timeAgo(selectedJob.createdAt)}
                     {Array.isArray(selectedJob.params?.queries) && selectedJob.params.queries.length > 1 &&
                       <span> · {selectedJob.params.queries.length} terms</span>}
                   </p>
@@ -997,7 +1030,7 @@ export default function ExtractPage() {
                       lead and the step that just found it are visible together without
                       scrolling. See the block rendered after the table/empty-state. */}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className={`rounded px-2 py-1 text-xs font-medium ${STATUS_COLORS[selectedJob.status]}`}>
                     {selectedJob.status}
                   </span>
@@ -1017,43 +1050,70 @@ export default function ExtractPage() {
                       Resume
                     </button>
                   )}
+                  {/* Task 26, Piece 7e — job control (Pause/Resume) and the primary
+                      next action (Create email campaign) stay as their own visible
+                      buttons; the export variants + Validate all collapse into one
+                      Actions dropdown instead of five same-styled flat controls. */}
                   {selectedJob.leads.length > 0 && (
-                    <>
-                      <a
-                        href={`/api/jobs/${selectedJob.id}/export.csv`}
-                        download
-                        className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
-                      >
-                        Export CSV
-                      </a>
-                      <a
-                        href={`/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1`}
-                        download
-                        className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
-                      >
-                        Emails only
-                      </a>
-                      <Link
-                        href={`/dashboard/campaigns?fromSearchJob=${selectedJob.id}`}
-                        className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500"
-                      >
-                        Create email campaign
-                      </Link>
-                      {/* Task 26, Piece 3 — batch email validation (syntax + MX).
-                          Only shows once there are leads; disabled while the request
-                          is in flight and while there's nothing unchecked to do. */}
-                      <button
-                        type="button"
-                        onClick={() => void validateAll()}
-                        disabled={validateBusy || !selectedJob.leads.some((l) => !l.validationStatus || l.validationStatus === "unchecked")}
-                        className="rounded-lg border border-brand-500 px-3 py-1 text-xs font-medium text-brand-600 hover:bg-brand-50 disabled:opacity-50 dark:text-brand-400 dark:hover:bg-brand-900/40"
-                      >
-                        {validateBusy ? "Validating…" : "Validate all"}
-                      </button>
-                    </>
+                    <Link
+                      href={`/dashboard/campaigns?fromSearchJob=${selectedJob.id}`}
+                      className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500"
+                    >
+                      Create email campaign
+                    </Link>
                   )}
-                  {validateMessage && (
-                    <p className="mt-2 text-xs text-fg-muted">{validateMessage}</p>
+                  {selectedJob.leads.length > 0 && (
+                    <Dropdown
+                      label="Actions"
+                      align="right"
+                      className="h-7 border-brand-500 text-brand-600 hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-900/40"
+                      items={[
+                        { label: "Export CSV", href: `/api/jobs/${selectedJob.id}/export.csv`, download: true },
+                        { label: "Emails only", href: `/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1`, download: true },
+                        {
+                          label: validateBusy ? "Validating…" : "Validate all",
+                          busy: validateBusy,
+                          onSelect: () => void validateAll(),
+                          disabled: validateBusy || !selectedJob.leads.some((l) => !l.validationStatus || l.validationStatus === "unchecked"),
+                        },
+                      ]}
+                    />
+                  )}
+                  {/* Task 26, Piece 7a — LIVE validation summary derived from THIS
+                      job's own leads (never stale across job switches), with a
+                      running unchecked count. key-ing on the numbers remounts the
+                      line only when they change, replaying the fadeInUp crossfade
+                      (7g) instead of snapping. Rendered only once something has been
+                      validated, so a fresh job isn't cluttered with zeros. */}
+                  {(() => {
+                    const vValid = selectedJob.leads.filter((l) => l.validationStatus === "valid").length;
+                    const vInvalid = selectedJob.leads.filter((l) => l.validationStatus === "invalid").length;
+                    const vUntested = selectedJob.leads.filter((l) => !l.validationStatus || l.validationStatus === "unchecked").length;
+                    if (vValid + vInvalid === 0) return null;
+                    return (
+                      <>
+                        <span
+                          key={`${vValid}-${vInvalid}-${vUntested}`}
+                          className="animate-[fadeInUp_0.15s_ease-out] text-xs text-fg-muted"
+                        >
+                          {vValid} valid · {vInvalid} invalid{vUntested > 0 ? ` · ${vUntested} unchecked` : ""}
+                        </span>
+                        {/* Task 26, Piece 7c — "Delete N invalid", only while there
+                            are invalid leads to remove. */}
+                        {vInvalid > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => void deleteInvalidLeads()}
+                            className="rounded-lg border border-red-500 px-3 py-1 text-xs font-medium text-red-500 hover:bg-red-50"
+                          >
+                            Delete {vInvalid} invalid
+                          </button>
+                        )}
+                      </>
+                    );
+                  })()}
+                  {validateError && (
+                    <span className="mt-2 text-xs text-red-600 dark:text-red-400">{validateError}</span>
                   )}
                 </div>
               </div>
@@ -1105,6 +1165,22 @@ export default function ExtractPage() {
                 const visibleLeads = mode === "emailsOnly"
                   ? selectedJob.leads.filter((lead) => lead.email)
                   : selectedJob.leads;
+                // Task 26, Piece 7b — select-all header checkbox. "All" means all the
+                // leads currently RENDERED (respecting Piece 1's visibleLeads filter,
+                // so Emails-only mode only selects the emails actually shown, never
+                // leads hidden by the filter). Indeterminate when only some visible
+                // ones are checked.
+                const visibleIds = visibleLeads.map((l) => l.id);
+                const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
+                const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id));
+                const onToggleSelectAll = () => {
+                  const next = new Set(selectedIds);
+                  for (const id of visibleIds) {
+                    if (allVisibleSelected) next.delete(id);
+                    else next.add(id);
+                  }
+                  setSelectedIds(next);
+                };
                 return (
                 <div
                   ref={leadsScrollRef}
@@ -1114,9 +1190,18 @@ export default function ExtractPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-fg-muted">
-                        {/* Task 26, Piece 2 — merge selection checkbox column. */}
-                        <th className="w-6 pb-2" aria-label="Select">
-                          <span className="sr-only">Select</span>
+                        {/* Task 26, Piece 2 — merge selection checkbox column.
+                            Task 26, Piece 7b — the header cell became a real select-all
+                            checkbox wired to the same selectedIds set. */}
+                        <th className="w-6 pb-2" aria-label="Select all visible leads">
+                          <input
+                            type="checkbox"
+                            ref={(el) => { if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected; }}
+                            checked={allVisibleSelected}
+                            onChange={onToggleSelectAll}
+                            aria-label="Select all visible leads"
+                            className="h-4 w-4 cursor-pointer"
+                          />
                         </th>
                         {showBusiness && <th className="pb-2 pr-3 font-medium">Business</th>}
                         {showContact && <th className="pb-2 pr-3 font-medium">Name</th>}
@@ -1229,7 +1314,9 @@ export default function ExtractPage() {
           const selected = selectedJob.leads.filter((l) => selectedIds.has(l.id));
           return (
             <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 dark:bg-black/70">
-              <div className="mx-auto my-8 w-full max-w-2xl rounded-xl border border-border bg-card p-6 dark:bg-zinc-950">
+              {/* Task 26, Piece 7g — entrance transition so the dialog doesn't snap in
+                (CSS-only fadeInUp, same approach as Piece 1d's row fade-in). */}
+            <div className="animate-[fadeInUp_0.15s_ease-out] mx-auto my-8 w-full max-w-2xl rounded-xl border border-border bg-card p-6 dark:bg-zinc-950">
                 <h2 className="text-lg font-semibold">Merge {selected.length} leads</h2>
                 <p className="mt-1 text-xs text-fg-muted">
                   The leads below are combined into one row. The fields start pre-filled from
@@ -1322,8 +1409,10 @@ export default function ExtractPage() {
               aria-modal="true"
               aria-label="Import leads"
             >
+              {/* Task 26, Piece 7g — entrance transition (CSS-only fadeInUp), same as the merge
+                  dialog, so the upload dialog doesn't snap in either. */}
               <div
-                className="mx-auto my-8 w-full max-w-lg rounded-xl border border-border bg-card p-6 dark:bg-zinc-950"
+                className="animate-[fadeInUp_0.15s_ease-out] mx-auto my-8 w-full max-w-lg rounded-xl border border-border bg-card p-6 dark:bg-zinc-950"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-start justify-between">
