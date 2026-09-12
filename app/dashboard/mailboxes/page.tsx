@@ -423,6 +423,9 @@ export default function MailboxesPage() {
                   placeholder={editing ? "Leave blank to keep current" : "SMTP password"}
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
+                <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
+                  Chrome may warn about reusing a saved password here — that's expected. We need your real SMTP credentials to send on your behalf, so choose "Site is legitimate" if prompted.
+                </span>
               </label>
 
               <label className="flex items-center gap-2 text-sm font-medium">
