@@ -1,8 +1,8 @@
 # Task 26 — Leads dashboard redesign, merge, email validator + upload, and a leads→mailer automation plan
 
-**Status: Pieces 1, 2, 3 and 4 IMPLEMENTED and verified (2026-09-12). Pieces 5–6 ready — start with Piece 5.** Written 2026-09-12, based on directly reading the current `app/dashboard/extract/page.tsx` (897 lines), the current `Lead`/`SearchJob` Prisma models, and the standalone Lead Extractor's own proven validator (`app/lead_manager/validator.py`) and file-uploader (`app/lead_manager/uploader.py`) — Piece 3 below ports their actual logic, not a guess at what "validation" should mean. Piece 5 added 2026-09-12 after live user feedback on the mailboxes/campaigns UI.
+**Status: Pieces 1, 2, 3, 4 and 5 IMPLEMENTED and verified (2026-09-12). Pieces 6–7 ready — start with Piece 6.** Written 2026-09-12, based on directly reading the current `app/dashboard/extract/page.tsx` (897 lines), the current `Lead`/`SearchJob` Prisma models, and the standalone Lead Extractor's own proven validator (`app/lead_manager/validator.py`) and file-uploader (`app/lead_manager/uploader.py`) — Piece 3 below ports their actual logic, not a guess at what "validation" should mean. Piece 5 added 2026-09-12 after live user feedback on the mailboxes/campaigns UI. Piece 7 added 2026-09-12 after live user feedback on Pieces 1-4's actual deployed UI.
 
-Pieces are independent and can be built/shipped in any order, but 1 is the fastest win and 3 is a prerequisite for 4's "extracted + validated" selection filter. Piece 5's two halves (5a mailbox testing, 5b rotation batch size) are also independent of everything else and of each other.
+Pieces are independent and can be built/shipped in any order, but 1 is the fastest win and 3 is a prerequisite for 4's "extracted + validated" selection filter. Piece 5's two halves (5a mailbox testing, 5b rotation batch size) are also independent of everything else and of each other. Piece 7's sub-items are independent of each other too, but 7a (the stale validation-count bug) is the one genuine correctness bug in the list and should not wait behind the others.
 
 ---
 
@@ -317,6 +317,35 @@ While setting up a real mailbox for live testing, a genuine bug surfaced and was
 3. The rotation formula changes from `i % mailboxIds.length` / `i % variantRows.length` to `Math.floor(i / rotateEvery) % mailboxIds.length` / `Math.floor(i / rotateEvery) % variantRows.length` — recipients `0..rotateEvery-1` all get the first mailbox/variant, the next `rotateEvery` get the second, etc., wrapping around. `rotateEvery: 1` (the default) reproduces today's exact per-recipient rotation, so this is non-breaking for anyone not using the new field.
 4. UI (`app/dashboard/campaigns/page.tsx`'s "New campaign" form): add a labeled number input "Rotate every N emails" (default value 1, min 1) near the existing Sending mailboxes / Subject lines fields — short helper text: "Send N emails from one mailbox/subject before moving to the next." Wire into the existing campaign-creation POST body.
 
+### ✅ IMPLEMENTED (2026-09-12) — Piece 5 (both halves), what changed & where, for the handoff
+
+**New backend**
+- `app/api/mailboxes/test-connection/route.ts` (POST, auth) — pre-save mailbox connectivity/auth test on the form's CURRENT values; builds a transport through the shared `buildSmtpTransport`, calls `verify()`, returns `{ ok: true }` or `{ ok: false, error }`. **Never persists** — no row, no `MAILBOX_SAFE_SELECT`, no password stored. Sends no mail, so it's offered in both Add and Edit.
+- `lib/mailer-send.ts` — extracted `buildSmtpTransport(opts)` (single source of truth for port-derived `secure: port === 465` + `requireTLS: !implicitTls && !allowInsecure`) and `transporterForMailbox` now delegates to it, now passing `allowInsecure`. The pre-save test and every real send share byte-identical TLS logic, so "test OK" means the stored mailbox will connect the same way.
+
+**Edited (5a — mailboxes)**
+- `prisma/schema.prisma` + migration `prisma/migrations/20260912030000_add_mailbox_allow_insecure_and_campaign_rotate_every/` — added `Mailbox.allowInsecure Boolean @default(false)` and `EmailCampaign.rotateEvery Int @default(1)` (applied to the local DB via `prisma migrate deploy`).
+- `app/api/mailboxes/route.ts` `POST` — now derives `secure = port === 465` (never a checkbox) and stores `allowInsecure`.
+- `app/api/mailboxes/[id]/route.ts` `PUT` — same derivation when port/security changes; stores `allowInsecure`.
+- `lib/mailbox-safe-select.ts` — exposes `allowInsecure` (not the password columns).
+- `app/dashboard/mailboxes/page.tsx` — replaced the single "Use TLS" checkbox with a Security `<select>` (STARTTLS/port 587 recommended, Implicit TLS/port 465, None/port 25 unencrypted, each pre-filling the Port field, still editable), a "⚠" warning under the None option, and a **"Test connection"** button that POSTs the current form to the new route and shows a green/red inline result. Existing post-save per-mailbox "Test" button is untouched.
+
+**Edited (5b — campaigns)**
+- `lib/campaign-recipients.ts` `buildQueueItemRows` — now takes `rotateEvery` (default 1) and `offsetIndex` (default 0); rotation uses `Math.floor((i+offsetIndex)/rotateEvery) % len` for BOTH mailbox and variant (block rotation, exactly the plan's formula; `rotateEvery: 1` reproduces the old per-recipient behavior).
+- `app/api/campaigns/route.ts` `POST` — accepts `rotateEvery?: number`, clamped `Math.max(1, Math.min(1000, Math.floor(n)))`, stored on the created campaign row and passed to `buildQueueItemRows`.
+- `app/api/campaigns/[id]/recipients/from-leads/route.ts` — reads the campaign's stored `rotateEvery` and passes `offsetIndex: existingRows.length` so a batch added later continues the rotation at the roster's current index instead of restarting at 0.
+- `app/dashboard/campaigns/page.tsx` — "Rotate every N emails" number input (default 1, min 1) between Subject lines and Body, wired into the create POST body.
+
+**Design note / deviation from the literal 5b wording**: the plan's step-3 sentence only rewrote the `mailboxId` formula but the shared helper also rotates `variantId`; I applied the same `floor(i/rotateEvery)` block formula to BOTH so the mailbox and its subject line stay coupled per block (recipients 0..N-1 all get mailbox[0] AND variant[0]), which matches the plan's stated intent ("send N emails from one mailbox/subject"). Verified directly via the helper.
+
+**Validation**
+- `npx tsc --noEmit` → exit 0.
+- `npm run build` → success; new route registers as `ƒ /api/mailboxes/test-connection`.
+- `npx eslint` on every new/changed file → the ONLY findings are **pre-existing at HEAD** (`react-hooks/set-state-in-effect` on the mailboxes page `load()` effect + campaigns page `load()`/`setLeadCountError`, an unused `exhaustive-deps` disable, and the `react/no-unescaped-entities` on the mailboxes page's already-uncommitted "Chrome may warn…" line and the campaigns modal's "You'll") — none introduced by this piece; left untouched per the prior handoff discipline.
+- `buildQueueItemRows` exercised directly via `tsx`: `rotateEvery=1` → `m0/v0 m1/v1 m0/v2 m1/v0 …` (old per-recipient); `rotateEvery=2` → `m0/v0 m0/v0 m1/v1 m1/v1 …` (2 share mailbox+variant); `offsetIndex=7` after 7 items → `m1/v0 m0/v1` (continues, not restarts); `leadToRecipient` still trims email keeping casing, omits blank merge vars, `null` on blank email.
+
+**For the next agent**: `app/dashboard/mailboxes/page.tsx` and `app/globals.css` still carry their pre-existing (Piece 5/6 context) uncommitted changes — I only touched the mailbox modal's Security select + Test button region of that page and left the rest (and `globals.css`) alone. `rotateEvery`/`allowInsecure` were applied to the LOCAL dev DB; a prod deploy just needs `prisma migrate deploy` for `20260912030000_add_mailbox_allow_insecure_and_campaign_rotate_every`.
+
 ### Note: "select validated / merged leads for the mailer" is already Piece 4 — no new design needed
 
 Re-reading the ask against the plan already written above: Piece 4's "Pick from my leads" picker (scoped to `validationStatus: "valid"`, filterable by source job) already covers exactly this — a merged lead (Piece 2) is just a normal `Lead` row afterward, so once it's validated (Piece 3) it's automatically selectable through Piece 4's picker with no extra work. **Piece 4 has not been implemented yet** — this is a reminder to actually build it (it's the piece that turns "we have leads" into "leads can reach the mailer"), not a sign anything about its design needs to change.
@@ -357,6 +386,66 @@ The user asked that the system be "ready" for a future AI-driven automation laye
 1. Confirm `Mailboxes` no longer appears as its own top-level nav item (desktop Dock AND mobile nav row — both render from the same `NAV_ITEMS`, so fixing one fixes both, but check both surfaces since they render as visually distinct components).
 2. Confirm the Campaigns page's new Mailboxes tab shows the exact same mailbox list/add/edit/test functionality as before the move (nothing lost in the relocation), and that visiting the old `/dashboard/mailboxes` URL directly redirects cleanly instead of 404ing.
 3. Confirm the new "Automations" nav item appears, links to a real (if placeholder) page, and doesn't error.
+
+---
+
+## Piece 7 — Real usage feedback on Pieces 1-4's deployed UI
+
+Written after the user tested the live Pieces 1-4 deploy directly. Each item below was checked against the actual current code (`app/dashboard/extract/page.tsx`) before being written up — some are confirmed bugs, some are confirmed-built-but-not-discoverable, one is a genuinely new feature.
+
+### 7a. CONFIRMED BUG: the validation summary leaks across different jobs
+
+**Confirmed by reading the code**: `validateMessage` (`useState<string | null>`, ~line 135) is a single piece of component state set once by `validateAll()`'s response (`` `${data.valid} valid, ${data.invalid} invalid` ``, ~line 491) and rendered unconditionally next to the action buttons (~line 1055) — nothing clears or recomputes it when `selectedJob` changes. Confirmed live: the user validated job A (1501 valid / 55 invalid), then switched to a completely different job B that had never been validated, and job B's action bar still showed "1501 valid, 55 invalid" — a stale result from job A with no indication it belongs to a different job.
+
+**The fix**: stop treating this as a one-shot POST-response message and make it a **live, derived summary of the currently selected job's own leads** instead — computed from `selectedJob.leads`' own `validationStatus` values (`leads.filter(l => l.validationStatus === "valid").length`, same for `"invalid"` and `"unchecked"`), recalculated on every render of the detail pane (a plain `const`, not state — it already has everything it needs in props/state that changes on job switch). This has two benefits beyond fixing the bug: it can never go stale (switching jobs, or the leads array updating after a validate call, both naturally recompute it), and it can show a running unchecked count too ("1501 valid · 55 invalid · 4 unchecked") instead of only appearing after a validate click. Keep `validateBusy`/the button's own disabled-state logic as-is; only the *summary line* changes from "one-shot server message" to "live derived count."
+
+### 7b. Select-all checkbox for the leads table
+
+**Confirmed missing**: the table header's checkbox column (~line 1118, `<th className="w-6 pb-2" aria-label="Select">`) is a static, non-interactive cell — there is no way to select every (visible) lead at once, only one-by-one via each row's own checkbox.
+
+**The fix**: make that header cell a real checkbox wired to the same `selectedIds`/`toggleSelected` state Piece 2 already built. Checked state = every currently-rendered lead's id is in `selectedIds` (respect Piece 1's `visibleLeads` filter — "select all" in Emails-only mode should only select the emails actually shown, not ones hidden by the filter); clicking it when unchecked adds all `visibleLeads` ids to the set, clicking when checked (or indeterminate) clears just those ids from the set (don't clear a selection the user made on a *different* job's leads if that's somehow still around — in practice `selectedIds` should already reset on job switch, confirm it does).
+
+### 7c. New action: delete the invalid leads after validating
+
+**The ask**: after running "Validate all," there's no way to discard the invalid ones and keep only the valid leads — the user has to individually check-and-do-something with 55 bad rows, or ignore them forever.
+
+**The fix**: new route `app/api/jobs/[id]/leads/delete-invalid/route.ts`, `POST` — auth + ownership-gated (404 on a job that isn't the caller's, matching convention), `prisma.lead.deleteMany({ where: { searchJobId: id, userId: session.userId, validationStatus: "invalid" } })`, returns `{ deleted: count }`. UI: a button next to the (now-live, per 7a) validation summary — "Delete N invalid" — only rendered when the live invalid count is > 0, behind a plain confirm (`window.confirm` is fine here, matching this app's existing lightweight-confirm convention elsewhere, or reuse whatever confirm-dialog pattern Piece 2's merge flow already established if one exists — Cline's call, don't invent a third pattern). On success, refetch the job detail so the table drops the deleted rows immediately.
+
+### 7d. Job date shown per session, plus a 30-day auto-deletion policy
+
+**Confirmed missing**: neither the job-list row nor the detail-pane header renders `job.createdAt` anywhere (grepped both `extract/page.tsx` and `api/jobs/route.ts` — the field exists on every `SearchJob` row already, it's just never displayed).
+
+**The fix, display half**: add a relative-date caption next to `summarizeQuery(...)` at both call sites — reuse the exact `timeAgo()` helper already written for Piece 5a's mailbox "last tested" caption (`app/dashboard/mailboxes/page.tsx`, ~line 69: `"just now"` / `"Nm ago"` / `"Nh ago"` / `"Nd ago"`) rather than writing a second date-formatting function — move it to a shared `lib/format-date.ts` (or similar) if it doesn't already live somewhere both pages can import from, since it's now needed in two places.
+
+**The fix, retention half — a real decision, not a trivial add**: "delete after 30 days" needs a policy decision before it needs code: does this mean deleting the whole `SearchJob` + its `Lead` rows 30 days after `createdAt`, regardless of whether those leads were ever validated, merged, exported, or added to a campaign? A lead a user validated and is actively relying on for an ongoing campaign getting silently deleted on day 31 would be a real problem, not a cleanup. **Recommended, conservative interpretation** (confirm with the user before building, don't assume): only auto-delete a `SearchJob` (cascade to its `Lead`s) when ALL of — older than 30 days AND status is a terminal one (`done`/`stopped`, never `running`/`paused`) AND none of its leads have ever been referenced by an `EmailQueueItem` (i.e., never used in a campaign) — are true. Implementation: this app has no cron/background-job infrastructure beyond the existing dispatch-tick pattern (`app/api/internal/dispatch/route.ts`, called periodically by the same external scheduler that already drives job dispatch and mail-queue draining) — add the retention sweep as one more thing that same scheduled call does (or a sibling `app/api/internal/retention-sweep/route.ts` hit by the same cron on a longer interval, e.g. once a day rather than every dispatch tick), not a new piece of infrastructure. Log what got deleted (count + a sample of ids) via whatever this app's existing lightweight logging convention is, so a surprising mass-deletion is at least traceable after the fact.
+
+### 7e. Actions row redesign — group into a cleaner control, not five buttons in a line
+
+**Confirmed by reading the code** (~lines 1000-1058): the detail-pane header currently renders up to five separate same-styled controls in one flex row — Pause/Resume (job control), Export CSV, Emails only, Create email campaign, Validate all — plus the (per 7a, soon-to-be-live) validation summary text. No visual hierarchy distinguishes "the one action you'll use most" from "an export format variant you'll use rarely."
+
+**The fix**: keep job-control (Pause/Resume) and the primary "Create email campaign" as their own visible buttons (these are the two most common next actions), but collapse the export variants (Export CSV / Emails only) and Validate all into a single "Actions" dropdown/menu button — this app has no existing dropdown-menu primitive to confirm and reuse (grep for one before building a second one if it turns out one already exists elsewhere), so introduce one plain, accessible dropdown (a button + an absolutely-positioned menu panel, closed on outside-click/Escape, no new dependency needed for something this simple) and use it here first. This directly addresses the ask for the campaign/export controls to "look better" without inventing new functionality — it's the existing five actions, reorganized.
+
+### 7f. Merge and Import-leads: confirmed built, likely a discoverability gap — verify with the user rather than rebuilding
+
+**Confirmed by reading the code**: both exist today. Merge: checkboxes on every leads-table row (~line 1140) plus a floating "N leads selected · Merge N leads" action bar that appears once 2+ are checked (~line 1185-1194) — this is Piece 2, already shipped. Import: an "Import leads" button top-right of the whole Extract page, next to the "Extract Leads" heading (~line 660-666), opening a drag-and-drop dialog — this is Piece 3, already shipped.
+
+Given both are confirmed present in the exact code the user was testing, "no option to merge" / "no option to upload" most likely means **not discovered**, not **not built** — the Import button sits at the very top of the page while the user's actual attention was deep in a specific job's detail pane (scrolled well past it), and the Merge bar only appears after checking 2+ boxes, which is easy to never attempt if nothing invites the click. Before Cline spends time rebuilding either: **re-confirm with the user, screen-sharing or a fresh screenshot, whether these are actually invisible/broken or simply weren't noticed** — if genuinely a discoverability problem, the fix is relocating/emphasizing what already exists (e.g., a persistent "Import leads" affordance inside the leads pane itself, not only at the page's top; a lighter-weight, always-visible "Select leads to merge" toggle instead of relying on the bar appearing only after 2 checks are already made), not reimplementing the underlying feature.
+
+### 7g. A real motion pass, broader than Piece 1d's row fade-in
+
+**Context**: Piece 1d added a `fadeInUp` CSS animation to leads-table `<tr>` elements only. The user's "no animation during any of this" feedback, given after using validate/merge/import/the actions row, suggests the ask was always broader than new-row entrance — button presses, modal open/close (the merge dialog, the upload dialog), and validation's own busy/success/done states currently all snap instantly with no transition, which reads as "no animation" even though Piece 1d's specific row effect is technically present.
+
+**The fix**: this is a real design pass, not a one-line tweak — **load the `design`/`artifact-design` conventions this session already has access to for calibrating motion treatment** (a utilitarian tool like this doesn't need showy animation, but *some* deliberate transition on state changes reads as considered rather than broken) rather than Cline improvising CSS keyframes ad hoc a second time. Concrete, bounded scope for this pass: (1) the two modals (merge, upload) get an entrance/exit transition instead of popping in/out instantly — reuse whatever transition approach Piece 1d settled on (CSS-only, no new dependency, given that constraint held for the whole rest of this doc); (2) "Validate all" gets a visible busy state beyond the button's own text changing to "Validating…" — e.g. a small inline spinner — so a validation that takes a few seconds (DNS lookups aren't instant) doesn't look stalled; (3) the (per 7a) live validation-summary line transitions/crossfades when its numbers change, same `key`-based crossfade approach already used for the relocated "Currently: …" activity text in Piece 1b, for consistency.
+
+### Verification (Piece 7)
+
+1. 7a: validate job A, note its valid/invalid counts, switch to a never-validated job B, confirm the summary either shows job B's own (zero/unchecked) state or disappears — never A's stale numbers. Validate job B, confirm ITS numbers appear, switch back to A, confirm A's original numbers are still correct (not overwritten by B's).
+2. 7b: with a filter active (e.g. Emails-only mode hiding some leads), click select-all, confirm only the visible/filtered leads get selected, not ones hidden by the filter.
+3. 7c: validate a job with a mix of valid/invalid, click "Delete N invalid," confirm exactly the invalid rows are gone and valid ones remain untouched; confirm the button doesn't appear at all once invalid count is 0.
+4. 7d: confirm a relative date appears on every job (list + detail); for the retention sweep, test against a manually-backdated job row (set `createdAt` >30 days ago directly in the DB for a test job) in each of the three disqualifying states (running, has a campaign-linked lead, <30 days old) and confirm none of those get swept, then confirm a genuinely-eligible old/unused/terminal job does.
+5. 7e: confirm the collapsed actions dropdown contains Export CSV/Emails only/Validate all, opens/closes correctly (outside-click, Escape), and every action inside still works exactly as before the visual regrouping.
+6. 7f: get explicit confirmation from the user (screenshot or live check) on whether Merge/Import are now noticed once pointed at their current locations, before deciding whether relocation work is still needed.
+7. 7g: manually trigger each of the three motion additions (open/close both modals, run a validation, watch the summary line update) and confirm each transitions rather than snaps.
 
 ---
 
