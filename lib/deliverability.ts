@@ -325,3 +325,235 @@ export function buildIsolationProbes(opts: {
     },
   ];
 }
+
+// ---------------------------------------------------------------------------
+// Task 38 — the SHARED decision/mutation core. These are the exact branches the
+// deliverability-decision route used to inline; extracted so BOTH humans (the REST
+// route) and the AI agent (lib/agent-executor.ts) call ONE identical implementation.
+// No behavior change to the human flow — this is a pure refactor.
+// ---------------------------------------------------------------------------
+
+// Typed failure with an HTTP status so both the route (NextResponse) and the agent
+// executor (AgentActionError) can map it to the same client-visible 4xx.
+export class DeliverabilityError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 400) {
+    super(message);
+    this.name = "DeliverabilityError";
+    this.status = status;
+  }
+}
+
+// A single delivered probe outcome, as returned to BOTH the run-diagnostics route
+// and the agent's diagnostics_result widget (same shape — one visual language).
+export interface DiagnosticsProbeOutcome {
+  key: string;
+  label: string;
+  description: string;
+  variant: { subject: string; bodyHtml: string };
+  from: string | null;
+  available: boolean;
+  unavailableReason?: string;
+  outcome: string | null;
+  landedIn: string | null;
+  error?: string;
+}
+
+// Guard helper: only a campaign actually awaiting a deliverability decision can
+// accept a pin/switch decision (mirrors the route's pre-call guard exactly).
+export async function assertAwaitingDecision(campaign: {
+  id: string;
+  status: string;
+}): Promise<void> {
+  const fromInitial = campaign.status === "pending_test_confirm";
+  const fromBatch = campaign.status === "paused_deliverability";
+  if (!fromInitial && !fromBatch) {
+    throw new DeliverabilityError(
+      `Campaign is not awaiting a deliverability decision (status: ${campaign.status})`,
+      409
+    );
+  }
+}
+
+/** Task 33 — a TEMPORARY pinned-override window. Locks the campaign onto one
+ * proven-good { subject, bodyHtml, fromAddress } for exactly `pinCount` sends.
+ * Both states resolve to "sending" (continue semantics). The stored rotation is
+ * left untouched — the drain consults pinnedOverride while it's set.
+ */
+export async function applyPinAndContinue(
+  campaignId: string,
+  opts: {
+    userId: string;
+    subject: string;
+    bodyHtml?: string;
+    fromAddress?: string;
+    pinCount?: number;
+  }
+): Promise<{
+  ok: true;
+  status: "sending";
+  pinCount: number;
+  pinnedOverride: { subject: string; bodyHtml: string; fromAddress: string; remaining: number };
+}> {
+  const campaign = await prisma.emailCampaign.findFirst({
+    where: { id: campaignId, userId: opts.userId },
+    include: { variants: { orderBy: { createdAt: "asc" } } },
+  });
+  if (!campaign) throw new DeliverabilityError("Campaign not found", 404);
+  await assertAwaitingDecision(campaign);
+
+  const subject = opts.subject.trim();
+  // bodyHtml may legitimately be "" (a pinned empty-body diagnostic that came
+  // back clean) — only the subject is required to pin.
+  const bodyHtml = opts.bodyHtml ?? "";
+  if (!subject) throw new DeliverabilityError("Provide a subject to pin", 400);
+  const fromAddress = opts.fromAddress?.trim() ?? "";
+  const rawPinCount = Number(opts.pinCount ?? campaign.batchSize ?? 50);
+  const pinCount = Math.max(1, Math.min(1000, Math.floor(rawPinCount)));
+
+  // Audit trail, mirroring the other explicit-decision branches.
+  await prisma.deliverabilityCheck.create({
+    data: {
+      campaignId: campaign.id,
+      seedMailboxId: null,
+      status: "delivered",
+      landedIn: "inbox",
+      error: `Pinned override approved by the user for ${pinCount} send(s): "${subject}"${
+        fromAddress ? ` from ${fromAddress}` : ""
+      }.`,
+      checkedAt: new Date(),
+    },
+  });
+  const pinnedOverride = { subject, bodyHtml, fromAddress, remaining: pinCount };
+  await prisma.emailCampaign.update({
+    where: { id: campaign.id },
+    data: { pinnedOverride, status: "sending" },
+  });
+  // Task 34 — return the full pinnedOverride shape so callers can show the
+  // pinned-override banner locally.
+  return { ok: true, status: "sending", pinCount, pinnedOverride };
+}
+
+/** Task 36 — rotate to the next independent subject (decoupled campaigns).
+ * From a batch pause: rotates AND moves into pending_test_confirm (fresh
+ * verification required). From the initial gate: rotates only, status stays.
+ * Throws a 400 (DeliverabilityError) when there is nothing to switch to — same
+ * error the route returned before this extraction. */
+export async function applySwitchSubject(
+  campaignId: string,
+  opts: { userId: string; fromInitialGate?: boolean }
+): Promise<{ ok: true; status: string; subjects: string[] }> {
+  const campaign = await prisma.emailCampaign.findFirst({
+    where: { id: campaignId, userId: opts.userId },
+    include: { variants: { orderBy: { createdAt: "asc" } } },
+  });
+  if (!campaign) throw new DeliverabilityError("Campaign not found", 404);
+  await assertAwaitingDecision(campaign);
+
+  const fromInitialGate = opts.fromInitialGate ?? campaign.status === "pending_test_confirm";
+  const rotatedSubjects =
+    Array.isArray(campaign.subjects) && campaign.subjects.length > 1
+      ? [...campaign.subjects.slice(1), campaign.subjects[0]]
+      : undefined;
+  if (!rotatedSubjects) {
+    throw new DeliverabilityError(
+      'This campaign only has one subject — there\'s nothing to switch to. Use "Manually edit and test" to try a fresh subject/body instead.',
+      400
+    );
+  }
+
+  if (fromInitialGate) {
+    await prisma.emailCampaign.update({
+      where: { id: campaign.id },
+      data: { subjects: rotatedSubjects },
+    });
+    return { ok: true, status: campaign.status, subjects: rotatedSubjects };
+  }
+  await prisma.emailCampaign.update({
+    where: { id: campaign.id },
+    data: { subjects: rotatedSubjects, status: "pending_test_confirm" },
+  });
+  return { ok: true, status: "pending_test_confirm", subjects: rotatedSubjects };
+}
+
+/**
+ * Task 38 — the isolation ladder, refactored out of the run-diagnostics route so
+ * the AI agent (seed-mailbox autonomous read) and the human UI call the SAME code.
+ *
+ * Loads the campaign/primary mailbox/probes, resolves the seed (or override), runs
+ * each probe via the SAME runTestSend primitive, and returns each probe's outcome.
+ * overrideRecipient mode paces sends 3-6s apart (a human eyeballs their own inbox);
+ * seed mode runs them in parallel (auto-verified via IMAP).
+ */
+export async function runCampaignDiagnostics(opts: {
+  campaignId: string;
+  userId: string;
+  keys?: string[];
+}): Promise<{ results: DiagnosticsProbeOutcome[]; overrideRecipient: string | null }> {
+  const campaign = await prisma.emailCampaign.findFirst({
+    where: { id: opts.campaignId, userId: opts.userId },
+    include: { variants: { orderBy: { createdAt: "asc" }, select: { subject: true, bodyHtml: true } } },
+  });
+  if (!campaign) throw new DeliverabilityError("Campaign not found", 404);
+
+  const mailboxes = await prisma.mailbox.findMany({
+    where: { id: { in: campaign.mailboxIds }, userId: opts.userId, active: true },
+    orderBy: { createdAt: "asc" },
+  });
+  // Isolation demands a single sender held constant across probes.
+  const primary = mailboxes[0];
+  if (!primary) throw new DeliverabilityError("No active sending mailbox on this campaign", 400);
+
+  const probes = buildIsolationProbes({
+    subjects: campaign.subjects ?? [],
+    bodies: campaign.bodies ?? [],
+    variants: campaign.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml })),
+    fromAddresses: primary.fromAddresses,
+  });
+
+  const selected =
+    opts.keys && opts.keys.length > 0 ? probes.filter((p) => opts.keys!.includes(p.key)) : probes;
+  if (selected.length === 0) throw new DeliverabilityError("No matching probes", 400);
+
+  const overrideRecipient = campaign.testRecipientOverride?.trim() || null;
+  const seed = overrideRecipient ? null : await resolveSeedMailbox(opts.userId);
+  if (!overrideRecipient && !seed) {
+    throw new DeliverabilityError(
+      "No seed/test mailbox is configured — a real one is required to run diagnostics",
+      400
+    );
+  }
+
+  const runProbe = (probe: IsolationProbe): Promise<DiagnosticsProbeOutcome> => {
+    if (!probe.available) {
+      return Promise.resolve({ ...probe, outcome: null, landedIn: null, error: probe.unavailableReason });
+    }
+    return runTestSend({
+      campaignId: campaign.id,
+      mailbox: primary,
+      variant: probe.variant,
+      ...(overrideRecipient ? { overrideRecipient } : { seed: seed! }),
+      ...(probe.from ? { from: probe.from } : {}),
+    })
+      .then((r) => ({ ...probe, outcome: r.outcome, landedIn: r.landedIn, error: r.error }))
+      .catch((e) => ({
+        ...probe,
+        outcome: "failed",
+        landedIn: "unknown",
+        error: e instanceof Error ? e.message : "Probe failed at SMTP",
+      }));
+  };
+
+  let results: DiagnosticsProbeOutcome[];
+  if (overrideRecipient) {
+    results = [];
+    for (const probe of selected) {
+      if (results.length > 0) await new Promise((r) => setTimeout(r, 3_000 + Math.random() * 4_000));
+      results.push(await runProbe(probe));
+    }
+  } else {
+    results = await Promise.all(selected.map(runProbe));
+  }
+
+  return { results, overrideRecipient };
+}

@@ -6,6 +6,20 @@ import { createSearchJob } from "@/lib/create-search-job";
 import { buildSearchQueries } from "@/lib/build-search-queries";
 import { leadToRecipient, type RecipientInput } from "@/lib/campaign-recipients";
 import { createCampaign } from "@/lib/campaign-create";
+import {
+  applyPinAndContinue,
+  applySwitchSubject,
+  runCampaignDiagnostics,
+  DeliverabilityError,
+  type DiagnosticsProbeOutcome,
+} from "@/lib/deliverability";
+
+// Task 38 — the kinds of pending agent action this executor can turn into a REAL
+// thing on explicit human approval. job/campaign create objects; pin /
+// switch_subject mutate a campaign's deliverability decision; diagnostics runs the
+// isolation probes (seed-mailbox mode is the ONE autonomous agent action, override
+// mode stays approval-gated).
+export type AgentActionKind = "job" | "campaign" | "pin" | "switch_subject" | "diagnostics";
 
 // Task 31, item 3 — the approval EXECUTOR. This is the ONLY place a pending
 // AgentPendingAction is turned into a REAL SearchJob / EmailCampaign, and it
@@ -24,13 +38,24 @@ export class AgentActionError extends Error {
   }
 }
 
+// The shared deliverability decision functions throw `DeliverabilityError` (with an
+// HTTP status) so the REST routes map them cleanly. In the executor we translate to
+// `AgentActionError` so the approve route's existing catch frees the proposal back
+// to "pending" and returns the same user-visible 4xx message.
+function throwDeliverability(err: unknown): never {
+  if (err instanceof DeliverabilityError) {
+    throw new AgentActionError("deliverability", err.message, err.status);
+  }
+  throw err;
+}
+
 function clamp(n: number | undefined, lo: number, hi: number): number | undefined {
   if (n === undefined || Number.isNaN(n)) return undefined;
   return Math.min(Math.max(lo, n), hi);
 }
 
 export interface ApproveResult {
-  kind: "job" | "campaign";
+  kind: AgentActionKind;
   executedJobId?: string;
   executedCampaignId?: string;
 }
@@ -66,6 +91,90 @@ export async function approvePendingAction(opts: {
       data: { status: "executed", executedCampaignId: id },
     });
     return { kind: "campaign", executedCampaignId: id };
+  }
+
+  // Task 38 — deliverability actions. Each calls the SAME lib/deliverability.ts
+  // implementation the human REST route uses, so an approved agent decision is
+  // indistinguishable from a hand-built one. All three resolve to an
+  // executedCampaignId so the chat panel's poll-after-approve reports the
+  // campaign's live status/pinnedOverride/subjects (or diagnostics results).
+  if (action.kind === "pin") {
+    const payload = action.payload as Record<string, unknown>;
+    const campaignId = String(payload.campaign_id ?? "").trim();
+    if (!campaignId) throw new AgentActionError("invalid_payload", "No campaign was proposed for the pin.", 400);
+    try {
+      await applyPinAndContinue(campaignId, {
+        userId: opts.userId,
+        subject: String(payload.subject ?? "").trim(),
+        bodyHtml: typeof payload.body_html === "string" ? payload.body_html : "",
+        fromAddress: String(payload.from_address ?? "").trim() || undefined,
+        pinCount: typeof payload.pin_count === "number" ? payload.pin_count : undefined,
+      });
+    } catch (err) {
+      throwDeliverability(err);
+    }
+    await prisma.agentPendingAction.update({
+      where: { id: action.id },
+      data: { status: "executed", executedCampaignId: campaignId },
+    });
+    return { kind: "pin", executedCampaignId: campaignId };
+  }
+
+  if (action.kind === "switch_subject") {
+    const payload = action.payload as Record<string, unknown>;
+    const campaignId = String(payload.campaign_id ?? "").trim();
+    if (!campaignId) throw new AgentActionError("invalid_payload", "No campaign was proposed for the subject switch.", 400);
+    // The branch (initial gate vs batch pause) is resolved from the campaign's
+    // live status — same decision the route used to compute before delegating.
+    const c = await prisma.emailCampaign.findFirst({
+      where: { id: campaignId, userId: opts.userId },
+      select: { status: true },
+    });
+    if (!c) throw new AgentActionError("not_found", "Campaign not found.", 404);
+    try {
+      await applySwitchSubject(campaignId, {
+        userId: opts.userId,
+        fromInitialGate: c.status === "pending_test_confirm",
+      });
+    } catch (err) {
+      throwDeliverability(err);
+    }
+    await prisma.agentPendingAction.update({
+      where: { id: action.id },
+      data: { status: "executed", executedCampaignId: campaignId },
+    });
+    return { kind: "switch_subject", executedCampaignId: campaignId };
+  }
+
+  if (action.kind === "diagnostics") {
+    const payload = action.payload as Record<string, unknown>;
+    const campaignId = String(payload.campaign_id ?? "").trim();
+    if (!campaignId) throw new AgentActionError("invalid_payload", "No campaign was proposed for diagnostics.", 400);
+    const keys = normStringArray(payload.keys);
+    // Reuse payload as the pollable result sink: nothing else reads payload after
+    // execution, and it avoids a schema migration for a nullable result column.
+    let results: DiagnosticsProbeOutcome[];
+    try {
+      ({ results } = await runCampaignDiagnostics({
+        campaignId,
+        userId: opts.userId,
+        keys,
+      }));
+    } catch (err) {
+      throwDeliverability(err);
+    }
+    await prisma.agentPendingAction.update({
+      where: { id: action.id },
+      data: {
+        status: "executed",
+        executedCampaignId: campaignId,
+        payload: {
+          ...(action.payload as Record<string, unknown>),
+          diagnosticsResults: results as DiagnosticsProbeOutcome[],
+        } as unknown as Prisma.InputJsonValue,
+      },
+    });
+    return { kind: "diagnostics", executedCampaignId: campaignId };
   }
 
   const jobId = await executeJob(opts.userId, action.payload as Record<string, unknown>);
@@ -203,7 +312,7 @@ async function executeCampaign(userId: string, payload: Record<string, unknown>)
 }
 
 export interface ExecutedActionStatus {
-  kind: "job" | "campaign";
+  kind: AgentActionKind;
   status: string;
   executedJobId: string | null;
   executedCampaignId: string | null;
@@ -215,6 +324,13 @@ export interface ExecutedActionStatus {
     uncheckedCount: number;
   };
   campaign?: { id: string };
+  // Task 38 — deliverability outcomes: the campaign's live status after a pin /
+  // switch / diagnostics approval, plus its pinned override window, and (for
+  // diagnostics) the probe results stored back into the action's payload.
+  campaignStatus?: string;
+  pinnedOverride?: Record<string, unknown> | null;
+  subjects?: string[];
+  diagnosticsResults?: DiagnosticsProbeOutcome[];
 }
 
 // Poll helper for the chat panel: given an executed action, return its live
@@ -229,7 +345,7 @@ export async function executedActionStatus(opts: {
   if (!action) return null;
 
   const base: ExecutedActionStatus = {
-    kind: action.kind === "campaign" ? "campaign" : "job",
+    kind: action.kind as AgentActionKind,
     status: action.status,
     executedJobId: action.executedJobId,
     executedCampaignId: action.executedCampaignId,
@@ -237,6 +353,33 @@ export async function executedActionStatus(opts: {
 
   if (action.kind === "campaign") {
     if (action.executedCampaignId) base.campaign = { id: action.executedCampaignId };
+    return base;
+  }
+
+  // Task 38 — pin / switch_subject / diagnostics all resolve to a campaign; report
+  // its live status + pinned window (and, for diagnostics, the stored probe results).
+  if (
+    action.kind === "pin" ||
+    action.kind === "switch_subject" ||
+    action.kind === "diagnostics"
+  ) {
+    if (action.executedCampaignId) {
+      const cmp = await prisma.emailCampaign.findUnique({
+        where: { id: action.executedCampaignId },
+        select: { status: true, pinnedOverride: true, subjects: true },
+      });
+      if (cmp) {
+        base.campaignStatus = cmp.status;
+        base.pinnedOverride = (cmp.pinnedOverride as Record<string, unknown> | null) ?? null;
+        if (Array.isArray(cmp.subjects)) base.subjects = cmp.subjects;
+      }
+    }
+    if (action.kind === "diagnostics") {
+      const payload = (action.payload ?? {}) as Record<string, unknown>;
+      if (Array.isArray(payload.diagnosticsResults)) {
+        base.diagnosticsResults = payload.diagnosticsResults as DiagnosticsProbeOutcome[];
+      }
+    }
     return base;
   }
 

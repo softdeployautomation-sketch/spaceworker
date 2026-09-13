@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
-import { runTestSend, buildIsolationProbes } from "@/lib/deliverability";
-import { resolveSeedMailbox } from "@/lib/seed-mailbox";
+import {
+  buildIsolationProbes,
+  DeliverabilityError,
+  runCampaignDiagnostics,
+} from "@/lib/deliverability";
 
 // Task 33 — the isolation ladder. This is the API primitive the "Run
 // diagnostics" panel (and later the AI agent) uses to figure out WHICH element
@@ -29,17 +32,6 @@ import { resolveSeedMailbox } from "@/lib/seed-mailbox";
 // POST — actually runs the requested probe(s) (a live test-send through
 //        runTestSend) and returns each probe's outcome plus the exact content it
 //        was tested as.
-
-type ProbeMeta = {
-  key: string;
-  label: string;
-  description: string;
-  variant: { subject: string; bodyHtml: string };
-  from: string | null;
-  available: boolean;
-  unavailableReason?: string;
-};
-type ProbeOutcome = ProbeMeta & { outcome: string | null; landedIn: string | null; error?: string };
 
 async function loadProbeMeta({ id, userId }: { id: string; userId: string }) {
   const campaign = await prisma.emailCampaign.findFirst({
@@ -95,61 +87,20 @@ export async function POST(
       ? reqBody.keys.filter((k): k is string => typeof k === "string")
       : undefined;
 
-  const ctx = await loadProbeMeta({ id, userId: session.userId });
-  if (!ctx) {
-    return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-  const { campaign, primary, probes, overrideRecipient } = ctx;
-  if (!primary) {
-    return NextResponse.json({ error: "No active sending mailbox on this campaign" }, { status: 400 });
-  }
-
-  const selected = requestedKeys ? probes.filter((p) => requestedKeys.includes(p.key)) : probes;
-  if (selected.length === 0) {
-    return NextResponse.json({ error: "No matching probes" }, { status: 400 });
-  }
-
-  const seed = overrideRecipient ? null : await resolveSeedMailbox(session.userId);
-  if (!overrideRecipient && !seed) {
-    return NextResponse.json(
-      { error: "No seed/test mailbox is configured — a real one is required to run diagnostics" },
-      { status: 400 }
-    );
-  }
-
-  const runProbe = (probe: ProbeMeta): Promise<ProbeOutcome> => {
-    if (!probe.available) {
-      return Promise.resolve({ ...probe, outcome: null, landedIn: null, error: probe.unavailableReason });
+  // The actual probe build + seed/override routing + per-probe test-send lives in
+  // the shared lib/deliverability.ts runner (Task 38) — the AI agent's autonomous
+  // seed-mailbox read and this human UI call the EXACT same code.
+  try {
+    const { results } = await runCampaignDiagnostics({
+      campaignId: id,
+      userId: session.userId,
+      keys: requestedKeys,
+    });
+    return NextResponse.json({ results });
+  } catch (err) {
+    if (err instanceof DeliverabilityError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
     }
-    return runTestSend({
-      campaignId: campaign.id,
-      mailbox: primary,
-      variant: probe.variant,
-      ...(overrideRecipient ? { overrideRecipient } : { seed: seed! }),
-      ...(probe.from ? { from: probe.from } : {}),
-    })
-      .then((r) => ({ ...probe, outcome: r.outcome, landedIn: r.landedIn, error: r.error }))
-      .catch((e) => ({
-        ...probe,
-        outcome: "failed",
-        landedIn: "unknown",
-        error: e instanceof Error ? e.message : "Probe failed at SMTP",
-      }));
-  };
-
-  let results: ProbeOutcome[];
-  if (overrideRecipient) {
-    // Override mode: a human is going to eyeball their own inbox, so pace the
-    // probes like the test-send route does (3-6s between sends) rather than
-    // dropping 4 look-alike test emails in the same second.
-    results = [];
-    for (const probe of selected) {
-      if (results.length > 0) await new Promise((r) => setTimeout(r, 3_000 + Math.random() * 4_000));
-      results.push(await runProbe(probe));
-    }
-  } else {
-    results = await Promise.all(selected.map(runProbe));
+    throw err;
   }
-
-  return NextResponse.json({ results });
 }

@@ -78,9 +78,45 @@ interface AgentInlineMailbox {
 }
 
 interface AgentInlineWidgetData {
-  type: "lead_source_picker" | "lead_upload" | "mailbox_picker";
+  type:
+    | "lead_source_picker"
+    | "lead_upload"
+    | "mailbox_picker"
+    | "campaign_status_list"
+    | "diagnostics_result";
   jobs?: AgentInlineJob[];
   mailboxes?: AgentInlineMailbox[];
+  // Task 38 — campaign_status_list rows (mirror of lib/agent.ts CampaignStatusItem).
+  campaigns?: AgentCampaignStatus[];
+  // Task 38 — diagnostics_result rows (mirror of DiagnosticsProbeOutcome).
+  results?: AgentDiagnosticsProbe[];
+  overrideRecipient?: string | null;
+  error?: string | null;
+}
+
+// Task 38 — one stuck campaign row (pending_test_confirm / paused_deliverability).
+interface AgentCampaignStatus {
+  id: string;
+  name: string;
+  status: string;
+  landedIn: string | null;
+  lastError: string | null;
+  overrideRecipient: boolean;
+}
+
+// Task 38 — one isolation-diagnostics probe outcome (same shape as the campaign
+// detail page's ProbeResult, so the widget reuses the same visual language).
+interface AgentDiagnosticsProbe {
+  key: string;
+  label: string;
+  description: string;
+  variant: { subject: string; bodyHtml: string };
+  from: string | null;
+  available: boolean;
+  unavailableReason?: string;
+  outcome: string | null;
+  landedIn: string | null;
+  error?: string;
 }
 
 interface AgentMessage {
@@ -94,7 +130,7 @@ interface AgentMessage {
 
 interface AgentPendingAction {
   id: string;
-  kind: "job" | "campaign";
+  kind: "job" | "campaign" | "pin" | "switch_subject" | "diagnostics";
   payload: Record<string, unknown>;
   proposal: string | null;
   expiresAt: string;
@@ -109,12 +145,17 @@ interface AgentJobOutcome {
 }
 
 interface AgentOutcome {
-  kind: "job" | "campaign";
+  kind: "job" | "campaign" | "pin" | "switch_subject" | "diagnostics";
   status: string;
   executedJobId: string | null;
   executedCampaignId: string | null;
   job?: AgentJobOutcome;
   campaign?: { id: string };
+  // Task 38 — deliverability action outcome (pin / switch / diagnostics).
+  campaignStatus?: string;
+  pinnedOverride?: Record<string, unknown> | null;
+  subjects?: string[];
+  diagnosticsResults?: AgentDiagnosticsProbe[];
 }
 
 interface AgentOutcomeView {
@@ -157,6 +198,46 @@ function payloadNum(payload: Record<string, unknown>, key: string): number | und
 
 function payloadStr(payload: Record<string, unknown>, key: string): string {
   return typeof payload[key] === "string" ? (payload[key] as string) : "";
+}
+
+// Task 38 — presentational labels for the three new deliverability proposal kinds.
+function actionLabel(kind: AgentPendingAction["kind"]): string {
+  switch (kind) {
+    case "job":
+      return "Job plan";
+    case "campaign":
+      return "Campaign plan";
+    case "pin":
+      return "Pin plan";
+    case "switch_subject":
+      return "Switch subject plan";
+    case "diagnostics":
+      return "Diagnostics";
+  }
+}
+
+// The success toast after approving an action. Approving diagnostics is special —
+// it immediately sends real test emails to the user's own inbox, unlike every other
+// approval which stages something reviewable.
+function approveToast(kind: AgentPendingAction["kind"]): string {
+  switch (kind) {
+    case "campaign":
+      return "Campaign created";
+    case "job":
+      return "Job started";
+    case "pin":
+      return "Pin applied";
+    case "switch_subject":
+      return "Subject switched";
+    case "diagnostics":
+      return "Test emails sent";
+  }
+}
+
+// The diagnostics approval card's Confirm button reads as a confirmation (it starts
+// sending real test emails right away), not the generic "Confirm" used to stage a plan.
+function confirmButtonLabel(kind: AgentPendingAction["kind"]): string {
+  return kind === "diagnostics" ? "Yes, send the test emails" : "Confirm";
 }
 
 // SearchJob statuses: "queued" | "running" | "done" | "failed" | "paused" | "stopped".
@@ -462,14 +543,13 @@ export default function AutomationsPage() {
         push(err.error || "Approval failed", "error");
         return;
       }
-      const data = (await res.json()) as { ok?: boolean; kind?: string };
       setAgentPending((prev) => prev.filter((a) => a.id !== action.id));
       const requestedLeads = action.kind === "job" ? payloadNum(action.payload, "min_results") : undefined;
       setAgentOutcomes((prev) => ({
         ...prev,
         [action.id]: { phase: "pending", requestedLeads },
       }));
-      push(data.kind === "campaign" ? "Campaign created" : "Job started", "success");
+      push(approveToast(action.kind), "success");
       void pollAgentOutcome(action.id, requestedLeads, 0);
     } catch {
       push("Approval request failed", "error");
@@ -576,18 +656,14 @@ export default function AutomationsPage() {
             <Card key={action.id} className="flex flex-col gap-3 p-4">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge tone="warning">🤖 Proposed by agent — awaiting your review</Badge>
-                <Badge tone="neutral">{action.kind === "job" ? "Job plan" : "Campaign plan"}</Badge>
+                <Badge tone="neutral">{actionLabel(action.kind)}</Badge>
                 <span className="text-xs text-fg-muted">
                   expires{" "}
                   {new Date(action.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                 </span>
               </div>
               {action.proposal && <p className="text-sm text-fg">{action.proposal}</p>}
-              {action.kind === "job" ? (
-                <JobPlanDetails payload={action.payload} />
-              ) : (
-                <CampaignPlanDetails payload={action.payload} />
-              )}
+              <PlanDetails kind={action.kind} payload={action.payload} />
               <div className="flex flex-wrap items-center gap-2">
                 <Button
                   type="button"
@@ -595,7 +671,7 @@ export default function AutomationsPage() {
                   disabled={agentBusyId === action.id}
                 >
                   {agentBusyId === action.id ? <Spinner className="h-3.5 w-3.5" /> : null}
-                  Confirm
+                  {confirmButtonLabel(action.kind)}
                 </Button>
                 <Button
                   type="button"
@@ -927,17 +1003,13 @@ export default function AutomationsPage() {
             {agentPending.map((action) => (
               <div key={action.id} className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
                 <div className="flex items-center gap-2">
-                  <Badge tone="warning">{action.kind === "job" ? "Job plan" : "Campaign plan"}</Badge>
+                  <Badge tone="warning">{actionLabel(action.kind)}</Badge>
                   <span className="text-xs text-fg-muted">
                     expires {new Date(action.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
                   </span>
                 </div>
                 {action.proposal && <p className="text-sm text-fg">{action.proposal}</p>}
-                {action.kind === "job" ? (
-                  <JobPlanDetails payload={action.payload} />
-                ) : (
-                  <CampaignPlanDetails payload={action.payload} />
-                )}
+                <PlanDetails kind={action.kind} payload={action.payload} />
                 <div className="flex gap-2">
                   <Button
                     type="button"
@@ -945,7 +1017,7 @@ export default function AutomationsPage() {
                     disabled={agentBusyId === action.id}
                   >
                     {agentBusyId === action.id ? <Spinner className="h-3.5 w-3.5" /> : null}
-                    Confirm
+                    {confirmButtonLabel(action.kind)}
                   </Button>
                   <Button
                     type="button"
@@ -1063,6 +1135,96 @@ function CampaignPlanDetails({ payload }: { payload: Record<string, unknown> }) 
   );
 }
 
+// Task 38 — the three new deliverability proposal kinds, shown in BOTH the chat
+// plan cards AND the staged-proposal automations list (same place Job/Campaign render).
+
+function PinPlanDetails({ payload }: { payload: Record<string, unknown> }) {
+  const campaignId = payloadStr(payload, "campaign_id");
+  const subject = payloadStr(payload, "subject");
+  const body = payloadStr(payload, "body_html");
+  const from = payloadStr(payload, "from_address");
+  const pinCount = payloadNum(payload, "pin_count");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm">
+      {campaignId && <p className="break-all text-xs text-fg-muted">Campaign: {campaignId}</p>}
+      <p className="text-sm text-fg">
+        Pin this subject/body{pinCount && pinCount > 0 ? ` for the next ${pinCount} sends` : ""}
+      </p>
+      {subject && (
+        <p className="text-xs text-fg-muted">
+          <span className="font-medium">Subject:</span> {subject}
+        </p>
+      )}
+      {body && (
+        <p className="line-clamp-2 text-xs text-fg-muted">
+          <span className="font-medium">Body:</span>{" "}
+          {body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}
+        </p>
+      )}
+      {from && (
+        <p className="text-xs text-fg-muted">
+          <span className="font-medium">From:</span> {from}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SwitchSubjectPlanDetails({ payload }: { payload: Record<string, unknown> }) {
+  const campaignId = payloadStr(payload, "campaign_id");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm">
+      {campaignId && <p className="break-all text-xs text-fg-muted">Campaign: {campaignId}</p>}
+      <p className="text-sm text-fg">Switch to the next subject in the rotation</p>
+      <p className="text-xs text-fg-muted">
+        A new subject requires a fresh test-send and your confirmation before sending resumes.
+      </p>
+    </div>
+  );
+}
+
+function DiagnosticsPlanDetails({ payload }: { payload: Record<string, unknown> }) {
+  const campaignId = payloadStr(payload, "campaign_id");
+  const keys = payloadArr(payload, "keys");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm">
+      {campaignId && <p className="break-all text-xs text-fg-muted">Campaign: {campaignId}</p>}
+      <p className="text-sm text-fg">Run the isolation diagnostics</p>
+      <p className="text-xs text-fg-muted">
+        This campaign tests against a personal test-recipient, so approving this sends{" "}
+        <span className="font-medium">real test emails to your own inbox</span> — check them
+        before deciding.
+      </p>
+      {keys.length > 0 && (
+        <p className="text-[11px] text-fg-muted">Probes: {keys.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
+// Dispatch a pending action's plan body — reuses Job/Campaign details for those kinds
+// and the three new Task 38 renderers for the deliverability kinds.
+function PlanDetails({
+  kind,
+  payload,
+}: {
+  kind: AgentPendingAction["kind"];
+  payload: Record<string, unknown>;
+}) {
+  switch (kind) {
+    case "job":
+      return <JobPlanDetails payload={payload} />;
+    case "campaign":
+      return <CampaignPlanDetails payload={payload} />;
+    case "pin":
+      return <PinPlanDetails payload={payload} />;
+    case "switch_subject":
+      return <SwitchSubjectPlanDetails payload={payload} />;
+    case "diagnostics":
+      return <DiagnosticsPlanDetails payload={payload} />;
+  }
+}
+
 function AgentInlineWidget({
   widget,
   onSend,
@@ -1074,7 +1236,135 @@ function AgentInlineWidget({
   // same order — never conditionally inside a single component.
   if (widget.type === "lead_upload") return <InlineLeadUpload onSend={onSend} />;
   if (widget.type === "lead_source_picker") return <InlineLeadSourcePicker widget={widget} onSend={onSend} />;
-  return <InlineMailboxPicker widget={widget} onSend={onSend} />;
+  if (widget.type === "mailbox_picker") return <InlineMailboxPicker widget={widget} onSend={onSend} />;
+  // Task 38 — a campaign_status_list row is itself clickable (run diagnostics on it),
+  // and a diagnostics_result widget is a pure read (no follow-up send needed).
+  if (widget.type === "campaign_status_list")
+    return <InlineCampaignStatusList widget={widget} onSend={onSend} />;
+  return <InlineDiagnosticsResult widget={widget} />;
+}
+
+// Task 38 — a compact list of the user's stuck campaigns (pending_test_confirm /
+// paused_deliverability). Each row is clickable to send "Run diagnostics on campaign
+// {id}" — the user picks, they don't type, matching the pre-existing widget discipline.
+function InlineCampaignStatusList({
+  widget,
+  onSend,
+}: {
+  widget: AgentInlineWidgetData;
+  onSend: (text: string) => void;
+}) {
+  const campaigns = widget.campaigns ?? [];
+  if (campaigns.length === 0) {
+    return (
+      <div className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-xs text-fg-muted">
+        <p>No campaigns are stuck right now. 🎉</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      <p className="text-[11px] font-medium uppercase tracking-wide text-fg-muted">
+        Stuck campaigns — click one to run diagnostics
+      </p>
+      {campaigns.map((c) => (
+        <div
+          key={c.id}
+          className="flex flex-col gap-1 rounded-lg border border-border bg-bg p-2.5 text-sm"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="min-w-0 truncate font-medium">{c.name}</p>
+            <Badge tone={c.status === "paused_deliverability" ? "warning" : "neutral"}>
+              {c.status.replace("_", " ")}
+            </Badge>
+            {c.overrideRecipient && <Badge tone="neutral">personal test</Badge>}
+          </div>
+          <p className="break-all text-[11px] text-fg-muted">{c.id}</p>
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-[11px] text-fg-muted">
+              last landed: {c.landedIn ?? "n/a"}
+              {c.lastError ? ` · ${c.lastError}` : ""}
+            </p>
+            <button
+              type="button"
+              onClick={() => onSend(`Run diagnostics on campaign ${c.id}`)}
+              className="text-xs font-medium text-brand-600 underline underline-offset-2 hover:text-brand-500"
+            >
+              Run diagnostics
+            </button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Task 38 — the probe-checklist visual language from the campaign detail page's Task 33
+// diagnostics panel, re-homed into a chat bubble. Pure read: no onSend needed. Renders
+// the outcome automatically (seed mailbox) or after an approved (override) diagnostics run.
+function InlineDiagnosticsResult({ widget }: { widget: AgentInlineWidgetData }) {
+  if (widget.error) {
+    return (
+      <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+        {widget.error}
+      </div>
+    );
+  }
+  const results = widget.results ?? [];
+  if (results.length === 0) {
+    return (
+      <div className="mt-2 rounded-lg border border-border bg-bg p-2.5 text-xs text-fg-muted">
+        <p>No probe results yet — this diagnostics run hasn&apos;t returned anything.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      {widget.overrideRecipient && (
+        <p className="text-[11px] text-fg-muted">
+          Sent to your inbox ({widget.overrideRecipient}) — check it, then reply about what you
+          see before deciding.
+        </p>
+      )}
+      {results.map((p) => {
+        const landed = p.landedIn;
+        const out = p.outcome;
+        return (
+          <div key={p.key} className="rounded-lg border border-border bg-bg px-2.5 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium">{p.label}</p>
+              {!p.available ? (
+                <span className="rounded-full bg-bg-elevated px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-fg-muted">
+                  n/a
+                </span>
+              ) : (
+                <span
+                  className={`text-xs font-medium ${
+                    landed === "inbox"
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : landed === "spam"
+                        ? "text-red-600 dark:text-red-400"
+                        : "text-amber-600 dark:text-amber-400"
+                  }`}
+                >
+                  landed: {landed ?? "n/a"} · {out ?? "—"}
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[11px] text-fg-muted">{p.description}</p>
+            {p.landedIn === "inbox" && (
+              <p className="mt-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
+                Clean — this combination is worth pinning. Ask the agent to pin it.
+              </p>
+            )}
+            {!p.available && p.unavailableReason && (
+              <p className="mt-0.5 text-[11px] text-fg-muted">{p.unavailableReason}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 // Task 37 — the SAME dropdown behavior as the Campaigns picker, re-homed into a
@@ -1272,6 +1562,40 @@ function AgentOutcomeCard({
         <Badge tone="success">Campaign created</Badge>
         {o.campaign?.id && (
           <p className="break-all text-xs text-fg-muted">{o.campaign.id}</p>
+        )}
+      </div>
+    );
+  }
+
+  // Task 38 — pin / switch_subject / diagnostics resolve to a campaign mutation;
+  // report its live status, pinned window, rotated subjects, and stored probe results.
+  if (o.kind === "pin" || o.kind === "switch_subject" || o.kind === "diagnostics") {
+    return (
+      <div className="flex flex-col gap-1.5 rounded-xl border border-border bg-bg p-3 text-sm">
+        <Badge tone="success">
+          {o.kind === "pin" ? "Pin applied" : o.kind === "switch_subject" ? "Subject switched" : "Diagnostics sent"}
+        </Badge>
+        {o.campaignStatus && (
+          <p>
+            Campaign status: <span className="font-medium">{o.campaignStatus}</span>
+          </p>
+        )}
+        {o.pinnedOverride && (
+          <p className="text-xs text-fg-muted">
+            Pinned: &ldquo;{String((o.pinnedOverride as Record<string, unknown>).subject ?? "—")}&rdquo;
+            {typeof (o.pinnedOverride as Record<string, unknown>).remaining === "number"
+              ? ` (${Number((o.pinnedOverride as Record<string, unknown>).remaining)} sends left)`
+              : ""}
+          </p>
+        )}
+        {o.subjects && o.subjects.length > 0 && (
+          <p className="text-xs text-fg-muted">Subjects: {o.subjects.join(" → ")}</p>
+        )}
+        {o.diagnosticsResults && (
+          <InlineDiagnosticsResult widget={{ type: "diagnostics_result", results: o.diagnosticsResults }} />
+        )}
+        {o.executedCampaignId && (
+          <p className="break-all text-xs text-fg-muted">{o.executedCampaignId}</p>
         )}
       </div>
     );

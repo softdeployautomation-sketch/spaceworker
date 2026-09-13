@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import {
+  applyPinAndContinue,
+  applySwitchSubject,
+  DeliverabilityError,
+} from "@/lib/deliverability";
 
 // Resolves a campaign that's awaiting a human deliverability decision — either
 // the batch gate's mid-send pause (status "paused_deliverability", set by the
@@ -54,6 +59,15 @@ import { getSession } from "@/lib/session";
 //   "stop"           — stop the campaign (terminal). Remaining queued items stay
 //                      queued but the campaign never re-enters "sending". Allowed
 //                      from either state (halting is always safe).
+// `DeliverabilityError` → `NextResponse` mapping for the two branches that now
+// delegate to the shared lib/deliverability.ts implementations.
+function decisionError(err: unknown): NextResponse | null {
+  if (err instanceof DeliverabilityError) {
+    return NextResponse.json({ error: err.message }, { status: err.status });
+  }
+  return null;
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -97,50 +111,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   if (action === "switch_subject") {
     // Task 36 — never a silent no-op. Rotating is only meaningful when the
-    // campaign actually HAS an independent subject to rotate to. For a legacy
-    // (non-decoupled) campaign, or a decoupled campaign with a single subject,
-    // there's nothing to switch to — reject with a clear redirect to Task 32's
-    // "Manually edit and test" (which upgrades legacy campaigns into the
-    // decoupled model on promotion) instead of pretending we changed something
-    // and letting the campaign resume with the very content that just failed.
-    const rotatedSubjects = Array.isArray(campaign.subjects) && campaign.subjects.length > 1
-      ? [...campaign.subjects.slice(1), campaign.subjects[0]]
-      : undefined;
-    if (!rotatedSubjects) {
-      return NextResponse.json(
-        { error: "This campaign only has one subject — there's nothing to switch to. Use \"Manually edit and test\" to try a fresh subject/body instead." },
-        { status: 400 }
-      );
+    // campaign actually HAS an independent subject to rotate to (legacy / single-
+    // subject campaigns throw a 400 redirecting to Task 32's "Manually edit and
+    // test"). The shared implementation lives in lib/deliverability.ts so the AI
+    // agent's pending-action executor calls the exact same code as this route.
+    try {
+      const res = await applySwitchSubject(id, { userId: session.userId, fromInitialGate });
+      return NextResponse.json(res);
+    } catch (err) {
+      const r = decisionError(err);
+      if (r) return r;
+      throw err;
     }
-
-    // From the initial gate: rotate only, stay put — nothing has been confirmed
-    // to send yet, so there's no \"resume\" to do. The frontend immediately
-    // re-runs the test-send against the new subject.
-    if (fromInitialGate) {
-      await prisma.emailCampaign.update({
-        where: { id },
-        data: { subjects: rotatedSubjects },
-      });
-      // Task 34 — return the rotated subjects so the frontend can update its
-      // subjects list locally (openEdit prefills from subjects[0]) without a
-      // full campaign re-fetch.
-      return NextResponse.json({ ok: true, status: campaign.status, subjects: rotatedSubjects });
-    }
-
-    // From a batch pause: rotate AND move into the SAME \"awaiting a fresh test\"
-    // shape the initial gate uses (pending_test_confirm) instead of resuming
-    // straight to \"sending\". The batch gate's core discipline is that a campaign
-    // only enters \"sending\" after an explicit test-send + human confirm;
-    // resuming a mid-campaign spam hit with zero re-verification undermines
-    // exactly that protection. The mail-queue drain only processes \"sending\", so
-    // this keeps the campaign paused until the frontend (retryWithNextSubject)
-    // runs a fresh test of the new subject and the human confirms it — the same
-    // loop the campaign went through on its very first send.
-    await prisma.emailCampaign.update({
-      where: { id },
-      data: { subjects: rotatedSubjects, status: "pending_test_confirm" },
-    });
-    return NextResponse.json({ ok: true, status: "pending_test_confirm", subjects: rotatedSubjects });
   }
 
   // \"pin_and_continue\" — Task 33: lock the campaign onto one particular
@@ -159,49 +141,26 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     // bodyHtml may legitimately be "" (a pinned empty-body diagnostic that came
     // back clean) — only the subject is required to pin.
     const bodyHtml = typeof body.bodyHtml === "string" ? body.bodyHtml : "";
-    if (!subject) {
-      return NextResponse.json(
-        { error: "Provide a subject to pin" },
-        { status: 400 }
-      );
-    }
     const fromAddress = typeof body.from === "string" ? body.from.trim() : "";
-    const rawPinCount = Number(body.pinCount ?? campaign.batchSize ?? 50);
-    const pinCount = Math.max(1, Math.min(1000, Math.floor(rawPinCount)));
+    const numPinCount = Number(body.pinCount ?? campaign.batchSize ?? 50);
+    const pinCount = Number.isFinite(numPinCount) ? numPinCount : campaign.batchSize ?? 50;
 
-    // Audit trail, mirroring the other explicit-decision branches: the human
-    // approved pinning this exact content for exactly pinCount sends.
-    await prisma.deliverabilityCheck.create({
-      data: {
-        campaignId: id,
-        seedMailboxId: null,
-        status: "delivered",
-        landedIn: "inbox",
-        error: `Pinned override approved by the user for ${pinCount} send(s): "${subject}"${
-          fromAddress ? ` from ${fromAddress}` : ""
-        }.`,
-        checkedAt: new Date(),
-      },
-    });
-    // Both states resolve to \"sending\" here, exactly like continue/add_edit.
-    // The stored rotation (subjects/bodies) is left untouched — the drain
-    // consults pinnedOverride instead while it's set, and clears it after
-    // `remaining` sends, cleanly resuming the rotation.
-    await prisma.emailCampaign.update({
-      where: { id },
-      data: {
-        pinnedOverride: { subject, bodyHtml, fromAddress, remaining: pinCount },
-        status: "sending",
-      },
-    });
-    // Task 34 — return the full pinnedOverride shape so the frontend can show the
-    // pinned-override banner locally without re-fetching the whole campaign.
-    return NextResponse.json({
-      ok: true,
-      status: "sending",
-      pinCount,
-      pinnedOverride: { subject, bodyHtml, fromAddress, remaining: pinCount },
-    });
+    // Task 33 — TEMPORARY pinned override, extracted to lib/deliverability.ts so
+    // the AI agent's executor and this human route run the identical mutation.
+    try {
+      const res = await applyPinAndContinue(id, {
+        userId: session.userId,
+        subject,
+        bodyHtml,
+        fromAddress,
+        pinCount,
+      });
+      return NextResponse.json(res);
+    } catch (err) {
+      const r = decisionError(err);
+      if (r) return r;
+      throw err;
+    }
   }
 
   // "add_edit_and_continue" — Task 32: promote a human/agent-authored draft that a
