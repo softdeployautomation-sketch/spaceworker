@@ -31,5 +31,14 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  return NextResponse.json(campaign);
+  // Task 32 — EmailCampaign has no `mailboxes` relation (it stores ids in
+  // mailboxIds), so fetch the configured sending mailboxes (and their Task 30
+  // item 4 From addresses) separately for the "manually edit and test" From
+  // select.
+  const mailboxes = await prisma.mailbox.findMany({
+    where: { id: { in: campaign.mailboxIds } },
+    select: { id: true, label: true, username: true, fromAddresses: true },
+  });
+
+  return NextResponse.json({ ...campaign, mailboxes });
 }

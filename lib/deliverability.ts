@@ -49,6 +49,10 @@ export async function runTestSend(opts: {
   // which is what keeps the batch gate pausing on every batch for this mode.
   seed?: SeedMailboxRow | null;
   overrideRecipient?: string | null;
+  // Task 32 — optional explicit From address for this probe (overrides the
+  // mailbox's normal fromAddresses[0] rotation). Used when a user (or an agent)
+  // is live-testing an edited draft and wants to see it send as a specific From.
+  from?: string;
 }): Promise<{ outcome: DeliverabilityOutcome; checkId: string; landedIn: "inbox" | "spam" | "unknown"; error?: string }> {
   const since = new Date(Date.now() - 120_000); // generous window for clock skew
   const isOverride = !!opts.overrideRecipient;
@@ -70,9 +74,10 @@ export async function runTestSend(opts: {
     const transport = transporterForMailbox(opts.mailbox);
     await transport.sendMail({
       // Task 30, item 4 — a test send is a one-shot per mailbox (no per-recipient
-      // rotation has run here), so just use the mailbox's first configured From
-      // address (empty list => send as the SMTP username).
-      from: opts.mailbox.fromAddresses?.[0] || opts.mailbox.username,
+      // rotation has run here), so use the mailbox's first configured From
+      // address (empty list => send as the SMTP username). Task 32 — an explicit
+      // probe `from` override (live draft test) wins when provided.
+      from: opts.from ?? (opts.mailbox.fromAddresses?.[0] || opts.mailbox.username),
       to: toAddress,
       subject: isOverride
         ? renderMerge(opts.variant.subject, {})

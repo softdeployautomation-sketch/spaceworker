@@ -9,8 +9,17 @@ import { resolveSeedMailbox } from "@/lib/seed-mailbox";
 // manual-confirm mode gate — it returns delivered/failed without ever touching the
 // campaign's queued items. The campaign stays at "pending_test_confirm" until the
 // user explicitly confirms via POST /api/campaigns/[id]/confirm-test.
+//
+// Task 32 — optional live-draft override. The default tests the campaign's STORED
+// content (subjects[0]/bodies[0], or the first CampaignVariant for legacy). A body
+// of { "subject", "bodyHtml", "from?" } instead tests that arbitrary DRAFT content
+// as a live probe WITHOUT persisting anything — nothing is written back to the
+// campaign, so a user (or later an agent driving the same REST surface) can try a
+// tweak before ever deciding to promote it. `from` overrides the From address the
+// probe is sent as (falls back to the normal mailbox.fromAddresses rotation when
+// omitted).
 export async function POST(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
@@ -18,6 +27,18 @@ export async function POST(
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const { id } = await params;
+
+  // Task 32 — parse the optional draft override up front (ignored when absent).
+  let reqBody: { subject?: unknown; bodyHtml?: unknown; from?: unknown } = {};
+  try {
+    reqBody = await req.json();
+  } catch {
+    reqBody = {};
+  }
+  const draftSubject = typeof reqBody.subject === "string" ? reqBody.subject.trim() : undefined;
+  const draftBodyHtml = typeof reqBody.bodyHtml === "string" ? reqBody.bodyHtml : undefined;
+  // Optional Task 30 item 4 override — send the probe as a specific From address.
+  const draftFrom = typeof reqBody.from === "string" ? reqBody.from.trim() : undefined;
 
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
@@ -35,15 +56,26 @@ export async function POST(
     );
   }
 
-  // Legacy pair campaigns have a CampaignVariant row; decoupled campaigns (item 4)
-  // keep no rows, so synthesize a probe variant from the independent subject/body
-  // lists (first entry of each) to test-send with.
-  let variant: { subject: string; bodyHtml: string } | undefined = campaign.variants[0];
-  if (!variant && campaign.subjects && campaign.subjects.length > 0) {
-    variant = {
-      subject: campaign.subjects[0],
-      bodyHtml: campaign.bodies && campaign.bodies.length > 0 ? campaign.bodies[0] : "",
-    };
+  // Task 32 — a draft override means "test THIS content, not the stored one":
+  // skip the stored-content resolution entirely and build the probe variant from
+  // the draft values. Nothing is persisted here — it's a live probe only.
+  let variant: { subject: string; bodyHtml: string } | undefined;
+  if (draftSubject !== undefined || draftBodyHtml !== undefined) {
+    variant = { subject: draftSubject ?? "", bodyHtml: draftBodyHtml ?? "" };
+    if (!variant.subject && !variant.bodyHtml) {
+      return NextResponse.json({ error: "Edited content is empty — provide a subject and/or body" }, { status: 400 });
+    }
+  } else {
+    // Legacy pair campaigns have a CampaignVariant row; decoupled campaigns (item 4)
+    // keep no rows, so synthesize a probe variant from the independent subject/body
+    // lists (first entry of each) to test-send with.
+    variant = campaign.variants[0];
+    if (!variant && campaign.subjects && campaign.subjects.length > 0) {
+      variant = {
+        subject: campaign.subjects[0],
+        bodyHtml: campaign.bodies && campaign.bodies.length > 0 ? campaign.bodies[0] : "",
+      };
+    }
   }
   if (!variant) {
     return NextResponse.json({ error: "Campaign has no variant to test with" }, { status: 400 });
@@ -92,12 +124,12 @@ export async function POST(
   if (overrideRecipient) {
     for (const mailbox of mailboxes) {
       if (results.length > 0) await new Promise((r) => setTimeout(r, 3_000 + Math.random() * 4_000));
-      results.push(await runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient }));
+      results.push(await runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient, ...(draftFrom ? { from: draftFrom } : {}) }));
     }
   } else {
     results.push(
       ...(await Promise.all(
-        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed! })),
+        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed!, ...(draftFrom ? { from: draftFrom } : {}) })),
       )),
     );
   }

@@ -62,6 +62,9 @@ type CampaignDetail = {
   variants: Variant[];
   checks: DeliverabilityCheck[];
   items: QueueItem[];
+  // Task 32 — the campaign's configured sending mailboxes + their Task 30 item 4
+  // From addresses, for pre-filling the "manually edit and test" From select.
+  mailboxes: { id: string; label: string; username: string; fromAddresses: string[] }[];
 };
 
 const PAGE_SIZE = 50;
@@ -147,6 +150,19 @@ export default function CampaignDetailPage() {
   // target instead of Gmail from then on.
   const [testRecipientInput, setTestRecipientInput] = useState("");
   const [settingTestRecipient, setSettingTestRecipient] = useState(false);
+  // Task 32 — "Manually edit and test": a 4th, clearly-secondary path in the
+  // decision box. The user drafts a subject/body (and optional From) tweak,
+  // live-tests it via the extended test-send route WITHOUT touching stored
+  // content, then promotes it onto the front of the rotation only if — and after —
+  // they judge a real test result good by eye.
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSubject, setEditSubject] = useState("");
+  const [editBody, setEditBody] = useState("");
+  const [editFrom, setEditFrom] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  // True once a live draft test-send comes back — the promote option is only
+  // offered after that result, so promotion is always a judged outcome.
+  const [draftTested, setDraftTested] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -262,6 +278,82 @@ export default function CampaignDetailPage() {
     await sendTest();
   }
 
+  // Task 32 — open the "manually edit and test" surface, pre-filling the draft from
+  // whatever the LAST test-send actually used: subjects[0]/bodies[0] for a decoupled
+  // campaign, or variants[0] for a legacy pair campaign (index 0 is always what
+  // test-send and the batch probe use today). Pre-fill From with the first offered
+  // address (see fromOptions below).
+  function openEdit() {
+    setEditSubject(campaign?.subjects?.[0] ?? campaign?.variants?.[0]?.subject ?? "");
+    setEditBody(campaign?.bodies?.[0] ?? campaign?.variants?.[0]?.bodyHtml ?? "");
+    setEditFrom(fromOptions[0] ?? "");
+    setDraftTested(false);
+    setEditOpen(true);
+  }
+
+  // Task 32 — fire a REAL test with the draft content without persisting anything:
+  // the extended test-send route builds the probe from { subject, bodyHtml, from }
+  // instead of the stored campaign content. The campaign's stored subjects/bodies
+  // stay untouched until the user explicitly promotes (see promoteEdit).
+  async function sendDraftTest() {
+    setEditBusy(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/test-send`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: editSubject,
+          bodyHtml: editBody,
+          ...(editFrom ? { from: editFrom } : {}),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Draft test-send failed" });
+      } else {
+        setTestResult({ outcome: data.outcome ?? "failed", error: data.error });
+        setDraftTested(true);
+      }
+      void load();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while sending the edited test." });
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  // Task 32 — the human judged the draft test good by eye; promote it onto the
+  // FRONT of the campaign's subject/body rotation via the deliverability-decision
+  // route's new "add_edit_and_continue" action (which also resumes/ unlocks sending,
+  // exactly like "continue"). Only offered after a live draft test came back.
+  async function promoteEdit() {
+    setDebating(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/deliverability-decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "add_edit_and_continue",
+          subject: editSubject,
+          bodyHtml: editBody,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't promote the edited version." });
+      } else {
+        setEditOpen(false);
+        setDraftTested(false);
+        void load();
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while promoting the edit." });
+    } finally {
+      setDebating(false);
+    }
+  }
+
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
   }
@@ -281,6 +373,117 @@ export default function CampaignDetailPage() {
   const pageItems = campaign.items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const latestCheck = campaign.checks?.[0];
   const awaitingConfirm = campaign.status === "pending_test_confirm";
+
+  // Task 32 — the From addresses the draft probe can be sent as: every Task 30
+  // item 4 configured from address across the campaign's mailboxes, deduped, plus
+  // each mailbox's SMTP username as a fallback (an empty list on a mailbox means
+  // "send as the SMTP username"). Empty list => hide the select for v1.
+  const fromOptions = Array.from(
+    new Set(
+      campaign.mailboxes.flatMap((m) =>
+        m.fromAddresses && m.fromAddresses.length > 0 ? m.fromAddresses : [m.username]
+      )
+    )
+  );
+
+  // Task 32 — the 4th, clearly-secondary path through the decision box, rendered in
+  // BOTH the initial test-send-confirm gate and the batch-pause banner. A small
+  // toggle expands into a subject / From / body edit form pre-filled from whatever
+  // the last test-send used, a "Send test with this edit" live probe (stored
+  // content untouched), and — once a check comes back — a single "Use this edited
+  // version" promote action alongside the normal options (which, if chosen instead,
+  // just discard the draft and fall back to the automated flow).
+  const manualEditSection = (
+    <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+      {!editOpen ? (
+        <button
+          type="button"
+          onClick={openEdit}
+          className="text-sm font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          Manually edit and test instead →
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Subject
+            </label>
+            <input
+              type="text"
+              value={editSubject}
+              onChange={(e) => setEditSubject(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+            />
+          </div>
+          {fromOptions.length > 0 && (
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                From address
+              </label>
+              <select
+                value={editFrom}
+                onChange={(e) => setEditFrom(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+              >
+                {fromOptions.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div>
+            <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Body HTML
+            </label>
+            <textarea
+              value={editBody}
+              onChange={(e) => setEditBody(e.target.value)}
+              rows={5}
+              className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void sendDraftTest()}
+              disabled={editBusy || debating}
+              className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {editBusy ? "Sending test… checking" : "Send test with this edit"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setEditOpen(false);
+                setDraftTested(false);
+              }}
+              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+            >
+              Discard draft
+            </button>
+          </div>
+          {draftTested && (
+            <div className="rounded-lg border border-violet-200 bg-violet-50 p-2 text-xs text-violet-700 dark:border-violet-900/50 dark:bg-violet-950/20 dark:text-violet-300">
+              <p className="font-medium">
+                A live test with this edit came back — if it looks good, promote it:
+              </p>
+              <button
+                type="button"
+                onClick={() => void promoteEdit()}
+                disabled={debating || editBusy}
+                className="mt-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+              >
+                {debating ? "Promoting…" : "Use this edited version — add to rotation and go ahead"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div>
@@ -412,6 +615,10 @@ export default function CampaignDetailPage() {
             </div>
           )}
 
+          {/* Task 32 — the 4th, clearly-secondary path through the initial gate:
+              manually edit and test a draft without touching stored content. */}
+          {manualEditSection}
+
           {/* Human-assisted fallback, offered after the automated check fails and
               no override is set yet: use a recipient already in the queue, or
               type a new one, as this campaign's test target from now on. */}
@@ -499,6 +706,9 @@ export default function CampaignDetailPage() {
               {debating ? "Applying…" : "Stop"}
             </button>
           </div>
+          {/* Task 32 — same 4th, secondary "manually edit and test" path, available
+              from a batch pause too (test-send remains callable while paused). */}
+          {manualEditSection}
         </div>
       )}
 {/* Variants */}

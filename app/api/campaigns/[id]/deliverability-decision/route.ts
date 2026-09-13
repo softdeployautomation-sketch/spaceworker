@@ -21,6 +21,18 @@ import { getSession } from "@/lib/session";
 //                      pending_test_confirm: rotates only — status STAYS
 //                      pending_test_confirm, since nothing has been confirmed to
 //                      send yet; the frontend re-runs the test-send right after.
+//   "add_edit_and_continue" — Task 32: promote a manually-authored draft (subject/
+//                      bodyHtml fields) that a real test-send already judged good
+//                      into the campaign's rotation, as the PREFERRED entry. Front-
+//                      inserted at index 0 of subjects/bodies (not appended), so
+//                      the very next test-send and the very next batch pick it up
+//                      first (rotation is i % length — no weighting scheme needed).
+//                      For a legacy pair campaign with empty subjects/bodies, this
+//                      naturally upgrades it into the decoupled model, seeding each
+//                      array with the original CampaignVariant's content as the
+//                      second entry so nothing already in flight is dropped. Records
+//                      a manual-override DeliverabilityCheck like "continue" does,
+//                      then resumes/ unlocks to "sending" from either state.
 //   "stop"           — stop the campaign (terminal). Remaining queued items stay
 //                      queued but the campaign never re-enters "sending". Allowed
 //                      from either state (halting is always safe).
@@ -29,16 +41,19 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { id } = await params;
 
-  const campaign = await prisma.emailCampaign.findFirst({ where: { id, userId: session.userId } });
+  const campaign = await prisma.emailCampaign.findFirst({
+    where: { id, userId: session.userId },
+    include: { variants: { orderBy: { createdAt: "asc" } } },
+  });
   if (!campaign) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let body: { action?: string };
+  let body: { action?: string; subject?: unknown; bodyHtml?: unknown };
   try {
     body = await req.json();
   } catch {
     body = {};
   }
-  const action = body.action === "continue" || body.action === "switch_subject" || body.action === "stop"
+  const action = body.action === "continue" || body.action === "switch_subject" || body.action === "stop" || body.action === "add_edit_and_continue"
     ? body.action
     : "continue";
 
@@ -82,6 +97,66 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       data: { ...(rotatedSubjects ? { subjects: rotatedSubjects } : {}), status: "sending" },
     });
     return NextResponse.json({ ok: true, status: "sending" });
+  }
+
+  // "add_edit_and_continue" — Task 32: promote a human/agent-authored draft that a
+  // real test-send judged good by eye into the campaign's rotation as the PREFERRED
+  // entry. Front-insert at index 0 (rotation is i % length, so front-insertion is
+  // what makes it "used preferentially" for free). For a legacy pair campaign this
+  // also upgrades it into the decoupled model, seeding the arrays with the original
+  // variant's content as the second entry so nothing already in flight is dropped.
+  if (action === "add_edit_and_continue") {
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    const bodyHtml = typeof body.bodyHtml === "string" ? body.bodyHtml.trim() : "";
+    if (!subject || !bodyHtml) {
+      return NextResponse.json(
+        { error: "Provide both an edited subject and body to promote" },
+        { status: 400 }
+      );
+    }
+    const legacy = campaign.variants[0];
+    const hasDecoupled = Array.isArray(campaign.subjects) && campaign.subjects.length > 0;
+    // Seed from the existing subjects/bodies for a decoupled campaign, or from the
+    // legacy variant for a pair campaign being upgraded — either way the new edit
+    // lands at index 0 with everything already present following it.
+    const baseSubjects = hasDecoupled
+      ? [...campaign.subjects]
+      : legacy && legacy.subject
+        ? [legacy.subject]
+        : [];
+    const baseBodies = hasDecoupled
+      ? [...(Array.isArray(campaign.bodies) ? campaign.bodies : [])]
+      : legacy && legacy.bodyHtml
+        ? [legacy.bodyHtml]
+        : [];
+    // Front-insert unless the edit is already what sits at index 0 (no-op duplicate).
+    const subjects = baseSubjects[0] === subject
+      ? baseSubjects
+      : [subject, ...baseSubjects.filter((s) => s !== "")];
+    const bodies = baseBodies[0] === bodyHtml
+      ? baseBodies
+      : [bodyHtml, ...baseBodies.filter((b) => b !== "")];
+
+    // This WAS a human-verified test (just with edited content) — record it in the
+    // audit trail the same way the "continue" branch does, explicit that it was an
+    // edited-and-approved variant.
+    await prisma.deliverabilityCheck.create({
+      data: {
+        campaignId: id,
+        seedMailboxId: null,
+        status: "delivered",
+        landedIn: "inbox",
+        error: "Manually edited variant approved by the user — added to the front of the rotation.",
+        checkedAt: new Date(),
+      },
+    });
+    // Both states resolve to "sending" here: fromInitialGate unlocks straight to
+    // sending; fromBatchPause resumes to sending — same as "continue".
+    await prisma.emailCampaign.update({
+      where: { id },
+      data: { subjects, bodies, status: "sending" },
+    });
+    return NextResponse.json({ ok: true, status: "sending", subjects, bodies });
   }
 
   // "continue"
