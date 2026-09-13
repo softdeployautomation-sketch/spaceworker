@@ -27,7 +27,7 @@ export async function POST(req: Request) {
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; allowInsecure?: boolean;
+    fromAddresses?: unknown; password?: string; secure?: boolean; dailyLimit?: number; allowInsecure?: boolean;
   };
   try {
     body = await req.json();
@@ -39,7 +39,11 @@ export async function POST(req: Request) {
   const host = (body.host ?? "").trim();
   const port = Number(body.port ?? 587);
   const username = (body.username ?? "").trim();
-  const fromAddress = (body.fromAddress ?? "").trim();
+  // Task 30, item 4 — multiple From addresses per mailbox (rotated across
+  // recipients at queue-build time). Empty list = send as the SMTP username.
+  const fromAddresses = Array.isArray(body.fromAddresses)
+    ? body.fromAddresses.map((a) => String(a ?? "").trim()).filter((a) => a.length > 0)
+    : [];
   const password = body.password ?? "";
   const dailyLimit = Number(body.dailyLimit ?? 40);
   // Task 26, Piece 5a — `secure` (implicit TLS) is DERIVED from port, never taken
@@ -64,8 +68,8 @@ export async function POST(req: Request) {
       host,
       port,
       username,
-      // Empty string -> null/unset: never store "".
-      fromAddress: fromAddress.length > 0 ? fromAddress : null,
+      // Empty list -> send as the SMTP username; never store "" elements.
+      fromAddresses,
       encryptedPassword: ciphertext,
       passwordIv: iv,
       passwordTag: tag,

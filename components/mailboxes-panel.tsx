@@ -11,7 +11,9 @@ type Mailbox = {
   host: string;
   port: number;
   username: string;
-  fromAddress: string | null;
+  // Task 30, item 4 — multiple From addresses per mailbox (rotated across
+  // recipients at queue-build time). Empty array = send as the SMTP username.
+  fromAddresses: string[];
   secure: boolean;
   allowInsecure: boolean;
   dailyLimit: number;
@@ -67,7 +69,7 @@ type MailboxForm = {
   host: string;
   port: string;
   username: string;
-  fromAddress: string;
+  fromAddresses: string[];
   password: string;
   securityMode: SecurityMode;
   dailyLimit: string;
@@ -78,7 +80,7 @@ const EMPTY_FORM: MailboxForm = {
   host: "",
   port: "587",
   username: "",
-  fromAddress: "",
+  fromAddresses: [],
   password: "",
   securityMode: "starttls",
   dailyLimit: "40",
@@ -144,7 +146,7 @@ export default function MailboxesPanel() {
       host: m.host,
       port: String(m.port),
       username: m.username,
-      fromAddress: m.fromAddress ?? "",
+      fromAddresses: m.fromAddresses ?? [],
       password: "",
       securityMode: modeForMailbox(m),
       dailyLimit: String(m.dailyLimit),
@@ -174,7 +176,9 @@ export default function MailboxesPanel() {
         allowInsecure,
         dailyLimit: Math.max(1, dailyLimit),
       };
-      if (form.fromAddress.trim()) payload.fromAddress = form.fromAddress.trim();
+      // Task 30, item 4 — multiple From addresses (rotated across recipients at
+      // queue-build time). Empty list / all-blank rows => send as the SMTP username.
+      payload.fromAddresses = form.fromAddresses.map((a) => a.trim()).filter((a) => a.length > 0);
       if (form.password.trim()) payload.password = form.password;
 
       const url = editing ? `/api/mailboxes/${editing.id}` : "/api/mailboxes";
@@ -382,7 +386,7 @@ export default function MailboxesPanel() {
                   <div className="min-w-0">
                     <h2 className="truncate font-semibold">{m.label}</h2>
                     <p className="mt-0.5 truncate text-sm text-zinc-500 dark:text-zinc-400">
-                      {(m.fromAddress || m.username)} @ {m.host}:{m.port}
+                      {(m.fromAddresses && m.fromAddresses.length > 0 ? m.fromAddresses.join(", ") : m.username)} @ {m.host}:{m.port}
                     </p>
                   </div>
                   <span
@@ -629,19 +633,54 @@ export default function MailboxesPanel() {
                 />
               </label>
 
-              <label className="flex flex-col gap-1 text-sm font-medium">
-                From address (optional)
-                <input
-                  type="text"
-                  value={form.fromAddress}
-                  onChange={(e) => setForm({ ...form, fromAddress: e.target.value })}
-                  placeholder="you@example.com"
-                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
-                />
+              {/* Task 30, item 4 — multiple From addresses per mailbox, rotated
+                  across recipients at queue-build time (resolvedFromAddress on each
+                  queued item). Same add/remove-row interaction as the campaign
+                  builder's subject/body list. Empty list = send as the SMTP username. */}
+              <div className="flex flex-col gap-1 text-sm font-medium">
+                <div>
+                  From addresses (optional) <span className="text-xs text-zinc-400">— blank list sends as your SMTP username</span>
+                </div>
+                <div className="mt-1 flex flex-col gap-1.5">
+                  {form.fromAddresses.map((addr, i) => (
+                    <div key={i} className="inline-flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={addr}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            fromAddresses: form.fromAddresses.map((a, j) => (j === i ? e.target.value : a)),
+                          })
+                        }
+                        placeholder="you@example.com"
+                        className="flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setForm({ ...form, fromAddresses: form.fromAddresses.filter((_, j) => j !== i) })}
+                        className="text-sm text-red-600 hover:underline"
+                        aria-label="Remove from address"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                  {form.fromAddresses.length < 5 && (
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, fromAddresses: [...form.fromAddresses, ""] })}
+                      className="rounded-lg border border-dashed border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400"
+                    >
+                      + Add from address
+                    </button>
+                  )}
+                </div>
                 <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
-                  Leave blank for a normal account. Only needed for a relay service like Resend where you send as a different address than you log in with.
+                  Leave blank for a normal account. Add several (e.g. admin@, outreach@) to rotate them across recipients from one SMTP login — or use a single
+                  address for a relay service like Resend where you send as a different address than you log in with.
                 </span>
-              </label>
+              </div>
 
               <label className="flex flex-col gap-1 text-sm font-medium">
                 Password

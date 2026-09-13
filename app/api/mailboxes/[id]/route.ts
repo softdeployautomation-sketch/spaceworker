@@ -24,7 +24,7 @@ export async function PUT(
 
   let body: {
     label?: string; host?: string; port?: number; username?: string;
-    fromAddress?: string | null; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean; allowInsecure?: boolean;
+    fromAddresses?: unknown; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean; allowInsecure?: boolean;
   };
   try {
     body = await req.json();
@@ -37,10 +37,13 @@ export async function PUT(
   if (body.host !== undefined) data.host = String(body.host).trim();
   if (body.port !== undefined) data.port = Number(body.port);
   if (body.username !== undefined) data.username = String(body.username).trim();
-  if (body.fromAddress !== undefined) {
-    const fromAddress = String(body.fromAddress ?? "").trim();
-    // Empty string -> null/unset: never store "".
-    data.fromAddress = fromAddress.length > 0 ? fromAddress : null;
+  if (body.fromAddresses !== undefined) {
+    // Task 30, item 4 — multiple From addresses (rotated at queue-build time).
+    const fromAddresses = Array.isArray(body.fromAddresses)
+      ? body.fromAddresses.map((a) => String(a ?? "").trim()).filter((a) => a.length > 0)
+      : [];
+    // Empty list -> send as the SMTP username; never store "" elements.
+    data.fromAddresses = fromAddresses;
   }
   // Task 26, Piece 5a — `secure` is derived from the (possibly new) port, never a
   // checkbox: 465 => implicit TLS, anything else => STARTTLS. allowInsecure is the

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
-import { buildQueueItemRows, leadToRecipient } from "@/lib/campaign-recipients";
+import { buildQueueItemRows, leadToRecipient, resolveFromAddressesByMailbox } from "@/lib/campaign-recipients";
 
 // Task 26, Piece 4 — add leads to a campaign's recipient list.
 // POST /api/campaigns/[id]/recipients/from-leads   body: { leadIds: string[] }
@@ -139,9 +139,12 @@ export async function POST(
     // Continue this campaign's rotation cadence (Task 26, Piece 5b): same
     // rotateEvery, and offset by the number of items already on the roster so a
     // batch added later picks up exactly where previous sends left off instead of
-    // restarting mailbox/variant assignment at slot 0.
+    // restarting mailbox/variant assignment at slot 0. Task 30, item 4 — same
+    // offset continues the From-address rotation across the whole roster too.
     rotateEvery: campaign.rotateEvery,
     offsetIndex: existingRows.length,
+    // Task 30, item 4 — assign resolvedFromAddress identically to the create path.
+    fromAddressesByMailbox: await resolveFromAddressesByMailbox(campaign.mailboxIds),
   });
   const { count } = await prisma.emailQueueItem.createMany({ data: rows });
 

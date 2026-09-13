@@ -3,6 +3,12 @@ import { Fragment, useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 
+import { Modal } from "@/components/modal";
+// Task 30, item 1 — renderMerge is pure (no server-only deps), so previewing a
+// queued item's EXACT resolvedSubject/resolvedBodyHtml with its own variables is
+// safe to do right here client-side.
+import { renderMerge } from "@/lib/render-merge";
+
 type QueueItem = {
   id: string;
   campaignId: string;
@@ -81,6 +87,26 @@ function stripHtml(html: string): string {
   return div.textContent ?? "";
 }
 
+// Task 30, item 1 — render a real email body inside a SANDBOXED iframe via srcDoc
+// (never dangerouslySetInnerHTML directly), so a body's scripts/markup can never
+// execute — the same XSS-avoidance stance as stripHtml above. The user sees the
+// body exactly as a mail client would render it, not raw markup.
+function emailSrcDoc(html: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8"></head><body>` +
+    `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.5;background:#fff;padding:20px;max-width:640px">${html}</div>` +
+    `</body></html>`;
+}
+
+// Task 30, item 1 — resolve the content a given queue item actually carries:
+// decoupled items carry resolvedSubject/resolvedBodyHtml snapshots; legacy items
+// fall back to their CampaignVariant row.
+function itemSubject(item: QueueItem): string {
+  return item.resolvedSubject ?? item.variant?.subject ?? "";
+}
+function itemBody(item: QueueItem): string {
+  return item.resolvedBodyHtml ?? item.variant?.bodyHtml ?? "";
+}
+
 const STATUS_BADGES: Record<string, string> = {
   pending_test_confirm: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
   sending: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
@@ -105,6 +131,12 @@ export default function CampaignDetailPage() {
   const [error, setError] = useState("");
   const [page, setPage] = useState(0);
   const [openErrorId, setOpenErrorId] = useState<string | null>(null);
+  // Task 30, item 1 — a specific queue item opened in the preview modal, rendered
+  // with that item's REAL variables (the exact message that recipient receives).
+  const [previewItem, setPreviewItem] = useState<QueueItem | null>(null);
+  // Task 30, item 2 — compact "what's been sent so far" overview modal (no
+  // scrolling thousands of queue rows).
+  const [activityOpen, setActivityOpen] = useState(false);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -265,6 +297,17 @@ export default function CampaignDetailPage() {
         >
           {campaign.status.replace("_", " ")}
         </span>
+        {/* Task 30, item 2 — compact "what's been sent so far" overview instead of
+            scrolling the whole (potentially thousands-row) queue table. */}
+        {campaign.items.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setActivityOpen(true)}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+          >
+            View activity
+          </button>
+        )}
       </div>
 
       {/* Test-send-confirm gate */}
@@ -495,7 +538,7 @@ export default function CampaignDetailPage() {
               <th className="px-4 py-3 font-medium">Message preview</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Sent at</th>
-              <th className="px-4 py-3 font-medium">Error</th>
+              <th className="px-4 py-3 font-medium">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -530,19 +573,29 @@ export default function CampaignDetailPage() {
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
                     {item.sentAt ? new Date(item.sentAt).toLocaleString() : "—"}
                   </td>
-                  <td className="px-4 py-3">
-                    {item.status === "failed" ? (
-                      <button
-                        type="button"
-                        onClick={() => setOpenErrorId(openErrorId === item.id ? null : item.id)}
-                        className="text-xs font-medium text-red-600 underline-offset-2 hover:underline dark:text-red-400"
-                      >
-                        {openErrorId === item.id ? "Hide" : "View"}
-                      </button>
-                    ) : (
-                      <span className="text-zinc-300 dark:text-zinc-700">—</span>
-                    )}
-                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                  {/* Task 30, item 1 — preview this exact item's resolved content,
+                      rendered with its OWN variables, before/after it sends. */}
+                  <button
+                    type="button"
+                    onClick={() => setPreviewItem(item)}
+                    className="text-xs font-medium underline-offset-2 hover:underline"
+                  >
+                    Preview
+                  </button>
+                  {item.status === "failed" ? (
+                    <span className="text-zinc-300 dark:text-zinc-600"> · </span>
+                  ) : null}
+                  {item.status === "failed" ? (
+                    <button
+                      type="button"
+                      onClick={() => setOpenErrorId(openErrorId === item.id ? null : item.id)}
+                      className="text-xs font-medium text-red-600 underline-offset-2 hover:underline dark:text-red-400"
+                    >
+                      {openErrorId === item.id ? "Hide error" : "Error"}
+                    </button>
+                  ) : null}
+                </td>
                 </tr>
                 {openErrorId === item.id && item.error && (
                   <tr key={`${item.id}-error`} className="bg-red-50/50 dark:bg-red-950/20">
@@ -579,6 +632,112 @@ export default function CampaignDetailPage() {
           </button>
         </div>
       )}
+
+      {/* Task 30, item 1 — per-recipient preview: this EXACT item's resolved
+          subject/body rendered with ITS OWN variables, in a sandboxed iframe. */}
+      {previewItem && (
+        <Modal open onClose={() => setPreviewItem(null)} title={`Preview for ${previewItem.toEmail}`} wide>
+          <div className="text-sm">
+            <span className="text-xs font-medium text-zinc-500">Subject:</span>{" "}
+            <span className="text-zinc-900 dark:text-zinc-100">
+              {renderMerge(itemSubject(previewItem), previewItem.variables ?? {}) || "—"}
+            </span>
+          </div>
+          <div className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+            Status: <span className="capitalize">{previewItem.status}</span>
+            {previewItem.sentAt ? ` · sent ${new Date(previewItem.sentAt).toLocaleString()}` : ""}
+            {previewItem.variables && Object.keys(previewItem.variables).length > 0
+              ? ` · merge values: ${Object.entries(previewItem.variables).map(([k, v]) => `${k}=${v}`).join(", ")}`
+              : " · no merge values on this recipient"}
+          </div>
+          <iframe
+            sandbox=""
+            title="Email preview"
+            className="mt-3 h-80 w-full overflow-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-700"
+            srcDoc={emailSrcDoc(renderMerge(itemBody(previewItem), previewItem.variables ?? {}))}
+          />
+        </Modal>
+      )}
+
+      {/* Task 30, item 2 — compact sending-activity overview: what's been sent so
+          far, per-mailbox breakdown, recent sends, and failures — instead of having
+          to scroll the whole (potentially thousands-row) queue table. */}
+      {activityOpen && (() => {
+        const items = campaign.items;
+        const sent = items.filter((i) => i.status === "sent");
+        const queued = items.filter((i) => i.status === "queued" || i.status === "pending");
+        const failed = items.filter((i) => i.status === "failed");
+        const byMailbox: Record<string, { sent: number; failed: number }> = {};
+        for (const i of items) {
+          const label = i.mailbox?.label ?? i.mailboxId;
+          const slot = byMailbox[label] ?? { sent: 0, failed: 0 };
+          if (i.status === "sent") slot.sent += 1;
+          else if (i.status === "failed") slot.failed += 1;
+          byMailbox[label] = slot;
+        }
+        const recent = [...sent].sort((a, b) => (b.sentAt ?? "").localeCompare(a.sentAt ?? "")).slice(0, 15);
+        const kpi = (label: string, value: number, cls: string) => (
+          <div className="flex flex-col rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+            <span className={`text-xl font-semibold ${cls}`}>{value}</span>
+            <span className="text-xs text-zinc-500 dark:text-zinc-400">{label}</span>
+          </div>
+        );
+        return (
+          <Modal open onClose={() => setActivityOpen(false)} title="Sending activity" wide>
+            <div className="flex flex-wrap gap-3">
+              {kpi("Recipients", items.length, "text-zinc-900 dark:text-zinc-100")}
+              {kpi("Sent", sent.length, "text-emerald-600 dark:text-emerald-400")}
+              {kpi("Queued", queued.length, "text-amber-600 dark:text-amber-400")}
+              {kpi("Failed", failed.length, failed.length > 0 ? "text-red-600 dark:text-red-400" : "text-zinc-400 dark:text-zinc-500")}
+            </div>
+
+            <div className="mt-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Sent by mailbox</h3>
+              {Object.keys(byMailbox).length === 0 ? (
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Nothing sent yet.</p>
+              ) : (
+                <table className="mt-1 w-full text-sm">
+                  <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                    {Object.entries(byMailbox).map(([label, t]) => (
+                      <tr key={label}>
+                        <td className="px-3 py-1.5">{label}</td>
+                        <td className="px-3 py-1.5 text-right text-emerald-600 dark:text-emerald-400">{t.sent} sent</td>
+                        <td className="px-3 py-1.5 text-right">{t.failed > 0 ? <span className="text-red-600 dark:text-red-400">{t.failed} failed</span> : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div className="mt-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Most recent sends</h3>
+              {recent.length === 0 ? (
+                <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">No sends yet.</p>
+              ) : (
+                <ul className="mt-1 divide-y divide-zinc-100 dark:divide-zinc-800">
+                  {recent.map((i) => (
+                    <li key={i.id} className="flex items-center justify-between px-3 py-1.5 text-sm">
+                      <span className="truncate">{i.toEmail}</span>
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {i.sentAt ? new Date(i.sentAt).toLocaleString() : ""}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {failed.length > 0 && (
+              <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/20">
+                <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+                  {failed.length} failed — review the error per row in the queue table
+                </p>
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

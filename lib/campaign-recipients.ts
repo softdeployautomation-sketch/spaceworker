@@ -1,4 +1,23 @@
 import type { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
+
+// Task 30, item 4 — the from-address rotation the queue builder uses. Loads each
+// requested mailbox's `fromAddresses` array into a { mailboxId: string[] } map so
+// buildQueueItemRows can pick `fromAddresses[i % len]` per recipient. Used by the
+// ONE create path (lib/campaign-create.ts) and the add-to-existing route
+// (from-leads), so both assign resolvedFromAddress identically. Server-only.
+export async function resolveFromAddressesByMailbox(
+  mailboxIds: string[],
+): Promise<Record<string, string[]>> {
+  const out: Record<string, string[]> = {};
+  if (mailboxIds.length === 0) return out;
+  const rows = await prisma.mailbox.findMany({
+    where: { id: { in: mailboxIds } },
+    select: { id: true, fromAddresses: true },
+  });
+  for (const r of rows) out[r.id] = r.fromAddresses;
+  return out;
+}
 
 // Task 26, Piece 4 — shared recipient → EmailQueueItem row builder.
 //
@@ -98,8 +117,14 @@ export function buildQueueItemRows(opts: {
   recipients: RecipientInput[];
   rotateEvery?: number;
   offsetIndex?: number;
+  // Task 30, item 4 — { mailboxId: fromAddresses[] }. When the assigned mailbox
+  // has from addresses configured, recipient i resolves resolvedFromAddress =
+  // fromAddresses[i % len] (a single-item list holds constant; empty => null,
+  // and the drain falls back to the SMTP username). Built by
+  // resolveFromAddressesByMailbox so every queue-builder call assigns it the same way.
+  fromAddressesByMailbox?: Record<string, string[]>;
 }): Prisma.EmailQueueItemCreateManyInput[] {
-  const { campaignId, mailboxIds, recipients, variantRows = [], subjects = [], bodies = [] } = opts;
+  const { campaignId, mailboxIds, recipients, variantRows = [], subjects = [], bodies = [], fromAddressesByMailbox = {} } = opts;
   const rotateEvery = Math.max(1, Math.floor(opts.rotateEvery ?? 1));
   const offsetIndex = Math.max(0, Math.floor(opts.offsetIndex ?? 0));
   const decoupled = (subjects.length > 0 || bodies.length > 0);
@@ -107,13 +132,21 @@ export function buildQueueItemRows(opts: {
     // Mailbox rotation (unchanged): `rotateEvery` consecutive recipients share a
     // sender, then the next block advances — floor(i/rotateEvery) % len.
     const slot = Math.floor((i + offsetIndex) / rotateEvery) % mailboxIds.length;
+    const mailboxId = mailboxIds[slot];
     const row: Prisma.EmailQueueItemCreateManyInput = {
       campaignId,
-      mailboxId: mailboxIds[slot],
+      mailboxId,
       toEmail: r.email,
       variables: r.variables as Prisma.InputJsonValue,
       source: r.source ?? "",
     };
+    // Task 30, item 4 — per-item From rotation. Continues across batches the same
+    // way subject/body/mailbox do (offsetIndex), so an add-to-existing batch picks
+    // up where the roster left off instead of restarting at element 0.
+    const fromList = fromAddressesByMailbox[mailboxId] ?? [];
+    if (fromList.length > 0) {
+      row.resolvedFromAddress = fromList[Math.floor((i + offsetIndex) % fromList.length)];
+    }
     if (decoupled) {
       // Independent per-recipient index rotation (item 4). A single-item list is
       // held constant (i % 1 === 0) while the other dimension still varies.

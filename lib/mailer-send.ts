@@ -10,10 +10,12 @@ export interface TransporterMailbox {
   encryptedPassword: string;
   passwordIv: string;
   passwordTag: string;
-  // The address to actually send AS. null/undefined means "same as username" —
-  // normal for every non-relay mailbox. Set it for a relay like Resend, where the
-  // SMTP login is a fixed account but mail is sent as a specific address.
-  fromAddress?: string | null;
+  // Task 30, item 4 — the addresses to send AS. Empty/absent [] means "same as
+  // username" — normal for every non-relay mailbox. Populated for a relay like
+  // Resend (fixed SMTP login, specific send addresses). For the mail-queue drain,
+  // each queued item's resolvedFromAddress (chosen from this array at queue-build
+  // time) takes precedence; this is the fallback used by one-shot test sends.
+  fromAddresses?: string[];
   // Task 26, Piece 5a — explicit opt-in to NO TLS (self-hosted/internal relays on
   // port 25 that genuinely don't support encryption). Default false; see the big
   // comment on transporterForMailbox below for why a separate flag (not the port)

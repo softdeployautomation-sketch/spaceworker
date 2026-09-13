@@ -3,6 +3,11 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
+// Task 30, item 1 — renderMerge is a pure string->string function with no
+// server-only dependencies, so it's safe to import into this client component to
+// show the user exactly what a recipient would receive (including the raw gap a
+// missing merge variable leaves) BEFORE they confirm the send.
+import { renderMerge } from "@/lib/render-merge";
 
 type Campaign = {
   id: string;
@@ -18,7 +23,7 @@ type Mailbox = {
   label: string;
   host: string;
   username: string;
-  fromAddress: string | null;
+  fromAddresses: string[];
 };
 
 // Task 26, Piece 4 — "Pick from my leads" recipient picker data (GET /api/leads/selectable).
@@ -82,6 +87,13 @@ export default function CampaignsPage() {
   // Task 29, item 6 — how many queue items the mail-queue drain sends before it
   // runs the deliverability probe and re-checks placement (clamped to [1, 1000]).
   const [batchSize, setBatchSize] = useState("50");
+  // Task 30, item 1 — collapsed/expanded in-modal Preview panel that renders the
+  // CURRENT draft subjects/bodies through renderMerge() so a user sees exactly
+  // what will send (including missing {{merge}} gaps like "Hi ,") before creating.
+  const [showPreview, setShowPreview] = useState(false);
+  // Task 30, item 3 — opt-in link cloaking. Only offered when a body actually
+  // contains http(s):// links; each unique link gets a /r/<token> redirect.
+  const [cloakLinks, setCloakLinks] = useState(false);
   const [csvName, setCsvName] = useState("");
   const [csvContent, setCsvContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -163,6 +175,8 @@ export default function CampaignsPage() {
     setName("");
     setSubjects([""]);
     setBodies([""]);
+    setShowPreview(false);
+    setCloakLinks(false);
     setMiEnabled(false);
     setMiEmail("");
     setMiMode("top");
@@ -182,7 +196,7 @@ export default function CampaignsPage() {
     setModalOpen(true);
     fetch("/api/mailboxes")
       .then((res) => (res.ok ? res.json() : []))
-      .then((data) => setMailboxes((data as Mailbox[]).map((m) => ({ id: m.id, label: m.label, host: m.host, username: m.username, fromAddress: m.fromAddress }))))
+      .then((data) => setMailboxes((data as Mailbox[]).map((m) => ({ id: m.id, label: m.label, host: m.host, username: m.username, fromAddresses: m.fromAddresses ?? [] }))))
       .catch(() => setMailboxes([]));
   }
 
@@ -300,6 +314,63 @@ export default function CampaignsPage() {
     };
   }
 
+  // Task 30, item 1 — the merge variables the Preview panel renders with. When a
+  // real lead is selected (recipientSource "leads") we preview against that
+  // lead's ACTUAL variables — the exact thing a recipient would get. In every
+  // other state (CSV, ?fromSearchJob, or no lead picked yet) we render with an
+  // EMPTY variable set, which is deliberately what surfaces the "Hi ," style gap
+  // BEFORE the campaign exists rather than after a real send.
+  function sampleRecipientVars(): Record<string, string> {
+    if (recipientSource === "leads" && pickerData && selectedLeadIds.length > 0) {
+      for (const id of selectedLeadIds) {
+        const lead = pickerData.leads.find((l) => l.id === id);
+        if (!lead) continue;
+        const vars: Record<string, string> = {};
+        if (lead.contactName) vars.contactName = lead.contactName;
+        if (lead.businessName) vars.businessName = lead.businessName;
+        return vars;
+      }
+    }
+    return {};
+  }
+
+  // Task 30, item 3 — for the create-modal preview only: when cloaking is on and a
+  // body has http(s):// links, show what the mailed link will look like (a
+  // /r/<token> URL on this origin) using an obvious placeholder token. The REAL
+  // tokens only exist once creation happens (see createCampaign in lib/campaign-create.ts).
+  const PREVIEW_URL_RE = /https?:\/\/[^\s"'<>]+/g;
+  function cloakPreviewLinks(html: string): string {
+    return html.replace(PREVIEW_URL_RE, `${window.location.origin}/r/xxxxxx`);
+  }
+
+  // Task 30, item 3 — for the create-modal UI: list the unique absolute http(s)
+  // links across the current draft bodies (only shown when non-empty; a plain-text
+  // / link-free body keeps the whole cloaking section hidden). Client-side mirror
+  // of lib/link-cloak.ts's extractUniqueLinks (that module is server-only).
+  function extractLinksClient(bodies: string[]): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const b of bodies) {
+      if (!b) continue;
+      for (const m of b.matchAll(PREVIEW_URL_RE)) {
+        const url = m[0].replace(/[.,;:!?]+$/, "").replace(/[)\]}>]+$/, "");
+        if (!url || seen.has(url)) continue;
+        seen.add(url);
+        out.push(url);
+      }
+    }
+    return out;
+  }
+
+  // Task 30, item 1 — render the body inside a SANDBOXED iframe via srcDoc (never
+  // dangerouslySetInnerHTML directly), so scripts/markup a body happens to contain
+  // can never execute — the same XSS-avoidance stance as stripHtml() on the detail page.
+  function emailSrcDoc(html: string): string {
+    return `<!doctype html><html><head><meta charset="utf-8"></head><body>` +
+      `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#1f2937;line-height:1.5;background:#fff;padding:20px;max-width:640px">${html}</div>` +
+      `</body></html>`;
+  }
+
   async function submit() {
     setFormError("");
     const content = validContent();
@@ -332,6 +403,9 @@ export default function CampaignsPage() {
           bodies: content.bodies,
           rotateEvery: Number(rotateEvery) || 1,
           batchSize: Number(batchSize) || 50,
+          // Task 30, item 3 — opt-in link cloaking (no-op server-side unless the
+          // body actually contains http(s):// links).
+          cloakLinks: cloakLinks,
           ...(fromSearchJobId
             ? { searchJobId: fromSearchJobId }
             : recipientSource === "leads"
@@ -507,7 +581,7 @@ export default function CampaignsPage() {
                             : "border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400"
                         }`}
                       >
-                        {m.label} — {(m.fromAddress || m.username)}
+                        {m.label} — {(m.fromAddresses && m.fromAddresses.length > 0 ? m.fromAddresses.join(", ") : m.username)}
                       </button>
                     );
                   })}
@@ -515,7 +589,22 @@ export default function CampaignsPage() {
               </div>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
-                Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
+                <div className="flex items-center justify-between gap-2">
+                  <span>
+                    Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
+                  </span>
+                  {/* Task 30, item 1 — Preview the EXACT subject/body a recipient
+                      will get (real merge vars when a lead is picked, else empty
+                      vars so a missing-value gap like "Hi ," is visible at author
+                      time, not after a real send). */}
+                  <button
+                    type="button"
+                    onClick={() => setShowPreview(!showPreview)}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                  >
+                    {showPreview ? "Hide preview" : "Preview"}
+                  </button>
+                </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   {subjects.map((s, i) => (
                     <div key={i} className="inline-flex items-center gap-1.5">
@@ -592,6 +681,65 @@ export default function CampaignsPage() {
                   )}
                 </div>
               </div>
+
+              {/* Task 30, item 3 — opt-in link cloaking, shown ONLY while a body
+                  actually contains http(s):// links (no UI clutter for a
+                  plain-text / link-free body). Each unique link becomes a
+                  /r/<token> redirect so the sent email doesn't visually announce
+                  itself as a tracking/redirect link. */}
+              {(() => {
+                const links = extractLinksClient(validContent().bodies);
+                if (links.length === 0) return null;
+                return (
+                  <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                    <label className="flex items-center gap-2 text-sm font-medium">
+                      <input type="checkbox" checked={cloakLinks} onChange={(e) => setCloakLinks(e.target.checked)} className="h-4 w-4 accent-zinc-900" />
+                      Cloak links (send via /r/&lt;token&gt; instead of the raw URL)
+                    </label>
+                    {cloakLinks && (
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {links.length} unique link{links.length === 1 ? "" : "s"} will be rewritten to a /r/&lt;token&gt; URL on this domain — a plain redirect
+                        counter (no per-recipient tracking), created at send setup.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Task 30, item 1 — inline Preview panel: the CURRENT draft subject
+                  and body rendered through renderMerge() with the real sample
+                  (or empty) merge variables, body shown as HTML the way a mail
+                  client renders it, in a sandboxed iframe (never
+                  dangerouslySetInnerHTML). Catches missing-{{merge}} gaps before
+                  the campaign is created. */}
+              {showPreview && (() => {
+                const content = validContent();
+                const sampleVars = sampleRecipientVars();
+                const previewSubject = content.subjects.length > 0 ? renderMerge(content.subjects[0], sampleVars) : "";
+                const bodyRaw = content.bodies.length > 0 ? renderMerge(content.bodies[0], sampleVars) : "";
+                const previewBody = cloakLinks ? cloakPreviewLinks(bodyRaw) : bodyRaw;
+                const sourceLabel =
+                  recipientSource === "leads" && selectedLeadIds.length > 0
+                    ? "the first selected lead's real fields"
+                    : "empty merge variables (shows raw gaps)";
+                return (
+                  <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                    <div className="text-sm font-medium">
+                      Preview <span className="text-xs font-normal text-zinc-400">— rendered with {sourceLabel}</span>
+                    </div>
+                    <div className="text-sm">
+                      <span className="text-xs font-medium text-zinc-500">Subject:</span>{" "}
+                      <span className="text-zinc-900 dark:text-zinc-100">{previewSubject || "—"}</span>
+                    </div>
+                    <iframe
+                      sandbox=""
+                      title="Email preview"
+                      className="h-64 w-full overflow-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-700"
+                      srcDoc={emailSrcDoc(previewBody)}
+                    />
+                  </div>
+                );
+              })()}
 
               {/* Task 29, item 3 — drop an ad-hoc test recipient into the queue at a
                   chosen position, useful for eyeballing a live run in your own inbox

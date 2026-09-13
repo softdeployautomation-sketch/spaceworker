@@ -51,7 +51,11 @@ export async function POST(req: Request) {
     rotateEvery?: unknown;
     // Task 29, item 6 — per-batch deliverability checkpoint size (default 50).
     batchSize?: unknown;
+    // Task 30, item 3 — when true, every unique http(s) link in the bodies is
+    // cloaked into a /r/<token> redirect at creation (see lib/campaign-create.ts).
+    cloakLinks?: unknown;
   };
+
   try {
     body = await req.json();
   } catch {
@@ -269,6 +273,8 @@ export async function POST(req: Request) {
     batchSize,
     searchJobId,
     testRecipientOverride,
+    // Task 30, item 3 — opt-in link cloaking (no-op unless bodies contain links).
+    cloakLinks: body.cloakLinks === true,
   });
 
   // Response shape kept compatible with the Campaigns page: the frontend reads

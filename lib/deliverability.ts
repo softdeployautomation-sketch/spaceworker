@@ -69,7 +69,10 @@ export async function runTestSend(opts: {
   try {
     const transport = transporterForMailbox(opts.mailbox);
     await transport.sendMail({
-      from: opts.mailbox.fromAddress || opts.mailbox.username,
+      // Task 30, item 4 — a test send is a one-shot per mailbox (no per-recipient
+      // rotation has run here), so just use the mailbox's first configured From
+      // address (empty list => send as the SMTP username).
+      from: opts.mailbox.fromAddresses?.[0] || opts.mailbox.username,
       to: toAddress,
       subject: isOverride
         ? renderMerge(opts.variant.subject, {})

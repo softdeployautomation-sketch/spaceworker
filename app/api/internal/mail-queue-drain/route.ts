@@ -118,7 +118,10 @@ export async function POST(req: Request) {
               : renderMerge(item.campaign.bodyHtml, variables);
 
         await transport!.sendMail({
-          from: mailbox.fromAddress || mailbox.username,
+          // Task 30, item 4 — multi-From rotation: prefer the per-item resolved
+          // From address (computed at queue-build time), else the mailbox's first
+          // configured From address, else fall back to the SMTP username.
+          from: item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username,
           to: item.toEmail,
           subject,
           html,

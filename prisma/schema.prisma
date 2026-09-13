@@ -70,9 +70,13 @@ model Mailbox {
   // SMTP AUTH username only, going forward. For a relay service like Resend this
   // is the literal "resend" (password = API key), independent of the From address.
   username          String
-  // The address mail is actually sent AS. Nullable: null means "same as username",
-  // which is every existing mailbox's real-world behavior, so this is additive.
-  fromAddress       String?
+  // Task 30, item 4 — the addresses mail is actually sent AS. An empty array ([])
+  // means "same as the SMTP username", which is every non-relay mailbox's
+  // real-world behavior. Multiple entries rotate across recipients at queue-build
+  // time (each item stores the resolved value on EmailQueueItem.resolvedFromAddress),
+  // so one SMTP account can send as admin@/outreach@/hello@ etc. Replaces the old
+  // single `fromAddress` column (additive migration, backfilled into a 1-item array).
+  fromAddresses     String[]         @default([])
   encryptedPassword String
   passwordIv        String
   passwordTag       String
@@ -145,6 +149,7 @@ model EmailCampaign {
   variants    CampaignVariant[]
   checks      DeliverabilityCheck[]
   items       EmailQueueItem[]
+  linkRedirects LinkRedirect[]
 
   @@index([userId])
 }
@@ -183,6 +188,10 @@ model EmailQueueItem {
   // pair-based campaigns, which fall back to variant.subject / variant.bodyHtml.
   resolvedSubject String?
   resolvedBodyHtml String?
+  // Task 30, item 4 — the From address this specific recipient's send resolved
+  // to at queue-build time (mailbox.fromAddresses[i % len] rotation). null = the
+  // mailbox has no from addresses configured (drain falls back to SMTP username).
+  resolvedFromAddress String?
   // Per-recipient merge variables from the uploaded CSV (extra columns).
   // { "firstName": "Ada", "company": "ACME", ... }
   variables  Json?
@@ -526,4 +535,28 @@ model CampaignAutomationRun {
   errorMessage          String?
 
   @@index([automationId, startedAt])
+}
+
+// Task 30, item 3 — optional link-redirect cloaking. The task explicitly scopes
+// this to "doesn't visually announce itself as a tracking/redirect link", not
+// cryptographic security: the token is a public opaque lookup key (the route is
+// world-readable), so it carries no secret. Out of scope: per-click timestamps,
+// per-recipient attribution, domain rotation, automatic (non-optional) wrapping.
+model LinkRedirect {
+  id         String          @id @default(cuid())
+  // Opaque, url-safe lookup key for GET /r/<token>. __no secret__ — the counter
+  // is a plain aggregate, and an unknown/expired token must 404 cleanly.
+  token      String          @unique
+  campaignId String?
+  campaign   EmailCampaign?  @relation(fields: [campaignId], references: [id])
+  // The real destination this cloaked link redirects to.
+  target     String
+  // Optional friendly label (e.g. the link's anchor text) for the create-modal
+  // preview; informational only.
+  label      String?
+  // Plain per-link click counter (aggregate only, no timestamps/attribution).
+  clickCount Int             @default(0)
+  createdAt  DateTime        @default(now())
+
+  @@index([campaignId])
 }
