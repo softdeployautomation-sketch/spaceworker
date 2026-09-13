@@ -34,6 +34,10 @@ export interface CreateCampaignInput {
   // for the DB default when omitted). Clamped to [1, 1000] like rotateEvery.
   batchSize?: number;
   searchJobId?: string | null;
+  // Human-assisted deliverability fallback (see lib/deliverability.ts) — set at
+  // creation when the user opts to use their inserted test recipient instead of
+  // the platform seed mailbox from the start.
+  testRecipientOverride?: string | null;
 }
 
 export interface CreateCampaignResult {
@@ -97,6 +101,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         // Decoupled content: store the independent lists; legacy keeps [].
         ...(decoupled ? { subjects, bodies } : {}),
         searchJobId: input.searchJobId ?? null,
+        testRecipientOverride: input.testRecipientOverride?.trim() || null,
       },
       select: { id: true },
     });

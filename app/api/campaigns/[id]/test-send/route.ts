@@ -60,11 +60,15 @@ export async function POST(
     return NextResponse.json({ error: "No active sending mailbox on this campaign" }, { status: 400 });
   }
 
-  // Task 29, item 5 — a user who registered their OWN test mailbox uses that (it
-  // may filter differently than the platform's shared seed); otherwise the
-  // platform default is used, exactly as before.
-  const seed = await resolveSeedMailbox(session.userId);
-  if (!seed) {
+  // Human-assisted fallback: a campaign with testRecipientOverride set (either
+  // chosen at creation, or after the automated seed-mailbox check failed) skips
+  // the seed mailbox entirely — every test goes straight to that plain address,
+  // and "delivered" there just means the SMTP send succeeded (see
+  // lib/deliverability.ts's runTestSend for why: no IMAP account exists to poll,
+  // so the human is the one confirming placement, not this route).
+  const overrideRecipient = campaign.testRecipientOverride?.trim() || null;
+  const seed = overrideRecipient ? null : await resolveSeedMailbox(session.userId);
+  if (!overrideRecipient && !seed) {
     return NextResponse.json(
       { error: "No seed/test mailbox is configured — a real one is required to prove delivery" },
       { status: 400 }
@@ -72,10 +76,14 @@ export async function POST(
   }
 
   // Run all mailboxes' tests concurrently (each already waits ~20s internally
-  // for the IMAP poll) rather than serially, which would multiply the wait by
-  // the mailbox count.
+  // for the IMAP poll — skipped entirely in override mode) rather than serially,
+  // which would multiply the wait by the mailbox count.
   const results = await Promise.all(
-    mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, mailbox, variant, seed })),
+    mailboxes.map((mailbox) =>
+      overrideRecipient
+        ? runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient })
+        : runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed! }),
+    ),
   );
 
   const failed = results.filter((r) => r.outcome !== "delivered");
@@ -103,7 +111,8 @@ export async function POST(
   const summary = await prisma.deliverabilityCheck.create({
     data: {
       campaignId: campaign.id,
-      seedMailboxId: seed.id,
+      seedMailboxId: seed?.id ?? null,
+      overrideRecipient,
       status: outcome,
       landedIn,
       messageId: null,

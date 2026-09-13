@@ -238,6 +238,11 @@ export async function POST(req: Request) {
   // the exact same buildQueueItemRows assignment as every other recipient, just
   // stamped source:"manual_insert" so the run-detail UI can label it.
   let sendRecipients = recipients;
+  // Human-assisted deliverability fallback (see lib/deliverability.ts) — when
+  // the manual-insert recipient is flagged "use as my test target", it replaces
+  // the platform seed mailbox for every deliverability check on this campaign,
+  // from the very first test-send.
+  let testRecipientOverride: string | null = null;
   const miRaw = body.manualInsert;
   if (miRaw && typeof miRaw === "object") {
     const mi = miRaw as Record<string, unknown>;
@@ -250,6 +255,7 @@ export async function POST(req: Request) {
         position: Number(mi.position),
         everyN: Number(mi.everyN),
       });
+      if (mi.useAsTestTarget === true) testRecipientOverride = email;
     }
   }
 
@@ -262,6 +268,7 @@ export async function POST(req: Request) {
     rotateEvery,
     batchSize,
     searchJobId,
+    testRecipientOverride,
   });
 
   // Response shape kept compatible with the Campaigns page: the frontend reads

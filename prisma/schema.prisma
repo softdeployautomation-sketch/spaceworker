@@ -129,6 +129,18 @@ model EmailCampaign {
   // many recipients per campaign per tick, then re-checks deliverability on the
   // campaign's test mailbox and pauses if the probe didn't land in the inbox.
   batchSize   Int              @default(50)
+  // Human-assisted deliverability fallback: when set, EVERY deliverability
+  // probe for this campaign (the initial test-send-confirm gate AND every
+  // later batch-gate check) targets this plain address instead of a
+  // registered SeedMailbox. There's no IMAP access to an arbitrary recipient,
+  // so placement is never auto-verified here — the initial check passes on a
+  // successful SMTP send (the human then eyeballs their own inbox before
+  // clicking Confirm), and every batch probe always reports landedIn:"unknown",
+  // which is exactly what keeps the batch gate pausing for a human decision on
+  // every batch rather than auto-continuing. Set either up front (the
+  // campaign-create "use this recipient as my test target" option) or
+  // reactively after the platform seed mailbox's automated check fails.
+  testRecipientOverride String?
   createdAt   DateTime         @default(now())
   variants    CampaignVariant[]
   checks      DeliverabilityCheck[]
@@ -212,14 +224,28 @@ model DeliverabilityCheck {
   id            String        @id @default(cuid())
   campaignId    String
   campaign      EmailCampaign @relation(fields: [campaignId], references: [id])
-  seedMailboxId String
-  seedMailbox   SeedMailbox   @relation(fields: [seedMailboxId], references: [id])
+  // Nullable: a check against a registered SeedMailbox (platform default or a
+  // user's own IMAP account) sets this; a check that instead targeted a plain
+  // ad-hoc recipient (no IMAP credentials to poll — see overrideRecipient) has
+  // no SeedMailbox row at all.
+  seedMailboxId String?
+  seedMailbox   SeedMailbox?  @relation(fields: [seedMailboxId], references: [id])
+  // The human-assisted fallback: when a campaign has no pollable seed mailbox
+  // (the platform default failed, or the user opted to test against their own
+  // address instead), the test message goes straight to this address and
+  // "delivered" means "the SMTP send succeeded" — there's no IMAP account to
+  // poll, so placement is never auto-verified; the human checks their own
+  // inbox and clicks Confirm. Exactly one of seedMailboxId/overrideRecipient
+  // is set per check.
+  overrideRecipient String?
   // "pending" | "delivered" | "failed"
   status        String        @default("pending")
   // Task 29, item 6 — where the test message actually landed, from a spam-aware
   // IMAP poll. null on legacy checks / before the check runs; "inbox" | "spam" |
   // "unknown" afterward. "unknown" is what the batch gate needs to force a human
-  // eyeball instead of auto-continuing.
+  // eyeball instead of auto-continuing. Always "unknown" for an overrideRecipient
+  // check (no IMAP access), which is exactly what keeps the batch gate pausing
+  // on every batch rather than auto-continuing.
   landedIn      String?
   messageId     String?
   error         String?

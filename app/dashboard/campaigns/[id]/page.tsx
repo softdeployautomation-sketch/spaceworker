@@ -49,6 +49,9 @@ type CampaignDetail = {
   rotateEvery: number;
   subjects: string[] | null;
   bodies: string[] | null;
+  // Human-assisted deliverability fallback — set, every check targets this
+  // plain address instead of the platform seed mailbox (see lib/deliverability.ts).
+  testRecipientOverride: string | null;
   variants: Variant[];
   checks: DeliverabilityCheck[];
   items: QueueItem[];
@@ -95,6 +98,12 @@ export default function CampaignDetailPage() {
   const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [debating, setDebating] = useState(false);
+  // Human-assisted deliverability fallback — offered after the platform seed
+  // mailbox's automated check fails: pick an existing manual_insert recipient
+  // already in the queue, or type a new one, to use as this campaign's test
+  // target instead of Gmail from then on.
+  const [testRecipientInput, setTestRecipientInput] = useState("");
+  const [settingTestRecipient, setSettingTestRecipient] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -152,7 +161,37 @@ export default function CampaignDetailPage() {
     }
   }
 
-  // Task 29, item 6 — resolve a batch-gate pause (continue / switch subject / stop).
+  // Sets this campaign's human-assisted test-recipient override, then immediately
+  // re-runs the test-send against it — the whole point of offering this after a
+  // failure is to get a working result without a second manual click.
+  async function useAsTestRecipient(email: string) {
+    setSettingTestRecipient(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/test-recipient`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't set the test recipient." });
+        return;
+      }
+      setTestRecipientInput("");
+      await load();
+      await sendTest();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while setting the test recipient." });
+    } finally {
+      setSettingTestRecipient(false);
+    }
+  }
+
+  // Resolves a pending deliverability decision — either a batch-gate pause
+  // (status "paused_deliverability") or the initial test-send-confirm gate when
+  // the automated check failed/couldn't verify (status "pending_test_confirm").
+  // Same three actions, different meaning depending on which state the backend
+  // finds the campaign in — see the route's own comment for the full breakdown.
   async function deliverabilityDecision(action: "continue" | "switch_subject" | "stop") {
     setDebating(true);
     try {
@@ -169,6 +208,15 @@ export default function CampaignDetailPage() {
     } finally {
       setDebating(false);
     }
+  }
+
+  // The "it went to spam — try a different subject" path at the INITIAL gate:
+  // rotate the subject (deliverabilityDecision leaves status untouched here),
+  // then immediately re-run the test-send so the user isn't left staring at a
+  // rotated subject with no fresh result.
+  async function retryWithNextSubject() {
+    await deliverabilityDecision("switch_subject");
+    await sendTest();
   }
 
   if (loading) {
@@ -213,8 +261,14 @@ export default function CampaignDetailPage() {
         <div className="mt-4 rounded-xl border border-violet-300 bg-violet-50 p-4 dark:border-violet-800 dark:bg-violet-950/20">
           <h2 className="text-sm font-semibold text-violet-800 dark:text-violet-300">Test-send before the real send</h2>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-            A real send is blocked until we prove the connected SMTP actually delivers. Send one test message to
-            the SpaceWorker seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.
+            {campaign.testRecipientOverride ? (
+              <>A real send is blocked until you confirm delivery yourself. Every test goes straight to your chosen
+                test recipient (<span className="font-medium">{campaign.testRecipientOverride}</span>) — check your
+                inbox, then unlock the campaign with an explicit click.</>
+            ) : (
+              <>A real send is blocked until we prove the connected SMTP actually delivers. Send one test message to
+                the SpaceWorker seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.</>
+            )}
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -224,7 +278,7 @@ export default function CampaignDetailPage() {
               disabled={testBusy}
               className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
             >
-              {testBusy ? "Sending test… this takes ~20s" : "Send test message"}
+              {testBusy ? "Sending test… checking for up to 2 minutes" : "Send test message"}
             </button>
             {(testResult?.outcome === "delivered" || latestCheck?.status === "delivered") && (
               <button
@@ -251,6 +305,95 @@ export default function CampaignDetailPage() {
               {latestCheck.checkedAt ? <span className="text-zinc-400"> ({new Date(latestCheck.checkedAt).toLocaleString()})</span> : null}
             </p>
           )}
+
+          {/* The automated check failed or couldn't verify placement — ask the
+              human what actually happened, rather than only offering a blind
+              retry. Mirrors the batch-gate's own continue/switch/stop framing,
+              reworded for "nothing has sent yet" (no "stop" here — there's
+              nothing running to halt). */}
+          {latestCheck?.status === "failed" && (
+            <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+              <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                What actually happened to the test message?
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => void deliverabilityDecision("continue")}
+                  disabled={debating || testBusy}
+                  className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                >
+                  {debating ? "Applying…" : "It's in the inbox — go ahead"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void retryWithNextSubject()}
+                  disabled={debating || testBusy}
+                  className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                >
+                  {debating || testBusy ? "Working…" : "It went to spam — try a different subject"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void sendTest()}
+                  disabled={debating || testBusy}
+                  className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                >
+                  Didn't receive it — try again
+                </button>
+              </div>
+              <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                "It's in the inbox" records your manual confirmation and unlocks sending immediately. "Try a different
+                subject" rotates to the next subject (if you have more than one) and re-tests.
+              </p>
+            </div>
+          )}
+
+          {/* Human-assisted fallback, offered after the automated check fails and
+              no override is set yet: use a recipient already in the queue, or
+              type a new one, as this campaign's test target from now on. */}
+          {latestCheck?.status === "failed" && !campaign.testRecipientOverride && (() => {
+            const existingTestRecipient = campaign.items.find((i) => i.source === "manual_insert")?.toEmail;
+            return (
+              <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
+                <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
+                  The automated check failed — want to test against a real inbox instead?
+                </p>
+                {existingTestRecipient ? (
+                  <button
+                    type="button"
+                    onClick={() => void useAsTestRecipient(existingTestRecipient)}
+                    disabled={settingTestRecipient || testBusy}
+                    className="mt-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                  >
+                    {settingTestRecipient ? "Setting…" : `Use ${existingTestRecipient} as my test recipient`}
+                  </button>
+                ) : (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <input
+                      type="email"
+                      value={testRecipientInput}
+                      onChange={(e) => setTestRecipientInput(e.target.value)}
+                      placeholder="you@example.com"
+                      className="w-56 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-amber-500 dark:border-amber-800 dark:bg-zinc-950"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => testRecipientInput.trim() && void useAsTestRecipient(testRecipientInput.trim())}
+                      disabled={settingTestRecipient || testBusy || !testRecipientInput.trim()}
+                      className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                    >
+                      {settingTestRecipient ? "Setting…" : "Use this as my test recipient"}
+                    </button>
+                  </div>
+                )}
+                <p className="mt-1.5 text-xs text-amber-700/80 dark:text-amber-400/70">
+                  Every test (and later batch check) will go straight there — you'll check your own inbox and confirm
+                  delivery yourself, since there's no automated way to verify a plain address.
+                </p>
+              </div>
+            );
+          })()}
         </div>
       )}
 

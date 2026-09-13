@@ -179,6 +179,7 @@ export async function POST(req: Request) {
       subjects: c.subjects,
       bodies: c.bodies,
       variants: c.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml })),
+      overrideRecipient: c.testRecipientOverride,
     });
 
     if (probe.landedIn === "inbox") continue; // safe — next tick sends the next batch

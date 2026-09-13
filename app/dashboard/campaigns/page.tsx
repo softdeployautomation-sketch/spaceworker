@@ -72,6 +72,10 @@ export default function CampaignsPage() {
   const [miMode, setMiMode] = useState<"top" | "position" | "every">("top");
   const [miPosition, setMiPosition] = useState("1");
   const [miEveryN, setMiEveryN] = useState("10");
+  // Human-assisted deliverability fallback — use this same test recipient for
+  // EVERY deliverability check on this campaign instead of the platform seed
+  // mailbox (useful when it's unreliable, or you'd rather eyeball your own inbox).
+  const [miUseAsTestTarget, setMiUseAsTestTarget] = useState(false);
   // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
   // before the rotation advances (clamped server-side to [1, 1000]; default 1).
   const [rotateEvery, setRotateEvery] = useState("1");
@@ -340,6 +344,7 @@ export default function CampaignsPage() {
                   mode: miMode,
                   position: Number(miPosition) || 0,
                   everyN: Number(miEveryN) || 1,
+                  useAsTestTarget: miUseAsTestTarget,
                 },
               }
             : {}),
@@ -631,6 +636,20 @@ export default function CampaignsPage() {
                         </span>
                       )}
                     </div>
+                  )}
+                  {miEnabled && miEmail.trim() && (
+                    <label className="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                      <input
+                        type="checkbox"
+                        checked={miUseAsTestTarget}
+                        onChange={(e) => setMiUseAsTestTarget(e.target.checked)}
+                        className="mt-0.5 h-3.5 w-3.5 accent-zinc-900"
+                      />
+                      <span>
+                        Use this recipient as my deliverability test target instead of the platform seed mailbox — every
+                        test-send (including later batch checks) goes straight to it, and you confirm delivery yourself.
+                      </span>
+                    </label>
                   )}
                 </div>
               )}

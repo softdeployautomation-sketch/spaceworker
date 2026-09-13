@@ -14,11 +14,20 @@ export interface SeedMailboxRow extends TransporterMailbox {
   secure: boolean;
 }
 
-// Delay between the SMTP send and the IMAP poll. Provider delivery isn't instant;
-// this needs to be long enough to be meaningful but short enough that the manual
-// confirm flow doesn't hang a request. We deliberately don't add retries here —
-// a failed poll is surfaced to the user and they can re-run the test.
-const TEST_CONFIRM_DELAY_MS = 20_000;
+// A single 20s-then-check was confirmed live (2026-09-13) to be too short:
+// Gmail's spam classification can take well longer than that to actually file a
+// message into [Gmail]/Spam — a real test was directly confirmed sitting in
+// Spam by the user ~9 minutes after send, while our one-shot poll at 20s found
+// nothing in either INBOX or Spam and reported landedIn:"unknown". Retrying
+// across a longer window catches the common case (classification finishing
+// within ~2 minutes) without hanging the request indefinitely; nginx's proxy
+// for this app has a 3600s read timeout, so there's ample headroom to wait
+// longer than 20s synchronously. A case that's still unresolved after this
+// window falls through to the same landedIn:"unknown" human-check path as
+// before — this raises the odds of an automated answer, it doesn't remove the
+// fallback.
+const POLL_INTERVAL_MS = 20_000;
+const POLL_ATTEMPTS = 6; // 6 * 20s = 120s total
 
 /**
  * Send one test message (a campaign's own template/variant) from a customer
@@ -31,12 +40,26 @@ export async function runTestSend(opts: {
   campaignId: string;
   mailbox: TransporterMailbox;
   variant: { subject: string; bodyHtml: string };
-  seed: SeedMailboxRow;
+  // Exactly one of these is provided. `seed` = a registered, IMAP-pollable
+  // SeedMailbox (platform default or a user's own) — placement is verified
+  // automatically. `overrideRecipient` = a plain ad-hoc address with no IMAP
+  // access — the human-assisted fallback: "delivered" means the SMTP send
+  // succeeded, nothing more; the human checks their own inbox before clicking
+  // Confirm, and landedIn always stays "unknown" (never auto-verified "inbox"),
+  // which is what keeps the batch gate pausing on every batch for this mode.
+  seed?: SeedMailboxRow | null;
+  overrideRecipient?: string | null;
 }): Promise<{ outcome: DeliverabilityOutcome; checkId: string; landedIn: "inbox" | "spam" | "unknown"; error?: string }> {
   const since = new Date(Date.now() - 120_000); // generous window for clock skew
+  const isOverride = !!opts.overrideRecipient;
+  const toAddress = opts.overrideRecipient || opts.seed?.username;
+  if (!toAddress) {
+    return { outcome: "failed", checkId: "", landedIn: "unknown", error: "No test destination configured" };
+  }
   // Unique per-test-send marker so the IMAP poll can tie a found message back to
   // exactly this send. The seed mailbox is a single row shared across all users,
   // so "anything arrived" is not proof THIS campaign delivered — the token is.
+  // Harmless (just unused) in override mode, where there's no poll at all.
   const token = `swtest-${randomBytes(12).toString("hex")}`;
   let sendError: string | undefined;
 
@@ -44,7 +67,7 @@ export async function runTestSend(opts: {
     const transport = transporterForMailbox(opts.mailbox);
     await transport.sendMail({
       from: opts.mailbox.fromAddress || opts.mailbox.username,
-      to: opts.seed.username,
+      to: toAddress,
       subject: `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
       html: renderMerge(opts.variant.bodyHtml, {}),
       headers: { "X-SpaceWorker-Test": token },
@@ -53,34 +76,40 @@ export async function runTestSend(opts: {
     sendError = e instanceof Error ? e.message : "Test send failed at SMTP";
   }
 
-  await new Promise((r) => setTimeout(r, TEST_CONFIRM_DELAY_MS));
-
   let messages: string[] = [];
   let pollError: string | undefined;
   // Task 29, item 6 — where the test message actually landed (inbox / spam /
-  // unknown), passed straight through from the spam-aware IMAP poll.
+  // unknown), passed straight through from the spam-aware IMAP poll. Stays
+  // "unknown" for the whole override-recipient path — there's no mailbox to poll.
   let landedIn: "inbox" | "spam" | "unknown" = "unknown";
 
-  if (!sendError) {
+  if (!sendError && !isOverride && opts.seed) {
     const seedPassword = decryptSecret(
       opts.seed.encryptedPassword,
       opts.seed.passwordIv,
       opts.seed.passwordTag
     );
-    const poll = await pollSeedMailbox(
-      {
-        host: opts.seed.host,
-        port: opts.seed.port,
-        secure: opts.seed.secure,
-        username: opts.seed.username,
-        password: seedPassword,
-      },
-      since,
-      token
-    );
-    messages = poll.messages;
-    pollError = poll.error;
-    landedIn = poll.landedIn;
+    for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const poll = await pollSeedMailbox(
+        {
+          host: opts.seed.host,
+          port: opts.seed.port,
+          secure: opts.seed.secure,
+          username: opts.seed.username,
+          password: seedPassword,
+        },
+        since,
+        token
+      );
+      messages = poll.messages;
+      pollError = poll.error;
+      landedIn = poll.landedIn;
+      // Stop as soon as the message shows up anywhere (inbox or spam) — no need
+      // to keep polling once we have a real answer. Keep retrying on "unknown"
+      // (not found yet, or a transient IMAP error) until the window runs out.
+      if (landedIn !== "unknown") break;
+    }
   }
 
   // Task 29, item 6 — landing in the Spam/Junk folder must NOT count as a passed
@@ -92,19 +121,33 @@ export async function runTestSend(opts: {
   // `status !== "delivered"` check (and the campaign detail page's Confirm-button
   // gate, which reads the same field) correctly blocking on a spam result without
   // needing to change either of them.
-  const outcome: DeliverabilityOutcome = !sendError && landedIn === "inbox" ? "delivered" : "failed";
+  //
+  // The one deliberate exception: override-recipient mode has no IMAP account to
+  // verify placement with at all, so it trusts the human instead — a successful
+  // SMTP send is "delivered" there, full stop. This still isn't a free pass on
+  // sends in general: the batch gate below reads landedIn (always "unknown" in
+  // this mode), not outcome, so a real send still pauses for human review on
+  // every batch — only the ONE-TIME initial test-send-confirm gate treats
+  // override "delivered" as enough to unlock, matching "the human already
+  // looked at it and clicked Confirm."
+  const outcome: DeliverabilityOutcome = isOverride
+    ? (sendError ? "failed" : "delivered")
+    : (!sendError && landedIn === "inbox" ? "delivered" : "failed");
   const error =
     sendError ??
-    (landedIn === "inbox"
+    (isOverride
       ? undefined
-      : landedIn === "spam"
-        ? "Test message was delivered to the Spam/Junk folder, not the inbox — sending is blocked until this is resolved."
-        : (pollError ?? "Message not observed in the seed mailbox within the test window"));
+      : landedIn === "inbox"
+        ? undefined
+        : landedIn === "spam"
+          ? "Test message was delivered to the Spam/Junk folder, not the inbox — sending is blocked until this is resolved."
+          : (pollError ?? "Message not observed in the seed mailbox within the test window"));
 
   const check = await prisma.deliverabilityCheck.create({
     data: {
       campaignId: opts.campaignId,
-      seedMailboxId: opts.seed.id,
+      seedMailboxId: opts.seed?.id ?? null,
+      overrideRecipient: opts.overrideRecipient ?? null,
       status: outcome,
       landedIn,
       messageId: messages[0] ?? null,
@@ -131,6 +174,11 @@ export async function probeCampaignPlacement(opts: {
   subjects: string[];
   bodies: string[];
   variants?: { subject: string; bodyHtml: string }[];
+  // Human-assisted fallback (see runTestSend) — when set, every batch probe
+  // targets this address instead of a registered seed mailbox, and always
+  // reports landedIn:"unknown", so the batch gate pauses for a human decision
+  // after every batch rather than auto-continuing.
+  overrideRecipient?: string | null;
 }): Promise<{ outcome: DeliverabilityOutcome; landedIn: "inbox" | "spam" | "unknown"; checkId: string; error?: string }> {
   const mailbox = opts.mailboxes[0];
   if (!mailbox) return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No sending mailbox available" };
@@ -142,6 +190,11 @@ export async function probeCampaignPlacement(opts: {
     variant = opts.variants[0];
   } else {
     return { outcome: "failed", landedIn: "unknown", checkId: "", error: "Campaign has no content to test-send" };
+  }
+
+  if (opts.overrideRecipient) {
+    const r = await runTestSend({ campaignId: opts.campaignId, mailbox, variant, overrideRecipient: opts.overrideRecipient });
+    return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
   }
 
   const seed = await resolveSeedMailbox(opts.userId);
