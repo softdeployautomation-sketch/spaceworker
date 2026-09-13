@@ -14,12 +14,9 @@ export async function DELETE(
   }
   const { id } = await params; // MUST await — async in Next.js 16
 
-  const profile = await prisma.browserProfile.findUnique({ where: { id } });
+  const profile = await prisma.browserProfile.findFirst({ where: { id, userId: session.userId } });
   if (!profile) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
-  }
-  if (profile.userId !== session.userId) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   if (profile.status === "in_use") {
     return NextResponse.json(
