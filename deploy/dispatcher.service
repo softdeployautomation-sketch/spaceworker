@@ -1,3 +1,9 @@
+# PORT 3500 — matches spaceworker.service's real Environment=PORT=3500 (NOT 3000).
+# Confirmed live 2026-09-13: this file previously said 3000, silently failing every
+# tick (curl exit 7, connection refused) since the Task 28 deploy overwrote a
+# manually-corrected VPS copy with this stale repo template — mail sends, job
+# dispatch, and payment verification were all silently broken. If you ever change
+# the app's real listening port, update this file (and its siblings) to match.
 # Replace %INTERNAL_BEARER_TOKEN% with the actual value from .env before installing.
 # Install: sudo cp dispatcher.service /etc/systemd/system/
 [Unit]
@@ -7,4 +13,4 @@ Description=SpaceWorker job dispatcher
 Type=oneshot
 ExecStart=/usr/bin/curl -s -X POST \
   -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
-  http://localhost:3000/api/internal/dispatch
+  http://localhost:3500/api/internal/dispatch
