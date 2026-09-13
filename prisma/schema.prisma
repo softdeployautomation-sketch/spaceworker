@@ -147,6 +147,13 @@ model EmailCampaign {
   // campaign-create "use this recipient as my test target" option) or
   // reactively after the platform seed mailbox's automated check fails.
   testRecipientOverride String?
+  // Task 35 — configurable send pacing. The drain's per-send jitter is
+  // `min + random * (max - min)` seconds; defaults (5/45) match the pre-Task-35
+  // hardcoded `Math.random() * 40_000 + 5_000` exactly (zero behavior change for
+  // existing campaigns). Bounds are clamped server-side so a user can never
+  // configure a 0-0 "bot blast" — see POST /api/campaigns and the drain route.
+  minSendDelaySeconds Int @default(5)
+  maxSendDelaySeconds Int @default(45)
   // Task 33 — a temporary, human-approved "pinned override" window: a specific
   // proven-good subject/body/from combination locked onto the campaign for a
   // fixed number of upcoming sends (requested pinCount). While set, the

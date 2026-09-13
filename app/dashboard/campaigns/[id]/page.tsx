@@ -60,6 +60,14 @@ type ProbeResult = {
   error?: string;
 };
 
+// Task 35 — the lightweight live-sending payload. A single recent-sends poll
+// serves the ticker (items only) AND the activity modal (items + aggregates).
+type RecentSend = { id: string; toEmail: string; status: string; sentAt: string | null };
+type LiveStats = {
+  counts: { recipients: number; sent: number; queued: number; failed: number };
+  byMailbox: Record<string, { sent: number; failed: number }>;
+};
+
 type CampaignDetail = {
   id: string;
   name: string;
@@ -70,6 +78,9 @@ type CampaignDetail = {
   // surfaced so the paused-decision banner has context.
   batchSize: number;
   rotateEvery: number;
+  // Task 35 — configurable send pacing bounds (seconds) between sends.
+  minSendDelaySeconds: number;
+  maxSendDelaySeconds: number;
   subjects: string[] | null;
   bodies: string[] | null;
   // Human-assisted deliverability fallback — set, every check targets this
@@ -161,6 +172,14 @@ export default function CampaignDetailPage() {
   // Task 30, item 2 — compact "what's been sent so far" overview modal (no
   // scrolling thousands of queue rows).
   const [activityOpen, setActivityOpen] = useState(false);
+  // Task 35 — live sending UI. While status === "sending" a single lightweight
+  // poll (GET /api/campaigns/[id]/recent-sends) feeds BOTH the always-visible
+  // ticker and the open activity modal (never two fetches). liveFeed holds the
+  // newest send attempts (newest-first), liveStats the aggregate counts +
+  // per-mailbox breakdown; both stay null for the "no poll yet" baseline, when
+  // the modal falls back to its loaded campaign.items snapshot.
+  const [liveFeed, setLiveFeed] = useState<RecentSend[]>([]);
+  const [liveStats, setLiveStats] = useState<LiveStats | null>(null);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -215,6 +234,38 @@ export default function CampaignDetailPage() {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Task 35 — shared live-sending poll. While the campaign is actually sending,
+  // re-pull the lightweight recent-sends payload every few seconds; this single
+  // poll drives BOTH the always-visible ticker and the open activity modal.
+  // Stops (and cancels the pending fetch) the moment status leaves "sending" —
+  // done/paused/stopped — via the cleanup that runs when campaign.status changes.
+  useEffect(() => {
+    if (!id || campaign?.status !== "sending") return;
+    let cancelled = false;
+    async function poll() {
+      try {
+        const res = await fetch(`/api/campaigns/${id}/recent-sends?limit=5`);
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => ({}))) as {
+          items?: RecentSend[];
+          counts?: LiveStats["counts"];
+          byMailbox?: LiveStats["byMailbox"];
+        };
+        if (cancelled) return;
+        if (Array.isArray(data.items)) setLiveFeed(data.items);
+        if (data.counts) setLiveStats({ counts: data.counts, byMailbox: data.byMailbox ?? {} });
+      } catch {
+        // Transient network error — keep the last-good feed rather than clearing it.
+      }
+    }
+    void poll();
+    const timer = setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [id, campaign?.status]);
 
   // Task 34 — merge a small, targeted update into the already-loaded campaign
   // state instead of re-fetching the whole campaign (which re-pulls every queued
@@ -835,6 +886,49 @@ export default function CampaignDetailPage() {
         )}
       </div>
 
+      {/* Task 35 — live, always-visible sending ticker. Only while status is
+          "sending": a glanceable pulse of the 5 most recent send attempts fed by
+          the shared poll above. Newest at the bottom so the batch reads
+          oldest→newest top-to-bottom: a new line slides in (existing lines shift
+          up) and the oldest is trimmed once past the 5th slot. This is explicitly
+          NOT the activity modal — no counts here, that's what the modal is for. */}
+      {campaign.status === "sending" && liveFeed.length > 0 && (
+        <div
+          className="mt-4 rounded-xl border border-zinc-200 bg-white/70 p-3 dark:border-zinc-800 dark:bg-zinc-900/50"
+          aria-live="polite"
+        >
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Live sending
+            </h3>
+            <span className="flex items-center gap-1.5 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+              sending
+            </span>
+          </div>
+          <ul className="mt-2 flex flex-col">
+            {/* liveFeed is newest-first; reverse so the newest sits at the bottom
+                and prior lines shift up as each new one slides in. */}
+            {liveFeed
+              .slice()
+              .reverse()
+              .map((s) => (
+                <li
+                  key={s.id}
+                  className="flex items-center gap-2 py-1 text-sm animate-[fadeInUp_0.3s_ease-out]"
+                >
+                  {s.status === "sent" ? (
+                    <span className="text-emerald-600 dark:text-emerald-400" aria-label="sent">✓</span>
+                  ) : (
+                    <span className="text-red-600 dark:text-red-400" aria-label="failed">✗</span>
+                  )}
+                  <span className="truncate text-zinc-700 dark:text-zinc-200">{s.toEmail}</span>
+                </li>
+              ))}
+          </ul>
+        </div>
+      )}
+
       {/* Task 33 — an active pinned override window (only ever set by an explicit
           human pin_and_continue decision): rotation is suspended for `remaining`
           more sends while the drain sends this exact proven combination. */}
@@ -1096,6 +1190,7 @@ export default function CampaignDetailPage() {
             shown together so the owner sees how the drain paces this campaign. */}
         <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
           Rotate every {campaign.rotateEvery} recipient(s) · Batch size {campaign.batchSize} per deliverability check
+          · {campaign.minSendDelaySeconds}–{campaign.maxSendDelaySeconds}s delay between sends
         </p>
         {campaign.variants.length === 0 ? (
           <p className="mt-2 text-sm text-zinc-400 dark:text-zinc-500">No variants on this legacy campaign.</p>
@@ -1250,18 +1345,42 @@ export default function CampaignDetailPage() {
           to scroll the whole (potentially thousands-row) queue table. */}
       {activityOpen && (() => {
         const items = campaign.items;
-        const sent = items.filter((i) => i.status === "sent");
-        const queued = items.filter((i) => i.status === "queued" || i.status === "pending");
-        const failed = items.filter((i) => i.status === "failed");
-        const byMailbox: Record<string, { sent: number; failed: number }> = {};
-        for (const i of items) {
-          const label = i.mailbox?.label ?? i.mailboxId;
-          const slot = byMailbox[label] ?? { sent: 0, failed: 0 };
-          if (i.status === "sent") slot.sent += 1;
-          else if (i.status === "failed") slot.failed += 1;
-          byMailbox[label] = slot;
-        }
-        const recent = [...sent].sort((a, b) => (b.sentAt ?? "").localeCompare(a.sentAt ?? "")).slice(0, 15);
+        // Task 35 — the modal goes LIVE while sending by preferring the shared
+        // poll's real-time aggregates over the (increasingly stale) loaded
+        // campaign.items snapshot. liveStats is null until the first poll, at
+        // which point we fall back to the snapshot — e.g. for campaigns that
+        // never entered "sending" this session, or the very first frames.
+        const live = liveStats !== null;
+        const recipients = live ? liveStats.counts.recipients : items.length;
+        const sentCount = live
+          ? liveStats.counts.sent
+          : items.filter((i) => i.status === "sent").length;
+        const queuedCount = live
+          ? liveStats.counts.queued
+          : items.filter((i) => i.status === "queued" || i.status === "pending").length;
+        const failedCount = live
+          ? liveStats.counts.failed
+          : items.filter((i) => i.status === "failed").length;
+        const byMailbox: Record<string, { sent: number; failed: number }> = live
+          ? liveStats.byMailbox
+          : (() => {
+              const m: Record<string, { sent: number; failed: number }> = {};
+              for (const i of items) {
+                const label = i.mailbox?.label ?? i.mailboxId;
+                const slot = m[label] ?? { sent: 0, failed: 0 };
+                if (i.status === "sent") slot.sent += 1;
+                else if (i.status === "failed") slot.failed += 1;
+                m[label] = slot;
+              }
+              return m;
+            })();
+        const recent: RecentSend[] = live
+          ? liveFeed.slice()
+          : items
+              .filter((i) => i.status === "sent")
+              .map((i) => ({ id: i.id, toEmail: i.toEmail, status: i.status, sentAt: i.sentAt }))
+              .sort((a, b) => (b.sentAt ?? "").localeCompare(a.sentAt ?? ""))
+              .slice(0, 15);
         const kpi = (label: string, value: number, cls: string) => (
           <div className="flex flex-col rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
             <span className={`text-xl font-semibold ${cls}`}>{value}</span>
@@ -1271,10 +1390,10 @@ export default function CampaignDetailPage() {
         return (
           <Modal open onClose={() => setActivityOpen(false)} title="Sending activity" wide>
             <div className="flex flex-wrap gap-3">
-              {kpi("Recipients", items.length, "text-zinc-900 dark:text-zinc-100")}
-              {kpi("Sent", sent.length, "text-emerald-600 dark:text-emerald-400")}
-              {kpi("Queued", queued.length, "text-amber-600 dark:text-amber-400")}
-              {kpi("Failed", failed.length, failed.length > 0 ? "text-red-600 dark:text-red-400" : "text-zinc-400 dark:text-zinc-500")}
+              {kpi("Recipients", recipients, "text-zinc-900 dark:text-zinc-100")}
+              {kpi("Sent", sentCount, "text-emerald-600 dark:text-emerald-400")}
+              {kpi("Queued", queuedCount, "text-amber-600 dark:text-amber-400")}
+              {kpi("Failed", failedCount, failedCount > 0 ? "text-red-600 dark:text-red-400" : "text-zinc-400 dark:text-zinc-500")}
             </div>
 
             <div className="mt-3">
@@ -1301,11 +1420,21 @@ export default function CampaignDetailPage() {
               {recent.length === 0 ? (
                 <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">No sends yet.</p>
               ) : (
-                <ul className="mt-1 divide-y divide-zinc-100 dark:divide-zinc-800">
+                /* Task 35 — the list is capped to a fixed height with an internal
+                    scroll so a busy campaign can never push the modal (and its
+                    close ×) off-screen; the KEY fix for Task 30 item 2 regression. */
+                <ul className="mt-1 max-h-64 divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
                   {recent.map((i) => (
-                    <li key={i.id} className="flex items-center justify-between px-3 py-1.5 text-sm">
-                      <span className="truncate">{i.toEmail}</span>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    <li key={i.id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm">
+                      <span className="flex min-w-0 items-center gap-2">
+                        {i.status === "sent" ? (
+                          <span className="shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="sent">✓</span>
+                        ) : (
+                          <span className="shrink-0 text-red-600 dark:text-red-400" aria-label="failed">✗</span>
+                        )}
+                        <span className="truncate">{i.toEmail}</span>
+                      </span>
+                      <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
                         {i.sentAt ? new Date(i.sentAt).toLocaleString() : ""}
                       </span>
                     </li>
@@ -1314,10 +1443,10 @@ export default function CampaignDetailPage() {
               )}
             </div>
 
-            {failed.length > 0 && (
+            {failedCount > 0 && (
               <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/20">
                 <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
-                  {failed.length} failed — review the error per row in the queue table
+                  {failedCount} failed — review the error per row in the queue table
                 </p>
               </div>
             )}

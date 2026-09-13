@@ -51,6 +51,11 @@ export async function POST(req: Request) {
     rotateEvery?: unknown;
     // Task 29, item 6 — per-batch deliverability checkpoint size (default 50).
     batchSize?: unknown;
+    // Task 35 — configurable send pacing bounds (seconds). Defaults 5/45 match
+    // today's hardcoded jitter exactly; clamped server-side (min >= 1, max >= min)
+    // so a "bot blast" 0-0 can never be configured.
+    minSendDelaySeconds?: unknown;
+    maxSendDelaySeconds?: unknown;
     // Task 30, item 3 — when true, every unique http(s) link in the bodies is
     // cloaked into a /r/<token> redirect at creation (see lib/campaign-create.ts).
     cloakLinks?: unknown;
@@ -101,6 +106,15 @@ export async function POST(req: Request) {
   // realistic campaign needs >1000 emails between rotations.
   const rotateEvery = Math.max(1, Math.min(1000, Math.floor(Number(body.rotateEvery ?? 1))));
   const batchSize = Math.max(1, Math.min(1000, Math.floor(Number(body.batchSize ?? 50))));
+  // Task 35 — send pacing bounds in SECONDS. A sane floor (min >= 1, max >= min)
+  // so a user can never configure genuinely unsafe 0-0 "bot blast" pacing; the
+  // deliverability research (Instantly/Smartlead/lemlist all throttle per-mailbox)
+  // means this stays conservative by default (5/45), never a sends-per-second dial.
+  const minSendDelaySeconds = Math.max(1, Math.floor(Number(body.minSendDelaySeconds ?? 5)));
+  const maxSendDelaySeconds = Math.max(
+    minSendDelaySeconds,
+    Math.floor(Number(body.maxSendDelaySeconds ?? 45))
+  );
 
   const parsed = typeof body.csv === "string" && body.csv.trim() !== ""
     ? parseRecipientsCsv(body.csv)
@@ -271,6 +285,10 @@ export async function POST(req: Request) {
     recipients: sendRecipients,
     rotateEvery,
     batchSize,
+    // Task 35 — send pacing bounds (seconds); defaults 5/45 preserved in the
+    // drain route when omitted on existing campaigns.
+    minSendDelaySeconds,
+    maxSendDelaySeconds,
     searchJobId,
     testRecipientOverride,
     // Task 30, item 3 — opt-in link cloaking (no-op unless bodies contain links).

@@ -35,6 +35,11 @@ export interface CreateCampaignInput {
   // Task 29, item 6 — per-batch deliverability checkpoint size (default 50, waits
   // for the DB default when omitted). Clamped to [1, 1000] like rotateEvery.
   batchSize?: number;
+  // Task 35 — send pacing bounds in seconds. Defaults 5/45 reproduce the old
+  // hardcoded jitter exactly for existing campaigns. min is floored at 1 and max
+  // at min (safety floor — no 0-0 bot blast); the UI is an advanced control.
+  minSendDelaySeconds?: number;
+  maxSendDelaySeconds?: number;
   searchJobId?: string | null;
   // Human-assisted deliverability fallback (see lib/deliverability.ts) — set at
   // creation when the user opts to use their inserted test recipient instead of
@@ -61,6 +66,12 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
   const mailboxIds = input.mailboxIds;
   const rotateEvery = Math.max(1, Math.min(1000, Math.floor(input.rotateEvery ?? 1)));
   const batchSize = Math.max(1, Math.min(1000, Math.floor(input.batchSize ?? 50)));
+  // Task 35 — same server-side floor as POST /api/campaigns: min >= 1, max >= min.
+  const minSendDelaySeconds = Math.max(1, Math.floor(input.minSendDelaySeconds ?? 5));
+  const maxSendDelaySeconds = Math.max(
+    minSendDelaySeconds,
+    Math.floor(input.maxSendDelaySeconds ?? 45)
+  );
   const subjects = (input.subjects ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
   let bodies = (input.bodies ?? []).map((b) => b.trim()).filter((b) => b.length > 0);
   let variants = (input.variants ?? []).filter((v) => v.subject.trim().length > 0 && v.bodyHtml.trim().length > 0);
@@ -125,6 +136,8 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         mailboxIds,
         rotateEvery,
         batchSize,
+        minSendDelaySeconds,
+        maxSendDelaySeconds,
         // Decoupled content: store the independent (cloak-rewritten) lists; legacy keeps [].
         ...(decoupled ? { subjects, bodies } : {}),
         searchJobId: input.searchJobId ?? null,

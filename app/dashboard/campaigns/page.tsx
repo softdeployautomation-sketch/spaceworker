@@ -87,6 +87,12 @@ export default function CampaignsPage() {
   // Task 29, item 6 — how many queue items the mail-queue drain sends before it
   // runs the deliverability probe and re-checks placement (clamped to [1, 1000]).
   const [batchSize, setBatchSize] = useState("50");
+  // Task 35 — configurable send pacing bounds (seconds) between individual sends.
+  // Kept ADVANCED on purpose: defaults (5/45) reproduce today's human-like jitter
+  // exactly, and most users (personal-mailbox cold outreach) should never touch
+  // it — only a dedicated/warmed relay benefits from going faster.
+  const [minSendDelay, setMinSendDelay] = useState("5");
+  const [maxSendDelay, setMaxSendDelay] = useState("45");
   // Task 30, item 1 — collapsed/expanded in-modal Preview panel that renders the
   // CURRENT draft subjects/bodies through renderMerge() so a user sees exactly
   // what will send (including missing {{merge}} gaps like "Hi ,") before creating.
@@ -403,6 +409,10 @@ export default function CampaignsPage() {
           bodies: content.bodies,
           rotateEvery: Number(rotateEvery) || 1,
           batchSize: Number(batchSize) || 50,
+          // Task 35 — optional send pacing bounds (seconds). Empty/missing falls
+          // back to the 5/45 defaults server-side; a 0 min is floored to 1 there.
+          minSendDelaySeconds: Number(minSendDelay) || 5,
+          maxSendDelaySeconds: Number(maxSendDelay) || 45,
           // Task 30, item 3 — opt-in link cloaking (no-op server-side unless the
           // body actually contains http(s):// links).
           cloakLinks: cloakLinks,
@@ -656,6 +666,47 @@ export default function CampaignsPage() {
                   className="w-32 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
+
+              {/* Task 35 — configurable send pacing, deliberately tucked under an
+                  "Advanced" disclosure (NOT a prominent dial): default 5–45s matches
+                  today's human-like per-mailbox jitter, and most personal-mailbox
+                  cold campaigns shouldn't touch it. A dedicated/warmed relay can go
+                  faster. Server-side floors min to 1s and max to >= min. */}
+              <details className="group text-sm">
+                <summary className="cursor-pointer select-none font-medium text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200">
+                  Advanced — send pacing (optional)
+                </summary>
+                <div className="mt-2 flex flex-wrap items-start gap-4">
+                  <label className="flex flex-col gap-1 font-medium">
+                    Min seconds between sends
+                    <input
+                      type="number"
+                      min={1}
+                      max={120}
+                      value={minSendDelay}
+                      onChange={(e) => setMinSendDelay(e.target.value)}
+                      className="w-28 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 font-medium">
+                    Max seconds between sends
+                    <input
+                      type="number"
+                      min={1}
+                      max={3600}
+                      value={maxSendDelay}
+                      onChange={(e) => setMaxSendDelay(e.target.value)}
+                      className="w-28 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                    />
+                  </label>
+                </div>
+                <p className="mt-1.5 text-xs text-zinc-400">
+                  A random delay in this range is applied between each send, per mailbox.
+                  The safe default is 5–45s: fast burst sending through personal Gmail/SMTP
+                  mailboxes is what gets an account spam-flagged, so only shorten this if
+                  you&apos;re sending through a dedicated, warmed-up relay.
+                </p>
+              </details>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
                 Bodies <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc.; each body rotates on its own index'}</span>

@@ -97,7 +97,17 @@ export async function POST(req: Request) {
     }
   }
 
-  for (const mailbox of mailboxes) {
+  // Task 35 — parallelize across mailboxes. Mailboxes are independent SMTP
+  // connections with independent reputation/daily quotas, so there's no reason to
+  // serialize them (before this, mailbox B's whole batch waited for ALL of mailbox
+  // A's jittered sends to finish). Each mailbox keeps its OWN sequential inner loop
+  // and per-item jitter — only the outer mailbox loop runs concurrently. The batch
+  // gate stays safe: admission (dispatchedThisTick/dispatchedByMailbox) happens in a
+  // synchronous admit loop with NO await between cap-check and increment, so it's
+  // atomic within one Node turn and two mailboxes can never BOTH admit past a
+  // campaign's batchSize in the same drain run.
+  await Promise.all(
+    mailboxes.map(async (mailbox) => {
     let sentToday: number;
     if (mailbox.sentTodayDate !== today) {
       await prisma.mailbox.update({
@@ -110,7 +120,7 @@ export async function POST(req: Request) {
     }
 
     const remaining = mailbox.dailyLimit - sentToday;
-    if (remaining <= 0) continue;
+    if (remaining <= 0) return;
 
     const items = await prisma.emailQueueItem.findMany({
       where: {
@@ -121,7 +131,7 @@ export async function POST(req: Request) {
       take: remaining,
       include: { campaign: true, variant: true },
     });
-    if (items.length === 0) continue;
+    if (items.length === 0) return;
 
     // Batch gate: only take the first `batchSize` items of each campaign this tick,
     // so the drain pauses at the batch boundary and lets the probe gate the next one.
@@ -146,7 +156,7 @@ export async function POST(req: Request) {
       byMailbox.set(mailbox.id, usedByMailbox + 1);
       drainedCampaignIds.add(item.campaignId);
     }
-    if (admit.length === 0) continue;
+    if (admit.length === 0) return;
 
     let transport: ReturnType<typeof transporterForMailbox> | undefined;
     try {
@@ -158,13 +168,24 @@ export async function POST(req: Request) {
         data: { status: "failed", error },
       });
       processed += admit.length;
-      continue;
+      return;
     }
 
     for (const item of admit) {
       processed += 1;
-      // Jitter between sends (a few seconds to <1 min) — never fire a batch back-to-back.
-      await new Promise((r) => setTimeout(r, Math.random() * 40_000 + 5_000));
+      // Jitter between sends — never fire a batch back-to-back. Task 35: the
+      // bounds are now configurable per campaign (EmailCampaign.minSendDelaySeconds
+      // / maxSendDelaySeconds, default 5/45 — exactly matching the pre-Task-35
+      // hardcoded `Math.random() * 40_000 + 5_000`, so existing campaigns are
+      // unchanged). Clamped here as a server-side safety floor (min >= 1, max >=
+      // min) so a misconfigured 0-0 "bot blast" can never send back-to-back even if
+      // the create UI was bypassed. The jitter algorithm itself is untouched:
+      // min + random * (max - min).
+      const dayDelayMin = Math.max(1, Math.floor(item.campaign.minSendDelaySeconds ?? 5));
+      const dayDelayMax = Math.max(dayDelayMin, Math.floor(item.campaign.maxSendDelaySeconds ?? 45));
+      await new Promise((r) =>
+        setTimeout(r, (dayDelayMin + Math.random() * (dayDelayMax - dayDelayMin)) * 1000)
+      );
 
       try {
         // Render at send time from the item's assigned variant + CSV merge vars.
@@ -254,7 +275,7 @@ export async function POST(req: Request) {
         });
       }
     }
-  }
+    }));
 
   // Task 29, item 6 — batch gate: after dispatching a batch to a campaign, probe
   // its test mailbox and gate the NEXT batch. "inbox" => keep sending; "spam" or
