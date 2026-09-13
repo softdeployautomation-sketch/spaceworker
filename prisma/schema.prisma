@@ -147,6 +147,19 @@ model EmailCampaign {
   // campaign-create "use this recipient as my test target" option) or
   // reactively after the platform seed mailbox's automated check fails.
   testRecipientOverride String?
+  // Task 33 — a temporary, human-approved "pinned override" window: a specific
+  // proven-good subject/body/from combination locked onto the campaign for a
+  // fixed number of upcoming sends (requested pinCount). While set, the
+  // mail-queue drain sends every recipient this exact content instead of
+  // consulting subjects[i % len]/bodies[i % len]/fromAddresses[i % len], and
+  // decrements `remaining` per successful send. When `remaining` reaches 0 the
+  // drain clears it and (on a clean finish — no spam hit through the window)
+  // front-inserts the pinned content into the normal rotation (Task 32's
+  // mechanic) so it keeps serving the campaign after the window too. A spam hit
+  // during the window clears the pin and falls back to paused_deliverability.
+  // Shape: { subject, bodyHtml, fromAddress, remaining }. null = not pinned.
+  // Achieved as a JSON column — no separate table.
+  pinnedOverride Json?
   createdAt   DateTime         @default(now())
   variants    CampaignVariant[]
   checks      DeliverabilityCheck[]

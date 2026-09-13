@@ -33,6 +33,17 @@ import { getSession } from "@/lib/session";
 //                      second entry so nothing already in flight is dropped. Records
 //                      a manual-override DeliverabilityCheck like "continue" does,
 //                      then resumes/ unlocks to "sending" from either state.
+//   "pin_and_continue" — Task 33: a TEMPORARY pinned override. { subject, bodyHtml,
+//                      from?, pinCount? } locks the campaign onto one proven-good
+//                      combination for exactly `pinCount` sends (default batchSize,
+//                      clamped [1,1000]), suspending normal rotation for that window
+//                      ("that exact run gets sent to the next N contacts... canceling
+//                      the normal flow of changing subject after 10 sent"). Unlike
+//                      add_edit_and_continue it doesn't touch the rotation yet — it
+//                      sets EmailCampaign.pinnedOverride, which the drain honors and
+//                      decrements per send, then clears (promoting the combo into the
+//                      rotation on a clean finish, per TASK_33 §2). Requires the same
+//                      explicit human click as every action here — never auto-applied.
 //   "stop"           — stop the campaign (terminal). Remaining queued items stay
 //                      queued but the campaign never re-enters "sending". Allowed
 //                      from either state (halting is always safe).
@@ -47,13 +58,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   });
   if (!campaign) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let body: { action?: string; subject?: unknown; bodyHtml?: unknown };
+  let body: { action?: string; subject?: unknown; bodyHtml?: unknown; from?: unknown; pinCount?: unknown };
   try {
     body = await req.json();
   } catch {
     body = {};
   }
-  const action = body.action === "continue" || body.action === "switch_subject" || body.action === "stop" || body.action === "add_edit_and_continue"
+  const action = body.action === "continue" || body.action === "switch_subject" || body.action === "stop" || body.action === "add_edit_and_continue" || body.action === "pin_and_continue"
     ? body.action
     : "continue";
 
@@ -97,6 +108,60 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       data: { ...(rotatedSubjects ? { subjects: rotatedSubjects } : {}), status: "sending" },
     });
     return NextResponse.json({ ok: true, status: "sending" });
+  }
+
+  // \"pin_and_continue\" — Task 33: lock the campaign onto one particular
+  // proven-good combination for a WINDOW of upcoming sends (suspending normal
+  // per-batch rotation for that stretch), not a permanent rotation change like
+  // add_edit_and_continue. This is exactly the owner's ask: \"that exact run gets
+  // sent to the next N contacts... canceling the normal flow of changing subject
+  // after 10 sent.\" Requires the SAME explicit human-approval click as every
+  // other action on this route (which is per-whoever's-calling real here — this
+  // endpoint is the decision point); it is never auto-applied, even when the
+  // future agent is the one proposing it. pinCount defaults to the campaign's
+  // own batchSize (\"the next batch\") and is clamped to [1, 1000] like every
+  // other numeric knob in this app.
+  if (action === "pin_and_continue") {
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    // bodyHtml may legitimately be "" (a pinned empty-body diagnostic that came
+    // back clean) — only the subject is required to pin.
+    const bodyHtml = typeof body.bodyHtml === "string" ? body.bodyHtml : "";
+    if (!subject) {
+      return NextResponse.json(
+        { error: "Provide a subject to pin" },
+        { status: 400 }
+      );
+    }
+    const fromAddress = typeof body.from === "string" ? body.from.trim() : "";
+    const rawPinCount = Number(body.pinCount ?? campaign.batchSize ?? 50);
+    const pinCount = Math.max(1, Math.min(1000, Math.floor(rawPinCount)));
+
+    // Audit trail, mirroring the other explicit-decision branches: the human
+    // approved pinning this exact content for exactly pinCount sends.
+    await prisma.deliverabilityCheck.create({
+      data: {
+        campaignId: id,
+        seedMailboxId: null,
+        status: "delivered",
+        landedIn: "inbox",
+        error: `Pinned override approved by the user for ${pinCount} send(s): "${subject}"${
+          fromAddress ? ` from ${fromAddress}` : ""
+        }.`,
+        checkedAt: new Date(),
+      },
+    });
+    // Both states resolve to \"sending\" here, exactly like continue/add_edit.
+    // The stored rotation (subjects/bodies) is left untouched — the drain
+    // consults pinnedOverride instead while it's set, and clears it after
+    // `remaining` sends, cleanly resuming the rotation.
+    await prisma.emailCampaign.update({
+      where: { id },
+      data: {
+        pinnedOverride: { subject, bodyHtml, fromAddress, remaining: pinCount },
+        status: "sending",
+      },
+    });
+    return NextResponse.json({ ok: true, status: "sending", pinCount });
   }
 
   // "add_edit_and_continue" — Task 32: promote a human/agent-authored draft that a

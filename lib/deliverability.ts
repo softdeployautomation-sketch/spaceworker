@@ -192,6 +192,10 @@ export async function probeCampaignPlacement(opts: {
   // reports landedIn:"unknown", so the batch gate pauses for a human decision
   // after every batch rather than auto-continuing.
   overrideRecipient?: string | null;
+  // Task 33 — explicit From for the probe. Passed straight through to
+  // runTestSend. Used during a pinned-override window so the batch probe judges
+  // the SAME From address the pinned sends actually use, not mailbox[0]'s.
+  from?: string | null;
 }): Promise<{ outcome: DeliverabilityOutcome; landedIn: "inbox" | "spam" | "unknown"; checkId: string; error?: string }> {
   const mailbox = opts.mailboxes[0];
   if (!mailbox) return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No sending mailbox available" };
@@ -206,7 +210,13 @@ export async function probeCampaignPlacement(opts: {
   }
 
   if (opts.overrideRecipient) {
-    const r = await runTestSend({ campaignId: opts.campaignId, mailbox, variant, overrideRecipient: opts.overrideRecipient });
+    const r = await runTestSend({
+      campaignId: opts.campaignId,
+      mailbox,
+      variant,
+      overrideRecipient: opts.overrideRecipient,
+      ...(opts.from ? { from: opts.from } : {}),
+    });
     return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
   }
 
@@ -215,6 +225,103 @@ export async function probeCampaignPlacement(opts: {
     return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No test mailbox configured" };
   }
 
-  const r = await runTestSend({ campaignId: opts.campaignId, mailbox, variant, seed });
+  const r = await runTestSend({
+    campaignId: opts.campaignId,
+    mailbox,
+    variant,
+    seed,
+    ...(opts.from ? { from: opts.from } : {}),
+  });
   return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
+}
+
+/**
+ * Task 33 — the isolation ladder. Given a campaign's CURRENT active
+ * subject/body/from (index 0 of each rotation, or the first legacy variant),
+ * this builds four diagnostic probes, each changing EXACTLY ONE variable and
+ * holding the other two constant, so a spacing-filtering diagnosis can isolate
+ * WHICH element (subject, body, or From address) is actually triggering spam:
+ *
+ *   1. subject    — next subject in the rotation, same body, same From.
+ *   2. body       — next body in the rotation, same subject, same From.
+ *   3. emptyBody  — same subject/From, body replaced with "" (a genuine
+ *                   diagnostic: if THIS still hits spam, subject/From reputation
+ *                   is implicated — a body-content trigger can't explain a
+ *                   message with no body).
+ *   4. from       — next From in the mailbox's fromAddresses rotation, same
+ *                   subject/body.
+ *
+ * Each probe is just content — the caller routes it through the SAME
+ * runTestSend primitive the test-send route uses (each write its own
+ * DeliverabilityCheck audit row). `available` is false with an explanation when
+ * a dimension has no alternative to isolate (single-subject campaigns, a
+ * mailbox with a single From address, etc.) — those probes are genuinely not
+ * testable, not just unoffered.
+ */
+export interface IsolationProbe {
+  key: "subject" | "body" | "emptyBody" | "from";
+  label: string;
+  description: string;
+  variant: { subject: string; bodyHtml: string };
+  // The From address this probe TEST AS (null = send as the mailbox's normal
+  // first From, i.e. the campaign's current From — the "same From" arm).
+  from: string | null;
+  available: boolean;
+  unavailableReason?: string;
+}
+
+export function buildIsolationProbes(opts: {
+  subjects: string[];
+  bodies: string[];
+  variants?: { subject: string; bodyHtml: string }[];
+  // The campaign's PRIMARY sending mailbox's configured From rotation
+  // (Task 30, item 4). Used for both the "current From" arm and the from-probe.
+  fromAddresses: string[];
+}): IsolationProbe[] {
+  const subject = opts.subjects?.[0] ?? opts.variants?.[0]?.subject ?? "";
+  const bodyHtml = opts.bodies?.[0] ?? opts.variants?.[0]?.bodyHtml ?? "";
+  // "next" in the rotation — i % len, so index 1 is what follows index 0. If a
+  // dimension has only one entry there IS no alternative; the probe is flagged
+  // unavailable rather than silently testing the identical content twice.
+  const nextSubject = opts.subjects && opts.subjects.length > 1 ? opts.subjects[1] : subject;
+  const nextBody = opts.bodies && opts.bodies.length > 1 ? opts.bodies[1] : bodyHtml;
+  const nextFrom = opts.fromAddresses && opts.fromAddresses.length > 1 ? opts.fromAddresses[1] : null;
+
+  return [
+    {
+      key: "subject",
+      label: "Subject only",
+      description: "Next subject in the rotation; same body and From.",
+      variant: { subject: nextSubject, bodyHtml },
+      from: null,
+      available: opts.subjects && opts.subjects.length > 1,
+      unavailableReason: opts.subjects && opts.subjects.length > 1 ? undefined : "Only one subject on this campaign — no alternative to test.",
+    },
+    {
+      key: "body",
+      label: "Body only",
+      description: "Next body in the rotation; same subject and From.",
+      variant: { subject, bodyHtml: nextBody },
+      from: null,
+      available: opts.bodies && opts.bodies.length > 1,
+      unavailableReason: opts.bodies && opts.bodies.length > 1 ? undefined : "Only one body on this campaign — no alternative to test.",
+    },
+    {
+      key: "emptyBody",
+      label: "Empty-body diagnostic",
+      description: "Same subject and From, body removed. If this still hits spam, body content isn't the trigger.",
+      variant: { subject, bodyHtml: "" },
+      from: null,
+      available: true,
+    },
+    {
+      key: "from",
+      label: "From address only",
+      description: "Next From address in the mailbox rotation; same subject and body.",
+      variant: { subject, bodyHtml },
+      from: nextFrom,
+      available: opts.fromAddresses && opts.fromAddresses.length > 1,
+      unavailableReason: opts.fromAddresses && opts.fromAddresses.length > 1 ? undefined : "Only one From address on the sending mailbox — no alternative to test.",
+    },
+  ];
 }

@@ -44,6 +44,22 @@ type DeliverabilityCheck = {
   createdAt: string;
 };
 
+// Task 33 — a single isolation-diagnostic probe: which element (subject, body,
+// or From) a given probe changed, the EXACT content it was tested as (variant +
+// from), whether it was even runnable, and — once run — where it landed.
+type ProbeResult = {
+  key: string;
+  label: string;
+  description: string;
+  variant: { subject: string; bodyHtml: string };
+  from: string | null;
+  available: boolean;
+  unavailableReason?: string;
+  outcome: string | null;
+  landedIn: string | null;
+  error?: string;
+};
+
 type CampaignDetail = {
   id: string;
   name: string;
@@ -59,6 +75,11 @@ type CampaignDetail = {
   // Human-assisted deliverability fallback — set, every check targets this
   // plain address instead of the platform seed mailbox (see lib/deliverability.ts).
   testRecipientOverride: string | null;
+  // Task 33 — a temporary pinned-override window active on this campaign:
+  // { subject, bodyHtml, fromAddress, remaining }. While set, the drain sends
+  // every recipient this exact content instead of rotating, and decrements
+  // `remaining` per send. null = not pinned.
+  pinnedOverride: { subject: string; bodyHtml: string; fromAddress: string; remaining: number } | null;
   variants: Variant[];
   checks: DeliverabilityCheck[];
   items: QueueItem[];
@@ -163,6 +184,17 @@ export default function CampaignDetailPage() {
   // True once a live draft test-send comes back — the promote option is only
   // offered after that result, so promotion is always a judged outcome.
   const [draftTested, setDraftTested] = useState(false);
+  // Task 33 — "Run diagnostics": the 4-probe isolation ladder. Probe definitions
+  // arrive from the run-diagnostics route (GET); each probe's own Run button
+  // posts just that key and stores its landedIn outcome for a checklist badge.
+  // A green (inbox) probe opens the "Pin this combination for the next N sends"
+  // action — a temporary window that suspends rotation, distinct from promote.
+  const [diagOpen, setDiagOpen] = useState(false);
+  const [diagProbes, setDiagProbes] = useState<ProbeResult[] | null>(null);
+  const [diagResults, setDiagResults] = useState<Record<string, ProbeResult>>({});
+  const [diagBusyKey, setDiagBusyKey] = useState<string | null>(null);
+  const [pinCount, setPinCount] = useState(50);
+  const [pinning, setPinning] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -354,6 +386,100 @@ export default function CampaignDetailPage() {
     }
   }
 
+  // Task 33 — open the diagnostics panel, pulling the 4 probe definitions from
+  // the run-diagnostics route's GET (the probe builder lives server-side in
+  // lib/deliverability.ts, which is server-only, so the client asks the API for
+  // the same definitions the POST will run rather than re-deriving them).
+  async function openDiagnostics() {
+    if (diagProbes) {
+      setDiagOpen(true);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/campaigns/${id}/run-diagnostics`);
+      const data = (await res.json().catch(() => ({}))) as { probes?: ProbeResult[]; error?: string };
+      if (!res.ok || !data.probes) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't load the diagnostics probes." });
+        return;
+      }
+      setDiagProbes(data.probes);
+      setPinCount(campaign?.batchSize ?? 50);
+      setDiagOpen(true);
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while loading diagnostics." });
+    }
+  }
+
+  // Task 33 — run ONE isolation probe through the run-diagnostics route (which
+  // itself runs it through the SAME runTestSend primitive as test-send, writing
+  // its own DeliverabilityCheck audit row). Stores the landedIn outcome so the
+  // panel reads as a checklist. Nothing here touches the campaign's stored content.
+  async function runProbe(key: string) {
+    setDiagBusyKey(key);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/run-diagnostics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys: [key] }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { results?: ProbeResult[]; error?: string };
+      if (!res.ok || !data.results || data.results.length === 0) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Probe failed to run." });
+      } else {
+        for (const r of data.results) {
+          const next = { ...diagResults, [r.key]: r };
+          setDiagResults(next);
+          if (r.outcome === "delivered") {
+            setTestResult(null);
+          } else {
+            setTestResult({ outcome: r.outcome ?? "failed", error: r.error });
+          }
+        }
+      }
+      void load();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while running the probe." });
+    } finally {
+      setDiagBusyKey(null);
+    }
+  }
+
+  // Task 33 — the human judged a diagnostic probe good (it landed in the inbox)
+  // and wants to LOCK the campaign onto that exact proven combination for the
+  // next `pinCount` sends — a temporary window that suspends normal rotation,
+  // distinct from the permanent promote action. Requires this explicit human
+  // click (never auto-applied); the agent, when it drives this surface, still
+  // has to stop here for approval.
+  async function pinProbe(result: ProbeResult) {
+    setPinning(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/deliverability-decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "pin_and_continue",
+          subject: result.variant.subject,
+          bodyHtml: result.variant.bodyHtml,
+          ...(result.from ? { from: result.from } : {}),
+          pinCount: Math.max(1, Math.min(1000, Math.floor(Number(pinCount)))),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't pin this combination." });
+      } else {
+        setDiagOpen(false);
+        void load();
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while pinning." });
+    } finally {
+      setPinning(false);
+    }
+  }
+
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
   }
@@ -485,6 +611,112 @@ export default function CampaignDetailPage() {
     </div>
   );
 
+  // Task 33 — the isolation-diagnostic panel (alongside Task 32's manual-edit
+  // box, both optional). Lists the 4 probes as a checklist — subject-only /
+  // body-only / empty-body / from-only — each with its own Run button and a
+  // landedIn badge once tested. A probe that lands in the inbox is \"green\": the
+  // owner can PIN that exact combination for the next `pinCount` sends (a
+  // temporary window that keeps rotation off until it's over), which posts to
+  // deliverability-decision with action pin_and_continue (explicit human click).
+  const diagnosticsSection = (
+    <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+      {!diagOpen ? (
+        <button
+          type="button"
+          onClick={() => void openDiagnostics()}
+          className="text-sm font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          Run diagnostics to isolate the spam trigger →
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Isolate WHICH element (subject / body / From) is triggering spam. Each probe changes
+            exactly one variable and holds the other two constant, and each is a real test against
+            your test mailbox (every probe writes its own audit row). A probe that lands in the
+            inbox lets you pin that proven combination for the next few sends — a temporary window
+            that keeps rotation off until it&apos;s over.
+          </p>
+          {!diagProbes ? (
+            <p className="text-xs text-zinc-400 dark:text-zinc-500">Loading probes…</p>
+          ) : (
+            diagProbes.map((p) => {
+              const result = diagResults[p.key];
+              const out = result?.outcome;
+              const landed = result?.landedIn;
+              return (
+                <div key={p.key} className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium">{p.label}</p>
+                      <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{p.description}</p>
+                      {!p.available && p.unavailableReason ? (
+                        <p className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{p.unavailableReason}</p>
+                      ) : null}
+                    </div>
+                    {p.available ? (
+                      <button
+                        type="button"
+                        onClick={() => void runProbe(p.key)}
+                        disabled={diagBusyKey !== null}
+                        className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                      >
+                        {diagBusyKey === p.key ? "Testing…" : "Run"}
+                      </button>
+                    ) : (
+                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        n/a
+                      </span>
+                    )}
+                  </div>
+                  {out && (
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs">
+                      <span className={`font-medium ${
+                        landed === "inbox" ? "text-emerald-600" : landed === "spam" ? "text-red-600" : "text-amber-600"
+                      }`}>
+                        landed: {landed ?? "n/a"} · {out}
+                      </span>
+                      {result?.error ? <span className="text-zinc-500 dark:text-zinc-400">{result.error}</span> : null}
+                      {landed === "inbox" && (
+                        <>
+                          <span className="text-zinc-400 dark:text-zinc-500">Pin for</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={1000}
+                            value={pinCount}
+                            onChange={(e) => setPinCount(Number(e.target.value))}
+                            className="w-20 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+                          />
+                          <span className="text-zinc-400 dark:text-zinc-500">sends</span>
+                          <button
+                            type="button"
+                            onClick={() => void pinProbe(result)}
+                            disabled={pinning}
+                            className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                          >
+                            {pinning ? "Pinning…" : "Pin this combination"}
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+          <button
+            type="button"
+            onClick={() => setDiagOpen(false)}
+            className="text-xs font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            Close diagnostics
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div>
       <Link href="/dashboard/campaigns" className="text-sm font-medium text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400">
@@ -512,6 +744,26 @@ export default function CampaignDetailPage() {
           </button>
         )}
       </div>
+
+      {/* Task 33 — an active pinned override window (only ever set by an explicit
+          human pin_and_continue decision): rotation is suspended for `remaining`
+          more sends while the drain sends this exact proven combination. */}
+      {campaign.pinnedOverride && (
+        <div className="mt-4 rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/20">
+          <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+            Pinned override active — rotation suspended for{" "}
+            {campaign.pinnedOverride.remaining} more send{campaign.pinnedOverride.remaining === 1 ? "" : "s"}
+          </p>
+          <p className="mt-1 text-xs text-zinc-600 dark:text-zinc-300">
+            Every recipient will get this exact combination instead of the normal rotation:
+            <span className="font-medium">&quot;{campaign.pinnedOverride.subject}&quot;</span>
+            {campaign.pinnedOverride.fromAddress ? (
+              <>{" "}from <span className="font-medium">{campaign.pinnedOverride.fromAddress}</span></>
+            ) : null}
+            . The window ends and normal rotation resumes after the count above.
+          </p>
+        </div>
+      )}
 
       {/* Test-send-confirm gate */}
       {awaitingConfirm && (
@@ -618,6 +870,8 @@ export default function CampaignDetailPage() {
           {/* Task 32 — the 4th, clearly-secondary path through the initial gate:
               manually edit and test a draft without touching stored content. */}
           {manualEditSection}
+          {/* Task 33 — the isolation-diagnostic panel (opt-in, alongside edit). */}
+          {diagnosticsSection}
 
           {/* Human-assisted fallback, offered after the automated check fails and
               no override is set yet: use a recipient already in the queue, or
@@ -709,6 +963,8 @@ export default function CampaignDetailPage() {
           {/* Task 32 — same 4th, secondary "manually edit and test" path, available
               from a batch pause too (test-send remains callable while paused). */}
           {manualEditSection}
+          {/* Task 33 — the isolation-diagnostic panel (opt-in, alongside edit). */}
+          {diagnosticsSection}
         </div>
       )}
 {/* Variants */}
