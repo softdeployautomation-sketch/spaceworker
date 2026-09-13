@@ -280,7 +280,13 @@ export default function CampaignDetailPage() {
             >
               {testBusy ? "Sending test… checking for up to 2 minutes" : "Send test message"}
             </button>
-            {(testResult?.outcome === "delivered" || latestCheck?.status === "delivered") && (
+            {/* In override mode, "delivered" only ever means the SMTP send
+                succeeded — it's never a confirmed-good result the way a seed-
+                mailbox "delivered" is, so this plain confirm button is hidden
+                there in favor of the 3-way decision box below (which always
+                shows for override mode and covers the same "go ahead" action
+                alongside the spam/retry alternatives that button can't offer). */}
+            {!campaign.testRecipientOverride && (testResult?.outcome === "delivered" || latestCheck?.status === "delivered") && (
               <button
                 type="button"
                 onClick={() => void confirm()}
@@ -306,12 +312,15 @@ export default function CampaignDetailPage() {
             </p>
           )}
 
-          {/* The automated check failed or couldn't verify placement — ask the
-              human what actually happened, rather than only offering a blind
-              retry. Mirrors the batch-gate's own continue/switch/stop framing,
-              reworded for "nothing has sent yet" (no "stop" here — there's
-              nothing running to halt). */}
-          {latestCheck?.status === "failed" && (
+          {/* Ask the human what actually happened, rather than only offering a
+              blind retry or a single "confirm" button. Mirrors the batch-gate's
+              own continue/switch/stop framing, reworded for "nothing has sent
+              yet" (no "stop" here — there's nothing running to halt). Shown
+              whenever the automated check failed/couldn't verify (the seed-
+              mailbox path), OR whenever a test-recipient override is in play —
+              there, "delivered" only ever means the SMTP send succeeded, never
+              a confirmed-good result, so the human must always be asked. */}
+          {(latestCheck?.status === "failed" || (!!campaign.testRecipientOverride && !!latestCheck)) && (
             <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
               <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
                 What actually happened to the test message?

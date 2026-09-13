@@ -57,9 +57,12 @@ export async function runTestSend(opts: {
     return { outcome: "failed", checkId: "", landedIn: "unknown", error: "No test destination configured" };
   }
   // Unique per-test-send marker so the IMAP poll can tie a found message back to
-  // exactly this send. The seed mailbox is a single row shared across all users,
-  // so "anything arrived" is not proof THIS campaign delivered — the token is.
-  // Harmless (just unused) in override mode, where there's no poll at all.
+  // exactly this send — needed because the seed mailbox is a single row shared
+  // across all users, so "anything arrived" isn't proof THIS campaign delivered.
+  // Override mode has no poll at all (no IMAP account to search), so the token
+  // serves no purpose there and is left out of the subject entirely — the whole
+  // point of testing against a human's own inbox is to see the REAL subject a
+  // recipient would get, not one visibly tagged as a test.
   const token = `swtest-${randomBytes(12).toString("hex")}`;
   let sendError: string | undefined;
 
@@ -68,9 +71,11 @@ export async function runTestSend(opts: {
     await transport.sendMail({
       from: opts.mailbox.fromAddress || opts.mailbox.username,
       to: toAddress,
-      subject: `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
+      subject: isOverride
+        ? renderMerge(opts.variant.subject, {})
+        : `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
       html: renderMerge(opts.variant.bodyHtml, {}),
-      headers: { "X-SpaceWorker-Test": token },
+      headers: isOverride ? {} : { "X-SpaceWorker-Test": token },
     });
   } catch (e) {
     sendError = e instanceof Error ? e.message : "Test send failed at SMTP";

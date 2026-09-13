@@ -75,16 +75,32 @@ export async function POST(
     );
   }
 
-  // Run all mailboxes' tests concurrently (each already waits ~20s internally
-  // for the IMAP poll — skipped entirely in override mode) rather than serially,
-  // which would multiply the wait by the mailbox count.
-  const results = await Promise.all(
-    mailboxes.map((mailbox) =>
-      overrideRecipient
-        ? runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient })
-        : runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed! }),
-    ),
-  );
+  // Override mode: a human is about to look at their own inbox, so send each
+  // mailbox's test SEQUENTIALLY with a short human-paced gap between them —
+  // confirmed live this matters: 4 configured mailboxes fired via Promise.all
+  // landed as 4 identical-looking test emails in the same second, reading as an
+  // obvious blast rather than what the real send (which already staggers via
+  // random jitter in the mail-queue drain) actually does. There's no 2-minute
+  // IMAP poll in this mode to make serializing expensive, so there's no
+  // downside to pacing it the same way.
+  //
+  // Seed-mailbox mode keeps running all mailboxes CONCURRENTLY — each one
+  // already waits up to 2 minutes for its own IMAP poll, so serializing here
+  // would multiply that wait by the mailbox count for no benefit (nothing
+  // human-visible is watching these arrive in real time).
+  const results: Awaited<ReturnType<typeof runTestSend>>[] = [];
+  if (overrideRecipient) {
+    for (const mailbox of mailboxes) {
+      if (results.length > 0) await new Promise((r) => setTimeout(r, 3_000 + Math.random() * 4_000));
+      results.push(await runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient }));
+    }
+  } else {
+    results.push(
+      ...(await Promise.all(
+        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed! })),
+      )),
+    );
+  }
 
   const failed = results.filter((r) => r.outcome !== "delivered");
   const outcome: "delivered" | "failed" = failed.length === 0 ? "delivered" : "failed";
