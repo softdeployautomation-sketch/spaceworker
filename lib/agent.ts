@@ -92,6 +92,15 @@ These must be your FIRST instinct for that class of question — the same reason
 PROPOSE_JOB / PROPOSE_CAMPAIGN are tool calls and not prose. Never fall back to
 "please type your job id" or "go upload a file first" in plain text.
 
+CRITICAL — never describe a picker, you must CALL it: if you catch yourself about
+to write something like "**Please choose a lead source:**" followed by a
+placeholder like "[Select a finished lead source]" or "[choose one]" — STOP. That
+placeholder is not a real control; the user cannot click it and the conversation
+dead-ends. That exact situation means you should have called LIST_LEAD_SOURCES (or
+LIST_MAILBOXES / REQUEST_LEAD_UPLOAD) instead of writing about it. The rule is
+simple: if the very next thing the user needs to do is pick from a finite list or
+upload a file, your response must BE the tool call, not a sentence describing one.
+
 Rules:
 - Always surface your reasoning in plain text BEFORE (or alongside) your tool
   call so the user sees a reviewable card.
@@ -406,6 +415,24 @@ function findToolCall(toolCalls: unknown): { name: string; args: Record<string, 
   return null;
 }
 
+// Confirmed live (2026-09-13): despite the system prompt's explicit instruction,
+// the relay's underlying model sometimes DESCRIBES a picker in prose instead of
+// actually calling the tool that renders one — e.g. replying "**Please choose a
+// lead source:** [Select a finished lead source]" as literal text, with no
+// tool_calls at all. That leaves nothing clickable, so the user hits a dead end.
+// This detects the unmistakable cases (the reply is unambiguously asking the user
+// to pick from one of these three finite sets) and synthesizes the REAL widget
+// anyway, via the exact same processToolCall path a genuine tool call would use —
+// a corrective fallback for a demonstrated model-reliability gap, not a guess.
+function detectMissedWidgetIntent(replyText: string): "list_lead_sources" | "list_mailboxes" | "request_lead_upload" | null {
+  const t = replyText.toLowerCase();
+  const asksToPick = /\b(choose|pick|select)\b/.test(t);
+  if (/\blead[\s-]?source/.test(t) && asksToPick) return "list_lead_sources";
+  if (/\bupload\b/.test(t) && /\b(no|don't have|do not have|haven't)\b/.test(t)) return "request_lead_upload";
+  if (/\bmailbox(es)?\b/.test(t) && asksToPick) return "list_mailboxes";
+  return null;
+}
+
 // Where the user's stuck campaigns are, for the campaign_status_list widget.
 async function loadCampaignsForStatus(userId: string): Promise<CampaignStatusItem[]> {
   const rows = await prisma.emailCampaign.findMany({
@@ -641,7 +668,16 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
   });
 
   const tool = findToolCall(result.tool_calls);
-  const processed = tool ? await processToolCall(tool.name, tool.args, opts.userId) : null;
+  let processed = tool ? await processToolCall(tool.name, tool.args, opts.userId) : null;
+
+  // No tool call at all, but the reply is unmistakably describing one of the three
+  // finite-choice widgets in prose (see detectMissedWidgetIntent) — synthesize the
+  // real widget the model should have called for, rather than leaving the user
+  // with dead placeholder text and no way to proceed without leaving the chat.
+  if (!processed) {
+    const missed = detectMissedWidgetIntent(result.content);
+    if (missed) processed = await processToolCall(missed, {}, opts.userId);
+  }
 
   // A widget/execute tool resolves its inline widget NOW so the snapshot is
   // persisted with the message and survives a reload (same discipline as toolCall

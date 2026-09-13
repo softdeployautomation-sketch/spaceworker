@@ -32,12 +32,13 @@ A running, chronological, human-readable log of what the agent has actually done
 
 Build a small pure function (e.g. `deriveActivityLog(messages, pending, outcomes)`) that walks the existing data and produces these entries — keep it in the same file or a small new `lib/agent-activity.ts` if that reads cleaner, but it's presentation logic, not a new data model. Show this panel persistently alongside the chat (a second column on wide screens; a toggle/tab on narrow ones — see layout note below) so a user "just chatting" can glance at it and see the stage of a longer flow without losing track, per the ask's "during the campaign, agent can handle most of the task" — this panel is what lets a hands-off user still feel oriented.
 
-## 3. Layout restructure
+## 3. Layout restructure — split on demand, not always-on
 
-Replace the current single 380px fixed sidebar with a layout that fits BOTH the chat and the activity panel without either feeling cramped:
-- **Wide screens (`xl:` and up)**: three logical regions — the main automations list (unchanged, existing left column), the chat (compact, own scroll area), and the activity panel (own scroll area) — stacked vertically within the existing right-hand column is the simplest correct answer if horizontal space is tight; a wider `xl:grid-cols-[minmax(0,1fr)_320px_320px]` three-column split is the alternative if there's room. Cline's call on which reads better once built — the requirement is both being visibly present at once without scrolling to switch between them, not a specific column count.
-- **Narrow/mobile**: a tab switcher ("Chat" / "Activity") is the pragmatic answer — don't try to fit three regions on a phone width.
-- The expand-drawer from item 1 layers on TOP of this (it's a temporary overlay/side-panel for one widget's full detail, not a permanent layout region).
+**Refined 2026-09-13** (owner, after seeing the plain single-column chat live): don't permanently reserve screen space for the activity panel. Default state is exactly what exists today — one column, just the chat, full width of the sidebar. The moment the agent produces something worth a second view (an inline widget, or the first entry in the activity log for this turn), the panel **automatically splits into two** — chat on one side, activity/widget detail on the other — with a smooth transition (width/opacity, not an abrupt reflow). When there's nothing to show (a fresh thread, or after the user's cleared everything relevant), it can collapse back to the single-column chat.
+
+- **Wide screens (`xl:` and up)**: single column by default; auto-splits to two side-by-side panels (chat + activity) the first time there's something to show. `grid-template-columns` transitioning between `[1fr]` and `[minmax(0,1fr)_320px]` (or similar) driven by whether the activity log is non-empty is the natural implementation — a CSS transition on the grid handles the "nicely" part of the ask.
+- **Narrow/mobile**: the same on-demand logic applies, but a second SIDE-BY-SIDE column doesn't fit — fall back to a tab switcher that appears (with a small badge/dot indicating new activity) only once there's something in it, rather than showing an empty "Activity" tab from the start.
+- The expand-drawer from item 1 is a separate, further zoom-in on ONE widget's full detail — it can be invoked whether the layout is currently split or not, and layers on top either way.
 
 ## Explicitly out of scope
 
@@ -48,6 +49,11 @@ Replace the current single 380px fixed sidebar with a layout that fits BOTH the 
 ## Verification expected
 
 - `npx tsc --noEmit` / `npm run build` clean.
-- Trigger a multi-step flow live (ask about a stuck campaign → run diagnostics → propose a pin) and confirm the activity panel shows all three steps without needing to scroll the chat to find them.
+- Confirm the DEFAULT state (fresh thread, no widgets yet) still looks exactly like today's single-column chat — the split must be earned by real content, never shown empty.
+- Trigger a multi-step flow live (ask about a stuck campaign → run diagnostics → propose a pin) and confirm the layout auto-splits on the first widget, the activity panel shows all three steps without needing to scroll the chat to find them, and the split transition is smooth rather than an abrupt jump.
 - Confirm expanding a widget (e.g. `diagnostics_result` with several probes) opens the drawer with a visible slide/fade transition, and that the chat input is still reachable/usable while the drawer is open — not blocked by a full-screen backdrop.
-- Confirm collapsing back to mobile width degrades to the tab switcher rather than an overlapping/broken layout — check at ~400px width per this app's existing responsive convention.
+- Confirm collapsing back to mobile width degrades to the tab switcher (badged only once there's real activity) rather than an overlapping/broken layout — check at ~400px width per this app's existing responsive convention.
+
+## Note — a related bug fixed separately (2026-09-13)
+
+While testing this live, the owner also hit a case where the agent's reply described a lead-source picker in plain prose ("**Please choose a lead source:** [Select a finished lead source]") instead of actually calling `list_lead_sources` — nothing clickable rendered at all. That's a `lib/agent.ts` model-reliability issue (the relay sometimes skips the tool call despite the system prompt), fixed independently of this task via a corrective `detectMissedWidgetIntent` fallback plus a strengthened system-prompt rule — not something this task needs to touch. Once this task's expand/activity UI lands, that corrective widget will display exactly like a normal one.
