@@ -7,8 +7,8 @@
 // each run's detail page.
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { Badge, Button, Card, Input, Label, Select } from "@/components/ui";
+import { useEffect, useRef, useState } from "react";
+import { Badge, Button, Card, Input, Label, Select, Spinner } from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { useConfirm } from "@/components/confirm-provider";
 
@@ -57,6 +57,46 @@ interface UploadJobOption {
   _count?: { leads: number };
 }
 
+// --- Task 31, item 3 — "Ask the agent" chat panel types ---------------------
+interface AgentMessage {
+  id: string;
+  role: string;
+  content: string;
+  toolCall: unknown;
+  createdAt: string;
+}
+
+interface AgentPendingAction {
+  id: string;
+  kind: "job" | "campaign";
+  payload: Record<string, unknown>;
+  proposal: string | null;
+  expiresAt: string;
+}
+
+interface AgentJobOutcome {
+  status: string;
+  ledCount: number;
+  validCount: number;
+  invalidCount: number;
+  uncheckedCount: number;
+}
+
+interface AgentOutcome {
+  kind: "job" | "campaign";
+  status: string;
+  executedJobId: string | null;
+  executedCampaignId: string | null;
+  job?: AgentJobOutcome;
+  campaign?: { id: string };
+}
+
+interface AgentOutcomeView {
+  phase: "pending" | "rejected" | "executed" | "error";
+  outcome?: AgentOutcome;
+  requestedLeads?: number;
+}
+
 const TRIGGER_LABEL: Record<string, string> = {
   manual: "Manual",
   daily: "Daily",
@@ -75,6 +115,27 @@ function summarizeTerms(findTerms: string[], locationTerms: string[], leadSource
   const f = findTerms.length === 1 ? findTerms[0] : `${findTerms[0]} +${findTerms.length - 1}`;
   if (locationTerms.length === 0) return f;
   return `${f} in ${locationTerms.length === 1 ? locationTerms[0] : `${locationTerms.length} locations`}`;
+}
+
+// --- Task 31, item 3 — agent payload readers ---------------------------------
+function payloadArr(payload: Record<string, unknown>, key: string): string[] {
+  const v = payload[key];
+  if (!Array.isArray(v)) return [];
+  return v.map((x) => String(x ?? "").trim()).filter((x) => x.length > 0);
+}
+
+function payloadNum(payload: Record<string, unknown>, key: string): number | undefined {
+  const n = Number(payload[key]);
+  return Number.isFinite(n) ? Math.floor(n) : undefined;
+}
+
+function payloadStr(payload: Record<string, unknown>, key: string): string {
+  return typeof payload[key] === "string" ? (payload[key] as string) : "";
+}
+
+// SearchJob statuses: "queued" | "running" | "done" | "failed" | "paused" | "stopped".
+function jobStillWorking(status: string | undefined): boolean {
+  return status === "queued" || status === "running";
 }
 
 const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -113,6 +174,16 @@ export default function AutomationsPage() {
   const [scheduleHour, setScheduleHour] = useState(9);
   const [formError, setFormError] = useState("");
 
+  // Task 31, item 3 — "Ask the agent" chat panel state.
+  const [agentMessages, setAgentMessages] = useState<AgentMessage[]>([]);
+  const [agentPending, setAgentPending] = useState<AgentPendingAction[]>([]);
+  const [agentInput, setAgentInput] = useState("");
+  const [agentSending, setAgentSending] = useState(false);
+  const [agentBusyId, setAgentBusyId] = useState<string | null>(null);
+  const [agentOutcomes, setAgentOutcomes] = useState<Record<string, AgentOutcomeView>>({});
+  const [mailboxCount, setMailboxCount] = useState(0);
+  const agentInputRef = useRef<HTMLDivElement>(null);
+
   async function loadAll() {
     try {
       setLoading(true);
@@ -138,8 +209,31 @@ export default function AutomationsPage() {
     }
   }
 
+  async function loadAgent() {
+    try {
+      const [master, mb] = await Promise.all([fetch("/api/agent"), fetch("/api/mailboxes")]);
+      if (mb.ok) {
+        const arr = (await mb.json()) as unknown[];
+        setMailboxCount(Array.isArray(arr) ? arr.length : 0);
+      }
+      if (master.ok) {
+        const data = (await master.json()) as {
+          messages?: AgentMessage[];
+          pending?: AgentPendingAction[];
+        };
+        setAgentMessages(data.messages ?? []);
+        setAgentPending(data.pending ?? []);
+      }
+    } catch {
+      push("Failed to load the agent chat", "error");
+    }
+  }
+
   useEffect(() => {
     void loadAll();
+    // Task 31, item 3 — load the agent chat + mailbox count once on mount too,
+    // reusing this single mount effect so we don't add a second setState-in-effect.
+    void loadAgent();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -296,6 +390,130 @@ export default function AutomationsPage() {
     await loadAll();
   }
 
+  // --- Task 31, item 3 — "Ask the agent" chat panel handlers ----------------
+  async function sendAgentMessage(text?: string) {
+    const msg = (text ?? agentInput).trim();
+    if (!msg || agentSending) return;
+    setAgentSending(true);
+    setAgentInput("");
+    try {
+      const res = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        push(err.error || "Agent request failed", "error");
+        return;
+      }
+      const data = (await res.json()) as {
+        reply?: string;
+        pendingAction?: AgentPendingAction;
+        messages?: AgentMessage[];
+      };
+      if (data.messages) setAgentMessages(data.messages);
+      if (data.pendingAction) {
+        setAgentPending((prev) => [data.pendingAction!, ...prev]);
+      }
+    } catch {
+      push("Agent request failed", "error");
+    } finally {
+      setAgentSending(false);
+    }
+  }
+
+  async function approveAction(action: AgentPendingAction) {
+    setAgentBusyId(action.id);
+    try {
+      const res = await fetch(`/api/agent/actions/${action.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "approve" }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        push(err.error || "Approval failed", "error");
+        return;
+      }
+      const data = (await res.json()) as { ok?: boolean; kind?: string };
+      setAgentPending((prev) => prev.filter((a) => a.id !== action.id));
+      const requestedLeads = action.kind === "job" ? payloadNum(action.payload, "min_results") : undefined;
+      setAgentOutcomes((prev) => ({
+        ...prev,
+        [action.id]: { phase: "pending", requestedLeads },
+      }));
+      push(data.kind === "campaign" ? "Campaign created" : "Job started", "success");
+      void pollAgentOutcome(action.id, requestedLeads, 0);
+    } catch {
+      push("Approval request failed", "error");
+    } finally {
+      setAgentBusyId(null);
+    }
+  }
+
+  async function rejectAction(action: AgentPendingAction) {
+    setAgentBusyId(action.id);
+    try {
+      const res = await fetch(`/api/agent/actions/${action.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: "reject" }),
+      });
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { error?: string };
+        push(err.error || "Reject failed", "error");
+        return;
+      }
+      setAgentPending((prev) => prev.filter((a) => a.id !== action.id));
+      setAgentOutcomes((prev) => ({ ...prev, [action.id]: { phase: "rejected" } }));
+      push("Proposal rejected", "info");
+    } catch {
+      push("Reject request failed", "error");
+    } finally {
+      setAgentBusyId(null);
+    }
+  }
+
+  async function pollAgentOutcome(actionId: string, requestedLeads?: number, attempt = 0) {
+    try {
+      const res = await fetch(`/api/agent/actions/${actionId}`);
+      if (res.status === 404) {
+        setAgentOutcomes((prev) => ({ ...prev, [actionId]: { phase: "error" } }));
+        return;
+      }
+      if (!res.ok) return;
+      const outcome = (await res.json()) as AgentOutcome | { error?: string };
+      if (outcome && typeof outcome === "object" && "kind" in outcome) {
+        const o = outcome as AgentOutcome;
+        setAgentOutcomes((prev) => ({
+          ...prev,
+          [actionId]: {
+            phase: "executed",
+            outcome: o,
+            requestedLeads: prev[actionId]?.requestedLeads ?? requestedLeads,
+          },
+        }));
+        if (o.kind === "job" && jobStillWorking(o.job?.status) && attempt < 20) {
+          window.setTimeout(() => void pollAgentOutcome(actionId, requestedLeads, attempt + 1), 5000);
+        }
+      }
+    } catch {
+      // Stop polling on network failure; the panel still shows the last snapshot.
+    }
+  }
+
+  async function planCampaignFollowUp(jobId: string) {
+    await sendAgentMessage(
+      `The extraction job ${jobId} has finished. Please propose an email campaign to follow up with these leads.`
+    );
+  }
+
+  function focusAgentInput() {
+    agentInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    agentInputRef.current?.querySelector("input")?.focus();
+  }
+
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex items-start justify-between gap-4">
@@ -305,9 +523,16 @@ export default function AutomationsPage() {
             Save a re-runnable extract + send config. Trigger it manually or let it run daily.
           </p>
         </div>
-        <Button onClick={openCreate}>{createOpen ? "Cancel" : "New automation"}</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onClick={focusAgentInput}>
+            Ask the agent
+          </Button>
+          <Button onClick={openCreate}>{createOpen ? "Cancel" : "New automation"}</Button>
+        </div>
       </div>
 
+      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="flex flex-col gap-6">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
       ) : automations.length === 0 ? (
@@ -577,6 +802,265 @@ export default function AutomationsPage() {
             )}
           </div>
         </Card>
+      )}
+        </div>
+
+        <aside className="sticky top-6 flex flex-col gap-3">
+          <Card className="flex flex-col gap-3 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-lg font-semibold">Ask the agent</h2>
+              {mailboxCount > 0 ? (
+                <Badge tone="neutral">
+                  {mailboxCount} mailbox{mailboxCount === 1 ? "" : "es"}
+                </Badge>
+              ) : (
+                <Badge tone="warning">No mailboxes</Badge>
+              )}
+            </div>
+            <p className="text-xs text-fg-muted">
+              Describe the audience you need leads for. The agent drafts a plan you review — nothing runs until you confirm it.
+            </p>
+
+            {/* Message bubbles */}
+            <div className="flex max-h-80 flex-col gap-2 overflow-y-auto rounded-lg border border-border bg-bg p-3">
+              {agentMessages.filter((m) => m.role === "user" || m.role === "assistant").length === 0 && (
+                <p className="text-xs text-fg-muted">No messages yet — try &quot;find leads for AI app founders in the US&quot;.</p>
+              )}
+              {agentMessages
+                .filter((m) => m.role === "user" || m.role === "assistant")
+                .map((m) => (
+                  <div
+                    key={m.id}
+                    className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                      m.role === "user"
+                        ? "ml-auto bg-brand-600 text-white"
+                        : "border border-border bg-bg-elevated"
+                    }`}
+                  >
+                    {m.content || "—"}
+                  </div>
+                ))}
+              {agentSending && (
+                <div className="flex max-w-[90%] items-center gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg-muted">
+                  <Spinner className="h-3.5 w-3.5" /> The agent is thinking…
+                </div>
+              )}
+            </div>
+
+            {/* Pending (unconfirmed) plan cards */}
+            {agentPending.map((action) => (
+              <div key={action.id} className="flex flex-col gap-2 rounded-xl border border-border bg-bg p-3">
+                <div className="flex items-center gap-2">
+                  <Badge tone="warning">{action.kind === "job" ? "Job plan" : "Campaign plan"}</Badge>
+                  <span className="text-xs text-fg-muted">
+                    expires {new Date(action.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+                </div>
+                {action.proposal && <p className="text-sm text-fg">{action.proposal}</p>}
+                {action.kind === "job" ? (
+                  <JobPlanDetails payload={action.payload} />
+                ) : (
+                  <CampaignPlanDetails payload={action.payload} />
+                )}
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    onClick={() => void approveAction(action)}
+                    disabled={agentBusyId === action.id}
+                  >
+                    {agentBusyId === action.id ? <Spinner className="h-3.5 w-3.5" /> : null}
+                    Confirm
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    onClick={() => void rejectAction(action)}
+                    disabled={agentBusyId === action.id}
+                  >
+                    Reject
+                  </Button>
+                </div>
+              </div>
+            ))}
+
+            {/* Executed outcomes + campaign follow-up */}
+            {Object.entries(agentOutcomes).map(([id, view]) => (
+              <AgentOutcomeCard
+                key={id}
+                view={view}
+                mailboxCount={mailboxCount}
+                onPlanCampaign={planCampaignFollowUp}
+              />
+            ))}
+
+            {/* Composer */}
+            <form
+              className="flex flex-col gap-2"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void sendAgentMessage();
+              }}
+            >
+              <div ref={agentInputRef}>
+                <Input
+                  value={agentInput}
+                  onChange={(e) => setAgentInput(e.target.value)}
+                  disabled={agentSending}
+                  placeholder="e.g. up to 10,000 leads for AI apps outreach"
+                />
+              </div>
+              <Button type="submit" disabled={agentSending || agentInput.trim().length === 0}>
+                {agentSending ? "Sending…" : "Send"}
+              </Button>
+            </form>
+          </Card>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+// --- Task 31, item 3 — small presentational pieces for the agent chat panel ---
+function JobPlanDetails({ payload }: { payload: Record<string, unknown> }) {
+  const findTerms = payloadArr(payload, "find_terms");
+  const locationTerms = payloadArr(payload, "location_terms");
+  const emailDomains = payloadArr(payload, "email_domains");
+  const minResults = payloadNum(payload, "min_results");
+  const maxDuration = payloadNum(payload, "max_duration_minutes");
+  const estimatedMin = payloadNum(payload, "estimated_time_minutes");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm">
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="text-xs font-medium text-fg-muted">Find:</span>
+        {findTerms.length === 0 ? (
+          <span className="text-fg-muted">—</span>
+        ) : (
+          findTerms.map((t) => (
+            <Badge key={t}>{t}</Badge>
+          ))
+        )}
+      </div>
+      {locationTerms.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs font-medium text-fg-muted">Location:</span>
+          {locationTerms.map((t) => (
+            <Badge key={t}>{t}</Badge>
+          ))}
+        </div>
+      )}
+      {emailDomains.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs font-medium text-fg-muted">Domains:</span>
+          {emailDomains.map((t) => (
+            <Badge key={t}>{t}</Badge>
+          ))}
+        </div>
+      )}
+      <p className="text-xs text-fg-muted">
+        {minResults && minResults > 0 ? `${minResults.toLocaleString()} result${minResults === 1 ? "" : "s"} target` : "No result target"}
+        {estimatedMin ?? maxDuration ? ` · ~${estimatedMin ?? maxDuration} min` : ""}
+      </p>
+    </div>
+  );
+}
+
+function CampaignPlanDetails({ payload }: { payload: Record<string, unknown> }) {
+  const name = payloadStr(payload, "name");
+  const subject = payloadStr(payload, "subject");
+  const body = payloadStr(payload, "body_html");
+  const jobId = payloadStr(payload, "search_job_id");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm">
+      {name && <p className="font-medium">{name}</p>}
+      {jobId && <p className="break-all text-xs text-fg-muted">Job: {jobId}</p>}
+      {subject && (
+        <p className="text-xs text-fg-muted">
+          <span className="font-medium">Subject:</span> {subject}
+        </p>
+      )}
+      {body && (
+        <p className="line-clamp-3 text-xs text-fg-muted">
+          {body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function AgentOutcomeCard({
+  view,
+  mailboxCount,
+  onPlanCampaign,
+}: {
+  view: AgentOutcomeView;
+  mailboxCount: number;
+  onPlanCampaign: (jobId: string) => void;
+}) {
+  if (view.phase === "pending") {
+    return (
+      <div className="flex items-center gap-2 rounded-xl border border-border bg-bg p-3 text-sm text-fg-muted">
+        <Spinner className="h-3.5 w-3.5" /> Executing…
+      </div>
+    );
+  }
+  if (view.phase === "rejected") {
+    return (
+      <div className="rounded-xl border border-border bg-bg p-3 text-sm text-fg-muted">Proposal rejected.</div>
+    );
+  }
+  if (view.phase === "error" || !view.outcome) {
+    return (
+      <div className="rounded-xl border border-border bg-bg p-3 text-sm text-fg-muted">Couldn&apos;t load the outcome.</div>
+    );
+  }
+
+  const o = view.outcome;
+  if (o.kind === "campaign") {
+    return (
+      <div className="flex flex-col gap-1.5 rounded-xl border border-border bg-bg p-3 text-sm">
+        <Badge tone="success">Campaign created</Badge>
+        {o.campaign?.id && (
+          <p className="break-all text-xs text-fg-muted">{o.campaign.id}</p>
+        )}
+      </div>
+    );
+  }
+
+  const job = o.job;
+  const done = job ? !jobStillWorking(job.status) : false;
+  const req = view.requestedLeads;
+  const pct =
+    job && req && req > 0 && job.ledCount > 0 ? Math.round((job.ledCount / req) * 100) : undefined;
+  return (
+    <div className="flex flex-col gap-1.5 rounded-xl border border-border bg-bg p-3 text-sm">
+      <div className="flex items-center gap-2">
+        <Badge tone={done ? (job?.status === "done" ? "success" : "danger") : "neutral"}>
+          {job?.status ?? "executed"}
+        </Badge>
+        {job && jobStillWorking(job.status) && <Spinner className="h-3.5 w-3.5" />}
+      </div>
+      {job && (
+        <>
+          <p className="text-fg">
+            {job.ledCount.toLocaleString()} leads found
+            {req && req > 0
+              ? ` vs ${req.toLocaleString()} requested${pct !== undefined ? ` (${pct}%)` : ""}`
+              : ""}
+          </p>
+          <p className="text-xs text-fg-muted">
+            {job.validCount} valid · {job.invalidCount} invalid · {job.uncheckedCount} unchecked
+          </p>
+        </>
+      )}
+      {done && mailboxCount > 0 && (
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={!o.executedJobId}
+          onClick={() => onPlanCampaign(o.executedJobId!)}
+        >
+          Plan a follow-up campaign
+        </Button>
       )}
     </div>
   );

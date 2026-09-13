@@ -37,6 +37,12 @@ export const env = {
   // templates (today's behaviour).
   systemTemplatesUserEmail: process.env.SYSTEM_TEMPLATES_USER_EMAIL ?? "",
 
+  // Task 31 — the API key for SpaceWorker's Channelry external-AI relay client
+  // (client_id "spaceworker", $50/day pooled cap). OPTIONAL: when blank the
+  // admin "Test connection" button and the AI agent fail CLOSED (marked "not
+  // configured") — never send a fake/empty key to Channelry.
+  channelryAiApiKey: process.env.CHANNELRY_AI_API_KEY ?? "",
+
   port: number("PORT", 3400),
 };
 

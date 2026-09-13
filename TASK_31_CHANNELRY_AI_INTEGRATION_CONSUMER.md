@@ -55,3 +55,45 @@ This is the bigger piece this contract was built for — re-read `TASK_27_EXE_LI
 - `npx tsc --noEmit` / `npm run build` clean.
 - Item 1: the admin "Test connection" button must be run against the REAL key and REAL Channelry endpoint (not mocked) — confirm a real `usage.cost_hundredths_cent >= 1` comes back, the same bar Channelry's own live-fire test used.
 - Item 3: the confirmation gate must be verified live — an agent-proposed job must NOT actually call `POST /api/jobs` until the human explicitly approves, checked by watching the Extract page's job list, not just trusting the code path.
+
+## STATUS — handoff from Cline (2026-09-13)
+
+### Items 1 & 2 — DONE and LIVE-VERIFIED against the real endpoint
+
+- **`lib/env.ts` + `.env.example`** — added optional `CHANNELRY_AI_API_KEY` (fail-closed). The real key is in the local `.env` and the production VPS `.env` (owner-provided); never commit it.
+- **`lib/channelry-ai.ts`** — the single thin wrapper: `channelryAiChat(opts)` (typed `{ content, tool_calls, usage }`), `channelryAiConfigured()`, `ChannelryAiError` with explicit codes for `401/403/429/502`/network/unconfigured. Bearer key from env only.
+- **`app/api/admin/ai/route.ts`** — admin-gated `GET { configured }` + `POST` Test-connection (real trivial plain-completion).
+- **`app/admin/(protected)/admin-panel.tsx`** — new **"AI"** tab (key-configured badge, "Test connection" button showing the real `usage` block; never displays the raw key).
+- **Live test PASSED (not mocked):** via the wrapper against `https://channelry-admin.olowolabiakinwale.workers.dev/external/ai-chat`, reply `"Acknowledged"` with `usage: { mode:"plain", cost_hundredths_cent:1, used_today_hundredths_cent:1, cap_hundredths_cent:500000 }` — `cost_hundredths_cent >= 1` ✓.
+
+### Item 3 — server-side COMPLETE (tsc-clean), UI + live verify OUTSTANDING
+
+New DB models (schema + migration `20260913100000_add_agent_threads`, applied to the local dev DB):
+- `AgentThread` (one per user), `AgentMessage` (chat turns, `toolCall` snapshot), `AgentPendingAction` (the approval-gate row: `kind` `"job"|"campaign"`, `status` `pending|approved|rejected|expired|executed`, `payload` JSON, `expiresAt` 1h TTL).
+
+New files (all `tsc --noEmit` clean, `npm run build` clean, migration applied):
+- **`lib/agent.ts`** — `runAgentTurn({userId, message})` routes through `channelryAiChat` tool-calling mode. Emits `propose_job`/`propose_campaign` → persists an `AgentPendingAction` (status `pending`, 1h TTL). **It NEVER creates a job/campaign.** Rich system prompt with grounded example find/location-term phrasing. `listThreadMessages`, `AGENT_PROPOSAL_TTL_MS`.
+- **`lib/agent-executor.ts`** — the ONLY place a pending action becomes real: `approvePendingAction` (atomic `pending→approved→executed` claim; resets back to `pending` if execution throws), `executeJob` (via `buildSearchQueries` + `createSearchJob` — the exact path `POST /api/jobs` uses), `executeCampaign` (via `leadToRecipient` + `createCampaign`, valid-leads only, `pending_test_confirm` so the test-send gate still applies), and `executedActionStatus` (poll: job status + lead/valid/invalid/unchecked counts or campaign id).
+- **`app/api/agent/route.ts`** — `GET` (thread messages + pending actions), `POST { message }` (runs a turn).
+- **`app/api/agent/actions/[id]/route.ts`** — `PATCH { decision:"approve"|"reject" }` (approve is the ONLY job/campaign creation trigger), `GET` (outcome poll).
+
+### Item 3 UI — DONE (tsc-clean + build-clean); LIVE VERIFY still outstanding
+
+- **`app/dashboard/automations/page.tsx`** now has the **"Ask the agent"** chat panel as a right-hand column (plus an "Ask the agent" header button beside "New automation" that focuses the composer).
+  - `GET /api/agent` on mount (folded into the single existing mount effect, so no new `setState-in-effect` lint error) renders message bubbles + any `pending` plan cards; mailbox count from `GET /api/mailboxes` drives the "No mailboxes" badge and the campaign-follow-up gating.
+  - Composer `POST /api/agent {message}`, appends the assistant reply, and any returned `pendingAction` renders a reviewable card.
+  - **Job plan card**: find terms / location terms / email domains (Badges), `min_results` target, `estimated_time_minutes`/`max_duration_minutes`, with **Confirm** (`PATCH /api/agent/actions/[id] {decision:"approve"}`) and **Reject**. On Confirm it starts polling `GET /api/agent/actions/[id]` (5s cadence, ≤20 shots, stops once the job leaves queued/running).
+  - **Outcome card**: leads-found vs. requested (+%), valid/invalid/unchecked split. When the job is done and the user has ≥1 mailbox, a **"Plan a follow-up campaign"** button POSTs a message that prompts the agent's `propose_campaign`, surfacing a confirmable **kind:"campaign"** plan card.
+  - **Campaign plan card**: name / subject / stripped-HTML body preview / search-job id, with Confirm + Reject; Confirm shows the created campaign id.
+  - Matches the file's conventions (plain `useState`/`fetch`, `Button`/`Card`/`Badge`/`Spinner`/`Input` from `@/components/ui`, `useToast`, `useConfirm`). `npx tsc --noEmit` clean, `npm run build` clean.
+
+### What the next agent must do (in order)
+
+1. **LIVE-verify the confirmation gate** (the doc's explicit item-3 bar): with the real key + running server, have the agent propose a job, then check the Extract page's job list — it must be **empty until Approve is clicked**; only after Approve does the new SearchJob appear. Also exercise the campaign follow-up with a mailbox configured. (The UI panel above is built and compiles clean; this live run is the remaining bar.)
+2. **`npm run build` + `npx tsc --noEmit`** must stay clean. Re-run `npx prune migrate deploy` on the prod DB on deploy (the local migrated fine).
+   - `GET /api/agent` on load → render `messages` (user/agent bubbles) + any currently-`pending` plan card.
+   - A message input → `POST /api/agent { message }`; append returned assistant `reply`.
+   - When a `pendingAction` comes back, render a **reviewable plan card** for `kind:"job"`: find terms, location terms, minResults, estimated time (use `max_duration_minutes` / `estimated_time_minutes`), with **Confirm** (`PATCH .../actions/[id] {decision:"approve"}`) and **Reject** buttons. Then poll `GET .../actions/[id]` to show the outcome (leads found vs requested, valid/invalid split, and — if the user has mailboxes — a follow-up opportunity to plan a campaign as its own confirmable `kind:"campaign"` step).
+   - Follow the file's existing conventions (plain `useState`/`fetch`, `Button`/`Card`/`Badge`/`useToast` from `@/components/ui`; note this file's lint is not `react-hooks`-clean baseline).
+2. **Live-verify the confirmation gate** (the doc's explicit item-3 bar): with the real key + running server, have the agent propose a job, then check the Extract page's job list — it must be **empty until Approve is clicked**; only after Approve does the new SearchJob appear. Also exercise the campaign follow-up with a mailbox configured.
+3. **`npm run build` + `npx tsc --noEmit`** must stay clean. Re-run `npx prisma migrate deploy` on the prod DB on deploy (the local migrated fine).

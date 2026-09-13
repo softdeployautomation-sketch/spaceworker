@@ -29,6 +29,8 @@ model User {
   leads            Lead[]
   campaignAutomations CampaignAutomation[]
   seedMailboxes    SeedMailbox[]
+  agentThreads     AgentThread[]
+  agentPendingActions AgentPendingAction[]
 }
 
 model VerificationCode {
@@ -559,4 +561,63 @@ model LinkRedirect {
   createdAt  DateTime        @default(now())
 
   @@index([campaignId])
+}
+
+// Task 31, item 3 — the Automations "Ask the agent" feature. Threads, messages,
+// and TTL-gated pending actions that implement the approval-gated tool calling
+// (Channelry's "Agent Decider System" precedent, reimplemented here in the
+// SpaceWorker schema — no shared library across the two repos). The agent never
+// creates a real SearchJob or EmailCampaign; it only proposes one as an
+// AgentPendingAction row. A human approval (PATCH .../approve) executes it for
+// real through the exact same creation helpers POST /api/jobs and POST
+// /api/campaigns use.
+
+model AgentThread {
+  id        String         @id @default(cuid())
+  userId    String
+  user      User           @relation(fields: [userId], references: [id])
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  messages  AgentMessage[]
+
+  @@index([userId])
+}
+
+model AgentMessage {
+  id        String      @id @default(cuid())
+  threadId  String
+  thread    AgentThread @relation(fields: [threadId], references: [id])
+  // "user" | "assistant" — every row is a literal turn in the chat panel.
+  role      String
+  content   String
+  // Snapshot of the pending job/campaign the assistant proposed (the tool_call
+  // channelryAiChat returned), so the plan card can be re-rendered without
+  // re-deriving it from free text on every reload.
+  toolCall  Json?
+  createdAt DateTime   @default(now())
+
+  @@index([threadId, createdAt])
+}
+
+model AgentPendingAction {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  // "job" | "campaign"
+  kind          String
+  // "pending" | "approved" | "rejected" | "expired" | "executed". A proposal is
+  // only ever turned into a REAL job/campaign exactly once, on explicit human
+  // approval, via the "approved" -> "executed" transition.
+  status        String   @default("pending")
+  payload       Json
+  // The assistant's prose that described this plan (shown as the plan card's
+  // supporting text).
+  proposal      String?
+  // One-hour TTL: an unapproved plan silently expires rather than lingering.
+  expiresAt     DateTime
+  executedJobId String?
+  executedCampaignId String?
+  createdAt     DateTime @default(now())
+
+  @@index([userId, status])
 }

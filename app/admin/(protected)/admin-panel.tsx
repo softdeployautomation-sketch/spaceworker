@@ -23,7 +23,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -34,6 +34,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "queue", label: "Search Queue" },
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
+  { id: "ai", label: "AI" },
 ];
 
 // Import type only (server-only), not the runtime module — keeps this
@@ -116,6 +117,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "queue" && <QueueTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
+        {tab === "ai" && <AiTab />}
       </main>
     </div>
   );
@@ -965,6 +967,154 @@ function ServiceStateBadge({ activeState }: { activeState: string }) {
 const SERVICE_LABELS: Record<string, string> = {
   "spaceworker-browser.service": "Browser subsystem (Neko/Chrome)",
 };
+
+type AITestUsage = {
+  mode?: string;
+  cost_hundredths_cent?: number;
+  used_today_hundredths_cent?: number;
+  cap_hundredths_cent?: number;
+};
+
+type AITestResult = {
+  ok: boolean;
+  content?: string;
+  usage?: AITestUsage;
+  error?: string;
+  code?: string;
+};
+
+function AiTab() {
+  const [configured, setConfigured] = useState<boolean | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<AITestResult | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/admin/ai");
+        if (!res.ok) throw new Error("Failed to read AI config");
+        const data = await res.json();
+        setConfigured(Boolean(data.configured));
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load AI config");
+      }
+    })();
+  }, []);
+
+  async function testConnection() {
+    setTesting(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await fetch("/api/admin/ai", { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as AITestResult;
+      if (res.ok) {
+        setResult(data);
+      } else {
+        setResult({ ok: false, error: data.error ?? "Test failed", code: data.code });
+      }
+    } catch {
+      setResult({ ok: false, error: "Network error" });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-semibold tracking-tight">AI (Channelry relay)</h2>
+        <button
+          onClick={() => void testConnection()}
+          disabled={testing || configured === false}
+          className="rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+        >
+          {testing ? "Testing…" : "Test connection"}
+        </button>
+      </div>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        SpaceWorker's client on the Channelry external-AI relay (client id{" "}
+        <code className="text-zinc-600">spaceworker</code>, a pooling $50/day cap). The key is read from
+        the <code className="text-zinc-600">CHANNELRY_AI_API_KEY</code> environment variable and is never
+        shown here or exposed to the browser.
+      </p>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-medium">Key configured</span>
+          {configured === null ? (
+            <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+              Loading…
+            </span>
+          ) : configured ? (
+            <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+              Yes — ready to test
+            </span>
+          ) : (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
+              No — set CHANNELRY_AI_API_KEY to enable
+            </span>
+          )}
+        </div>
+      </div>
+
+      {configured === false && (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
+          Add <code className="text-zinc-600">CHANNELRY_AI_API_KEY</code> to the server environment and
+          restart, then reload this page. The connection test is disabled until then (fail closed).
+        </p>
+      )}
+
+      {result && (
+        <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold">Test result</h3>
+            {result.ok ? (
+              <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                Connected
+              </span>
+            ) : (
+              <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                Failed{result.code ? ` — ${result.code}` : ""}
+              </span>
+            )}
+          </div>
+          {result.content && (
+            <p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">
+              <span className="font-medium">Reply:</span> “{result.content}”
+            </p>
+          )}
+          {result.error && (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{result.error}</p>
+          )}
+          {result.usage && (
+            <div className="mt-3 grid grid-cols-3 gap-3 text-sm">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Cost</p>
+                <p className="font-medium">{result.usage.cost_hundredths_cent ?? 0} hundredths ¢</p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Used today</p>
+                <p className="font-medium">
+                  {result.usage.used_today_hundredths_cent === undefined
+                    ? "—"
+                    : `${result.usage.used_today_hundredths_cent}`}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">Daily cap</p>
+                <p className="font-medium">{result.usage.cap_hundredths_cent ?? "—"}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function ServicesTab() {
   const confirm = useConfirm();
