@@ -223,13 +223,25 @@ if (res.status === 401) {
     );
   }
 
+  // Root-caused live 2026-09-13: the relay returns the standard OpenAI
+  // function-calling shape — {id, type: "function", function: {name,
+  // arguments}} — but this mapping was reading tc.name/tc.arguments directly,
+  // which don't exist at that level. Every tool call has been silently turned
+  // into { name: "", arguments: null } since Task 31's first implementation —
+  // findToolCall (lib/agent.ts) then correctly found no matching name and
+  // treated a perfectly valid tool call as if the model had said nothing,
+  // which is what produced the "agent won't do anything, just repeats a
+  // generic reply" symptom on ANY request that should have triggered a tool.
+  // Read the nested function.* fields (with a flat fallback retained in case
+  // any caller ever gets the older shape) rather than the top level.
   const toolCallsRaw = Array.isArray(record.tool_calls) ? record.tool_calls : undefined;
   const tool_calls = toolCallsRaw?.map((tc) => {
     const t = (typeof tc === "object" && tc !== null ? tc : {}) as Record<string, unknown>;
+    const fn = (typeof t.function === "object" && t.function !== null ? t.function : {}) as Record<string, unknown>;
     return {
       id: typeof t.id === "string" ? t.id : undefined,
-      name: typeof t.name === "string" ? t.name : "",
-      arguments: t.arguments ?? null,
+      name: typeof fn.name === "string" ? fn.name : (typeof t.name === "string" ? t.name : ""),
+      arguments: fn.arguments ?? t.arguments ?? null,
     };
   });
 
