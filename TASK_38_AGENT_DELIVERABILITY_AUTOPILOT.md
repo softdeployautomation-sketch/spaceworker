@@ -58,6 +58,27 @@ Extend `ExecutedActionStatus`/`executedActionStatus` so the chat panel's existin
 - Any autonomy beyond what TASK_33 §3 already specified. Reading diagnostics on the seed mailbox is the ONE autonomous action; everything else (pin, switch, running diagnostics in override mode) keeps the explicit human click.
 - Changing `deliverability-decision`'s `continue`/`stop`/`add_edit_and_continue` actions — not mentioned in the original ask, and `add_edit_and_continue` in particular requires a manually-authored draft the agent has no business inventing unprompted.
 
+## Bug found during live testing (2026-09-13) — fix as part of this pass
+
+Confirmed live on production via the actual `AgentMessage` rows: sending plain
+conversational input ("hello", "i want campaign") sometimes gets back
+`content: ""` from `channelryAiChat` with no `tool_calls` at all — the relay's
+underlying model occasionally returns a genuinely empty completion for input
+that doesn't cleanly map to a tool call. `runAgentTurn` has no fallback for
+this: it persists the empty string as-is, and the frontend (which only renders
+`m.content` when non-empty, or `m.inlineWidget`) shows a completely blank
+bubble — the chat looks stuck/dead with no error and nothing to click.
+
+Fix, in `runAgentTurn` (the same function this task is already restructuring
+for the widget/pending-action split): if `reply.trim()` is empty AND there is
+no tool call AND no inline widget, substitute a graceful fallback string (e.g.
+"I can help you find leads, plan a campaign, or check on one that's stuck —
+what would you like to do?") before persisting and returning — never let an
+assistant turn render as literally nothing. This is a small, isolated
+addition; it doesn't require diagnosing why the relay returned empty (that's
+model/relay behavior, not fixable from this codebase), only ensuring the chat
+never goes silent because of it.
+
 ## Verification expected
 
 - `npx tsc --noEmit` / `npm run build` clean.
