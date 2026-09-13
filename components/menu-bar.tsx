@@ -57,7 +57,7 @@ export function MenuBar() {
     { label: "New Extraction Job", href: "/dashboard/extract" },
     { label: "New Campaign", href: "/dashboard/campaigns" },
     { label: "New Mailbox", href: "/dashboard/mailboxes" },
-    { label: "New Browser Profile", href: "/dashboard/browser-profiles" },
+    { label: "New Browser Profile", href: "/dashboard/browser?tab=profiles" },
   ];
 
   const windowItems: MenuItemDef[] = navItems.map((item) => ({

@@ -9,12 +9,13 @@ type QueueItem = {
   mailboxId: string;
   mailbox?: { id: string; label: string; username: string } | null;
   variantId: string | null;
-  variant?: { id: string; subject: string } | null;
+  variant?: { id: string; subject: string; bodyHtml: string } | null;
   toEmail: string;
   // Task 29, item 3 — provenance. "manual_insert" = a test recipient the user
   // dropped into the queue at a chosen position; "" = extracted/uploaded/picked.
   source: string;
   resolvedSubject: string | null;
+  resolvedBodyHtml: string | null;
   variables: Record<string, string> | null;
   status: string;
   sentAt: string | null;
@@ -63,6 +64,16 @@ const PAGE_SIZE = 50;
 // email, so there's no value in rendering real HTML here (and doing so via
 // dangerouslySetInnerHTML would execute any script/markup a campaign's bodyHtml
 // happened to contain, a stored-XSS surface this page never had before).
+// First ~80 chars of the plain-text body, for a quick "what's actually being
+// sent" glance in the queue table — replaces the old raw "merge vars" column,
+// which showed internal field names/values that weren't meaningful to a user
+// (especially once leads come from an upload, not extraction) instead of
+// anything about the message itself.
+function bodyPreview(html: string): string {
+  const text = stripHtml(html).replace(/\s+/g, " ").trim();
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 function stripHtml(html: string): string {
   if (typeof document === "undefined") return html.replace(/<[^>]*>/g, " ");
   const div = document.createElement("div");
@@ -164,7 +175,7 @@ export default function CampaignDetailPage() {
   // Sets this campaign's human-assisted test-recipient override, then immediately
   // re-runs the test-send against it — the whole point of offering this after a
   // failure is to get a working result without a second manual click.
-  async function useAsTestRecipient(email: string) {
+  async function applyTestRecipient(email: string) {
     setSettingTestRecipient(true);
     try {
       const res = await fetch(`/api/campaigns/${id}/test-recipient`, {
@@ -348,12 +359,12 @@ export default function CampaignDetailPage() {
                   disabled={debating || testBusy}
                   className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
                 >
-                  Didn't receive it — try again
+                  Didn&apos;t receive it — try again
                 </button>
               </div>
               <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
-                "It's in the inbox" records your manual confirmation and unlocks sending immediately. "Try a different
-                subject" rotates to the next subject (if you have more than one) and re-tests.
+                &quot;It&apos;s in the inbox&quot; records your manual confirmation and unlocks sending immediately.
+                &quot;Try a different subject&quot; rotates to the next subject (if you have more than one) and re-tests.
               </p>
             </div>
           )}
@@ -371,7 +382,7 @@ export default function CampaignDetailPage() {
                 {existingTestRecipient ? (
                   <button
                     type="button"
-                    onClick={() => void useAsTestRecipient(existingTestRecipient)}
+                    onClick={() => void applyTestRecipient(existingTestRecipient)}
                     disabled={settingTestRecipient || testBusy}
                     className="mt-2 rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
                   >
@@ -388,7 +399,7 @@ export default function CampaignDetailPage() {
                     />
                     <button
                       type="button"
-                      onClick={() => testRecipientInput.trim() && void useAsTestRecipient(testRecipientInput.trim())}
+                      onClick={() => testRecipientInput.trim() && void applyTestRecipient(testRecipientInput.trim())}
                       disabled={settingTestRecipient || testBusy || !testRecipientInput.trim()}
                       className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
                     >
@@ -397,8 +408,8 @@ export default function CampaignDetailPage() {
                   </div>
                 )}
                 <p className="mt-1.5 text-xs text-amber-700/80 dark:text-amber-400/70">
-                  Every test (and later batch check) will go straight there — you'll check your own inbox and confirm
-                  delivery yourself, since there's no automated way to verify a plain address.
+                  Every test (and later batch check) will go straight there — you&apos;ll check your own inbox and confirm
+                  delivery yourself, since there&apos;s no automated way to verify a plain address.
                 </p>
               </div>
             );
@@ -481,7 +492,7 @@ export default function CampaignDetailPage() {
               <th className="px-4 py-3 font-medium">Recipient</th>
               <th className="px-4 py-3 font-medium">Mailbox</th>
               <th className="px-4 py-3 font-medium">Variant subject</th>
-              <th className="px-4 py-3 font-medium">Merge vars</th>
+              <th className="px-4 py-3 font-medium">Message preview</th>
               <th className="px-4 py-3 font-medium">Status</th>
               <th className="px-4 py-3 font-medium">Sent at</th>
               <th className="px-4 py-3 font-medium">Error</th>
@@ -506,10 +517,8 @@ export default function CampaignDetailPage() {
                   </td>
                   <td className="px-4 py-3">{item.mailbox?.label ?? "—"}</td>
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{item.variant?.subject ?? "—"}</td>
-                  <td className="px-4 py-3 text-zinc-500 max-w-[220px] truncate dark:text-zinc-400">
-                    {item.variables && Object.keys(item.variables).length > 0
-                      ? Object.entries(item.variables).map(([k, v]) => `${k}=${v}`).join(", ")
-                      : "—"}
+                  <td className="px-4 py-3 text-zinc-500 max-w-[280px] truncate dark:text-zinc-400" title={stripHtml(item.resolvedBodyHtml ?? item.variant?.bodyHtml ?? "")}>
+                    {bodyPreview(item.resolvedBodyHtml ?? item.variant?.bodyHtml ?? "") || "—"}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${

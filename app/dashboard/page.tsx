@@ -11,8 +11,7 @@ const DESCRIPTIONS: Record<string, string> = {
   Extract: "Search the web for leads and pull them into your workspace.",
   Mailboxes: "Connect your own SMTP accounts, tested before first use.",
   Campaigns: "Draft outreach and send safely under a daily cap.",
-  "Browser Profiles": "Isolated Chrome profiles with clean fingerprints.",
-  "Private Browser": "A real Chrome instance routed through a proxy.",
+  "Private Browser": "A real Chrome instance routed through a proxy, with isolated profiles under the Browser Profiles tab.",
   Settings: "Account, billing, and workspace preferences.",
 };
 
@@ -23,7 +22,6 @@ export default function DashboardPage() {
       i.href === "/dashboard/mailboxes" ||
       i.href === "/dashboard/campaigns" ||
       i.href === "/dashboard/extract" ||
-      i.href === "/dashboard/browser-profiles" ||
       i.href === "/dashboard/browser" ||
       i.href === "/dashboard/settings",
   );

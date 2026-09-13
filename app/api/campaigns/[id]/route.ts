@@ -20,7 +20,7 @@ export async function GET(
         orderBy: { createdAt: "asc" },
         include: {
           mailbox: { select: { id: true, label: true, username: true } } ,
-          variant: { select: { id: true, subject: true } },
+          variant: { select: { id: true, subject: true, bodyHtml: true } },
         },
       },
       checks: { orderBy: { createdAt: "desc" }, take: 10 },

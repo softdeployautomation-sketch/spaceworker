@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import {
-  Fingerprint,
   Globe,
   LayoutDashboard,
   Megaphone,
@@ -31,11 +30,6 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard/extract", label: "Extract", icon: Search },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/automations", label: "Automations", icon: Zap },
-  {
-    href: "/dashboard/browser-profiles",
-    label: "Browser Profiles",
-    icon: Fingerprint,
-  },
   { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
