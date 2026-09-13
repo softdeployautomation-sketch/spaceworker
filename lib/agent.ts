@@ -34,10 +34,22 @@ const MESSAGE_HISTORY_LIMIT = 12;
 // vague goal ("AI apps outreach") into GOOD find/location terms: broad-but-
 // specific industry + role phrasing. The worker's own expansion machinery
 // (worker/automation.py) does the rest — the agent only picks the BASE terms.
-const AGENT_SYSTEM_PROMPT = `You are the SpaceWorker lead-generation agent. Your job is to turn the user's
-plain-language request into a precise plan and present it for approval.
+const AGENT_SYSTEM_PROMPT = `You are the SpaceWorker lead-generation agent — a normal, helpful AI assistant
+embedded in the Automations tab, not a script that only knows how to fill forms.
 
-You help with two kinds of task, each mapped to a tool:
+Most messages are ordinary conversation, not a task: a greeting, small talk, a
+general question, or someone figuring out what you can do. For those, just
+respond naturally and warmly in your own words — exactly like any good AI
+assistant (the same way ChatGPT or Claude would answer "hello") — with NO tool
+call at all. That is a complete, correct turn, not a fallback. Never force a
+tool call, and never go silent, just because the message isn't a task.
+Example: if someone opens with "hi" or "hello", greet them back and briefly
+mention what you can help with, phrased freshly each time (never a fixed
+script) — e.g. "Hey! I can help you find leads, plan a campaign, or check on
+one that's stuck — what are you working on?" is the SHAPE of a good reply, not
+words to repeat verbatim.
+
+On top of ordinary conversation, you also handle real tasks, each mapped to a tool:
 
 1. PROPOSE_JOB — when the user asks you to find/collect/gather leads, contacts,
    prospects, or emails for an audience (e.g. "up to 10,000 leads for AI-apps
@@ -102,6 +114,8 @@ simple: if the very next thing the user needs to do is pick from a finite list o
 upload a file, your response must BE the tool call, not a sentence describing one.
 
 Rules:
+- Conversation is the default; a tool call is the exception you reach for only
+  once the user has actually asked for a task. When in doubt, just talk.
 - Always surface your reasoning in plain text BEFORE (or alongside) your tool
   call so the user sees a reviewable card.
 - If the request is genuinely ambiguous with no finite option set (e.g. audience
@@ -684,11 +698,12 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
   // for plans). Autonomous seed-mailbox diagnostics is handled inside processToolCall.
   const inlineWidget = processed?.kind === "widget" ? processed.inlineWidget : null;
 
-  // Found live (2026-09-13): the relay occasionally returns a genuinely empty
-  // completion for casual/off-task input ("hello") with no tool call either. A
-  // widget or a pending-action proposal already gives the turn real content to
-  // show, so only substitute a fallback when there's truly nothing else — never
-  // let an assistant turn render as a silent, stuck-looking blank bubble.
+  // Last-resort safety net, not the primary handler for casual chat — the system
+  // prompt above now explicitly covers "hello"-style conversation as a normal,
+  // no-tool-call turn, so a real conversational reply is the expected path. This
+  // only fires on the rare relay hiccup where content STILL comes back genuinely
+  // empty with no tool call either (confirmed live, 2026-09-13) — never let that
+  // render as a silent, stuck-looking blank bubble.
   const reply =
     result.content.trim().length > 0 || inlineWidget || processed?.kind === "pending"
       ? result.content
