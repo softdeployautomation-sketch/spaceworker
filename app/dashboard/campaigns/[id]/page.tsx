@@ -500,6 +500,13 @@ export default function CampaignDetailPage() {
   const latestCheck = campaign.checks?.[0];
   const awaitingConfirm = campaign.status === "pending_test_confirm";
 
+  // Task 36 — "switch subject" is only offered when the campaign actually has an
+  // independent subject to rotate to (decoupled subjects.length > 1). A legacy
+  // campaign, or a decoupled one with a single subject, has nothing to switch to
+  // — the button is hidden and the user is steered to "Manually edit and test",
+  // so clicking can never silently do nothing (the server also rejects it).
+  const canSwitchSubject = (campaign.subjects?.length ?? 0) > 1;
+
   // Task 32 — the From addresses the draft probe can be sent as: every Task 30
   // item 4 configured from address across the campaign's mailboxes, deduped, plus
   // each mailbox's SMTP username as a fallback (an empty list on a mailbox means
@@ -843,14 +850,16 @@ export default function CampaignDetailPage() {
                 >
                   {debating ? "Applying…" : "It's in the inbox — go ahead"}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void retryWithNextSubject()}
-                  disabled={debating || testBusy}
-                  className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
-                >
-                  {debating || testBusy ? "Working…" : "It went to spam — try a different subject"}
-                </button>
+                {canSwitchSubject && (
+                  <button
+                    type="button"
+                    onClick={() => void retryWithNextSubject()}
+                    disabled={debating || testBusy}
+                    className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-500 disabled:opacity-50"
+                  >
+                    {debating || testBusy ? "Working…" : "It went to spam — try a different subject"}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void sendTest()}
@@ -862,7 +871,9 @@ export default function CampaignDetailPage() {
               </div>
               <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
                 &quot;It&apos;s in the inbox&quot; records your manual confirmation and unlocks sending immediately.
-                &quot;Try a different subject&quot; rotates to the next subject (if you have more than one) and re-tests.
+                {canSwitchSubject
+                  ? " \"Try a different subject\" rotates to the next subject and re-tests it before anything resumes."
+                  : " This campaign only has one subject, so rotating isn&apos;t available — use \"Manually edit and test\" below to try fresh content instead."}
               </p>
             </div>
           )}
@@ -943,14 +954,24 @@ export default function CampaignDetailPage() {
             >
               {debating ? "Applying…" : "Continue anyway"}
             </button>
-            <button
-              type="button"
-              onClick={() => void deliverabilityDecision("switch_subject")}
-              disabled={debating}
-              className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-400 disabled:opacity-50"
-            >
-              {debating ? "Applying…" : "Switch subject & resume"}
-            </button>
+            {canSwitchSubject ? (
+              <button
+                type="button"
+                onClick={() => void retryWithNextSubject()}
+                disabled={debating || testBusy}
+                className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-400 disabled:opacity-50"
+              >
+                {debating || testBusy ? "Applying…" : "Switch subject & re-test"}
+              </button>
+            ) : (
+              // Task 36 — a legacy / single-subject campaign has nothing to
+              // rotate to; switching silently wouldn't change anything being
+              // sent, so instead of offering a dead button we surface that and
+              // steer to Task 32's "Manually edit and test" below.
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                This campaign only has one subject — use &quot;Manually edit and test&quot; below to try fresh content.
+              </p>
+            )}
             <button
               type="button"
               onClick={() => void deliverabilityDecision("stop")}

@@ -51,6 +51,25 @@ export async function POST(req: Request) {
     batchSizeByCampaign.set(c.id, Math.max(1, Math.floor(c.batchSize ?? 50)));
     dispatchedThisTick.set(c.id, 0);
   }
+  // Task 36 — mailbox fairness. The batch quota (batchSizeByCampaign) is shared
+  // campaign-wide but consumed in mailbox-iteration order, so a mailbox with
+  // many queued items could greedily fill the ENTIRE batch every tick, starving
+  // the campaign's other mailboxes (confirmed live: 66 straight sends through
+  // mailbox A, zero through mailbox B on a 2-mailbox, rotateEvery:10 campaign).
+  // Give each mailbox a proportional per-tick share: perMailboxCap = ceil(
+  // batchSize / mailboxCount). This is an ADDITIVE upper bound per mailbox, not
+  // a replacement for the campaign cap — admission still needs BOTH, so total
+  // per tick never exceeds the configured batch.
+  const perMailboxCapByCampaign = new Map<string, number>();
+  for (const c of sendingCampaigns) {
+    perMailboxCapByCampaign.set(
+      c.id,
+      Math.ceil((c.batchSize ?? 50) / Math.max(1, c.mailboxIds.length))
+    );
+  }
+  // dispatchedByMailbox[campaignId][mailboxId] = how many items THIS campaign
+  // has admitted from THIS mailbox so far this tick.
+  const dispatchedByMailbox = new Map<string, Map<string, number>>();
   const drainedCampaignIds = new Set<string>();
   // Task 33 — snapshot each sending campaign's active pinned-override window. The
   // drain honors the pin (sends the pinned content/From instead of consulting
@@ -106,13 +125,25 @@ export async function POST(req: Request) {
 
     // Batch gate: only take the first `batchSize` items of each campaign this tick,
     // so the drain pauses at the batch boundary and lets the probe gate the next one.
+    // Task 36 — ALSO cap per-mailbox at this campaign's per-mailbox share of the
+    // batch (perMailboxCapByCampaign), so one well-stocked mailbox can't consume
+    // the whole quota and starve its siblings in the same campaign on this tick.
     const admit: typeof items = [];
     for (const item of items) {
       const used = dispatchedThisTick.get(item.campaignId) ?? 0;
       const cap = batchSizeByCampaign.get(item.campaignId) ?? Number.MAX_SAFE_INTEGER;
       if (used >= cap) continue;
+      const mboxCap = perMailboxCapByCampaign.get(item.campaignId) ?? Number.MAX_SAFE_INTEGER;
+      let byMailbox = dispatchedByMailbox.get(item.campaignId);
+      if (!byMailbox) {
+        byMailbox = new Map();
+        dispatchedByMailbox.set(item.campaignId, byMailbox);
+      }
+      const usedByMailbox = byMailbox.get(mailbox.id) ?? 0;
+      if (usedByMailbox >= mboxCap) continue;
       admit.push(item);
       dispatchedThisTick.set(item.campaignId, used + 1);
+      byMailbox.set(mailbox.id, usedByMailbox + 1);
       drainedCampaignIds.add(item.campaignId);
     }
     if (admit.length === 0) continue;

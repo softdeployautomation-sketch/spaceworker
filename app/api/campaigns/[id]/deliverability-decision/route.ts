@@ -16,11 +16,18 @@ import { getSession } from "@/lib/session";
 //                       separate confirm-test call since the human already made
 //                       the call this endpoint exists to capture).
 //   "switch_subject" — rotate to the next independent subject (decoupled
-//                      campaigns; no-op rotation for legacy pair campaigns).
-//                      paused_deliverability: rotates AND resumes sending.
-//                      pending_test_confirm: rotates only — status STAYS
+//                      campaigns). From a batch pause: rotates AND moves the
+//                      campaign back into the initial-gate "pending_test_confirm"
+//                      shape so resuming requires a fresh test-send + human
+//                      confirm of the NEW content (Task 36) — never a bare
+//                      flip to "sending" without re-verification. From the
+//                      initial gate: rotates only — status STAYS
 //                      pending_test_confirm, since nothing has been confirmed to
 //                      send yet; the frontend re-runs the test-send right after.
+//                      Task 36 — a legacy (non-decoupled) or single-subject
+//                      campaign has nothing to rotate to, so this returns a 400
+//                      (redirecting to Task 32's "Manually edit and test") rather
+//                      than silently resuming with the content that just failed.
 //   "add_edit_and_continue" — Task 32: promote a manually-authored draft (subject/
 //                      bodyHtml fields) that a real test-send already judged good
 //                      into the campaign's rotation, as the PREFERRED entry. Front-
@@ -89,25 +96,48 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   if (action === "switch_subject") {
+    // Task 36 — never a silent no-op. Rotating is only meaningful when the
+    // campaign actually HAS an independent subject to rotate to. For a legacy
+    // (non-decoupled) campaign, or a decoupled campaign with a single subject,
+    // there's nothing to switch to — reject with a clear redirect to Task 32's
+    // "Manually edit and test" (which upgrades legacy campaigns into the
+    // decoupled model on promotion) instead of pretending we changed something
+    // and letting the campaign resume with the very content that just failed.
     const rotatedSubjects = Array.isArray(campaign.subjects) && campaign.subjects.length > 1
       ? [...campaign.subjects.slice(1), campaign.subjects[0]]
       : undefined;
+    if (!rotatedSubjects) {
+      return NextResponse.json(
+        { error: "This campaign only has one subject — there's nothing to switch to. Use \"Manually edit and test\" to try a fresh subject/body instead." },
+        { status: 400 }
+      );
+    }
+
     // From the initial gate: rotate only, stay put — nothing has been confirmed
-    // to send yet, so there's no "resume" to do. The frontend immediately
+    // to send yet, so there's no \"resume\" to do. The frontend immediately
     // re-runs the test-send against the new subject.
     if (fromInitialGate) {
       await prisma.emailCampaign.update({
         where: { id },
-        data: rotatedSubjects ? { subjects: rotatedSubjects } : {},
+        data: { subjects: rotatedSubjects },
       });
       return NextResponse.json({ ok: true, status: campaign.status });
     }
-    // From a batch pause: rotate AND resume — this is the existing behavior.
+
+    // From a batch pause: rotate AND move into the SAME \"awaiting a fresh test\"
+    // shape the initial gate uses (pending_test_confirm) instead of resuming
+    // straight to \"sending\". The batch gate's core discipline is that a campaign
+    // only enters \"sending\" after an explicit test-send + human confirm;
+    // resuming a mid-campaign spam hit with zero re-verification undermines
+    // exactly that protection. The mail-queue drain only processes \"sending\", so
+    // this keeps the campaign paused until the frontend (retryWithNextSubject)
+    // runs a fresh test of the new subject and the human confirms it — the same
+    // loop the campaign went through on its very first send.
     await prisma.emailCampaign.update({
       where: { id },
-      data: { ...(rotatedSubjects ? { subjects: rotatedSubjects } : {}), status: "sending" },
+      data: { subjects: rotatedSubjects, status: "pending_test_confirm" },
     });
-    return NextResponse.json({ ok: true, status: "sending" });
+    return NextResponse.json({ ok: true, status: "pending_test_confirm" });
   }
 
   // \"pin_and_continue\" — Task 33: lock the campaign onto one particular
