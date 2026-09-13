@@ -2,6 +2,10 @@
 
 **Status: ready for Cline, after Task 33 lands.** Task 33 is still mid-flight in `app/api/internal/mail-queue-drain/route.ts`, `lib/deliverability.ts`, `app/dashboard/campaigns/[id]/page.tsx`, and the two campaign decision routes — do not start until that's committed, since this task builds directly on the drain loop Task 33 is changing.
 
+## URGENT — fix this first, before anything else in this doc (confirmed live, 2026-09-13)
+
+The "Sending activity" modal's "Most recent sends" list has **no height cap or scroll container** — on a real campaign (150 recipients, 50+ sent) the list grows the whole modal past the viewport, pushing the close (×) button off-screen entirely. The user could still dismiss it via backdrop-click (the `Modal` component in `components/modal.tsx` closes `onClick` on the outer backdrop), but that's a workaround, not a fix — a user who doesn't know that is stuck. Cap that list to a fixed height (e.g. `max-h-64 overflow-y-auto`, matching the "no need to make the modal bigger" instruction from Task 30 item 2 that this regressed) as the very first thing done when this file is next safely editable. Do this ahead of the rest of Task 35's items below if picking them up in the same pass.
+
 ## Context: the "stuck" campaign was a real infra bug, now fixed — this is a follow-up UX request, not a bug report
 
 While diagnosing why a campaign sat at "150 queued, 0 sent" indefinitely, we found and fixed a real production bug: all four internal systemd timers (`mail-queue-drain`, `dispatcher`, `payment-verify`, `automations-sweep`) were hitting `localhost:3000`, but the app runs on `:3500` — they'd been silently failing every tick since the Task 28 deploy overwrote a manually-corrected VPS copy with a stale repo template. Fixed directly on production and in the repo's `deploy/*.service` source files (commit `7633187`) so it can't regress on the next deploy. Sends are now flowing correctly.
