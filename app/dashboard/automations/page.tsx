@@ -58,11 +58,37 @@ interface UploadJobOption {
 }
 
 // --- Task 31, item 3 — "Ask the agent" chat panel types ---------------------
+// Task 37 — inline structured widget the agent's turn can return so the user
+// picks from the SAME real component the app already uses (never a text prompt
+// for a finite set of options). The snapshot is persisted server-side and
+// rendered here on reload.
+interface AgentInlineJob {
+  id: string;
+  query: string;
+  template: string;
+  params?: Record<string, unknown> | null;
+  totalCount: number;
+  validCount: number;
+}
+
+interface AgentInlineMailbox {
+  id: string;
+  label: string;
+  username: string;
+}
+
+interface AgentInlineWidgetData {
+  type: "lead_source_picker" | "lead_upload" | "mailbox_picker";
+  jobs?: AgentInlineJob[];
+  mailboxes?: AgentInlineMailbox[];
+}
+
 interface AgentMessage {
   id: string;
   role: string;
   content: string;
   toolCall: unknown;
+  inlineWidget?: AgentInlineWidgetData | null;
   createdAt: string;
 }
 
@@ -535,7 +561,7 @@ export default function AutomationsPage() {
         <div className="flex flex-col gap-6">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
-      ) : automations.length === 0 ? (
+      ) : automations.length === 0 && agentPending.length === 0 ? (
         <Card className="p-10 text-center">
           <p className="text-sm text-fg-muted">
             No automations yet. Create one to save an outreach config you can run on demand or daily.
@@ -543,6 +569,45 @@ export default function AutomationsPage() {
         </Card>
       ) : (
         <div className="flex flex-col gap-3">
+          {/* Task 37, part 2 — an agent-proposed plan surfaces here in the NORMAL
+              automations list (not only in the chat), flagged as agent-authored, so
+              a user who never opens the chat panel still sees and reviews it. */}
+          {agentPending.map((action) => (
+            <Card key={action.id} className="flex flex-col gap-3 p-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge tone="warning">🤖 Proposed by agent — awaiting your review</Badge>
+                <Badge tone="neutral">{action.kind === "job" ? "Job plan" : "Campaign plan"}</Badge>
+                <span className="text-xs text-fg-muted">
+                  expires{" "}
+                  {new Date(action.expiresAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              </div>
+              {action.proposal && <p className="text-sm text-fg">{action.proposal}</p>}
+              {action.kind === "job" ? (
+                <JobPlanDetails payload={action.payload} />
+              ) : (
+                <CampaignPlanDetails payload={action.payload} />
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  type="button"
+                  onClick={() => void approveAction(action)}
+                  disabled={agentBusyId === action.id}
+                >
+                  {agentBusyId === action.id ? <Spinner className="h-3.5 w-3.5" /> : null}
+                  Confirm
+                </Button>
+                <Button
+                  type="button"
+                  variant="danger"
+                  onClick={() => void rejectAction(action)}
+                  disabled={agentBusyId === action.id}
+                >
+                  Reject
+                </Button>
+              </div>
+            </Card>
+          ))}
           {automations.map((a) => {
             const latest = a.runs?.[0];
             const isDaily = a.triggerMode === "daily";
@@ -831,13 +896,24 @@ export default function AutomationsPage() {
                 .map((m) => (
                   <div
                     key={m.id}
-                    className={`max-w-[90%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                    className={`max-w-[90%] rounded-lg px-3 py-2 text-sm ${
                       m.role === "user"
-                        ? "ml-auto bg-brand-600 text-white"
+                        ? "ml-auto whitespace-pre-wrap bg-brand-600 text-white"
                         : "border border-border bg-bg-elevated"
                     }`}
                   >
-                    {m.content || "—"}
+                    {m.role === "user" ? (
+                      m.content || "—"
+                    ) : (
+                      <>
+                        {m.content && m.content.trim().length > 0 && (
+                          <p className="whitespace-pre-wrap">{m.content}</p>
+                        )}
+                        {m.inlineWidget && (
+                          <AgentInlineWidget widget={m.inlineWidget} onSend={(t) => void sendAgentMessage(t)} />
+                        )}
+                      </>
+                    )}
                   </div>
                 ))}
               {agentSending && (
@@ -983,6 +1059,181 @@ function CampaignPlanDetails({ payload }: { payload: Record<string, unknown> }) 
           {body.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()}
         </p>
       )}
+    </div>
+  );
+}
+
+function AgentInlineWidget({
+  widget,
+  onSend,
+}: {
+  widget: AgentInlineWidgetData;
+  onSend: (text: string) => void;
+}) {
+  // Each picker is its own component so hooks (if any) are always called in the
+  // same order — never conditionally inside a single component.
+  if (widget.type === "lead_upload") return <InlineLeadUpload onSend={onSend} />;
+  if (widget.type === "lead_source_picker") return <InlineLeadSourcePicker widget={widget} onSend={onSend} />;
+  return <InlineMailboxPicker widget={widget} onSend={onSend} />;
+}
+
+// Task 37 — the SAME dropdown behavior as the Campaigns picker, re-homed into a
+// chat bubble. Selecting an option immediately composes + sends the next turn
+// (e.g. "Use search job {id} ({query})") — the user picks, they don't type.
+function InlineLeadSourcePicker({
+  widget,
+  onSend,
+}: {
+  widget: AgentInlineWidgetData;
+  onSend: (text: string) => void;
+}) {
+  const jobs = widget.jobs ?? [];
+  if (jobs.length === 0) {
+    return (
+      <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-border bg-bg p-2.5 text-xs text-fg-muted">
+        <p>No finished lead sources yet — upload one, or ask the agent to find fresh leads first.</p>
+        <button
+          type="button"
+          onClick={() => onSend("I don't have a finished lead source — please upload one for me to use.")}
+          className="underline"
+        >
+          I&apos;ll upload a lead file
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      <label className="flex flex-col gap-1 text-xs font-medium">
+        Which finished job?
+        <select
+          defaultValue=""
+          onChange={(e) => {
+            const id = e.target.value;
+            if (!id) return;
+            const job = jobs.find((j) => j.id === id);
+            e.currentTarget.value = "";
+            onSend(`Use search job ${id}${job ? ` (${job.query})` : ""}`);
+          }}
+          className="w-full rounded-lg border border-border bg-bg px-2 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+        >
+          <option value="">Pick a lead source…</option>
+          {jobs.map((j) => (
+            <option key={j.id} value={j.id}>
+              {j.query}{j.template === "upload" ? " (upload)" : ""} — {j.validCount} valid{j.validCount === 0 ? " · none" : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-[11px] text-fg-muted">Selecting an option sends it automatically.</p>
+    </div>
+  );
+}
+
+// A checkbox list of the user's mailboxes (same data as GET /api/mailboxes). The
+// user checks the mailboxes, then a single click composes + sends the selection.
+function InlineMailboxPicker({
+  widget,
+  onSend,
+}: {
+  widget: AgentInlineWidgetData;
+  onSend: (text: string) => void;
+}) {
+  const mailboxes = widget.mailboxes ?? [];
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+  const labels = mailboxes.filter((m) => selected.has(m.id)).map((m) => m.label);
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      {mailboxes.length === 0 ? (
+        <p className="text-xs text-fg-muted">No sending mailboxes configured yet.</p>
+      ) : (
+        <>
+          <div className="flex max-h-32 flex-col gap-1 overflow-y-auto rounded-lg border border-border">
+            {mailboxes.map((m) => (
+              <label key={m.id} className="flex items-center gap-2 px-2.5 py-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={selected.has(m.id)}
+                  onChange={() => toggle(m.id)}
+                  className="h-4 w-4 accent-brand-500"
+                />
+                <span className="font-medium">{m.label}</span>
+                <span className="text-xs text-fg-muted">{m.username}</span>
+              </label>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={selected.size === 0}
+            onClick={() => onSend(`Use mailboxes: ${labels.join(", ")}`)}
+          >
+            Send with {selected.size} mailbox{selected.size === 1 ? "" : "es"}
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// The existing upload dropzone (compact inline variant of the Extract page's
+// modal), posting to POST /api/leads/upload. On success it auto-advances with
+// the newly created job id — the user never leaves the panel.
+function InlineLeadUpload({ onSend }: { onSend: (text: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function doUpload(file?: File | null) {
+    if (!file || busy) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setError("File is larger than the 20MB limit.");
+      return;
+    }
+    setError("");
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/leads/upload", { method: "POST", body: fd });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; jobId?: string };
+      if (!res.ok) {
+        setError((data.error || "Upload failed.").toString());
+        return;
+      }
+      const jobId = typeof data.jobId === "string" ? data.jobId : "";
+      onSend(`Use search job ${jobId} (uploaded leads)`);
+    } catch {
+      setError("Network error while uploading.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-2 flex flex-col gap-1.5">
+      <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed px-4 py-5 text-center text-xs text-fg-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5">
+        <input
+          type="file"
+          className="hidden"
+          accept=".txt,.csv,.tsv,.json,.xls,.xlsx"
+          disabled={busy}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void doUpload(f);
+            e.target.value = "";
+          }}
+        />
+        <span className="font-medium">{busy ? "Uploading…" : "Click to choose a lead file"}</span>
+        <span>.csv .tsv .txt .json .xls .xlsx · max 20MB</span>
+      </label>
+      {error && <p className="text-xs text-red-600 dark:text-red-400">{error}</p>}
+      <p className="text-[11px] text-fg-muted">Uploading immediately continues the conversation with the new job.</p>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { fetchSelectableData } from "@/lib/lead-selectable";
 
 // Task 26, Piece 4 — picker data for the campaign "Pick from my leads" flow.
 // GET /api/leads/selectable  (auth-gated)
@@ -14,55 +14,14 @@ import { getSession } from "@/lib/session";
 //
 // This is a read-only convenience endpoint; the WRITE side (from-leads) re-validates
 // ownership + validity server-side and never trusts what the client filtered to.
+//
+// Task 37 — the query/shape now lives in lib/lead-selectable.ts (shared with the
+// agent's list_lead_sources inline widget) so both callers reuse ONE implementation.
 
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const userId = session.userId;
-
-  const jobs = await prisma.searchJob.findMany({
-    where: { userId },
-    select: {
-      id: true,
-      query: true,
-      template: true,
-      params: true,
-      _count: { select: { leads: true } },
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  const validCounts = await prisma.lead.groupBy({
-    by: ["searchJobId"],
-    where: { userId, validationStatus: "valid" },
-    _count: { _all: true },
-  });
-  const validByJob = new Map<string, number>(
-    validCounts.map((g) => [g.searchJobId, g._count._all]),
-  );
-
-  const leads = await prisma.lead.findMany({
-    where: { userId, validationStatus: "valid", email: { not: null } },
-    select: {
-      id: true,
-      email: true,
-      businessName: true,
-      contactName: true,
-      searchJobId: true,
-    },
-    orderBy: { createdAt: "desc" },
-  });
-
-  return NextResponse.json({
-    jobs: jobs.map((j) => ({
-      id: j.id,
-      query: j.query,
-      template: j.template,
-      params: j.params,
-      totalCount: j._count.leads,
-      validCount: validByJob.get(j.id) ?? 0,
-    })),
-    leads,
-  });
+  const data = await fetchSelectableData(session.userId);
+  return NextResponse.json(data);
 }

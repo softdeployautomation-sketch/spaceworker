@@ -3,6 +3,8 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { channelryAiChat } from "@/lib/channelry-ai";
+import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
+import { fetchSelectableData, PickerJob } from "@/lib/lead-selectable";
 
 // Task 31, item 3 — the Automations "Ask the agent" feature.
 //
@@ -43,11 +45,28 @@ You help with two kinds of task, each mapped to a tool:
    planning an email campaign, given the finished SearchJob id. Draft a clear
    campaign name plus one subject line and one HTML body.
 
+Gathering what you need (never ask in prose for a finite, known set of options):
+3. LIST_LEAD_SOURCES — as soon as you need a finished extraction/upload to build
+   a campaign from and the user hasn't given you a SearchJob id, call this
+   instead of asking in text. It shows a real dropdown of the user's own
+   finished lead sources in the chat. The choice comes back as a follow-up
+   message naming the job id — then propose the campaign with that id.
+4. REQUEST_LEAD_UPLOAD — when you need a lead source but the user has no usable
+   extraction/upload at all, call this to offer the upload dropzone inline.
+   After an upload completes, the new job id comes back in the follow-up.
+5. LIST_MAILBOXES — when you need to know which sending mailbox(es) the
+   campaign should send from and the user hasn't specified them, call this so
+   they pick from a checkbox list in the chat instead of typing names.
+
+These must be your FIRST instinct for that class of question — the same reason
+PROPOSE_JOB / PROPOSE_CAMPAIGN are tool calls and not prose. Never fall back to
+"please type your job id" or "go upload a file first" in plain text.
+
 Rules:
 - Always surface your reasoning in plain text BEFORE (or alongside) your tool
   call so the user sees a reviewable card.
-- If the request is ambiguous, ask one short clarifying question instead of
-  guessing wildly.
+- If the request is genuinely ambiguous with no finite option set (e.g. audience
+  size, tone), one short clarifying question is fine.
 - Never claim you ran or started a job — you only propose. The user must
   approve.
 - Prefer planning a single job/campaign per turn. If more is asked, propose the
@@ -122,13 +141,57 @@ const AGENT_TOOLS: unknown[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "list_lead_sources",
+      description:
+        "Offer the user a real dropdown of their own FINISHED lead sources (extractions/uploads) when you need one to build a campaign from but they haven't given you a SearchJob id. Call this INSTEAD of asking in prose. Returns an inline lead_source_picker widget; the user's choice comes back as the next message.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "request_lead_upload",
+      description:
+        "Offer the user the existing upload dropzone INLINE when you need a lead source but they have no usable extraction/upload yet. Call this INSTEAD of telling them to go upload a file. Returns an inline lead_upload widget; the new job id comes back as the next message.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_mailboxes",
+      description:
+        "Offer the user a checkbox list of their sending mailboxes when you need to know which mailbox(es) a campaign should send from and they haven't specified them. Call this INSTEAD of asking in prose. Returns an inline mailbox_picker widget; the selection comes back as the next message.",
+      parameters: { type: "object", properties: {} },
+    },
+  },
 ];
+
+export interface MailboxOption {
+  id: string;
+  label: string;
+  username: string;
+}
+
+// Task 37 — an assistant turn that, instead of proposing something, asks the
+// user to make a structured pick from a FINITE, known set. The chat panel
+// renders the SAME real component the app already uses for that choice (there
+// is deliberately no second, simplified widget, and never a raw text prompt for
+// something with a finite set of options).
+export type InlineWidget =
+  | { type: "lead_source_picker"; jobs: PickerJob[] }
+  | { type: "lead_upload" }
+  | { type: "mailbox_picker"; mailboxes: MailboxOption[] };
 
 export interface AgentThreadMessage {
   id: string;
   role: string;
   content: string;
   toolCall: unknown;
+  inlineWidget: InlineWidget | null;
   createdAt: string;
 }
 
@@ -142,6 +205,9 @@ export interface AgentTurnResult {
     proposal: string | null;
     expiresAt: string;
   } | null;
+  // Non-null when this turn asked the user to make an inline structured pick
+  // (lead source / upload / mailbox). Mutually exclusive with pendingAction.
+  inlineWidget: InlineWidget | null;
   usage: unknown;
 }
 
@@ -188,14 +254,52 @@ function pickInt(value: unknown): number | undefined {
   return undefined;
 }
 
+// All tool names the agent may emit. PROPOSE_* produce a pending action;
+// the widget tools produce an inline structured pick instead.
+const WIDGET_TOOL_NAMES = new Set(["list_lead_sources", "request_lead_upload", "list_mailboxes"]);
+
 function findToolCall(toolCalls: unknown): { name: string; args: Record<string, unknown> } | null {
   if (!Array.isArray(toolCalls)) return null;
   for (const tc of toolCalls) {
     if (typeof tc !== "object" || tc === null) continue;
     const name = String((tc as Record<string, unknown>).name ?? "");
-    if (name === "propose_job" || name === "propose_campaign") {
+    if (
+      name === "propose_job" ||
+      name === "propose_campaign" ||
+      WIDGET_TOOL_NAMES.has(name)
+    ) {
       return { name, args: coerceArgs((tc as Record<string, unknown>).arguments) };
     }
+  }
+  return null;
+}
+
+// A widget tool triggers NO AgentPendingAction (nothing is being proposed yet) —
+// it tells the chat panel to render a real component so the user can make a
+// structured pick instead of digging up an id (or uploading a file) elsewhere.
+async function buildInlineWidget(
+  name: string,
+  userId: string
+): Promise<InlineWidget | null> {
+  if (name === "list_lead_sources") {
+    const { jobs } = await fetchSelectableData(userId);
+    return { type: "lead_source_picker", jobs };
+  }
+  if (name === "request_lead_upload") {
+    // No data needed — the widget IS the existing upload dropzone. The frontend
+    // posts to POST /api/leads/upload and auto-advances on success.
+    return { type: "lead_upload" };
+  }
+  if (name === "list_mailboxes") {
+    const mailboxes = await prisma.mailbox.findMany({
+      where: { userId },
+      select: MAILBOX_SAFE_SELECT,
+      orderBy: { createdAt: "asc" },
+    });
+    return {
+      type: "mailbox_picker",
+      mailboxes: mailboxes.map((m) => ({ id: m.id, label: m.label, username: m.username })),
+    };
   }
   return null;
 }
@@ -213,6 +317,7 @@ export async function listThreadMessages(userId: string): Promise<AgentThreadMes
     role: m.role,
     content: m.content,
     toolCall: m.toolCall,
+    inlineWidget: m.inlineWidget as InlineWidget | null,
     createdAt: m.createdAt.toISOString(),
   }));
 }
@@ -244,19 +349,29 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
 
   const reply = result.content;
   const tool = findToolCall(result.tool_calls);
+  const isWidget = tool !== null && WIDGET_TOOL_NAMES.has(tool.name);
 
-  // Persist the assistant's message (with the tool snapshot for the plan card).
+  // For a widget tool, resolve the inline widget NOW so its snapshot is persisted
+  // with the message and survives a reload (same as toolCall does for plans).
+  const inlineWidget = isWidget ? await buildInlineWidget(tool!.name, opts.userId) : null;
+
+  // Persist the assistant's message (with the tool snapshot for the plan card,
+  // or the inline widget snapshot for a structured pick).
   await prisma.agentMessage.create({
     data: {
       threadId: thread.id,
       role: "assistant",
       content: reply,
-      toolCall: tool ? ({ name: tool.name, args: tool.args } as Prisma.InputJsonValue) : Prisma.DbNull,
+      toolCall:
+        tool && !isWidget
+          ? ({ name: tool.name, args: tool.args } as Prisma.InputJsonValue)
+          : Prisma.DbNull,
+      inlineWidget: inlineWidget ? (inlineWidget as Prisma.InputJsonValue) : Prisma.DbNull,
     },
   });
 
-  if (!tool) {
-    return { reply, pendingAction: null, usage: result.usage };
+  if (!tool || isWidget) {
+    return { reply, pendingAction: null, inlineWidget, usage: result.usage };
   }
 
   // Intercept: persist a pending action, and ONLY a pending action. No real job
@@ -283,6 +398,7 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
       proposal: pendingAction.proposal,
       expiresAt: pendingAction.expiresAt.toISOString(),
     },
+    inlineWidget: null,
     usage: result.usage,
   };
 }

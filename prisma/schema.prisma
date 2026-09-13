@@ -614,6 +614,11 @@ model AgentMessage {
   // channelryAiChat returned), so the plan card can be re-rendered without
   // re-deriving it from free text on every reload.
   toolCall  Json?
+  // Task 37 — snapshot of an inline structured pick (lead-source dropdown,
+  // upload dropzone, or mailbox picker) the assistant offered, so a reload
+  // still renders the widget instead of losing it. Mutually exclusive with
+  // toolCall (a turn either proposes or asks a structured question).
+  inlineWidget Json?
   createdAt DateTime   @default(now())
 
   @@index([threadId, createdAt])
