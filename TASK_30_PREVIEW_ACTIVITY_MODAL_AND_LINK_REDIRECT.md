@@ -37,13 +37,22 @@ Keep the existing full paginated table on the page as-is for anyone who wants th
 
 **Explicitly out of scope for this pass**: per-click analytics beyond a plain counter (no click timestamps table, no per-recipient click attribution — that's a much bigger feature and wasn't asked for); domain rotation/multiple redirect domains; automatic (non-optional) link wrapping — the ask was explicit that this stays opt-in per link.
 
+## 4. Multiple "From" addresses per mailbox, rotating
+
+**Grounded finding**: `Mailbox.fromAddress: String?` already exists and already works (null = falls back to the SMTP username) — confirmed live 2026-09-13 while investigating why a test send showed "admin"/"support" as the sender: the campaign had 2 mailboxes configured, neither had `fromAddress` set, so both fell back to their raw SMTP usernames. **This item is not fixing a bug** — it's a genuine new ask: let a single mailbox rotate across *several* From addresses (e.g. `admin@`, `outreach@`, `hello@` all sent via the same SMTP account) instead of exactly one fixed address.
+
+- Schema: widen `Mailbox.fromAddress: String?` to `Mailbox.fromAddresses: String[] @default([])` (additive migration; keep the column name change simple — a single-element array replaces the old single string, migrate existing non-null `fromAddress` values into a one-item array, drop the old column same as the `personalListId` → `personalListIds` precedent in Task 29).
+- Rotation: resolve per-recipient the same way subjects/bodies already do (`lib/campaign-recipients.ts`'s `buildQueueItemRows`) — add a `resolvedFromAddress` column to `EmailQueueItem`, computed at queue-build time as `fromAddresses[i % fromAddresses.length]` (single-item or empty list holds constant / falls back to username, matching the established single-item-constant rule). The mail-queue drain reads `item.resolvedFromAddress || mailbox.fromAddress || mailbox.username` instead of just `mailbox.fromAddress || mailbox.username`.
+- UI: `components/mailboxes-panel.tsx`'s "From address (optional)" field becomes a small repeatable list (add/remove rows), same interaction pattern as the campaign builder's subject/body list editor.
+
 ---
 
 ## Sequencing recommendation
 
 1. Item 1 (preview) — smallest, and the one that would have caught the actual bug that prompted all three asks. Do this first.
 2. Item 2 (activity modal) — self-contained UI addition, no schema changes.
-3. Item 3 (link redirect) — the only one needing a new model + new public route; give it its own careful pass, verify the redirect route live (a real click should actually land on the target, and increment the counter) before considering it done.
+3. Item 4 (multi-from rotation) — small, follows the exact pattern already established for subject/body rotation; can slot in alongside items 1-2.
+4. Item 3 (link redirect) — the only one needing a new model + new public route; give it its own careful pass, verify the redirect route live (a real click should actually land on the target, and increment the counter) before considering it done.
 
 ## Verification expected
 
