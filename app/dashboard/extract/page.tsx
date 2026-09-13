@@ -110,20 +110,16 @@ export default function ExtractPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState("");
 
-  // Task 26, Piece 2 — lead merging. selectedIds is the Set of lead ids checked
-  // in the results table's checkbox column; when 2+ are selected a floating bar
-  // appears and opens the merge modal, whose field values are pre-filled from the
-  // first non-empty value across the selected leads (and are editable before the
-  // merge is confirmed).
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set<string>());
-  const [mergeOpen, setMergeOpen] = useState(false);
-  const [mergeBusy, setMergeBusy] = useState(false);
-  const [mergeError, setMergeError] = useState("");
-  const [mergeEmail, setMergeEmail] = useState("");
-  const [mergePhone, setMergePhone] = useState("");
-  const [mergeContact, setMergeContact] = useState("");
-  const [mergeBusiness, setMergeBusiness] = useState("");
-  const [mergeWebsite, setMergeWebsite] = useState("");
+  // Session merge — selectedJobIds is the Set of job ids checked in the job
+  // list sidebar; when 2+ are selected a bar appears to combine those SESSIONS
+  // (possibly from different queries) into one. This replaces an earlier
+  // per-lead merge feature that combined near-duplicate rows WITHIN a single
+  // session — that was the wrong unit: merging leads inside one already-single
+  // session solved nothing real, while merging whole sessions (e.g. several
+  // fragmented runs of the same or related queries) is what's actually useful.
+  const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set<string>());
+  const [sessionMergeBusy, setSessionMergeBusy] = useState(false);
+  const [sessionMergeError, setSessionMergeError] = useState("");
 
   // Task 26, Piece 3 — lead upload (import .csv/.txt/.json/.xlsx into a new job)
   // and per-job batch email validation. Both are additive UI on the existing job
@@ -383,71 +379,39 @@ export default function ExtractPage() {
     }
   }
 
-  // Task 26, Piece 2 — merge helpers. toggleSelected flips one lead's checkbox in
-  // the selection Set (writer, not mutator, so we always hand React a new Set).
-  function toggleSelected(id: string) {
-    const next = new Set(selectedIds);
+  // Session-merge helpers. toggleJobSelected flips one job's checkbox in the
+  // sidebar list (writer, not mutator, so we always hand React a new Set).
+  function toggleJobSelected(id: string) {
+    const next = new Set(selectedJobIds);
     if (next.has(id)) next.delete(id);
     else next.add(id);
-    setSelectedIds(next);
+    setSelectedJobIds(next);
   }
 
-  // Opens the merge modal, pre-filling each field from the FIRST non-empty value
-  // found across the currently-selected leads (so the user can edit it if the
-  // auto-pick guessed the wrong source's value).
-  function openMergeModal() {
-    const selected = (selectedJob?.leads ?? []).filter((l) => selectedIds.has(l.id));
-    const pick = (get: (l: Lead) => string | null | undefined) =>
-      selected
-        .map((l) => get(l))
-        .find((v) => v && v.trim().length > 0) ?? "";
-    setMergeEmail(pick((l) => l.email));
-    setMergePhone(pick((l) => l.phone));
-    setMergeContact(pick((l) => l.contactName));
-    setMergeBusiness(pick((l) => l.businessName));
-    setMergeWebsite(pick((l) => l.website));
-    setMergeError("");
-    setMergeOpen(true);
-  }
-
-  // Confirms the merge: POSTs the selected ids + chosen values to the new route,
-  // then re-fetches the job detail so the single new row replaces the merged-away
-  // ones (optional-manual-action weight, not a hot path — re-fetch is fine).
-  async function confirmMerge() {
-    if (!selectedJob) return;
-    const selected = selectedJob.leads.filter((l) => selectedIds.has(l.id));
-    if (selected.length < 2) return;
-    setMergeBusy(true);
-    setMergeError("");
+  // Combines the selected sessions into one via POST /api/jobs/merge, then
+  // refreshes the job list and opens the new merged session.
+  async function confirmMergeSessions() {
+    if (selectedJobIds.size < 2) return;
+    setSessionMergeBusy(true);
+    setSessionMergeError("");
     try {
-      const res = await fetch("/api/leads/merge", {
+      const res = await fetch("/api/jobs/merge", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          leadIds: selected.map((l) => l.id),
-          merged: {
-            email: mergeEmail,
-            phone: mergePhone,
-            contactName: mergeContact,
-            businessName: mergeBusiness,
-            website: mergeWebsite,
-          },
-        }),
+        body: JSON.stringify({ jobIds: [...selectedJobIds] }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setMergeError(typeof data.error === "string" ? data.error : "Merge failed.");
+        setSessionMergeError(typeof data.error === "string" ? data.error : "Merge failed.");
         return;
       }
-      setMergeOpen(false);
-      setSelectedIds(new Set());
-      // Re-fetch so the new merged row appears (and the merged-away rows vanish).
-      void fetchJobDetail(selectedJob.id);
-      void fetchJobs();
+      setSelectedJobIds(new Set());
+      await fetchJobs();
+      if (typeof data.jobId === "string") void fetchJobDetail(data.jobId);
     } catch {
-      setMergeError("Network error while merging.");
+      setSessionMergeError("Network error while merging.");
     } finally {
-      setMergeBusy(false);
+      setSessionMergeBusy(false);
     }
   }
 
@@ -952,16 +916,34 @@ export default function ExtractPage() {
           {jobs.length === 0 && (
             <p className="p-4 text-sm text-fg-muted">No jobs yet. Submit a search above.</p>
           )}
-          {jobs.map((job) => (
+          {jobs.map((job) => {
+            // Only a finished session can be merged — one still queued/running
+            // still has leads landing on it, so it can't be safely folded into
+            // another session and deleted mid-run.
+            const mergeable = job.status !== "queued" && job.status !== "running";
+            return (
             <div
               key={job.id}
-              onClick={() => { setSelectedIds(new Set()); void fetchJobDetail(job.id); }}
+              onClick={() => void fetchJobDetail(job.id)}
               className={`cursor-pointer border-b border-border p-3 last:border-0 hover:bg-black/5 dark:hover:bg-white/5 ${
                 selectedJob?.id === job.id ? "bg-brand-50 dark:bg-brand-900/20" : ""
               }`}
             >
               <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium" title={job.query}>{summarizeQuery(job)}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  {mergeable && (
+                    <input
+                      type="checkbox"
+                      checked={selectedJobIds.has(job.id)}
+                      onChange={(e) => { e.stopPropagation(); toggleJobSelected(job.id); }}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`Select session ${summarizeQuery(job)} to merge`}
+                      title="Select to merge with other sessions"
+                      className="h-4 w-4 flex-shrink-0 cursor-pointer"
+                    />
+                  )}
+                  <span className="truncate text-sm font-medium" title={job.query}>{summarizeQuery(job)}</span>
+                </span>
                 <span className="flex flex-shrink-0 items-center gap-1">
                   {isStalled(job) && (
                     <span
@@ -1027,7 +1009,27 @@ export default function ExtractPage() {
                 </p>
               ) : null}
             </div>
-          ))}
+            );
+          })}
+          {selectedJobIds.size >= 2 && (
+            <div className="sticky bottom-0 z-10 border-t border-brand-500 bg-brand-50 p-2 dark:bg-brand-900/40">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-medium text-brand-700 dark:text-brand-300">
+                  {selectedJobIds.size} sessions selected
+                </span>
+                <button
+                  onClick={() => void confirmMergeSessions()}
+                  disabled={sessionMergeBusy}
+                  className="ml-auto rounded-lg bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {sessionMergeBusy ? "Merging…" : `Merge ${selectedJobIds.size} sessions`}
+                </button>
+              </div>
+              {sessionMergeError && (
+                <p className="mt-1 text-xs text-red-600 dark:text-red-400">{sessionMergeError}</p>
+              )}
+            </div>
+          )}
         </div>
 {/* Lead detail */}
         <div className="max-h-[70vh] flex-1 overflow-y-auto rounded-xl border border-border bg-card">
@@ -1170,14 +1172,6 @@ export default function ExtractPage() {
                 </p>
               ) : (
                 <>
-                {/* Bug fix (2026-09-12): the merge action (Piece 2) only becomes
-                    visible once 2+ row checkboxes are checked, and nothing on
-                    screen said the checkboxes were there for that — reported
-                    twice as "no option to merge multiple leads" when the feature
-                    was actually present, just undiscoverable. */}
-                <p className="-mb-2 text-xs text-fg-muted">
-                  Check 2+ leads below to merge them into one, or use the header checkbox to select all.
-                </p>
                 {(() => {
                 // Display-only — extraction always captured every field regardless
                 // of what this job's resultMode was set to at creation time.
@@ -1209,17 +1203,6 @@ export default function ExtractPage() {
                 // so Emails-only mode only selects the emails actually shown, never
                 // leads hidden by the filter). Indeterminate when only some visible
                 // ones are checked.
-                const visibleIds = visibleLeads.map((l) => l.id);
-                const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedIds.has(id));
-                const someVisibleSelected = visibleIds.some((id) => selectedIds.has(id));
-                const onToggleSelectAll = () => {
-                  const next = new Set(selectedIds);
-                  for (const id of visibleIds) {
-                    if (allVisibleSelected) next.delete(id);
-                    else next.add(id);
-                  }
-                  setSelectedIds(next);
-                };
                 return (
                 <div
                   ref={leadsScrollRef}
@@ -1229,19 +1212,6 @@ export default function ExtractPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-border text-left text-xs text-fg-muted">
-                        {/* Task 26, Piece 2 — merge selection checkbox column.
-                            Task 26, Piece 7b — the header cell became a real select-all
-                            checkbox wired to the same selectedIds set. */}
-                        <th className="w-6 pb-2" aria-label="Select all visible leads">
-                          <input
-                            type="checkbox"
-                            ref={(el) => { if (el) el.indeterminate = !allVisibleSelected && someVisibleSelected; }}
-                            checked={allVisibleSelected}
-                            onChange={onToggleSelectAll}
-                            aria-label="Select all visible leads"
-                            className="h-4 w-4 cursor-pointer"
-                          />
-                        </th>
                         {showBusiness && <th className="pb-2 pr-3 font-medium">Business</th>}
                         {showContact && <th className="pb-2 pr-3 font-medium">Name</th>}
                         <th className="pb-2 pr-3 font-medium">Email</th>
@@ -1257,16 +1227,6 @@ export default function ExtractPage() {
                           key={lead.id}
                           className="animate-[fadeInUp_0.15s_ease-out] border-b border-border last:border-0"
                         >
-                          {/* Task 26, Piece 2 — merge selection checkbox. */}
-                          <td className="py-2 pr-2">
-                            <input
-                              type="checkbox"
-                              checked={selectedIds.has(lead.id)}
-                              onChange={() => toggleSelected(lead.id)}
-                              aria-label={`Select ${lead.businessName ?? lead.contactName ?? lead.email ?? "lead"}`}
-                              className="h-4 w-4 cursor-pointer"
-                            />
-                          </td>
                           {showBusiness && <td className="py-2 pr-3">{lead.businessName ?? "—"}</td>}
                           {showContact && <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>}
                           <td className="py-2 pr-3">
@@ -1305,22 +1265,6 @@ export default function ExtractPage() {
               })()}
                 </>
               )}
-              {/* Task 26, Piece 2 — merge action bar. Sticky to the bottom of the
-                  leads pane (not the whole page) so it stays visible while the
-                  table scrolls, and only appears once 2+ leads are selected. */}
-              {selectedIds.size >= 2 && (
-                <div className="sticky bottom-0 z-10 flex items-center gap-3 rounded-lg border border-brand-500 bg-brand-50 px-3 py-2 dark:bg-brand-900/40">
-                  <span className="text-sm font-medium text-brand-700 dark:text-brand-300">
-                    {selectedIds.size} leads selected
-                  </span>
-                  <button
-                    onClick={openMergeModal}
-                    className="ml-auto rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-700"
-                  >
-                    Merge {selectedIds.size} leads
-                  </button>
-                </div>
-              )}
               {/* Task 26, Piece 1 — live activity feed, relocated UNDER the leads
                   table (it used to sit in the detail-pane header above). key-ing on
                   currentStep remounts the line only when the text actually changes,
@@ -1345,95 +1289,6 @@ export default function ExtractPage() {
           )}
         </div>
       </div>
-
-      {/* Task 26, Piece 2 — merge modal. createPortal to document.body so it
-          renders above the app's stacking contexts (same fix as the campaigns /
-          mailboxes modals); the selected leads are shown read-only alongside the
-          editable, pre-filled merge fields. */}
-      {mergeOpen && typeof document !== "undefined" && selectedJob && createPortal(
-        (() => {
-          const selected = selectedJob.leads.filter((l) => selectedIds.has(l.id));
-          return (
-            <div className="fixed inset-0 z-50 overflow-y-auto bg-black/40 p-4 dark:bg-black/70">
-              {/* Task 26, Piece 7g — entrance transition so the dialog doesn't snap in
-                (CSS-only fadeInUp, same approach as Piece 1d's row fade-in). */}
-            <div className="animate-[fadeInUp_0.15s_ease-out] mx-auto my-8 w-full max-w-2xl rounded-xl border border-border bg-card p-6 dark:bg-zinc-950">
-                <h2 className="text-lg font-semibold">Merge {selected.length} leads</h2>
-                <p className="mt-1 text-xs text-fg-muted">
-                  The leads below are combined into one row. The fields start pre-filled from
-                  each value found, but you can change any of them before confirming.
-                </p>
-
-                {selected.length === 0 ? (
-                  <p className="mt-4 text-sm text-fg-muted">
-                    No leads selected any more — close this dialog and pick leads first.
-                  </p>
-                ) : (
-                  <>
-                    {/* Selected sources, read-only — so the user can see exactly
-                        which rows are being collapsed into the one new row. */}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {selected.map((l) => (
-                        <span
-                          key={l.id}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-border bg-black/5 px-3 py-1 text-xs dark:bg-white/5"
-                        >
-                          {l.businessName ?? l.contactName ?? (l.email || "Lead")}
-                          <span className="text-fg-muted">· {l.email ?? "no email"}</span>
-                        </span>
-                      ))}
-                    </div>
-
-                    {/* Editable merge fields, one per Lead column. */}
-                    <div className="mt-4 grid grid-cols-1 gap-3">
-                      {[
-                        { label: "Email", value: mergeEmail, set: setMergeEmail, required: true },
-                        { label: "Business name", value: mergeBusiness, set: setMergeBusiness },
-                        { label: "Contact name", value: mergeContact, set: setMergeContact },
-                        { label: "Phone", value: mergePhone, set: setMergePhone },
-                        { label: "Website", value: mergeWebsite, set: setMergeWebsite },
-                      ].map((f) => (
-                        <label key={f.label} className="flex flex-col gap-1 text-sm font-medium">
-                          {f.label}
-                          {f.required && <span className="text-xs text-red-500">*</span>}
-                          <input
-                            type="text"
-                            value={f.value}
-                            onChange={(e) => f.set(e.target.value)}
-                            className="rounded-lg border border-border bg-input px-3 py-1.5 text-sm font-normal outline-none focus:ring-2 focus:ring-brand-500"
-                          />
-                        </label>
-                      ))}
-                    </div>
-                  </>
-                )}
-
-                {mergeError && (
-                  <p className="mt-3 text-sm text-red-600 dark:text-red-400">{mergeError}</p>
-                )}
-
-                <div className="mt-4 flex justify-end gap-2">
-                  <button
-                    onClick={() => setMergeOpen(false)}
-                    disabled={mergeBusy}
-                    className="rounded-lg border border-border px-3 py-1.5 text-sm font-medium text-fg hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    onClick={() => void confirmMerge()}
-                    disabled={mergeBusy || selected.length < 2}
-                    className="rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
-                  >
-                    {mergeBusy ? "Merging…" : "Confirm merge"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })(),
-        document.body,
-      )}
 
       {/* Task 26, Piece 3 — import-leads dialog. A dropzone (click or drag & drop)
           that posts the file to /api/leads/upload and then jumps to the new job. */}
