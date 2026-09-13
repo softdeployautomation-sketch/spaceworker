@@ -216,18 +216,34 @@ export default function CampaignDetailPage() {
     void load();
   }, [load]);
 
+  // Task 34 — merge a small, targeted update into the already-loaded campaign
+  // state instead of re-fetching the whole campaign (which re-pulls every queued
+  // item and re-renders the whole page). Only the fields that actually changed
+  // are touched; `items`/pagination are left completely alone — no test-time
+  // action ever changes the queue.
+  const patchCampaign = useCallback((partial: Partial<CampaignDetail>) => {
+    setCampaign((prev) => (prev ? { ...prev, ...partial } : prev));
+  }, []);
+
+  // Prepend a freshly-created DeliverabilityCheck (test-send / draft test-send)
+  // so the top test-send box's "latest check" line redraws without a refetch.
+  const prependCheck = useCallback((check: DeliverabilityCheck) => {
+    setCampaign((prev) => (prev ? { ...prev, checks: [check, ...prev.checks] } : prev));
+  }, []);
+
   async function sendTest() {
     setTestBusy(true);
     setTestResult(null);
     try {
       const res = await fetch(`/api/campaigns/${id}/test-send`, { method: "POST" });
-      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
+      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string; check?: DeliverabilityCheck };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Test-send failed" });
       } else {
         setTestResult({ outcome: data.outcome ?? "failed", error: data.error });
+        // Task 34 — merge just the new check into state; no full campaign re-fetch.
+        if (data.check) prependCheck(data.check);
       }
-      void load();
     } catch {
       setTestResult({ outcome: "failed", error: "Network error" });
     } finally {
@@ -239,12 +255,13 @@ export default function CampaignDetailPage() {
     setConfirming(true);
     try {
       const res = await fetch(`/api/campaigns/${id}/confirm-test`, { method: "POST" });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't confirm the test send." });
         return;
       }
-      void load();
+      // Task 34 — only status changes (pending_test_confirm → sending); merge it.
+      patchCampaign({ status: data.status ?? "sending" });
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while confirming." });
     } finally {
@@ -263,16 +280,46 @@ export default function CampaignDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as { error?: string; testRecipientOverride?: string | null };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't set the test recipient." });
         return;
       }
       setTestRecipientInput("");
-      await load();
+      // Task 34 — merge just the override field locally; sendTest() merges its check.
+      patchCampaign({ testRecipientOverride: data.testRecipientOverride ?? null });
       await sendTest();
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while setting the test recipient." });
+    } finally {
+      setSettingTestRecipient(false);
+    }
+  }
+
+  // Task 34 — the inverse of applyTestRecipient: switch back from a personal
+  // test recipient to the platform's automated seed-mailbox path. POSTs the
+  // SAME test-recipient route with { email: null }, which clears
+  // testRecipientOverride back to null and makes resolveSeedMailbox() fall back
+  // to the platform default automatically (the backend already supported this —
+  // this just surfaces it as a one-click action instead of requiring the user to
+  // know to clear it). Merges the returned override null locally; no re-fetch.
+  async function revertTestRecipient() {
+    setSettingTestRecipient(true);
+    setTestResult(null);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/test-recipient`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: null }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; testRecipientOverride?: string | null };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't switch back to automated testing." });
+        return;
+      }
+      patchCampaign({ testRecipientOverride: data.testRecipientOverride ?? null });
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while switching back to automated testing." });
     } finally {
       setSettingTestRecipient(false);
     }
@@ -291,9 +338,24 @@ export default function CampaignDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) setTestResult({ outcome: "failed", error: data.error ?? "Couldn't apply that choice." });
-      else void load();
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        status?: string;
+        subjects?: string[];
+        bodies?: string[];
+        pinnedOverride?: CampaignDetail["pinnedOverride"];
+      };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't apply that choice." });
+      } else {
+        // Task 34 — merge only the fields this decision actually changed, locally.
+        const partial: Partial<CampaignDetail> = {};
+        if (data.status) partial.status = data.status;
+        if (data.subjects) partial.subjects = data.subjects;
+        if (data.bodies) partial.bodies = data.bodies;
+        if (data.pinnedOverride) partial.pinnedOverride = data.pinnedOverride;
+        patchCampaign(partial);
+      }
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while applying your choice." });
     } finally {
@@ -340,14 +402,15 @@ export default function CampaignDetailPage() {
           ...(editFrom ? { from: editFrom } : {}),
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string };
+      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string; check?: DeliverabilityCheck };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Draft test-send failed" });
       } else {
         setTestResult({ outcome: data.outcome ?? "failed", error: data.error });
         setDraftTested(true);
+        // Task 34 — merge just the new check; no full campaign re-fetch.
+        if (data.check) prependCheck(data.check);
       }
-      void load();
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while sending the edited test." });
     } finally {
@@ -371,13 +434,23 @@ export default function CampaignDetailPage() {
           bodyHtml: editBody,
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        status?: string;
+        subjects?: string[];
+        bodies?: string[];
+      };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't promote the edited version." });
       } else {
         setEditOpen(false);
         setDraftTested(false);
-        void load();
+        // Task 34 — merge the newly-promoted rotation + status locally.
+        const partial: Partial<CampaignDetail> = {};
+        if (data.status) partial.status = data.status;
+        if (data.subjects) partial.subjects = data.subjects;
+        if (data.bodies) partial.bodies = data.bodies;
+        patchCampaign(partial);
       }
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while promoting the edit." });
@@ -437,7 +510,9 @@ export default function CampaignDetailPage() {
           }
         }
       }
-      void load();
+      // Task 34 — the diagnostics panel already re-rendered from diagResults /
+      // testResult above; the probe writes no campaign field the page re-reads
+      // from the loaded campaign, so there's nothing to merge and no re-fetch.
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while running the probe." });
     } finally {
@@ -466,12 +541,20 @@ export default function CampaignDetailPage() {
           pinCount: Math.max(1, Math.min(1000, Math.floor(Number(pinCount)))),
         }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        status?: string;
+        pinnedOverride?: CampaignDetail["pinnedOverride"];
+      };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't pin this combination." });
       } else {
         setDiagOpen(false);
-        void load();
+        // Task 34 — merge status + the new pinned-override window locally.
+        patchCampaign({
+          status: data.status ?? "sending",
+          ...(data.pinnedOverride ? { pinnedOverride: data.pinnedOverride } : {}),
+        });
       }
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while pinning." });
@@ -786,6 +869,22 @@ export default function CampaignDetailPage() {
                 the SpaceWorker seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.</>
             )}
           </p>
+
+          {/* Task 34 — a personal test-recipient override is in play (Task 29/32
+              set it); offer a one-click way back to the platform's automated
+              IMAP-verified seed-mailbox path. Undoes exactly what "use this as my
+              test recipient"/"edit and promote" did — POSTs the same route with
+              { email: null } and merges the cleared override locally. */}
+          {campaign.testRecipientOverride && (
+            <button
+              type="button"
+              onClick={() => void revertTestRecipient()}
+              disabled={settingTestRecipient}
+              className="mt-2 text-xs font-medium text-violet-700 underline underline-offset-4 hover:text-violet-600 disabled:opacity-50 dark:text-violet-300"
+            >
+              {settingTestRecipient ? "Switching back…" : "Switch back to automated testing (SpaceWorker seed mailbox)"}
+            </button>
+          )}
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button

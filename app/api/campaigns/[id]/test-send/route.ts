@@ -169,5 +169,20 @@ export async function POST(
     },
   });
 
-  return NextResponse.json({ outcome, checkId: summary.id, error });
+  // Task 34 — return the FULL created DeliverabilityCheck (not just a handle) so
+  // the frontend can prepend it to its checks list and re-render the top box
+  // without re-fetching the whole campaign (which re-pulls every queued item).
+  return NextResponse.json({
+    outcome,
+    checkId: summary.id,
+    error,
+    check: {
+      id: summary.id,
+      status: summary.status,
+      landedIn: summary.landedIn,
+      error: summary.error,
+      checkedAt: summary.checkedAt,
+      createdAt: summary.createdAt,
+    },
+  });
 }

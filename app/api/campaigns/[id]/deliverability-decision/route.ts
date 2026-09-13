@@ -121,7 +121,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         where: { id },
         data: { subjects: rotatedSubjects },
       });
-      return NextResponse.json({ ok: true, status: campaign.status });
+      // Task 34 — return the rotated subjects so the frontend can update its
+      // subjects list locally (openEdit prefills from subjects[0]) without a
+      // full campaign re-fetch.
+      return NextResponse.json({ ok: true, status: campaign.status, subjects: rotatedSubjects });
     }
 
     // From a batch pause: rotate AND move into the SAME \"awaiting a fresh test\"
@@ -137,7 +140,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       where: { id },
       data: { subjects: rotatedSubjects, status: "pending_test_confirm" },
     });
-    return NextResponse.json({ ok: true, status: "pending_test_confirm" });
+    return NextResponse.json({ ok: true, status: "pending_test_confirm", subjects: rotatedSubjects });
   }
 
   // \"pin_and_continue\" — Task 33: lock the campaign onto one particular
@@ -191,7 +194,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         status: "sending",
       },
     });
-    return NextResponse.json({ ok: true, status: "sending", pinCount });
+    // Task 34 — return the full pinnedOverride shape so the frontend can show the
+    // pinned-override banner locally without re-fetching the whole campaign.
+    return NextResponse.json({
+      ok: true,
+      status: "sending",
+      pinCount,
+      pinnedOverride: { subject, bodyHtml, fromAddress, remaining: pinCount },
+    });
   }
 
   // "add_edit_and_continue" — Task 32: promote a human/agent-authored draft that a
