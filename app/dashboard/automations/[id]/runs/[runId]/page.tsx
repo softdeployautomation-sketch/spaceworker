@@ -35,6 +35,9 @@ interface RunDetail {
   searchJob: { id: string; query: string; status: string; currentStep: string | null; error: string | null; createdAt: string; _count: { leads: number } } | null;
   campaign: { id: string; name: string; status: string; mailboxIds: string[] } | null;
   mailboxSends: { mailboxId: string; count: number }[];
+  // Task 29, item 3 — recipient roster with provenance, so test recipients
+  // (source === "manual_insert") can be labelled distinctly from extracted ones.
+  roster: { toEmail: string; source: string; status: string }[];
 }
 
 const STATUS_TONE: Record<RunStatus, "success" | "danger" | "warning" | "neutral"> = {
@@ -92,7 +95,7 @@ export default function AutomationRunDetailPage() {
   if (loading) return <div className="p-6 text-sm text-fg-muted">Loading…</div>;
   if (!data) return <div className="p-6 text-sm text-fg-muted">Run not found.</div>;
 
-  const { automation, run, searchJob, campaign, mailboxSends } = data;
+  const { automation, run, searchJob, campaign, mailboxSends, roster } = data;
   const started = new Date(run.startedAt);
   const extractionDone = run.extractionCompletedAt ? new Date(run.extractionCompletedAt) : null;
   const completed = run.completedAt ? new Date(run.completedAt) : null;
@@ -186,6 +189,27 @@ export default function AutomationRunDetailPage() {
               <div key={m.mailboxId} className="flex items-center justify-between text-sm">
                 <span className="text-fg-muted">{m.mailboxId}</span>
                 <span className="font-medium">{m.count}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {roster.length > 0 && (
+        <Card className="p-4">
+          <p className="mb-3 text-sm font-medium">Recipients <span className="text-fg-muted">({roster.length}{roster.length === 500 ? "+" : ""})</span></p>
+          <div className="flex flex-col gap-1.5">
+            {roster.map((r, i) => (
+              // Task 29, item 3 — label ad-hoc test recipients distinctly from
+              // extracted/uploaded/picked leads so they're easy to spot in a run.
+              <div key={`${r.toEmail}-${i}`} className="flex items-center justify-between gap-2 text-sm">
+                <span className="flex items-center gap-1.5">
+                  {r.source === "manual_insert" ? (
+                    <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">Test</span>
+                  ) : null}
+                  <span className="truncate">{r.toEmail}</span>
+                </span>
+                <span className="text-xs text-fg-muted">{r.source === "manual_insert" ? "manual insert" : r.status}</span>
               </div>
             ))}
           </div>

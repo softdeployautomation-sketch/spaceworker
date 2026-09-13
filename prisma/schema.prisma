@@ -28,6 +28,7 @@ model User {
   searchJobs       SearchJob[]
   leads            Lead[]
   campaignAutomations CampaignAutomation[]
+  seedMailboxes    SeedMailbox[]
 }
 
 model VerificationCode {
@@ -103,6 +104,14 @@ model EmailCampaign {
   // their content as 1+ CampaignVariant rows and leave these empty.
   subject     String           @default("")
   bodyHtml    String           @default("")
+  // Task 29, item 4 — independent subject and body lists for cross-combined
+  // rotation. Empty ([]) for legacy pair-based campaigns, which keep using
+  // CampaignVariant rows (see EmailQueueItem.variantId below). When populated,
+  // recipient *i* resolves to subjects[i % len] + bodies[i % len] independently —
+  // a single-item list is held constant (i % 1 === 0) while the other dimension
+  // still rotates. Additive, so every pre-Task-29 campaign path is untouched.
+  subjects    String[]         @default([])
+  bodies      String[]         @default([])
   searchJobId String?
   // "draft" | "pending_test_confirm" | "sending" | "done" | ...
   // New campaigns start at "pending_test_confirm": a real send is gated behind the
@@ -116,6 +125,10 @@ model EmailCampaign {
   // (non-breaking). Clamped server-side to [1, 1000]. Stored so the from-leads
   // add-to-existing route can keep rotating on the same cadence.
   rotateEvery Int              @default(1)
+  // Task 29, item 6 — the batch gate: the mail-queue drain dispatches up to this
+  // many recipients per campaign per tick, then re-checks deliverability on the
+  // campaign's test mailbox and pauses if the probe didn't land in the inbox.
+  batchSize   Int              @default(50)
   createdAt   DateTime         @default(now())
   variants    CampaignVariant[]
   checks      DeliverabilityCheck[]
@@ -148,6 +161,16 @@ model EmailQueueItem {
   variantId  String?
   variant    CampaignVariant? @relation(fields: [variantId], references: [id])
   toEmail    String
+  // Task 29, item 3 — how this recipient got onto the queue. "" (default) =
+  // extracted/uploaded/picked lead; "manual_insert" = a test recipient a user
+  // dropped into the queue at a chosen position. Lets the run-detail UI label it
+  // distinctly from extracted/uploaded/picked leads.
+  source     String           @default("")
+  // Task 29, item 4 — resolved subject/body snapshots for decoupled campaigns
+  // (EmailCampaign.subjects/bodies set). Populated on those; null on legacy
+  // pair-based campaigns, which fall back to variant.subject / variant.bodyHtml.
+  resolvedSubject String?
+  resolvedBodyHtml String?
   // Per-recipient merge variables from the uploaded CSV (extra columns).
   // { "firstName": "Ada", "company": "ACME", ... }
   variables  Json?
@@ -163,6 +186,12 @@ model EmailQueueItem {
 
 model SeedMailbox {
   id                String   @id @default(cuid())
+  // Task 29, item 5 — ownership. null = the platform-shared seed (today's
+  // default, bootstrapped by lib/seed-mailbox.ts from env); set = a user's own
+  // registered test account (created via POST /api/test-mailboxes). A user with
+  // no own row keeps using the platform default, exactly as before — additive.
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id])
   // Platform-owned deliverability seed account (typically only one row for v1).
   label             String
   host              String
@@ -175,6 +204,8 @@ model SeedMailbox {
   active            Boolean  @default(true)
   createdAt         DateTime @default(now())
   checks            DeliverabilityCheck[]
+
+  @@index([userId])
 }
 
 model DeliverabilityCheck {
@@ -185,6 +216,11 @@ model DeliverabilityCheck {
   seedMailbox   SeedMailbox   @relation(fields: [seedMailboxId], references: [id])
   // "pending" | "delivered" | "failed"
   status        String        @default("pending")
+  // Task 29, item 6 — where the test message actually landed, from a spam-aware
+  // IMAP poll. null on legacy checks / before the check runs; "inbox" | "spam" |
+  // "unknown" afterward. "unknown" is what the batch gate needs to force a human
+  // eyeball instead of auto-continuing.
+  landedIn      String?
   messageId     String?
   error         String?
   createdAt     DateTime      @default(now())
@@ -416,7 +452,10 @@ model CampaignAutomation {
   findTerms          String[] @default([])
   locationTerms      String[] @default([])
   params             Json?    // engine, maxResults, minResults, pagesPerQuery, resultMode, emailDomains
-  personalListId     String?  // set when leadSource is "personal_list"
+  // Task 29, item 2 — personal_list source can now select MULTIPLE uploaded
+  // lists (replaces the old single personalListId). A run pulls validated leads
+  // from every selected SearchJob id, deduping by email across all of them.
+  personalListIds    String[] @default([])
 
   // Campaign + mailbox — HARD GATE per Task 09: both required to even CREATE
   // this row. campaignTemplateId references one of the user's OWN EmailCampaign

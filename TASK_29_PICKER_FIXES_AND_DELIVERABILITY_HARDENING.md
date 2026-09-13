@@ -92,3 +92,58 @@ On a campaign, let the user set a batch size (default something sane, e.g. 50) a
 - Item 2: confirm live — upload a list, immediately open Automations without reloading, confirm it now appears; confirm selecting 2+ uploaded sessions actually merges their leads (deduped) in a run.
 - Item 6: confirm live against a real Gmail test mailbox — deliberately trigger a message that Gmail spam-filters (e.g. an obvious cold-outreach phrase) and confirm `landedIn` correctly reports `"spam"`, not just `"inbox"` on a clean test. A check that only ever reports "inbox" hasn't actually proven the spam-folder path works.
 - Report per-item like Task 28, not a single "done" — these are 6 separable pieces of real product surface.
+
+---
+
+## Handoff — implementation status & next steps (updated 2026-09-13)
+
+Implemented (typecheck-clean; DB migrations applied to local postgres). The next agent starts from **"Remaining work"** below.
+
+### ✅ Done — schema + both migrations
+- `prisma/migrations/20260912150000_task29_picker_deliverability/migration.sql`
+  - `EmailCampaign`: `subjects TEXT[]`, `bodies TEXT[]` (item 4)
+  - `EmailQueueItem`: `source TEXT NOT NULL DEFAULT ''`, `resolvedSubject TEXT`, `resolvedBodyHtml TEXT` (items 3+4)
+  - `SeedMailbox`: `userId TEXT` + FK to `User` (ON DELETE SET NULL) + `userId` index (item 5)
+  - `DeliverabilityCheck`: `landedIn TEXT` (item 6)
+  - `CampaignAutomation`: `personalListId` → `personalListIds TEXT[]` **backfilled** from the old column (item 2)
+- `prisma/migrations/20260912160000_add_campaign_batch_size/migration.sql` → `EmailCampaign.batchSize INT NOT NULL DEFAULT 50` (item 6)
+- **Local-DB caveat**: the postgres role can't create the shadow DB, so `prisma migrate dev` fails with P3014. Both migrations were applied with **`npx prisma migrate deploy`** (no shadow DB needed) + `npx prisma generate`. New agents must use `migrate deploy`, not `migrate dev`. The schema is committed, so `migrate deploy` reproduces it on a fresh clone.
+
+### ✅ Done — per item
+- **Item 1** — `app/dashboard/campaigns/page.tsx`: “Select all in this session (N)” / “Select all valid, every session (N)”. Copy-only.
+- **Item 2** — `app/dashboard/automations/page.tsx`: `refreshUploadJobs()` now called in `openCreate`/`openEdit` (kills the stale-list bug); personal-list picker is checkbox multi-select (`personalListSelections`); `submitForm` sends `personalListIds` array. Backend: `app/api/automations/route.ts` + `[id]/route.ts` validate/store the array; `lib/automation-run.ts` `resolveRunRecipients()` now takes `jobIds: string[]` and dedups by email across ALL selected lists; `processSendPhase`, `kickOffRun`, `confirmDailyRun` resolve the correct id set.
+- **Item 3** — `lib/campaign-recipients.ts`: `RecipientInput.source` + `insertManualRecipients()`; `POST /api/campaigns` applies `manualInsert`; create-modal “Insert a test recipient” (top / after position N / every N).
+- **Item 4** — Independent `subjects`/`bodies` rotation (cross-combined per recipient, single-item list held constant), stored per item via `resolvedSubject`/`resolvedBodyHtml`. Updated: `lib/campaign-recipients.ts` `buildQueueItemRows`, `lib/campaign-create.ts`, `POST /api/campaigns`, `[id]/recipients/from-leads/route.ts` (now supports decoupled), `[id]/test-send/route.ts` (synthesizes a probe from lists), the drain render, and the create-modal multi-body editor. The legacy `CampaignVariant` pair path is preserved so automation template cloning still works.
+- **Item 5** — `SeedMailbox.userId`; `lib/seed-mailbox.ts` `resolveSeedMailbox(userId)` (own active row, else platform default); new `app/api/test-mailboxes/route.ts` (GET / POST / DELETE) with encrypted passwords; test-send route uses the per-user seed.
+- **Item 6** — `lib/imap.ts` `pollSeedMailbox` is spam-aware (`\Junk` SPECIAL-USE via `client.list()`, literal “Spam”/“Junk”… fallback, “unknown” when undetectable) returning `{ found, landedIn, messages, error }`; `runTestSend` threads `landedIn` through; `probeCampaignPlacement()` added; `app/api/internal/mail-queue-drain/route.ts` has the **batch gate** (per-campaign `batchSize` cap per tick, post-batch probe, pauses to `paused_deliverability`, emails the owner, skips until decided); new `app/api/campaigns/[id]/deliverability-decision/route.ts` (continue / switch_subject / stop). Status badges + `landedIn` type added to the campaigns + detail pages.
+
+### ✅ Done — remaining UI (this pass, 2026-09-13)
+- **Item 1 — `app/dashboard/campaigns/[id]/page.tsx`** (all four):
+  - `paused_deliverability` decision banner (Continue anyway / Switch subject & resume / Stop) wired to the existing `deliverabilityDecision()`/`debating` state.
+  - `landedIn` surfaced on the latest-check line (green "inbox" / amber otherwise).
+  - `item.source === "manual_insert"` queue rows get a violet “Test” badge; decoupled items show their `resolvedSubject`.
+  - `batchSize` shown beside “Rotate every N” (uses `campaign.rotateEvery`/`campaign.batchSize` from the GET row).
+- **Item 2 — `components/mailboxes-panel.tsx`**: added a “Deliverability test mailbox” section — lists the user's registered test boxes (GET `/api/test-mailboxes`), a label/host/port/username/app-password form that POSTs to create/update, per-row Delete via DELETE, and a note that none registered = platform default. Test-box loading folds into the existing `load()` so no extra effect was added.
+- **Item 3 — create-campaign modal (`app/dashboard/campaigns/page.tsx`)**: added a “Batch size for deliverability checks” number input (default 50, clamped [1,1000]) sent as `batchSize`; `POST /api/campaigns` now accepts it and threads it into `createCampaign()` which stores it on the `EmailCampaign` row.
+- **Item 4 — run-detail `app/dashboard/automations/[id]/runs/[runId]/page.tsx`**: added a “Recipients” roster (from `GET …/runs/[runId]`, capped at 500) and labels `source === "manual_insert"` rows with a violet “Test” badge; the run GET route now returns `roster` (the campaign's `EmailQueueItem` toEmail/source/status).
+- **Verification (item 5)**: `npx tsc --noEmit` clean; `npm run build` PASSES (exit 0). `npm run lint` is NOT fully clean, but every remaining error is pre-existing codebase-wide debt (the React 19 `react-hooks/set-state-in-effect` pattern used by essentially every page — `clock.tsx`, `admin-panel.tsx`, `extract/page.tsx`, etc. all share it) — this pass **introduced zero new lint errors** and removed several (fixed the `react/no-unescaped-entities` copy, the unused `Prisma` import + `prefer-const` in `lib/campaign-create.ts`, and an unused eslint-disable).
+
+### ❗ Remaining work — NONE implementation-side. Live verification only:
+- The ONLY remaining item is the **mandatory LIVE verification** below. It cannot be run in this sandbox (needs real Gmail/IMAP creds), so the code is reviewed + built but NOT live-verified here.
+
+### ❗ Needs real live verification (mandatory, doc's bar)
+- **Item 2 live**: upload a list → open Automations without a page reload → list appears; 2+ selected lists merge (deduped) in a run.
+- **Item 6 live against a real Gmail test mailbox**: deliberately trigger spam-filtering so the probe's `landedIn` returns `"spam"` (not just `"inbox"` on a clean test); confirm the `"unknown"` → human-check pause path; confirm a decoupled campaign drains via `resolvedSubject`/`resolvedBodyHtml` and that the batch gate pauses + resumes via `deliverability-decision`. **Requires real IMAP/SMTP creds (`SEED_MAILBOX_*` env or a `POST /api/test-mailboxes` row) — not possible in this sandbox, so the spam-detection code is reviewed but NOT live-verified.**
+
+---
+
+## PROMPT FOR NEXT AGENT
+
+Task 29's implementation is **complete** (schema + backend + all UI, including the previously-open remaining-work items) in `/Users/mikeolab/spaceworker` (Next.js 16 + Prisma 6 + postgres on `127.0.0.1:5432`). `npx tsc --noEmit` is clean and `npm run build` passes; the two migrations are applied via **`npx prisma migrate deploy` + `npx prisma generate`** (do NOT use `migrate dev` — the local role can't create a shadow DB, P3014).
+
+The only remaining step is the **mandatory LIVE verification** below. It requires real Gmail/IMAP creds you can't fabricate (`SEED_MAILBOX_*` env or a `POST /api/test-mailboxes` row), so it cannot be done from this sandbox:
+
+- Item 2: upload a list → open Automations without a full page reload → the list appears (the `refreshUploadJobs()` on modal-open fix); select 2+ lists → run merges them deduped by email.
+- Item 6: send against a real Gmail test mailbox and deliberately trigger spam-filtering so the probe's `landedIn` returns `"spam"` (not just `"inbox"` on a clean test); confirm the `"unknown"` → human-check pause path; confirm a decoupled campaign drains via `resolvedSubject`/`resolvedBodyHtml` and that the batch gate pauses to `paused_deliverability` and resumes via `deliverability-decision` (continue / switch_subject / stop).
+
+When running the live checks, call the stop / not done until the real Gmail spam placement passes. Report per-item. `npm run lint` is not fully clean due to pre-existing React 19 `react-hooks/set-state-in-effect` debt across many untouched pages; don't chase that unless asked — it predates Task 29 and this pass added zero new findings. Do not re-run `prisma migrate dev` — always `migrate deploy`.

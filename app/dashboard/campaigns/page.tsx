@@ -47,6 +47,10 @@ const STATUS_BADGES: Record<string, string> = {
   pending_test_confirm: "bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300",
   sending: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
   done: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
+  // Task 29, item 6 — batch gate paused this campaign pending a deliverability
+  // decision (continue / switch subject / stop).
+  paused_deliverability: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
 export default function CampaignsPage() {
@@ -58,10 +62,22 @@ export default function CampaignsPage() {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [selectedMailboxIds, setSelectedMailboxIds] = useState<string[]>([]);
   const [subjects, setSubjects] = useState<string[]>([""]);
-  const [sharedBody, setSharedBody] = useState("");
+  // Task 29, item 4 — independent body list (was a single shared body). Bodies
+  // rotate on their own index, cross-combined with the subject list per recipient.
+  const [bodies, setBodies] = useState<string[]>([""]);
+  // Task 29, item 3 — optional ad-hoc "test recipient" inserted into the queue at a
+  // chosen position (top / after position N / every N-th recipient).
+  const [miEnabled, setMiEnabled] = useState(false);
+  const [miEmail, setMiEmail] = useState("");
+  const [miMode, setMiMode] = useState<"top" | "position" | "every">("top");
+  const [miPosition, setMiPosition] = useState("1");
+  const [miEveryN, setMiEveryN] = useState("10");
   // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
   // before the rotation advances (clamped server-side to [1, 1000]; default 1).
   const [rotateEvery, setRotateEvery] = useState("1");
+  // Task 29, item 6 — how many queue items the mail-queue drain sends before it
+  // runs the deliverability probe and re-checks placement (clamped to [1, 1000]).
+  const [batchSize, setBatchSize] = useState("50");
   const [csvName, setCsvName] = useState("");
   const [csvContent, setCsvContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -137,13 +153,17 @@ export default function CampaignsPage() {
         setLeadEmailCount(emails.size);
       })
       .catch(() => setLeadCountError("Couldn't load that job's leads."));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromSearchJobId]);
 
   function openNew() {
     setName("");
     setSubjects([""]);
-    setSharedBody("");
+    setBodies([""]);
+    setMiEnabled(false);
+    setMiEmail("");
+    setMiMode("top");
+    setMiPosition("1");
+    setMiEveryN("10");
     setSelectedMailboxIds([]);
     setCsvName("");
     setCsvContent("");
@@ -256,20 +276,32 @@ export default function CampaignsPage() {
     }
   }
 
-  function validVariants(): { subject: string; bodyHtml: string }[] {
-    const body = sharedBody.trim();
-    return subjects
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0 && body.length > 0)
-      .map((s) => ({ subject: s, bodyHtml: sharedBody }));
+  function setBodyAt(index: number, value: string) {
+    setBodies(bodies.map((b, i) => (i === index ? value : b)));
+  }
+  function addBody() {
+    setBodies([...bodies, ""]);
+  }
+  function removeBody(index: number) {
+    setBodies(bodies.filter((_, i) => i !== index));
+  }
+
+  // Task 29, item 4 — decoupled content: a subject list and a body list, each
+  // rotating on its own index (a single-item list is held constant). This replaces
+  // the old paired "shared body" model; the API stores both lists independently.
+  function validContent(): { subjects: string[]; bodies: string[] } {
+    return {
+      subjects: subjects.map((s) => s.trim()).filter((s) => s.length > 0),
+      bodies: bodies.map((b) => b.trim()).filter((b) => b.length > 0),
+    };
   }
 
   async function submit() {
     setFormError("");
-    const variants = validVariants();
+    const content = validContent();
     if (!name.trim()) { setFormError("Name is required"); return; }
     if (selectedMailboxIds.length === 0) { setFormError("Select at least one sending mailbox"); return; }
-    if (variants.length === 0) { setFormError("Add at least one subject line and a body"); return; }
+    if (content.subjects.length === 0 || content.bodies.length === 0) { setFormError("Add at least one subject line and one body"); return; }
     // Task 26, Piece 4 — the source-dependent validity checks. The locked
     // ?fromSearchJob mode keeps its old "loaded job, has emails" check.
     if (fromSearchJobId) {
@@ -292,13 +324,25 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           name: name.trim(),
           mailboxIds: selectedMailboxIds,
-          variants,
+          subjects: content.subjects,
+          bodies: content.bodies,
           rotateEvery: Number(rotateEvery) || 1,
+          batchSize: Number(batchSize) || 50,
           ...(fromSearchJobId
             ? { searchJobId: fromSearchJobId }
             : recipientSource === "leads"
               ? { leadIds: selectedLeadIds }
               : { csv: csvContent }),
+          ...(miEnabled && miEmail.trim()
+            ? {
+                manualInsert: {
+                  email: miEmail.trim(),
+                  mode: miMode,
+                  position: Number(miPosition) || 0,
+                  everyN: Number(miEveryN) || 1,
+                },
+              }
+            : {}),
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -426,7 +470,7 @@ export default function CampaignsPage() {
           <div className="mx-auto my-8 w-full max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 dark:border-zinc-700 dark:bg-zinc-950">
             <h2 className="text-lg font-semibold">New campaign</h2>
             <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-              Senders and subject lines rotate evenly in-run; recipients come from a CSV or your validated leads. You'll confirm a
+              Senders and subject lines rotate evenly in-run; recipients come from a CSV or your validated leads. You will confirm a
               one-message test-send before the real send is allowed.
             </p>
 <div className="mt-4 flex flex-col gap-4">
@@ -466,7 +510,7 @@ export default function CampaignsPage() {
               </div>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
-                Subject lines <span className="text-xs text-zinc-400">— rotate evenly across recipients (shared body)</span>
+                Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   {subjects.map((s, i) => (
                     <div key={i} className="inline-flex items-center gap-1.5">
@@ -503,16 +547,93 @@ export default function CampaignsPage() {
                 />
               </label>
 
+              {/* Task 29, item 6 — per-batch deliverability checkpoint size. The
+                  mail-queue drain sends this many recipients, then probes the test
+                  mailbox and re-checks placement before the next batch. */}
               <label className="flex flex-col gap-1 text-sm font-medium">
-                Body <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc. from your CSV columns'}</span>
-                <textarea
-                  value={sharedBody}
-                  onChange={(e) => setSharedBody(e.target.value)}
-                  rows={5}
-                  placeholder='Hi {{firstName}} — thanks for the time with {{company}}.'
-                  className="resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                Batch size for deliverability checks
+                <span className="text-xs text-zinc-400">— pause every N sends to confirm your mail still lands in the inbox, not spam</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={1000}
+                  value={batchSize}
+                  onChange={(e) => setBatchSize(e.target.value)}
+                  className="w-32 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
               </label>
+
+              <div className="flex flex-col gap-1 text-sm font-medium">
+                Bodies <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc.; each body rotates on its own index'}</span>
+                <div className="mt-1 flex flex-col gap-2">
+                  {bodies.map((b, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <textarea
+                        value={b}
+                        onChange={(e) => setBodyAt(i, e.target.value)}
+                        rows={3}
+                        placeholder={`Body ${i + 1} — Hi {{firstName}}, thanks for the time with {{company}}.`}
+                        className="resize-y flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      />
+                      {bodies.length > 1 && (
+                        <button type="button" onClick={() => removeBody(i)} className="text-sm text-red-600 hover:underline">×</button>
+                      )}
+                    </div>
+                  ))}
+                  {bodies.length < 5 && (
+                    <button type="button" onClick={addBody} className="rounded-lg border border-dashed border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
+                      + Add body
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Task 29, item 3 — drop an ad-hoc test recipient into the queue at a
+                  chosen position, useful for eyeballing a live run in your own inbox
+                  (especially once batch-checking lands). Stored as source:"manual_insert". */}
+              {!fromSearchJobId && (
+                <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" checked={miEnabled} onChange={(e) => setMiEnabled(e.target.checked)} className="h-4 w-4 accent-zinc-900" />
+                    Insert a test/extra recipient into the queue
+                  </label>
+                  {miEnabled && (
+                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                      <input
+                        type="email"
+                        value={miEmail}
+                        onChange={(e) => setMiEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-56 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      />
+                      <select value={miMode} onChange={(e) => setMiMode(e.target.value as "top" | "position" | "every")} className="rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950">
+                        <option value="top">At the top</option>
+                        <option value="position">After position N</option>
+                        <option value="every">Every Nth recipient</option>
+                      </select>
+                      {miMode === "position" && (
+                        <input
+                          type="number" min={0} value={miPosition}
+                          onChange={(e) => setMiPosition(e.target.value)}
+                          className="w-20 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+                          title="Insert after this 1-based position"
+                        />
+                      )}
+                      {miMode === "every" && (
+                        <span className="flex items-center gap-1">
+                          every
+                          <input
+                            type="number" min={1} value={miEveryN}
+                            onChange={(e) => setMiEveryN(e.target.value)}
+                            className="w-16 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+                          />
+                          recipients
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {!fromSearchJobId && (
                 <div className="flex flex-col gap-1 text-sm font-medium">
@@ -606,13 +727,13 @@ export default function CampaignsPage() {
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2">
                         <button type="button" onClick={selectAllVisible} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
-                          Select all visible ({visibleLeads.length})
+                          Select all in this session ({visibleLeads.length})
                         </button>
                         <button type="button" onClick={selectNoneVisible} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
                           Clear visible
                         </button>
                         <button type="button" onClick={selectAllValid} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
-                          Select all valid across everything ({pickerData.leads.length})
+                          Select all valid, every session ({pickerData.leads.length})
                         </button>
                       </div>
                       <p className="text-sm font-semibold">

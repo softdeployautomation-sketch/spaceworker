@@ -21,6 +21,21 @@ type Mailbox = {
   lastTestedAt: string | null;
   lastTestOk: boolean | null;
   createdAt: string;
+}
+
+// Task 29, item 5 — a user's OWN deliverability test/seed mailbox (their Gmail or
+// any IMAP inbox). It's what the test-send probe and the batch gate poll to check
+// placement (inbox vs spam). Separate from sending mailboxes; password is
+// encrypted, IMAP only. NULL row = use the platform default.
+type TestMailbox = {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  secure: boolean;
+  active: boolean;
+  createdAt: string;
 };
 
 // Task 26, Piece 5a — real-world SMTP security as three explicit choices instead
@@ -84,14 +99,25 @@ export default function MailboxesPanel() {
   // Task 26, Piece 5a — live pre-save connection test in the Add/Edit modal.
   const [testConnecting, setTestConnecting] = useState(false);
   const [testConnResult, setTestConnResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  // Task 29, item 5 — per-user deliverability test/seed mailbox registration.
+  const [testMailboxes, setTestMailboxes] = useState<TestMailbox[]>([]);
+  const [testMbLoading, setTestMbLoading] = useState(true);
+  const [testMbForm, setTestMbForm] = useState({ label: "", host: "", port: "993", username: "", password: "" });
+  const [testMbError, setTestMbError] = useState("");
+  const [testMbSaving, setTestMbSaving] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/mailboxes");
-      if (!res.ok) throw new Error("Failed to load mailboxes");
-      setMailboxes((await res.json()) as Mailbox[]);
+      // Sending mailboxes + (Task 29, item 5) the user's registered
+      // deliverability test/seed mailbox, loaded together.
+      const mailRes = await fetch("/api/mailboxes");
+      if (!mailRes.ok) throw new Error("Failed to load mailboxes");
+      setMailboxes((await mailRes.json()) as Mailbox[]);
+      const testRes = await fetch("/api/test-mailboxes");
+      if (testRes.ok) setTestMailboxes((await testRes.json()) as TestMailbox[]);
+      setTestMbLoading(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load mailboxes");
     } finally {
@@ -257,6 +283,60 @@ export default function MailboxesPanel() {
     }
   }
 
+  // --- Task 29, item 5 — per-user deliverability test/seed mailbox ---
+
+  async function registerTestMailbox() {
+    const port = Number(testMbForm.port);
+    if (!testMbForm.label.trim() || !testMbForm.host.trim() || !testMbForm.username.trim() || !testMbForm.password.trim() || !Number.isInteger(port) || port <= 0) {
+      setTestMbError("Label, host, port, username and password are required.");
+      return;
+    }
+    setTestMbSaving(true);
+    setTestMbError("");
+    try {
+      const res = await fetch("/api/test-mailboxes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          label: testMbForm.label.trim(),
+          host: testMbForm.host.trim(),
+          port,
+          username: testMbForm.username.trim(),
+          password: testMbForm.password,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : "Failed to register test mailbox");
+      setTestMailboxes((prev) => {
+        const existing = prev.find((x) => x.id === (data as TestMailbox).id);
+        return existing ? prev.map((x) => (x.id === (data as TestMailbox).id ? data as TestMailbox : x)) : [...prev, data as TestMailbox];
+      });
+      setTestMbForm({ label: "", host: "", port: "993", username: "", password: "" });
+    } catch (e) {
+      setTestMbError(e instanceof Error ? e.message : "Failed to register test mailbox");
+    } finally {
+      setTestMbSaving(false);
+    }
+  }
+
+  async function removeTestMailbox(t: TestMailbox) {
+    if (!(await confirm({
+      title: `Delete test mailbox "${t.label}"?`,
+      description: "You'll go back to using the platform-default seed mailbox for deliverability checks unless you register another one.",
+      confirmLabel: "Delete",
+    }))) return;
+    try {
+      const res = await fetch("/api/test-mailboxes", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: t.id }),
+      });
+      if (res.ok) setTestMailboxes((prev) => prev.filter((x) => x.id !== t.id));
+    } catch {
+      // ignore transient delete errors
+    }
+  }
+
   return (
     <div>
       <div className="flex items-center justify-between">
@@ -383,6 +463,97 @@ export default function MailboxesPanel() {
           })}
         </div>
       )}
+
+      {/* Task 29, item 5 — per-user deliverability test/seed mailbox. A user's own
+          IMAP account (e.g. their Gmail) checked for placement by the test-send
+          probe and batch gate. Optional — with none registered, the platform
+          default seed is used. */}
+      <div className="mt-10 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-950">
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Deliverability test mailbox</h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Your own IMAP account used to confirm that campaign mail lands in the inbox and not spam.
+            A Gmail account works well — its spam filter gives a realistic signal. With none registered,
+            SpaceWorker uses its platform default seed mailbox. Passwords are encrypted and used for IMAP reads only.
+          </p>
+        </div>
+
+        {testMbLoading ? (
+          <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+        ) : testMailboxes.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No test mailbox registered — using the platform default.</p>
+        ) : (
+          <div className="mt-3 flex flex-col gap-2">
+            {testMailboxes.map((t) => (
+              <div key={t.id} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{t.label}</p>
+                  <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">{t.username} @ {t.host}:{t.port}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeTestMailbox(t)}
+                  className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/40"
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <input
+            type="text"
+            value={testMbForm.label}
+            onChange={(e) => setTestMbForm({ ...testMbForm, label: e.target.value })}
+            placeholder="Label — e.g. My Gmail"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <input
+            type="text"
+            value={testMbForm.host}
+            onChange={(e) => setTestMbForm({ ...testMbForm, host: e.target.value })}
+            placeholder="imap.gmail.com"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <input
+            type="text"
+            value={testMbForm.username}
+            onChange={(e) => setTestMbForm({ ...testMbForm, username: e.target.value })}
+            placeholder="you@gmail.com"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <input
+            type="password"
+            value={testMbForm.password}
+            onChange={(e) => setTestMbForm({ ...testMbForm, password: e.target.value })}
+            placeholder="App password"
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+        </div>
+        <div className="mt-2 grid grid-cols-[minmax(0,7rem)_minmax(0,1fr)] items-center gap-3">
+          <label className="flex flex-col gap-1 text-xs text-zinc-500 dark:text-zinc-400">
+            Port
+            <input
+              type="number"
+              value={testMbForm.port}
+              onChange={(e) => setTestMbForm({ ...testMbForm, port: e.target.value })}
+              className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+            />
+          </label>
+          <span className="text-xs text-zinc-400 dark:text-zinc-500">IMAP — 993 (implicit TLS) is the Gmail/standard default.</span>
+        </div>
+        {testMbError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{testMbError}</p>}
+        <button
+          type="button"
+          onClick={() => void registerTestMailbox()}
+          disabled={testMbSaving}
+          className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+        >
+          {testMbSaving ? "Saving…" : "Register test mailbox"}
+        </button>
+      </div>
   {modalOpen && typeof document !== "undefined" && createPortal(
         // Rendered via a portal to document.body, not in place — this page's
         // content sits inside Shell's z-10 wrapper, a SIBLING of the app's
@@ -482,7 +653,7 @@ export default function MailboxesPanel() {
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
                 <span className="text-xs font-normal text-zinc-500 dark:text-zinc-400">
-                  Chrome may warn about reusing a saved password here — that's expected. We need your real SMTP credentials to send on your behalf, so choose "Site is legitimate" if prompted.
+                  Chrome may warn about reusing a saved password here — that behavior is expected. We need your real SMTP credentials to send on your behalf, so choose to mark the site as legitimate if prompted.
                 </span>
               </label>
 

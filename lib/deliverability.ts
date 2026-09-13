@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { transporterForMailbox, type TransporterMailbox } from "./mailer-send";
 import { decryptSecret } from "./mailbox-crypto";
 import { pollSeedMailbox } from "./imap";
+import { resolveSeedMailbox } from "./seed-mailbox";
 import { renderMerge } from "./render-merge";
 import { randomBytes } from "crypto";
 
@@ -31,7 +32,7 @@ export async function runTestSend(opts: {
   mailbox: TransporterMailbox;
   variant: { subject: string; bodyHtml: string };
   seed: SeedMailboxRow;
-}): Promise<{ outcome: DeliverabilityOutcome; checkId: string; error?: string }> {
+}): Promise<{ outcome: DeliverabilityOutcome; checkId: string; landedIn: "inbox" | "spam" | "unknown"; error?: string }> {
   const since = new Date(Date.now() - 120_000); // generous window for clock skew
   // Unique per-test-send marker so the IMAP poll can tie a found message back to
   // exactly this send. The seed mailbox is a single row shared across all users,
@@ -54,9 +55,11 @@ export async function runTestSend(opts: {
 
   await new Promise((r) => setTimeout(r, TEST_CONFIRM_DELAY_MS));
 
-  let found = false;
   let messages: string[] = [];
   let pollError: string | undefined;
+  // Task 29, item 6 — where the test message actually landed (inbox / spam /
+  // unknown), passed straight through from the spam-aware IMAP poll.
+  let landedIn: "inbox" | "spam" | "unknown" = "unknown";
 
   if (!sendError) {
     const seedPassword = decryptSecret(
@@ -75,26 +78,77 @@ export async function runTestSend(opts: {
       since,
       token
     );
-    found = poll.found;
     messages = poll.messages;
     pollError = poll.error;
+    landedIn = poll.landedIn;
   }
 
-  const outcome: DeliverabilityOutcome = !sendError && found ? "delivered" : "failed";
+  // Task 29, item 6 — landing in the Spam/Junk folder must NOT count as a passed
+  // gate. `found` alone is true for either INBOX or Spam (pollSeedMailbox's
+  // definition), so gating on `found` would let a spam-filtered test message
+  // unlock a real send. Only an INBOX landing is "delivered"; spam and unknown are
+  // both "failed", exactly like "not found anywhere" was treated before this
+  // feature existed — this is what keeps confirm-test's existing
+  // `status !== "delivered"` check (and the campaign detail page's Confirm-button
+  // gate, which reads the same field) correctly blocking on a spam result without
+  // needing to change either of them.
+  const outcome: DeliverabilityOutcome = !sendError && landedIn === "inbox" ? "delivered" : "failed";
   const error =
     sendError ??
-    (found ? undefined : (pollError ?? "Message not observed in the seed mailbox within the test window"));
+    (landedIn === "inbox"
+      ? undefined
+      : landedIn === "spam"
+        ? "Test message was delivered to the Spam/Junk folder, not the inbox — sending is blocked until this is resolved."
+        : (pollError ?? "Message not observed in the seed mailbox within the test window"));
 
   const check = await prisma.deliverabilityCheck.create({
     data: {
       campaignId: opts.campaignId,
       seedMailboxId: opts.seed.id,
       status: outcome,
+      landedIn,
       messageId: messages[0] ?? null,
       error,
       checkedAt: new Date(),
     },
   });
 
-  return { outcome, checkId: check.id, error };
+  return { outcome, checkId: check.id, landedIn, error };
+}
+
+/**
+ * Task 29, item 6 — the batch-gate probe. After each batch a campaign drains, the
+ * mail-queue drain calls this to re-verify deliverability on the campaign's test
+ * mailbox (the user's own registered one, else the platform default). It sends one
+ * real test message and returns where it landed ("inbox" => safe to continue the
+ * next batch; "spam"/"unknown" => the drain should pause for a human). Uses the
+ * campaign's first active mailbox as the sender, mirroring the manual test-send.
+ */
+export async function probeCampaignPlacement(opts: {
+  campaignId: string;
+  userId: string;
+  mailboxes: TransporterMailbox[];
+  subjects: string[];
+  bodies: string[];
+  variants?: { subject: string; bodyHtml: string }[];
+}): Promise<{ outcome: DeliverabilityOutcome; landedIn: "inbox" | "spam" | "unknown"; checkId: string; error?: string }> {
+  const mailbox = opts.mailboxes[0];
+  if (!mailbox) return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No sending mailbox available" };
+
+  let variant: { subject: string; bodyHtml: string };
+  if (opts.subjects.length > 0) {
+    variant = { subject: opts.subjects[0], bodyHtml: opts.bodies.length > 0 ? opts.bodies[0] : "" };
+  } else if (opts.variants && opts.variants.length > 0) {
+    variant = opts.variants[0];
+  } else {
+    return { outcome: "failed", landedIn: "unknown", checkId: "", error: "Campaign has no content to test-send" };
+  }
+
+  const seed = await resolveSeedMailbox(opts.userId);
+  if (!seed) {
+    return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No test mailbox configured" };
+  }
+
+  const r = await runTestSend({ campaignId: opts.campaignId, mailbox, variant, seed });
+  return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
 }

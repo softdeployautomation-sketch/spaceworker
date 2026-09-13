@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { runTestSend } from "@/lib/deliverability";
-import { ensureSeedMailbox } from "@/lib/seed-mailbox";
+import { resolveSeedMailbox } from "@/lib/seed-mailbox";
 
 // POST: send one test message to a platform-owned seed mailbox and verify it
 // actually arrives via IMAP, recording a DeliverabilityCheck. This is the
@@ -35,7 +35,16 @@ export async function POST(
     );
   }
 
-  const variant = campaign.variants[0];
+  // Legacy pair campaigns have a CampaignVariant row; decoupled campaigns (item 4)
+  // keep no rows, so synthesize a probe variant from the independent subject/body
+  // lists (first entry of each) to test-send with.
+  let variant: { subject: string; bodyHtml: string } | undefined = campaign.variants[0];
+  if (!variant && campaign.subjects && campaign.subjects.length > 0) {
+    variant = {
+      subject: campaign.subjects[0],
+      bodyHtml: campaign.bodies && campaign.bodies.length > 0 ? campaign.bodies[0] : "",
+    };
+  }
   if (!variant) {
     return NextResponse.json({ error: "Campaign has no variant to test with" }, { status: 400 });
   }
@@ -51,10 +60,13 @@ export async function POST(
     return NextResponse.json({ error: "No active sending mailbox on this campaign" }, { status: 400 });
   }
 
-  const seed = await ensureSeedMailbox() ?? await prisma.seedMailbox.findFirst({ where: { active: true } });
+  // Task 29, item 5 — a user who registered their OWN test mailbox uses that (it
+  // may filter differently than the platform's shared seed); otherwise the
+  // platform default is used, exactly as before.
+  const seed = await resolveSeedMailbox(session.userId);
   if (!seed) {
     return NextResponse.json(
-      { error: "No platform seed mailbox is configured — a real one is required to prove delivery" },
+      { error: "No seed/test mailbox is configured — a real one is required to prove delivery" },
       { status: 400 }
     );
   }
@@ -75,6 +87,16 @@ export async function POST(
           .join("; ")
       : undefined;
 
+  // Task 29, item 6 — aggregate where the tests landed. "spam" if ANY test hit the
+  // spam folder (worst case is what the run-detail UI must not hide); "unknown" if
+  // none could be verified; else "inbox".
+  const landedIn =
+    results.some((r) => r.landedIn === "spam")
+      ? "spam"
+      : results.some((r) => r.landedIn === "unknown")
+        ? "unknown"
+        : "inbox";
+
   // Write one summary row reflecting the whole gate's outcome — it's what the
   // dashboard's "latest check" (campaign.checks[0]) needs to represent, since
   // the gate is only truly passed when every rotated mailbox is verified.
@@ -83,6 +105,7 @@ export async function POST(
       campaignId: campaign.id,
       seedMailboxId: seed.id,
       status: outcome,
+      landedIn,
       messageId: null,
       error,
       checkedAt: new Date(),

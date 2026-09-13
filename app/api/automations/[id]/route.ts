@@ -77,7 +77,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const locationTerms = sanitizeStringArray(body.locationTerms);
   const mailboxIds = parseMailboxIds(body.mailboxIds);
   const campaignTemplateId = typeof body.campaignTemplateId === "string" ? body.campaignTemplateId.trim() : "";
-  const personalListId = leadSource === "personal_list" && typeof body.personalListId === "string" ? body.personalListId.trim() : null;
+  const personalListIds = leadSource === "personal_list" ? sanitizeStringArray(body.personalListIds) : [];
   const triggerMode = body.triggerMode === "daily" ? "daily" : "manual";
   const rawHour = Number(body.scheduleHour);
   const scheduleHour = Number.isInteger(rawHour) && rawHour >= 0 && rawHour <= 23 ? rawHour : null;
@@ -107,11 +107,16 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     return NextResponse.json({ error: "Add at least one Find term for the extract source." }, { status: 400 });
   }
   if (leadSource === "personal_list") {
-    const uploadJob = await prisma.searchJob.findFirst({
-      where: { id: personalListId ?? "", userId: session.userId, template: "upload" },
+    if (personalListIds.length === 0) {
+      return NextResponse.json({ error: "Pick at least one of your uploaded lead lists." }, { status: 400 });
+    }
+    const uploadJobs = await prisma.searchJob.findMany({
+      where: { id: { in: personalListIds }, userId: session.userId, template: "upload" },
       select: { id: true },
     });
-    if (!uploadJob) return NextResponse.json({ error: "Pick one of your uploaded lead lists." }, { status: 400 });
+    if (uploadJobs.length !== personalListIds.length) {
+      return NextResponse.json({ error: "One or more selected uploaded lists are not yours." }, { status: 400 });
+    }
   }
   if (triggerMode === "daily" && scheduleHour === null) {
     return NextResponse.json({ error: "Daily automations need a schedule hour (0-23 UTC)." }, { status: 400 });
@@ -130,7 +135,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       findTerms,
       locationTerms,
       params: bodyParams,
-      personalListId,
+      personalListIds,
       campaignTemplateId,
       mailboxIds,
       triggerMode,

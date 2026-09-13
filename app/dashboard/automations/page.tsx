@@ -28,7 +28,7 @@ interface Automation {
   locationTerms: string[];
   campaignTemplateId: string;
   mailboxIds: string[];
-  personalListId?: string | null;
+  personalListIds?: string[];
   triggerMode: string;
   scheduleHour: number | null;
   scheduleEnabled: boolean;
@@ -104,7 +104,11 @@ export default function AutomationsPage() {
   const [locations, setLocations] = useState<string[]>([]);
   const [campaignTemplateId, setCampaignTemplateId] = useState("");
   const [mailboxSelections, setMailboxSelections] = useState<Set<string>>(new Set());
-  const [personalListId, setPersonalListId] = useState("");
+  // Task 29, item 2 — personal_list source is a MULTI-select of uploaded lists
+  // (was a single personalListId), and uploadJobs is refreshed each time the
+  // create/edit modal opens so a list uploaded on the Extract page shows up
+  // without a full page reload (the reported "doesn't load the list" bug).
+  const [personalListSelections, setPersonalListSelections] = useState<Set<string>>(new Set());
   const [triggerMode, setTriggerMode] = useState<"manual" | "daily">("manual");
   const [scheduleHour, setScheduleHour] = useState(9);
   const [formError, setFormError] = useState("");
@@ -139,6 +143,20 @@ export default function AutomationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Task 29, item 2 — refresh just the uploaded-list dropdown whenever the
+  // create/edit modal opens, so a list just uploaded on the Extract page is
+  // visible immediately without a full page reload (the reported bug).
+  async function refreshUploadJobs() {
+    try {
+      const res = await fetch("/api/jobs");
+      if (!res.ok) return;
+      const jobs = (await res.json()) as (UploadJobOption & { template: string })[];
+      setUploadJobs(jobs.filter((j) => j.template === "upload"));
+    } catch {
+      // Best-effort — the modal still works with the cached list.
+    }
+  }
+
   function openCreate() {
     setEditTarget(null);
     setStep(0);
@@ -150,11 +168,12 @@ export default function AutomationsPage() {
     setLocations([]);
     setCampaignTemplateId("");
     setMailboxSelections(new Set());
-    setPersonalListId("");
+    setPersonalListSelections(new Set());
     setTriggerMode("manual");
     setScheduleHour(9);
     setFormError("");
     setCreateOpen(true);
+    void refreshUploadJobs();
   }
 
   function openEdit(a: Automation) {
@@ -166,11 +185,14 @@ export default function AutomationsPage() {
     setLocations(a.locationTerms ?? []);
     setCampaignTemplateId(a.campaignTemplateId);
     setMailboxSelections(new Set(a.mailboxIds));
-    setPersonalListId(a.leadSource === "personal_list" ? a.personalListId ?? "" : "");
+    setPersonalListSelections(
+      new Set(a.leadSource === "personal_list" ? (a.personalListIds ?? []) : [])
+    );
     setTriggerMode(a.triggerMode === "daily" ? "daily" : "manual");
     setScheduleHour(a.scheduleHour ?? 9);
     setFormError("");
     setCreateOpen(true);
+    void refreshUploadJobs();
   }
 
   function addChip(value: string, list: string[], set: (v: string[]) => void) {
@@ -187,10 +209,20 @@ export default function AutomationsPage() {
     });
   }
 
+  function togglePersonalList(id: string) {
+    setPersonalListSelections((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   async function submitForm() {
     setFormError("");
     if (!formName.trim()) return setFormError("Name is required");
     if (leadSource === "extract" && findTerms.length === 0) return setFormError("Add at least one Find term");
+    if (leadSource === "personal_list" && personalListSelections.size === 0) return setFormError("Select at least one uploaded lead list");
     if (!campaignTemplateId) return setFormError("Select a campaign template");
     if (mailboxSelections.size === 0) return setFormError("Select at least one sending mailbox");
     if (triggerMode === "daily" && (scheduleHour < 0 || scheduleHour > 23)) return setFormError("Pick an hour 0-23 UTC");
@@ -201,7 +233,7 @@ export default function AutomationsPage() {
       findTerms,
       locationTerms: locations,
       params: { engine: "duckduckgo", resultMode: "namesEmails" },
-      personalListId: leadSource === "personal_list" ? personalListId || null : null,
+      personalListIds: leadSource === "personal_list" ? [...personalListSelections] : [],
       campaignTemplateId,
       mailboxIds: [...mailboxSelections],
       triggerMode,
@@ -419,17 +451,27 @@ export default function AutomationsPage() {
 
           {step === 1 && leadSource === "personal_list" && (
             <div>
-              <Label>Choose an uploaded lead list</Label>
-              <Select value={personalListId} onChange={(e) => setPersonalListId(e.target.value)}>
-                <option value="">Select a list…</option>
-                {uploadJobs.map((j) => (
-                  <option key={j.id} value={j.id}>
-                    {j.query} ({j._count?.leads ?? 0} leads)
-                  </option>
-                ))}
-              </Select>
+              <Label>Choose uploaded lead lists ({personalListSelections.size} selected)</Label>
+              <div className="mt-1 flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border border-border">
+                {uploadJobs.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-fg-muted">No uploaded lists yet — upload one from the Extract page, then reopen this panel.</p>
+                ) : (
+                  uploadJobs.map((j) => (
+                    <label key={j.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={personalListSelections.has(j.id)}
+                        onChange={() => togglePersonalList(j.id)}
+                        className="h-4 w-4 accent-brand-500"
+                      />
+                      <span className="font-medium">{j.query}</span>
+                      <span className="text-xs text-fg-muted">({j._count?.leads ?? 0} leads)</span>
+                    </label>
+                  ))
+                )}
+              </div>
               <p className="mt-2 text-xs text-fg-muted">
-                Only your previously uploaded lists appear here. Upload one from the Extract page if it's missing.
+                Runs merge validated leads from every selected list, deduped by email. Lists upload on the Extract page appear here the moment you open this panel.
               </p>
             </div>
           )}

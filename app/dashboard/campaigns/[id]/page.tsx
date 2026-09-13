@@ -11,6 +11,10 @@ type QueueItem = {
   variantId: string | null;
   variant?: { id: string; subject: string } | null;
   toEmail: string;
+  // Task 29, item 3 — provenance. "manual_insert" = a test recipient the user
+  // dropped into the queue at a chosen position; "" = extracted/uploaded/picked.
+  source: string;
+  resolvedSubject: string | null;
   variables: Record<string, string> | null;
   status: string;
   sentAt: string | null;
@@ -27,6 +31,7 @@ type Variant = {
 type DeliverabilityCheck = {
   id: string;
   status: "pending" | "delivered" | "failed";
+  landedIn: string | null;
   error: string | null;
   checkedAt: string | null;
   createdAt: string;
@@ -38,6 +43,12 @@ type CampaignDetail = {
   status: string;
   searchJobId: string | null;
   createdAt: string;
+  // Task 29, item 6 — per-batch deliverability checkpoint + rotation config,
+  // surfaced so the paused-decision banner has context.
+  batchSize: number;
+  rotateEvery: number;
+  subjects: string[] | null;
+  bodies: string[] | null;
   variants: Variant[];
   checks: DeliverabilityCheck[];
   items: QueueItem[];
@@ -61,6 +72,9 @@ const STATUS_BADGES: Record<string, string> = {
   sending: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
   done: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
   draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+  // Task 29, item 6 — batch gate paused pending a deliverability decision.
+  paused_deliverability: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
 const ITEM_STATUS_BADGES: Record<string, string> = {
@@ -80,6 +94,7 @@ export default function CampaignDetailPage() {
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [debating, setDebating] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -137,6 +152,25 @@ export default function CampaignDetailPage() {
     }
   }
 
+  // Task 29, item 6 — resolve a batch-gate pause (continue / switch subject / stop).
+  async function deliverabilityDecision(action: "continue" | "switch_subject" | "stop") {
+    setDebating(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/deliverability-decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) setTestResult({ outcome: "failed", error: data.error ?? "Couldn't apply that choice." });
+      else void load();
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while applying your choice." });
+    } finally {
+      setDebating(false);
+    }
+  }
+
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
   }
@@ -180,7 +214,7 @@ export default function CampaignDetailPage() {
           <h2 className="text-sm font-semibold text-violet-800 dark:text-violet-300">Test-send before the real send</h2>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
             A real send is blocked until we prove the connected SMTP actually delivers. Send one test message to
-            SpaceWorker's seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.
+            the SpaceWorker seed mailbox, wait for the IMAP confirmation, then unlock the campaign with an explicit click.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -207,10 +241,58 @@ export default function CampaignDetailPage() {
           {latestCheck && (
             <p className="mt-2 text-sm">
               Latest check: <span className={`font-medium ${latestCheck.status === "delivered" ? "text-emerald-600" : "text-red-600"}`}>{latestCheck.status}</span>
+              {latestCheck.landedIn ? (
+                <span className="text-zinc-500">
+                  {" — landed in "}
+                  <span className={`font-medium ${latestCheck.landedIn === "inbox" ? "text-emerald-600" : "text-amber-600"}`}>{latestCheck.landedIn}</span>
+                </span>
+              ) : null}
               {latestCheck.error ? <span className="text-zinc-500"> — {latestCheck.error}</span> : null}
               {latestCheck.checkedAt ? <span className="text-zinc-400"> ({new Date(latestCheck.checkedAt).toLocaleString()})</span> : null}
             </p>
           )}
+        </div>
+      )}
+
+      {/* Task 29, item 6 — the batch gate (mail-queue drain) paused this campaign
+          after a batch because the probe message's placement couldn't be verified as
+          a clean inbox landing (it landed in spam, or placement was undetectable).
+          Let the owner decide: continue anyway, rotate to the next subject & resume,
+          or stop outright. Wired to deliverabilityDecision()/debating state. */}
+      {campaign.status === "paused_deliverability" && (
+        <div className="mt-4 rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-900/20">
+          <h2 className="text-sm font-semibold text-red-700 dark:text-red-300">Deliverability check needs your input</h2>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
+            This campaign paused after a batch because the probe message could not be confirmed in the inbox
+            — it may have landed in spam, or we could not verify its placement automatically. Check your test
+            mailbox, then decide how to proceed.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void deliverabilityDecision("continue")}
+              disabled={debating}
+              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {debating ? "Applying…" : "Continue anyway"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void deliverabilityDecision("switch_subject")}
+              disabled={debating}
+              className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-amber-400 disabled:opacity-50"
+            >
+              {debating ? "Applying…" : "Switch subject & resume"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void deliverabilityDecision("stop")}
+              disabled={debating}
+              className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/40"
+            >
+              {debating ? "Applying…" : "Stop"}
+            </button>
+          </div>
         </div>
       )}
 {/* Variants */}
@@ -218,6 +300,11 @@ export default function CampaignDetailPage() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
           Subject / body variants <span className="text-zinc-400">({campaign.variants.length})</span>
         </h2>
+        {/* Task 29, item 6 — rotation + per-batch deliverability checkpoint config,
+            shown together so the owner sees how the drain paces this campaign. */}
+        <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+          Rotate every {campaign.rotateEvery} recipient(s) · Batch size {campaign.batchSize} per deliverability check
+        </p>
         {campaign.variants.length === 0 ? (
           <p className="mt-2 text-sm text-zinc-400 dark:text-zinc-500">No variants on this legacy campaign.</p>
         ) : (
@@ -252,7 +339,19 @@ export default function CampaignDetailPage() {
             {pageItems.map((item) => (
               <Fragment key={item.id}>
                 <tr>
-                  <td className="px-4 py-3">{item.toEmail}</td>
+                  <td className="px-4 py-3">
+                    {item.source === "manual_insert" ? (
+                      <span className="flex items-center gap-1.5">
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-700 dark:bg-violet-900/40 dark:text-violet-300" title="Ad-hoc test recipient">Test</span>
+                        <span className="text-violet-700 dark:text-violet-300">{item.toEmail}</span>
+                      </span>
+                    ) : (
+                      item.toEmail
+                    )}
+                    {item.resolvedSubject ? (
+                      <div className="mt-0.5 text-[11px] text-zinc-400 dark:text-zinc-500">Subject: {item.resolvedSubject}</div>
+                    ) : null}
+                  </td>
                   <td className="px-4 py-3">{item.mailbox?.label ?? "—"}</td>
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{item.variant?.subject ?? "—"}</td>
                   <td className="px-4 py-3 text-zinc-500 max-w-[220px] truncate dark:text-zinc-400">

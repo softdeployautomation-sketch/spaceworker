@@ -39,7 +39,7 @@ export async function POST(
   // we can't prove belongs to this user reads as 404, not 403.
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
-    select: { id: true, mailboxIds: true, rotateEvery: true },
+    select: { id: true, mailboxIds: true, rotateEvery: true, subjects: true, bodies: true },
   });
   if (!campaign) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
@@ -47,9 +47,12 @@ export async function POST(
     where: { campaignId: id },
     select: { id: true },
   });
-  if (variants.length === 0) {
+  // Task 29, item 4 — decoupled campaigns store independent subject/body lists (no
+  // CampaignVariant rows); legacy campaigns use variant pairs.
+  const decoupled = (campaign.subjects ?? []).length > 0 || (campaign.bodies ?? []).length > 0;
+  if (!decoupled && variants.length === 0) {
     return NextResponse.json(
-      { error: "This campaign has no subject/body variants to rotate across." },
+      { error: "This campaign has no subject/body content to rotate across." },
       { status: 400 },
     );
   }
@@ -129,7 +132,9 @@ export async function POST(
   const rows = buildQueueItemRows({
     campaignId: id,
     mailboxIds: campaign.mailboxIds,
-    variantRows: variants,
+    ...(decoupled
+      ? { subjects: campaign.subjects ?? [], bodies: campaign.bodies ?? [] }
+      : { variantRows: variants }),
     recipients: fresh,
     // Continue this campaign's rotation cadence (Task 26, Piece 5b): same
     // rotateEvery, and offset by the number of items already on the roster so a

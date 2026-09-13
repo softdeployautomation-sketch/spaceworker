@@ -24,7 +24,10 @@ export interface AutomationShape {
   findTerms: string[];
   locationTerms: string[];
   params?: Prisma.JsonValue | null;
-  personalListId: string | null;
+  // Task 29, item 2 — personal_list runs may now pull from MULTIPLE uploaded
+  // lists (was a single personalListId). A run resolves validated leads from
+  // every one of these SearchJob ids, deduping by email across all of them.
+  personalListIds: string[];
   campaignTemplateId: string;
   mailboxIds: string[];
   triggerMode: string;
@@ -33,12 +36,15 @@ export interface AutomationShape {
 // Every send-phase recipient source honors the same deliverability filter the
 // Task 26 leads-to-mailer picker enforces server-side: only VALIDATED leads,
 // computed per run so a silently-broken pipeline can't queue junk addresses.
+// Task 29, item 2: `jobIds` is an array so a personal_list run MERGES the
+// validated leads of every selected uploaded list — deduping by email ACROSS
+// the whole set, not just within one job.
 async function resolveRunRecipients(
   userId: string,
-  searchJobId: string,
+  jobIds: string[],
 ): Promise<RecipientInput[]> {
   const leads = await prisma.lead.findMany({
-    where: { searchJobId, userId, validationStatus: "valid", email: { not: null } },
+    where: { searchJobId: { in: jobIds }, userId, validationStatus: "valid", email: { not: null } },
     select: { email: true, businessName: true, contactName: true, phone: true, website: true },
   });
   const seen = new Set<string>();
@@ -139,9 +145,16 @@ async function processSendPhase(
   automation: AutomationShape,
 ): Promise<void> {
   const run = await prisma.campaignAutomationRun.findUnique({ where: { id: runId } });
-  if (!run || !run.searchJobId) return;
+  if (!run) return;
+  // Task 29, item 2 — personal_list runs source from EVERY selected uploaded
+  // list; extract runs source from the run's single extraction SearchJob.
+  const jobIds =
+    automation.leadSource === "personal_list"
+      ? automation.personalListIds
+      : run.searchJobId ? [run.searchJobId] : [];
+  if (jobIds.length === 0) return;
 
-  const recipients = await resolveRunRecipients(automation.userId, run.searchJobId);
+  const recipients = await resolveRunRecipients(automation.userId, jobIds);
   if (recipients.length === 0) {
     await prisma.campaignAutomationRun.update({
       where: { id: runId },
@@ -222,16 +235,19 @@ export async function kickOffRun(automation: AutomationShape): Promise<{ runId: 
   });
 
   if (automation.leadSource === "personal_list") {
-    if (!automation.personalListId) {
+    if (automation.personalListIds.length === 0) {
       await prisma.campaignAutomationRun.update({
         where: { id: run.id },
-        data: { status: "failed", errorMessage: "This automation has no personal list selected.", completedAt: new Date() },
+        data: { status: "failed", errorMessage: "This automation has no personal lists selected.", completedAt: new Date() },
       });
       return { runId: run.id };
     }
+    // The run row keeps a single searchJobId for backward compatibility/display
+    // (first selected list); the send phase resolves recipients from the full
+    // personalListIds array in processSendPhase.
     await prisma.campaignAutomationRun.update({
       where: { id: run.id },
-      data: { searchJobId: automation.personalListId },
+      data: { searchJobId: automation.personalListIds[0] },
     });
     await processSendPhase(run.id, automation);
     return { runId: run.id };
@@ -300,7 +316,13 @@ export async function confirmDailyRun(
   }
 
   const automation: AutomationShape = run.automation;
-  const recipients = await resolveRunRecipients(ownerUserId, run.searchJobId);
+  // Confirm-run path: the run row carries a single searchJobId (for personal_list
+  // it's the FIRST selected list); resolve validated leads across whatever list ids
+  // apply here so multi-list automations resolve correctly.
+  const jobIds = automation.leadSource === "personal_list"
+    ? automation.personalListIds
+    : [run.searchJobId];
+  const recipients = await resolveRunRecipients(ownerUserId, jobIds);
   if (recipients.length === 0) {
     await prisma.campaignAutomationRun.update({
       where: { id: runId },

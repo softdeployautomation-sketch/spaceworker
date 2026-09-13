@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
-import { leadToRecipient } from "@/lib/campaign-recipients";
+import { leadToRecipient, insertManualRecipients } from "@/lib/campaign-recipients";
 import { createCampaign } from "@/lib/campaign-create";
 
 interface VariantInput {
@@ -38,10 +38,19 @@ export async function POST(req: Request) {
     name?: string;
     mailboxIds?: string[];
     variants?: VariantInput[];
+    // Task 29, item 4 — decoupled independent subject/body lists (alternative to
+    // `variants` pairs). Each rotates on its own index, cross-combined per recipient.
+    subjects?: unknown;
+    bodies?: unknown;
+    // Task 29, item 3 — insert an ad-hoc test recipient into the queue at a
+    // chosen position ({ email, mode: "top"|"position"|"every", position?, everyN? }).
+    manualInsert?: unknown;
     csv?: string;
     searchJobId?: string;
     leadIds?: unknown;
     rotateEvery?: unknown;
+    // Task 29, item 6 — per-batch deliverability checkpoint size (default 50).
+    batchSize?: unknown;
   };
   try {
     body = await req.json();
@@ -58,6 +67,15 @@ export async function POST(req: Request) {
         .map((v) => ({ subject: (v.subject ?? "").trim(), bodyHtml: v.bodyHtml ?? "" }))
         .filter((v) => v.subject.length > 0 && v.bodyHtml.trim().length > 0)
     : [];
+  // Task 29, item 4 — independent subject/body lists (decoupled rotation). If the
+  // client sends them, they win; `variants` pairs are kept for back-compat.
+  const rawSubjects = Array.isArray(body.subjects) ? body.subjects : [];
+  const rawBodies = Array.isArray(body.bodies) ? body.bodies : [];
+  let subjects = rawSubjects.map((s) => String(s ?? "").trim()).filter((s) => s.length > 0);
+  let bodies = rawBodies.map((b) => String(b ?? "").trim()).filter((b) => b.length > 0);
+  subjects = [...new Set(subjects)];
+  bodies = [...new Set(bodies)];
+  const decoupled = subjects.length > 0 || bodies.length > 0;
   const searchJobId = body.searchJobId ? String(body.searchJobId).trim() : null;
   // Task 26, Piece 4 — third recipient source: an explicit list of validated Lead
   // ids (created atomically with the campaign). Dedup the raw list up front.
@@ -78,6 +96,7 @@ export async function POST(req: Request) {
   // knob in this app (see maxResults/minResults in app/api/jobs/route.ts); no
   // realistic campaign needs >1000 emails between rotations.
   const rotateEvery = Math.max(1, Math.min(1000, Math.floor(Number(body.rotateEvery ?? 1))));
+  const batchSize = Math.max(1, Math.min(1000, Math.floor(Number(body.batchSize ?? 50))));
 
   const parsed = typeof body.csv === "string" && body.csv.trim() !== ""
     ? parseRecipientsCsv(body.csv)
@@ -92,9 +111,9 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  if (variants.length === 0) {
+  if (variants.length === 0 && subjects.length === 0 && bodies.length === 0) {
     return NextResponse.json(
-      { error: "At least one subject/body variant is required" },
+      { error: "Provide at least one subject line and body (or independent subject/body lists)" },
       { status: 400 }
     );
   }
@@ -213,13 +232,35 @@ export async function POST(req: Request) {
   // to inline its own copy of that transaction — two versions that could silently
   // drift — now it only owns the recipient resolution above and hands off the
   // already-resolved list.
+  //
+  // Task 29, item 3 — an ad-hoc "manual insert" recipient is dropped into the
+  // resolved list at a chosen position (top / after N / every N) and goes through
+  // the exact same buildQueueItemRows assignment as every other recipient, just
+  // stamped source:"manual_insert" so the run-detail UI can label it.
+  let sendRecipients = recipients;
+  const miRaw = body.manualInsert;
+  if (miRaw && typeof miRaw === "object") {
+    const mi = miRaw as Record<string, unknown>;
+    const email = typeof mi.email === "string" ? mi.email.trim() : "";
+    const mode = mi.mode === "position" || mi.mode === "every" ? (mi.mode as "position" | "every") : "top";
+    if (email) {
+      sendRecipients = insertManualRecipients(recipients, {
+        email,
+        mode,
+        position: Number(mi.position),
+        everyN: Number(mi.everyN),
+      });
+    }
+  }
+
   const created = await createCampaign({
     userId: session.userId,
     name,
     mailboxIds,
-    variants,
-    recipients,
+    ...(decoupled ? { subjects, bodies } : { variants }),
+    recipients: sendRecipients,
     rotateEvery,
+    batchSize,
     searchJobId,
   });
 

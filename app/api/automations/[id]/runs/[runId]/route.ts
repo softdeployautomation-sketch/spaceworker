@@ -49,11 +49,24 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       })
     : [];
 
+  // Task 29, item 3 — the recipient roster so the run-detail page can label
+  // ad-hoc test recipients (source === "manual_insert"). Capped to a sane window
+  // for a drill-down page.
+  const roster = campaign
+    ? await prisma.emailQueueItem.findMany({
+        where: { campaignId: campaign.id },
+        select: { toEmail: true, source: true, status: true },
+        orderBy: { createdAt: "asc" },
+        take: 500,
+      })
+    : [];
+
   return NextResponse.json({
     automation,
     run,
     searchJob,
     campaign,
     mailboxSends: mailboxSends.map((m) => ({ mailboxId: m.mailboxId, count: m._count._all })),
+    roster,
   });
 }

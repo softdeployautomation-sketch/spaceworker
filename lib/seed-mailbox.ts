@@ -2,6 +2,19 @@ import "server-only";
 import { prisma } from "@/lib/prisma";
 import { encryptSecret } from "@/lib/mailbox-crypto";
 
+// The shape runTestSend (lib/deliverability.ts) needs from a seed mailbox.
+export interface ResolvedSeedMailbox {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  username: string;
+  encryptedPassword: string;
+  passwordIv: string;
+  passwordTag: string;
+}
+
 /**
  * Bootstrap/ensure the platform's SeedMailbox row exists.
  *
@@ -14,17 +27,7 @@ import { encryptSecret } from "@/lib/mailbox-crypto";
  *
  * Returns the active SeedMailbox row, or null if it isn't configured.
  */
-export async function ensureSeedMailbox(): Promise<{
-  id: string;
-  label: string;
-  host: string;
-  port: number;
-  secure: boolean;
-  username: string;
-  encryptedPassword: string;
-  passwordIv: string;
-  passwordTag: string;
-} | null> {
+export async function ensureSeedMailbox(): Promise<ResolvedSeedMailbox | null> {
   const host = process.env.SEED_MAILBOX_HOST;
   const username = process.env.SEED_MAILBOX_USERNAME;
   const password = process.env.SEED_MAILBOX_PASSWORD;
@@ -71,4 +74,40 @@ export async function ensureSeedMailbox(): Promise<{
     passwordIv: row.passwordIv,
     passwordTag: row.passwordTag,
   };
+}
+
+// Task 29, item 5 — pick which seed/test mailbox a user's deliverability probe
+// should target. A user who registered their OWN test account (a SeedMailbox row
+// with their userId — e.g. their own Gmail, which may filter differently than the
+// platform's shared seed) uses that; otherwise they keep using the platform-shared
+// default exactly as today. Additive: no current user's flow changes until they
+// register their own row.
+export async function resolveSeedMailbox(userId: string): Promise<ResolvedSeedMailbox | null> {
+  const own = await prisma.seedMailbox.findFirst({
+    where: { userId, active: true },
+    orderBy: { createdAt: "asc" },
+  });
+  if (own) {
+    return {
+      id: own.id,
+      label: own.label,
+      host: own.host,
+      port: own.port,
+      secure: own.secure,
+      username: own.username,
+      encryptedPassword: own.encryptedPassword,
+      passwordIv: own.passwordIv,
+      passwordTag: own.passwordTag,
+    };
+  }
+  // No personal test mailbox → the platform default (env-bootstrapped, else any
+  // active platform-shared row with userId null).
+  return ensureSeedMailbox()
+    ?? await prisma.seedMailbox.findFirst({
+      where: { active: true, userId: null },
+      select: {
+        id: true, label: true, host: true, port: true, secure: true, username: true,
+        encryptedPassword: true, passwordIv: true, passwordTag: true,
+      },
+    });
 }
