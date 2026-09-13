@@ -7,7 +7,7 @@
 // each run's detail page.
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Badge, Button, Card, Input, Label, Select, Spinner } from "@/components/ui";
 import { useToast } from "@/components/toast";
 import { useConfirm } from "@/components/confirm-provider";
@@ -164,6 +164,139 @@ interface AgentOutcomeView {
   requestedLeads?: number;
 }
 
+// --- Task 41 — "Agent activity" panel ---------------------------------------
+// A running, human-readable log of what the agent has actually done in this
+// thread, derived ENTIRELY from state already on the page (agentMessages /
+// agentPending / agentOutcomes) — pure presentation, no new data model.
+type ActivityTone = "info" | "success" | "pending" | "danger";
+
+interface ActivityEntry {
+  id: string;
+  icon: string;
+  text: string;
+  detail?: string;
+  tone: ActivityTone;
+}
+
+const ACTIVITY_DOT: Record<ActivityTone, string> = {
+  success: "bg-emerald-500",
+  info: "bg-brand-500",
+  pending: "bg-amber-500",
+  danger: "bg-red-500",
+};
+
+// One human line describing a pending action awaiting the user's review.
+function pendingActionText(a: AgentPendingAction): string {
+  switch (a.kind) {
+    case "pin": {
+      const subject = payloadStr(a.payload, "subject");
+      const pinCount = payloadNum(a.payload, "pin_count");
+      const base = subject ? `Pinning "${subject}"` : "Pinning a subject/body";
+      return `${base}${pinCount && pinCount > 0 ? ` for ${pinCount} sends` : ""} — awaiting your review`;
+    }
+    case "switch_subject":
+      return "Proposed switching to the next subject — awaiting your review";
+    case "diagnostics":
+      return "Proposed the isolation diagnostics — awaiting your review";
+    case "campaign":
+      return "Proposed an email campaign — awaiting your review";
+    case "job":
+      return "Proposed a new lead-source job — awaiting your review";
+  }
+}
+
+// One human line for an executed (or rejected) outcome of a resolved action.
+function outcomeText(o: AgentOutcome): string {
+  switch (o.kind) {
+    case "pin": {
+      const ov = (o.pinnedOverride as Record<string, unknown> | null) ?? {};
+      const subject = typeof ov.subject === "string" ? ov.subject : null;
+      const remaining = ov.remaining;
+      const base = subject ? `Pinned "${subject}"` : "Pin applied";
+      return typeof remaining === "number" ? `${base} — ${remaining} sends locked` : base;
+    }
+    case "switch_subject": {
+      const latest = o.subjects && o.subjects.length > 0 ? o.subjects[o.subjects.length - 1] : null;
+      return latest ? `Switched subject to "${latest}"` : "Subject switched";
+    }
+    case "diagnostics":
+      return "Diagnostics completed";
+    case "campaign":
+      return "Campaign created";
+    case "job": {
+      const led = o.job?.ledCount;
+      return typeof led === "number" ? `Found ${led.toLocaleString()} leads` : "Lead search completed";
+    }
+  }
+}
+
+// Walk the existing agent state and produce a coherent, chronological-ish log:
+// agent turns that surfaced a status check / diagnostics snapshot first, then
+// proposals still awaiting review, then resolved outcomes. No new backend data.
+function deriveActivityLog(
+  messages: AgentMessage[],
+  pending: AgentPendingAction[],
+  outcomes: Record<string, AgentOutcomeView>
+): ActivityEntry[] {
+  const entries: ActivityEntry[] = [];
+
+  for (const m of messages) {
+    const w = m.inlineWidget;
+    if (!w) continue;
+    if (w.type === "campaign_status_list") {
+      const stuck = (w.campaigns ?? []).length;
+      entries.push({
+        id: `m-${m.id}-status`,
+        icon: stuck > 0 ? "🔍" : "✅",
+        text: `Checked campaign status — ${stuck} stuck`,
+        detail: stuck === 0 ? "No campaigns are blocked right now." : undefined,
+        tone: stuck > 0 ? "info" : "success",
+      });
+    } else if (w.type === "diagnostics_result") {
+      const results = w.results ?? [];
+      const clean = results.filter((p) => p.landedIn === "inbox").length;
+      const spam = results.filter((p) => p.landedIn === "spam").length;
+      const summary =
+        results.length === 0
+          ? "no probe results yet"
+          : clean + spam > 0
+            ? `${clean} clean · ${spam} spam`
+            : `${results.length} probes checked`;
+      entries.push({
+        id: `m-${m.id}-diag`,
+        icon: "🧪",
+        text: `Ran the deliverability diagnostics — ${summary}`,
+        tone: results.length === 0 ? "info" : spam > 0 ? "danger" : "success",
+      });
+    }
+  }
+
+  for (const a of pending) {
+    entries.push({
+      id: `p-${a.id}`,
+      icon: "⏳",
+      text: pendingActionText(a),
+      tone: "pending",
+    });
+  }
+
+  for (const [id, view] of Object.entries(outcomes)) {
+    if (view.phase === "rejected") {
+      entries.push({ id: `o-${id}`, icon: "🚫", text: "Proposal was rejected", tone: "danger" });
+      continue;
+    }
+    if (view.phase !== "executed" || !view.outcome) continue;
+    entries.push({
+      id: `o-${id}`,
+      icon: "✅",
+      text: outcomeText(view.outcome),
+      tone: "success",
+    });
+  }
+
+  return entries;
+}
+
 const TRIGGER_LABEL: Record<string, string> = {
   manual: "Manual",
   daily: "Daily",
@@ -288,6 +421,8 @@ export default function AutomationsPage() {
   const [agentSending, setAgentSending] = useState(false);
   const [agentBusyId, setAgentBusyId] = useState<string | null>(null);
   const [agentOutcomes, setAgentOutcomes] = useState<Record<string, AgentOutcomeView>>({});
+  // Task 41 — which right-hand sub-panel is active on narrow screens ("Chat" / "Activity").
+  const [agentTab, setAgentTab] = useState<"chat" | "activity">("chat");
   const [mailboxCount, setMailboxCount] = useState(0);
   const agentInputRef = useRef<HTMLDivElement>(null);
 
@@ -616,9 +751,15 @@ export default function AutomationsPage() {
   }
 
   function focusAgentInput() {
+    // Ensure the chat sub-panel (not the activity tab) is showing before we scroll to it.
+    setAgentTab("chat");
     agentInputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
     agentInputRef.current?.querySelector("input")?.focus();
   }
+
+  // Task 41 — derive the persistent activity log entirely from in-memory state.
+  const activity = deriveActivityLog(agentMessages, agentPending, agentOutcomes);
+  const hasActivity = activity.length > 0;
 
   return (
     <div className="flex flex-col gap-6 p-6">
@@ -637,8 +778,14 @@ export default function AutomationsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="flex flex-col gap-6">
+      <div className={`grid grid-cols-1 items-start gap-6 ${
+        // Task 41 — the right-hand split (chat + activity) only engages once the
+        // agent actually has something to log; otherwise it's a single chat column.
+        hasActivity
+          ? "xl:grid-cols-[minmax(0,1fr)_360px_320px]"
+          : "xl:grid-cols-[minmax(0,1fr)_400px]"
+      }`}>
+        <div className="flex flex-col gap-6 xl:col-start-1">
       {loading ? (
         <p className="text-sm text-fg-muted">Loading…</p>
       ) : automations.length === 0 && agentPending.length === 0 ? (
@@ -946,7 +1093,35 @@ export default function AutomationsPage() {
       )}
         </div>
 
-        <aside className="sticky top-6 flex flex-col gap-3">
+        {/* Task 41 — narrow/mobile: a tab switcher appears only once the agent
+            actually has activity to show. The split "earns" itself rather than
+            sitting as two idle panels by default. */}
+        {hasActivity && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg p-1 xl:hidden">
+            {(["chat", "activity"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                onClick={() => setAgentTab(t)}
+                className={`flex-1 rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  agentTab === t
+                    ? "bg-brand-100 text-brand-800 dark:bg-brand-900/40 dark:text-brand-300"
+                    : "text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+                }`}
+              >
+                {t === "chat" ? "💬 Chat" : "📋 Activity"}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Chat column — the existing "Ask the agent" panel. Beside the activity
+            panel on wide screens; the first tab on narrow. */}
+        <div
+          className={`min-w-0 ${
+            hasActivity && agentTab === "activity" ? "hidden " : ""
+          }xl:col-start-2 xl:block xl:sticky xl:top-6`}
+        >
           <Card className="flex flex-col gap-3 p-4">
             <div className="flex items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">Ask the agent</h2>
@@ -1062,7 +1237,21 @@ export default function AutomationsPage() {
               </Button>
             </form>
           </Card>
-        </aside>
+        </div>
+
+        {/* Activity column — a persistent, human-readable log of what the agent
+            has done this thread. Only mounts once deriveActivityLog has anything,
+            so on wide screens it slides in as a second pane right next to the chat
+            (fadeInUp on mount = the "earned" split transitions in smoothly). */}
+        {hasActivity && (
+          <div
+            className={`min-w-0 ${
+              agentTab === "chat" ? "hidden " : ""
+            }xl:col-start-3 xl:block xl:sticky xl:top-6`}
+          >
+            <AgentActivityPanel entries={activity} />
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1225,6 +1414,141 @@ function PlanDetails({
   }
 }
 
+// --- Task 41 — expandable inline widgets + the activity panel ---------------
+// A slide-in drawer anchored to the right edge of the viewport. It reuses the
+// EXACT SAME inline widget component (same props, same data — no second fetch
+// or duplicate state) rendered larger. The surrounding scrim is intentionally
+// pointer-events-none so the chat message list AND input stay reachable/usable
+// while the drawer is open — "have a conversation at the same time".
+function WidgetDrawer({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const [shown, setShown] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  // Let the browser paint the off-screen position before flipping to visible,
+  // so the transition-transform actually animates the slide-in.
+  useEffect(() => {
+    const t = window.setTimeout(() => setShown(true), 20);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  function requestClose() {
+    if (closing) return;
+    setClosing(true);
+    // duration-200 matches the transition-transform below.
+    window.setTimeout(onClose, 200);
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") requestClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const offscreen = !shown || closing;
+  return (
+    <div className="pointer-events-none fixed inset-0 z-40" role="dialog" aria-modal="false" aria-label={title}>
+      {/* Translucent, click-through scrim — never blocks the chat input. */}
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none fixed inset-0 bg-black/25 transition-opacity duration-200 dark:bg-black/40 ${
+          offscreen ? "opacity-0" : "opacity-100"
+        }`}
+      />
+      {/* The widget detail panel — slides in from the right. pointer-events-auto
+          so only the drawer itself is interactive (the scrim stays click-through). */}
+      <div
+        className={`pointer-events-auto fixed right-0 top-0 z-10 flex h-full w-full flex-col border-l border-border bg-bg-elevated shadow-lg transition-transform duration-200 ease-out sm:w-[440px] max-w-[86vw] ${
+          offscreen ? "translate-x-full" : "translate-x-0"
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2 border-b border-border bg-bg-elevated px-4 py-3">
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-wide text-fg-muted">Expanded</p>
+            <h3 className="truncate text-sm font-semibold">{title}</h3>
+          </div>
+          <button
+            type="button"
+            onClick={requestClose}
+            aria-label="Close"
+            className="flex h-7 w-7 items-center justify-center rounded-md text-sm text-fg-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-3">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+// ExpandableInline — the ONE reusable expand/pop-out pattern each inline widget
+// opts into, so a future widget type gets the affordance for free. The inline
+// copy stays in the chat (same props); the corner button lifts the same
+// component into the WidgetDrawer above.
+function ExpandableInline({ title, children }: { title: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <div className="relative">
+        {children}
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          title={`Open ${title} in a side panel`}
+          aria-label={`Open ${title} in a side panel`}
+          className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md border border-border bg-bg-elevated text-xs text-fg-muted shadow-sm transition-colors hover:bg-black/5 hover:text-fg dark:hover:bg-white/5"
+        >
+          ⤢
+        </button>
+      </div>
+      {open && (
+        <WidgetDrawer title={title} onClose={() => setOpen(false)}>
+          {children}
+        </WidgetDrawer>
+      )}
+    </>
+  );
+}
+
+// The persistent "Agent activity" panel — one readable line per meaningful step.
+function AgentActivityPanel({ entries }: { entries: ActivityEntry[] }) {
+  return (
+    <Card className="flex flex-col gap-3 p-4 animate-[fadeInUp_0.25s_ease-out]">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-lg font-semibold">Agent activity</h2>
+        <Badge tone="neutral">{entries.length} step{entries.length === 1 ? "" : "s"}</Badge>
+      </div>
+      <p className="text-xs text-fg-muted">
+        What the agent has done in this thread — glance here while you keep chatting.
+      </p>
+      <div className="flex max-h-80 flex-col gap-2 overflow-y-auto rounded-lg border border-border bg-bg p-3">
+        {entries.map((e) => (
+          <div key={e.id} className="flex items-start gap-2.5 rounded-lg border border-border bg-bg px-2.5 py-2 text-sm">
+            <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${ACTIVITY_DOT[e.tone]}`} />
+            <span className="w-5 shrink-0 text-center">{e.icon}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm leading-snug text-fg">{e.text}</p>
+              {e.detail && <p className="mt-0.5 text-[11px] text-fg-muted">{e.detail}</p>}
+            </div>
+          </div>
+        ))}
+        {entries.length === 0 && <p className="text-xs text-fg-muted">No agent activity yet.</p>}
+      </div>
+    </Card>
+  );
+}
+
 function AgentInlineWidget({
   widget,
   onSend,
@@ -1233,15 +1557,19 @@ function AgentInlineWidget({
   onSend: (text: string) => void;
 }) {
   // Each picker is its own component so hooks (if any) are always called in the
-  // same order — never conditionally inside a single component.
-  if (widget.type === "lead_upload") return <InlineLeadUpload onSend={onSend} />;
-  if (widget.type === "lead_source_picker") return <InlineLeadSourcePicker widget={widget} onSend={onSend} />;
-  if (widget.type === "mailbox_picker") return <InlineMailboxPicker widget={widget} onSend={onSend} />;
+  // same order — never conditionally inside a single component. Each is wrapped
+  // in the shared ExpandableInline so it can pop out into the side drawer.
+  if (widget.type === "lead_upload")
+    return <ExpandableInline title="Lead upload"><InlineLeadUpload onSend={onSend} /></ExpandableInline>;
+  if (widget.type === "lead_source_picker")
+    return <ExpandableInline title="Lead source"><InlineLeadSourcePicker widget={widget} onSend={onSend} /></ExpandableInline>;
+  if (widget.type === "mailbox_picker")
+    return <ExpandableInline title="Mailboxes"><InlineMailboxPicker widget={widget} onSend={onSend} /></ExpandableInline>;
   // Task 38 — a campaign_status_list row is itself clickable (run diagnostics on it),
   // and a diagnostics_result widget is a pure read (no follow-up send needed).
   if (widget.type === "campaign_status_list")
-    return <InlineCampaignStatusList widget={widget} onSend={onSend} />;
-  return <InlineDiagnosticsResult widget={widget} />;
+    return <ExpandableInline title="Campaign status"><InlineCampaignStatusList widget={widget} onSend={onSend} /></ExpandableInline>;
+  return <ExpandableInline title="Diagnostics result"><InlineDiagnosticsResult widget={widget} /></ExpandableInline>;
 }
 
 // Task 38 — a compact list of the user's stuck campaigns (pending_test_confirm /
@@ -1592,7 +1920,9 @@ function AgentOutcomeCard({
           <p className="text-xs text-fg-muted">Subjects: {o.subjects.join(" → ")}</p>
         )}
         {o.diagnosticsResults && (
-          <InlineDiagnosticsResult widget={{ type: "diagnostics_result", results: o.diagnosticsResults }} />
+          <ExpandableInline title="Diagnostics result">
+            <InlineDiagnosticsResult widget={{ type: "diagnostics_result", results: o.diagnosticsResults }} />
+          </ExpandableInline>
         )}
         {o.executedCampaignId && (
           <p className="break-all text-xs text-fg-muted">{o.executedCampaignId}</p>
