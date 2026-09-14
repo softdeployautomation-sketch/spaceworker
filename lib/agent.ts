@@ -30,6 +30,14 @@ import type { AgentActionKind } from "@/lib/agent-executor";
 export const AGENT_PROPOSAL_TTL_MS = 60 * 60 * 1000; // 1 hour
 const MESSAGE_HISTORY_LIMIT = 12;
 
+// Task 40 — the codebase's established "today" reset boundary, matching the
+// mail-queue-drain convention (`new Date().toISOString().slice(0, 10)` = UTC
+// "YYYY-MM-DD"). User AI daily caps reset at UTC midnight, exactly like
+// Mailbox.sentTodayDate. Do NOT invent a second (e.g. local-timezone) boundary.
+export function startOfTodayUTC(): Date {
+  return new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+}
+
 // The system prompt encodes what this session proved works for converting a
 // vague goal ("AI apps outreach") into GOOD find/location terms: broad-but-
 // specific industry + role phrasing. The worker's own expansion machinery
@@ -681,12 +689,57 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
     .slice(-MESSAGE_HISTORY_LIMIT)
     .map((m) => ({ role: m.role, content: m.content }));
 
+  // Task 40 — per-user daily AI cap. Sum today's REAL AiUsageLog rows; if the
+  // user is already at/over their admin-set cap, short-circuit BEFORE calling
+  // channelryAiChat (zero Channelry spend) and answer in-line instead. Read as a
+  // SUM over append-only rows (not a mutable counter) so concurrent turns can't
+  // race each other past the cap. Returns a cap-blocked reply when exceeded.
+  const user = await prisma.user.findUnique({
+    where: { id: opts.userId },
+    select: { id: true, aiDailyCapHundredthsCent: true },
+  });
+  const usedAgg = await prisma.aiUsageLog.aggregate({
+    where: { userId: opts.userId, createdAt: { gte: startOfTodayUTC() } },
+    _sum: { costHundredthsCent: true },
+  });
+  const usedToday = usedAgg._sum.costHundredthsCent ?? 0;
+  const cap = user?.aiDailyCapHundredthsCent ?? 20000;
+  if (usedToday >= cap) {
+    const reply =
+      "You've hit today's AI usage limit. Your daily allowance resets at midnight UTC — an admin can raise it sooner if you need it right away. What else can I help you with meanwhile?";
+    await prisma.agentMessage.create({
+      data: {
+        threadId: thread.id,
+        role: "assistant",
+        content: reply,
+        toolCall: Prisma.DbNull,
+        inlineWidget: Prisma.DbNull,
+      },
+    });
+    return { reply, pendingAction: null, inlineWidget: null, usage: null };
+  }
+
   const result = await channelryAiChat({
     messages: [{ role: "system", content: AGENT_SYSTEM_PROMPT }, ...dialogue],
     tools: AGENT_TOOLS,
     max_tokens: 900,
     external_user_id: opts.userId,
   });
+
+  // Task 40 — append the REAL cost Channelry reported for this completed call
+  // (never estimate one). Log only meaningful, positive spend (a 0 reported cost
+  // is a no-op row in the audit trail). The admin test-connection button is not
+  // logged here by design — that's an admin diagnostic, not a user's usage.
+  const realCostHundredthsCent = result.usage.cost_hundredths_cent;
+  if (typeof realCostHundredthsCent === "number" && realCostHundredthsCent > 0) {
+    await prisma.aiUsageLog.create({
+      data: {
+        userId: opts.userId,
+        costHundredthsCent: Math.round(realCostHundredthsCent),
+        eventType: "agent_turn",
+      },
+    });
+  }
 
   const tool = findToolCall(result.tool_calls);
   let processed = tool ? await processToolCall(tool.name, tool.args, opts.userId) : null;

@@ -27,6 +27,12 @@ model User {
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
   // account created before this field existed, not that they never agreed.
   acceptedTermsAt  DateTime?
+  // Task 40 — per-user daily AI cost cap, in hundredths of a cent. Default $2/day
+  // (20000), a modest slice of the shared $50/day Channelry pool. Deliberately a
+  // per-user, admin-adjustable value (not a global constant) so an admin can "add
+  // more" to a power user live, per the ask. Enforced in runAgentTurn against a
+  // SUM over today's AiUsageLog rows (append-only, race-safe — see AiUsageLog).
+  aiDailyCapHundredthsCent Int              @default(20000)
   createdAt        DateTime           @default(now())
   verifications    VerificationCode[]
   rateLimits       RateLimitEvent[]
@@ -42,6 +48,7 @@ model User {
   seedMailboxes    SeedMailbox[]
   agentThreads     AgentThread[]
   agentPendingActions AgentPendingAction[]
+  aiUsageLogs      AiUsageLog[]
 }
 
 model VerificationCode {
@@ -656,4 +663,32 @@ model AgentPendingAction {
   createdAt     DateTime @default(now())
 
   @@index([userId, status])
+}
+
+// Task 40 — per-user daily AI cost attribution. An append-only audit log of the
+// REAL cost Channelry reported for each completed AI call (never an estimate),
+// mirroring this codebase's preference for auditable rows over mutable counters
+// (DeliverabilityCheck, NotificationLog). "Today" is a SUM over rows with
+// createdAt >= startOfTodayUTC — correct even under concurrent requests, where a
+// mutable counter would need a transaction to avoid a race. Enforced + written
+// in lib/agent.ts's runAgentTurn (the one user-facing channelryAiChat call site).
+//
+// Units are hundredths of a cent everywhere to match Channelry's own usage block
+// (cost_hundredths_cent) and User.aiDailyCapHundredthsCent — never divide by 100.
+// The admin test-connection button is deliberately NOT logged here (it's an
+// admin diagnostic, not a real user's usage).
+model AiUsageLog {
+  id                  String   @id @default(cuid())
+  userId              String
+  user                User     @relation(fields: [userId], references: [id])
+  // The REAL cost_hundredths_cent Channelry returned for this call. Always the
+  // reported value verbatim (rounded to an int for storage); 0-cost rows are
+  // skipped so the log only ever holds meaningful, real spend.
+  costHundredthsCent  Int
+  // e.g. "agent_turn". A future caller's event name, kept free-form (no enum)
+  // so new callers don't require a migration to start logging.
+  eventType           String
+  createdAt           DateTime @default(now())
+
+  @@index([userId, createdAt])
 }

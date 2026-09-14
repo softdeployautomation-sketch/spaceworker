@@ -983,24 +983,104 @@ type AITestResult = {
   code?: string;
 };
 
+// Task 40 — admin per-user AI usage + cap adjustment (GET/PATCH /api/admin/ai-usage).
+type AiUsageUser = {
+  userId: string;
+  email: string;
+  usedTodayHundredthsCent: number;
+  aiDailyCapHundredthsCent: number;
+};
+
+type AiUsageData = {
+  users: AiUsageUser[];
+  totalUsedTodayHundredthsCent: number;
+  poolCapHundredthsCent: number;
+  pooled:
+    | { usedTodayHundredthsCent: number | null; capHundredthsCent: number | null; error?: string }
+    | null;
+};
+
 function AiTab() {
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [testing, setTesting] = useState(false);
   const [result, setResult] = useState<AITestResult | null>(null);
   const [error, setError] = useState("");
+  const [usage, setUsage] = useState<AiUsageData | null>(null);
+  const [capDrafts, setCapDrafts] = useState<Record<string, string>>({});
+  const [savingCapId, setSavingCapId] = useState<string | null>(null);
 
   useEffect(() => {
     void (async () => {
       try {
-        const res = await fetch("/api/admin/ai");
-        if (!res.ok) throw new Error("Failed to read AI config");
-        const data = await res.json();
-        setConfigured(Boolean(data.configured));
+        const [confRes, usageRes] = await Promise.all([
+          fetch("/api/admin/ai"),
+          fetch("/api/admin/ai-usage"),
+        ]);
+        if (confRes.ok) {
+          const data = await confRes.json();
+          setConfigured(Boolean(data.configured));
+        }
+        if (usageRes.ok) {
+          const data = (await usageRes.json()) as AiUsageData;
+          setUsage(data);
+        }
       } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load AI config");
+        setError(e instanceof Error ? e.message : "Failed to load AI usage");
       }
     })();
   }, []);
+
+  async function saveCap(userId: string, explicit?: number) {
+    const raw = explicit !== undefined ? String(explicit) : capDrafts[userId];
+    if (raw === undefined) return;
+    const cap = Number(raw);
+    if (!Number.isFinite(cap) || cap < 0) {
+      setError("Cap must be a non-negative number (hundredths of a cent)");
+      return;
+    }
+    setSavingCapId(userId);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/ai-usage", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, aiDailyCapHundredthsCent: cap }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUsage((prev) =>
+          prev
+            ? {
+                ...prev,
+                users: prev.users.map((u) =>
+                  u.userId === data.userId
+                    ? { ...u, aiDailyCapHundredthsCent: data.aiDailyCapHundredthsCent }
+                    : u
+                ),
+              }
+            : prev
+        );
+        setCapDrafts((prev) => {
+          const next = { ...prev };
+          delete next[userId];
+          return next;
+        });
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to update cap");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setSavingCapId(null);
+    }
+  }
+
+  async function quickSetCap(userId: string, delta: number, unlimited: boolean) {
+    const user = usage?.users.find((u) => u.userId === userId);
+    if (!user) return;
+    const next = unlimited ? 500000 : user.aiDailyCapHundredthsCent + delta;
+    await saveCap(userId, next);
+  }
 
   async function testConnection() {
     setTesting(true);
@@ -1110,6 +1190,134 @@ function AiTab() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {usage && (
+        <div className="mt-8">
+          <h3 className="text-xl font-semibold tracking-tight">Per-user daily limits</h3>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Each agent turn is charged against the user's cap. Exceed it and the next turn is blocked
+            in-line with zero Channelry spend until midnight UTC — or until you raise the cap here
+            (takes effect on their very next turn, no deploy).
+          </p>
+
+          <div className="mt-4 flex flex-wrap items-center gap-6 rounded-xl border border-zinc-200 bg-white p-4 text-sm shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Users, today (this app)
+              </p>
+              <p className="font-medium">
+                {usage.totalUsedTodayHundredthsCent} / {usage.poolCapHundredthsCent} hundredths ¢
+              </p>
+            </div>
+            <div>
+              <p className="text-xs uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Channelry pool, today
+              </p>
+              <p className="font-medium">
+                {usage.pooled?.error ? (
+                  <span className="text-amber-600 dark:text-amber-400">
+                    unreachable — {usage.pooled.error}
+                  </span>
+                ) : usage.pooled?.usedTodayHundredthsCent === null ? (
+                  "—"
+                ) : (
+                  <>
+                    {usage.pooled?.usedTodayHundredthsCent} /{" "}
+                    {usage.pooled?.capHundredthsCent ?? "—"} hundredths ¢
+                  </>
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                  <th className="px-4 py-3 font-medium">Email</th>
+                  <th className="px-4 py-3 font-medium">Used today</th>
+                  <th className="px-4 py-3 font-medium">Daily cap</th>
+                  <th className="px-4 py-3 font-medium">Adjust</th>
+                </tr>
+              </thead>
+              <tbody>
+                {usage.users.length === 0 ? (
+                  <tr>
+                    <td className="px-4 py-6 text-zinc-500" colSpan={4}>No users yet.</td>
+                  </tr>
+                ) : (
+                  usage.users.map((u) => {
+                    const overCap = u.usedTodayHundredthsCent >= u.aiDailyCapHundredthsCent;
+                    const draft = capDrafts[u.userId];
+                    const qbtn =
+                      "rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50";
+                    return (
+                      <tr
+                        key={u.userId}
+                        className="border-b border-zinc-100 last:border-0 dark:border-zinc-800"
+                      >
+                        <td className="px-4 py-3">
+                          {u.email}
+                          {overCap && (
+                            <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                              capped
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">{u.usedTodayHundredthsCent}</td>
+                        <td className="px-4 py-3">
+                          <input
+                            type="number"
+                            min={0}
+                            value={draft ?? String(u.aiDailyCapHundredthsCent)}
+                            onChange={(e) =>
+                              setCapDrafts((prev) => ({ ...prev, [u.userId]: e.target.value }))
+                            }
+                            className="w-28 rounded-md border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+                          />
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <button
+                              onClick={() => void saveCap(u.userId)}
+                              disabled={savingCapId === u.userId || draft === undefined}
+                              className="rounded-md bg-indigo-600 px-2.5 py-1 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+                            >
+                              {savingCapId === u.userId ? "Saving…" : "Set"}
+                            </button>
+                            <button
+                              onClick={() => void quickSetCap(u.userId, 100, false)}
+                              disabled={savingCapId === u.userId}
+                              className={`${qbtn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700`}
+                            >
+                              +$0.01
+                            </button>
+                            <button
+                              onClick={() => void quickSetCap(u.userId, 500, false)}
+                              disabled={savingCapId === u.userId}
+                              className={`${qbtn} bg-zinc-100 text-zinc-700 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700`}
+                            >
+                              +$0.05
+                            </button>
+                            <button
+                              onClick={() => void quickSetCap(u.userId, 0, true)}
+                              disabled={savingCapId === u.userId}
+                              className={`${qbtn} bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-900/40 dark:text-indigo-300 dark:hover:bg-indigo-900/60`}
+                              title="Raise to the whole $50 pool cap"
+                            >
+                              Max today
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>
