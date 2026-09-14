@@ -69,6 +69,7 @@ export function MenuBar() {
   const helpItems: MenuItemDef[] = [
     { label: "About SpaceWorker OS", onSelect: () => setAboutOpen(true) },
     { label: "Terms of Service", href: "/terms" },
+    { label: "Privacy Policy", href: "/privacy" },
   ];
 
   return (

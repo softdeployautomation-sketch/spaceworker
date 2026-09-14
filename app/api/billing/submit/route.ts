@@ -1,20 +1,32 @@
 import { NextResponse } from "next/server";
+import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
+import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
+import { handleApprovedPayment } from "@/lib/license-service";
+import { hashPassword } from "@/lib/auth";
+import { getProduct, WEB_SUBSCRIPTION } from "@/lib/products";
 
 const KINDS = ["btc", "usdt_trc20"] as const;
 type Kind = (typeof KINDS)[number];
 
-// POST /api/billing/submit — body: { kind: "btc" | "usdt_trc20", txHash: string }
+function isEmail(v: unknown): v is string {
+  return typeof v === "string" && v.trim().length > 0 && v.includes("@");
+}
+
+// POST /api/billing/submit — body: { kind, txHash, product?, email? }
+//
+// product defaults to web_subscription (back-compat). For a web subscription an
+// existing session is required and the email is ignored. For an EXE product the
+// buyer may be a not-yet-signed-up visitor: an email is required then, and a
+// User row is created inline if one doesn't exist yet (the license is delivered
+// to that address) — Task 27 Part A's "no account required first" buy path.
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
-  let body: { kind?: unknown; txHash?: unknown };
+  let body: { kind?: unknown; txHash?: unknown; product?: unknown; email?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -31,6 +43,34 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Transaction hash is required" }, { status: 400 });
   }
 
+  const productId = typeof body.product === "string" && body.product ? body.product : WEB_SUBSCRIPTION.id;
+  const product = getProduct(productId);
+  if (!product) {
+    return NextResponse.json({ error: "Unknown product" }, { status: 400 });
+  }
+
+  let userId: string | null = null;
+  if (product.kind === "web") {
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    userId = session.userId;
+  } else {
+    // EXE — resolve the buyer: an existing session wins, otherwise the email.
+    if (session) {
+      userId = session.userId;
+    } else {
+      const email = body.email;
+      if (!isEmail(email)) {
+        return NextResponse.json(
+          { error: "A valid email is required to deliver your license key" },
+          { status: 400 },
+        );
+      }
+      userId = await findOrCreateUser(email.trim().toLowerCase());
+    }
+  }
+
   const settings = await getAdminSettings();
   const toAddress = paymentKind === "btc" ? settings.btcWallet : settings.usdtWallet;
   if (!toAddress) {
@@ -44,9 +84,10 @@ export async function POST(req: Request) {
 
   const payment = await prisma.payment.create({
     data: {
-      userId: session.userId,
+      userId,
       kind: paymentKind,
-      amountUsd: settings.planPriceUsd,
+      product: product.id,
+      amountUsd: settings[product.priceField],
       txHash,
       toAddress,
       status: "pending",
@@ -65,7 +106,9 @@ export async function POST(req: Request) {
       where: { id: payment.id },
       data: { status: "approved", autoApproved: true },
     });
-    await prisma.user.update({ where: { id: session.userId }, data: { tier: 1 } });
+    // Finalize into the product's consequence (tier bump for web, license issue
+    // for EXE) via the single shared handler.
+    await handleApprovedPayment(payment.id);
   } else if (isPendingNote(result.note)) {
     status = "pending"; // might confirm soon — rely on the internal poller
   } else {
@@ -78,4 +121,20 @@ export async function POST(req: Request) {
   });
 
   return NextResponse.json({ paymentId: payment.id, status, note: result.note });
+}
+
+async function findOrCreateUser(email: string): Promise<string> {
+  const existing = await db.user.findUnique({ where: { email } });
+  if (existing) return existing.id;
+
+  // Inline account for an EXE buyer who isn't signed up yet. A random password
+  // (no one signs in with it) tied to emailVerified:true keeps the account
+  // usable after a future password reset; the license itself is delivered by
+  // email regardless of login state.
+  const randomPassword = randomBytes(24).toString("hex");
+  const passwordHash = await hashPassword(randomPassword);
+  const created = await db.user.create({
+    data: { email, passwordHash, emailVerified: true },
+  });
+  return created.id;
 }

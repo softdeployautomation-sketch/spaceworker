@@ -49,6 +49,7 @@ model User {
   agentThreads     AgentThread[]
   agentPendingActions AgentPendingAction[]
   aiUsageLogs      AiUsageLog[]
+  exeLicenses      ExeLicense[]
 }
 
 model VerificationCode {
@@ -77,7 +78,15 @@ model AdminSetting {
   updatedAt    DateTime @updatedAt
   btcWallet    String?
   usdtWallet   String?
-  planPriceUsd Float    @default(9.99)
+  // Task 42 — one price per product sold on the store/landing page (all real
+  // launch prices decided 2026-09-14, still admin-adjustable at runtime). The
+  // old planPriceUsd field was renamed to webSubscriptionPriceUsd (same role,
+  // new default 25 = the store's web-subscription price, superseding 9.99).
+  webSubscriptionPriceUsd Float @default(25)    // /month
+  extractorExePriceUsd     Float @default(50)   // one-time, 6-month term
+  mailerExePriceUsd        Float @default(50)   // one-time, 6-month term
+  combinedExePriceUsd      Float @default(70)   // one-time, 6-month term
+  automationExePriceUsd    Float @default(100)  // one-time, 6-month term — top tier
 }
 
 model Mailbox {
@@ -308,18 +317,43 @@ model Payment {
   id           String                       @id @default(cuid())
   userId       String
   user         User                         @relation(fields: [userId], references: [id])
-  kind         String // "btc" | "usdt_trc20"
+  kind         String // "btc" | "usdt_trc20" — the PAYMENT METHOD, not the product
   amountUsd    Float
   txHash       String                       @unique
   toAddress    String
+  // Task 42 — which product this payment bought. Distinct from `kind` (the
+  // payment METHOD). Defaulted so every pre-existing row is correctly the only
+  // product that has ever existed. "web_subscription" | "extractor_exe" |
+  // "mailer_exe" | "combined_exe" | "automation_exe".
+  product      String                       @default("web_subscription")
   status       String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
   autoApproved Boolean                      @default(false)
   createdAt    DateTime                     @default(now())
   updatedAt    DateTime                     @updatedAt
   attempts     PaymentVerificationAttempt[]
+  exeLicense   ExeLicense?
 
   @@index([userId])
   @@index([status])
+}
+
+// Task 42 — an issued desktop-app (EXE) license. Created exactly once per
+// approved EXE payment via lib/license-service.ts. `issuedAt + 180 days` is the
+// real term (a 6-month, non-perpetual license, decided 2026-09-14 superseding
+// Part A's original perpetual note). `licenseKey` uses the proven Lead Extractor
+// Pro format (lib/exe-license.ts) — the key's own `expires_at` payload field
+// carries the authoritative expiry, which the dashboard/email surface.
+model ExeLicense {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  paymentId  String   @unique
+  payment    Payment  @relation(fields: [paymentId], references: [id])
+  product    String // matches Payment.product
+  licenseKey String   @unique
+  issuedAt   DateTime @default(now())
+
+  @@index([userId])
 }
 
 model PaymentVerificationAttempt {

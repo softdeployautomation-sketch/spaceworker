@@ -17,6 +17,7 @@ type ReviewPayment = {
   kind: string;
   amountUsd: number;
   status: string;
+  product: string;
   txHash: string;
   createdAt: string;
   user: { email: string };
@@ -35,6 +36,24 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
+];
+
+// Task 42 — human labels for Payment.product in the admin review table.
+const PRODUCT_LABELS: Record<string, string> = {
+  web_subscription: "Web subscription",
+  extractor_exe: "Extractor EXE",
+  mailer_exe: "Mailer EXE",
+  combined_exe: "Combined EXE",
+  automation_exe: "Automation EXE",
+};
+
+// The five products sold on the store, in admin "Wallets & Prices" tab edit order.
+const WALLET_PRICE_ROWS: Array<{ id: string; field: string; label: string; hint: string }> = [
+  { id: "web_subscription", field: "webSubscriptionPriceUsd", label: "Web subscription (USD / month)", hint: "Full web app — the /month price shown on the store." },
+  { id: "extractor_exe", field: "extractorExePriceUsd", label: "Extractor EXE (USD)", hint: "One-time, 6-month license." },
+  { id: "mailer_exe", field: "mailerExePriceUsd", label: "Mailer EXE (USD)", hint: "One-time, 6-month license." },
+  { id: "combined_exe", field: "combinedExePriceUsd", label: "Combined EXE (USD)", hint: "One-time, 6-month license." },
+  { id: "automation_exe", field: "automationExePriceUsd", label: "Automation EXE (USD)", hint: "Top tier — one-time, 6-month license." },
 ];
 
 // Import type only (server-only), not the runtime module — keeps this
@@ -297,6 +316,7 @@ function PaymentsTab() {
             <thead>
               <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
                 <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">Product</th>
                 <th className="px-4 py-3 font-medium">Kind</th>
                 <th className="px-4 py-3 font-medium">Amount</th>
                 <th className="px-4 py-3 font-medium">Status</th>
@@ -309,6 +329,7 @@ function PaymentsTab() {
               {payments.map((p) => (
                 <tr key={p.id}>
                   <td className="px-4 py-3">{p.user.email}</td>
+                  <td className="px-4 py-3">{PRODUCT_LABELS[p.product] ?? p.product}</td>
                   <td className="px-4 py-3 uppercase">{p.kind === "btc" ? "BTC" : "USDT"}</td>
                   <td className="px-4 py-3">${p.amountUsd.toFixed(2)}</td>
                   <td className="px-4 py-3">
@@ -350,7 +371,7 @@ function WalletsTab() {
   const [loaded, setLoaded] = useState(false);
   const [btc, setBtc] = useState("");
   const [usdt, setUsdt] = useState("");
-  const [price, setPrice] = useState("9.99");
+  const [prices, setPrices] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -361,7 +382,9 @@ function WalletsTab() {
       if (res.ok) {
         setBtc(data.btcWallet ?? "");
         setUsdt(data.usdtWallet ?? "");
-        setPrice(String(data.planPriceUsd));
+        const next: Record<string, string> = {};
+        for (const row of WALLET_PRICE_ROWS) next[row.field] = String(data[row.field] ?? "");
+        setPrices(next);
       } else {
         setMessage({
           ok: false,
@@ -374,16 +397,21 @@ function WalletsTab() {
 
   async function save() {
     setMessage(null);
-    const priceNum = Number(price);
-    if (!Number.isFinite(priceNum) || priceNum <= 0) {
-      setMessage({ ok: false, text: "Plan price must be greater than 0" });
-      return;
+    const payload: Record<string, unknown> = { btcWallet: btc.trim(), usdtWallet: usdt.trim() };
+    for (const row of WALLET_PRICE_ROWS) {
+      const num = Number(prices[row.field]);
+      if (!Number.isFinite(num) || num <= 0) {
+        setMessage({ ok: false, text: `${row.label} must be greater than 0` });
+        return;
+      }
+      payload[row.field] = num;
     }
     setSaving(true);
     try {
       const res = await fetch("/api/admin/wallets", {
         method: "PUT",
-        body: JSON.stringify({ btcWallet: btc.trim(), usdtWallet: usdt.trim(), planPriceUsd: priceNum }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) setMessage({ ok: true, text: "Settings saved" });
@@ -397,9 +425,10 @@ function WalletsTab() {
 
   return (
     <div>
-      <h2 className="text-2xl font-semibold tracking-tight">Wallets</h2>
+      <h2 className="text-2xl font-semibold tracking-tight">Wallets &amp; Prices</h2>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Wallet addresses customers pay to. Stored in the database — no env vars needed.
+        Wallet addresses customers pay to, and the price for each product sold on the store.
+        Stored in the database — no env vars needed.
       </p>
 
       {!loaded ? (
@@ -428,17 +457,24 @@ function WalletsTab() {
             className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-mono outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
           />
 
-          <label className="mt-4 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Plan price (USD / month)
-          </label>
-          <input
-            type="number"
-            min={0}
-            step={0.01}
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
-          />
+          <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-700">
+            {WALLET_PRICE_ROWS.map((row) => (
+              <div key={row.id} className="mb-3">
+                <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+                  {row.label}
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={prices[row.field] ?? ""}
+                  onChange={(e) => setPrices((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                  className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                />
+                <p className="mt-0.5 text-xs text-zinc-400 dark:text-zinc-500">{row.hint}</p>
+              </div>
+            ))}
+          </div>
 
           {message && (
             <p

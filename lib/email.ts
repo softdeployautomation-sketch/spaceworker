@@ -120,3 +120,46 @@ export function verificationEmailHtml(code: string): string {
   </body>
 </html>`;
 }
+
+// Task 42, item 6 — the buyer's actual disclosure moment for the license term.
+// Unlike the public store page (which deliberately shows only a price), this
+// email must state the REAL 6-month expiry clearly, plus the honest status that
+// the desktop build isn't downloadable yet.
+export function exeLicenseIssuedEmailHtml(opts: {
+  productName: string;
+  licenseKey: string;
+  expiresAt: Date;
+}): string {
+  const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">Your ${opts.productName} license is active</p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Thanks for your purchase. Your license key is below.
+      </p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <strong style="color:#b91c1c;">Your license is valid for 6 months and expires on ${plainDate}.</strong>
+        It will not renew automatically.
+      </p>
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0 0 16px;">
+        <strong>About the download:</strong> the desktop app build is not ready to download yet.
+        Your key is already active and will work immediately the moment you download the app.
+        We&rsquo;ll email you the download link as soon as the build is available — no need to do anything now.
+      </p>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;word-break:break-all;">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">Your license key</p>
+        <p style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#111827;margin:0;">${opts.licenseKey}</p>
+      </div>
+      <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:12px 0 0;">
+        Keep this email safe — it contains your only copy of the key.
+      </p>
+    </div>
+  </body>
+</html>`;
+}

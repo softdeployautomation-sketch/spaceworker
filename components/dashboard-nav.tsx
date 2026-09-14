@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import {
   Globe,
+  KeyRound,
   LayoutDashboard,
   Megaphone,
   Search,
@@ -31,6 +32,7 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/automations", label: "Automations", icon: Zap },
   { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
+  { href: "/dashboard/licenses", label: "Licenses", icon: KeyRound },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

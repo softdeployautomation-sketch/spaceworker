@@ -1,0 +1,100 @@
+import "server-only";
+
+import { db } from "./db";
+import { exeLicenseIssuedEmailHtml, sendEmail } from "./email";
+import { generateLicenseKey } from "./exe-license";
+import { getProduct } from "./products";
+
+// Task 42, item 5 — the one place that finalizes an APPROVED payment into its
+// product's consequence. All three approval paths funnel through here:
+//   - POST /api/billing/submit       (payment auto-confirmed on-chain, instantly)
+//   - app/api/internal/payment-verify/route.ts (the on-chain poller)
+//   - app/api/admin/payments/[id]/approve/route.ts (manual admin review)
+// Centralizing it keeps the branch-on-product logic in exactly one file instead
+// of being copy-pasted across three routes and drifting.
+//
+// Idempotent: called once per approval, guarded by the approved-status check and
+// the ExeLicense.paymentId unique constraint, so a retry never double-mints.
+
+/**
+ * Applies the consequence of an already-approved payment: for a web subscription
+ * this is today's exact tier bump; for any EXE product it issues a license key
+ * (and emails it with the real 6-month expiry). Safe to call any number of times
+ * for the same payment — it only acts on transitions that haven't happened yet.
+ */
+export async function handleApprovedPayment(paymentId: string): Promise<void> {
+  const payment = await db.payment.findUnique({
+    where: { id: paymentId },
+    include: { user: { select: { id: true, email: true } } },
+  });
+  if (!payment || payment.status !== "approved") return;
+  if (!payment.product || payment.product === "web_subscription") {
+    await bumpWebTier(payment.userId);
+    return;
+  }
+  await issueExeLicense(payment);
+}
+
+async function bumpWebTier(userId: string): Promise<void> {
+  // No-op-safe: setting tier=1 when it's already 1 is harmless and keeps the
+  // path identical to today's behaviour for the only product that existed.
+  await db.user.update({ where: { id: userId }, data: { tier: 1 } });
+}
+
+async function issueExeLicense(payment: {
+  id: string;
+  userId: string;
+  product: string;
+  user: { id: string; email: string };
+}): Promise<void> {
+  const productId = payment.product;
+  const existing = await db.exeLicense.findUnique({
+    where: { paymentId: payment.id },
+  });
+  if (existing) return; // idempotency — never double-mint
+
+  const product = getProduct(productId);
+  if (!product || product.kind !== "exe" || !product.plan) {
+    throw new Error(`Unknown EXE product for payment ${payment.id}: "${productId}"`);
+  }
+
+  const { licenseKey, expiresAt } = generateLicenseKey({
+    licensee: payment.user.email,
+    plan: product.plan,
+  });
+
+  // Storing the license is the source of truth; the email is the buyer's
+  // disclosure of the real term. Store first so the dashboard/email can never
+  // reference a key that doesn't exist — and so a failed send loses nothing.
+  await db.exeLicense.create({
+    data: {
+      userId: payment.userId,
+      paymentId: payment.id,
+      product: productId,
+      licenseKey,
+    },
+  });
+
+  // A real transactional email, unconditionally (not via notifyUser's
+  // preference fan-out) — this is the buyer's disclosure moment for the term,
+  // so it must always reach the email they paid with.
+  try {
+    await sendEmail({
+      to: payment.user.email,
+      subject: `Your ${product.name} license is active`,
+      html: exeLicenseIssuedEmailHtml({
+        productName: product.name,
+        licenseKey,
+        expiresAt,
+      }),
+      eventType: "exe_license_issued",
+    });
+  } catch (err) {
+    // The license row + key are already saved; the buyer can still retrieve the
+    // key from /dashboard/licenses once they log in. Log loudly, don't roll back.
+    console.error(
+      `[exe-license] issued key for payment ${payment.id} but failed to email it:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}

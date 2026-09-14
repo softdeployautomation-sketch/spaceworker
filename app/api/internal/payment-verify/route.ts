@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
+import { handleApprovedPayment } from "@/lib/license-service";
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
@@ -33,7 +34,9 @@ export async function POST(req: Request) {
         where: { id: payment.id },
         data: { status: "approved", autoApproved: true },
       });
-      await prisma.user.update({ where: { id: payment.userId }, data: { tier: 1 } });
+      // Finalize into the product's consequence (tier bump / license issue) via
+      // the single shared handler — Task 42.
+      await handleApprovedPayment(payment.id);
       approved += 1;
     } else if (isPendingNote(result.note)) {
       // Still not found — reject once the payment is older than 24h.

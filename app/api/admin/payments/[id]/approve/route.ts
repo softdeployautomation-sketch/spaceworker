@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
+import { handleApprovedPayment } from "@/lib/license-service";
 
-// POST /api/admin/payments/[id]/approve — manually approve + upgrade the user.
+// POST /api/admin/payments/[id]/approve — manually approve a payment and
+// finalize it into its product's consequence (web => tier bump, EXE => license
+// issue) via the single shared handler.
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -22,7 +25,7 @@ export async function POST(
   }
 
   await prisma.payment.update({ where: { id }, data: { status: "approved" } });
-  await prisma.user.update({ where: { id: payment.userId }, data: { tier: 1 } });
+  await handleApprovedPayment(id);
 
   return NextResponse.json({ ok: true });
 }
