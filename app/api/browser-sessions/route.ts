@@ -5,6 +5,7 @@ import { SESSION_SAFE_SELECT } from "@/lib/browser-session-safe-select";
 import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
+import { getAdminSettings } from "@/lib/admin-settings";
 import {
   proxyServerValue as buildProxyArg,
   checkIpThroughProxy,
@@ -13,9 +14,10 @@ import {
   type ProxySpec,
 } from "@/lib/browser-proxy";
 
-// Phase 1 deliberate cap: 2–3 simultaneous interactive sessions, sized explicitly
-// around this number of concurrent Chrome/streaming processes on the shared box.
-const MAX_CONCURRENT_SESSIONS = 3;
+// Task 46 — this used to be a hardcoded constant (each session is a full
+// Neko/Chrome streaming container, the real RAM cost). Now admin-adjustable at
+// runtime via AdminSetting.browserSessionsMaxConcurrent (default 3, matching
+// the old constant exactly) plus a pause toggle (browserSessionsEnabled).
 
 type SessionRow = NonNullable<
   Awaited<ReturnType<typeof prisma.browserSession.findFirst>>
@@ -117,15 +119,25 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Profile not found" }, { status: 404 });
   }
 
-  // Concurrency cap — across ALL users (the subsystem must service this many
-  // Chrome/streaming processes). Count active rows before allowing a new start.
+  // Task 46 — admin pause + admin-adjustable concurrency cap, across ALL users
+  // (the subsystem must service this many Chrome/streaming processes). Existing
+  // active sessions are never touched — pausing/lowering the cap only blocks NEW
+  // starts.
+  const adminSettings = await getAdminSettings();
+  if (!adminSettings.browserSessionsEnabled) {
+    return NextResponse.json(
+      { error: "Browser sessions are temporarily paused by an admin." },
+      { status: 409 }
+    );
+  }
+  const maxConcurrentSessions = Math.max(1, adminSettings.browserSessionsMaxConcurrent);
   const active = await prisma.browserSession.count({
     where: { status: { in: ["starting", "running"] } },
   });
-  if (active >= MAX_CONCURRENT_SESSIONS) {
+  if (active >= maxConcurrentSessions) {
     return NextResponse.json(
       {
-        error: `Concurrency limit reached — ${MAX_CONCURRENT_SESSIONS} browser sessions already active. Stop one before starting another.`,
+        error: `Concurrency limit reached — ${maxConcurrentSessions} browser session${maxConcurrentSessions === 1 ? "" : "s"} already active. Stop one before starting another.`,
       },
       { status: 409 }
     );

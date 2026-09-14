@@ -87,6 +87,19 @@ model AdminSetting {
   mailerExePriceUsd        Float @default(50)   // one-time, 6-month term
   combinedExePriceUsd      Float @default(70)   // one-time, 6-month term
   automationExePriceUsd    Float @default(100)  // one-time, 6-month term — top tier
+
+  // Task 46 — admin admission control for the two mechanisms that actually spend
+  // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
+  // (each running job is a real Playwright+Chromium process, one per lane today)
+  // and interactive browser sessions (each is a full Neko streaming container).
+  // Defaults exactly match today's hardcoded behavior — purely additive, zero
+  // change until an admin actually touches a toggle or number.
+  dispatchLightEnabled         Boolean @default(true)
+  dispatchLightMaxConcurrent   Int     @default(1)
+  dispatchHeavyEnabled         Boolean @default(true)
+  dispatchHeavyMaxConcurrent   Int     @default(1)
+  browserSessionsEnabled       Boolean @default(true)
+  browserSessionsMaxConcurrent Int     @default(3)
 }
 
 model Mailbox {

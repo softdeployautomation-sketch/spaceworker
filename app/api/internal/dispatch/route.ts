@@ -2,8 +2,20 @@ import { NextResponse } from "next/server";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resumeJob } from "@/lib/job-resume";
+import { getAdminSettings } from "@/lib/admin-settings";
 
 const LANES = ["light", "heavy"] as const;
+
+// Task 46 — admin admission control. Each lane's enabled/maxConcurrent now
+// comes from AdminSetting instead of being hardcoded; defaults (enabled, max 1)
+// match the previous hardcoded "running > 0" behavior exactly.
+const LANE_SETTINGS_KEYS: Record<
+  (typeof LANES)[number],
+  { enabled: "dispatchLightEnabled" | "dispatchHeavyEnabled"; max: "dispatchLightMaxConcurrent" | "dispatchHeavyMaxConcurrent" }
+> = {
+  light: { enabled: "dispatchLightEnabled", max: "dispatchLightMaxConcurrent" },
+  heavy: { enabled: "dispatchHeavyEnabled", max: "dispatchHeavyMaxConcurrent" },
+};
 
 // A job can be deleted (DELETE /api/jobs/[id]) in the window between this
 // route claiming/dispatching it and a later update in an error-handling
@@ -62,6 +74,7 @@ export async function POST(req: Request) {
   const workerBase = process.env.WORKER_BASE_URL;
   const workerToken = process.env.WORKER_AUTH_TOKEN;
   const results: Record<string, unknown> = {};
+  const adminSettings = await getAdminSettings();
 
   // Phase A: dispatch one queued job per idle lane
   for (const lane of LANES) {
@@ -72,16 +85,26 @@ export async function POST(req: Request) {
       continue;
     }
 
+    // Task 46 — admin pause: existing running jobs keep running to completion,
+    // only NEW claims stop. Checked before the transaction/advisory lock below —
+    // a paused lane shouldn't even take the lock.
+    const laneKeys = LANE_SETTINGS_KEYS[lane];
+    if (!adminSettings[laneKeys.enabled]) {
+      results[`${lane}_dispatch`] = "queue_paused";
+      continue;
+    }
+    const maxConcurrent = Math.max(1, adminSettings[laneKeys.max]);
+
     // The lane-busy count and the row claim are inside one transaction guarded
     // by a PostgreSQL advisory lock. This prevents two concurrent dispatch
-    // calls from each seeing running=0 independently and then each claiming a
-    // different queued entry — which would violate the single-concurrency
-    // invariant for each lane.
+    // calls from each seeing the same running count independently and then each
+    // claiming a different queued entry — which would violate the lane's
+    // concurrency invariant (now admin-configured, was always exactly 1).
     const claimed = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LANE_LOCK_ID[lane]})`;
 
       const running = await tx.searchJob.count({ where: { lane, status: "running" } });
-      if (running > 0) return "lane_busy" as const;
+      if (running >= maxConcurrent) return "lane_busy" as const;
 
       const entry = await tx.jobQueueEntry.findFirst({
         where: { lane, status: "queued" },

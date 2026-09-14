@@ -717,6 +717,142 @@ function QueueJobStatusBadge({ status }: { status: string }) {
   );
 }
 
+// Task 46 — the two mechanisms that actually spend real RAM on this shared,
+// resource-constrained VPS (dispatch lanes each run a real Playwright+Chromium
+// process; browser sessions are full Neko streaming containers). Deliberately
+// separate from the "Search Queue" job list below — this is the fast, direct
+// admission-control layer the owner asked for on top of the coarser systemd
+// start/stop controls (the Services tab), for saving RAM / raising throughput
+// without needing to touch a whole service.
+type AdmissionMechanism = { enabled: boolean; maxConcurrent: number; active: number };
+type AdmissionControlState = Record<"dispatchLight" | "dispatchHeavy" | "browserSessions", AdmissionMechanism>;
+
+const ADMISSION_ROWS: Array<{ key: keyof AdmissionControlState; label: string; hint: string }> = [
+  { key: "dispatchLight", label: "Search dispatch — light lane", hint: "Quick/shallow extraction jobs. Each running job is a real Playwright + Chromium process." },
+  { key: "dispatchHeavy", label: "Search dispatch — heavy lane", hint: "Deep/large extraction jobs. Same real per-job Chromium cost as the light lane." },
+  { key: "browserSessions", label: "Interactive browser sessions", hint: "Each active session is a full Neko browser-streaming container." },
+];
+
+function AdmissionControlPanel() {
+  const [state, setState] = useState<AdmissionControlState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/admission-control");
+      if (!res.ok) throw new Error("Failed to load admission control");
+      setState((await res.json()) as AdmissionControlState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load admission control");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function patch(mechanism: keyof AdmissionControlState, body: { enabled?: boolean; maxConcurrent?: number }) {
+    setSaving(mechanism);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/admission-control", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mechanism, ...body }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState((prev) => (prev ? { ...prev, [mechanism]: { enabled: data.enabled, maxConcurrent: data.maxConcurrent, active: data.active } } : prev));
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[mechanism];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Admission control</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Fast, direct dials for the mechanisms that actually spend real RAM — pause new admissions or raise/lower
+        concurrency without touching a whole service (see the Services tab for that). Existing running work is never
+        interrupted; a pause or lower limit only blocks NEW starts.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3">
+          {ADMISSION_ROWS.map((row) => {
+            const m = state[row.key];
+            const draft = drafts[row.key];
+            return (
+              <div
+                key={row.key}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">{row.label}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                  <p className="mt-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+                    {m.active} of {m.maxConcurrent} active right now
+                  </p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <label className="flex items-center gap-2 text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">Max concurrent</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={draft ?? String(m.maxConcurrent)}
+                      onChange={(e) => setDrafts((prev) => ({ ...prev, [row.key]: e.target.value }))}
+                      className="w-20 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                    />
+                  </label>
+                  <button
+                    onClick={() => {
+                      const n = Number(draft ?? m.maxConcurrent);
+                      if (!Number.isFinite(n) || n < 1) {
+                        setError("Max concurrent must be a positive integer");
+                        return;
+                      }
+                      patch(row.key, { maxConcurrent: Math.floor(n) });
+                    }}
+                    disabled={saving === row.key || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Set
+                  </button>
+                  <button
+                    onClick={() => patch(row.key, { enabled: !m.enabled })}
+                    disabled={saving === row.key}
+                    className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                      m.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                    }`}
+                  >
+                    {m.enabled ? "Enabled" : "Paused"}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QueueTab() {
   const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
   const [loading, setLoading] = useState(true);
@@ -774,6 +910,8 @@ function QueueTab() {
 
   return (
     <div>
+      <AdmissionControlPanel />
+
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Search Queue</h2>
         <div className="flex items-center gap-2">
