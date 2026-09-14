@@ -18,7 +18,8 @@ type ReviewPayment = {
   amountUsd: number;
   status: string;
   product: string;
-  txHash: string;
+  // Task 44 — nullable: a buyer can submit without a hash for manual review.
+  txHash: string | null;
   createdAt: string;
   user: { email: string };
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
@@ -319,6 +320,7 @@ function PaymentsTab() {
                 <th className="px-4 py-3 font-medium">Product</th>
                 <th className="px-4 py-3 font-medium">Kind</th>
                 <th className="px-4 py-3 font-medium">Amount</th>
+                <th className="px-4 py-3 font-medium">Hash</th>
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Submitted</th>
                 <th className="px-4 py-3 font-medium">Last check</th>
@@ -332,6 +334,13 @@ function PaymentsTab() {
                   <td className="px-4 py-3">{PRODUCT_LABELS[p.product] ?? p.product}</td>
                   <td className="px-4 py-3 uppercase">{p.kind === "btc" ? "BTC" : "USDT"}</td>
                   <td className="px-4 py-3">${p.amountUsd.toFixed(2)}</td>
+                  <td className="max-w-[160px] px-4 py-3 font-mono text-xs">
+                    {p.txHash ? (
+                      <span className="truncate" title={p.txHash}>{p.txHash}</span>
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">no hash — verify manually</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <StatusBadge status={p.status} />
                   </td>

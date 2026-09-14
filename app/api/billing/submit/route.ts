@@ -34,14 +34,17 @@ export async function POST(req: Request) {
   }
 
   const kind = body.kind;
-  const txHash = typeof body.txHash === "string" ? body.txHash.trim() : "";
+  // Task 44 — the hash is now OPTIONAL: a buyer who doesn't know how to find it
+  // can still submit, and the payment sits "pending" for manual admin review
+  // only (no on-chain check runs without a real hash to look up, and the
+  // internal poller explicitly skips these rows too — see below and
+  // app/api/internal/payment-verify/route.ts).
+  const txHashRaw = typeof body.txHash === "string" ? body.txHash.trim() : "";
+  const txHash: string | null = txHashRaw || null;
   if (typeof kind !== "string" || !KINDS.includes(kind as Kind)) {
     return NextResponse.json({ error: "Invalid payment method" }, { status: 400 });
   }
   const paymentKind = kind as Kind;
-  if (!txHash) {
-    return NextResponse.json({ error: "Transaction hash is required" }, { status: 400 });
-  }
 
   const productId = typeof body.product === "string" && body.product ? body.product : WEB_SUBSCRIPTION.id;
   const product = getProduct(productId);
@@ -77,9 +80,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Wallet not configured" }, { status: 400 });
   }
 
-  const existing = await prisma.payment.findUnique({ where: { txHash } });
-  if (existing) {
-    return NextResponse.json({ error: "Transaction hash already submitted" }, { status: 400 });
+  // A null txHash never collides (Postgres allows multiple NULLs under
+  // @unique) — only check for a real duplicate when a real hash was given.
+  if (txHash) {
+    const existing = await prisma.payment.findUnique({ where: { txHash } });
+    if (existing) {
+      return NextResponse.json({ error: "Transaction hash already submitted" }, { status: 400 });
+    }
   }
 
   const payment = await prisma.payment.create({
@@ -93,6 +100,18 @@ export async function POST(req: Request) {
       status: "pending",
     },
   });
+
+  // No hash given — nothing to look up on-chain. Leave it "pending" for manual
+  // admin review only; never call the verifier with an empty/null hash, and
+  // never let it enter the on-chain result branches below (which is also what
+  // keeps it out of the internal poller's 24h auto-reject timer — that poller
+  // explicitly filters txHash: { not: null }).
+  if (!payment.txHash) {
+    await prisma.paymentVerificationAttempt.create({
+      data: { paymentId: payment.id, success: false, note: "No transaction hash provided — awaiting manual review" },
+    });
+    return NextResponse.json({ paymentId: payment.id, status: "pending", note: "Awaiting manual review" });
+  }
 
   const result =
     paymentKind === "btc"

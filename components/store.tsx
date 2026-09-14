@@ -173,11 +173,10 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
   }
 
   async function submit() {
+    // Task 44 — the hash is optional: a buyer who doesn't know how to find it
+    // can still submit; the payment just sits pending for manual review
+    // instead of being auto-verified on-chain.
     const hash = txHash.trim();
-    if (!hash) {
-      setError("Enter your transaction hash");
-      return;
-    }
     if (email.trim() && !email.includes("@")) {
       setError("Enter a valid email — it receives your license key.");
       return;
@@ -293,14 +292,19 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
           ) : null}
 
           <label className="block">
-            <span className="text-sm font-medium text-fg">Transaction hash</span>
+            <span className="text-sm font-medium text-fg">
+              Transaction hash <span className="font-normal text-fg-muted">(optional)</span>
+            </span>
             <input
               type="text"
               value={txHash}
               onChange={(e) => setTxHash(e.target.value)}
-              placeholder="Enter the transaction hash after sending"
+              placeholder="Enter it if you have it — leave blank otherwise"
               className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-3 py-2 font-mono text-sm text-fg focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
             />
+            <p className="mt-1 text-xs text-fg-muted">
+              Don&apos;t know how to find it? Leave this blank — we&apos;ll verify your payment manually instead. It just takes a little longer.
+            </p>
           </label>
 
           {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}

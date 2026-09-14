@@ -319,7 +319,14 @@ model Payment {
   user         User                         @relation(fields: [userId], references: [id])
   kind         String // "btc" | "usdt_trc20" — the PAYMENT METHOD, not the product
   amountUsd    Float
-  txHash       String                       @unique
+  // Task 44 — nullable: a buyer who doesn't know how to find their tx hash can
+  // submit without one, staying "pending" for manual admin review only (never
+  // auto-verified, never auto-rejected by the 24h poller timeout — see
+  // app/api/internal/payment-verify/route.ts's explicit txHash-not-null filter
+  // and app/api/billing/submit/route.ts's early return before any on-chain
+  // check). Postgres allows multiple NULLs under @unique, so this never
+  // collides between different no-hash submissions.
+  txHash       String?                      @unique
   toAddress    String
   // Task 42 — which product this payment bought. Distinct from `kind` (the
   // payment METHOD). Defaulted so every pre-existing row is correctly the only
