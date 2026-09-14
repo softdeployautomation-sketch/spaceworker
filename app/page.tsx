@@ -92,7 +92,7 @@ export default function HomePage() {
       </section>
 
       {/* Store */}
-      <section className="mx-auto max-w-5xl px-4 py-16 sm:px-6">
+      <section id="store" className="mx-auto max-w-5xl px-4 py-16 sm:px-6 scroll-mt-24">
         <Store />
       </section>
 
