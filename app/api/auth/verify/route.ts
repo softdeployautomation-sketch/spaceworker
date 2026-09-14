@@ -33,13 +33,18 @@ export async function POST(request: Request) {
   }
 
   if (user.emailVerified) {
-    // Already verified — just start a session and redirect to the dashboard.
-    await setSessionCookie({
-      sub: user.id,
-      email: user.email,
-      emailVerified: true,
-    });
-    return NextResponse.json({ ok: true, alreadyVerified: true });
+    // CRITICAL FIX (2026-09-14): this used to call setSessionCookie() here and
+    // return, granting a full authenticated session to ANYONE who knew this
+    // user's email address — no password, no valid code, not even a check that
+    // parsed.code was real (the zod schema only required 6 digits of ANY
+    // value). That was a live account-takeover vulnerability present since the
+    // very first commit of this project. An already-verified account has
+    // nothing to "verify" here; send them to log in with their real password
+    // instead of minting a session for a caller who has proven nothing.
+    return NextResponse.json(
+      { error: "This account is already verified. Please sign in instead.", alreadyVerified: true },
+      { status: 409 },
+    );
   }
 
   // Rate limit + cap brute-force attempts on the code.
