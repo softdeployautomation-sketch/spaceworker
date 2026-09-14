@@ -4,7 +4,7 @@ import { createSearchJob } from "@/lib/create-search-job";
 import { buildSearchQueries } from "@/lib/build-search-queries";
 import { createCampaign } from "@/lib/campaign-create";
 import { leadToRecipient, type RecipientInput } from "@/lib/campaign-recipients";
-import { sendEmail } from "@/lib/email";
+import { notifyUser } from "@/lib/notify";
 import { env } from "@/lib/env";
 import { usableTemplateWhere } from "@/lib/campaign-templates";
 
@@ -70,35 +70,29 @@ async function loadTemplateCampaign(campaignTemplateId: string, userId: string) 
   });
 }
 
-// Real external notification when a daily run reaches needs_confirmation. Sends
-// SpaceWorker's OWN transactional email (lib/email.ts sendEmail — the same
-// separate Resend account used for verification codes, never the customer SMTP)
-// to the automation owner and records an accurate audit row via sendEmail's
-// internal recordNotificationLog. Best-effort by design: a notification failure
-// must never fail the run itself, so the send is wrapped and any error is
-// swallowed (sendEmail already logged the failed attempt as outcome:"failed"
-// for the audit trail).
+// Real external notification when a daily run reaches needs_confirmation.
+// Dispatched through lib/notify.ts's notifyUser, which delivers to whatever
+// channels the owner has enabled (email default-on + agent chat default-on +
+// optional Telegram) and records a per-channel NotificationLog row. Best-effort
+// by design: a notification failure must never fail the run.
 async function notifyNeedsConfirmation(runId: string, automation: AutomationShape) {
-  // Thread the real recipient through: the owner's verified email, looked up via
-  // automation.userId -> User.email (the function no longer hardcodes an
-  // in-app-only row that falsely claimed outcome:"sent").
-  const user = await prisma.user.findUnique({
-    where: { id: automation.userId },
-    select: { email: true },
-  });
-  if (!user?.email) return; // no reachable owner — the run's state is the signal
-
   const runLink = `${env.appBaseUrl}/dashboard/automations/${automation.id}/runs/${runId}`;
   try {
-    await sendEmail({
-      to: user.email,
-      subject: `SpaceWorker: "${automation.name}" needs your confirmation`,
-      html: automationNeedsConfirmationEmailHtml(automation.name, runLink),
+    await notifyUser(automation.userId, {
       eventType: "automation_needs_confirmation",
+      subject: `SpaceWorker: "${automation.name}" needs your confirmation`,
+      emailHtml: automationNeedsConfirmationEmailHtml(automation.name, runLink),
+      telegramText:
+        `⚠️ Your daily automation "${automation.name}" finished extracting leads ` +
+        `and needs your confirmation before anything is sent.`,
+      agentText:
+        `Your daily automation "${automation.name}" has finished extracting leads and is ` +
+        `waiting on your confirmation before anything is sent. No email has gone out yet.`,
+      link: runLink,
     });
   } catch {
-    // Best-effort — swallow; sendEmail already recorded the failure to
-    // NotificationLog (outcome:"failed") and must not block the run.
+    // Best-effort — swallow; each channel already recorded its own outcome to
+    // NotificationLog and must not block the run.
   }
 }
 

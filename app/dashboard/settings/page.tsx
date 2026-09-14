@@ -3,7 +3,11 @@ import Link from "next/link";
 
 import { Badge, Card } from "@/components/ui";
 import { ChangePasswordForm } from "@/components/change-password-form";
+import { NotificationsSettings } from "@/components/notifications-settings";
+import { db } from "@/lib/db";
+import { env } from "@/lib/env";
 import { getCurrentUser } from "@/lib/session-user";
+import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -12,6 +16,24 @@ export default async function SettingsPage() {
   if (!user) return null;
 
   const plan = user.tier >= 1 ? "Pro" : "Free";
+
+  // Task 39 — Telegram connect link. When a bot username is configured and the
+  // user isn't linked yet, ensure a short-lived link token exists (reusing a
+  // still-valid one so the shown link doesn't churn on every page load) and build
+  // the deep link. Unlinked + no username => null (the UI shows a note).
+  let connectUrl: string | null = null;
+  if (env.telegramBotUsername && !user.telegramChatId) {
+    let token = user.telegramLinkToken;
+    if (!token || !parseTelegramLinkToken(token)) {
+      token = generateTelegramLinkToken();
+      // Persist lazily so we don't mint a fresh token on every render.
+      await db.user.update({
+        where: { id: user.id },
+        data: { telegramLinkToken: token },
+      });
+    }
+    connectUrl = `https://t.me/${env.telegramBotUsername}?start=${token}`;
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -65,10 +87,21 @@ export default async function SettingsPage() {
           <div>
             <h2 className="text-lg font-semibold text-fg">Notifications</h2>
             <p className="mt-1 text-sm text-fg-muted">
-              Choose which emails SpaceWorker sends you — job completion, campaign results, billing.
+              Choose which channels SpaceWorker uses to notify you about stuck
+              campaigns and automations that need your attention.
             </p>
           </div>
-          <Badge tone="neutral">Coming soon</Badge>
+        </div>
+        <div className="mt-4">
+          <NotificationsSettings
+            prefs={{
+              notifyEmail: user.notifyEmail,
+              notifyTelegram: user.notifyTelegram,
+              notifyAgent: user.notifyAgent,
+              linked: user.telegramChatId !== null,
+              connectUrl,
+            }}
+          />
         </div>
       </Card>
 

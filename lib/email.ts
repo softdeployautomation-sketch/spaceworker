@@ -4,45 +4,45 @@ import { Resend } from "resend";
 
 import { db } from "./db";
 import { env } from "./env";
+import { writeNotificationLog } from "./notification-log";
 
 // Sentinel value used in non-production .env to allow a successful local build
 // without a real Resend key. Treated as "not configured" at runtime.
 export const RESEND_PLACEHOLDER = "re_local_dev_placeholder";
 
 /**
- * Append-only audit record of a real notification send attempt (Task 8).
- * Additive by design: a failure to write the log row must never change the send
- * outcome the caller observes. SpaceWorker only sends email today — the
- * `channel` value is stored generically so a future Telegram integration can
- * log into the same table without a schema change.
+ * Append-only audit record of a real notification send attempt (Task 8) —
+ * delegated to the shared writer in lib/notification-log.ts so lib/notify.ts's
+ * other channels log into the exact same table. Additive by design: a failure
+ * to write the log row must never change the send outcome the caller observes.
  */
 async function recordNotificationLog(entry: {
   eventType: string;
   recipient: string;
-  channel: string;
   outcome: "sent" | "failed";
   errorMessage?: string | null;
 }): Promise<void> {
   try {
     // Best-effort link to the owning user — verification emails always target a
-    // registered account and the recipient email is the natural key.
+    // registered account and the recipient email is the natural key. writeNotificationLog
+    // is already fully additive; the extra guard here keeps OUR lookup failure
+    // from ever changing the send outcome the caller observes.
     const user = await db.user.findUnique({
       where: { email: entry.recipient },
       select: { id: true },
     });
-    await db.notificationLog.create({
-      data: {
-        userId: user?.id ?? null,
-        eventType: entry.eventType,
-        channel: entry.channel,
-        recipient: entry.recipient,
-        outcome: entry.outcome,
-        errorMessage: entry.errorMessage ?? null,
-      },
+    await writeNotificationLog({
+      userId: user?.id ?? null,
+      eventType: entry.eventType,
+      // email.ts only ever records the email channel; cast is safe.
+      channel: "email",
+      recipient: entry.recipient,
+      outcome: entry.outcome,
+      errorMessage: entry.errorMessage ?? null,
     });
   } catch (err) {
     // Logging is strictly additive — never let it fail (or change the outcome
-    // of) the actual send, which is what the caller depends on today.
+    // of) the actual send, which is what the caller depends on.
     console.error("Failed to write NotificationLog:", err);
   }
 }
@@ -64,7 +64,6 @@ export async function sendEmail(opts: {
   eventType?: string;
 }): Promise<void> {
   const eventType = opts.eventType ?? "verification_code";
-  const channel = "email";
 
   let outcome: "sent" | "failed" = "sent";
   let errorMessage: string | null = null;
@@ -95,7 +94,6 @@ export async function sendEmail(opts: {
     await recordNotificationLog({
       eventType,
       recipient: opts.to,
-      channel,
       outcome,
       errorMessage,
     });

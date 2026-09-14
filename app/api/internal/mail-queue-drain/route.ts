@@ -1,10 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { env } from "@/lib/env";
 import { transporterForMailbox } from "@/lib/mailer-send";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
-import { sendEmail } from "@/lib/email";
+import { notifyUser } from "@/lib/notify";
 
 // Task 33 — a campaign's active pinned-override window (EmailCampaign.pinnedOverride
 // as a typed structure rather than raw Json). `remaining` is decremented per
@@ -368,24 +369,46 @@ export async function POST(req: Request) {
       data: { status: "paused_deliverability", ...(clearPin ? { pinnedOverride: Prisma.DbNull } : {}) },
     });
 
-    // Best-effort owner notification (SpaceWorker's own transactional email; a
-    // failure must never break the drain — sendEmail already audit-logs internally).
+    // Best-effort owner notification (SpaceWorker's own transactional email, plus
+    // the owner's optionally-enabled Telegram + agent-chat channels, fanned out by
+    // lib/notify.ts; a failure must never break the drain — each channel already
+    // audit-logs its own outcome).
     try {
-      const owner = await prisma.user.findUnique({ where: { id: c.userId }, select: { email: true } });
-      if (owner?.email) {
-        const placement = probe.landedIn === "spam"
+      const placement =
+        probe.landedIn === "spam"
           ? "landed in the spam folder"
           : "could not be verified to have reached the inbox";
-        await sendEmail({
-          to: owner.email,
-          subject: `SpaceWorker: "${c.name}" paused on a deliverability check`,
-          html:
-            `<p>The batch send for campaign <strong>${c.name}</strong> was paused after its latest` +
-            ` deliverability check ${placement} on your test mailbox.</p>` +
-            `<p>Open the campaign to review and choose Continue, Switch subject, or Stop.</p>`,
-          eventType: "batch_deliverability_pause",
-        });
-      }
+      const campaignLink = `${env.appBaseUrl}/dashboard/campaigns/${c.id}`;
+      await notifyUser(c.userId, {
+        eventType: "batch_deliverability_pause",
+        subject: `SpaceWorker: "${c.name}" paused on a deliverability check`,
+        emailHtml:
+          `<p>The batch send for campaign <strong>${c.name}</strong> was paused after its latest` +
+          ` deliverability check ${placement} on your test mailbox.</p>` +
+          `<p>Open the campaign to review and choose Continue, Switch subject, or Stop.</p>`,
+        telegramText:
+          `⚠️ Campaign "${c.name}" was paused — its latest deliverability check ${placement}. ` +
+          `Open the campaign to Continue, Switch subject, or Stop.`,
+        agentText:
+          `Campaign "${c.name}" was paused after its latest deliverability check ${placement}. ` +
+          `Open the campaign to review and choose Continue, Switch subject, or Stop.`,
+        link: campaignLink,
+        // Task 38 — attach the exact stuck-campaign widget so the agent chat panel
+        // renders the familiar status row for this specific paused campaign.
+        inlineWidget: {
+          type: "campaign_status_list",
+          campaigns: [
+            {
+              id: c.id,
+              name: c.name,
+              status: "paused_deliverability",
+              landedIn: probe.landedIn ?? null,
+              lastError: null,
+              overrideRecipient: Boolean(c.testRecipientOverride?.trim()),
+            },
+          ],
+        },
+      });
     } catch {
       // Best-effort; the pause + DeliverabilityCheck (already recorded by the
       // probe) persist regardless.

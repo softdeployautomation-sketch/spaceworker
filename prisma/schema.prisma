@@ -13,6 +13,17 @@ model User {
   passwordHash     String
   emailVerified    Boolean            @default(false)
   tier             Int                @default(0)
+  // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
+  // / notifyAgent default ON so a user who never opens Settings keeps today's
+  // behavior; notifyTelegram defaults OFF (it's a no-op until the user links
+  // their chat anyway). telegramChatId is set only via the bot-linking webhook;
+  // telegramLinkToken is a short-lived random token backing the Connect deep link,
+  // cleared on a successful link.
+  notifyEmail      Boolean            @default(true)
+  notifyTelegram   Boolean            @default(false)
+  notifyAgent      Boolean            @default(true)
+  telegramChatId   String?
+  telegramLinkToken String?
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
   // account created before this field existed, not that they never agreed.
   acceptedTermsAt  DateTime?

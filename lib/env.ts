@@ -43,6 +43,21 @@ export const env = {
   // configured") — never send a fake/empty key to Channelry.
   channelryAiApiKey: process.env.CHANNELRY_AI_API_KEY ?? "",
 
+  // Task 39 — Telegram notifications. All OPTIONAL/fail-soft, same discipline as
+  // channelryAiApiKey: Telegram simply doesn't fire when unconfigured and
+  // everything else keeps working.
+  //  - telegramBotToken: the bot's API token from @BotFather. blank => no
+  //    sends, no /start linking.
+  //  - telegramBotUsername: the bot's @username, used to build the Connect deep
+  //    link (https://t.me/<username>?start=<token>).
+  //  - telegramWebhookSecret: the secret passed to setWebhook's
+  //    secret_token (via the X-Telegram-Bot-Api-Secret-Token header). The
+  //    webhook route FAILS CLOSED (401) when unset, matching adminToken's
+  //    "unset = locked" rule.
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? "",
+  telegramBotUsername: process.env.TELEGRAM_BOT_USERNAME ?? "",
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+
   port: number("PORT", 3400),
 };
 

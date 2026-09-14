@@ -1,0 +1,104 @@
+import { NextResponse } from "next/server";
+import { z } from "zod";
+
+import { db } from "@/lib/db";
+import { env } from "@/lib/env";
+import { getCurrentUser } from "@/lib/session-user";
+import { generateTelegramLinkToken } from "@/lib/telegram";
+
+// PATCH /api/settings/notifications — update the user's per-channel notification
+// preferences and/or manage their Telegram link. Follows the same shape as
+// change-password/route.ts (getCurrentUser + zod).
+//
+// Body (all optional; at least one must be present):
+//   notifyEmail / notifyTelegram / notifyAgent — boolean toggles (PATCH them all
+//   at once is fine; omitted ones are left untouched).
+//   unlink — true => clear telegramChatId (the user unlinks their chat).
+//   regenerate — true => mint a fresh short-lived link token (used by the
+//   settings UI's "Regenerate link" so a stale/compromised link is replaced).
+
+const schema = z
+  .object({
+    notifyEmail: z.boolean().optional(),
+    notifyTelegram: z.boolean().optional(),
+    notifyAgent: z.boolean().optional(),
+    unlink: z.boolean().optional(),
+    regenerate: z.boolean().optional(),
+  })
+  .refine(
+    (v) =>
+      v.notifyEmail !== undefined ||
+      v.notifyTelegram !== undefined ||
+      v.notifyAgent !== undefined ||
+      v.unlink === true ||
+      v.regenerate === true,
+    "Nothing to update",
+  );
+
+export async function PATCH(request: Request) {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  let parsed;
+  try {
+    parsed = schema.parse(await request.json());
+  } catch (e) {
+    const msg = e instanceof z.ZodError ? e.errors[0]?.message : "Invalid request body";
+    return NextResponse.json({ error: msg }, { status: 400 });
+  }
+
+  const data: Record<string, unknown> = {};
+
+  // Preferences: only ever merge in the provided keys (never clobber others).
+  if (parsed.notifyEmail !== undefined) data.notifyEmail = parsed.notifyEmail;
+  if (parsed.notifyTelegram !== undefined) data.notifyTelegram = parsed.notifyTelegram;
+  if (parsed.notifyAgent !== undefined) data.notifyAgent = parsed.notifyAgent;
+
+  if (parsed.unlink === true) {
+    // Unlinking clears the chat id (and the now-stale link token). notifyUser
+    // already skips telegram when telegramChatId is null regardless of the flag,
+    // so this is the single source of truth for "not linked".
+    data.telegramChatId = null;
+    data.telegramLinkToken = null;
+  }
+
+  if (parsed.regenerate === true) {
+    // Mint a fresh token for a new Connect deep link. The webhook only matches a
+    // token once, so an attacker who grabbed the old URL can't replay it.
+    data.telegramLinkToken = generateTelegramLinkToken();
+  }
+
+  const updated = await db.user.update({
+    where: { id: user.id },
+    data,
+    select: {
+      notifyEmail: true,
+      notifyTelegram: true,
+      notifyAgent: true,
+      telegramChatId: true,
+      telegramLinkToken: true,
+    },
+  });
+
+  const linked = updated.telegramChatId !== null;
+  // Fresh Connect deep link (present only when unlinked AND a bot username is
+  // configured; null otherwise so the UI can tell "unlinked, linkable" from
+  // "Telegram not configured").
+  const connectUrl =
+    !linked && updated.telegramLinkToken && env.telegramBotUsername
+      ? `https://t.me/${env.telegramBotUsername}?start=${updated.telegramLinkToken}`
+      : null;
+
+  return NextResponse.json({
+    ok: true,
+    prefs: {
+      notifyEmail: updated.notifyEmail,
+      notifyTelegram: updated.notifyTelegram,
+      notifyAgent: updated.notifyAgent,
+      linked,
+      connectUrl,
+    },
+  });
+}
