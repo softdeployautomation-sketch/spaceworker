@@ -51,6 +51,13 @@ export interface CreateCampaignInput {
   // <appBaseUrl>/r/<token> instead of the raw target. Stored rewritten (so the
   // drain sends the cloaked absolute URL with no extra render-time work).
   cloakLinks?: boolean;
+  // Added 2026-09-14 — per-link selection: which of the detected links to
+  // ACTUALLY cloak (e.g. a real CTA link, but not an unrelated image src in the
+  // same body). Omitted entirely (undefined) = legacy "cloak everything
+  // detected" behavior, which automation template cloning still uses (it has no
+  // per-link picker). An explicit array — including an empty one — restricts
+  // cloaking to exactly those URLs.
+  cloakedUrls?: string[];
 }
 
 export interface CreateCampaignResult {
@@ -95,7 +102,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
   // URL with no extra render-time work. Legacy variants are rewritten the same way.
   let tokenByUrl: Record<string, string> = {};
   if (input.cloakLinks && hasHttpLinks(...bodies, ...variants.map((v) => v.bodyHtml))) {
-    tokenByUrl = assignLinkTokens(...bodies, ...variants.map((v) => v.bodyHtml));
+    tokenByUrl = assignLinkTokens([...bodies, ...variants.map((v) => v.bodyHtml)], input.cloakedUrls);
     const baseUrl = env.appBaseUrl;
     bodies = bodies.map((b) => rewriteLinks(b, tokenByUrl, baseUrl));
     variants = variants.map((v) => ({ subject: v.subject, bodyHtml: rewriteLinks(v.bodyHtml, tokenByUrl, baseUrl) }));

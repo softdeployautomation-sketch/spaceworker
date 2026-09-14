@@ -59,6 +59,10 @@ export async function POST(req: Request) {
     // Task 30, item 3 — when true, every unique http(s) link in the bodies is
     // cloaked into a /r/<token> redirect at creation (see lib/campaign-create.ts).
     cloakLinks?: unknown;
+    // Added 2026-09-14 — the subset of detected links to actually cloak (e.g. a
+    // CTA link, not an unrelated image src). Omitted = cloak everything detected
+    // (legacy behavior); an explicit array — including empty — restricts to it.
+    cloakedUrls?: unknown;
   };
 
   try {
@@ -293,6 +297,12 @@ export async function POST(req: Request) {
     testRecipientOverride,
     // Task 30, item 3 — opt-in link cloaking (no-op unless bodies contain links).
     cloakLinks: body.cloakLinks === true,
+    // Only forward an explicit array (including empty — a real "nothing
+    // selected" choice); anything else (missing, wrong type) stays undefined so
+    // createCampaign falls back to its legacy "cloak everything detected" path.
+    ...(Array.isArray(body.cloakedUrls)
+      ? { cloakedUrls: body.cloakedUrls.map((u) => String(u)).filter((u) => u.length > 0) }
+      : {}),
   });
 
   // Response shape kept compatible with the Campaigns page: the frontend reads

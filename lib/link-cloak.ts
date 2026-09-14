@@ -58,7 +58,17 @@ export function hasHttpLinks(...bodies: string[]): boolean {
 // (presentation-only; protects against injecting an un-cloaked url mid-token map).
 export function rewriteLinks(html: string, tokenByUrl: Record<string, string>, baseUrl: string): string {
   return html.replace(URL_RE, (m) => {
-    const url = cleanUrl(m[0]);
+    // Found 2026-09-14 while verifying the new per-link allowlist: this was
+    // `cleanUrl(m[0])`. In a String.prototype.replace(regex, fn) callback, `m`
+    // is ALREADY the matched substring (a string), not a match array — `m[0]`
+    // therefore indexed the string itself, returning only its first CHARACTER
+    // ("h" of "https://..."). tokenByUrl["h"] is never a real key, so the
+    // ternary always fell through to `: m` (the original, unrewritten match) —
+    // cloaking silently rewrote NOTHING. LinkRedirect rows were still created
+    // correctly (that path never touched this function), so every past
+    // "cloaked" campaign sent its RAW original links while leaving orphaned,
+    // never-hit redirect rows behind — the opposite of what the feature was for.
+    const url = cleanUrl(m);
     const token = tokenByUrl[url];
     return token ? `${baseUrl.replace(/\/+$/, "")}/r/${token}` : m;
   });
@@ -66,9 +76,19 @@ export function rewriteLinks(html: string, tokenByUrl: Record<string, string>, b
 
 // Assign each unique link a fresh token (used by createCampaign before creating
 // LinkRedirect rows and rewriting stored bodies inside the transaction).
-export function assignLinkTokens(...bodies: string[]): Record<string, string> {
+//
+// `allowlist`, when passed, restricts tokenization to just those exact URLs —
+// this is the per-link opt-in from the create-modal (e.g. cloak a real CTA link
+// but leave an unrelated image src alone). An explicit EMPTY array is a valid,
+// meaningful selection ("cloaking is on, but nothing is checked") and correctly
+// produces no tokens — only `undefined` (the param omitted entirely) means "no
+// allowlist, cloak everything detected," which is the legacy behavior automation
+// template cloning still relies on (it has no per-link UI to select from).
+export function assignLinkTokens(bodies: string[], allowlist?: string[]): Record<string, string> {
+  const allowed = allowlist ? new Set(allowlist) : null;
   const map: Record<string, string> = {};
   for (const url of extractUniqueLinks(...bodies)) {
+    if (allowed && !allowed.has(url)) continue;
     map[url] = randomLinkToken();
   }
   return map;

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
@@ -58,6 +58,35 @@ const STATUS_BADGES: Record<string, string> = {
   stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
+// Matches absolute http(s) URLs — same character class as lib/link-cloak.ts's
+// URL_RE (that module is server-only, so this is a client-side mirror).
+const PREVIEW_URL_RE = /https?:\/\/[^\s"'<>]+/g;
+const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico)(\?[^\s"'<>]*)?$/i;
+
+// Task 30, item 3 — the unique absolute http(s) links across a set of bodies,
+// each flagged `likelyImage` when it looks like an asset rather than a real CTA
+// link — an `<img src="...">` reference, or a common image extension — so those
+// default to UNCHECKED (not cloaked) in the create-modal while everything else
+// defaults to checked. It's only a default; any link can be toggled either way.
+// A pure function of its argument (no component state), kept at module scope so
+// it has a stable identity across renders for the useMemo that calls it.
+function extractLinksClient(bodies: string[]): { url: string; likelyImage: boolean }[] {
+  const out: { url: string; likelyImage: boolean }[] = [];
+  const seen = new Set<string>();
+  for (const b of bodies) {
+    if (!b) continue;
+    for (const m of b.matchAll(PREVIEW_URL_RE)) {
+      const url = m[0].replace(/[.,;:!?]+$/, "").replace(/[)\]}>]+$/, "");
+      if (!url || seen.has(url)) continue;
+      seen.add(url);
+      const before = b.slice(Math.max(0, (m.index ?? 0) - 10), m.index ?? 0);
+      const likelyImage = /src\s*=\s*["']$/i.test(before) || IMAGE_EXT_RE.test(url);
+      out.push({ url, likelyImage });
+    }
+  }
+  return out;
+}
+
 export default function CampaignsPage() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,6 +134,14 @@ export default function CampaignsPage() {
   // Task 30, item 3 — opt-in link cloaking. Only offered when a body actually
   // contains http(s):// links; each unique link gets a /r/<token> redirect.
   const [cloakLinks, setCloakLinks] = useState(false);
+  // Added 2026-09-14 — which of the DETECTED links to actually cloak (per-link
+  // opt-out, e.g. leave an image src alone but cloak a real CTA link). A link is
+  // added here automatically the first time it's seen (checked by default unless
+  // it looks like an image), then left alone — defaultedLinksRef tracks "already
+  // applied a default for this URL" so a later re-render never overwrites a
+  // manual toggle back to its default state.
+  const [cloakedUrls, setCloakedUrls] = useState<Set<string>>(new Set());
+  const defaultedLinksRef = useRef<Set<string>>(new Set());
   const [csvName, setCsvName] = useState("");
   const [csvContent, setCsvContent] = useState("");
   const [saving, setSaving] = useState(false);
@@ -188,6 +225,8 @@ export default function CampaignsPage() {
     setBodies([""]);
     setShowPreview(false);
     setCloakLinks(false);
+    setCloakedUrls(new Set());
+    defaultedLinksRef.current = new Set();
     setMiEnabled(false);
     setMiEmail("");
     setMiMode("top");
@@ -345,44 +384,45 @@ export default function CampaignsPage() {
     return {};
   }
 
-  // Task 30, item 3 — for the create-modal preview only: when cloaking is on and a
-  // body has http(s):// links, show what the mailed link will look like (a
-  // /r/<token> URL on this origin). The REAL tokens only exist once creation
-  // happens (see createCampaign in lib/campaign-create.ts) — this preview uses a
-  // stable per-link NUMBER instead of a real token, numbered the SAME way as the
-  // legend in the cloak-links section (both derive from extractLinksClient over
-  // ALL bodies, so numbering matches however many bodies you're rotating through),
-  // so a body with several different links (a CTA plus an unrelated image src,
-  // say) shows which placeholder is which instead of every link collapsing into
-  // one indistinguishable "/r/xxxxxx".
-  const PREVIEW_URL_RE = /https?:\/\/[^\s"'<>]+/g;
-  function cloakPreviewLinks(html: string): string {
-    const order = extractLinksClient(validContent().bodies);
+  // Task 30, item 3 — for the create-modal preview only: shows exactly what will
+  // actually send — only links CHECKED in cloakedUrls become a placeholder
+  // (/r/link-N, numbered the SAME way as the legend in the cloak-links section —
+  // both derive from the same bodyLinks list so numbering always matches);
+  // anything unchecked (an image src, say) is left as its real raw URL, same as
+  // the real send will do. The real /r/<token> only exists once the campaign is
+  // actually created (see createCampaign in lib/campaign-create.ts).
+  function cloakPreviewLinks(html: string, order: string[], selected: Set<string>): string {
     return html.replace(PREVIEW_URL_RE, (m) => {
       const url = m.replace(/[.,;:!?]+$/, "").replace(/[)\]}>]+$/, "");
+      if (!selected.has(url)) return m;
       const i = order.indexOf(url);
       return `${window.location.origin}/r/link-${i >= 0 ? i + 1 : "?"}`;
     });
   }
 
-  // Task 30, item 3 — for the create-modal UI: list the unique absolute http(s)
-  // links across the current draft bodies (only shown when non-empty; a plain-text
-  // / link-free body keeps the whole cloaking section hidden). Client-side mirror
-  // of lib/link-cloak.ts's extractUniqueLinks (that module is server-only).
-  function extractLinksClient(bodies: string[]): string[] {
-    const out: string[] = [];
-    const seen = new Set<string>();
-    for (const b of bodies) {
-      if (!b) continue;
-      for (const m of b.matchAll(PREVIEW_URL_RE)) {
-        const url = m[0].replace(/[.,;:!?]+$/, "").replace(/[)\]}>]+$/, "");
-        if (!url || seen.has(url)) continue;
-        seen.add(url);
-        out.push(url);
-      }
-    }
-    return out;
-  }
+  // The current draft's detected links, recomputed whenever bodies change. Bodies
+  // are trimmed/filtered inline (matching validContent()'s rule) rather than
+  // calling validContent() itself, so this memo only depends on `bodies` — not on
+  // a function identity that's recreated every render.
+  const bodyLinks = useMemo(
+    () => extractLinksClient(bodies.map((b) => b.trim()).filter((b) => b.length > 0)),
+    [bodies]
+  );
+
+  // Apply the checked/unchecked DEFAULT exactly once per link, the first render
+  // it's seen on (tracked in defaultedLinksRef, not cloakedUrls itself) — so
+  // editing an unrelated body later never silently re-checks a link the user
+  // deliberately unchecked (or vice versa).
+  useEffect(() => {
+    const newlySeen = bodyLinks.filter((l) => !defaultedLinksRef.current.has(l.url));
+    if (newlySeen.length === 0) return;
+    for (const l of newlySeen) defaultedLinksRef.current.add(l.url);
+    setCloakedUrls((prev) => {
+      const next = new Set(prev);
+      for (const l of newlySeen) if (!l.likelyImage) next.add(l.url);
+      return next;
+    });
+  }, [bodyLinks]);
 
   // Task 30, item 1 — render the body inside a SANDBOXED iframe via srcDoc (never
   // dangerouslySetInnerHTML directly), so scripts/markup a body happens to contain
@@ -430,8 +470,11 @@ export default function CampaignsPage() {
           minSendDelaySeconds: Number(minSendDelay) || 5,
           maxSendDelaySeconds: Number(maxSendDelay) || 45,
           // Task 30, item 3 — opt-in link cloaking (no-op server-side unless the
-          // body actually contains http(s):// links).
+          // body actually contains http(s):// links). cloakedUrls restricts it to
+          // exactly the checked links (added 2026-09-14) — server only reads this
+          // when cloakLinks is true, but always sending it keeps the two in sync.
           cloakLinks: cloakLinks,
+          cloakedUrls: [...cloakedUrls],
           ...(fromSearchJobId
             ? { searchJobId: fromSearchJobId }
             : recipientSource === "leads"
@@ -738,12 +781,20 @@ export default function CampaignsPage() {
 
               {/* Task 30, item 3 — opt-in link cloaking, shown ONLY while a body
                   actually contains http(s):// links (no UI clutter for a
-                  plain-text / link-free body). Each unique link becomes a
-                  /r/<token> redirect so the sent email doesn't visually announce
-                  itself as a tracking/redirect link. */}
+                  plain-text / link-free body). Per-link checkboxes (added
+                  2026-09-14) — only CHECKED links get a /r/<token> redirect;
+                  anything unchecked (typically an image src, defaulted off) is
+                  left as its raw URL. */}
               {(() => {
-                const links = extractLinksClient(validContent().bodies);
-                if (links.length === 0) return null;
+                if (bodyLinks.length === 0) return null;
+                const toggleLink = (url: string) => {
+                  setCloakedUrls((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(url)) next.delete(url);
+                    else next.add(url);
+                    return next;
+                  });
+                };
                 return (
                   <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
                     <label className="flex items-center gap-2 text-sm font-medium">
@@ -753,19 +804,39 @@ export default function CampaignsPage() {
                     {cloakLinks && (
                       <div className="flex flex-col gap-1">
                         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                          Every link below (found across all bodies, including image/asset URLs — there&apos;s no way yet to
-                          exclude one) will be rewritten to its own /r/&lt;token&gt; redirect on this domain — a plain
-                          redirect counter (no per-recipient tracking), created at send setup. The numbers here match the
-                          numbered placeholders shown in Preview below, so you can confirm exactly which link is which.
+                          Pick which links actually get cloaked — image/asset URLs are unchecked by default since
+                          cloaking those usually isn&apos;t wanted. The numbers here match the numbered placeholders
+                          shown in Preview below (unchecked links show their real URL there, exactly like the real send).
                         </p>
                         <ol className="mt-1 flex flex-col gap-0.5 text-xs">
-                          {links.map((url, i) => (
-                            <li key={url} className="flex items-baseline gap-1.5 font-mono">
-                              <span className="text-zinc-400">{i + 1}.</span>
-                              <span className="truncate text-zinc-600 dark:text-zinc-300" title={url}>{url}</span>
-                              <span className="shrink-0 text-zinc-400">→ /r/link-{i + 1}</span>
-                            </li>
-                          ))}
+                          {bodyLinks.map((l, i) => {
+                            const checked = cloakedUrls.has(l.url);
+                            return (
+                              <li key={l.url} className="flex items-baseline gap-1.5 font-mono">
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={() => toggleLink(l.url)}
+                                  className="h-3.5 w-3.5 shrink-0 accent-zinc-900"
+                                />
+                                <span className="text-zinc-400">{i + 1}.</span>
+                                <span
+                                  className={`truncate ${checked ? "text-zinc-600 dark:text-zinc-300" : "text-zinc-400 dark:text-zinc-500"}`}
+                                  title={l.url}
+                                >
+                                  {l.url}
+                                </span>
+                                {l.likelyImage && (
+                                  <span className="shrink-0 rounded border border-zinc-300 px-1 text-[10px] font-sans text-zinc-400 dark:border-zinc-700">
+                                    image
+                                  </span>
+                                )}
+                                <span className="shrink-0 text-zinc-400">
+                                  {checked ? `→ /r/link-${i + 1}` : "— not cloaked"}
+                                </span>
+                              </li>
+                            );
+                          })}
                         </ol>
                       </div>
                     )}
@@ -829,7 +900,9 @@ export default function CampaignsPage() {
                       const sampleVars = sampleRecipientVars();
                       const previewSubject = content.subjects.length > 0 ? renderMerge(content.subjects[subjIndex], sampleVars) : "";
                       const bodyRaw = content.bodies.length > 0 ? renderMerge(content.bodies[bodyIndex], sampleVars) : "";
-                      const previewBody = cloakLinks ? cloakPreviewLinks(bodyRaw) : bodyRaw;
+                      const previewBody = cloakLinks
+                        ? cloakPreviewLinks(bodyRaw, bodyLinks.map((l) => l.url), cloakedUrls)
+                        : bodyRaw;
                       const sourceLabel =
                         recipientSource === "leads" && selectedLeadIds.length > 0
                           ? "the first selected lead's real fields"
@@ -843,10 +916,11 @@ export default function CampaignsPage() {
                           </div>
                           {cloakLinks && (
                             <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                              Links below show as numbered /r/link-N placeholders matching the list above — they&apos;re
-                              inert in this sandboxed preview (won&apos;t navigate on click, and the real /r/&lt;token&gt;
-                              only exists once the campaign is created), so use the numbers to confirm the right link is
-                              covered rather than clicking through.
+                              Checked links below show as numbered /r/link-N placeholders (matching the list above);
+                              unchecked links show their real raw URL — exactly what the real send will do. Placeholders
+                              are inert in this sandboxed preview (won&apos;t navigate on click, and the real
+                              /r/&lt;token&gt; only exists once the campaign is created) — use the numbers to confirm
+                              the right link is covered rather than clicking through.
                             </p>
                           )}
                           <iframe
