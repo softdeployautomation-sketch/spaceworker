@@ -17,10 +17,25 @@ const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days
 const encoder = new TextEncoder();
 const secretKey = () => encoder.encode(env.sessionSecret);
 
+// Task 45 — a session can be "full" (everything that exists today, unchanged)
+// or "license_only" (can see and manage their EXE licenses, nothing else — the
+// narrow session issued by the license-claim flow so an EXE-only buyer never
+// gets the whole paid web product for free). `scope` is OPTIONAL in the input
+// payload so every existing call site (login, signup, verify) keeps working
+// unchanged — an omitted scope defaults to "full". It lives in the JWT itself,
+// so middleware can resolve it cheaply (cookie read + one HMAC, no DB round
+// trip) for the 99% of users who are "full".
+export type SessionScope = "full" | "license_only";
+
 export interface SessionPayload {
   sub: string; // user id
   email: string;
   emailVerified: boolean;
+  scope?: SessionScope; // omitted => "full" (today's behaviour, unchanged)
+}
+
+function normalizeScope(raw: unknown): SessionScope {
+  return raw === "license_only" ? "license_only" : "full";
 }
 
 export async function hashPassword(password: string): Promise<string> {
@@ -38,6 +53,7 @@ export async function createSessionToken(payload: SessionPayload): Promise<strin
   return new SignJWT({
     email: payload.email,
     emailVerified: payload.emailVerified,
+    scope: normalizeScope(payload.scope),
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(payload.sub)
@@ -60,6 +76,10 @@ export async function verifySessionToken(token: string): Promise<SessionPayload 
       sub: payload.sub,
       email: String(payload.email ?? ""),
       emailVerified: Boolean(payload.emailVerified),
+      // Task 45 — an older token issued before `scope` existed has no scope
+      // claim, which must read as "full" so a pre-existing session keeps working
+      // exactly as it did before this change.
+      scope: normalizeScope(payload.scope),
     };
   } catch {
     return null;

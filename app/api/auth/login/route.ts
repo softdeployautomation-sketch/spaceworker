@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { setSessionCookie, verifyPassword } from "@/lib/auth";
+import { setSessionCookie, verifyPassword, type SessionScope } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 
@@ -60,10 +60,23 @@ export async function POST(request: Request) {
     );
   }
 
+  // Task 45 — decide the session scope at sign-in time, from the user's CURRENT
+  // state rather than a sticky flag. Normal accounts (signed up with a real
+  // password, acceptedTermsAt set) are always "full" exactly as before. Only the
+  // inline-created EXE buyer (acceptedTermsAt null — never went through signup,
+  // only ever created server-side by findOrCreateUser with a random password) is
+  // ever license_only, and only while they remain tier 0. Physically buying the
+  // web subscription bumps tier to 1 (bumpWebTier), so the NEXT time they log in
+  // normally with the real password they've since set, they're naturally upgraded
+  // to "full" — no special-case code, no sticky flag that never changes.
+  const scope: SessionScope =
+    user.acceptedTermsAt === null && user.tier < 1 ? "license_only" : "full";
+
   await setSessionCookie({
     sub: user.id,
     email: user.email,
     emailVerified: true,
+    scope,
   });
   return NextResponse.json({ ok: true });
 }

@@ -3,6 +3,8 @@ import Link from "next/link";
 
 import { CopyButton } from "@/components/copy-button";
 import { Badge, Card } from "@/components/ui";
+import { LicenseUpgradeForm } from "@/components/license-upgrade-form";
+import { getSession } from "@/lib/auth";
 import { getCurrentUser } from "@/lib/session-user";
 import { prisma } from "@/lib/prisma";
 import { getProduct } from "@/lib/products";
@@ -13,9 +15,19 @@ export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
 // Task 42, item 6 — the post-purchase license page. This is where the EXE term
 // (a real 6-month expiry) is first disclosed on a screen, alongside the honest
 // "download coming soon" status. Deliberately NOT linked before a purchase.
+//
+// Task 45 — for a license_only session (an EXE-only buyer) this is the ONLY
+// dashboard page they can reach, so it must carry the honest "want the full web
+// app too?" up-sell plus the password on-ramp to becoming a real customer. The
+// restriction itself is enforced centrally by proxy.ts (Next.js 16 renamed the
+// middleware.ts convention to proxy.ts), not by hiding a nav
+// link.
 export default async function LicensesPage() {
   const user = await getCurrentUser();
   if (!user) return null; // dashboard layout gates auth anyway
+
+  const session = await getSession();
+  const isLicenseOnly = session?.scope === "license_only";
 
   const licenses = await prisma.exeLicense.findMany({
     where: { userId: user.id },
@@ -28,6 +40,37 @@ export default async function LicensesPage() {
       <p className="mt-2 text-sm text-fg-muted">
         Your desktop-app license keys. Each is linked to the product you bought.
       </p>
+
+      {isLicenseOnly && (
+        <div className="mt-6 space-y-5">
+          <Card className="p-5">
+            <h2 className="text-lg font-semibold text-fg">
+              Want the full web app too?
+            </h2>
+            <p className="mt-2 text-sm text-fg-muted">
+              Your desktop licenses are all here. The web app — private browser,
+              lead extraction, campaigns, automations and the AI agent — is a
+              separate subscription.
+            </p>
+            <Link
+              href="/pricing"
+              className="mt-3 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              Subscribe →
+            </Link>
+          </Card>
+
+          <Card className="p-5">
+            <h2 className="text-lg font-semibold text-fg">Set a password</h2>
+            <p className="mt-1 text-sm text-fg-muted">
+              Choose a password so you can sign in to a full account later.
+            </p>
+            <div className="mt-4 max-w-sm">
+              <LicenseUpgradeForm />
+            </div>
+          </Card>
+        </div>
+      )}
 
       {licenses.length === 0 ? (
         <Card className="mt-6 p-6">

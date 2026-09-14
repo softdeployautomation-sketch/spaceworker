@@ -359,6 +359,16 @@ model ExeLicense {
   product    String // matches Payment.product
   licenseKey String   @unique
   issuedAt   DateTime @default(now())
+  // Task 45 — a short-lived, single-use claim token backing the "view my
+  // license" link emailed to the buyer. Only the SHA-256 hash of the random half
+  // is stored (never the raw token), `ExpiresAt` is set at issuance, and
+  // `ConsumedAt` flips on a successful claim to make it single-use. All three are
+  // null for licenses issued before this feature existed (no emailed claim link
+  // for them — a pre-existing buyer still reaches /dashboard/licenses by logging
+  // in as a real customer).
+  licenseClaimTokenHash   String?   @unique
+  licenseClaimTokenExpiresAt DateTime?
+  licenseClaimTokenConsumedAt DateTime?
 
   @@index([userId])
 }

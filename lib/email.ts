@@ -129,12 +129,22 @@ export function exeLicenseIssuedEmailHtml(opts: {
   productName: string;
   licenseKey: string;
   expiresAt: Date;
+  // Task 45 — single-use "view my license" claim link. When present (always, for
+  // newly issued licenses) it lets an EXE-only buyer prove email ownership and
+  // reach a narrow license_only session where they can see this key again.
+  claimUrl?: string;
 }): string {
   const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
     year: "numeric",
     month: "long",
     day: "numeric",
   });
+  const claimSection = opts.claimUrl
+    ? `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Need to see your key again later? Open this link to view your licenses:<br/>
+        <a href="${opts.claimUrl}" style="color:#4f46e5;word-break:break-all;">${opts.claimUrl}</a>
+      </p>`
+    : "";
   return `<!doctype html>
 <html>
   <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
@@ -156,6 +166,7 @@ export function exeLicenseIssuedEmailHtml(opts: {
         <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">Your license key</p>
         <p style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#111827;margin:0;">${opts.licenseKey}</p>
       </div>
+      ${claimSection}
       <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:12px 0 0;">
         Keep this email safe — it contains your only copy of the key.
       </p>

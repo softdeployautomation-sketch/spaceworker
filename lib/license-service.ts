@@ -3,7 +3,13 @@ import "server-only";
 import { db } from "./db";
 import { exeLicenseIssuedEmailHtml, sendEmail } from "./email";
 import { generateLicenseKey } from "./exe-license";
+import {
+  generateLicenseClaimToken,
+  hashLicenseClaimToken,
+  LICENSE_CLAIM_TTL_MS,
+} from "./license-claim";
 import { getProduct } from "./products";
+import { env } from "./env";
 
 // Task 42, item 5 — the one place that finalizes an APPROVED payment into its
 // product's consequence. All three approval paths funnel through here:
@@ -66,7 +72,7 @@ async function issueExeLicense(payment: {
   // Storing the license is the source of truth; the email is the buyer's
   // disclosure of the real term. Store first so the dashboard/email can never
   // reference a key that doesn't exist — and so a failed send loses nothing.
-  await db.exeLicense.create({
+  const license = await db.exeLicense.create({
     data: {
       userId: payment.userId,
       paymentId: payment.id,
@@ -74,6 +80,22 @@ async function issueExeLicense(payment: {
       licenseKey,
     },
   });
+
+  // Task 45 — mint a single-use claim link so an EXE-only buyer (who may have no
+  // web account and no known password) can view their key by proving email
+  // ownership. The link resolves to a NARROW license_only session — never a full
+  // one. Storing happens with issuance so a failed email still leaves a working
+  // link the buyer can be re-sent later.
+  const claimToken = generateLicenseClaimToken();
+  const claimExpiresAt = new Date(Date.now() + LICENSE_CLAIM_TTL_MS);
+  await db.exeLicense.update({
+    where: { id: license.id },
+    data: {
+      licenseClaimTokenHash: hashLicenseClaimToken(claimToken),
+      licenseClaimTokenExpiresAt: claimExpiresAt,
+    },
+  });
+  const claimUrl = `${env.appBaseUrl}/api/exe-license/claim?token=${encodeURIComponent(claimToken)}`;
 
   // A real transactional email, unconditionally (not via notifyUser's
   // preference fan-out) — this is the buyer's disclosure moment for the term,
@@ -86,6 +108,7 @@ async function issueExeLicense(payment: {
         productName: product.name,
         licenseKey,
         expiresAt,
+        claimUrl,
       }),
       eventType: "exe_license_issued",
     });
