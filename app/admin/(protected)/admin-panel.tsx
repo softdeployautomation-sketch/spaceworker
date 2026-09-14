@@ -728,9 +728,9 @@ type AdmissionMechanism = { enabled: boolean; maxConcurrent: number; active: num
 type AdmissionControlState = Record<"dispatchLight" | "dispatchHeavy" | "browserSessions", AdmissionMechanism>;
 
 const ADMISSION_ROWS: Array<{ key: keyof AdmissionControlState; label: string; hint: string }> = [
-  { key: "dispatchLight", label: "Search dispatch — light lane", hint: "Quick/shallow extraction jobs. Each running job is a real Playwright + Chromium process." },
-  { key: "dispatchHeavy", label: "Search dispatch — heavy lane", hint: "Deep/large extraction jobs. Same real per-job Chromium cost as the light lane." },
-  { key: "browserSessions", label: "Interactive browser sessions", hint: "Each active session is a full Neko browser-streaming container." },
+  { key: "dispatchLight", label: "Lead extraction searches — light lane", hint: "How many searches using DuckDuckGo/Bing can run at once. Each running search is a real Playwright + Chromium process." },
+  { key: "dispatchHeavy", label: "Lead extraction searches — heavy lane", hint: "How many Google-engine searches can run at once (kept separate — Google is the slower, more resource-hungry engine). Same real per-job Chromium cost as the light lane." },
+  { key: "browserSessions", label: "Interactive browser sessions", hint: "How many live browser sessions can be open at once. Each is a full Neko browser-streaming container." },
 ];
 
 function AdmissionControlPanel() {
