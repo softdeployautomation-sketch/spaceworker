@@ -105,6 +105,14 @@ export interface LicensePayload {
   plan: string;
   issued_at: string;
   expires_at: string;
+  // Optional machine binding — READ/validated by lib/exe-license-validator.ts (a
+  // faithful port of validator.py). The server NEVER emits these fields at
+  // issuance time: Task 27 Part A binds the machine client-side at first
+  // activation instead. They only appear on keys minted machine-bound by the old
+  // standalone generator (machine_id / machine_ids), which the EXE validator must
+  // still be able to honour.
+  machine_id?: string;
+  machine_ids?: string[];
 }
 
 /**
