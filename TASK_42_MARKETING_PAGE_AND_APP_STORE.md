@@ -71,6 +71,8 @@ No `machine_id`/`machine_ids` at issuance time here (per Part A: "no machine_id 
 
 **`days_valid` = 180 (6 months) — decided 2026-09-14, supersedes Part A's original "one-time perpetual license" note.** This is a real, deliberate business decision, not an oversight: every EXE license is now a 6-month term, not perpetual. **The 6-month term is NOT shown anywhere on the public store/pricing page** (the mockup and item 1 above deliberately show only a price, "once," with no duration) — it's disclosed to the buyer for the first time on the post-purchase license page/email (item 6), after the purchase is already made. Implement exactly this: nothing pre-purchase mentions a term; the license page and delivery email state the 6-month expiry (and the actual `expires_at` date) clearly and unambiguously once the buyer is there. New `lib/exe-license.ts` module, its own signing secret as a new required-in-prod env var (`EXE_LICENSE_SECRET` — never reuse `INTERNAL_BEARER_TOKEN` or any other existing secret for this; a leaked key-signing secret can forge unlimited licenses).
 
+**Future, not this task**: once the real EXE build exists (Task 27 Part A), a term-selection step gets added before checkout — the buyer can extend past the 6-month default (a year or more) for a small discount, on a page shown right after clicking "pay for license." Flagged in Part A's own doc; this task's fixed 180-day flow is the correct, complete implementation for now.
+
 New model to store issued keys:
 ```prisma
 model ExeLicense {
