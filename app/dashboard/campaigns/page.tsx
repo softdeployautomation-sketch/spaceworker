@@ -97,6 +97,11 @@ export default function CampaignsPage() {
   // CURRENT draft subjects/bodies through renderMerge() so a user sees exactly
   // what will send (including missing {{merge}} gaps like "Hi ,") before creating.
   const [showPreview, setShowPreview] = useState(false);
+  // Which subject/body to render in the Preview panel, when more than one exists
+  // (subjects and bodies rotate on independent indexes — a fixed subjects[0]/
+  // bodies[0] preview couldn't show what a recipient on rotation slot 2+ gets).
+  const [previewSubjectIndex, setPreviewSubjectIndex] = useState(0);
+  const [previewBodyIndex, setPreviewBodyIndex] = useState(0);
   // Task 30, item 3 — opt-in link cloaking. Only offered when a body actually
   // contains http(s):// links; each unique link gets a /r/<token> redirect.
   const [cloakLinks, setCloakLinks] = useState(false);
@@ -342,11 +347,22 @@ export default function CampaignsPage() {
 
   // Task 30, item 3 — for the create-modal preview only: when cloaking is on and a
   // body has http(s):// links, show what the mailed link will look like (a
-  // /r/<token> URL on this origin) using an obvious placeholder token. The REAL
-  // tokens only exist once creation happens (see createCampaign in lib/campaign-create.ts).
+  // /r/<token> URL on this origin). The REAL tokens only exist once creation
+  // happens (see createCampaign in lib/campaign-create.ts) — this preview uses a
+  // stable per-link NUMBER instead of a real token, numbered the SAME way as the
+  // legend in the cloak-links section (both derive from extractLinksClient over
+  // ALL bodies, so numbering matches however many bodies you're rotating through),
+  // so a body with several different links (a CTA plus an unrelated image src,
+  // say) shows which placeholder is which instead of every link collapsing into
+  // one indistinguishable "/r/xxxxxx".
   const PREVIEW_URL_RE = /https?:\/\/[^\s"'<>]+/g;
   function cloakPreviewLinks(html: string): string {
-    return html.replace(PREVIEW_URL_RE, `${window.location.origin}/r/xxxxxx`);
+    const order = extractLinksClient(validContent().bodies);
+    return html.replace(PREVIEW_URL_RE, (m) => {
+      const url = m.replace(/[.,;:!?]+$/, "").replace(/[)\]}>]+$/, "");
+      const i = order.indexOf(url);
+      return `${window.location.origin}/r/link-${i >= 0 ? i + 1 : "?"}`;
+    });
   }
 
   // Task 30, item 3 — for the create-modal UI: list the unique absolute http(s)
@@ -599,22 +615,9 @@ export default function CampaignsPage() {
               </div>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
-                <div className="flex items-center justify-between gap-2">
-                  <span>
-                    Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
-                  </span>
-                  {/* Task 30, item 1 — Preview the EXACT subject/body a recipient
-                      will get (real merge vars when a lead is picked, else empty
-                      vars so a missing-value gap like "Hi ," is visible at author
-                      time, not after a real send). */}
-                  <button
-                    type="button"
-                    onClick={() => setShowPreview(!showPreview)}
-                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
-                  >
-                    {showPreview ? "Hide preview" : "Preview"}
-                  </button>
-                </div>
+                <span>
+                  Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
+                </span>
                 <div className="mt-1 flex flex-wrap items-center gap-2">
                   {subjects.map((s, i) => (
                     <div key={i} className="inline-flex items-center gap-1.5">
@@ -748,46 +751,113 @@ export default function CampaignsPage() {
                       Cloak links (send via /r/&lt;token&gt; instead of the raw URL)
                     </label>
                     {cloakLinks && (
-                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                        {links.length} unique link{links.length === 1 ? "" : "s"} will be rewritten to a /r/&lt;token&gt; URL on this domain — a plain redirect
-                        counter (no per-recipient tracking), created at send setup.
-                      </p>
+                      <div className="flex flex-col gap-1">
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                          Every link below (found across all bodies, including image/asset URLs — there&apos;s no way yet to
+                          exclude one) will be rewritten to its own /r/&lt;token&gt; redirect on this domain — a plain
+                          redirect counter (no per-recipient tracking), created at send setup. The numbers here match the
+                          numbered placeholders shown in Preview below, so you can confirm exactly which link is which.
+                        </p>
+                        <ol className="mt-1 flex flex-col gap-0.5 text-xs">
+                          {links.map((url, i) => (
+                            <li key={url} className="flex items-baseline gap-1.5 font-mono">
+                              <span className="text-zinc-400">{i + 1}.</span>
+                              <span className="truncate text-zinc-600 dark:text-zinc-300" title={url}>{url}</span>
+                              <span className="shrink-0 text-zinc-400">→ /r/link-{i + 1}</span>
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
                     )}
                   </div>
                 );
               })()}
 
-              {/* Task 30, item 1 — inline Preview panel: the CURRENT draft subject
-                  and body rendered through renderMerge() with the real sample
-                  (or empty) merge variables, body shown as HTML the way a mail
-                  client renders it, in a sandboxed iframe (never
-                  dangerouslySetInnerHTML). Catches missing-{{merge}} gaps before
-                  the campaign is created. */}
-              {showPreview && (() => {
+              {/* Task 30, item 1 — inline Preview panel, kept next to Bodies/Cloak
+                  links (not up by Subject lines) so the toggle and the thing it
+                  toggles are in the same place. Subject/body selectors let you
+                  preview ANY rotation slot, not just index 0 — with 2+ subjects or
+                  bodies there was previously no way to see what recipients on a
+                  later rotation slot actually get. Renders the CURRENT draft
+                  through renderMerge() with real (or empty) sample merge
+                  variables, body shown as HTML the way a mail client renders it,
+                  in a sandboxed iframe (never dangerouslySetInnerHTML). */}
+              {(() => {
                 const content = validContent();
-                const sampleVars = sampleRecipientVars();
-                const previewSubject = content.subjects.length > 0 ? renderMerge(content.subjects[0], sampleVars) : "";
-                const bodyRaw = content.bodies.length > 0 ? renderMerge(content.bodies[0], sampleVars) : "";
-                const previewBody = cloakLinks ? cloakPreviewLinks(bodyRaw) : bodyRaw;
-                const sourceLabel =
-                  recipientSource === "leads" && selectedLeadIds.length > 0
-                    ? "the first selected lead's real fields"
-                    : "empty merge variables (shows raw gaps)";
+                const subjIndex = Math.min(previewSubjectIndex, Math.max(content.subjects.length - 1, 0));
+                const bodyIndex = Math.min(previewBodyIndex, Math.max(content.bodies.length - 1, 0));
                 return (
                   <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
-                    <div className="text-sm font-medium">
-                      Preview <span className="text-xs font-normal text-zinc-400">— rendered with {sourceLabel}</span>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowPreview(!showPreview)}
+                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+                      >
+                        {showPreview ? "Hide preview" : "Preview"}
+                      </button>
+                      {showPreview && content.subjects.length > 1 && (
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-500">
+                          Subject
+                          <select
+                            value={subjIndex}
+                            onChange={(e) => setPreviewSubjectIndex(Number(e.target.value))}
+                            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                          >
+                            {content.subjects.map((s, i) => (
+                              <option key={i} value={i}>{i + 1}. {s.slice(0, 40)}{s.length > 40 ? "…" : ""}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      {showPreview && content.bodies.length > 1 && (
+                        <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-500">
+                          Body
+                          <select
+                            value={bodyIndex}
+                            onChange={(e) => setPreviewBodyIndex(Number(e.target.value))}
+                            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                          >
+                            {content.bodies.map((b, i) => (
+                              <option key={i} value={i}>{i + 1}. {b.replace(/\s+/g, " ").slice(0, 40)}{b.length > 40 ? "…" : ""}</option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
                     </div>
-                    <div className="text-sm">
-                      <span className="text-xs font-medium text-zinc-500">Subject:</span>{" "}
-                      <span className="text-zinc-900 dark:text-zinc-100">{previewSubject || "—"}</span>
-                    </div>
-                    <iframe
-                      sandbox=""
-                      title="Email preview"
-                      className="h-64 w-full overflow-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-700"
-                      srcDoc={emailSrcDoc(previewBody)}
-                    />
+                    {showPreview && (() => {
+                      const sampleVars = sampleRecipientVars();
+                      const previewSubject = content.subjects.length > 0 ? renderMerge(content.subjects[subjIndex], sampleVars) : "";
+                      const bodyRaw = content.bodies.length > 0 ? renderMerge(content.bodies[bodyIndex], sampleVars) : "";
+                      const previewBody = cloakLinks ? cloakPreviewLinks(bodyRaw) : bodyRaw;
+                      const sourceLabel =
+                        recipientSource === "leads" && selectedLeadIds.length > 0
+                          ? "the first selected lead's real fields"
+                          : "empty merge variables (shows raw gaps)";
+                      return (
+                        <>
+                          <div className="text-xs font-normal text-zinc-400">— rendered with {sourceLabel}</div>
+                          <div className="text-sm">
+                            <span className="text-xs font-medium text-zinc-500">Subject:</span>{" "}
+                            <span className="text-zinc-900 dark:text-zinc-100">{previewSubject || "—"}</span>
+                          </div>
+                          {cloakLinks && (
+                            <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                              Links below show as numbered /r/link-N placeholders matching the list above — they&apos;re
+                              inert in this sandboxed preview (won&apos;t navigate on click, and the real /r/&lt;token&gt;
+                              only exists once the campaign is created), so use the numbers to confirm the right link is
+                              covered rather than clicking through.
+                            </p>
+                          )}
+                          <iframe
+                            sandbox=""
+                            title="Email preview"
+                            className="h-64 w-full overflow-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-700"
+                            srcDoc={emailSrcDoc(previewBody)}
+                          />
+                        </>
+                      );
+                    })()}
                   </div>
                 );
               })()}
