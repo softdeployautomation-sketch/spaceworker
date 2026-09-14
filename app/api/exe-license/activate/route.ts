@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getMachineId } from "@/lib/machine-id";
 import { saveActivation } from "@/lib/license-state";
 
@@ -11,8 +12,14 @@ import { saveActivation } from "@/lib/license-state";
 // desktop EXE's local runtime: it validates the key against the embedded signing
 // secret (no server round-trip), checks the emailed `licensee` against the key's
 // payload (the light anti-sharing/usability check Part A specifies), then binds
-// the CURRENT machine id and persists the activation locally.
+// the CURRENT machine id and persists the activation locally. Gated by
+// isLocalExeRuntime() (see lib/exe-runtime.ts) — fail-closed, never reachable on
+// the deployed web server.
 export async function POST(req: Request) {
+  if (!isLocalExeRuntime()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   let body: { licenseKey?: unknown; email?: unknown };
   try {
     body = await req.json();

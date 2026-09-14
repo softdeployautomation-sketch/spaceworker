@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getMachineId, validateMachineId } from "@/lib/machine-id";
 import {
   readLocalState,
@@ -12,15 +13,21 @@ import {
 } from "@/lib/license-state";
 
 // POST /api/exe-license/status — the LOCAL licensing gate status, read from this
-// machine's filesystem (no database, no auth). This is the same code that runs
-// inside the desktop EXE's bundled local runtime; it is only mounted by the EXE
-// shell, never by the hosted web dashboard.
+// machine's filesystem (no database, no session auth — see lib/exe-runtime.ts
+// for why that's safe: SPACEWORKER_LOCAL_EXE gates this to the Tauri-bundled
+// local runtime only, fail-closed, never set on the deployed web server). This
+// is the same code that runs inside the desktop EXE's bundled local runtime; it
+// is only mounted by the EXE shell, never by the hosted web dashboard.
 //
 // Returns the gate decision the shared <LicenseGate> component renders on:
 //   - licensed       -> user has an active, machine-valid key -> show dashboard
 //   - inTrial        -> unlicensed but first launch was < 24h ago -> show dashboard
 //   - otherwise      -> trial exhausted -> show the activation gate
 export async function POST() {
+  if (!isLocalExeRuntime()) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
   const state = await readLocalState();
 
   // 1. A stored activation wins if the key is still valid on THIS machine.
