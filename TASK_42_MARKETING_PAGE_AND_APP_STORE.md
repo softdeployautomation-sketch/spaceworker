@@ -8,6 +8,10 @@
 
 Resolved via AskUserQuestion the same day: **real checkout, fake downloads** — build the full store with real pricing/checkout for both the web subscription and the 4 EXE tiers (using the existing BTC/USDT manual-verification flow), but what's delivered immediately after a purchase is approved is a real, valid, already-active license key — not yet a working download, since the EXE builds don't exist. This is an explicit, accepted business tradeoff (collecting payment before the product is fully ready) — the implementation must be **honest about it**, never implying an instant download that isn't there.
 
+## Visual reference — build against this, don't design from scratch
+
+A static visual mockup of the redesigned landing page (hero, capabilities, the store section, footer) is published here: **https://claude.ai/code/artifact/2ce49c73-865c-4581-a372-28dd6f582fc6** — built from this codebase's actual design tokens (the "Night Studio" warm-amber palette in `app/globals.css`, Sora/Karla fonts from `app/layout.tsx`, the exact Button/Card/Badge treatment from `components/ui.tsx`), not invented from scratch. Match it structurally (section order, the store's card layout, the footer links) and match the extracted tokens exactly for anything the mockup doesn't spell out — don't reinterpret the brand. `[PRICE]`/`[YOUR PRICE]` placeholders in the mockup map to the `AdminSettings` fields in item 2 below; real copy elsewhere is draft, adjust freely. Reuse the real `Button`/`Card`/`Badge` components from `components/ui.tsx` in the actual implementation rather than re-styling raw elements — the mockup used inline styles only because it's a static HTML preview outside the Next.js app.
+
 ## Why the current landing page can't just be "redesigned"
 
 `app/page.tsx` today is a 58-line placeholder: one hero line, a generic capability grid (private browser / lead extraction / outreach / browser profiles), two links (Sign up / Sign in). No pricing, no agent/automation mention, no store. This is closer to a from-scratch build than an edit.
@@ -85,6 +89,21 @@ model ExeLicense {
 ## 6. Post-purchase UX — honest, not deceptive
 
 A new small section on the dashboard (e.g. `app/dashboard/licenses/page.tsx`) listing the user's `ExeLicense` rows: product name, the license key (shown in full — it's theirs, and copyable), issued date, and a clear status line: **"Download coming soon — we'll email you the moment the desktop app is ready. Your key is already active and will work immediately once you download."** Also send this same message as a real transactional email (`lib/email.ts`'s `sendEmail`) the moment the license is issued, using the new `notifyUser` dispatcher from Task 39 if that's landed by the time this starts (email channel only makes sense here — Telegram/agent-chat notification for "your license is ready" is a reasonable bonus if trivial to include, skip it if not).
+
+## 7. Privacy Policy — genuinely missing, not just unlinked
+
+Confirmed 2026-09-14: `app/terms/page.tsx` (111 lines, real content, `Last updated: September 2026`) exists and is linked from Settings/signup, but there is **no Privacy Policy page anywhere** — only one incidental mention of "privacy" inside the Terms page's exit-node disclaimer. This app collects and stores genuinely sensitive data (extracted lead contact info, encrypted SMTP mailbox credentials, browser-profile fingerprints, BTC/USDT transaction hashes, and — once Task 39 is used — a linked Telegram chat id), and now takes payment for products (Task 42 itself) before delivering them — a real Privacy Policy is overdue, not optional polish.
+
+Write `app/privacy/page.tsx`, same structure/tone/component pattern as `app/terms/page.tsx` (same header, same `<section>` rhythm, same "Last updated" line, linked from the new footer). Cover, grounded in what this codebase actually does — don't write generic boilerplate:
+- What's collected (account email; extracted lead data; SMTP credentials, stored AES-256-GCM encrypted, never sent anywhere but the user's own mailbox provider; browser-profile data; payment tx hashes; Telegram chat id if linked; AI usage attributed via `external_user_id` per Task 27/31's Channelry relay).
+- That cold-outreach content and recipient lists are the USER's own data and business responsibility, not SpaceWorker's — mirrors the Terms page's existing "not an anonymity product" framing for the equivalent disclaimer on the sending side.
+- Retention (check `app/api/internal/retention-sweep/route.ts` for what's actually auto-deleted today and describe that truthfully, don't invent a policy the code doesn't implement).
+- That the BTC/USDT flow never touches card data (no PCI scope) and Telegram linking is opt-in and revocable from Settings.
+- A real contact/request-deletion path (an email address — ask the owner which one, or reuse whatever `env.emailFrom`/support contact already exists elsewhere in the app).
+
+## 8. A standalone `/pricing` route
+
+The mockup's store section anchors to `#store` on the homepage — also give it a real `/pricing` route (can render the same store component) so it's linkable/indexable on its own, matching the footer's "Pricing" link in the mockup.
 
 ## Explicitly out of scope
 
