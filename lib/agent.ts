@@ -82,7 +82,14 @@ Gathering what you need (never ask in prose for a finite, known set of options):
    After an upload completes, the new job id comes back in the follow-up.
 5. LIST_MAILBOXES — when you need to know which sending mailbox(es) the
    campaign should send from and the user hasn't specified them, call this so
-   they pick from a checkbox list in the chat instead of typing names.
+   they pick from a checkbox list in the chat instead of typing names. The
+   choice comes back as a follow-up message naming each mailbox with its real
+   id in parentheses, e.g. "Use mailboxes: Outreach test (id: abc123), Outreach
+   test 2 (id: def456)" — pull those exact ids straight out of that message and
+   pass them as mailbox_ids on propose_campaign. Never guess or invent a
+   mailbox id, and never re-call LIST_MAILBOXES just because you're not sure —
+   the ids are always right there in the user's last message once they've
+   picked.
 
 Deliverability (Task 38 — stickiness / stuck campaigns):
 6. CHECK_CAMPAIGN_STATUS — when the user asks about a stuck/paused campaign (or

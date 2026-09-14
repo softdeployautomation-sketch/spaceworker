@@ -1765,7 +1765,7 @@ function InlineMailboxPicker({
     else next.add(id);
     setSelected(next);
   };
-  const labels = mailboxes.filter((m) => selected.has(m.id)).map((m) => m.label);
+  const chosen = mailboxes.filter((m) => selected.has(m.id));
   return (
     <div className="mt-2 flex flex-col gap-1.5">
       {mailboxes.length === 0 ? (
@@ -1790,7 +1790,17 @@ function InlineMailboxPicker({
             type="button"
             variant="secondary"
             disabled={selected.size === 0}
-            onClick={() => onSend(`Use mailboxes: ${labels.join(", ")}`)}
+            onClick={() =>
+              // Same pattern as InlineLeadSourcePicker's "Use search job {id} (...)"
+              // — the model can't turn a display label back into a real mailbox id,
+              // so the id has to travel in the message text itself (this was the
+              // actual bug: the old text sent labels only, so propose_campaign could
+              // never get real mailbox_ids and the agent looped back to this same
+              // picker instead of moving on).
+              onSend(
+                `Use mailboxes: ${chosen.map((m) => `${m.label} (id: ${m.id})`).join(", ")}`
+              )
+            }
           >
             Send with {selected.size} mailbox{selected.size === 1 ? "" : "es"}
           </Button>
