@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { createPortal } from "react-dom";
-import { Badge } from "@/components/ui";
+import { Badge, Spinner } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
 import { timeAgo } from "@/lib/format-date";
 import { useConfirm } from "@/components/confirm-provider";
+import { LocalExtractPage } from "./local-extract";
 
 type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
 
@@ -103,7 +104,7 @@ const TEMPLATES: { id: Template; label: string; description: string }[] = [
 
 const EXPERIENCE_LEVELS = ["", "Junior", "Mid", "Senior"];
 
-export default function ExtractPage() {
+export function WebExtractPage() {
   const confirm = useConfirm();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
@@ -1408,6 +1409,37 @@ export default function ExtractPage() {
         })(),
         document.body,
       )}
+    </div>
+  );
+}
+
+// Dispatcher: the hosted web app shows the Postgres/worker job UI above
+// (WebExtractPage); the local Extractor EXE shows the self-contained
+// local-engine UI (LocalExtractPage). Which mode we're in is decided by pinging
+// /api/exe/extract — it 200s only inside the local runtime (gated by
+// isLocalExeRuntime), 404s on the hosted web app.
+export default function ExtractPage() {
+  const [mode, setMode] = useState<"loading" | "web" | "local">("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/exe/extract", { method: "GET" })
+      .then((r) => {
+        if (!cancelled) setMode(r.ok ? "local" : "web");
+      })
+      .catch(() => {
+        if (!cancelled) setMode("web");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (mode === "local") return <LocalExtractPage />;
+  if (mode === "web") return <WebExtractPage />;
+  return (
+    <div className="flex min-h-[40vh] items-center justify-center py-16">
+      <Spinner className="text-brand-600" />
     </div>
   );
 }
