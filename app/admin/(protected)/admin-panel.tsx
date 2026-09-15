@@ -332,7 +332,9 @@ function PaymentsTab() {
                 <tr key={p.id}>
                   <td className="px-4 py-3">{p.user.email}</td>
                   <td className="px-4 py-3">{PRODUCT_LABELS[p.product] ?? p.product}</td>
-                  <td className="px-4 py-3 uppercase">{p.kind === "btc" ? "BTC" : "USDT"}</td>
+                  <td className="px-4 py-3 uppercase">
+                    {p.kind === "btc" ? "BTC" : p.kind === "usdt_erc20" ? "USDT (ERC20)" : "USDT (TRC20)"}
+                  </td>
                   <td className="px-4 py-3">${p.amountUsd.toFixed(2)}</td>
                   <td className="max-w-[160px] px-4 py-3 font-mono text-xs">
                     {p.txHash ? (
@@ -380,6 +382,7 @@ function WalletsTab() {
   const [loaded, setLoaded] = useState(false);
   const [btc, setBtc] = useState("");
   const [usdt, setUsdt] = useState("");
+  const [usdtErc20, setUsdtErc20] = useState("");
   const [prices, setPrices] = useState<Record<string, string>>({});
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -391,6 +394,7 @@ function WalletsTab() {
       if (res.ok) {
         setBtc(data.btcWallet ?? "");
         setUsdt(data.usdtWallet ?? "");
+        setUsdtErc20(data.usdtErc20Wallet ?? "");
         const next: Record<string, string> = {};
         for (const row of WALLET_PRICE_ROWS) next[row.field] = String(data[row.field] ?? "");
         setPrices(next);
@@ -406,7 +410,11 @@ function WalletsTab() {
 
   async function save() {
     setMessage(null);
-    const payload: Record<string, unknown> = { btcWallet: btc.trim(), usdtWallet: usdt.trim() };
+    const payload: Record<string, unknown> = {
+      btcWallet: btc.trim(),
+      usdtWallet: usdt.trim(),
+      usdtErc20Wallet: usdtErc20.trim(),
+    };
     for (const row of WALLET_PRICE_ROWS) {
       const num = Number(prices[row.field]);
       if (!Number.isFinite(num) || num <= 0) {
@@ -456,7 +464,7 @@ function WalletsTab() {
           />
 
           <label className="mt-4 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            USDT-TRC20 wallet address
+            USDT-TRC20 wallet address (Tron)
           </label>
           <input
             type="text"
@@ -465,6 +473,22 @@ function WalletsTab() {
             placeholder="T…"
             className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-mono outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
           />
+
+          <label className="mt-4 block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+            USDT-ERC20 wallet address (Ethereum)
+          </label>
+          <input
+            type="text"
+            value={usdtErc20}
+            onChange={(e) => setUsdtErc20(e.target.value)}
+            placeholder="0x…"
+            className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-mono outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <p className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+            No automated on-chain verification yet for this chain — ERC20 payments always go to manual review.
+            Set this before buyers try to pay with it — checkout doesn&apos;t hide the option when it&apos;s
+            blank, it just fails at submit with &quot;Wallet not configured.&quot;
+          </p>
 
           <div className="mt-5 border-t border-zinc-200 pt-4 dark:border-zinc-700">
             {WALLET_PRICE_ROWS.map((row) => (

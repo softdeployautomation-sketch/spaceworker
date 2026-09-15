@@ -3,10 +3,10 @@ import { getSession } from "@/lib/session";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { getProduct, WEB_SUBSCRIPTION } from "@/lib/products";
 
-const KINDS = ["btc", "usdt_trc20"] as const;
+const KINDS = ["btc", "usdt_trc20", "usdt_erc20"] as const;
 type Kind = (typeof KINDS)[number];
 
-// GET /api/billing/checkout?kind=btc|usdt_trc20&product=<productId>
+// GET /api/billing/checkout?kind=btc|usdt_trc20|usdt_erc20&product=<productId>
 // Returns payment instructions + wallet address + the per-product price. The
 // Payment row is created on submit.
 //
@@ -37,7 +37,12 @@ export async function GET(req: NextRequest) {
   }
 
   const settings = await getAdminSettings();
-  const toAddress = kind === "btc" ? settings.btcWallet : settings.usdtWallet;
+  const toAddress =
+    kind === "btc"
+      ? settings.btcWallet
+      : kind === "usdt_erc20"
+        ? settings.usdtErc20Wallet
+        : settings.usdtWallet;
   if (!toAddress) {
     return NextResponse.json({ error: "Wallet not configured" }, { status: 400 });
   }

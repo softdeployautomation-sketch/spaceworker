@@ -14,7 +14,7 @@ type Product = {
   priceUsd: number;
 };
 
-type Kind = "btc" | "usdt_trc20";
+type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
 
 type CheckoutInfo = {
   kind: string;
@@ -241,6 +241,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
               {[
                 { id: "btc", label: "Bitcoin" },
                 { id: "usdt_trc20", label: "USDT (TRC-20)" },
+                { id: "usdt_erc20", label: "USDT (ERC-20)" },
               ].map((opt) => (
                 <button
                   key={opt.id}

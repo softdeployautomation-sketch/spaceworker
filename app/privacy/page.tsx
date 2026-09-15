@@ -96,7 +96,7 @@ export default function PrivacyPage() {
             <h2 className="text-lg font-semibold text-fg">4. Payments never touch card data</h2>
             <p className="mt-2 text-fg-muted">
               We do not accept, store, or process any credit-card data — there is no PCI scope.
-              Purchases are paid with Bitcoin or USDT-TRC20 directly to an address we provide,
+              Purchases are paid with Bitcoin or USDT (TRC-20 or ERC-20) directly to an address we provide,
               and we only record the transaction hash to match the payment to your license.
             </p>
           </section>

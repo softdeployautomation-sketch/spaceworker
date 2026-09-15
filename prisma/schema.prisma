@@ -77,7 +77,12 @@ model AdminSetting {
   id           String   @id @default("singleton")
   updatedAt    DateTime @updatedAt
   btcWallet    String?
-  usdtWallet   String?
+  usdtWallet   String? // USDT-TRC20 (Tron) — the original/default USDT chain
+  // USDT-ERC20 (Ethereum) — a second USDT wallet so buyers on Ethereum-native
+  // exchanges (which often don't support Tron withdrawals) can pay directly
+  // instead of needing to bridge/swap first. Independent from usdtWallet —
+  // both can be configured at once, admin picks which chains are live.
+  usdtErc20Wallet String?
   // Task 42 — one price per product sold on the store/landing page (all real
   // launch prices decided 2026-09-14, still admin-adjustable at runtime). The
   // old planPriceUsd field was renamed to webSubscriptionPriceUsd (same role,

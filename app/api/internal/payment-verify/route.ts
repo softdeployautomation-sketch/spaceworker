@@ -18,8 +18,15 @@ export async function POST(req: Request) {
   // entirely: there is nothing to look up on-chain, and letting them fall
   // through to the "not found" -> 24h auto-reject path below would silently
   // reject a payment before an admin ever saw it.
+  //
+  // Also excludes kind "usdt_erc20" — there is no automated ERC20 verifier
+  // (verifyUsdtPayment only covers TRC20/Tron via Tronscan). Without this
+  // exclusion, every ERC20 payment would be checked against the WRONG chain,
+  // always read as "not found," and silently auto-reject after 24h before an
+  // admin ever saw it — the exact bug the null-txHash exclusion above already
+  // exists to prevent, just for a different reason.
   const pending = await prisma.payment.findMany({
-    where: { status: "pending", txHash: { not: null } },
+    where: { status: "pending", txHash: { not: null }, kind: { not: "usdt_erc20" } },
     orderBy: { createdAt: "asc" },
   });
 

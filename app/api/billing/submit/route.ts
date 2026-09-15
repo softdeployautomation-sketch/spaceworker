@@ -9,7 +9,7 @@ import { handleApprovedPayment } from "@/lib/license-service";
 import { hashPassword } from "@/lib/auth";
 import { getProduct, WEB_SUBSCRIPTION } from "@/lib/products";
 
-const KINDS = ["btc", "usdt_trc20"] as const;
+const KINDS = ["btc", "usdt_trc20", "usdt_erc20"] as const;
 type Kind = (typeof KINDS)[number];
 
 function isEmail(v: unknown): v is string {
@@ -75,7 +75,12 @@ export async function POST(req: Request) {
   }
 
   const settings = await getAdminSettings();
-  const toAddress = paymentKind === "btc" ? settings.btcWallet : settings.usdtWallet;
+  const toAddress =
+    paymentKind === "btc"
+      ? settings.btcWallet
+      : paymentKind === "usdt_erc20"
+        ? settings.usdtErc20Wallet
+        : settings.usdtWallet;
   if (!toAddress) {
     return NextResponse.json({ error: "Wallet not configured" }, { status: 400 });
   }
@@ -109,6 +114,22 @@ export async function POST(req: Request) {
   if (!payment.txHash) {
     await prisma.paymentVerificationAttempt.create({
       data: { paymentId: payment.id, success: false, note: "No transaction hash provided — awaiting manual review" },
+    });
+    return NextResponse.json({ paymentId: payment.id, status: "pending", note: "Awaiting manual review" });
+  }
+
+  // USDT-ERC20 has no automated on-chain checker yet (verifyUsdtPayment only
+  // covers TRC20/Tron, via Tronscan's public API) — route straight to manual
+  // review rather than guessing or leaving it silently uncalled. Same shape as
+  // the no-hash path above; kept separate because a real hash WAS given here
+  // (worth recording that fact for whoever reviews it manually).
+  if (paymentKind === "usdt_erc20") {
+    await prisma.paymentVerificationAttempt.create({
+      data: {
+        paymentId: payment.id,
+        success: false,
+        note: "USDT-ERC20 has no automated verification yet — awaiting manual review",
+      },
     });
     return NextResponse.json({ paymentId: payment.id, status: "pending", note: "Awaiting manual review" });
   }

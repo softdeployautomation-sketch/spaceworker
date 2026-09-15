@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-type Kind = "btc" | "usdt_trc20";
+type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
 
 type PaymentInfo = {
   status: string;
@@ -24,7 +24,12 @@ type CheckoutInfo = {
 const KIND_OPTIONS: Array<{ id: Kind; label: string }> = [
   { id: "btc", label: "Bitcoin" },
   { id: "usdt_trc20", label: "USDT (TRC-20)" },
+  { id: "usdt_erc20", label: "USDT (ERC-20)" },
 ];
+
+function kindLabel(kind: string): string {
+  return KIND_OPTIONS.find((o) => o.id === kind)?.label ?? kind;
+}
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
@@ -180,7 +185,7 @@ function UpgradeFlow({
           <div className="mt-5 space-y-4">
             <div>
               <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Send {kind === "btc" ? "Bitcoin" : "USDT-TRC20"} to this address
+                Send {kindLabel(kind)} to this address
               </p>
               <div className="mt-2 flex items-center gap-2">
                 <code className="flex-1 break-all rounded-lg bg-zinc-100 px-3 py-2 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
@@ -268,7 +273,7 @@ function StatusCardView({
           </div>
           <div className="flex items-center justify-between gap-4">
             <dt className="text-zinc-500 dark:text-zinc-400">Method</dt>
-            <dd>{payment.kind === "btc" ? "Bitcoin" : "USDT (TRC-20)"}</dd>
+            <dd>{kindLabel(payment.kind)}</dd>
           </div>
           <div className="flex items-center justify-between gap-4">
             <dt className="text-zinc-500 dark:text-zinc-400">

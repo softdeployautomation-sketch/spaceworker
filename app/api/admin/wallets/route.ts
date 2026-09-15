@@ -23,6 +23,7 @@ export async function GET() {
   return NextResponse.json({
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
+    usdtErc20Wallet: settings.usdtErc20Wallet,
     webSubscriptionPriceUsd: settings.webSubscriptionPriceUsd,
     extractorExePriceUsd: settings.extractorExePriceUsd,
     mailerExePriceUsd: settings.mailerExePriceUsd,
@@ -41,6 +42,7 @@ export async function PUT(req: Request) {
   let body: {
     btcWallet?: unknown;
     usdtWallet?: unknown;
+    usdtErc20Wallet?: unknown;
     webSubscriptionPriceUsd?: unknown;
     extractorExePriceUsd?: unknown;
     mailerExePriceUsd?: unknown;
@@ -56,6 +58,7 @@ export async function PUT(req: Request) {
   const data: {
     btcWallet?: string | null;
     usdtWallet?: string | null;
+    usdtErc20Wallet?: string | null;
     webSubscriptionPriceUsd?: number;
     extractorExePriceUsd?: number;
     mailerExePriceUsd?: number;
@@ -74,6 +77,12 @@ export async function PUT(req: Request) {
       return NextResponse.json({ error: "usdtWallet must be a string" }, { status: 400 });
     }
     data.usdtWallet = body.usdtWallet.trim() || null;
+  }
+  if (body.usdtErc20Wallet !== undefined) {
+    if (typeof body.usdtErc20Wallet !== "string") {
+      return NextResponse.json({ error: "usdtErc20Wallet must be a string" }, { status: 400 });
+    }
+    data.usdtErc20Wallet = body.usdtErc20Wallet.trim() || null;
   }
 
   for (const [, field] of Object.entries(PRICE_FIELDS)) {
@@ -100,6 +109,7 @@ export async function PUT(req: Request) {
   return NextResponse.json({
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
+    usdtErc20Wallet: settings.usdtErc20Wallet,
     webSubscriptionPriceUsd: settings.webSubscriptionPriceUsd,
     extractorExePriceUsd: settings.extractorExePriceUsd,
     mailerExePriceUsd: settings.mailerExePriceUsd,
