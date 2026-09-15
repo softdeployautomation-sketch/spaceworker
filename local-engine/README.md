@@ -5,12 +5,15 @@ of the production Python extraction worker (`../worker/*` in this repo) into a p
 module the desktop **Extractor EXE** (Task 27 Part A) is intended to run, and that the
 repo's own test runner can verify in isolation.
 
-> **Status (2026-09-15):** this is the first slice of Task 27 Part A's "ported local
-extraction engine". Per the plan's 2026-09-15 update, the Extractor EXE build is the
-immediate priority (a paying customer is waiting on it); this module is its deterministic
-foundation, ported first because it's the part testable in isolation.
+> **Status (2026-09-15):** the **deterministic core (0.1.0)** and the **HTML page-crawl
+layer (0.2.0)** of Task 27 Part A's "ported local extraction engine" are done. Per the
+plan's 2026-09-15 update, the Extractor EXE build is the immediate priority (a paying
+customer is waiting on it); this module is its deterministic + crawl foundation, ported
+first and sorted into surface area so it's testable in isolation.
 
-## What's ported (pure regex string processing — zero I/O, no browser/network/DB/Next.js)
+## What's ported
+
+Pure regex string processing (zero I/O — no browser/network/DB/Next.js):
 
 | Module (`src/…`) | Ports | Origin (Python) |
 | --- | --- | --- |
@@ -22,18 +25,24 @@ foundation, ported first because it's the part testable in isolation.
 | `query.ts` | `EXPANSION_SUFFIXES`, `SUFFIX_PAIR_INDICES`, `roundQueries` (+ `biasQueryTowardPdfs`) | `worker/automation.py` |
 | `lead.ts` | `SearchResult`, `buildLeads` | `worker/automation.py` (`_build_leads`) |
 
-## Explicitly out of scope (the I/O layer — not part of this isolated module)
+HTML page-crawl layer (parsing/decision logic only — I/O injected by the caller):
 
-The engine's I/O / orchestration layer is intentionally **not** ported here because it
-cannot run "in isolation" — it needs a browser + network + an HTML/PDF parser and a store:
+| Module (`src/…`) | Ports | Origin (Python) |
+| --- | --- | --- |
+| `html.ts` | `htmlToText`, `extractAnchors`, `scanHtml` (get_text/find_all stand-ins), `absoluteUrl`, `decodeDdgUrl`, `findContactLinks` (`_find_contact_links`), `findEmbeddedPdfLinks`, `netlocOf` | `worker/automation.py` + a self-contained HTML scanner (BeautifulSoup/lxml stand-in) |
+| `crawl.ts` | `extractLeadPage` (+ default `fetch`-based `defaultFetcher`) | `worker/automation.py` (`extract_lead_page`) |
 
-- search crawling (DuckDuckGo HTTP/Playwright, Google pagination, exit-node proxies, CAPTCHA handling),
-- `requests` page/PDF fetching, PDF detection (`_is_pdf_result`) + parse (`_fetch_pdf_text`),
-- HTML page crawling incl. contact-link discovery (`_find_contact_links` — needs an HTML parser like BeautifulSoup),
-- job scheduling / progress / persistence (`run_automation`, `_search_and_extract`, DB writes).
+## Still out of scope (the remaining I/O / orchestration)
 
-These belong in the Extractor EXE's Tauri shell / local service layer that this module
-plugs into, built in the next slices of the EXE workstream.
+Not ported because they can't run "in isolation" — they need a browser/network/PDF
+parser and a store:
+
+- **search crawling** (DuckDuckGo HTTP/Playwright, Google pagination, exit-node proxies, CAPTCHA handling) — `search_phase` & friends,
+- **PDF detection + parse** (`_is_pdf_result`, `_fetch_pdf_text`) — `crawl.ts` accepts an injected `fetchPdfText` hook so PDFs can plug in without a parser dependency now,
+- **job scheduling / progress / persistence** (`run_automation`, `_search_and_extract`, DB writes).
+
+The page-fetch itself is *injected* (`CrawlDeps.fetchHtml`), so `extractLeadPage` is
+testable without a network while still running for real in the desktop EXE.
 
 ## Fidelity notes
 

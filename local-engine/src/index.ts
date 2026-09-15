@@ -54,6 +54,28 @@ export {
   type Lead,
   buildLeads,
 } from "./lead";
+export {
+  MAX_CONTACT_LINKS_PER_PAGE,
+  MAX_EMBEDDED_PDFS_PER_PAGE,
+  CONTACT_LINK_KEYWORDS,
+  CRAWL_USER_AGENT,
+  type Anchor,
+  absoluteUrl,
+  netlocOf,
+  decodeDdgUrl,
+  scanHtml,
+  extractAnchors,
+  htmlToText,
+  findContactLinks,
+  findEmbeddedPdfLinks,
+} from "./html";
+export {
+  type CrawlDeps,
+  type ExtractLeadPageOptions,
+  type HtmlAnchor,
+  extractLeadPage,
+  defaultFetcher,
+} from "./crawl";
 
 /** Current module major/minor for tooling/diagnostics. */
-export const ENGINE_VERSION = "0.1.0";
+export const ENGINE_VERSION = "0.2.0";
