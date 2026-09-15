@@ -9,7 +9,9 @@
     "lint": "eslint",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
+    "typecheck:engine": "tsc -p local-engine/tsconfig.json"
   },
   "dependencies": {
     "@prisma/client": "^6",
