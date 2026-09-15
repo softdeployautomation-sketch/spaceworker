@@ -80,18 +80,43 @@ export async function extractLeadPage(
 
   const pageText = combinedTextParts.join("\n");
 
+  return leadsFromPageText(result, pageText, html);
+}
+
+/**
+ * Run the shared post-extraction pipeline (emails/phones/names → leads) on an
+ * arbitrary text blob, mirroring the tail of extract_lead_page / extract_lead_pdf.
+ * The `html` arg is passed through only for mailto: handling (main page's raw HTML).
+ */
+export function leadsFromPageText(result: SearchResult, text: string, html = ""): Lead[] {
   // Dedicated extractors — they handle mailto:, junk-domain filtering, and
   // false-extension removal (see extractors/*).
-  const emails = extractEmails(pageText, html);
-  const phones = extractPhones(pageText, html);
+  const emails = extractEmails(text, html);
+  const phones = extractPhones(text, html);
 
   // Best-effort contact name(s): structured patterns first, then email local-parts.
-  let contactNames = extractContactNames(pageText);
+  let contactNames = extractContactNames(text);
   if (emails.length && contactNames.length === 0) {
     contactNames = emails.map(extractNamesFromEmail).filter((n) => n.length > 0);
   }
 
   return buildLeads(result, emails, phones, contactNames);
+}
+
+/**
+ * Download a PDF result, extract its text, and produce 0..N leads. Ported from
+ * extract_lead_pdf(result): reuses the exact same leadsFromPageText pipeline a page
+ * uses — no parallel extraction implementation for PDF text. A PDF that can't be
+ * fetched or parsed (corrupt/encrypted/scanned-image-only) yields zero leads.
+ * `deps.fetchPdfText` mirrors _fetch_pdf_text (see pdf-text.ts).
+ */
+export async function extractLeadPdf(
+  result: SearchResult,
+  deps: { fetchPdfText(url: string): Promise<string> },
+): Promise<Lead[]> {
+  const pdfText = await deps.fetchPdfText(result.url);
+  if (!pdfText.trim()) return [];
+  return leadsFromPageText(result, pdfText);
 }
 
 /**

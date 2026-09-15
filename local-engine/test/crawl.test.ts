@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { extractLeadPage, defaultFetcher, type CrawlDeps } from "../src/crawl";
+import { extractLeadPage, leadsFromPageText, extractLeadPdf, defaultFetcher, type CrawlDeps } from "../src/crawl";
 import { type SearchResult } from "../src/lead";
 
 function fakeFetcher(map: Record<string, string>): CrawlDeps {
@@ -78,4 +78,29 @@ test("reports live steps via onStep (Task 14 channel)", async () => {
 test("defaultFetcher returns '' for a non-network URL instead of throwing", async () => {
   const html = await defaultFetcher().fetchHtml("not-a-real-url");
   assert.equal(html, "");
+});
+
+test("extractLeadPdf produces leads from a PDF's extracted text (mirrors extract_lead_pdf)", async () => {
+  const leads = await extractLeadPdf(result, {
+    fetchPdfText: async () => "Owner: ceo@acme.co\nboard@acme.co",
+  });
+  assert.equal(leads.length, 2);
+  // extractEmails returns a sorted, deduped set.
+  assert.equal(leads[0].email, "board@acme.co");
+  assert.equal(leads[1].email, "ceo@acme.co");
+});
+
+test("extractLeadPdf yields zero leads when no PDF text could be extracted", async () => {
+  const leads = await extractLeadPdf(result, { fetchPdfText: async () => "" });
+  assert.deepEqual(leads, []);
+});
+
+test("leadsFromPageText runs the shared post-extraction pipeline directly", () => {
+  const leads = leadsFromPageText(
+    result,
+    "Contact: Alice Brown <a@x.co> or bob@y.co",
+  );
+  assert.equal(leads.length, 2);
+  assert.equal(leads[0].email, "a@x.co");
+  assert.equal(leads[1].email, "bob@y.co");
 });

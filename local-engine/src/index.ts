@@ -74,8 +74,26 @@ export {
   type ExtractLeadPageOptions,
   type HtmlAnchor,
   extractLeadPage,
+  leadsFromPageText,
+  extractLeadPdf,
   defaultFetcher,
 } from "./crawl";
+export {
+  PDF_CONTENT_TYPES,
+  PDF_MAGIC,
+  type PdfProbeDeps,
+  isPdfUrlPath,
+  isPdfContentType,
+  sniffPdfMagic,
+  isPdfResult,
+  defaultProbe,
+} from "./pdf";
+export {
+  type PdfTextDeps,
+  fetchPdfText,
+  parsePdfTextWithPdfjs,
+  defaultPdfTextDeps,
+} from "./pdf-text";
 
 /** Current module major/minor for tooling/diagnostics. */
-export const ENGINE_VERSION = "0.2.0";
+export const ENGINE_VERSION = "0.3.0";
