@@ -6,12 +6,13 @@
   "build": {
     "beforeDevCommand": "npm run exe:dev:server",
     "devUrl": "http://localhost:3400/dashboard/extract",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm run exe:build:web",
     "frontendDist": "../exe/static"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "SpaceWorker OS",
         "width": 1280,
         "height": 860,
@@ -34,6 +35,7 @@
       "icons/icon.icns",
       "icons/icon.ico",
       "icons/icon.png"
-    ]
+    ],
+    "resources": ["../exe/runtime"]
   }
 }

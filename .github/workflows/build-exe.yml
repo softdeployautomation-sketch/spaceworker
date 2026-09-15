@@ -43,18 +43,23 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
-      # tauri-action invokes `tauri build --config tauri.extractor.conf.json`,
-      # which runs the bundle's beforeBuildCommand (`next build`) with the env
-      # below — so the Extractor-only routes/nav compile in for this binary.
+      # tauri-action invokes `tauri build --config src-tauri/tauri.extractor.conf.json`,
+      # which runs the bundle's beforeBuildCommand (`npm run exe:build:web` →
+      # `next build` + scripts/runtime-assemble.mjs to bundle the standalone
+      # runtime + Node binary as the EXE's sidecar) with the env below — so the
+      # Extractor-only routes/nav compile in and the EXE is licensable offline
+      # (EXE_LICENSE_SECRET is provided as a GH secret; the repo .env is not
+      # committed, so CI must supply it).
       - name: Build the Extractor EXE / release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BUILD_TARGET: extractor
           SPACEWORKER_LOCAL_EXE: "true"
+          EXE_LICENSE_SECRET: ${{ secrets.EXE_LICENSE_SECRET }}
         with:
           projectPath: .
-          args: --config tauri.extractor.conf.json
+          args: --config src-tauri/tauri.extractor.conf.json
           tagName: ${{ github.event.inputs.tag_name }}
           releaseName: "SpaceWorker OS — ${{ github.event.inputs.variant }}"
           releaseBody: "Manual-cut desktop release from the current commit."

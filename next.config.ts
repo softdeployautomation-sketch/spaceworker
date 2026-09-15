@@ -3,10 +3,15 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // SpaceWorker runs as a real Node server (holds the Resend key and, later,
   // worker/JWT secrets server-side). Do NOT set output:"export" — that would
-  // break server-only code and route handlers. Only native-binding packages need
-  // to be externalized (bcrypt, Prisma); do NOT add "server-only"/"jose"/"resend"
-  // here — those are pure JS and if externalized the real npm "server-only"
-  // resolves to its throwing index.js and breaks builds.
+  // break server-only code and route handlers. We DO use `output: "standalone"`
+  // so `next build` also emits a self-contained `.next/standalone/` server tree
+  // that the desktop EXE packs as its bundled local runtime (Task 27 Part A —
+  // see scripts/runtime-assemble.mjs); the hosted web deploy runs the same build
+  // and is unaffected (standalone is additive, `.next` is still produced).
+  output: "standalone",
+  // Only native-binding packages need to be externalized (bcrypt, Prisma); do NOT
+  // add "server-only"/"jose"/"resend" here — those are pure JS and if externalized
+  // the real npm "server-only" resolves to its throwing index.js and breaks builds.
   serverExternalPackages: ["bcrypt", "@prisma/client"],
   // Pin the workspace root explicitly — an unrelated package.json in the parent
   // home directory otherwise confuses Turbopack's root inference, causing bogus

@@ -16,3 +16,5 @@ venv/
 # Tauri (desktop EXE)
 src-tauri/target/
 src-tauri/gen/
+# Bundled desktop runtime (assembled by scripts/runtime-assemble.mjs at build time)
+exe/runtime/

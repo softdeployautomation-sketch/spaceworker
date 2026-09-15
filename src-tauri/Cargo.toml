@@ -14,14 +14,13 @@ edition = "2021"
 # not target; the Windows/macOS desktop EXEs build straight from `src/main.rs`).
 
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
 
-# Keep the dependency surface intentionally thin for this slice. The packaged EXE
-# will later need a shell sidecar to spawn the local Node/Next runtime — that uses
-# tauri-plugin-shell, added in the slice that wires production packaging (this
-# first slice runs the dev shell against `next dev` via beforeDevCommand, so the
-# window needs no Rust-side process management yet).
+# Keep the dependency surface intentionally thin. The packaged EXE spawns the
+# bundled Node/Next runtime (the production sidecar, see scripts/runtime-assemble.mjs)
+# using std::process::Command in main.rs — no extra Tauri plugin is needed. serde
+# is here for any future Rust-side command plumbing; it isn't used yet.
 serde = { version = "1", features = ["derive"] }
