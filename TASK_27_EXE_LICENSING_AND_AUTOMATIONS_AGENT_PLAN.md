@@ -4,6 +4,8 @@
 
 **Updated 2026-09-12, same day, with the user's follow-up clarification on both parts** — see the "4 separate EXEs" note in Part A and the Task 09 reconciliation folded into Part B below. Both updates are additive to the original text above; nothing already-written was found to be wrong, only underspecified.
 
+**Updated 2026-09-15 — current, immediate priority.** The licensing-layer prerequisite (`lib/machine-id.ts`, the offline validator, the 24h trial store, `<LicenseGate>`) is DONE, reviewed, merged, and deployed. **Next up is the Tauri shell + ported local extraction engine, Extractor build ONLY** — not Mailer, not Combined, not Automation-enabled. Reason: a real paying customer is waiting specifically on the Lead Extractor EXE right now. Do not start Mailer/Combined/Automation-enabled until the Extractor build is done, reviewed, and actually deliverable — this narrows this doc's own "Extractor first" build order into "Extractor ONLY, for now." Once Extractor ships, the next task in the queue is Vantra's Unified Ops Console (`TASK_41_UNIFIED_OPS_CONSOLE.md` in the vantra repo), not Mailer — Mailer/Combined/Automation-enabled come after that, in the order already specified below.
+
 ---
 
 # Part A — Licensed EXE distribution ("buy tools" flow)
