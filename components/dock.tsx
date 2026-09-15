@@ -5,8 +5,8 @@ import Link from "next/link";
 import { useNavItems, type NavItem } from "@/components/dashboard-nav";
 import { cn } from "@/lib/cn";
 
-export function Dock() {
-  const items = useNavItems();
+export function Dock({ buildTarget }: { buildTarget?: string }) {
+  const items = useNavItems(buildTarget);
 
   // Settings sits in its own dock group, separated by a divider — matching the
   // Desktop.design.html artboard (app icons, then a separator, then Settings).

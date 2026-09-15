@@ -10,9 +10,11 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 interface ShellProps {
   children: React.ReactNode;
+  /** Desktop EXE build target (e.g. "extractor") narrows the nav; the web app omits it. */
+  buildTarget?: string;
 }
 
-export function Shell({ children }: ShellProps) {
+export function Shell({ children, buildTarget }: ShellProps) {
   return (
     <div className="relative min-h-screen">
       {/* Static 3D ambient desktop scene, behind everything else. */}
@@ -34,13 +36,13 @@ export function Shell({ children }: ShellProps) {
               SpaceWorker OS
             </span>
           </Link>
-          <MenuBar />
+          <MenuBar buildTarget={buildTarget} />
         </div>
         <div className="flex items-center gap-3 md:gap-4">
           <DesktopClock />
           <div className="flex items-center gap-1">
             <ThemeToggle />
-            <LogoutButton />
+            {!buildTarget && <LogoutButton />}
           </div>
         </div>
       </header>
@@ -50,7 +52,7 @@ export function Shell({ children }: ShellProps) {
         {/* Inline nav row on small screens (the dock is the desktop nav). */}
         <div className="md:hidden">
           <div className="flex overflow-x-auto rounded-xl border border-border bg-bg-elevated/70 px-2 py-2 backdrop-blur">
-            <DashboardNav variant="mobile" />
+            <DashboardNav variant="mobile" buildTarget={buildTarget} />
           </div>
         </div>
 
@@ -58,7 +60,7 @@ export function Shell({ children }: ShellProps) {
       </div>
 
       {/* Application dock (desktop nav). */}
-      <Dock />
+      <Dock buildTarget={buildTarget} />
     </div>
   );
 }

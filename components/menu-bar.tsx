@@ -23,12 +23,12 @@ interface MenuItemDef {
 // plain, unclickable <span> labels (decorative only). Window's list is built
 // from useNavItems(), the same single source of truth the dock and mobile nav
 // already render from, so it can never list a destination those don't have.
-export function MenuBar() {
+export function MenuBar({ buildTarget }: { buildTarget?: string }) {
   const [openMenu, setOpenMenu] = useState<MenuKey | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
-  const navItems = useNavItems();
+  const navItems = useNavItems(buildTarget);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {

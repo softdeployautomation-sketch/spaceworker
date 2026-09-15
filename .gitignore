@@ -13,3 +13,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+# Tauri (desktop EXE)
+src-tauri/target/
+src-tauri/gen/

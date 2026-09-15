@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/v2",
+  "_comment": "Variant override for the Extractor build, merged onto base tauri.conf.json at build time via `tauri build --config tauri.extractor.conf.json` (the plan's 'four build targets, one core' — see TASK_27 Part A §Build/release pipeline). Only what GENUINELY differs per variant is set here: productName, identifier, and the bundle icon/target deviations. The Next.js app also reads BUILD_TARGET=extractor to gate which routes/nav compile in.",
+  "productName": "SpaceWorker OS - Lead Extractor",
+  "identifier": "com.spaceworker-os.extractor",
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false
+  }
+}

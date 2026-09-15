@@ -1,0 +1,61 @@
+name: Build EXE
+
+# Manual-trigger only — "cut a new EXE release from the current commit". Desktop
+# releases don't need an automatic build on every push (would burn CI minutes on
+# trivial commits), matching how the web deploy is already triggered today.
+# Windows-only initially, per Task 27 Part A (Lead Extractor Pro shipped a
+# ~290MB Windows EXE; nobody asked for macOS/Linux yet).
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Which EXE variant to build
+        required: true
+        default: extractor
+        type: choice
+        options:
+          - extractor
+      tag_name:
+        description: Release tag (e.g. v1.4.0) — leave blank to skip a GitHub Release
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # create/upload the GitHub Release (only when a tag is given)
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Install npm deps
+        run: npm ci
+
+      # tauri-action invokes `tauri build --config tauri.extractor.conf.json`,
+      # which runs the bundle's beforeBuildCommand (`next build`) with the env
+      # below — so the Extractor-only routes/nav compile in for this binary.
+      - name: Build the Extractor EXE / release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_TARGET: extractor
+          SPACEWORKER_LOCAL_EXE: "true"
+        with:
+          projectPath: .
+          args: --config tauri.extractor.conf.json
+          tagName: ${{ github.event.inputs.tag_name }}
+          releaseName: "SpaceWorker OS — ${{ github.event.inputs.variant }}"
+          releaseBody: "Manual-cut desktop release from the current commit."
+          releaseDraft: true

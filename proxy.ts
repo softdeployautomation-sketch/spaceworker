@@ -59,6 +59,32 @@ const secret = () => encoder.encode(process.env.SESSION_SECRET ?? "");
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // Task 27 Part A — local EXE runtime: the desktop EXE has NO web login by
+  // design. Access control is handled entirely by the local <LicenseGate> in the
+  // React tree (which is compiled into the EXE and runs offline), and the EXE's
+  // bundled server never has a spaceworker_session cookie. So before ANY cookie /
+  // session logic runs, short-circuit the whole web auth gate: without this every
+  // /dashboard request the EXE makes would 307 -> /login (a HARD blocker — the
+  // shipped EXE would be dead on arrival) before DashboardLayout's local-exe
+  // branch even gets to run.
+  //
+  // This mirrors lib/exe-runtime.ts's isLocalExeRuntime() exactly (same
+  // fail-closed env check — SPACEWORKER_LOCAL_EXE is ONLY ever true in the
+  // Tauri-bundled local runtime's own .env, never on the production host). It is
+  // kept inline rather than imported because the middleware deliberately stays a
+  // self-contained module that reads process.env directly (same reason it reads
+  // SESSION_SECRET above instead of pulling from lib/env.ts), and exe-runtime.ts
+  // is marked "server-only" — not worth betting the Edge bundle on it resolving.
+  //
+  // The bypass ONLY removes the cookie requirement. It does NOT widen anything
+  // else: every /api/* route (incl. /api/exe-license/*) still runs its own
+  // route-level isLocalExeRuntime() guard, and /admin still gates itself
+  // server-side with jose/cookies. This file only ever redirected when a cookie
+  // was absent/invalid; in local-exe there is deliberately no cookie to check.
+  if (process.env.SPACEWORKER_LOCAL_EXE === "true") {
+    return NextResponse.next();
+  }
+
   // Resolve the customer session's scope (if present). We need it to decide
   // whether to apply the license_only restriction below.
   let customerScope = null;
