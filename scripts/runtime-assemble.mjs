@@ -24,6 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const NODE_DIST_VERSION = process.env.EXE_NODE_VERSION ?? "20.19.6";
+const NODE_MIRROR = (process.env.EXE_NODE_MIRROR ?? "https://nodejs.org/dist").replace(/\/+$/, "");
 
 // fileURLToPath (not `new URL(...).pathname`) so ROOT resolves correctly on
 // Windows CI (URL.pathname yields a `/D:/…` root-relative path there).
@@ -137,8 +138,6 @@ console.log(
 );
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-const NODE_MIRROR = (process.env.EXE_NODE_MIRROR ?? "https://nodejs.org/dist").replace(/\/+$/, "");
 
 function nodeDistUrl(os, arch, version) {
   const base = `${NODE_MIRROR}/v${version}`;
