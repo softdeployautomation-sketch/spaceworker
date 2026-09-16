@@ -59,6 +59,21 @@ if (!exeLicenseSecret) {
   console.error("[runtime-assemble] EXE_LICENSE_SECRET is not set in repo .env — fail-closed (cannot build a licensable EXE).");
   process.exit(1);
 }
+// Block the known dev placeholder from ever reaching a distributable EXE. The
+// real license secret lives only in the EXE_LICENSE_SECRET GitHub Actions secret
+// (CI) / the EXE_LICENSE_SECRET env (local) / the repo .env — all three feed the
+// same variable above. If any of them is still the placeholder, someone is about
+// to ship a build whose license "secret" is public knowledge in the source, so a
+// buyer could self-issue a working license with zero purchase. Fail the build.
+const EXE_LICENSE_SECRET_PLACEHOLDER = "dev_exe_license_secret_for_local_testing_only";
+if (exeLicenseSecret === EXE_LICENSE_SECRET_PLACEHOLDER) {
+  console.error(
+    "[runtime-assemble] EXE_LICENSE_SECRET is still the dev placeholder — fail-closed. " +
+      "Set the real production secret as the EXE_LICENSE_SECRET GitHub Actions secret " +
+      "(or EXE_LICENSE_SECRET env / repo .env) before cutting ANY build that ships to a customer.",
+  );
+  process.exit(1);
+}
 
 // ── 2. Rebuild a fresh runtime dir ───────────────────────────────────────────
 rmSync(RUNTIME_DIR, { recursive: true, force: true });
@@ -76,6 +91,21 @@ const publicSrc = path.join(ROOT, "public");
 if (existsSync(publicSrc)) {
   cpSync(publicSrc, path.join(RUNTIME_STANDALONE, "public"), { recursive: true });
 }
+
+// ── 2b. Strip raw source from the copied runtime ──────────────────────────────
+// Root cause of the leak: Next's file tracer writes `.nft.json` trace manifests
+// that list the server modules' DEPENDENCIES, and the standalone assembler then
+// copies those listed entries VERBATIM into standalone/lib/ — but as the ORIGINAL
+// `.ts` source, not compiled JS (the compiled bodies are already inlined into the
+// `.next/server` chunks; server.js emits ZERO requires of these lib/*.ts files).
+// Result: the installer shipped the whole server source tree — readable with 7z in
+// under a minute, and it exposed the license-validation algorithm. Fixing Next's
+// conservative tracing is out of our hands, so strip every `.ts`/`.tsx` from the
+// copied standalone tree here as a defensive last line. Deleting the redundant
+// copies is safe because the code is already compiled into the JS chunks — proven
+// at build time by the bundled-node boot against server.js (validated in local CI
+// mimic below). Runs AFTER the copy and BEFORE the Node-bundling step.
+stripSourceFiles(RUNTIME_STANDALONE);
 
 // ── 3. Embed the local-EXE environment ───────────────────────────────────────
 // Next copies the repo .env into .next/standalone, which would ship server-only
@@ -237,4 +267,27 @@ function listFiles(dir, acc = []) {
     else acc.push(full);
   }
   return acc;
+}
+
+/**
+ * Recursively deletes every `.ts` / `.tsx` file under `dir`. Defensive last line
+ * against Next's standalone tracer copying raw server `.ts` source into `lib/`
+ * (see step 2b). `.tsx` is covered in case a JSX server module is ever traced the
+ * same way. Returns the number of files removed.
+ */
+function stripSourceFiles(dir) {
+  let removed = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      removed += stripSourceFiles(full);
+    } else if (entry.name.endsWith(".ts") || entry.name.endsWith(".tsx")) {
+      rmSync(full);
+      removed++;
+    }
+  }
+  if (removed > 0) {
+    console.log(`[runtime-assemble] stripped ${removed} raw .ts/.tsx source file(s) from ${dir}`);
+  }
+  return removed;
 }
