@@ -63,10 +63,21 @@ jobs:
           BUILD_TARGET: extractor
           SPACEWORKER_LOCAL_EXE: "true"
           EXE_LICENSE_SECRET: ${{ secrets.EXE_LICENSE_SECRET }}
-          # next build evaluates modules that construct PrismaClient (throws if
-          # DATABASE_URL is unset). This mirrors how the local build runs; the
-          # EXE itself never touches the DB at runtime (fully local mode).
+          # For a release build the whole app (incl. admin/api) compiles, and its
+          # modules construct/validate secrets at eval time. Mirror the local build
+          # environment so `next build` passes; the EXE itself never uses these at
+          # runtime (runtime-assemble scrubs .env-downstream and is fully local).
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+          INTERNAL_BEARER_TOKEN: ${{ secrets.INTERNAL_BEARER_TOKEN }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          MAILBOX_ENCRYPTION_KEY: ${{ secrets.MAILBOX_ENCRYPTION_KEY }}
+          CHANNELRY_AI_API_KEY: ${{ secrets.CHANNELRY_AI_API_KEY }}
+          PORT: ${{ secrets.PORT }}
+          BROWSER_PROFILE_BASE_DIR: ${{ secrets.BROWSER_PROFILE_BASE_DIR }}
         with:
           projectPath: .
           args: --config src-tauri/tauri.extractor.conf.json
