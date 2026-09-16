@@ -63,6 +63,10 @@ jobs:
           BUILD_TARGET: extractor
           SPACEWORKER_LOCAL_EXE: "true"
           EXE_LICENSE_SECRET: ${{ secrets.EXE_LICENSE_SECRET }}
+          # next build evaluates modules that construct PrismaClient (throws if
+          # DATABASE_URL is unset). This mirrors how the local build runs; the
+          # EXE itself never touches the DB at runtime (fully local mode).
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
         with:
           projectPath: .
           args: --config src-tauri/tauri.extractor.conf.json
