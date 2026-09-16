@@ -17,7 +17,7 @@
 // runtime + Mac .app, and the Windows CI runner produces a Windows runtime +
 // .exe). Override with EXE_TARGET_OS / EXE_TARGET_ARCH when cross-building.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -107,15 +107,45 @@ const nodeExeTarget = path.join(RUNTIME_DIR, `node${targetOs === "win32" ? ".exe
 if (existsSync(nodeExeTarget)) rmSync(nodeExeTarget);
 
 let nodeBinPath;
+let nodeDistRoot;
 if (process.env.EXE_NODE_BIN) {
   nodeBinPath = process.env.EXE_NODE_BIN;
   console.log(`[runtime-assemble] using provided Node binary at ${nodeBinPath}`);
 } else {
   const dist = nodeDistUrl(targetOs, targetArch, NODE_DIST_VERSION);
-  nodeBinPath = await downloadAndExtractNode(dist, targetOs);
+  nodeDistRoot = await downloadAndExtractNode(dist, targetOs);
+  nodeBinPath = findNodeBinary(nodeDistRoot, targetOs);
+  if (!nodeBinPath) {
+    console.error(`[runtime-assemble] could not locate the node binary extracted from ${dist}`);
+    process.exit(1);
+  }
 }
 mkdirSync(RUNTIME_DIR, { recursive: true });
-cpSync(nodeBinPath, nodeExeTarget);
+
+// Windows node.exe is NOT self-contained: it needs node.dll, vcruntime140*.dll,
+// icudt.dat, etc. in the SAME directory to run. Bundle the whole dist dir there
+// (node.exe finds them next to itself); macOS/Linux ship a monolithic binary, so
+// a single file copy is enough there.
+if (targetOs === "win32" && nodeDistRoot) {
+  cpSync(nodeDistRoot, RUNTIME_DIR, { recursive: true });
+} else {
+  cpSync(nodeBinPath, nodeExeTarget);
+}
+
+// Functional guard: execute the bundled Node. Windows node.exe silently fails
+// (0xC0000135) if its sibling node.dll/vcruntime/icu files are missing, so this
+// proves the multi-file bundle is complete BEFORE the installer is ever cut.
+// Fails the whole build on any platform where the packaged node can't run.
+const verifyExe = path.join(RUNTIME_DIR, `node${targetOs === "win32" ? ".exe" : ""}`);
+const probe = spawnSync(verifyExe, ["--version"], { encoding: "utf8", timeout: 30_000 });
+if (probe.status !== 0) {
+  console.error(
+    `[runtime-assemble] bundled Node failed to execute (${verifyExe}):`,
+    (probe.stderr || "").trim() || (probe.error && probe.error.message),
+  );
+  process.exit(1);
+}
+console.log(`[runtime-assemble] bundled Node executes OK: ${(probe.stdout || "").trim()}`);
 
 writeFileSync(
   path.join(RUNTIME_DIR, "RUNTIME.json"),
@@ -154,9 +184,10 @@ function nodeDistUrl(os, arch, version) {
 }
 
 /**
- * Downloads the official Node distribution and returns the path to the real
- * node binary inside the extracted tree. curl is present on macOS, Linux and
- * Windows CI; tar handles both .zip (bsdtar) and .tar.gz.
+ * Downloads the official Node distribution and returns the extracted dist ROOT
+ * dir (on Windows this contains node.exe + node.dll + vcruntime/icu files that
+ * must be bundled together; on macOS/Linux it contains bin/node). curl is present
+ * on macOS, Linux and Windows CI; tar handles both .zip (bsdtar) and .tar.gz.
  */
 async function downloadAndExtractNode(dist, os) {
   const work = mkdtempSync(path.join(tmpdir(), "sw-node-dist-"));
@@ -172,15 +203,17 @@ async function downloadAndExtractNode(dist, os) {
     os === "win32"
       ? `node-v${NODE_DIST_VERSION}-win-${targetArch}`
       : `node-v${NODE_DIST_VERSION}-${os}-${targetArch}`;
-  const direct =
-    os === "win32"
-      ? path.join(work, rootName, "node.exe")
-      : path.join(work, rootName, "bin", "node");
-  if (existsSync(direct)) return direct;
+  const root = path.join(work, rootName);
+  if (existsSync(root)) return root;
 
-  // Fallback: search the work dir for the real binary.
-  const found = findNodeBinary(work, os);
-  if (found) return found;
+  // Fallback: the archive may not lay out exactly as expected — find the dir
+  // containing the node binary. Return the parent of bin/ (dist root) so the
+  // monolith-vs-split logic in the caller still works on every platform.
+  const bin = findNodeBinary(work, os);
+  if (bin) {
+    const rootDir = os === "win32" ? path.dirname(bin) : path.dirname(path.dirname(bin));
+    return rootDir;
+  }
   console.error(`[runtime-assemble] could not locate the node binary extracted from ${dist}`);
   process.exit(1);
 }
