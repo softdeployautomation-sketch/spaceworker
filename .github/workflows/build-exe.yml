@@ -43,6 +43,12 @@ jobs:
       - name: Install npm deps
         run: npm ci
 
+      # next build type-checks every route (incl. admin), and prisma.user typed
+      # only once the Prisma client is generated. npm ci's postinstall doesn't
+      # reliably do this on CI, so generate explicitly before building.
+      - name: Generate Prisma client
+        run: npx prisma generate
+
       # tauri-action invokes `tauri build --config src-tauri/tauri.extractor.conf.json`,
       # which runs the bundle's beforeBuildCommand (`npm run exe:build:web` →
       # `next build` + scripts/runtime-assemble.mjs to bundle the standalone
