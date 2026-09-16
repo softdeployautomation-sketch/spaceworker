@@ -18,13 +18,16 @@
 // .exe). Override with EXE_TARGET_OS / EXE_TARGET_ARCH when cross-building.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const NODE_DIST_VERSION = process.env.EXE_NODE_VERSION ?? "20.19.6";
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
+// fileURLToPath (not `new URL(...).pathname`) so ROOT resolves correctly on
+// Windows CI (URL.pathname yields a `/D:/…` root-relative path there).
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STANDALONE_OUT = path.join(ROOT, ".next", "standalone");
 const RUNTIME_DIR = path.join(ROOT, "exe", "runtime");
 const RUNTIME_STANDALONE = path.join(RUNTIME_DIR, "standalone");
@@ -196,7 +199,6 @@ function findNodeBinary(dir, os) {
 }
 
 function listFiles(dir, acc = []) {
-  const { readdirSync } = require("node:fs");
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) listFiles(full, acc);
