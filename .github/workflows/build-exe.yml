@@ -85,3 +85,15 @@ jobs:
           releaseName: "SpaceWorker OS — ${{ github.event.inputs.variant }}"
           releaseBody: "Manual-cut desktop release from the current commit."
           releaseDraft: true
+
+      # No tag was given => tauri-action skips Release uploads. Always surface the
+      # installer as a downloadable run artifact so we can inspect it immediately.
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spaceworker-extractor-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.sig
+            src-tauri/target/release/bundle/nsis/*.nsis.zip
+          if-no-files-found: error
