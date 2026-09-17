@@ -34,6 +34,12 @@ const MAX_RESULTS_PER_QUERY = 6;
 const MAX_TOTAL_LEADS = 40;
 const QUERY_STAGGER_MS = 600; // be polite to DDG between plain-HTTP requests
 
+/** Clamp an integer-like number to [lo, hi], or `dflt` when not a finite number. */
+function clampInt(v: unknown, lo: number, hi: number, dflt: number): number {
+  if (typeof v !== "number" || !Number.isFinite(v)) return dflt;
+  return Math.min(hi, Math.max(lo, Math.floor(v)));
+}
+
 /** Parse freeform find/location input (commas, semicolons, newlines, pipes). */
 function splitTerms(raw: unknown): string[] {
   if (typeof raw !== "string") return [];
@@ -41,6 +47,39 @@ function splitTerms(raw: unknown): string[] {
     .split(/[,\n;|]+/)
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * Parse the email-domain allowlist sent by the UI. Accepts a string
+ * ("gmail.com, *.edu") or an array; normalizes to lowercase, trimmed, deduped.
+ */
+function parseEmailDomains(raw: unknown): string[] {
+  const parts: string[] = typeof raw === "string" ? splitTerms(raw) : Array.isArray(raw) ? raw.map(String) : [];
+  const out: string[] = [];
+  for (const p of parts) {
+    const d = p.trim().toLowerCase();
+    if (!d) continue;
+    if (!out.includes(d)) out.push(d);
+  }
+  return out;
+}
+
+/**
+ * True when `email` matches the domain allowlist: exact domain ("gmail.com"),
+ * or suffix pattern (".edu" / "*.edu" → any *.edu address). With an empty
+ * allowlist every lead is kept; with a non-empty list a lead is kept only if its
+ * email domain matches (a lead with no usable email fails the filter, matching
+ * the web UI's "only keep leads whose email matches any listed domain").
+ */
+function emailDomainMatches(domains: string[], email: unknown): boolean {
+  if (!domains.length) return true;
+  const e = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const at = e.lastIndexOf("@");
+  if (at < 0 || at === e.length - 1) return false;
+  const d = e.slice(at + 1);
+  return domains.some((pat) =>
+    pat.startsWith("*.") ? d.endsWith(pat.slice(1)) : pat.startsWith(".") ? d.endsWith(pat) : d === pat,
+  );
 }
 
 function buildBaseTerms(findTerms: string[], locationTerms: string[]): string[] {
@@ -80,14 +119,22 @@ function sseFrame(ev: Event): Uint8Array {
 
 /** The actual search → extract pipeline; pushes events into the SSE stream. */
 async function runExtraction(
-  payload: { findTerms: string[]; locationTerms: string[]; pdfOnly: boolean; maxResults: number },
+  payload: {
+    findTerms: string[];
+    locationTerms: string[];
+    pdfOnly: boolean;
+    maxResults: number; // queries per run (this slice's MAX_QUERIES_PER_RUN stand-in)
+    resultsPerQuery: number;
+    maxTotalLeads: number;
+    emailDomains: string[];
+  },
   push: (ev: Event) => void,
   delay: (ms: number) => Promise<void>,
 ): Promise<{ total: number; leadFile: string | null }> {
   const baseTerms = buildBaseTerms(payload.findTerms, payload.locationTerms);
   if (!baseTerms.length) throw new Error("No search terms.");
 
-  const queries = expandQueries(baseTerms, Math.max(1, Math.min(payload.maxResults, MAX_QUERIES_PER_RUN)));
+  const queries = expandQueries(baseTerms, payload.maxResults);
   const queryForDisplay = queries.length === 0 ? baseTerms[0] : queries[0];
   push({ type: "step", message: `Expanded ${baseTerms.length} base term(s) into ${queries.length} query(ies); starting with “${queryForDisplay}”.` });
 
@@ -108,7 +155,7 @@ async function runExtraction(
     if (payload.pdfOnly) q = biasQueryTowardPdfs(q);
     push({ type: "step", message: `Searching ${qi + 1}/${queries.length}: “${q}”` });
 
-    const { results, blocked } = await duckDuckGoSearch(q, MAX_RESULTS_PER_QUERY);
+    const { results, blocked } = await duckDuckGoSearch(q, payload.resultsPerQuery);
     if (blocked) {
       push({
         type: "step",
@@ -125,7 +172,7 @@ async function runExtraction(
     push({ type: "step", message: `${results.length} result(s); extracting contact details…` });
 
     for (const result of results) {
-      if (total >= MAX_TOTAL_LEADS) break;
+      if (total >= payload.maxTotalLeads) break;
       if (!result.url || seenUrls.has(result.url)) continue;
       seenUrls.add(result.url);
 
@@ -145,7 +192,10 @@ async function runExtraction(
       }
 
       for (const lead of leads) {
-        if (total >= MAX_TOTAL_LEADS) break;
+        if (total >= payload.maxTotalLeads) break;
+        // Email-domain allowlist: only keep leads whose email matches the filter
+        // (exact domain, or ".suffix"/"*.suffix" pattern). With no filter, keep all.
+        if (!emailDomainMatches(payload.emailDomains, lead.email)) continue;
         total++;
         const file = appendLeadRow(runId, lead); // temp local JSONL — replaced by SQLite fork later
         if (file) leadFile = file;
@@ -180,7 +230,13 @@ export async function POST(req: NextRequest) {
   }
   const locationTerms = splitTerms(body.locationTerms);
   const pdfOnly = body.pdfOnly === true;
-  const maxResults = typeof body.maxResults === "number" ? Math.floor(body.maxResults) : MAX_QUERIES_PER_RUN;
+  // Wire the UI's advanced controls to this slice's bounds. Wide but safe ranges so
+  // the advertised options (Scope 3/5/10 queries, results-per-query, lead cap) are
+  // real — the constants remain the defaults when a field is absent.
+  const maxResults = clampInt(body.maxResults, 1, 10, MAX_QUERIES_PER_RUN);
+  const resultsPerQuery = clampInt(body.resultsPerQuery, 1, 10, MAX_RESULTS_PER_QUERY);
+  const maxTotalLeads = clampInt(body.maxTotalLeads, 1, 200, MAX_TOTAL_LEADS);
+  const emailDomains = parseEmailDomains(body.emailDomains);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -195,7 +251,7 @@ export async function POST(req: NextRequest) {
 
       try {
         const { total, leadFile } = await runExtraction(
-          { findTerms, locationTerms, pdfOnly, maxResults },
+          { findTerms, locationTerms, pdfOnly, maxResults, resultsPerQuery, maxTotalLeads, emailDomains },
           push,
           delay,
         );

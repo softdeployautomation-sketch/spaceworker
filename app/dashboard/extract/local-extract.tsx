@@ -26,11 +26,21 @@ const MAX_CHOICES: { value: number; label: string }[] = [
   { value: 10, label: "10 queries" },
 ];
 
+/** Clamp a numeric input to [lo, hi], falling back to `fallback` for non-finite input. */
+function clampNumber(v: number, lo: number, hi: number, fallback: number): number {
+  if (Number.isNaN(v) || v < lo) return lo;
+  return Math.min(hi, Math.floor(v));
+}
+
 export function LocalExtractPage() {
   const findRef = useRef<HTMLInputElement>(null);
   const locRef = useRef<HTMLInputElement>(null);
   const [pdfOnly, setPdfOnly] = useState(false);
   const [maxChoice, setMaxChoice] = useState(5);
+  // Task 27 #2 — advanced bounds backed by /api/exe/extract route caps.
+  const [resultsPerQuery, setResultsPerQuery] = useState(6); // pages/results per query
+  const [maxTotalLeads, setMaxTotalLeads] = useState(40); // stop after N leads
+  const [emailFilter, setEmailFilter] = useState(""); // "gmail.com, *.edu" allowlist
   const [running, setRunning] = useState(false);
   const [steps, setSteps] = useState<string[]>([]);
   const [leads, setLeads] = useState<Lead[]>([]);
@@ -60,7 +70,7 @@ export function LocalExtractPage() {
       const res = await fetch("/api/exe/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ findTerms, locationTerms, pdfOnly, maxResults: maxChoice }),
+        body: JSON.stringify({ findTerms, locationTerms, pdfOnly, maxResults: maxChoice, resultsPerQuery, maxTotalLeads, emailDomains: emailFilter }),
       });
 
       if (res.status === 404) {
@@ -171,6 +181,47 @@ export function LocalExtractPage() {
               <Button variant="primary" type="button" onClick={() => void startSearch()}>Search</Button>
             )}
           </div>
+        </div>
+{/* Task 27 #2 — advanced config surfaced from the web version, backed by the
+            route's bounds (MAX_QUERIES_PER_RUN via Scope above, MAX_RESULTS_PER_QUERY,
+            MAX_TOTAL_LEADS, + email-domain allowlist). Wrapped so it degrades gracefully
+            at the EXE's min window width. */}
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Results / query</span>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={resultsPerQuery}
+              onChange={(e) => setResultsPerQuery(clampNumber(e.target.valueAsNumber, 1, 10, 6))}
+              title="How many results to take from each search query (1-10)."
+              className="w-32 rounded-lg border border-border bg-input px-2 py-2 text-sm"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Max leads</span>
+            <input
+              type="number"
+              min={1}
+              max={200}
+              value={maxTotalLeads}
+              onChange={(e) => setMaxTotalLeads(clampNumber(e.target.valueAsNumber, 1, 200, 40))}
+              title="Stop collecting once this many leads are found (1-200)."
+              className="w-32 rounded-lg border border-border bg-input px-2 py-2 text-sm"
+            />
+          </label>
+          <label className="flex flex-1 flex-col gap-1">
+            <span className="text-xs text-fg-muted">Email domain filter</span>
+            <input
+              type="text"
+              value={emailFilter}
+              onChange={(e) => setEmailFilter(e.target.value)}
+              placeholder="e.g. gmail.com, *.edu (optional)"
+              title="Only keep leads whose email matches a listed domain or suffix (comma-separated)."
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm"
+            />
+          </label>
         </div>
         {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
         <p className="mt-2 text-[11px] text-fg-muted">
