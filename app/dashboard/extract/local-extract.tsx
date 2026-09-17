@@ -131,32 +131,32 @@ export function LocalExtractPage() {
 
       {/* Search bar */}
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <label className="flex flex-col gap-1">
+        <div className="flex flex-col flex-wrap gap-3 md:flex-row md:flex-wrap md:items-center">
+          <label className="flex min-w-[13rem] flex-1 flex-col gap-1">
             <span className="text-xs text-fg-muted">Find</span>
             <input
               ref={findRef}
               type="text"
               defaultValue=""
               placeholder="e.g. roofing contractor, plumber, dentist"
-              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500 md:w-72"
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
             />
           </label>
-          <label className="flex flex-col gap-1">
+          <label className="flex min-w-[13rem] flex-1 flex-col gap-1">
             <span className="text-xs text-fg-muted">Location</span>
             <input
               ref={locRef}
               type="text"
               defaultValue=""
               placeholder="e.g. Austin, TX (optional, comma-separated)"
-              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500 md:w-64"
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
             />
           </label>
-          <label className="flex items-center gap-2 md:mt-6">
+          <label className="flex shrink-0 items-center gap-2 md:mt-6">
             <input type="checkbox" checked={pdfOnly} onChange={(e) => setPdfOnly(e.target.checked)} className="h-4 w-4" />
             <span className="text-xs text-fg-muted">Bias toward PDFs</span>
           </label>
-          <label className="flex flex-col gap-1">
+          <label className="flex shrink-0 flex-col gap-1">
             <span className="text-xs text-fg-muted">Scope</span>
             <select value={maxChoice} onChange={(e) => setMaxChoice(Number(e.target.value))} className="rounded-lg border border-border bg-input px-2 py-2 text-sm">
               {MAX_CHOICES.map((c) => (
@@ -164,7 +164,7 @@ export function LocalExtractPage() {
               ))}
             </select>
           </label>
-          <div className="md:mt-6">
+          <div className="shrink-0 md:mt-6">
             {running ? (
               <Button variant="primary" type="button" onClick={stopSearch}>Stop</Button>
             ) : (
