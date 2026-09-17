@@ -735,9 +735,9 @@ export function LocalExtractPage() {
             <input
               type="number"
               min={0}
-              max={5000}
+              max={100000}
               value={minLeads}
-              onChange={(e) => setMinLeads(clampNumber(e.target.valueAsNumber, 0, 5000, 0))}
+              onChange={(e) => setMinLeads(clampNumber(e.target.valueAsNumber, 0, 100000, 0))}
               title="Keep auto-expanding more search queries until this many leads are found (0 = off), like the web's Minimum results."
               className="w-32 rounded-lg border border-border bg-input px-2 py-2 text-sm"
             />
@@ -747,9 +747,9 @@ export function LocalExtractPage() {
             <input
               type="number"
               min={1}
-              max={5000}
+              max={1000000}
               value={maxTotalLeads}
-              onChange={(e) => setMaxTotalLeads(clampNumber(e.target.valueAsNumber, 1, 5000, 40))}
+              onChange={(e) => setMaxTotalLeads(clampNumber(e.target.valueAsNumber, 1, 1000000, 40))}
               title="Hard ceiling — stop collecting once this many leads are found. Never lower than Min leads."
               className="w-32 rounded-lg border border-border bg-input px-2 py-2 text-sm"
             />

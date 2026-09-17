@@ -352,8 +352,8 @@ export async function POST(req: NextRequest) {
   // Task 27 #1 — minLeads is the FLOOR (web's minResults semantics); maxTotalLeads is
   // the hard ceiling. The ceiling is normalized to never sit below the floor, so a
   // user asking for a 80-lead minimum can't be silently capped at the 40 default.
-  const minLeads = clampInt(body.minLeads, 0, 5000, 0);
-  const rawCeiling = clampInt(body.maxTotalLeads, 1, 5000, MAX_TOTAL_LEADS);
+  const minLeads = clampInt(body.minLeads, 0, 100_000, 0);
+  const rawCeiling = clampInt(body.maxTotalLeads, 1, 1_000_000, MAX_TOTAL_LEADS);
   const maxTotalLeads = Math.max(rawCeiling, minLeads);
   const maxDurationMinutes = clampInt(body.maxDurationMinutes, 1, 480, DEFAULT_MAX_DURATION_MINUTES);
   const emailDomains = parseEmailDomains(body.emailDomains);
