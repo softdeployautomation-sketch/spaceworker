@@ -43,13 +43,17 @@ function decode(buf: Buffer): string {
 }
 
 // Mirror `normalize_lead`: lowercases/trims every header, then picks the first
-// recognized alias for each standard field (case-insensitive, space/underscore
-// tolerant). The alias lists are ported field-for-field from uploader.py.
+// recognized alias for each standard field. Because headers are only lowercased
+// and trimmed (never separator-normalized), each alias list must enumerate every
+// spelling this app can produce or consume: snake_case, space-separated, and the
+// camelCase column names written by this app's own CSV exporters (see
+// app/api/jobs/[id]/export.csv/route.ts and app/dashboard/extract/local-extract.tsx),
+// which are what make an export→re-import round trip lossless.
 const EMAIL_ALIASES = ["email", "e-mail", "mail", "email_address", "email address", "contact_email"];
-const BUSINESS_ALIASES = ["business_name", "business name", "company", "company_name", "organization", "business"];
-const CONTACT_ALIASES = ["contact_name", "contact name", "name", "full name", "contact", "person_name", "first_name"];
+const BUSINESS_ALIASES = ["business_name", "business name", "businessname", "company", "company_name", "organization", "business"];
+const CONTACT_ALIASES = ["contact_name", "contact name", "contactname", "name", "full name", "contact", "person_name", "first_name"];
 const PHONE_ALIASES = ["phone", "phone_number", "phone number", "telephone", "tel", "contact_phone"];
-const WEBSITE_ALIASES = ["website", "url", "web", "website_url", "site", "source_url", "source url"];
+const WEBSITE_ALIASES = ["website", "url", "web", "website_url", "site", "source_url", "source url", "sourceurl"];
 
 function normalizeLead(leadData: Record<string, unknown>): ParsedLead {
   const lc: Record<string, string> = {};
