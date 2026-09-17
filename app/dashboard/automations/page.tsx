@@ -51,10 +51,22 @@ interface MailboxOption {
   username: string;
 }
 
-interface UploadJobOption {
+// Task 49 — one pickable "past run" in the personal_list lead-source step. This
+// is no longer limited to CSV-uploaded lists: it's every finished search/upload
+// run of the user's that actually produced leads, so the run phase's
+// searchJobId: { in: jobIds } merge (lib/automation-run.ts) can pull from real
+// DuckDuckGo extraction runs too, not just template "upload" jobs.
+interface JobRunOption {
   id: string;
   query: string;
+  template: string;
   _count?: { leads: number };
+  // Task 49 — validation tallies from /api/jobs (valid/invalid/unchecked). The
+  // run phase only sends validationStatus "valid" leads, so these tell the user
+  // how many of each run's leads are actually sendable before they pick it.
+  validCount: number;
+  invalidCount: number;
+  uncheckedCount: number;
 }
 
 // --- Task 31, item 3 — "Ask the agent" chat panel types ---------------------
@@ -389,7 +401,10 @@ export default function AutomationsPage() {
   // second group in the template picker (empty when the feature isn't configured).
   const [templates, setTemplates] = useState<CampaignOption[]>([]);
   const [mailboxes, setMailboxes] = useState<MailboxOption[]>([]);
-  const [uploadJobs, setUploadJobs] = useState<UploadJobOption[]>([]);
+  const [jobOptions, setJobOptions] = useState<JobRunOption[]>([]);
+  // Task 49 — jobs currently running POST /api/jobs/[id]/validate (unchecked
+  // leads are validated on selection so a pick doesn't silently yield zero leads).
+  const [validatingIds, setValidatingIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -405,9 +420,10 @@ export default function AutomationsPage() {
   const [locations, setLocations] = useState<string[]>([]);
   const [campaignTemplateId, setCampaignTemplateId] = useState("");
   const [mailboxSelections, setMailboxSelections] = useState<Set<string>>(new Set());
-  // Task 29, item 2 — personal_list source is a MULTI-select of uploaded lists
-  // (was a single personalListId), and uploadJobs is refreshed each time the
-  // create/edit modal opens so a list uploaded on the Extract page shows up
+  // Task 29, item 2 + Task 49 — personal_list source is a MULTI-select of the
+  // user's past runs (was a single personalListId). Now every search/upload run
+  // that produced leads is pickable, and jobOptions is refreshed each time the
+  // create/edit modal opens so a run just finished on the Extract page shows up
   // without a full page reload (the reported "doesn't load the list" bug).
   const [personalListSelections, setPersonalListSelections] = useState<Set<string>>(new Set());
   const [triggerMode, setTriggerMode] = useState<"manual" | "daily">("manual");
@@ -425,6 +441,10 @@ export default function AutomationsPage() {
   const [agentTab, setAgentTab] = useState<"chat" | "activity">("chat");
   const [mailboxCount, setMailboxCount] = useState(0);
   const agentInputRef = useRef<HTMLDivElement>(null);
+  // Task 49 — dedupe map for in-flight batch validations, so a job selected and
+  // then saved before validation finishes isn't hit with two concurrent POSTs to
+  // /api/jobs/[id]/validate for the same id.
+  const validatingPromises = useRef<Map<string, Promise<void>>>(new Map());
 
   async function loadAll() {
     try {
@@ -441,8 +461,12 @@ export default function AutomationsPage() {
       if (templRes.ok) setTemplates(await templRes.json());
       if (mbRes.ok) setMailboxes(await mbRes.json());
       if (jobsRes.ok) {
-        const jobs = (await jobsRes.json()) as (UploadJobOption & { template: string })[];
-        setUploadJobs(jobs.filter((j) => j.template === "upload"));
+        // Task 49 — same broaden as refreshJobOptions: every run the user has
+        // that actually produced leads (real extraction runs and CSV uploads
+        // alike), most recent first. loadAll populates the list on page load so
+        // the openCreate/openEdit refresh is just an up-to-date re-pull.
+        const jobs = (await jobsRes.json()) as JobRunOption[];
+        setJobOptions(jobs.filter((j) => (j._count?.leads ?? 0) > 0));
       }
     } catch {
       push("Failed to load automations", "error");
@@ -479,18 +503,60 @@ export default function AutomationsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Task 29, item 2 — refresh just the uploaded-list dropdown whenever the
-  // create/edit modal opens, so a list just uploaded on the Extract page is
-  // visible immediately without a full page reload (the reported bug).
-  async function refreshUploadJobs() {
+  // Task 49 — refresh just the pickable past-runs list whenever the create/edit
+  // modal opens, so a run just finished on the Extract page is visible
+  // immediately without a full page reload (the reported bug). No longer filtered
+  // to template "upload": the run phase merges searchJobId: { in: jobIds } with no
+  // template restriction, so real search/upload runs that produced leads should
+  // all appear here (most recent first, /api/jobs already orders createdAt desc).
+  async function refreshJobOptions() {
     try {
       const res = await fetch("/api/jobs");
       if (!res.ok) return;
-      const jobs = (await res.json()) as (UploadJobOption & { template: string })[];
-      setUploadJobs(jobs.filter((j) => j.template === "upload"));
+      const jobs = (await res.json()) as JobRunOption[];
+      setJobOptions(jobs.filter((j) => (j._count?.leads ?? 0) > 0));
     } catch {
       // Best-effort — the modal still works with the cached list.
     }
+  }
+
+  // Task 49 — batch-validate any still-untested leads in a run (POST
+  // /api/jobs/[id]/validate, which runs lib/email-validator.ts). Called when a
+  // run with unchecked leads is picked so the automation's send phase actually
+  // has valid recipients. Returns a promise so submitForm can await it before
+  // saving; sets state purely for the per-row "validating emails…" indicator.
+  // Dedupes via validatingPromises so a re-pick can never hit the endpoint twice
+  // concurrently for the same id.
+  function validateJob(jobId: string): Promise<void> {
+    const existing = validatingPromises.current.get(jobId);
+    if (existing) return existing;
+    const p = (async () => {
+      setValidatingIds((prev) => {
+        const next = new Set(prev);
+        next.add(jobId);
+        return next;
+      });
+      try {
+        const res = await fetch(`/api/jobs/${jobId}/validate`, { method: "POST" });
+        if (res.ok) {
+          // Re-pull so validCount/invalidCount/uncheckedCount reflect what the
+          // server actually wrote (avoids a stale unchecked count after this run).
+          await refreshJobOptions();
+        }
+      } catch {
+        // Best-effort — the automation can still be saved/run; it'll just send
+        // whatever is already valid.
+      } finally {
+        setValidatingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(jobId);
+          return next;
+        });
+        validatingPromises.current.delete(jobId);
+      }
+    })();
+    validatingPromises.current.set(jobId, p);
+    return p;
   }
 
   function openCreate() {
@@ -509,7 +575,7 @@ export default function AutomationsPage() {
     setScheduleHour(9);
     setFormError("");
     setCreateOpen(true);
-    void refreshUploadJobs();
+    void refreshJobOptions();
   }
 
   function openEdit(a: Automation) {
@@ -528,7 +594,7 @@ export default function AutomationsPage() {
     setScheduleHour(a.scheduleHour ?? 9);
     setFormError("");
     setCreateOpen(true);
-    void refreshUploadJobs();
+    void refreshJobOptions();
   }
 
   function addChip(value: string, list: string[], set: (v: string[]) => void) {
@@ -548,8 +614,18 @@ export default function AutomationsPage() {
   function togglePersonalList(id: string) {
     setPersonalListSelections((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+        // Task 49 — a pick with unchecked leads would otherwise silently send
+        // zero (run phase only reads validationStatus "valid"), so kick off the
+        // existing batch validator the moment the run is selected.
+        const opt = jobOptions.find((j) => j.id === id);
+        if (opt && (opt.uncheckedCount ?? 0) > 0) {
+          void validateJob(id);
+        }
+      }
       return next;
     });
   }
@@ -558,7 +634,20 @@ export default function AutomationsPage() {
     setFormError("");
     if (!formName.trim()) return setFormError("Name is required");
     if (leadSource === "extract" && findTerms.length === 0) return setFormError("Add at least one Find term");
-    if (leadSource === "personal_list" && personalListSelections.size === 0) return setFormError("Select at least one uploaded lead list");
+    if (leadSource === "personal_list" && personalListSelections.size === 0) return setFormError("Select at least one past run");
+
+    // Task 49 — make sure every selected run's still-untested leads are validated
+    // BEFORE the automation is saved, so its first run has the fullest set of
+    // valid recipients (a run whose leads are all "unchecked" would otherwise
+    // silently contribute zero to the send phase, which only reads "valid").
+    if (leadSource === "personal_list") {
+      const unvalidated = [...personalListSelections]
+        .map((id) => jobOptions.find((j) => j.id === id))
+        .filter((j): j is JobRunOption => Boolean(j && (j.uncheckedCount ?? 0) > 0));
+      // validateJob dedupes in-flight requests, so awaiting these while a
+      // validation is already running is safe (it just joins the live one).
+      await Promise.all(unvalidated.map((j) => validateJob(j.id)));
+    }
     if (!campaignTemplateId) return setFormError("Select a campaign template");
     if (mailboxSelections.size === 0) return setFormError("Select at least one sending mailbox");
     if (triggerMode === "daily" && (scheduleHour < 0 || scheduleHour > 23)) return setFormError("Pick an hour 0-23 UTC");
@@ -964,27 +1053,50 @@ export default function AutomationsPage() {
 
           {step === 1 && leadSource === "personal_list" && (
             <div>
-              <Label>Choose uploaded lead lists ({personalListSelections.size} selected)</Label>
+              <Label>Choose from your past runs ({personalListSelections.size} selected)</Label>
               <div className="mt-1 flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border border-border">
-                {uploadJobs.length === 0 ? (
-                  <p className="px-3 py-2 text-xs text-fg-muted">No uploaded lists yet — upload one from the Extract page, then reopen this panel.</p>
+                {jobOptions.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-fg-muted">
+                    No runs with leads yet — run a search or upload a list from the Extract page, then reopen this panel.
+                  </p>
                 ) : (
-                  uploadJobs.map((j) => (
-                    <label key={j.id} className="flex items-center gap-2 px-3 py-1.5 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={personalListSelections.has(j.id)}
-                        onChange={() => togglePersonalList(j.id)}
-                        className="h-4 w-4 accent-brand-500"
-                      />
-                      <span className="font-medium">{j.query}</span>
-                      <span className="text-xs text-fg-muted">({j._count?.leads ?? 0} leads)</span>
-                    </label>
-                  ))
+                  jobOptions.map((j) => {
+                    const selected = personalListSelections.has(j.id);
+                    const validating = validatingIds.has(j.id);
+                    const pending = j.uncheckedCount ?? 0;
+                    return (
+                      <label
+                        key={j.id}
+                        className={`flex items-center gap-2 px-3 py-1.5 text-sm ${j.template === "upload" ? "bg-brand-50/40 dark:bg-brand-900/10" : ""}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selected}
+                          onChange={() => togglePersonalList(j.id)}
+                          className="h-4 w-4 accent-brand-500"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="font-medium">{j.query}</span>
+                          <span className="block text-xs text-fg-muted">
+                            {j.template === "upload" ? "upload · " : ""}
+                            {(j._count?.leads ?? 0)} leads · {(j.validCount ?? 0)} valid
+                            {(j.invalidCount ?? 0) > 0 ? ` · ${j.invalidCount} invalid` : ""}
+                          </span>
+                        </span>
+                        {validating ? (
+                          <span className="flex shrink-0 items-center gap-1 text-xs text-brand-600">
+                            <Spinner className="h-3 w-3" /> validating emails…
+                          </span>
+                        ) : pending > 0 ? (
+                          <span className="shrink-0 text-xs text-amber-600">{pending} unchecked</span>
+                        ) : null}
+                      </label>
+                    );
+                  })
                 )}
               </div>
               <p className="mt-2 text-xs text-fg-muted">
-                Runs merge validated leads from every selected list, deduped by email. Lists upload on the Extract page appear here the moment you open this panel.
+                Every run merges validated leads from the selected runs, deduped by email. Searches and uploads from the Extract page appear here the moment you open this panel; any unchecked leads are validated when you pick a run.
               </p>
             </div>
           )}

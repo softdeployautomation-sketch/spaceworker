@@ -26,7 +26,35 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
   });
 
-  return NextResponse.json(jobs);
+  // Task 49 — per-job validation tallies so the automations "choose your past
+  // runs" picker can tell the user how many of a run's leads are sendable
+  // (valid) vs not, and whether any are still awaiting validation ("unchecked"
+  // leads — see POST /api/jobs/[id]/validate). The run phase only ever pulls
+  // validationStatus "valid" leads, so a freshly-extracted run with nothing
+  // validated yet would otherwise silently contribute zero recipients.
+  const statusCounts = await prisma.lead.groupBy({
+    by: ["searchJobId", "validationStatus"],
+    where: { userId: session.userId },
+    _count: { _all: true },
+  });
+  const tallyByJob = new Map<string, Record<string, number>>();
+  for (const row of statusCounts) {
+    const m = tallyByJob.get(row.searchJobId) ?? {};
+    m[row.validationStatus] = row._count._all;
+    tallyByJob.set(row.searchJobId, m);
+  }
+
+  return NextResponse.json(
+    jobs.map((job) => {
+      const tally = tallyByJob.get(job.id) ?? {};
+      return {
+        ...job,
+        validCount: tally.valid ?? 0,
+        invalidCount: tally.invalid ?? 0,
+        uncheckedCount: tally.unchecked ?? 0,
+      };
+    }),
+  );
 }
 
 export async function POST(req: Request) {
