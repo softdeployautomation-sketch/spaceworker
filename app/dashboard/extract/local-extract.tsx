@@ -18,9 +18,13 @@
 // mirrored to a temp JSONL file by the route). The future SQLite schema fork
 // replaces both.
 
-import { useMemo, useRef, useState } from "react";
-import { Button } from "@/components/ui";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Badge, Button } from "@/components/ui";
+import { Dropdown } from "@/components/dropdown";
+import { useConfirm } from "@/components/confirm-provider";
 import { timeAgo } from "@/lib/format-date";
+import { encodeCsvRow } from "@/lib/csv";
 import type { Lead } from "@/local-engine/src/lead";
 
 interface ExtractEvent {
@@ -30,6 +34,23 @@ interface ExtractEvent {
   total?: number;
   leadFile?: string | null;
   stoppedReason?: string | null;
+}
+
+// Results-column modes, mirroring the web's resultMode selector (and the same
+// "display-only, defaults to names+emails" semantics — nothing is dropped at
+// extraction time).
+type ResultMode = "namesEmails" | "full" | "emailsOnly";
+
+type ValidationStatus = "unchecked" | "valid" | "invalid";
+
+// The EXE's in-memory lead extends the local-engine Lead with per-lead email
+// validation state — the web sibling of the SearchJob Lead row's
+// validationStatus/validationError/validatedAt. Search-engine leads carry no
+// status until "Validate all" (or an import, which starts unchecked).
+interface ExeLead extends Lead {
+  validationStatus?: ValidationStatus;
+  validationError?: string | null;
+  validatedAt?: string | null; // ISO
 }
 
 // One extraction run kept in the sidebar history. Mirrors a web job's persisted
@@ -45,13 +66,18 @@ interface RunRecord {
   maxTotalLeads: number;
   maxDurationMinutes: number;
   emailFilter: string;
-  leads: Lead[];
+  leads: ExeLead[];
   steps: string[];
   total: number;
   leadFile: string | null;
   status: "running" | "done" | "failed";
   stoppedReason: string | null;
   createdAt: string; // ISO — for timeAgo() captions
+  // Per-run display preference for the leads table (web stores this on the job's
+  // params); set from the form at run creation, editable from the detail pane.
+  resultMode: ResultMode;
+  // How this run came to be — search / import / merge — for labels and clarity.
+  source?: "search" | "import" | "merge";
 }
 
 const MAX_CHOICES: { value: number; label: string }[] = [
@@ -85,6 +111,36 @@ function runStatusMeta(run: Pick<RunRecord, "status" | "stoppedReason">): { labe
   }
 }
 
+/** A lead still awaiting validation: no status at all (fresh from extraction or
+ *  import) or explicitly marked "unchecked". Leads with no email can never be
+ *  validated, so they're never "pending" — see isUncheckedAndEmailable. */
+function isUnchecked(l: ExeLead): boolean {
+  return !l.validationStatus || l.validationStatus === "unchecked";
+}
+
+/** A lead that actually CAN be validated — has an email and isn't checked yet.
+ *  Mirrors the web's own split of "pending validation" vs "no email (can't be
+ *  validated)" in its live validation summary. */
+function isPendingValidation(l: ExeLead): boolean {
+  return !!l.email && l.email.trim().length > 0 && isUnchecked(l);
+}
+
+/** Trigger a browser download of a client-generated CSV (no server round-trip — the
+ *  run's leads are already in memory). Mirrors the discrete file the web's
+ *  /api/jobs/[id]/export.csv serves. */
+function downloadCsv(filename: string, rows: string[]): void {
+  if (typeof document === "undefined") return;
+  const blob = new Blob([rows.join("")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function LocalExtractPage() {
   // Controlled form fields (converted from refs so a past run's search can be
   // "Load"ed back into the form, exactly like the web's Load action).
@@ -110,6 +166,31 @@ export function LocalExtractPage() {
   const nextRunId = useRef(1);
   const leadsScrollRef = useRef<HTMLDivElement>(null);
 
+  // Task 27 feature-parity state — result-mode, validation, import, merge, and
+  // per-lead selection. All local to this component's in-memory model (no Postgres).
+  const [resultFormMode, setResultFormMode] = useState<ResultMode>("namesEmails");
+  const [validateBusy, setValidateBusy] = useState(false);
+  const [validateError, setValidateError] = useState<string | null>(null);
+  const [selectedLeadIndexes, setSelectedLeadIndexes] = useState<Set<number>>(new Set());
+  // Import modal state (mirrors the web's upload dialog).
+  const [importOpen, setImportOpen] = useState(false);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importDone, setImportDone] = useState<{ imported: number; fileName: string } | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+  // Session/run merge — run ids checked in the sidebar history for merging.
+  const [mergeSelectedIds, setMergeSelectedIds] = useState<Set<number>>(new Set());
+  const [mergeBusy, setMergeBusy] = useState(false);
+  const [mergeError, setMergeError] = useState("");
+
+  const confirm = useConfirm();
+
+  // Per-lead selection is scoped to the currently-selected run; every place that
+// switches the selected run clears it (see the row onClick and the run creators) so
+// stale indexes can never point at another run's rows.
+
   const selectedRun = useMemo(
     () => runs.find((r) => r.id === selectedRunId) ?? null,
     [runs, selectedRunId],
@@ -130,6 +211,312 @@ export function LocalExtractPage() {
           : r,
       ),
     );
+
+  const selectedLeads = useMemo(() => {
+    if (!selectedRun) return [] as ExeLead[];
+    return selectedRun.leads.filter((_, i) => selectedLeadIndexes.has(i));
+  }, [selectedRun, selectedLeadIndexes]);
+
+  // Live validation summary derived from THIS run's own leads — never stale across
+  // run switches (the web's Piece 7a). Splits untested into "pending (has an email,
+  // can be validated)" vs "no email (can't)" so the wording is honest.
+  const validationSummary = useMemo(() => {
+    if (!selectedRun) return null;
+    const valid = selectedRun.leads.filter((l) => l.validationStatus === "valid").length;
+    const invalid = selectedRun.leads.filter((l) => l.validationStatus === "invalid").length;
+    const untested = selectedRun.leads.filter((l) => isUnchecked(l));
+    const noEmail = untested.filter((l) => !l.email || l.email.trim().length === 0).length;
+    const pending = untested.length - noEmail;
+    return { valid, invalid, noEmail, pending };
+  }, [selectedRun]);
+
+  // Indexes (into selectedRun.leads) of rows that are actually shown under the
+  // current result-mode (emailsOnly hides leads without an email, matching the
+  // column filter — same "visible leads" concept the web applies). Select-all
+  // operates only on these, never on hidden rows.
+  const visibleIndexes = useMemo(() => {
+    if (!selectedRun) return [] as number[];
+    const mode = selectedRun.resultMode;
+    return selectedRun.leads
+      .map((l, i) => ((mode === "emailsOnly" && !l.email) ? -1 : i))
+      .filter((i) => i >= 0);
+  }, [selectedRun]);
+
+  const allVisibleSelected = visibleIndexes.length > 0 && visibleIndexes.every((i) => selectedLeadIndexes.has(i));
+  const someVisibleSelected = visibleIndexes.some((i) => selectedLeadIndexes.has(i));
+
+  function toggleSelectAllVisible() {
+    const next = new Set(selectedLeadIndexes);
+    if (allVisibleSelected) visibleIndexes.forEach((i) => next.delete(i));
+    else visibleIndexes.forEach((i) => next.add(i));
+    setSelectedLeadIndexes(next);
+  }
+
+  function toggleLeadSelected(index: number) {
+    const next = new Set(selectedLeadIndexes);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    setSelectedLeadIndexes(next);
+  }
+
+  function setRunResultMode(id: number, mode: ResultMode) {
+    patchRun(id, { resultMode: mode });
+  }
+
+  // Keep the select-all checkbox's indeterminate state in sync with "some but not
+  // all" — a ref callback alone only fires on mount, so a bare callback would never
+  // update once the selection changes.
+  const selectAllInputRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (selectAllInputRef.current) {
+      selectAllInputRef.current.indeterminate = someVisibleSelected && !allVisibleSelected;
+    }
+  }, [someVisibleSelected, allVisibleSelected]);
+
+  // ── Export (client-side sibling of the web's /api/jobs/[id]/export.csv) ────────
+  // The run's leads are already in memory, so no round-trip is needed — we build an
+  // RFC-4180 CSV with the same encoder lib/csv.ts the web route uses. The columns
+  // follow the run's results-column mode (#1) so "what you see is what you get".
+  function exportRun(run: RunRecord, forceEmailsOnly: boolean) {
+    const rows: string[] = [];
+    if (forceEmailsOnly || run.resultMode === "emailsOnly") {
+      rows.push(encodeCsvRow(["email"]));
+      const seen = new Set<string>();
+      for (const l of run.leads) {
+        const email = (l.email ?? "").trim();
+        if (!email || seen.has(email.toLowerCase())) continue;
+        seen.add(email.toLowerCase());
+        rows.push(encodeCsvRow([email]));
+      }
+    } else if (run.resultMode === "namesEmails") {
+      rows.push(encodeCsvRow(["contactName", "email"]));
+      for (const l of run.leads) rows.push(encodeCsvRow([l.contactName, l.email]));
+    } else {
+      rows.push(encodeCsvRow(["businessName", "contactName", "email", "phone", "website", "sourceUrl", "snippet"]));
+      for (const l of run.leads) {
+        rows.push(
+          encodeCsvRow([l.businessName, l.contactName, l.email, l.phone, l.website, l.sourceUrl, l.snippet]),
+        );
+      }
+    }
+    downloadCsv(
+      `spaceworker-leads-${run.id}${forceEmailsOnly || run.resultMode === "emailsOnly" ? "-emails" : ""}.csv`,
+      rows,
+    );
+  }
+
+  // ── Local validation (web POST /api/jobs/[id]/validate → /api/exe/extract/validate) ──
+  // Same validator (lib/email-validator.ts) the web route calls; only the write step
+  // differs — instead of persisting, we fold the results into the in-memory leads.
+  async function runValidation(targetRun: RunRecord) {
+    const testLeads = targetRun.leads.filter((l) => isPendingValidation(l));
+    if (testLeads.length === 0) return;
+    setValidateBusy(true);
+    setValidateError(null);
+    try {
+      const res = await fetch("/api/exe/extract/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emails: testLeads.map((l) => l.email as string) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setValidateError(typeof data.error === "string" ? `Validation failed: ${data.error}` : "Validation failed.");
+        return;
+      }
+      const byEmail = new Map<string, { email: string; isValid: boolean; reason?: string }>();
+      for (const r of data.results ?? []) byEmail.set(String(r.email).toLowerCase(), r);
+      const now = new Date().toISOString();
+      patchRun(targetRun.id, {
+        leads: targetRun.leads.map((l) => {
+          if (!isPendingValidation(l) || !l.email) return l;
+          const r = byEmail.get(l.email.toLowerCase());
+          if (!r) return l;
+          return {
+            ...l,
+            validationStatus: r.isValid ? "valid" : "invalid",
+            validationError: r.isValid ? null : (typeof r.reason === "string" ? r.reason : "no_mx_records"),
+            validatedAt: now,
+          };
+        }),
+      });
+      setSelectedLeadIndexes(new Set());
+    } catch {
+      setValidateError("Network error while validating.");
+    } finally {
+      setValidateBusy(false);
+    }
+  }
+
+  async function validateSelectedRun() {
+    if (selectedRun) await runValidation(selectedRun);
+  }
+
+  // ── Per-lead actions: remove a single bad lead, a selected batch, or all invalid ──
+  function removeLeadsAt(run: RunRecord, indexes: number[]) {
+    if (indexes.length === 0) return;
+    const remove = new Set(indexes);
+    patchRun(run.id, { leads: run.leads.filter((_, i) => !remove.has(i)) });
+    setSelectedLeadIndexes(new Set());
+  }
+
+  async function removeSingleLead(run: RunRecord, index: number) {
+    const lead = run.leads[index];
+    if (!lead) return;
+    const label = lead.email || lead.businessName || lead.contactName || "This lead";
+    if (!(await confirm({ title: "Remove this lead?", description: `${label} will be removed from this run's list.`, confirmLabel: "Remove" }))) return;
+    removeLeadsAt(run, [index]);
+  }
+
+  async function removeSelectedLeads() {
+    if (!selectedRun || selectedLeads.length === 0) return;
+    if (!(await confirm({
+      title: `Remove ${selectedLeads.length} lead${selectedLeads.length === 1 ? "" : "s"}?`,
+      description: "They'll be removed from this run's list. This can't be undone.",
+      confirmLabel: "Remove",
+    }))) return;
+    const indexes = selectedRun.leads.map((_, i) => i).filter((i) => selectedLeadIndexes.has(i));
+    removeLeadsAt(selectedRun, indexes);
+  }
+
+  async function deleteInvalidLeads() {
+    if (!selectedRun) return;
+    const invalidIndexes = selectedRun.leads
+      .map((l, i) => (l.validationStatus === "invalid" ? i : -1))
+      .filter((i) => i >= 0);
+    if (invalidIndexes.length === 0) return;
+    if (!(await confirm({
+      title: `Delete ${invalidIndexes.length} invalid lead${invalidIndexes.length === 1 ? "" : "s"}?`,
+      description: "Valid and unchecked leads in this run are kept.",
+      confirmLabel: "Delete",
+    }))) return;
+    removeLeadsAt(selectedRun, invalidIndexes);
+  }
+
+  // ── Session merge (web POST /api/jobs/merge, client-side sibling) ──────────────
+  // Multi-select runs in the sidebar history; this combines their leads (deduped by
+  // email, preferring an already-validated copy — the web route's exact ranking)
+  // into ONE new run entry. Unlike the web (which deletes the sources inside a
+  // transaction), the EXE keeps the source runs: they're cheap in-memory records and
+  // there's no DB safety net on the customer's machine to make deletion recoverable.
+  function toggleRunSelected(id: number) {
+    const next = new Set(mergeSelectedIds);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setMergeSelectedIds(next);
+  }
+
+  const mergeRank = (s: ValidationStatus | undefined): number => (s === "valid" ? 2 : s === "invalid" ? 0 : 1);
+
+  async function confirmMergeRuns() {
+    const ids = [...mergeSelectedIds];
+    const targets = runs.filter((r) => ids.includes(r.id) && r.status !== "running");
+    if (targets.length < 2) return;
+    setMergeBusy(true);
+    setMergeError("");
+    try {
+      const byEmail = new Map<string, ExeLead>();
+      const noEmail: ExeLead[] = [];
+      for (const r of targets) {
+        for (const l of r.leads) {
+          const email = l.email?.trim();
+          if (!email) {
+            noEmail.push(l);
+            continue;
+          }
+          const key = email.toLowerCase();
+          const existing = byEmail.get(key);
+          if (!existing || mergeRank(l.validationStatus) > mergeRank(existing.validationStatus)) byEmail.set(key, l);
+        }
+      }
+      const deduped = [...byEmail.values(), ...noEmail];
+      const steps = [
+        `Merged ${targets.length} sessions into one run (${deduped.length} leads after email dedup).`,
+      ];
+      const mergedId = nextRunId.current++;
+      const mergedRun: RunRecord = {
+        id: mergedId,
+        findTerms: targets.map((r) => r.findTerms).filter(Boolean).join(", "),
+        locationTerms: targets.map((r) => r.locationTerms).filter(Boolean).join(", "),
+        pdfOnly: false, scope: 0, resultsPerQuery: 0, minLeads: 0, maxTotalLeads: 0,
+        maxDurationMinutes: 0, emailFilter: "",
+        leads: deduped,
+        steps,
+        total: deduped.length,
+        leadFile: null,
+        status: "done", stoppedReason: null,
+        createdAt: new Date().toISOString(),
+        resultMode: targets[0]?.resultMode ?? resultFormMode,
+        source: "merge",
+      };
+      setRuns((prev) => [mergedRun, ...prev]);
+      setSelectedRunId(mergedId);
+      setMergeSelectedIds(new Set());
+      setSelectedLeadIndexes(new Set());
+    } catch {
+      setMergeError("Error while merging sessions.");
+    } finally {
+      setMergeBusy(false);
+    }
+  }
+
+  // ── Lead import (web POST /api/leads/upload → /api/exe/extract/import) ────────
+  // Parses the file on the local server (lead-file-parser.ts takes a Node Buffer for
+  // .xlsx) and drops the parsed leads into a NEW local run — ready for "Validate all"
+  // rather than needing a real extraction pass.
+  async function performImport(file: File | null) {
+    if (!file || importBusy) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setImportError("File is larger than the 20MB limit.");
+      return;
+    }
+    setImportError("");
+    setImportDone(null);
+    setImportBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const res = await fetch("/api/exe/extract/import", { method: "POST", body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setImportError(typeof data.error === "string" ? data.error : "Import failed.");
+        return;
+      }
+      const leads: ExeLead[] = (data.leads ?? []).map(
+        (p: { email: string; businessName?: string; contactName?: string; phone?: string; website?: string }) => ({
+          email: p.email,
+          businessName: p.businessName ?? "",
+          contactName: p.contactName ?? null,
+          phone: p.phone ?? null,
+          website: p.website ?? "",
+          sourceUrl: "",
+          snippet: "",
+        }),
+      );
+      const runId = nextRunId.current++;
+      const run: RunRecord = {
+        id: runId,
+        findTerms: `Import: ${file.name}`, locationTerms: "",
+        pdfOnly: false, scope: 0, resultsPerQuery: 0, minLeads: 0, maxTotalLeads: 0,
+        maxDurationMinutes: 0, emailFilter: "",
+        leads,
+        steps: data.messages ?? [],
+        total: leads.length, leadFile: null,
+        status: "done", stoppedReason: null,
+        createdAt: new Date().toISOString(),
+        resultMode: resultFormMode,
+        source: "import",
+      };
+      setRuns((prev) => [run, ...prev]);
+      setSelectedRunId(runId);
+      setSelectedLeadIndexes(new Set());
+      setImportDone({ imported: leads.length, fileName: file.name });
+    } catch {
+      setImportError("Network error while importing.");
+    } finally {
+      setImportBusy(false);
+    }
+  }
 
   async function startSearch() {
     const finds = findTerms.trim();
@@ -160,11 +547,14 @@ export function LocalExtractPage() {
       status: "running",
       stoppedReason: null,
       createdAt: new Date().toISOString(),
+      resultMode: resultFormMode,
+      source: "search",
     };
     // Newest run on top, auto-selected — same feel as the web's fresh job appearing
     // at the top of the sidebar and being opened.
     setRuns((prev) => [run, ...prev]);
     setSelectedRunId(runId);
+    setSelectedLeadIndexes(new Set());
     setRunning(true);
 
     try {
@@ -387,6 +777,19 @@ export function LocalExtractPage() {
               className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm"
             />
           </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Results table</span>
+            <select
+              value={resultFormMode}
+              onChange={(e) => setResultFormMode(e.target.value as ResultMode)}
+              className="w-40 rounded-lg border border-border bg-input px-2 py-2 text-sm"
+              title="Which columns the results table shows for this search — doesn't affect what's extracted, just what's displayed. Saved with this run."
+            >
+              <option value="namesEmails">Names + Emails</option>
+              <option value="emailsOnly">Emails only</option>
+              <option value="full">Full details</option>
+            </select>
+          </label>
         </div>
         {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
         <p className="mt-2 text-[11px] text-fg-muted">
@@ -401,20 +804,58 @@ export function LocalExtractPage() {
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden md:flex-row">
         {/* Session / run history */}
         <div className="max-h-64 w-full flex-shrink-0 overflow-y-auto rounded-xl border border-border bg-card md:h-auto md:max-h-full md:w-72">
+          {/* Task 27 merge — multi-select finished runs and combine them into one new
+              run (the web's checkboxes + "Merge N sessions", operating on the EXE's
+              in-memory runs). */}
+          {mergeSelectedIds.size >= 2 && (
+            <div className="border-b border-border px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-fg-muted">{mergeSelectedIds.size} sessions selected</span>
+                <button
+                  type="button"
+                  onClick={() => void confirmMergeRuns()}
+                  disabled={mergeBusy}
+                  className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                >
+                  {mergeBusy ? "Merging…" : `Merge ${mergeSelectedIds.size} sessions`}
+                </button>
+              </div>
+              {mergeError && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{mergeError}</p>}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-sm font-medium text-brand-600 hover:bg-black/5 dark:text-brand-400 dark:hover:bg-white/5"
+          >
+            ↑ Import leads
+            <span className="text-[11px] font-normal text-fg-muted">(.csv .tsv .txt .json .xlsx)</span>
+          </button>
           {runs.length === 0 && (
             <p className="p-4 text-sm text-fg-muted">No runs yet. Submit a search above.</p>
           )}
           {runs.map((run) => {
             const meta = runStatusMeta(run);
             const summary = summarizeRun(run);
+            const mergeable = run.status !== "running";
             return (
               <div
                 key={run.id}
-                onClick={() => setSelectedRunId(run.id)}
+                onClick={() => { setSelectedRunId(run.id); setSelectedLeadIndexes(new Set()); }}
                 className={`cursor-pointer border-b border-border p-3 last:border-0 hover:bg-black/5 dark:hover:bg-white/5 ${selectedRunId === run.id ? "bg-brand-50 dark:bg-brand-900/20" : ""}`}
               >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium" title={summary}>{summary}</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={mergeSelectedIds.has(run.id)}
+                    disabled={!mergeable}
+                    aria-label={`Select session ${summary} to merge`}
+                    title={mergeable ? "Select to merge with other sessions" : "Running sessions can't be merged"}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={() => toggleRunSelected(run.id)}
+                    className="h-3.5 w-3.5 shrink-0 accent-brand-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  />
+                  <span className="min-w-0 flex-1 truncate text-sm font-medium" title={summary}>{summary}</span>
                   <span className={`rounded px-1.5 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
                 </div>
                 <div className="mt-1 flex items-center justify-between text-xs text-fg-muted">
@@ -454,6 +895,48 @@ export function LocalExtractPage() {
                 </span>
               </div>
 
+              {/* Task 27 — per-run actions for the selected session: columns selector
+                  (#1), the Actions menu (export + validate, the web's dropdown), and
+                  import. All operate on this run's in-memory leads. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-xs text-fg-muted">
+                  Results:
+                  <select
+                    value={selectedRun.resultMode}
+                    onChange={(e) => setRunResultMode(selectedRun.id, e.target.value as ResultMode)}
+                    className="rounded border border-border bg-input px-2 py-1 text-xs"
+                  >
+                    <option value="namesEmails">Names + Emails</option>
+                    <option value="emailsOnly">Emails only</option>
+                    <option value="full">Full details</option>
+                  </select>
+                </label>
+                <Dropdown
+                  label="Actions"
+                  className="text-xs"
+                  items={[
+                    { label: "Export CSV", onSelect: () => exportRun(selectedRun, false) },
+                    { label: "Emails only", onSelect: () => exportRun(selectedRun, true) },
+                    {
+                      label: validateBusy ? "Validating…" : "Validate all",
+                      busy: validateBusy,
+                      onSelect: () => void validateSelectedRun(),
+                      disabled:
+                        validateBusy ||
+                        !selectedRun.leads.some((l) => isPendingValidation(l)),
+                    },
+                  ]}
+                />
+                <Button
+                  variant="secondary"
+                  onClick={() => setImportOpen(true)}
+                  className="px-3 py-1 text-xs"
+                >
+                  Import leads
+                </Button>
+                {validateError && <span className="text-xs text-red-600 dark:text-red-400">{validateError}</span>}
+              </div>
+
               {/* Min-leads-not-reached banner, mirroring the web's minimum banner (~page.tsx 1153). */}
               {selectedRun.minLeads > 0 &&
                 selectedRun.status === "done" &&
@@ -473,7 +956,38 @@ export function LocalExtractPage() {
 
               {/* Leads */}
               <div className="rounded-lg border border-border">
-                <h3 className="px-3 pt-3 text-sm font-semibold">Leads ({selectedRun.leads.length})</h3>
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-3">
+                  <h3 className="text-sm font-semibold">Leads ({selectedRun.leads.length})</h3>
+                  {/* Live validation summary — the web's tally, derived from this run. */}
+                  {validationSummary && (validationSummary.valid + validationSummary.invalid + validationSummary.pending) > 0 && (
+                    <span className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-fg-muted">
+                      <Badge tone="success">{validationSummary.valid} valid</Badge>
+                      <Badge tone="danger">{validationSummary.invalid} invalid</Badge>
+                      {validationSummary.pending > 0 && <Badge tone="neutral">{validationSummary.pending} to check</Badge>}
+                      {validationSummary.noEmail > 0 && <span>({validationSummary.noEmail} no email)</span>}
+                    </span>
+                  )}
+                  {validationSummary && validationSummary.invalid > 0 && (
+                    <Button
+                      variant="ghost"
+                      onClick={() => void deleteInvalidLeads()}
+                      className="px-2 py-1 text-xs text-red-500 hover:text-red-600"
+                    >
+                      Delete {validationSummary.invalid} invalid
+                    </Button>
+                  )}
+                </div>
+                {selectedLeads.length > 0 && (
+                  <div className="px-3 py-1">
+                    <Button
+                      variant="ghost"
+                      onClick={() => void removeSelectedLeads()}
+                      className="px-2 py-1 text-xs text-red-500 hover:text-red-600"
+                    >
+                      Remove {selectedLeads.length} selected
+                    </Button>
+                  </div>
+                )}
                 {selectedRun.leads.length === 0 ? (
                   <p className="px-3 py-6 text-sm text-fg-muted">
                     {selectedRun.status === "running" ? "Searching… leads will appear here as they're extracted." : "No leads found this run."}
@@ -483,31 +997,86 @@ export function LocalExtractPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-border text-left text-xs text-fg-muted">
-                          <th className="px-3 pb-2 pr-3 font-medium">Business</th>
-                          <th className="pb-2 pr-3 font-medium">Name</th>
+                          <th className="w-8 px-3 pb-2 pr-1 font-normal">
+                            <input
+                              type="checkbox"
+                              checked={allVisibleSelected}
+                              ref={selectAllInputRef}
+                              aria-label="Select all leads"
+                              title="Select all shown leads"
+                              className="h-3.5 w-3.5 accent-brand-600"
+                              onChange={toggleSelectAllVisible}
+                            />
+                          </th>
+                          {selectedRun.resultMode !== "emailsOnly" && <th className="pb-2 pr-3 font-medium">Name</th>}
+                          {selectedRun.resultMode === "full" && <th className="pb-2 pr-3 font-medium">Business</th>}
                           <th className="pb-2 pr-3 font-medium">Email</th>
-                          <th className="pb-2 pr-3 font-medium">Phone</th>
-                          <th className="pb-2 font-medium">Website</th>
+                          {selectedRun.resultMode === "full" && (
+                            <>
+                              <th className="pb-2 pr-3 font-medium">Phone</th>
+                              <th className="pb-2 pr-3 font-medium">Website</th>
+                            </>
+                          )}
+                          <th className="pb-2 pr-3 font-medium">Status</th>
+                          <th className="w-8 pb-2 pr-1" />
                         </tr>
                       </thead>
                       <tbody>
-                        {selectedRun.leads.map((lead, i) => (
-                          <tr key={i} className="border-b border-border last:border-0">
-                            <td className="py-2 pl-3 pr-3">{lead.businessName ?? "—"}</td>
-                            <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>
-                            <td className="py-2 pr-3">
-                              {lead.email
-                                ? <a href={`mailto:${lead.email}`} className="text-brand-600 hover:underline">{lead.email}</a>
-                                : "—"}
-                            </td>
-                            <td className="py-2 pr-3">{lead.phone ?? "—"}</td>
-                            <td className="py-2 pr-3">
-                              {lead.website
-                                ? <a href={lead.website} target="_blank" rel="noopener noreferrer" className="block max-w-[160px] truncate text-brand-600 hover:underline">{lead.website}</a>
-                                : "—"}
-                            </td>
-                          </tr>
-                        ))}
+                        {selectedRun.leads.map((lead, i) => {
+                          // emailsOnly keeps lead emails visible, but hides leads that
+                          // have no email at all (nothing to show in that mode).
+                          if (selectedRun.resultMode === "emailsOnly" && !lead.email) return null;
+                          return (
+                            <tr key={i} className={`border-b border-border last:border-0 hover:bg-black/5 dark:hover:bg-white/5 ${selectedLeadIndexes.has(i) ? "bg-brand-50 dark:bg-brand-900/20" : ""}`}>
+                              <td className="py-2 pl-3 pr-1">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedLeadIndexes.has(i)}
+                                  aria-label={`Select ${lead.email || lead.businessName || "lead"}`}
+                                  onChange={() => toggleLeadSelected(i)}
+                                  className="h-3.5 w-3.5 accent-brand-600"
+                                />
+                              </td>
+                              {selectedRun.resultMode !== "emailsOnly" && <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>}
+                              {selectedRun.resultMode === "full" && <td className="py-2 pr-3">{lead.businessName || "—"}</td>}
+                              <td className="py-2 pr-3">
+                                {lead.email
+                                  ? <a href={`mailto:${lead.email}`} className="text-brand-600 hover:underline">{lead.email}</a>
+                                  : "—"}
+                              </td>
+                              {selectedRun.resultMode === "full" && (
+                                <>
+                                  <td className="py-2 pr-3">{lead.phone ?? "—"}</td>
+                                  <td className="py-2 pr-3">
+                                    {lead.website
+                                      ? <a href={lead.website} target="_blank" rel="noopener noreferrer" className="block max-w-[150px] truncate text-brand-600 hover:underline">{lead.website}</a>
+                                      : "—"}
+                                  </td>
+                                </>
+                              )}
+                              <td className="py-2 pr-3">
+                                {lead.validationStatus === "valid" ? (
+                                  <Badge tone="success" title="Valid email (syntax + MX)">Valid</Badge>
+                                ) : lead.validationStatus === "invalid" ? (
+                                  <Badge tone="danger" title={lead.validationError === "invalid_format" ? "Malformed email address" : lead.validationError === "no_mx_records" ? "Domain has no mail records" : "Invalid"}>Invalid</Badge>
+                                ) : (
+                                  <span className="text-xs text-fg-muted">—</span>
+                                )}
+                              </td>
+                              <td className="py-2 pr-1 text-right">
+                                <button
+                                  type="button"
+                                  title="Remove this lead"
+                                  aria-label={`Remove ${lead.email || lead.businessName || "this lead"}`}
+                                  onClick={() => void removeSingleLead(selectedRun, i)}
+                                  className="rounded px-1 text-fg-muted transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30"
+                                >
+                                  ✕
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -536,6 +1105,75 @@ export function LocalExtractPage() {
           )}
         </div>
       </div>
+      {importOpen &&
+        createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+            onClick={() => { if (!importBusy) setImportOpen(false); }}
+          >
+            <div className="w-full max-w-md rounded-xl border border-border bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Import leads</h2>
+                <button
+                  type="button"
+                  onClick={() => setImportOpen(false)}
+                  disabled={importBusy}
+                  className="rounded px-2 text-fg-muted hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+              <p className="mt-1 text-sm text-fg-muted">
+                Add your own lead list as a new local run — CSV, TSV, TXT (one email per line),
+                JSON, or XLSX. Then use <span className="font-medium">Actions → Validate all</span> to check the emails.
+              </p>
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => { if (!importBusy) importInputRef.current?.click(); }}
+                onKeyDown={(e) => { if ((e.key === "Enter" || e.key === " ") && !importBusy) importInputRef.current?.click(); }}
+                onDragEnter={(e) => { e.preventDefault(); dragDepthRef.current += 1; setDragActive(true); }}
+                onDragLeave={(e) => { e.preventDefault(); dragDepthRef.current -= 1; if (dragDepthRef.current <= 0) setDragActive(false); }}
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  dragDepthRef.current = 0;
+                  setDragActive(false);
+                  const f = e.dataTransfer.files?.[0] ?? null;
+                  if (f) void performImport(f);
+                }}
+                className={`mt-4 flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed px-4 py-8 text-sm ${dragActive ? "border-brand-500 bg-brand-50 text-brand-600 dark:bg-brand-900/20" : "border-border text-fg-muted"}`}
+              >
+                <span className="font-medium">
+                  {importBusy ? "Importing…" : dragActive ? "Drop it here" : importDone ? "Import another file" : "Click to choose a file"}
+                </span>
+                <span className="text-xs">or drag &amp; drop one here</span>
+              </div>
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".csv,.tsv,.txt,.json,.xlsx,.xls"
+                className="hidden"
+                disabled={importBusy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  if (f) void performImport(f);
+                  e.currentTarget.value = "";
+                }}
+              />
+              {importBusy && <p className="mt-3 flex items-center gap-2 text-sm text-fg-muted">Parsing file…</p>}
+              {importDone && (
+                <div className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-300">
+                  Imported {importDone.imported} lead{importDone.imported === 1 ? "" : "s"} from{" "}
+                  {importDone.fileName}. The imported list is now a new run in the sidebar.
+                </div>
+              )}
+              {importError && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{importError}</p>}
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
