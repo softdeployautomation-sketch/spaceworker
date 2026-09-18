@@ -67,6 +67,7 @@ async function issueExeLicense(payment: {
   const { licenseKey, expiresAt } = generateLicenseKey({
     licensee: payment.user.email,
     plan: product.plan,
+    product: productId,
   });
 
   // Storing the license is the source of truth; the email is the buyer's

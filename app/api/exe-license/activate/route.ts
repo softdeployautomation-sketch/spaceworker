@@ -2,8 +2,10 @@ import { NextResponse } from "next/server";
 
 import { exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
+import { exeBuildTarget } from "@/lib/exe-build-target";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getMachineId } from "@/lib/machine-id";
+import { getProduct } from "@/lib/products";
 import { saveActivation } from "@/lib/license-state";
 
 // POST /api/exe-license/activate — body: { licenseKey, email }
@@ -55,6 +57,24 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
+  // Per-tool enforcement (the gap this task closes): a license is cryptographically
+  // signed for ONE SpaceWorker EXE variant (payload.product). Reject it here if that
+  // isn't the build currently running — so a key minted for the Extractor can never
+  // activate inside, say, the Mailer, even if its DB row says otherwise. Fail-closed:
+  // a legacy key carrying no product field also lands here. The build's own tool comes
+  // from BUILD_TARGET (lib/exe-build-target.ts), mapped to its ProductId.
+  const expectedProduct = `${exeBuildTarget()}_exe`;
+  if (!validation.product || validation.product !== expectedProduct) {
+    const forName = getProduct(validation.product)?.name ?? "another SpaceWorker tool";
+    const currentName = getProduct(expectedProduct)?.name ?? "this SpaceWorker tool";
+    return NextResponse.json(
+      {
+        error: `This license is for ${forName} — it belongs to a different SpaceWorker tool and can't be activated in ${currentName}. Buy the right product, or contact us if you made a mistake.`,
+      },
+      { status: 400 },
+    );
+  }
+
   // Light anti-sharing check: the email entered must match the key's licensee
   // (Part A — "does this key belong to the account this person is typing", a
   // usability/anti-sharing check, not a security boundary).
@@ -75,6 +95,7 @@ export async function POST(req: Request) {
     licensed: true,
     licensee: validation.licensee,
     plan: validation.plan,
+    product: validation.product,
     expiresAt: validation.expiresAt,
     expiresAtDate: validation.expiresAtDate?.toISOString(),
     activatedAt: state.activation?.activatedAt,

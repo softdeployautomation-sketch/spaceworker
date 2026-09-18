@@ -7,9 +7,12 @@ import { createHmac, timingSafeEqual } from "crypto";
 // a key issued by SpaceWorker today validates identically inside the real EXE
 // once Task 27 Part A builds its validator — zero reissuance needed.
 //
-//   payload   = { licensee, plan, issued_at, expires_at }   (no machine binding
-//               server-side at issuance time — that happens client-side inside
-//               the EXE at first activation, per Part A)
+//   payload   = { licensee, plan, product, issued_at, expires_at }   (`product` is
+//               the SpaceWorker tool's EXE variant — "extractor_exe",
+//               "mailer_exe", "combined_exe" or "automation_exe" — so the signed
+//               key can be enforced against the build it was bought for. No machine
+//               binding server-side at issuance time — that happens client-side
+//               inside the EXE at first activation, per Part A.)
 //   payload_json = JSON.stringify(payload) with keys sorted ALPHABETICALLY.
 //                  Python's json.dumps(sort_keys=True) emits a space after the
 //                  colon and after each comma; Node's JSON.stringify does not,
@@ -89,6 +92,11 @@ function sign(payloadB64: string, secret: string): string {
 export interface GenerateLicenseKeyInput {
   licensee: string; // the buyer's email — embedded as `licensee` per Part A
   plan: string; // the purchased EXE tier's slug (Product.plan)
+  // The tool this key is FOR — the SpaceWorker EXE variant ProductId
+  // ("extractor_exe" | "mailer_exe" | "combined_exe" | "automation_exe"). Signed
+  // into the payload so a key minted for one tool can never activate in another
+  // build (enforced in app/api/exe-license/activate/route.ts).
+  product: string;
   daysValid?: number; // defaults to EXE_LICENSE_DAYS (180)
   at?: Date; // test seam: override "now" for deterministic keys
 }
@@ -103,6 +111,10 @@ export interface IssuedLicense {
 export interface LicensePayload {
   licensee: string;
   plan: string;
+  // The SpaceWorker tool this key is FOR — the EXE-variant ProductId
+  // ("extractor_exe" | "mailer_exe" | "combined_exe" | "automation_exe"). Signed
+  // into the payload so per-product enforcement survives any DB relabel.
+  product: string;
   issued_at: string;
   expires_at: string;
   // Optional machine binding — READ/validated by lib/exe-license-validator.ts (a
@@ -131,6 +143,7 @@ export function generateLicenseKey(input: GenerateLicenseKeyInput): IssuedLicens
   const payload: LicensePayload = {
     licensee: String(input.licensee),
     plan: String(input.plan),
+    product: String(input.product),
     issued_at: toPythonIsoformat(issuedAt),
     expires_at: toPythonIsoformat(expiresAt),
   };

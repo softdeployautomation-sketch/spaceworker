@@ -24,6 +24,11 @@ export interface LicenseValidation {
   valid: boolean;
   licensee: string;
   plan: string;
+  /** The SpaceWorker EXE-variant ProductId this key was signed for
+   *  ("extractor_exe" | "mailer_exe" | "combined_exe" | "automation_exe"). Empty
+   *  for legacy keys minted before the field existed — which the activation route
+   *  treats as a hard miss (fail-closed). */
+  product: string;
   issuedAt: string;
   expiresAt: string;
   /** Parsed expiry (UTC) — convenience for callers that need the Date. */
@@ -40,6 +45,7 @@ function result(
     valid,
     licensee: payload?.licensee ?? "",
     plan: payload?.plan ?? "",
+    product: payload?.product ?? "",
     issuedAt: payload?.issued_at ?? "",
     expiresAt: payload?.expires_at ?? "",
     expiresAtDate: parsePythonIsoformat(payload?.expires_at ?? ""),

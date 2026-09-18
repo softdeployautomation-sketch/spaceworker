@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
+import { EXE_PRODUCTS } from "@/lib/products";
 
 type AdminUser = {
   id: string;
@@ -25,7 +26,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai" | "licenses";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -37,6 +38,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
+  { id: "licenses", label: "Licenses" },
 ];
 
 // Task 42 — human labels for Payment.product in the admin review table.
@@ -138,6 +140,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
+        {tab === "licenses" && <ExeLicensesTab />}
       </main>
     </div>
   );
@@ -2064,6 +2067,147 @@ return (
               )}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+type IssuedLicenseResult = {
+  licenseKey: string;
+  product: string;
+  productName: string;
+  licensee: string;
+  expiresAt: string;
+  exeLicenseId: string;
+};
+
+function ExeLicensesTab() {
+  const [email, setEmail] = useState("");
+  const [productId, setProductId] = useState<string>(EXE_PRODUCTS[0].id);
+  const [durationDays, setDurationDays] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<IssuedLicenseResult | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function generate() {
+    setBusy(true);
+    setError("");
+    setResult(null);
+    setCopied(false);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email,
+          product: productId,
+          durationDays: durationDays === "" ? undefined : Number(durationDays),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<IssuedLicenseResult> & {
+        error?: string;
+      };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Issue failed");
+        return;
+      }
+      if (!data.licenseKey) {
+        setError("The license was created but no key was returned.");
+        return;
+      }
+      setResult(data as IssuedLicenseResult);
+    } catch {
+      setError("Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyKey() {
+    if (!result) return;
+    try {
+      await navigator.clipboard.writeText(result.licenseKey);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setError("Copy failed — select the key below manually.");
+    }
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold tracking-tight">EXE license generator</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Manually issue a desktop-app license outside the checkout flow — a comp, an off-platform
+        payment, or a support replacement. The key is signed for exactly one SpaceWorker tool
+        (the same as a real purchase), so it can only be activated in that tool&apos;s EXE.
+      </p>
+
+      <div className="mt-5 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <div className="px-4 py-3 text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+          New license
+        </div>
+        <div className="space-y-3 px-4 py-4">
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Buyer email (must match an existing account)"
+            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+          />
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <select
+              value={productId}
+              onChange={(e) => setProductId(e.target.value)}
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+            >
+              {EXE_PRODUCTS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input
+              value={durationDays}
+              onChange={(e) => setDurationDays(e.target.value)}
+              type="number"
+              min={1}
+              placeholder="Duration (days) — blank = default (180)"
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+            />
+          </div>
+          <button
+            onClick={generate}
+            disabled={busy}
+            className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+          >
+            {busy ? "Issuing…" : "Generate license"}
+          </button>
+        </div>
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {result && (
+        <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+              License issued for {result.productName}
+            </p>
+            <button
+              onClick={copyKey}
+              className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+            >
+              {copied ? "Copied!" : "Copy key"}
+            </button>
+          </div>
+          <p className="mt-3 break-all rounded-lg bg-white p-3 font-mono text-xs text-zinc-800 shadow-sm dark:bg-zinc-900 dark:text-zinc-200">
+            {result.licenseKey}
+          </p>
+          <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
+            Buyer: {result.licensee} · Expires: {new Date(result.expiresAt).toLocaleString()} · Tracked
+            as ExeLicense #{result.exeLicenseId}.
+          </p>
         </div>
       )}
     </div>
