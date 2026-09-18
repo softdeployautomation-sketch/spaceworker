@@ -2239,6 +2239,15 @@ type AdminBindResult = {
   expiresAt: string;
 };
 
+type AdminTransferResult = {
+  licenseKey: string;
+  boundMachineId: string;
+  boundMachineLabel: string | null;
+  movedFromMachineId: string | null;
+  productName: string;
+  expiresAt: string;
+};
+
 function ExeLicenseClaimSection() {
   const [email, setEmail] = useState("");
   const [licenses, setLicenses] = useState<AdminLicenseRow[] | null>(null);
@@ -2248,6 +2257,14 @@ function ExeLicenseClaimSection() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AdminBindResult | null>(null);
+
+  // Task 47 addition — device-transfer state (move an already-bound license).
+  const [transferSelectedId, setTransferSelectedId] = useState("");
+  const [transferMachineId, setTransferMachineId] = useState("");
+  const [transferMachineLabel, setTransferMachineLabel] = useState("");
+  const [transferNote, setTransferNote] = useState("");
+  const [transferResult, setTransferResult] = useState<AdminTransferResult | null>(null);
+  const [transferError, setTransferError] = useState("");
 
   async function loadLicenses() {
     if (!email.includes("@")) {
@@ -2272,6 +2289,10 @@ function ExeLicenseClaimSection() {
       setLicenses(rows);
       const firstUnbound = rows.find((r) => !r.boundMachineId);
       setSelectedId(firstUnbound ? firstUnbound.id : "");
+      const firstBound = rows.find((r) => r.boundMachineId);
+      setTransferSelectedId(firstBound ? firstBound.id : "");
+      setTransferResult(null);
+      setTransferError("");
     } catch {
       setError("Network error loading licenses.");
       setLicenses([]);
@@ -2317,7 +2338,46 @@ function ExeLicenseClaimSection() {
     }
   }
 
+  async function transfer() {
+    if (!transferSelectedId || !transferMachineId.trim() || busy) return;
+    setBusy(true);
+    setTransferError("");
+    setTransferResult(null);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "transfer",
+          email,
+          exeLicenseId: transferSelectedId,
+          newMachineId: transferMachineId.trim(),
+          newMachineLabel: transferMachineLabel.trim() ? transferMachineLabel.trim() : undefined,
+          note: transferNote.trim() ? transferNote.trim() : undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<AdminTransferResult> & {
+        error?: string;
+      };
+      if (!res.ok) {
+        setTransferError(typeof data.error === "string" ? data.error : "Transfer failed.");
+        return;
+      }
+      if (!data.licenseKey) {
+        setTransferError("The license was transferred but no key was returned.");
+        return;
+      }
+      setTransferResult(data as AdminTransferResult);
+      await loadLicenses();
+    } catch {
+      setTransferError("Network error transferring the license.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const unbound = (licenses ?? []).filter((r) => !r.boundMachineId);
+  const bound = (licenses ?? []).filter((r) => r.boundMachineId);
 return (
     <div className="mt-8">
       <div className="flex items-center justify-between">
@@ -2414,6 +2474,89 @@ return (
             </p>
           </div>
         )}
+
+        <hr className="my-5 border-zinc-200 dark:border-zinc-800" />
+        <div className="pt-2">
+          <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+            Transfer a bound license to a new device{" "}
+            <span className="font-normal text-zinc-500">
+              (admin/support action — deliberately overwrites the current device binding)
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            For a legitimate hardware replacement: moves an already-claimed license to a new
+            Device ID. Preserves the original expiry, invalidates the old machine&rsquo;s key, and
+            records the move in the license&rsquo;s audit log.
+          </p>
+
+          {licenses && bound.length === 0 && (
+            <p className="mt-2 text-sm text-zinc-500">No bound licenses to transfer — claim one above first.</p>
+          )}
+
+          {bound.length > 0 && (
+            <div className="mt-3 space-y-2">
+              <select
+                value={transferSelectedId}
+                onChange={(e) => setTransferSelectedId(e.target.value)}
+                className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+              >
+                {bound.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.productName} (#{r.id.slice(0, 8)}) — bound to {r.boundMachineId}
+                    {r.boundMachineLabel ? ` (${r.boundMachineLabel})` : ""}
+                  </option>
+                ))}
+              </select>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <input
+                  value={transferMachineId}
+                  onChange={(e) => setTransferMachineId(e.target.value)}
+                  placeholder="New Device ID (from the customer's new app)"
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/3"
+                />
+                <input
+                  value={transferMachineLabel}
+                  onChange={(e) => setTransferMachineLabel(e.target.value)}
+                  placeholder="New device label (optional)"
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/3"
+                />
+                <input
+                  value={transferNote}
+                  onChange={(e) => setTransferNote(e.target.value)}
+                  placeholder="Support note (optional, e.g. 'replaced laptop')"
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/3"
+                />
+                <button
+                  onClick={transfer}
+                  disabled={busy || !transferSelectedId || !transferMachineId.trim()}
+                  className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-rose-500 disabled:opacity-50"
+                >
+                  {busy ? "Transferring…" : "Transfer device"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {transferError && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{transferError}</p>}
+
+          {transferResult && (
+            <div className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950">
+              <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+                License transferred — {transferResult.productName} moved from{" "}
+                {transferResult.movedFromMachineId ?? "(unknown)"} to {transferResult.boundMachineId}
+              </p>
+              <p className="mt-3 break-all rounded-lg bg-white p-3 font-mono text-xs text-zinc-800 shadow-sm dark:bg-zinc-900 dark:text-zinc-200">
+                {transferResult.licenseKey}
+              </p>
+              <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
+                New bound device {transferResult.boundMachineId}
+                {transferResult.boundMachineLabel ? ` (${transferResult.boundMachineLabel})` : ""} · Expires:{" "}
+                {new Date(transferResult.expiresAt).toLocaleString()} — send this activation key to the buyer.
+                The old machine&rsquo;s key no longer validates.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

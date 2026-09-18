@@ -4,7 +4,7 @@ import { requireAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
 import { EXE_PRODUCTS } from "@/lib/products";
 import { generateLicenseKey } from "@/lib/exe-license";
-import { bindExeLicenseToMachine, LicenseBindError } from "@/lib/exe-license-bind";
+import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError } from "@/lib/exe-license-bind";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
 //   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
@@ -14,6 +14,15 @@ import { bindExeLicenseToMachine, LicenseBindError } from "@/lib/exe-license-bin
 //        an existing (unbound) license to a machine — the admin manual tool for
 //        one-real-machine-per-license. Re-signs the key with the device's
 //        machine_id, preserving the original expiry, and stores the bound key.
+//   POST { action: "transfer", email, exeLicenseId, newMachineId, newMachineLabel?,
+//        note? } -> ADMIN/SELF-SERVICE-ONLY DEVICE TRANSFER: move an ALREADY-BOUND
+//        license from its current machine to a new device (Task 47 addition). The
+//        ONE action that deliberately overwrites an existing binding (bind/claim
+//        refuses to). Re-signs the ORIGINAL unbound key for the new device,
+//        preserving the true original expiry, updates the bound key, and appends
+//        a durable ExeLicenseTransfer audit row — atomically, in one transaction.
+//        No buyer-facing equivalent: letting buyers freely re-bind would defeat
+//        the one-device-per-license guarantee.
 //   GET  ?email=... -> list that buyer's licenses (product, issuedAt, claimed?,
 //        bound machine) so the admin can pick which unclaimed key to claim.
 // All gated by the admin session like every /api/admin/* route.
@@ -57,9 +66,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const action = body.action === "bind" ? "bind" : "issue";
+  const action = body.action === "transfer" ? "transfer" : body.action === "bind" ? "bind" : "issue";
   if (action === "bind") {
     return bindLicense(user.id, user.email, body);
+  }
+  if (action === "transfer") {
+    return transferLicense(user.id, user.email, body);
   }
   return issueLicense(user, body);
 }
@@ -108,6 +120,78 @@ async function bindLicense(
   } catch (err) {
     if (err instanceof LicenseBindError) {
       const status = err.code === "not_found" ? 404 : err.code === "already_bound" ? 409 : 400;
+      return NextResponse.json({ error: err.message, code: err.code }, { status });
+    }
+    throw err;
+  }
+}
+
+// ---- transfer (move an already-bound license to a new device — admin/support) --
+// Task 47 addition. Deliberately the ONLY action that overwrites an existing
+// binding (bind/claim refuses to). An admin support replacement: a buyer replaced
+// a laptop / lost a machine and legitimately needs the license on a new device.
+// Same ownership shape as bind — the license MUST belong to the named buyer —
+// and admin-gated like every other action here. There is NO self-service version
+// of this: letting buyers freely re-bind would defeat the one-device guarantee.
+
+async function transferLicense(
+  userId: string,
+  userEmail: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const exeLicenseId = typeof body.exeLicenseId === "string" ? body.exeLicenseId.trim() : "";
+  const newMachineId = typeof body.newMachineId === "string" ? body.newMachineId.trim() : "";
+  const newMachineLabel =
+    typeof body.newMachineLabel === "string" && body.newMachineLabel.trim()
+      ? body.newMachineLabel.trim()
+      : null;
+  const note = typeof body.note === "string" && body.note.trim() ? body.note.trim() : null;
+
+  if (!exeLicenseId) {
+    return NextResponse.json({ error: "Pick which bound license to transfer." }, { status: 400 });
+  }
+  if (!newMachineId) {
+    return NextResponse.json({ error: "Enter the new Device ID to move this license to." }, { status: 400 });
+  }
+
+  // Ownership gate: the license MUST belong to the buyer the admin named.
+  const license = await prisma.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license || license.userId !== userId) {
+    return NextResponse.json(
+      { error: `No license for ${userEmail} matches that selection.` },
+      { status: 400 },
+    );
+  }
+  if (!license.boundMachineId) {
+    return NextResponse.json(
+      { error: "This license isn't bound to a device yet — claim (bind) it first before transferring." },
+      { status: 409 },
+    );
+  }
+
+  try {
+    const moved = await transferExeLicenseToMachine({
+      exeLicenseId,
+      newMachineId,
+      newMachineLabel,
+      note,
+    });
+    return NextResponse.json({
+      transferred: true,
+      licenseKey: moved.boundLicenseKey,
+      boundMachineId: moved.boundMachineId,
+      boundMachineLabel: moved.boundMachineLabel,
+      movedFromMachineId: moved.movedFromMachineId,
+      movedAt: moved.movedAt.toISOString(),
+      exeLicenseId,
+      product: moved.product,
+      productName: moved.productName,
+      licensee: moved.licensee,
+      expiresAt: moved.expiresAt.toISOString(),
+    });
+  } catch (err) {
+    if (err instanceof LicenseTransferError) {
+      const status = err.code === "not_found" ? 404 : err.code === "not_bound" ? 409 : err.code === "not_configured" ? 500 : 400;
       return NextResponse.json({ error: err.message, code: err.code }, { status });
     }
     throw err;

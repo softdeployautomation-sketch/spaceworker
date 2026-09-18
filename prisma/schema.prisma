@@ -50,6 +50,7 @@ model User {
   agentPendingActions AgentPendingAction[]
   aiUsageLogs      AiUsageLog[]
   exeLicenses      ExeLicense[]
+  exeLicenseTransfers ExeLicenseTransfer[]
 }
 
 model VerificationCode {
@@ -406,6 +407,47 @@ model ExeLicense {
   boundLicenseKey   String?
   boundAt           DateTime?
 
+  // Task 47 addition — an admin device-transfer moves an already-bound license
+  // from one machine to another (a deliberate support action, the only place a
+  // binding is intentionally overwritten). Each successful transfer appends an
+  // ExeLicenseTransfer audit row (see below) so "who moved what, when" survives
+  // for support disputes.
+  transfers ExeLicenseTransfer[]
+
+  @@index([userId])
+}
+
+// Task 47 addition — append-only audit log of every admin device transfer for an
+// EXE license. Written ATOMICALLY with the rebind (same $transaction as the
+// ExeLicense.boundMachineId overwrite) so a transfer can never be recorded
+// without its rebind or vice-versa. This is the durable record of the admin
+// support action that deliberately moves a license to a replacement machine;
+// the one-device guarantee in lib/exe-license-bind.ts is preserved because only
+// a transfer (never the claim/bind path) may overwrite an existing binding.
+//
+// fromMachineId/toMachineId mirror the same lowercased machine_id format as
+// ExeLicense.boundMachineId (getMachineId() output). fromMachineLabel is a
+// snapshot of the binding being replaced, so the record is meaningful even if
+// the ExeLicense row is later edited again.
+model ExeLicenseTransfer {
+  id               String    @id @default(cuid())
+  exeLicenseId     String
+  exeLicense       ExeLicense @relation(fields: [exeLicenseId], references: [id])
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  // The machine the license was bound to BEFORE this transfer. NULL only if the
+  // row was somehow unbound (won't happen — a transfer requires an existing
+  // binding — but kept nullable so the log can never fail to describe a move).
+  fromMachineId    String?
+  toMachineId      String
+  fromMachineLabel String?
+  toMachineLabel   String?
+  // Optional support note — "replaced laptop after recall" etc. Free-form, kept
+  // short; the admin UI caps it.
+  note             String?
+  transferredAt    DateTime  @default(now())
+
+  @@index([exeLicenseId, transferredAt])
   @@index([userId])
 }
 
