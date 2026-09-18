@@ -6,12 +6,32 @@ import { ChangePasswordForm } from "@/components/change-password-form";
 import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
+import { ExeLicensePanel } from "./exe-license-panel";
 
 export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
+  // Desktop EXE runs fully offline — the web session/Postgres read below has no
+  // meaning in the local runtime (same pattern as app/dashboard/layout.tsx, which
+  // passes user=null there). The only Settings content the EXE needs is the local
+  // License panel, which talks exclusively to /api/exe-license/*; the account/
+  // security/etc. cards are web-host-only. Split here so the EXE build never
+  // touches the DB.
+  if (isLocalExeRuntime()) {
+    return (
+      <div className="flex flex-col gap-6">
+        <div>
+          <h1 className="text-2xl font-bold text-fg">Settings</h1>
+          <p className="mt-1 text-sm text-fg-muted">Licensing and preferences for this device.</p>
+        </div>
+        <ExeLicensePanel />
+      </div>
+    );
+  }
+
   const user = await getCurrentUser();
   if (!user) return null;
 

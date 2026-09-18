@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 
-import { Badge, Button, Card, Input, Label, Spinner } from "@/components/ui";
+import { Badge, Card, Spinner } from "@/components/ui";
+import { LicenseActivationForm } from "@/components/license-activation-form";
 
 // The shared licensing/activation gate — ONE component compiled identically into
 // all four desktop EXE builds (Extractor / Mailer / Combined / Automation-
@@ -36,32 +37,6 @@ export interface LicenseGateProps {
 
 export function LicenseGate({ build, buyHref = "/#store", children }: LicenseGateProps) {
   const [status, setStatus] = useState<Status>({ mode: "loading" });
-  const [licenseKey, setLicenseKey] = useState("");
-  const [email, setEmail] = useState("");
-  const [error, setError] = useState("");
-  const [activating, setActivating] = useState(false);
-
-  async function activate() {
-    setError("");
-    setActivating(true);
-    try {
-      const res = await fetch("/api/exe-license/activate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey, email }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok && data.licensed) {
-        setStatus({ mode: "ok" });
-      } else {
-        setError(typeof data.error === "string" ? data.error : "Activation failed. Check the key and email and try again.");
-      }
-    } catch {
-      setError("Network error — could not reach the local licensing service.");
-    } finally {
-      setActivating(false);
-    }
-  }
 
   // Check the local license status on mount (first launch starts the 24h trial
   // silently; licensed/in-trial both let the dashboard through with no gate).
@@ -105,48 +80,19 @@ export function LicenseGate({ build, buyHref = "/#store", children }: LicenseGat
             `Your 24-hour trial of the ${build} edition is over. Activate with the license key emailed when you purchased it, or grab a license in the store.`}
         </p>
 
-        <div className="mt-5 space-y-4">
-          <div>
-            <Label htmlFor="exe-license-key">License key</Label>
-            <Input
-              id="exe-license-key"
-              type="text"
-              autoComplete="off"
-              spellCheck={false}
-              value={licenseKey}
-              onChange={(e) => setLicenseKey(e.target.value)}
-              placeholder="Paste your license key"
-            />
-          </div>
-          <div>
-            <Label htmlFor="exe-license-email">Email</Label>
-            <Input
-              id="exe-license-email"
-              type="email"
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-            />
-          </div>
-
-          {error && (
-            <p className="text-sm text-red-600 dark:text-red-400" role="alert">
-              {error}
-            </p>
-          )}
-
-          <div className="flex items-center justify-between gap-3">
-            <a
-              href={buyHref}
-              className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
-            >
-              Buy a license →
-            </a>
-            <Button variant="primary" type="button" onClick={activate} disabled={activating}>
-              {activating ? "Activating…" : "Activate"}
-            </Button>
-          </div>
+        <div className="mt-5">
+          <LicenseActivationForm
+            onActivated={() => setStatus({ mode: "ok" })}
+            autoFocus
+            actionSlot={
+              <a
+                href={buyHref}
+                className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
+              >
+                Buy a license →
+              </a>
+            }
+          />
         </div>
       </Card>
 
