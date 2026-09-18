@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { exeLicenseSecret } from "@/lib/exe-license";
+import { exeLicenseSecret, decodeLicenseKey } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
@@ -55,6 +55,26 @@ export async function POST(req: Request) {
 
   if (!validation.valid) {
     return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+
+  // Task 47 — the actual vulnerability this task exists to close. The key that a
+  // checkout issues is UNBOUND (no machine binding) — a purchase reference, not
+  // something the EXE may accept. Without this check, that unbound key validated
+  // on ANY machine (the offline validator's machine check is a no-op when
+  // machine_id/machine_ids are both absent), i.e. one purchase = unlimited
+  // machines. Reject it here with a clear remediation message; the buyer's real
+  // activation key is the RE-SIGNED, machine-bound key produced by claiming this
+  // license on their account's Licenses page (admin tool or self-service).
+  const decoded = decodeLicenseKey(licenseKey);
+  const hasMachineBinding = !!decoded?.machine_id || (decoded?.machine_ids?.length ?? 0) > 0;
+  if (!decoded || !hasMachineBinding) {
+    return NextResponse.json(
+      {
+        error:
+          "This key is a purchase reference, not an activation key — claim your license to this device on your account's Licenses page first, and use the activation key it gives you.",
+      },
+      { status: 400 },
+    );
   }
 
   // Per-tool enforcement (the gap this task closes): a license is cryptographically

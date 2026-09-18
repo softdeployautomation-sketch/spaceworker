@@ -98,6 +98,19 @@ export interface GenerateLicenseKeyInput {
   // build (enforced in app/api/exe-license/activate/route.ts).
   product: string;
   daysValid?: number; // defaults to EXE_LICENSE_DAYS (180)
+  // Task 47 — optional machine binding. When present, the payload carries this as
+  // `machine_id` so the offline validator locks the key to ONE device. Issuance
+  // at checkout leaves it ABSENT (an unbound purchase reference); only the claim
+  // step passes it, to re-sign the key for the buyer's actual machine. The EXE's
+  // activation route rejects any key with no machine binding (see the activate
+  // route), so an unbound key can never be used as a working, machine-agnostic
+  // license.
+  machineId?: string;
+  // Task 47 — exact-expiry override. When present, `expires_at` is this value
+  // (verbatim) instead of `now + daysValid` — a claim uses the ORIGINAL unbound
+  // key's expiry so binding a machine never resets or extends the term. Absent
+  // defaults to today's `now + daysValid` behaviour (unchanged).
+  expiresAt?: Date;
   at?: Date; // test seam: override "now" for deterministic keys
 }
 
@@ -118,11 +131,12 @@ export interface LicensePayload {
   issued_at: string;
   expires_at: string;
   // Optional machine binding — READ/validated by lib/exe-license-validator.ts (a
-  // faithful port of validator.py). The server NEVER emits these fields at
-  // issuance time: Task 27 Part A binds the machine client-side at first
-  // activation instead. They only appear on keys minted machine-bound by the old
-  // standalone generator (machine_id / machine_ids), which the EXE validator must
-  // still be able to honour.
+  // faithful port of validator.py). Task 47: the server emits `machine_id` on a
+  // claimed key (re-signed for the buyer's device) and ABSENT on the instant-
+  // purchase key. The EXE activation route rejects keys with no machine binding,
+  // so an unbound key is only ever a purchase reference, never a working license.
+  // `machine_ids` also still honours keys minted machine-bound by the old
+  // standalone generator, which the EXE validator must continue to support.
   machine_id?: string;
   machine_ids?: string[];
 }
@@ -138,7 +152,10 @@ export function generateLicenseKey(input: GenerateLicenseKeyInput): IssuedLicens
   const now = input.at ?? new Date();
 
   const issuedAt = now;
-  const expiresAt = new Date(now.getTime() + daysValid * 24 * 60 * 60 * 1000);
+  // Task 47: an explicit `expiresAt` (used by the claim step to preserve an
+  // original key's exact remaining validity) wins over the `now + daysValid`
+  // default, so binding a machine never resets or extends the term.
+  const expiresAt = input.expiresAt ?? new Date(now.getTime() + daysValid * 24 * 60 * 60 * 1000);
 
   const payload: LicensePayload = {
     licensee: String(input.licensee),
@@ -147,6 +164,12 @@ export function generateLicenseKey(input: GenerateLicenseKeyInput): IssuedLicens
     issued_at: toPythonIsoformat(issuedAt),
     expires_at: toPythonIsoformat(expiresAt),
   };
+  // Task 47 — a claim re-signs the key with the buyer's device; the field is
+  // ABSENT for the instant-purchase unbound key (which the activation route now
+  // rejects). The offline validator honours `machine_id` when present.
+  if (input.machineId) {
+    payload.machine_id = String(input.machineId);
+  }
 
   const payloadJson = pyJsonDumpsSorted(payload);
   const payloadB64 = b64urlEncode(payloadJson);

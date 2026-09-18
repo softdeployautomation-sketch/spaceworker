@@ -125,13 +125,19 @@ export function verificationEmailHtml(code: string): string {
 // Unlike the public store page (which deliberately shows only a price), this
 // email must state the REAL 6-month expiry clearly, plus the honest status that
 // the desktop build isn't downloadable yet.
+//
+// Task 47 — the key issued at checkout is a PURCHASE REFERENCE, not an
+// activation key. The email must not read as "enter this in the app" — an unbound
+// key can't be used by the EXE (the activation route now rejects it). The real
+// activation key comes from claiming the license to a device (admin tool or the
+// buyer's own Licenses page via `claimUrl`).
 export function exeLicenseIssuedEmailHtml(opts: {
   productName: string;
   licenseKey: string;
   expiresAt: Date;
   // Task 45 — single-use "view my license" claim link. When present (always, for
   // newly issued licenses) it lets an EXE-only buyer prove email ownership and
-  // reach a narrow license_only session where they can see this key again.
+  // reach a narrow license_only session where they can claim / see this license.
   claimUrl?: string;
 }): string {
   const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
@@ -141,17 +147,26 @@ export function exeLicenseIssuedEmailHtml(opts: {
   });
   const claimSection = opts.claimUrl
     ? `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Need to see your key again later? Open this link to view your licenses:<br/>
+        <strong style="color:#111827;">Next step — get your activation key:</strong> once you've
+        downloaded the app, run it, copy the <strong>Device ID</strong> it shows, then open this
+        link to claim this license to that device and get the key to enter in the app:<br/>
         <a href="${opts.claimUrl}" style="color:#4f46e5;word-break:break-all;">${opts.claimUrl}</a>
+        <span style="display:block;margin-top:4px;font-size:12px;color:#6b7280;">(If you already
+        have a SpaceWorker account, sign in and go to the &ldquo;Licenses&rdquo; page instead.)</span>
       </p>`
-    : "";
+    : `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <strong style="color:#111827;">Next step — get your activation key:</strong> once you've
+        downloaded the app, run it, copy the <strong>Device ID</strong> it shows, then sign in to
+        your account&rsquo;s <strong>Licenses</strong> page and claim this license to that device.
+        The page will give you the real activation key to enter in the app.
+      </p>`;
   return `<!doctype html>
 <html>
   <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
     <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
-      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">Your ${opts.productName} license is active</p>
+      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">Your ${opts.productName} purchase is confirmed</p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Thanks for your purchase. Your license key is below.
+        Thanks for your purchase.
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
         <strong style="color:#b91c1c;">Your license is valid for 6 months and expires on ${plainDate}.</strong>
@@ -159,16 +174,18 @@ export function exeLicenseIssuedEmailHtml(opts: {
       </p>
       <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0 0 16px;">
         <strong>About the download:</strong> the desktop app build is not ready to download yet.
-        Your key is already active and will work immediately the moment you download the app.
-        We&rsquo;ll email you the download link as soon as the build is available — no need to do anything now.
+        We&rsquo;ll email you the download link as soon as the build is available — no need to do
+        anything now.
       </p>
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;word-break:break-all;">
-        <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">Your license key</p>
+        <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">
+          Purchase reference (this is <strong style="color:#b91c1c;">not</strong> your activation key — use the next step below)
+        </p>
         <p style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#111827;margin:0;">${opts.licenseKey}</p>
       </div>
       ${claimSection}
       <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:12px 0 0;">
-        Keep this email safe — it contains your only copy of the key.
+        Keep this email safe — the purchase reference it contains is your proof of purchase.
       </p>
     </div>
   </body>

@@ -388,6 +388,24 @@ model ExeLicense {
   licenseClaimTokenExpiresAt DateTime?
   licenseClaimTokenConsumedAt DateTime?
 
+  // Task 47 — one-time machine binding via a "claim" step. Issuance produces an
+  // UNBOUND key (a purchase reference the EXE must never accept); a claim re-signs
+  // that key with the buyer's device machine_id and records the binding here. All
+  // four are set exactly once, on the first successful claim:
+  //   boundMachineId    — the hardware id the key is now locked to (same format
+  //                       getMachineId() produces, lowercased).
+  //   boundMachineLabel — optional buyer/admin-chosen cosmetic label ("Office PC").
+  //   boundLicenseKey   — the RE-SIGNED, machine-bound activation key the buyer
+  //                       actually enters into the EXE (decodes with machine_id).
+  //   boundAt           — when the claim happened (boundAt + original expiry is
+  //                       the real term — a claim never resets the 180 days).
+  // All nullable so every pre-existing (pre-feature) row correctly reads as
+  // "unclaimed" — no machine info was ever bound for them either.
+  boundMachineId    String?
+  boundMachineLabel String?
+  boundLicenseKey   String?
+  boundAt           DateTime?
+
   @@index([userId])
 }
 

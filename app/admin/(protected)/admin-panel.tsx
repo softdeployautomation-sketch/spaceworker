@@ -2210,6 +2210,211 @@ function ExeLicensesTab() {
           </p>
         </div>
       )}
+
+      <ExeLicenseClaimSection />
+    </div>
+  );
+}
+// Task 47 — CLAIM an existing (unbound) license to a machine. The admin manual
+// tool that actually locks a real customer's license to one device. Uses the
+// SAME existing generator route (/api/admin/exe-licenses), extended with an
+// action:"bind" + a GET list — not a second, separate generator.
+
+type AdminLicenseRow = {
+  id: string;
+  product: string;
+  productName: string;
+  issuedAt: string;
+  boundMachineId: string | null;
+  boundMachineLabel: string | null;
+  boundLicenseKey: string | null;
+  boundAt: string | null;
+};
+
+type AdminBindResult = {
+  licenseKey: string;
+  boundMachineId: string;
+  boundMachineLabel: string | null;
+  productName: string;
+  expiresAt: string;
+};
+
+function ExeLicenseClaimSection() {
+  const [email, setEmail] = useState("");
+  const [licenses, setLicenses] = useState<AdminLicenseRow[] | null>(null);
+  const [selectedId, setSelectedId] = useState("");
+  const [machineId, setMachineId] = useState("");
+  const [machineLabel, setMachineLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<AdminBindResult | null>(null);
+
+  async function loadLicenses() {
+    if (!email.includes("@")) {
+      setError("Enter the buyer's email first.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await fetch(`/api/admin/exe-licenses?email=${encodeURIComponent(email)}`);
+      const data = (await res.json().catch(() => ({}))) as {
+        licenses?: AdminLicenseRow[];
+        error?: string;
+      };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Couldn't load licenses.");
+        setLicenses([]);
+        return;
+      }
+      const rows = data.licenses ?? [];
+      setLicenses(rows);
+      const firstUnbound = rows.find((r) => !r.boundMachineId);
+      setSelectedId(firstUnbound ? firstUnbound.id : "");
+    } catch {
+      setError("Network error loading licenses.");
+      setLicenses([]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bind() {
+    if (!selectedId || !machineId.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "bind",
+          email,
+          exeLicenseId: selectedId,
+          machineId: machineId.trim(),
+          machineLabel: machineLabel.trim() ? machineLabel.trim() : undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<AdminBindResult> & {
+        error?: string;
+      };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Claim failed.");
+        return;
+      }
+      if (!data.licenseKey) {
+        setError("The license was claimed but no key was returned.");
+        return;
+      }
+      setResult(data as AdminBindResult);
+      await loadLicenses();
+    } catch {
+      setError("Network error claiming the license.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const unbound = (licenses ?? []).filter((r) => !r.boundMachineId);
+return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold tracking-tight">Claim an existing license</h3>
+        <span className="text-xs text-zinc-500 dark:text-zinc-400">
+          Lock an issued key to one customer device (one-machine guarantee)
+        </span>
+      </div>
+
+      <div className="mt-3 space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <input
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setLicenses(null);
+              setResult(null);
+            }}
+            placeholder="Buyer email (must match an existing account)"
+            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+          />
+          <button
+            onClick={loadLicenses}
+            disabled={busy}
+            className="rounded-lg bg-zinc-200 px-4 py-2 text-sm font-medium text-zinc-800 transition-colors hover:bg-zinc-300 disabled:opacity-50 dark:bg-zinc-700 dark:text-zinc-200"
+          >
+            {busy ? "Loading…" : "Load buyer's licenses"}
+          </button>
+        </div>
+
+        {licenses && licenses.length === 0 && (
+          <p className="text-sm text-zinc-500">No licenses found for this buyer.</p>
+        )}
+
+        {licenses && licenses.length > 0 && (
+          <select
+            value={selectedId}
+            onChange={(e) => setSelectedId(e.target.value)}
+            className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+          >
+            {licenses.map((r) => (
+              <option key={r.id} value={r.id} disabled={!!r.boundMachineId}>
+                {r.productName} (#{r.id.slice(0, 8)})
+                {r.boundMachineId ? ` — already bound to ${r.boundMachineId}` : " — unclaimed"}
+              </option>
+            ))}
+          </select>
+        )}
+
+        {unbound.length === 0 && licenses && licenses.length > 0 && (
+          <p className="text-sm text-amber-700 dark:text-amber-400">
+            All of this buyer&rsquo;s licenses are already bound to a device.
+          </p>
+        )}
+
+        {unbound.length > 0 && (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              value={machineId}
+              onChange={(e) => setMachineId(e.target.value)}
+              placeholder="Device ID (from the customer's app)"
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+            />
+            <input
+              value={machineLabel}
+              onChange={(e) => setMachineLabel(e.target.value)}
+              placeholder="Device label (optional)"
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+            />
+            <button
+              onClick={bind}
+              disabled={busy || !selectedId || !machineId.trim()}
+              className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {busy ? "Claiming…" : "Claim to device"}
+            </button>
+          </div>
+        )}
+
+        {error && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+        {result && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950">
+            <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+              License claimed — activation key for {result.productName}
+            </p>
+            <p className="mt-3 break-all rounded-lg bg-white p-3 font-mono text-xs text-zinc-800 shadow-sm dark:bg-zinc-900 dark:text-zinc-200">
+              {result.licenseKey}
+            </p>
+            <p className="mt-3 text-xs text-emerald-700 dark:text-emerald-400">
+              Bound to device {result.boundMachineId}
+              {result.boundMachineLabel ? ` (${result.boundMachineLabel})` : ""} · Expires:{" "}
+              {new Date(result.expiresAt).toLocaleString()} — send this activation key to the buyer.
+            </p>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

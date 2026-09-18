@@ -104,7 +104,7 @@ async function issueExeLicense(payment: {
   try {
     await sendEmail({
       to: payment.user.email,
-      subject: `Your ${product.name} license is active`,
+      subject: `Your ${product.name} purchase is confirmed`,
       html: exeLicenseIssuedEmailHtml({
         productName: product.name,
         licenseKey,
