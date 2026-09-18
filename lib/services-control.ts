@@ -5,14 +5,14 @@ import { promisify } from "util";
 const execFileAsync = promisify(execFile);
 
 /**
- * Lets the admin panel stop/start/restart the standalone browser subsystem
- * (spaceworker-browser.service — Neko/Chrome/Docker, NOT the main Next.js
- * app or extraction-worker) without shelling into the VPS. Deliberately
- * scoped to exactly this one unit, matching the actual ask ("the browser
- * part alone, so I can stop it if necessary") rather than a general
- * service-control panel — restarting the main app or worker from this same
- * surface is a much easier way to cause an outage than the "stop a
- * heavyweight, non-critical subsystem" lever this is meant to be.
+ * Lets the admin panel stop/start/restart the standalone heavyweight
+ * subsystems — spaceworker-browser.service (Neko/Chrome/Docker) and
+ * extraction-worker.service — without shelling into the VPS. Deliberately
+ * allowlisted to exactly these units (NOT the main Next.js app, so it stays a
+ * "stop a heavyweight, non-critical subsystem" lever rather than an easy way
+ * to take the whole site down). The Search Queue tab wraps the extraction
+ * worker with an additional coordinated stop that also pauses dispatch + marks
+ * running jobs stopped, but the same raw systemctl control is available here.
  *
  * Note: spaceworker.service (and this admin route) currently run as `trmm`,
  * which already carries a pre-existing, broader `NOPASSWD:ALL` sudo grant
@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 
 export type ServiceAction = "start" | "stop" | "restart";
 
-export const CONTROLLABLE_UNITS = ["spaceworker-browser.service"] as const;
+export const CONTROLLABLE_UNITS = ["spaceworker-browser.service", "extraction-worker.service"] as const;
 export type ControllableUnit = (typeof CONTROLLABLE_UNITS)[number];
 
 // Exported so callers (the API route, the client-side type below) share this

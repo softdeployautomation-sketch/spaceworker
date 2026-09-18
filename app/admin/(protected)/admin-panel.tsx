@@ -877,12 +877,126 @@ function AdmissionControlPanel() {
   );
 }
 
+// Task 48 — admin "Stop worker & pause all runs" / "Resume". Distinct from the
+// coarse per-service Start/Stop on the Services tab (which only toggles systemd
+// and leaves the dispatch toggles + running jobs untouched). This is the
+// coordinated hard-stop the owner asked for after the earlier incident where
+// the only "stop" was restarting the whole spaceworker.service and taking every
+// customer's site down: dispatch lanes off + running jobs marked "stopped"
+// atomically in the backend, then the worker process killed.
+type WorkerControlState = { activeState: string; subState: string; memoryMb: number | null };
+
+function WorkerControlPanel({ onChanged }: { onChanged?: () => void }) {
+  const confirm = useConfirm();
+  const [state, setState] = useState<WorkerControlState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/queue/worker-control");
+      if (!res.ok) throw new Error("Failed to load worker state");
+      const data = (await res.json()) as { state: WorkerControlState };
+      setState(data.state);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load worker state");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function run(action: "stop" | "resume") {
+    if (
+      action === "stop" &&
+      !(await confirm({
+        title: "Stop worker & pause all runs?",
+        description:
+          "Disables both dispatch lanes and hard-stops every search job that is currently running. Leads already found are already persisted on each ~10s poll tick, but each stopped job's remaining queries are lost and will NOT auto-resume. Start it again with Resume when you're ready.",
+        confirmLabel: "Stop worker",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/queue/worker-control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Action failed");
+        return;
+      }
+      if (data.state) setState(data.state as WorkerControlState);
+      onChanged?.();
+    } catch {
+      setError("Network error");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const active = state?.activeState === "active";
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Extraction worker</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        A coordinated hard-stop: disables both dispatch lanes and marks currently-running
+        jobs "stopped" before killing the worker — so you never have to restart the whole
+        app again (last time that was the only option, it took every customer down). Leads
+        already found are kept; a hard-stopped job's remaining queries are lost.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {loading ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <ServiceStateBadge activeState={state?.activeState ?? "unknown"} />
+              {state?.subState && (
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">{state.subState}</span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              {state?.memoryMb != null
+                ? `${state.memoryMb} MB RSS`
+                : "memory unavailable"}{" "}·{" "}{active ? "accepting jobs" : "dispatch paused"}
+            </p>
+          </div>
+          <button
+            onClick={() => run(active ? "stop" : "resume")}
+            disabled={busy}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+              active ? "bg-red-600 hover:bg-red-500" : "bg-blue-600 hover:bg-blue-500"
+            }`}
+          >
+            {busy ? "Working…" : active ? "Stop worker & pause all runs" : "Resume"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 function QueueTab() {
+  const confirm = useConfirm();
   const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [dispatching, setDispatching] = useState(false);
   const [dispatchResult, setDispatchResult] = useState<string>("");
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -921,6 +1035,37 @@ function QueueTab() {
     }
   }
 
+  // Task 48 — per-job admin stop, backed by the same shared cancellation the
+  // customer-facing Stop uses, gated on the admin session.
+  async function stopJob(id: string) {
+    if (
+      !(await confirm({
+        title: "Stop this job?",
+        description:
+          "Marks the job as stopped and cancels its queued entry. Leads already found are kept; any remaining queries are lost. This affects only this one job, not the worker.",
+        confirmLabel: "Stop job",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setStoppingId(id);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/queue/${id}/stop`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Stop failed");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Network error");
+    } finally {
+      setStoppingId(null);
+    }
+  }
+
   // A job "stuck" in the queue: still queued/dispatched but not making
   // progress. Flags anything queued for more than 2 minutes so a stall like
   // "the dispatcher/worker isn't running" is visually obvious, not just a
@@ -934,7 +1079,10 @@ function QueueTab() {
 
   return (
     <div>
-      <AdmissionControlPanel />
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <AdmissionControlPanel />
+        <WorkerControlPanel onChanged={load} />
+      </div>
 
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Search Queue</h2>
@@ -987,6 +1135,7 @@ function QueueTab() {
                 <th className="px-4 py-3 font-medium">Queue claim</th>
                 <th className="px-4 py-3 font-medium">Leads</th>
                 <th className="px-4 py-3 font-medium">Created</th>
+                <th className="px-4 py-3 font-medium">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -1016,6 +1165,17 @@ function QueueTab() {
                   <td className="px-4 py-3">{j.leadCount}</td>
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
                     {new Date(j.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {(j.jobStatus === "queued" || j.jobStatus === "running") && (
+                      <button
+                        onClick={() => stopJob(j.id)}
+                        disabled={stoppingId === j.id}
+                        className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                      >
+                        {stoppingId === j.id ? "Stopping…" : "Stop"}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1173,6 +1333,7 @@ function ServiceStateBadge({ activeState }: { activeState: string }) {
 
 const SERVICE_LABELS: Record<string, string> = {
   "spaceworker-browser.service": "Browser subsystem (Neko/Chrome)",
+  "extraction-worker.service": "Extraction worker",
 };
 
 type AITestUsage = {
@@ -1613,10 +1774,13 @@ function ServicesTab() {
         </button>
       </div>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Controls only the standalone browser subsystem — the interactive
-        Chrome/Neko sessions, not the main app or the extraction worker.
-        Stopping it frees the memory those Docker containers/processes use;
-        existing browser sessions are cut off immediately.
+        Raw start/stop/restart for the standalone heavyweight subsystems — the
+        browser subsystem (interactive Chrome/Neko sessions) and the extraction
+        worker. This only toggles systemd; it does NOT pause dispatch or change
+        job state (the Search Queue tab's "Stop worker & pause all runs" is the
+        coordinated hard-stop for the worker). Stopping the browser frees the
+        memory those Docker containers/processes use; existing browser sessions
+        are cut off immediately.
       </p>
 
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
