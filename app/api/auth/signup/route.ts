@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import { hashPassword } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { sendEmail, verificationEmailHtml } from "@/lib/email";
+import { sendEmail, tier1UpgradeEmailHtml, verificationEmailHtml } from "@/lib/email";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { issueVerificationCode } from "@/lib/verify-code";
 
@@ -53,7 +53,11 @@ export async function POST(request: Request) {
   const passwordHash = await hashPassword(parsed.password);
 
   const user = await db.user.create({
-    data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date() },
+    // Tier 1 trial — new signups get the trial tier immediately (email
+    // verification is unchanged as the gate to reach the dashboard; it only
+    // decides what number a not-yet-verified account carries). Explicit rather
+    // than relying solely on the schema default of 1 for clarity.
+    data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date(), tier: 1 },
   });
 
   // Issue a 6-digit verification code (15-min expiry) and email it.
@@ -69,6 +73,21 @@ export async function POST(request: Request) {
   } catch {
     // Email delivery failure shouldn't destroy the account, but the user needs
     // a way to get a new code — they can request a resend from the verify page.
+  }
+
+  // Tier 1 trial — the upgrade/welcome notice at registration. A brand-new
+  // account is always unverified, so send the verify-first variant. Failing
+  // closed here is safe: the account + trial tier already exist; the email is
+  // informational only and the verify-code email above remains the real gate.
+  try {
+    await sendEmail({
+      to: email,
+      subject: "You're on Tier 1 — try SpaceWorker free",
+      html: tier1UpgradeEmailHtml({ verified: false }),
+      eventType: "tier1_upgrade",
+    });
+  } catch {
+    // Best-effort — never destroy the account over a marketing email.
   }
 
   return NextResponse.json(

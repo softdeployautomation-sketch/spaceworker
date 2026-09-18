@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { mayEnterSending } from "@/lib/trial";
 
 // POST: the explicit "yes, this delivered, proceed" click. Only unlocks the real
 // send if a DeliverabilityCheck for this campaign is "delivered" — not a timer,
@@ -42,10 +43,29 @@ export async function POST(
     );
   }
 
-  const updated = await prisma.emailCampaign.update({
-    where: { id },
-    data: { status: "sending" },
+  // Tier 1 trial — gate entry into "sending" on the mailer's daily allowance
+  // (Premium is exempt). Inside a transaction so the in-flight-campaigns read
+  // and the status flip can't race another confirm on a different campaign.
+  const updated = await prisma.$transaction(async (tx) => {
+    const owner = await tx.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
+    const allowed = await mayEnterSending(tx, {
+      userId: session.userId,
+      tier: owner?.tier ?? 0,
+      excludeCampaignId: id,
+    });
+    if (!allowed) return "trial_cap" as const;
+    return tx.emailCampaign.update({
+      where: { id },
+      data: { status: "sending", sendingStartedAt: new Date() },
+    });
   });
+
+  if (updated === "trial_cap") {
+    return NextResponse.json(
+      { error: "Daily send-time limit reached for your plan. Try again after UTC midnight, or upgrade to Premium." },
+      { status: 429 },
+    );
+  }
 
   return NextResponse.json(updated);
 }

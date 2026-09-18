@@ -93,7 +93,7 @@ export default function BrowserProfilesPanel({
             Persistent Chrome sessions for your automation jobs.
           </p>
         </div>
-        {tier >= 1 && !creating && (
+        {tier >= 5 && !creating && (
           <button
             type="button"
             onClick={() => setCreating(true)}
@@ -142,12 +142,12 @@ export default function BrowserProfilesPanel({
         </div>
       )}
 
-      {tier === 0 && (
+      {tier < 5 && (
         <div className="mt-6 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
           Browser profiles require a Pro plan. Upgrade in the Billing tab to create profiles.
         </div>
       )}
-{tier >= 1 && profiles.length === 0 ? (
+{tier >= 5 && profiles.length === 0 ? (
         <div className="mt-8 rounded-xl border border-dashed border-zinc-300 p-10 text-center dark:border-zinc-700">
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             No browser profiles yet. Create one to get started.

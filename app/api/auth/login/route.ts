@@ -69,8 +69,13 @@ export async function POST(request: Request) {
   // web subscription bumps tier to 1 (bumpWebTier), so the NEXT time they log in
   // normally with the real password they've since set, they're naturally upgraded
   // to "full" — no special-case code, no sticky flag that never changes.
+  // Tier 1 trial — tier numbers: only tier 5 (Premium) is "full" web access.
+  // The inline EXE buyer is pinned at tier 0 (see findOrCreateUser in
+  // billing/submit), so `tier < 5` keeps them license_only even now that new
+  // signups default to tier 1 (the trial). Trial users (tier 1) are NOT
+  // license_only — they have a real signup and reach the dashboard normally.
   const scope: SessionScope =
-    user.acceptedTermsAt === null && user.tier < 1 ? "license_only" : "full";
+    user.acceptedTermsAt === null && user.tier < 5 ? "license_only" : "full";
 
   await setSessionCookie({
     sub: user.id,

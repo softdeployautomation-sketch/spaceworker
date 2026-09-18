@@ -104,7 +104,8 @@ export async function POST(req: Request) {
     where: { id: session.userId },
     select: { tier: true },
   });
-  if (!user || user.tier < 1) {
+  // Tier 1 trial — only Premium (tier 5) has Pro features.
+  if (!user || user.tier < 5) {
     return NextResponse.json(
       { error: "Pro plan required to start a browser session" },
       { status: 403 }

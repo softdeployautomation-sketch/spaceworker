@@ -173,8 +173,13 @@ async function findOrCreateUser(email: string): Promise<string> {
   // email regardless of login state.
   const randomPassword = randomBytes(24).toString("hex");
   const passwordHash = await hashPassword(randomPassword);
+  // Tier 1 trial — MUST pin tier: 0 explicitly. The schema default is now 1
+  // (trial), but this inline EXE buyer must stay tier 0: the login route keeps
+  // them license_only while `tier < 5` AND acceptedTermsAt is null, so a trial
+  // tier here would silently hand the entire web product to a non-signup buyer.
+  // (campaign-templates.ts already pins its template-owner account to 0.)
   const created = await db.user.create({
-    data: { email, passwordHash, emailVerified: true },
+    data: { email, passwordHash, emailVerified: true, tier: 0 },
   });
   return created.id;
 }

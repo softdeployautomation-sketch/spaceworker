@@ -35,7 +35,8 @@ export default async function SettingsPage() {
   const user = await getCurrentUser();
   if (!user) return null;
 
-  const plan = user.tier >= 1 ? "Pro" : "Free";
+  // Tier 1 trial — "Pro" is tier 5 (Premium) only; tier 1 (trial) shows Free.
+  const plan = user.tier >= 5 ? "Pro" : "Free";
 
   // Task 39 — Telegram connect link. When a bot username is configured and the
   // user isn't linked yet, ensure a short-lived link token exists (reusing a

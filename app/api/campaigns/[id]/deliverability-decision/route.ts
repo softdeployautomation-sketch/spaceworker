@@ -6,6 +6,7 @@ import {
   applySwitchSubject,
   DeliverabilityError,
 } from "@/lib/deliverability";
+import { finalizeMailerStretch, mayEnterSending } from "@/lib/trial";
 
 // Resolves a campaign that's awaiting a human deliverability decision — either
 // the batch gate's mid-send pause (status "paused_deliverability", set by the
@@ -68,6 +69,37 @@ function decisionError(err: unknown): NextResponse | null {
   return null;
 }
 
+// Tier 1 trial — every branch below that resolves straight to "sending" is an
+// entry point (same as confirm-test), so it needs the same daily-allowance
+// gate + sendingStartedAt marker. Shared here since three branches do this.
+async function tryEnterSending(
+  campaignId: string,
+  userId: string,
+  extraData: Record<string, unknown>,
+): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const owner = await tx.user.findUnique({ where: { id: userId }, select: { tier: true } });
+    const allowed = await mayEnterSending(tx, {
+      userId,
+      tier: owner?.tier ?? 0,
+      excludeCampaignId: campaignId,
+    });
+    if (!allowed) return false;
+    await tx.emailCampaign.update({
+      where: { id: campaignId },
+      data: { ...extraData, status: "sending", sendingStartedAt: new Date() },
+    });
+    return true;
+  });
+}
+
+function trialCapResponse(): NextResponse {
+  return NextResponse.json(
+    { error: "Daily send-time limit reached for your plan. Try again after UTC midnight, or upgrade to Premium." },
+    { status: 429 },
+  );
+}
+
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -105,7 +137,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   if (action === "stop") {
-    await prisma.emailCampaign.update({ where: { id }, data: { status: "stopped" } });
+    // Tier 1 trial — "stop" is allowed even while actively "sending" (halting is
+    // always safe), so finalize any in-flight mailer stretch in the SAME
+    // transaction as the status flip. No-op when sendingStartedAt is already
+    // null (e.g. stopping from a pause, whose stretch was already finalized).
+    await prisma.$transaction(async (tx) => {
+      await finalizeMailerStretch(tx, {
+        id: campaign.id,
+        userId: campaign.userId,
+        sendingStartedAt: campaign.sendingStartedAt,
+      });
+      await tx.emailCampaign.update({ where: { id }, data: { status: "stopped" } });
+    });
     return NextResponse.json({ ok: true, status: "stopped" });
   }
 
@@ -216,10 +259,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     });
     // Both states resolve to "sending" here: fromInitialGate unlocks straight to
     // sending; fromBatchPause resumes to sending — same as "continue".
-    await prisma.emailCampaign.update({
-      where: { id },
-      data: { subjects, bodies, status: "sending" },
-    });
+    const entered = await tryEnterSending(id, session.userId, { subjects, bodies });
+    if (!entered) return trialCapResponse();
     return NextResponse.json({ ok: true, status: "sending", subjects, bodies });
   }
 
@@ -241,11 +282,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
         checkedAt: new Date(),
       },
     });
-    await prisma.emailCampaign.update({ where: { id }, data: { status: "sending" } });
+    const entered = await tryEnterSending(id, session.userId, {});
+    if (!entered) return trialCapResponse();
     return NextResponse.json({ ok: true, status: "sending" });
   }
 
   // From a batch pause — resume from where the drain paused.
-  await prisma.emailCampaign.update({ where: { id }, data: { status: "sending" } });
+  const entered = await tryEnterSending(id, session.userId, {});
+  if (!entered) return trialCapResponse();
   return NextResponse.json({ ok: true, status: "sending" });
 }

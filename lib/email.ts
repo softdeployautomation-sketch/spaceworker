@@ -120,8 +120,34 @@ export function verificationEmailHtml(code: string): string {
   </body>
 </html>`;
 }
-
-// Task 42, item 6 — the buyer's actual disclosure moment for the license term.
+// Tier 1 trial — the "you're on Tier 1" welcome/upgrade notice sent (a) to every
+// existing free account bumped in the backfill and (b) at every new signup.
+// `verified` switches the call-to-action: unverified accounts are told to verify
+// first (that's their gate to actually reach the dashboard), verified ones can
+// start immediately. Free-form starting copy — adjust at the marketing layer.
+export function tier1UpgradeEmailHtml(opts: { verified: boolean }): string {
+  const actionLine = opts.verified
+    ? `<p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">Verify you're set up and just log in — no card, no setup fee.</p>`
+    : `<p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">First, verify your email address — it takes a minute and unlocks everything below.</p>`;
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">You're on Tier 1 — try SpaceWorker free</p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        You've been upgraded to Tier 1. That gets you <strong>15 minutes a day on every tool, free</strong> — no card required.
+      </p>
+      ${actionLine}
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Want unlimited access and top priority in the queue? Upgrade to Premium.
+      </p>
+      <p style="font-size:12px;line-height:1.5;color:#6b7280;margin:0;">
+        Tier 1 trial usage has no effect on Premium accounts, and Premium work is always prioritized over trial work in the queue.
+      </p>
+    </div>
+  </body>
+</html>`;
+}
 // Unlike the public store page (which deliberately shows only a price), this
 // email must state the REAL 6-month expiry clearly, plus the honest status that
 // the desktop build isn't downloadable yet.

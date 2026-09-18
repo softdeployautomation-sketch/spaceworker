@@ -6,6 +6,7 @@ import { pollSeedMailbox } from "./imap";
 import { resolveSeedMailbox } from "./seed-mailbox";
 import { renderMerge } from "./render-merge";
 import { randomBytes } from "crypto";
+import { mayEnterSending } from "./trial";
 
 export type DeliverabilityOutcome = "delivered" | "failed";
 
@@ -425,10 +426,28 @@ export async function applyPinAndContinue(
     },
   });
   const pinnedOverride = { subject, bodyHtml, fromAddress, remaining: pinCount };
-  await prisma.emailCampaign.update({
-    where: { id: campaign.id },
-    data: { pinnedOverride, status: "sending" },
+  // Tier 1 trial — this resolves straight to "sending", so it's an entry point
+  // like confirm-test and needs the same daily-allowance gate.
+  const entered = await prisma.$transaction(async (tx) => {
+    const owner = await tx.user.findUnique({ where: { id: opts.userId }, select: { tier: true } });
+    const allowed = await mayEnterSending(tx, {
+      userId: opts.userId,
+      tier: owner?.tier ?? 0,
+      excludeCampaignId: campaign.id,
+    });
+    if (!allowed) return false;
+    await tx.emailCampaign.update({
+      where: { id: campaign.id },
+      data: { pinnedOverride, status: "sending", sendingStartedAt: new Date() },
+    });
+    return true;
   });
+  if (!entered) {
+    throw new DeliverabilityError(
+      "Daily send-time limit reached for your plan. Try again after UTC midnight, or upgrade to Premium.",
+      429,
+    );
+  }
   // Task 34 — return the full pinnedOverride shape so callers can show the
   // pinned-override banner locally.
   return { ok: true, status: "sending", pinCount, pinnedOverride };

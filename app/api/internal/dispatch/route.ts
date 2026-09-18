@@ -3,6 +3,13 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resumeJob } from "@/lib/job-resume";
 import { getAdminSettings } from "@/lib/admin-settings";
+import {
+  isPremiumTier,
+  mayDispatchToolToday,
+  recordTrialRun,
+  toolForLane,
+  trialDayKey,
+} from "@/lib/trial";
 
 const LANES = ["light", "heavy"] as const;
 
@@ -113,6 +120,25 @@ export async function POST(req: Request) {
       });
       if (!entry) return null;
 
+      // Tier 1 trial — per-tool daily cap, enforced HERE at admission (Phase A),
+      // inside the same transaction + advisory lock as the claim, so two
+      // dispatch ticks can't both OK a trial user's over-cap run. Premium
+      // (tier >= 5) is always exempt. An over-cap trial job is left QUEUED
+      // (status untouched) so it's the first pick again after UTC midnight when
+      // the allowance resets — never silently dispatched past the cap.
+      const owner = await tx.user.findUnique({
+        where: { id: entry.searchJob.userId },
+        select: { tier: true },
+      });
+      const tool = toolForLane(lane);
+      const allow = await mayDispatchToolToday(tx, {
+        userId: entry.searchJob.userId,
+        tier: owner?.tier ?? 0,
+        tool,
+        usedOn: trialDayKey(new Date()),
+      });
+      if (!allow) return "trial_cap" as const;
+
       const { count } = await tx.jobQueueEntry.updateMany({
         where: { id: entry.id, status: "queued" },
         data: { status: "dispatched" },
@@ -121,13 +147,21 @@ export async function POST(req: Request) {
 
       await tx.searchJob.update({
         where: { id: entry.searchJobId },
-        data: { status: "running" },
+        data: { status: "running", trialStartedAt: new Date() },
       });
       return entry;
     });
 
     if (claimed === "lane_busy") {
       results[`${lane}_dispatch`] = "lane_busy";
+      continue;
+    }
+
+    if (claimed === "trial_cap") {
+      // Trial user is at/over their 900s/tool/day allowance for this lane's
+      // tool. The entry stays queued for tomorrow. This is a real, expected
+      // non-dispatch, not an error.
+      results[`${lane}_dispatch`] = "trial_cap";
       continue;
     }
 
@@ -192,6 +226,41 @@ export async function POST(req: Request) {
     }
   }
 
+  // Tier 1 trial — finally-ize a run that reached a terminal state ("done",
+  // "paused", "failed") in the SAME transaction that records its trial-usage
+  // tally, so a crash between the two can't silently under-count a user's day.
+  // Tolerant of a job deleted mid-poll (P2025), mirroring safeUpdateSearchJob.
+  // Metering only ever applies to a non-Premium (trial) user and only when a
+  // trialStartedAt dispatch marker is present (pre-deploy running jobs have
+  // null and record nothing). Premium is exempt and never logged here.
+  async function finalizeJobAndMeter(
+    job: { id: string; userId: string; lane: string; trialStartedAt: Date | null },
+    data: Parameters<typeof prisma.searchJob.update>[0]["data"],
+  ): Promise<void> {
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.searchJob.update({ where: { id: job.id }, data });
+        const owner = await tx.user.findUnique({
+          where: { id: job.userId },
+          select: { tier: true },
+        });
+        if (owner && !isPremiumTier(owner.tier) && job.trialStartedAt) {
+          await recordTrialRun(tx, {
+            userId: job.userId,
+            tool: toolForLane(job.lane) ?? "extractor",
+            lane: job.lane,
+            elapsedSeconds: (Date.now() - job.trialStartedAt.getTime()) / 1000,
+            usedOn: trialDayKey(job.trialStartedAt),
+            jobId: job.id,
+          });
+        }
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2025") return;
+      throw err;
+    }
+  }
+
   // Phase B: poll running jobs for completion
   const runningJobs = await prisma.searchJob.findMany({
     where: { status: "running", workerJobId: { not: null } },
@@ -227,10 +296,7 @@ export async function POST(req: Request) {
             skipDuplicates: true,
           });
         }
-        await prisma.searchJob.update({
-          where: { id: job.id },
-          data: { status: "done" },
-        });
+        await finalizeJobAndMeter(job, { status: "done" });
         completed++;
       } else if (data.status === "paused") {
         // Task 13 resume: the worker stopped at a query boundary (manual pause or
@@ -243,7 +309,7 @@ export async function POST(req: Request) {
             skipDuplicates: true,
           });
         }
-        await safeUpdateSearchJob(job.id, {
+        await finalizeJobAndMeter(job, {
           status: "paused",
           pausedAt: new Date(),
           resumeState: data.resumeState != null && data.resumeState !== undefined
@@ -262,10 +328,7 @@ export async function POST(req: Request) {
         }).catch(() => {});
         paused++;
       } else if (data.status === "failed") {
-        await prisma.searchJob.update({
-          where: { id: job.id },
-          data: { status: "failed", error: data.error ?? "Worker reported failure" },
-        });
+        await finalizeJobAndMeter(job, { status: "failed", error: data.error ?? "Worker reported failure" });
         failed++;
       } else {
         // Still "running" — the worker's on_progress callback (worker/api.py)

@@ -12,7 +12,16 @@ model User {
   email            String             @unique
   passwordHash     String
   emailVerified    Boolean            @default(false)
-  tier             Int                @default(0)
+  // Tier 1 trial (Task: Tier 1 trial for all free users). Tier numbers:
+  //   0 = legacy / nothing (inline EXE-buyer license_only accounts — see
+  //       findOrCreateUser in app/api/billing/submit/route.ts, which MUST pin 0)
+  //   1 = trial (15 min/day per tool, never prioritized over Premium)
+  //   5 = Premium (the web subscription product — always grant exactly 5, see
+  //       bumpWebTier in lib/license-service.ts)
+  // 2/3/4 are deliberately reserved/unused headroom for future paid plans.
+  // IMPORTANT: every "has Pro" branch must test `>= 5`, never `>= 1`, or a trial
+  // user would silently get a paid feature and a paying customer would lose one.
+  tier             Int                @default(1)
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links
@@ -49,6 +58,7 @@ model User {
   agentThreads     AgentThread[]
   agentPendingActions AgentPendingAction[]
   aiUsageLogs      AiUsageLog[]
+  toolUsageLogs    ToolUsageLog[]
   exeLicenses      ExeLicense[]
   exeLicenseTransfers ExeLicenseTransfer[]
 }
@@ -169,6 +179,15 @@ model EmailCampaign {
   // New campaigns start at "pending_test_confirm": a real send is gated behind the
   // test-send-confirm step (the drain route only processes status "sending").
   status      String           @default("pending_test_confirm")
+  // Tier 1 trial — when the CURRENT active-sending stretch began (null when not
+  // actively sending). Set on every transition INTO "sending"; cleared (and the
+  // stretch's elapsed seconds logged to ToolUsageLog) on every transition OUT of
+  // "sending" (done / paused_deliverability / stopped). Kept null until the
+  // first real send — a campaign sitting at "pending_test_confirm" accrues
+  // nothing. One per running stretch, never a running total: today's mailer
+  // usage is a SUM over ToolUsageLog rows (AiUsageLog precedent), so per-day
+  // correctness survives pauses/resumes across UTC midnights.
+  sendingStartedAt DateTime?
   // Which of the user's mailboxes this campaign's sends rotate across (true
   // in-run sender rotation, replacing the old single `mailboxId` at creation).
   mailboxIds  String[]         @default([])
@@ -582,6 +601,12 @@ model SearchJob {
   // catch, so re-stamping on every tick regardless of content would hide the
   // one thing this field exists to detect).
   currentStepAt DateTime?
+  // Tier 1 trial — wall-clock start of the job's most recent "running" stint.
+  // Set when the dispatcher flips the job to running (Phase A admission); used to
+  // meter ACTUAL elapsed runtime (dispatch start → terminal state) per tool per
+  // UTC day, not each internal queued chunk. Cleared once the run is recorded in
+  // ToolUsageLog so a later resume starts a fresh window. Null until first dispatch.
+  trialStartedAt DateTime?
   createdAt   DateTime       @default(now())
   queueEntry  JobQueueEntry?
   leads       Lead[]
@@ -819,5 +844,46 @@ model AiUsageLog {
   eventType           String
   createdAt           DateTime @default(now())
 
+  @@index([userId, createdAt])
+}
+
+// Tier 1 trial — append-only per-user, per-tool usage audit log, mirroring the
+// proven AiUsageLog pattern (Task 40): "today" is a SUM over rows with
+// createdAt/usedOn >= startOfTodayUTC, race-safe under concurrency unlike a
+// mutable counter. One row is written per completed tool run (a SearchJob
+// extraction or an EmailCampaign send batch macro-window), carrying the ACTUAL
+// elapsed wall-clock seconds of that run — never a reserved/declared duration.
+//
+// Which "tool" a row belongs to is the tool family (BUILD_TARGET contract, and
+// what the EXE products/Payment rows name): extractor / mailer / combined /
+// automation. The four web-app product surfaces map directly: lead extraction =
+// extractor, outreach campaigns = mailer, an extraction feeding a campaign in
+// one flow = combined, an automation-scheduled run = automation. A given lane/
+// pipeline always maps to exactly one tool so a user can never spend the trial
+// twice on the same feature under a different name.
+//
+// Tier 1 users are hard-capped at 900s per tool per UTC day at admission; tier 5
+// (Premium) is exempt and never logs here. Enforced in
+// app/api/internal/dispatch/route.ts Phase A (before a job/campaign is claimed).
+model ToolUsageLog {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  // Tool family this run belonged to: "extractor" | "mailer" | "combined" |
+  // "automation" (see toolForLane mapping in lib/trial.ts). Free-form string on
+  // storage, bounded at the write site so new tools don't need a migration.
+  tool           String
+  lane           String
+  // The ACTUAL wall-clock seconds of this run (dispatch start → terminal state).
+  elapsedSeconds Int
+  // UTC day this usage counted toward — YYYY-MM-DD, matching startOfTodayUTC().
+  // Written at run completion so a run spanning UTC midnight lands wholly on the
+  // day it STARTED, giving a predictable, easy-to-explain boundary.
+  usedOn         String
+  // The SearchJob / EmailCampaign this run measured (for auditing).
+  jobId          String?
+  createdAt      DateTime @default(now())
+
+  @@index([userId, tool, usedOn])
   @@index([userId, createdAt])
 }

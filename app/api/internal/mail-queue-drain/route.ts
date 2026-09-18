@@ -6,6 +6,7 @@ import { transporterForMailbox } from "@/lib/mailer-send";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
 import { notifyUser } from "@/lib/notify";
+import { finalizeMailerStretch } from "@/lib/trial";
 
 // Task 33 — a campaign's active pinned-override window (EmailCampaign.pinnedOverride
 // as a typed structure rather than raw Json). `remaining` is decremented per
@@ -270,9 +271,24 @@ export async function POST(req: Request) {
         // No promotion here — a pin only promotes on a CLEAN completed window (see
         // the batch-gate block below), and running out of recipients isn't that.
         pinFinalized.add(campaignId);
-        await prisma.emailCampaign.updateMany({
-          where: { id: campaignId, status: "sending" },
-          data: { status: "done", pinnedOverride: Prisma.DbNull },
+        // Tier 1 trial — finalize the mailer stretch in the SAME transaction as
+        // the status flip, gated on the updateMany actually having transitioned
+        // this row (guards the same status:"sending" race the updateMany's WHERE
+        // already protects against — two mailboxes finishing this campaign's
+        // last items in the same tick must not double-record the stretch).
+        const campaignSnapshot = items.find((i) => i.campaignId === campaignId)?.campaign;
+        await prisma.$transaction(async (tx) => {
+          const { count } = await tx.emailCampaign.updateMany({
+            where: { id: campaignId, status: "sending" },
+            data: { status: "done", pinnedOverride: Prisma.DbNull },
+          });
+          if (count > 0 && campaignSnapshot) {
+            await finalizeMailerStretch(tx, {
+              id: campaignSnapshot.id,
+              userId: campaignSnapshot.userId,
+              sendingStartedAt: campaignSnapshot.sendingStartedAt,
+            });
+          }
         });
       }
     }
@@ -364,9 +380,15 @@ export async function POST(req: Request) {
     // NOT-safe, this also means no promotion happened above (that required `safe`).
     const clearPin = !!pin && (pin.remaining <= 0 || !safe);
     if (clearPin) pinFinalized.add(c.id);
-    await prisma.emailCampaign.update({
-      where: { id: c.id },
-      data: { status: "paused_deliverability", ...(clearPin ? { pinnedOverride: Prisma.DbNull } : {}) },
+    // Tier 1 trial — finalize the mailer stretch (this loop runs sequentially
+    // per campaign, not concurrently, so no updateMany race guard is needed
+    // here unlike the "done" transition above).
+    await prisma.$transaction(async (tx) => {
+      await finalizeMailerStretch(tx, { id: c.id, userId: c.userId, sendingStartedAt: c.sendingStartedAt });
+      await tx.emailCampaign.update({
+        where: { id: c.id },
+        data: { status: "paused_deliverability", ...(clearPin ? { pinnedOverride: Prisma.DbNull } : {}) },
+      });
     });
 
     // Best-effort owner notification (SpaceWorker's own transactional email, plus

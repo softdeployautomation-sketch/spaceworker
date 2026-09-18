@@ -42,9 +42,10 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
 }
 
 async function bumpWebTier(userId: string): Promise<void> {
-  // No-op-safe: setting tier=1 when it's already 1 is harmless and keeps the
-  // path identical to today's behaviour for the only product that existed.
-  await db.user.update({ where: { id: userId }, data: { tier: 1 } });
+  // Tier 1 trial — Premium is tier 5 (was 1). tier 1 is now the free trial;
+  // a real web-subscription payment must always grant the FULL paid tier and
+  // never the trial. No-op-safe: idempotent for an already-5 account.
+  await db.user.update({ where: { id: userId }, data: { tier: 5 } });
 }
 
 async function issueExeLicense(payment: {

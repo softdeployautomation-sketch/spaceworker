@@ -11,7 +11,30 @@ type AdminUser = {
   tier: number;
   emailVerified: boolean;
   createdAt: string;
+  // Tier 1 trial — today's usage per tool in seconds, keyed by tool name
+  // ("extractor" | "mailer"). Empty for Premium users (never logged) and for
+  // trial users who haven't run anything today.
+  usageToday: Record<string, number>;
 };
+
+// Tier 1 trial — must match TRIAL_DAILY_SECONDS_PER_TOOL in lib/trial.ts
+// (a server-only module this client component can't import directly).
+const TRIAL_DAILY_SECONDS_PER_TOOL = 900;
+
+function UsageBadge({ seconds }: { seconds: number }) {
+  const overCap = seconds >= TRIAL_DAILY_SECONDS_PER_TOOL;
+  return (
+    <span
+      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+        overCap
+          ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
+          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+      }`}
+    >
+      {Math.round(seconds)}s / {TRIAL_DAILY_SECONDS_PER_TOOL}s
+    </span>
+  );
+}
 
 type ReviewPayment = {
   id: string;
@@ -206,6 +229,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               <th className="px-4 py-3 font-medium">Email</th>
               <th className="px-4 py-3 font-medium">Tier</th>
+              <th className="px-4 py-3 font-medium">Today's usage</th>
               <th className="px-4 py-3 font-medium">Verified</th>
               <th className="px-4 py-3 font-medium">Created</th>
             </tr>
@@ -234,6 +258,16 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
                       {savingId === user.id ? "Saving…" : "Save"}
                     </button>
                   </div>
+                </td>
+                <td className="px-4 py-3">
+                  {user.tier >= 5 ? (
+                    <span className="text-xs text-zinc-400 dark:text-zinc-500">Premium — unmetered</span>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5">
+                      <UsageBadge seconds={user.usageToday.extractor ?? 0} />
+                      <UsageBadge seconds={user.usageToday.mailer ?? 0} />
+                    </div>
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   {user.emailVerified ? (
