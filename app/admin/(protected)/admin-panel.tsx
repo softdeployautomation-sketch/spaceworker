@@ -101,12 +101,17 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
         {/* flex-wrap + order lets the 7-tab nav drop to its own full-width,
             horizontally-scrollable row on mobile (where it would otherwise
-            overflow) while staying exactly as a single inline row from md:
-            up — same reflow trick used elsewhere in this app rather than a
-            structural rewrite. */}
+            overflow) while staying inline with the header from md: up. The nav
+            stays overflow-x-auto at EVERY width (not just below md:) — it
+            previously switched to overflow-visible at md:, which assumed a wide
+            viewport always has room for the whole tab list. That broke inside
+            the Ops Console's Split view (a real, narrower iframe panel, not the
+            full browser width), where the tabs just got clipped by the panel's
+            edge instead of scrolling. min-w-0 lets the nav actually shrink
+            within the flex row instead of forcing an overflow. */}
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
           <h1 className="text-lg font-semibold tracking-tight">SpaceWorker Admin</h1>
-          <nav className="order-3 flex w-full gap-1 overflow-x-auto md:order-none md:w-auto md:ml-8 md:overflow-visible">
+          <nav className="order-3 flex w-full min-w-0 gap-1 overflow-x-auto md:order-none md:w-auto md:ml-8">
             {TABS.map((t) => (
               <button
                 key={t.id}
