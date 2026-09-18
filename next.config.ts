@@ -3,12 +3,18 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   // SpaceWorker runs as a real Node server (holds the Resend key and, later,
   // worker/JWT secrets server-side). Do NOT set output:"export" — that would
-  // break server-only code and route handlers. We DO use `output: "standalone"`
-  // so `next build` also emits a self-contained `.next/standalone/` server tree
-  // that the desktop EXE packs as its bundled local runtime (Task 27 Part A —
-  // see scripts/runtime-assemble.mjs); the hosted web deploy runs the same build
-  // and is unaffected (standalone is additive, `.next` is still produced).
-  output: "standalone",
+  // break server-only code and route handlers. `output: "standalone"` is ONLY
+  // set when BUILD_TARGET is present (the EXE build path — CI's build-exe.yml
+  // sets BUILD_TARGET=extractor before `next build`; scripts/runtime-assemble.mjs
+  // packs the resulting `.next/standalone/` tree as the desktop EXE's bundled
+  // runtime, Task 27 Part A). The hosted web deploy never sets BUILD_TARGET, so
+  // it gets plain (non-standalone) output — matching what its systemd unit
+  // actually runs (`next start`). Next.js itself warns "next start does not
+  // work with output: standalone configuration"; this was previously set
+  // unconditionally on the (wrong) assumption that standalone output is purely
+  // additive/harmless for a `next start` deploy — conditioning it here removes
+  // that risk for the hosted app without touching the EXE build at all.
+  output: process.env.BUILD_TARGET ? "standalone" : undefined,
   // Only native-binding packages need to be externalized (bcrypt, Prisma); do NOT
   // add "server-only"/"jose"/"resend" here — those are pure JS and if externalized
   // the real npm "server-only" resolves to its throwing index.js and breaks builds.
