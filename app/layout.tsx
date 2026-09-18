@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Sora, Karla, JetBrains_Mono } from "next/font/google";
 
 import { ToastProvider } from "@/components/toast";
@@ -20,6 +20,17 @@ export const metadata: Metadata = {
   },
   description:
     "SpaceWorker — automation tools for lead extraction, filtering, and outreach.",
+};
+
+// Explicit rather than relying on Next's implicit default -- viewportFit:
+// "cover" matters for landscape mobile specifically: without it, content
+// doesn't extend under the notch/home-indicator safe areas, which combined
+// with the address bar showing/hiding (changing how 100vh/100dvh resolve)
+// is a well-known cause of layout collapsing in mobile landscape.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({
