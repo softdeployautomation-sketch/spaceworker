@@ -35,10 +35,17 @@ export default function RootLayout({
     >
       <head>
         {/* Dark-by-default with a per-browser toggle. Read localStorage before
-            first paint to avoid a flash-of-wrong-theme. */}
+            first paint to avoid a flash-of-wrong-theme.
+            `?theme=dark|light` overrides localStorage entirely and is never
+            persisted -- Vantra's Ops Console embeds this app in an iframe with
+            that param set so the panel's theme is deterministic regardless of
+            whatever this iframe's own (possibly stale/partitioned/reloaded-by-
+            the-browser) localStorage happens to hold. Without this, a
+            backgrounded-tab iframe reload could silently flip the embedded
+            panel to a different theme than the rest of the console. */}
         <script
           dangerouslySetInnerHTML={{
-            __html: `(function(){try{var t=localStorage.getItem("spaceworker-theme");var d=t==="dark"||(!t&&true);document.documentElement.classList.toggle("dark",d);}catch(e){document.documentElement.classList.add("dark");}})();`,
+            __html: `(function(){try{var q=new URLSearchParams(location.search).get("theme");var t=q==="dark"||q==="light"?q:localStorage.getItem("spaceworker-theme");var d=t==="dark"||(!t&&true);document.documentElement.classList.toggle("dark",d);}catch(e){document.documentElement.classList.add("dark");}})();`,
           }}
         />
       </head>
