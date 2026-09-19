@@ -67,7 +67,15 @@ export async function POST(req: Request) {
   }
 
   const action =
-    body.action === "transfer" ? "transfer" : body.action === "bind" ? "bind" : body.action === "unbind" ? "unbind" : "issue";
+    body.action === "transfer"
+      ? "transfer"
+      : body.action === "bind"
+        ? "bind"
+        : body.action === "unbind"
+          ? "unbind"
+          : body.action === "delete"
+            ? "delete"
+            : "issue";
   if (action === "bind") {
     return bindLicense(user.id, user.email, body);
   }
@@ -77,7 +85,43 @@ export async function POST(req: Request) {
   if (action === "unbind") {
     return unbindLicense(user.id, user.email, body);
   }
+  if (action === "delete") {
+    return deleteLicense(user.id, user.email, body);
+  }
   return issueLicense(user, body);
+}
+
+// ---- delete (remove a superseded/duplicate license row outright — admin cleanup) --
+// Confirmed live (2026-09-19) — repeated admin "Issue" clicks before the
+// reuse-on-issue fix above left some buyers with multiple ExeLicense rows for
+// the same product. Same ownership gate as bind/transfer/unbind. Cascades any
+// transfer audit rows first — there's nothing left to audit once the license
+// row itself is gone.
+
+async function deleteLicense(
+  userId: string,
+  userEmail: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const exeLicenseId = typeof body.exeLicenseId === "string" ? body.exeLicenseId.trim() : "";
+  if (!exeLicenseId) {
+    return NextResponse.json({ error: "Pick which license to delete." }, { status: 400 });
+  }
+
+  const license = await prisma.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license || license.userId !== userId) {
+    return NextResponse.json(
+      { error: `No license for ${userEmail} matches that selection.` },
+      { status: 400 },
+    );
+  }
+
+  await prisma.$transaction([
+    prisma.exeLicenseTransfer.deleteMany({ where: { exeLicenseId } }),
+    prisma.exeLicense.delete({ where: { id: exeLicenseId } }),
+  ]);
+
+  return NextResponse.json({ deleted: true, exeLicenseId });
 }
 
 // ---- unbind (clear a binding back to "unclaimed" — admin support/testing) ----

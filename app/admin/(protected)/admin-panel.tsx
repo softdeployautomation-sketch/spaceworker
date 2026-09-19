@@ -2267,9 +2267,18 @@ function ExeLicensesTab() {
 // unless someone thought to look for that specific person. Loads on mount,
 // no email needed — the 100 most recent licenses across every buyer, same
 // live table every issue/bind/transfer/unbind action already writes to.
+/** Groups by buyer + product — one license per (email, product) is the norm;
+ * more than one is either a stale duplicate or a genuine multi-device case. */
+function licenseGroupKey(r: AdminLicenseRow): string {
+  return `${(r.email ?? "").toLowerCase()}::${r.product}`;
+}
+
 function RecentLicensesTable() {
+  const confirm = useConfirm();
   const [rows, setRows] = useState<AdminLicenseRow[] | null>(null);
   const [error, setError] = useState("");
+  const [openHistoryGroup, setOpenHistoryGroup] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -2292,6 +2301,56 @@ function RecentLicensesTable() {
     void load();
   }, [load]);
 
+  async function deleteRow(r: AdminLicenseRow) {
+    if (
+      !(await confirm({
+        title: "Delete this license row?",
+        description: r.boundMachineId
+          ? "It's currently bound to a device — the buyer's activation stops working immediately. Only do this for a confirmed stale duplicate, never their real one."
+          : "This can't be undone.",
+        confirmLabel: "Delete",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setDeletingId(r.id);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete", email: r.email, exeLicenseId: r.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Couldn't delete the license.");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Network error deleting the license.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
+  // Consolidated view (2026-09-19) — group by (buyer, product) so a buyer with
+  // leftover duplicate rows (minted before the reuse-on-issue fix) shows up
+  // once, not once per row. Zero or one bound row per group is the expected
+  // case (that row is "current"); more than one is surfaced in full instead
+  // of silently picking one to show.
+  const groups: AdminLicenseRow[][] = [];
+  if (rows) {
+    const map = new Map<string, AdminLicenseRow[]>();
+    for (const r of rows) {
+      const k = licenseGroupKey(r);
+      const arr = map.get(k);
+      if (arr) arr.push(r);
+      else map.set(k, [r]);
+    }
+    groups.push(...map.values());
+  }
+
   return (
     <div className="mt-8">
       <div className="flex items-center justify-between">
@@ -2309,39 +2368,88 @@ function RecentLicensesTable() {
       ) : rows.length === 0 ? (
         <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No licenses issued yet.</p>
       ) : (
-        <div className="mt-3 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <th className="px-4 py-3 font-medium">Buyer</th>
-                <th className="px-4 py-3 font-medium">Product</th>
-                <th className="px-4 py-3 font-medium">Issued</th>
-                <th className="px-4 py-3 font-medium">Status</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {rows.map((r) => (
-                <tr key={r.id}>
-                  <td className="px-4 py-3">{r.email ?? "—"}</td>
-                  <td className="px-4 py-3">{r.productName}</td>
-                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
-                    {new Date(r.issuedAt).toLocaleString()}
-                  </td>
-                  <td className="px-4 py-3">
-                    {r.boundMachineId ? (
-                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
-                        Bound{r.boundMachineLabel ? ` — ${r.boundMachineLabel}` : ""}
-                      </span>
-                    ) : (
-                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
-                        Unclaimed
-                      </span>
+        <div className="mt-3 space-y-3">
+          {groups.map((group) => {
+            const bound = group.filter((r) => r.boundMachineId);
+            const current = bound.length === 1 ? bound[0] : bound.length === 0 ? group[0] : null;
+            const reviewRows = current ? [] : bound;
+            const history = current
+              ? group.filter((r) => r.id !== current.id)
+              : group.filter((r) => !r.boundMachineId);
+            const first = group[0];
+            const gKey = licenseGroupKey(first);
+
+            const statusBadge = (r: AdminLicenseRow) =>
+              r.boundMachineId ? (
+                <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                  Bound{r.boundMachineLabel ? ` — ${r.boundMachineLabel}` : ""}
+                </span>
+              ) : (
+                <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                  Unclaimed
+                </span>
+              );
+
+            return (
+              <div
+                key={gKey}
+                className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    {first.email ?? "—"}
+                  </span>
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{first.productName}</span>
+                  {reviewRows.length > 0 && (
+                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                      {reviewRows.length} bound licenses — review before touching either
+                    </span>
+                  )}
+                </div>
+
+                {(reviewRows.length > 0 ? reviewRows : current ? [current] : []).map((r) => (
+                  <div key={r.id} className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">
+                      Issued {new Date(r.issuedAt).toLocaleString()}
+                    </span>
+                    {statusBadge(r)}
+                  </div>
+                ))}
+
+                {history.length > 0 && (
+                  <div className="mt-3 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+                    <button
+                      onClick={() => setOpenHistoryGroup(openHistoryGroup === gKey ? null : gKey)}
+                      className="text-xs font-medium text-zinc-600 hover:underline dark:text-zinc-400"
+                    >
+                      {openHistoryGroup === gKey ? "Hide" : "Show"} history ({history.length})
+                    </button>
+                    {openHistoryGroup === gKey && (
+                      <ul className="mt-2 space-y-2">
+                        {history.map((r) => (
+                          <li
+                            key={r.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-md bg-zinc-50 p-2 text-xs text-zinc-600 dark:bg-zinc-800/60 dark:text-zinc-400"
+                          >
+                            <span>
+                              Issued {new Date(r.issuedAt).toLocaleString()} · {statusBadge(r)}
+                            </span>
+                            <button
+                              onClick={() => void deleteRow(r)}
+                              disabled={deletingId === r.id}
+                              className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                            >
+                              {deletingId === r.id ? "Deleting…" : "Delete"}
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
