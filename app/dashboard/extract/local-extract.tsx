@@ -123,6 +123,7 @@ function runStatusMeta(run: Pick<RunRecord, "status" | "stoppedReason">): { labe
     case "maxTotalLeads": return { label: "cap", cls: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200" };
     case "deadline": return { label: "deadline", cls: "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200" };
     case "exhausted": return { label: "exhausted", cls: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" };
+    case "stopped": return { label: "stopped", cls: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300" };
     default: return { label: "done", cls: "bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200" };
   }
 }

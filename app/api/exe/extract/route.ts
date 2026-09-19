@@ -171,7 +171,7 @@ type Event =
        *  deadline hit, lead cap, query space exhausted) instead of silently
        *  reporting a bare "done" that can read as success when the minimum wasn't
        *  reached. Mirrors the worker's done-vs-paused status distinction. */
-      stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | null;
+      stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | "stopped" | null;
     };
 
 function sseFrame(ev: Event): Uint8Array {
@@ -197,7 +197,8 @@ async function runExtraction(
   },
   push: (ev: Event) => void,
   delay: (ms: number) => Promise<void>,
-): Promise<{ total: number; leadFile: string | null; stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | null }> {
+  signal: AbortSignal,
+): Promise<{ total: number; leadFile: string | null; stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | "stopped" | null }> {
   const baseTerms = buildBaseTerms(payload.findTerms, payload.locationTerms);
   if (!baseTerms.length) throw new Error("No search terms.");
 
@@ -235,13 +236,26 @@ async function runExtraction(
   const seenUrls = new Set<string>();
   let total = 0;
   let leadFile: string | null = null;
-  let stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | null = "exhausted";
+  let stoppedReason: "minLeadsReached" | "deadline" | "maxTotalLeads" | "exhausted" | "stopped" | null = "exhausted";
   let queriesRun = 0;
 
   for (let qi = 0; ; qi++) {
     // Stop checks — checked at every query boundary, mirroring the worker's
     // batch-boundary checks. These are the REAL stopping conditions; growing the
     // query list can only continue while none of them fires.
+    //
+    // Confirmed live (2026-09-19) — the desktop EXE's Stop button previously
+    // only cancelled the CLIENT's own stream reader; nothing told this
+    // server-side loop to actually stop, so it ran to completion regardless
+    // (the web version's separate job-queue Stop was always real; this local
+    // streaming path never had an equivalent). `signal` is the incoming
+    // request's own AbortSignal — it fires the moment the client disconnects
+    // (stream.cancel(), tab close, or a genuine network drop), so checking it
+    // here is a real, immediate stop, not a cosmetic one.
+    if (signal.aborted) {
+      stoppedReason = "stopped";
+      break;
+    }
     if (total >= payload.maxTotalLeads) {
       stoppedReason = "maxTotalLeads";
       break;
@@ -303,6 +317,7 @@ async function runExtraction(
     push({ type: "step", message: `${results.length} result(s); extracting contact details…` });
 
     for (const result of results) {
+      if (signal.aborted) break;
       if (total >= payload.maxTotalLeads) break;
       if (!result.url || seenUrls.has(result.url)) continue;
       seenUrls.add(result.url);
@@ -403,7 +418,9 @@ export async function POST(req: NextRequest) {
         try {
           controller.enqueue(sseFrame(ev));
         } catch {
-          /* client went away — stop pushing; the async run below still finishes */
+          /* client went away — the loop below now checks req.signal itself
+             and stops for real; this catch just guards the now-pointless
+             enqueue calls in the brief window before it does. */
         }
       };
       const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -425,6 +442,7 @@ export async function POST(req: NextRequest) {
           },
           push,
           delay,
+          req.signal,
         );
         push({ type: "done", total, leadFile, stoppedReason });
       } catch (err) {
