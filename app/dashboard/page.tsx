@@ -3,6 +3,7 @@
 import Link from "next/link";
 
 import { useNavItems } from "@/components/dashboard-nav";
+import { cn } from "@/lib/cn";
 
 // One-line descriptions shown under each app tile on the overview. New
 // destinations will only show up here if they already appear in the nav data
@@ -27,6 +28,17 @@ export default function DashboardPage() {
       i.href === "/dashboard/browser" ||
       i.href === "/dashboard/settings",
   );
+  // Confirmed live (2026-09-19) — the sidebar nav (dashboard-nav.tsx's
+  // BUILD_ALLOWED_HREFS) already narrows to Extract-only for the Extractor
+  // build, but these two hero buttons were hardcoded regardless of build
+  // target: "Launch a browser" threw an internal error inside the Extractor
+  // EXE (its /dashboard/browser page needs the real database + VPS browser-
+  // session infrastructure, neither of which exist there — it isn't a "needs
+  // the hosted app" redirect case like auth, it's a page this build was never
+  // meant to ship at all). Only show a hero button when its destination is
+  // actually in this build's nav.
+  const hasBrowser = items.some((i) => i.href === "/dashboard/browser");
+  const hasExtract = items.some((i) => i.href === "/dashboard/extract");
 
   return (
     <div className="space-y-6">
@@ -51,18 +63,27 @@ export default function DashboardPage() {
             send outreach — all from one place.
           </p>
           <div className="mt-5 flex flex-wrap gap-2">
-            <Link
-              href="/dashboard/browser"
-              className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-400"
-            >
-              Launch a browser
-            </Link>
-            <Link
-              href="/dashboard/extract"
-              className="rounded-lg border border-[#352a1e] bg-[#17130f]/60 px-4 py-2 text-sm font-medium text-[#e5d9c6] transition-colors hover:bg-white/5"
-            >
-              Extract leads
-            </Link>
+            {hasBrowser && (
+              <Link
+                href="/dashboard/browser"
+                className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-400"
+              >
+                Launch a browser
+              </Link>
+            )}
+            {hasExtract && (
+              <Link
+                href="/dashboard/extract"
+                className={cn(
+                  "rounded-lg px-4 py-2 text-sm font-medium transition-colors",
+                  hasBrowser
+                    ? "border border-[#352a1e] bg-[#17130f]/60 text-[#e5d9c6] hover:bg-white/5"
+                    : "bg-brand-500 text-white font-semibold hover:bg-brand-400",
+                )}
+              >
+                Extract leads
+              </Link>
+            )}
           </div>
         </div>
       </section>
