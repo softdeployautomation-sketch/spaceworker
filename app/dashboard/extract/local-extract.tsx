@@ -66,6 +66,10 @@ interface RunRecord {
   maxTotalLeads: number;
   maxDurationMinutes: number;
   emailFilter: string;
+  // Webmail platform targeting — mirrors the web dashboard's Extract page
+  // (worker/filters/webmail_platforms.py is the shared source of truth).
+  webmailPlatforms: string[];
+  verifyWebmail: boolean;
   leads: ExeLead[];
   steps: string[];
   total: number;
@@ -79,6 +83,18 @@ interface RunRecord {
   // How this run came to be — search / import / merge — for labels and clarity.
   source?: "search" | "import" | "merge";
 }
+
+// Self-hosted webmail platforms this app can target — mirrors the web
+// dashboard's Extract page; worker/filters/webmail_platforms.py (server) and
+// local-engine/src/filters/webmail-platforms.ts (this EXE) are the shared
+// source of truth for the codes and their actual detection fingerprints.
+const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "roundcube", label: "RoundCube" },
+  { value: "squirrelmail", label: "SquirrelMail" },
+  { value: "rainloop", label: "RainLoop" },
+  { value: "zimbra", label: "Zimbra" },
+  { value: "open-xchange", label: "Open-Xchange" },
+];
 
 const MAX_CHOICES: { value: number; label: string }[] = [
   { value: 3, label: "3 queries" },
@@ -156,6 +172,9 @@ export function LocalExtractPage() {
   const [maxTotalLeads, setMaxTotalLeads] = useState(40);
   const [maxDurationMinutes, setMaxDurationMinutes] = useState(30);
   const [emailFilter, setEmailFilter] = useState("");
+  // Webmail platform targeting — mirrors the web dashboard's Extract page.
+  const [webmailPlatforms, setWebmailPlatforms] = useState<string[]>([]);
+  const [verifyWebmail, setVerifyWebmail] = useState(false);
 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -439,7 +458,7 @@ export function LocalExtractPage() {
         findTerms: targets.map((r) => r.findTerms).filter(Boolean).join(", "),
         locationTerms: targets.map((r) => r.locationTerms).filter(Boolean).join(", "),
         pdfOnly: false, scope: 0, resultsPerQuery: 0, minLeads: 0, maxTotalLeads: 0,
-        maxDurationMinutes: 0, emailFilter: "",
+        maxDurationMinutes: 0, emailFilter: "", webmailPlatforms: [], verifyWebmail: false,
         leads: deduped,
         steps,
         total: deduped.length,
@@ -498,7 +517,7 @@ export function LocalExtractPage() {
         id: runId,
         findTerms: `Import: ${file.name}`, locationTerms: "",
         pdfOnly: false, scope: 0, resultsPerQuery: 0, minLeads: 0, maxTotalLeads: 0,
-        maxDurationMinutes: 0, emailFilter: "",
+        maxDurationMinutes: 0, emailFilter: "", webmailPlatforms: [], verifyWebmail: false,
         leads,
         steps: data.messages ?? [],
         total: leads.length, leadFile: null,
@@ -540,6 +559,8 @@ export function LocalExtractPage() {
       maxTotalLeads,
       maxDurationMinutes,
       emailFilter,
+      webmailPlatforms,
+      verifyWebmail,
       leads: [],
       steps: [],
       total: 0,
@@ -571,6 +592,8 @@ export function LocalExtractPage() {
           minLeads,
           maxDurationMinutes,
           emailDomains: emailFilter,
+          webmailPlatforms,
+          verifyWebmail,
         }),
       });
 
@@ -656,6 +679,8 @@ export function LocalExtractPage() {
     setMaxTotalLeads(run.maxTotalLeads);
     setMaxDurationMinutes(run.maxDurationMinutes);
     setEmailFilter(run.emailFilter);
+    setWebmailPlatforms(run.webmailPlatforms ?? []);
+    setVerifyWebmail(run.verifyWebmail ?? false);
     setError(undefined);
   }
 
@@ -791,6 +816,52 @@ export function LocalExtractPage() {
             </select>
           </label>
         </div>
+
+        {/* Webmail platform targeting — two independent modes, mirroring the
+            web dashboard's Extract page exactly. */}
+        <div className="mt-3 rounded-lg border border-border bg-input/40 p-3">
+          <p className="text-sm font-medium text-fg">Self-hosted webmail (RoundCube, SquirrelMail, etc.)</p>
+          <p className="mt-1 text-xs text-fg-muted">
+            Target businesses running their own webmail instead of Gmail/Outlook/Google Workspace.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-3 text-sm">
+            {WEBMAIL_PLATFORM_OPTIONS.map((opt) => (
+              <label key={opt.value} className="flex items-center gap-1.5">
+                <input
+                  type="checkbox"
+                  checked={webmailPlatforms.includes(opt.value)}
+                  onChange={(e) => {
+                    setWebmailPlatforms((prev) =>
+                      e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
+                    );
+                  }}
+                  className="h-4 w-4 cursor-pointer"
+                />
+                {opt.label}
+              </label>
+            ))}
+          </div>
+          {webmailPlatforms.length > 0 ? (
+            <p className="mt-2 text-xs text-brand-600 dark:text-brand-400">
+              Search mode: finds indexed webmail login pages directly (fast — no extra requests per
+              lead). Each match becomes a lead with no email — just the domain and detected platform.
+            </p>
+          ) : (
+            <label className="mt-2 flex items-center gap-1.5 text-sm">
+              <input
+                type="checkbox"
+                checked={verifyWebmail}
+                onChange={(e) => setVerifyWebmail(e.target.checked)}
+                className="h-4 w-4 cursor-pointer"
+              />
+              Verify each lead&apos;s mail platform
+              <span className="text-xs text-fg-muted">
+                (slower — probes every found lead&apos;s domain and drops non-matches)
+              </span>
+            </label>
+          )}
+        </div>
+
         {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
         <p className="mt-2 text-[11px] text-fg-muted">
           {running

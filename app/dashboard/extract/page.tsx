@@ -52,6 +52,18 @@ interface JobDetail extends Job {
 
 type Template = "lead" | "hr" | "plain";
 
+// Self-hosted webmail platforms this app can target (worker/filters/
+// webmail_platforms.py is the single source of truth for the codes and their
+// actual detection fingerprints — this list is just the UI's checkbox
+// labels, kept in the same order/codes).
+const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "roundcube", label: "RoundCube" },
+  { value: "squirrelmail", label: "SquirrelMail" },
+  { value: "rainloop", label: "RainLoop" },
+  { value: "zimbra", label: "Zimbra" },
+  { value: "open-xchange", label: "Open-Xchange" },
+];
+
 const STATUS_COLORS: Record<JobStatus, string> = {
   queued:  "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200",
   running: "bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-200",
@@ -150,6 +162,11 @@ export function WebExtractPage() {
   const [locationInput, setLocationInput] = useState("");
   const [emailDomains, setEmailDomains] = useState<string[]>([]);
   const [emailDomainInput, setEmailDomainInput] = useState("");
+  // Webmail platform targeting (worker/filters/webmail_platforms.py) — two
+  // independent, mutually-exclusive modes; see the checkbox group's own
+  // helper text for what each actually does.
+  const [webmailPlatforms, setWebmailPlatforms] = useState<string[]>([]);
+  const [verifyWebmail, setVerifyWebmail] = useState(false);
   const [engine, setEngine] = useState<"ddg" | "google">("ddg");
   const [maxResults, setMaxResults] = useState(50000);
   // 0 = disabled (no auto-expansion) — the worker only expands terms when
@@ -306,6 +323,12 @@ export function WebExtractPage() {
     const domains = emailDomains.map((t) => t.trim()).filter((t) => t.length > 0);
     const emailDomainParam = domains.length > 0 ? { emailDomains: domains.join(", ") } : {};
     const minResultsParam = minResults > 0 ? { minResults } : {};
+    // Webmail platform targeting — see the checkbox group below for the two
+    // modes. Search mode (webmailPlatforms) and verify mode (verifyWebmail)
+    // are mutually exclusive; the worker prioritizes search mode if somehow
+    // both are set (see _search_and_extract's verify_webmail computation).
+    const webmailParam = webmailPlatforms.length > 0 ? { webmailPlatforms } : {};
+    const verifyWebmailParam = verifyWebmail && webmailPlatforms.length === 0 ? { verifyWebmail: true } : {};
 
     setSubmitting(true);
     try {
@@ -320,7 +343,19 @@ export function WebExtractPage() {
           // the flattened `queries` cross-product (e.g. 2 Finds x 5 Locations
           // reloading as 10 separate Find chips instead of 2 + 5) — the worker
           // itself never reads either field, only `queries`.
-          params: { engine, maxResults, ...emailDomainParam, ...minResultsParam, pagesPerQuery, maxDurationMinutes, resultMode, findTerms: finds, locationTerms: locs },
+          params: {
+            engine,
+            maxResults,
+            ...emailDomainParam,
+            ...minResultsParam,
+            ...webmailParam,
+            ...verifyWebmailParam,
+            pagesPerQuery,
+            maxDurationMinutes,
+            resultMode,
+            findTerms: finds,
+            locationTerms: locs,
+          },
         }),
       });
       if (res.ok) {
@@ -580,6 +615,12 @@ export function WebExtractPage() {
         .filter((d) => d.length > 0),
     );
     setEmailDomainInput("");
+    setWebmailPlatforms(
+      Array.isArray(p.webmailPlatforms)
+        ? p.webmailPlatforms.filter((v): v is string => typeof v === "string")
+        : [],
+    );
+    setVerifyWebmail(p.verifyWebmail === true);
     setEngine(p.engine === "google" ? "google" : "ddg");
     if (typeof p.maxResults === "number") setMaxResults(p.maxResults);
     setMinResults(typeof p.minResults === "number" ? p.minResults : 0);
@@ -735,6 +776,57 @@ export function WebExtractPage() {
                 setInput: setEmailDomainInput,
               })}
             </div>
+
+            {/* Webmail platform targeting — two independent modes. Picking any
+                platform below switches to SEARCH mode (finds webmail login
+                pages directly, fast); the Verify toggle is a separate mode
+                that only applies when no platform is checked. */}
+            <div className="rounded-lg border border-border bg-bg-elevated/50 p-3">
+              <p className="text-sm font-medium text-fg">Self-hosted webmail (RoundCube, SquirrelMail, etc.)</p>
+              <p className="mt-1 text-xs text-fg-muted">
+                Target businesses running their own webmail instead of Gmail/Outlook/Google Workspace —
+                the classic &quot;still on old self-hosted email&quot; signal migration/IT-services outreach looks for.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-3 text-sm">
+                {WEBMAIL_PLATFORM_OPTIONS.map((opt) => (
+                  <label key={opt.value} className="flex items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      checked={webmailPlatforms.includes(opt.value)}
+                      onChange={(e) => {
+                        setWebmailPlatforms((prev) =>
+                          e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
+                        );
+                      }}
+                      className="h-4 w-4 cursor-pointer"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+              {webmailPlatforms.length > 0 ? (
+                <p className="mt-2 text-xs text-brand-700 dark:text-brand-400">
+                  Search mode: finds indexed webmail login pages directly (fast — no extra requests per
+                  lead). Each match becomes a lead with no email (the login page has none) — just the
+                  business&apos;s domain and which platform it&apos;s running.
+                </p>
+              ) : (
+                <label className="mt-2 flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={verifyWebmail}
+                    onChange={(e) => setVerifyWebmail(e.target.checked)}
+                    className="h-4 w-4 cursor-pointer"
+                  />
+                  Verify each lead&apos;s mail platform
+                  <span className="text-xs text-fg-muted">
+                    (slower — probes every found lead&apos;s domain for a webmail signature and drops
+                    leads that don&apos;t match; use with a normal Find search instead of the checkboxes above)
+                  </span>
+                </label>
+              )}
+            </div>
+
             <div className="flex flex-wrap gap-4 items-center text-sm">
               <label className="flex items-center gap-2">
                 <span className="text-fg-muted">Engine:</span>

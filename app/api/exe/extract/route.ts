@@ -3,8 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { roundQueries, biasQueryTowardPdfs } from "@/local-engine/src/query";
 import { isPdfResult, defaultProbe } from "@/local-engine/src/pdf";
-import { extractLeadPage, extractLeadPdf, defaultFetcher } from "@/local-engine/src/crawl";
+import {
+  extractLeadPage,
+  extractLeadPdf,
+  extractWebmailLead,
+  probeLeadForWebmail,
+  defaultFetcher,
+} from "@/local-engine/src/crawl";
 import { fetchPdfText, defaultPdfTextDeps } from "@/local-engine/src/pdf-text";
+import { applyWebmailBiasToQuery } from "@/local-engine/src/filters/webmail-platforms";
 import type { Lead } from "@/local-engine/src/lead";
 import { duckDuckGoSearch } from "./search";
 import { appendLeadRow, newRunId } from "./storage";
@@ -183,6 +190,10 @@ async function runExtraction(
     minLeads: number; // floor; 0 disables auto-expansion
     maxDurationMinutes: number; // wall-clock deadline
     emailDomains: string[];
+    // Webmail platform targeting — mutually exclusive per job (see below);
+    // mirrors worker/automation.py's _search_and_extract exactly.
+    webmailPlatforms: string[];
+    verifyWebmail: boolean;
   },
   push: (ev: Event) => void,
   delay: (ms: number) => Promise<void>,
@@ -266,7 +277,13 @@ async function runExtraction(
 
     let q = grower.ordered[qi];
     queriesRun = qi + 1;
-    if (payload.pdfOnly) q = biasQueryTowardPdfs(q);
+    // Webmail SEARCH mode replaces the PDF bias entirely — a webmail login
+    // page is never a PDF, and filetype:pdf would just zero out results.
+    if (payload.webmailPlatforms.length > 0) {
+      q = applyWebmailBiasToQuery(q, payload.webmailPlatforms);
+    } else if (payload.pdfOnly) {
+      q = biasQueryTowardPdfs(q);
+    }
     push({ type: "step", message: `Searching ${queriesRun}: “${q}”` });
 
     const { results, blocked } = await duckDuckGoSearch(q, payload.resultsPerQuery);
@@ -292,7 +309,13 @@ async function runExtraction(
 
       let leads: Lead[] = [];
       try {
-        if (await isPdfResult(result.url, probe)) {
+        if (payload.webmailPlatforms.length > 0) {
+          // SEARCH mode: every result is a webmail login page found via the
+          // biased query above, never a PDF/directory page.
+          leads = await extractWebmailLead(result, payload.webmailPlatforms, pageFetcher, (step) =>
+            push({ type: "step", message: step }),
+          );
+        } else if (await isPdfResult(result.url, probe)) {
           push({ type: "step", message: `PDF result — extracting: ${result.url}` });
           leads = await extractLeadPdf(result, { fetchPdfText: (u) => fetchPdfText(u, pdfDeps) });
         } else {
@@ -305,11 +328,22 @@ async function runExtraction(
         leads = []; // a bad page/PDF must never abort the run
       }
 
-      for (const lead of leads) {
+      for (let lead of leads) {
         if (total >= payload.maxTotalLeads) break;
-        // Email-domain allowlist: only keep leads whose email matches the filter
-        // (exact domain, or ".suffix"/"*.suffix" pattern). With no filter, keep all.
-        if (!emailDomainMatches(payload.emailDomains, lead.email)) continue;
+        // Email-domain allowlist: skipped for SEARCH-mode webmail leads (they
+        // never have an email — nothing to match a domain allowlist against).
+        if (payload.webmailPlatforms.length === 0 && !emailDomainMatches(payload.emailDomains, lead.email)) {
+          continue;
+        }
+        // VERIFY mode: probe this normally-found lead's own domain and only
+        // keep it if a self-hosted webmail platform confirms — real extra
+        // network requests per lead, so it's opt-in and mutually exclusive
+        // with SEARCH mode (see the POST handler's parsing).
+        if (payload.verifyWebmail && payload.webmailPlatforms.length === 0) {
+          const probed = await probeLeadForWebmail(lead, undefined, pageFetcher);
+          if (!probed) continue;
+          lead = probed;
+        }
         total++;
         const file = appendLeadRow(runId, lead); // temp local JSONL — replaced by SQLite fork later
         if (file) leadFile = file;
@@ -357,6 +391,11 @@ export async function POST(req: NextRequest) {
   const maxTotalLeads = Math.max(rawCeiling, minLeads);
   const maxDurationMinutes = clampInt(body.maxDurationMinutes, 1, 480, DEFAULT_MAX_DURATION_MINUTES);
   const emailDomains = parseEmailDomains(body.emailDomains);
+  const WEBMAIL_PLATFORM_CODES = ["roundcube", "squirrelmail", "rainloop", "zimbra", "open-xchange"];
+  const webmailPlatforms = Array.isArray(body.webmailPlatforms)
+    ? body.webmailPlatforms.filter((p): p is string => typeof p === "string" && WEBMAIL_PLATFORM_CODES.includes(p))
+    : [];
+  const verifyWebmail = body.verifyWebmail === true;
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -371,7 +410,19 @@ export async function POST(req: NextRequest) {
 
       try {
         const { total, leadFile, stoppedReason } = await runExtraction(
-          { findTerms, locationTerms, pdfOnly, maxResults, resultsPerQuery, maxTotalLeads, minLeads, maxDurationMinutes, emailDomains },
+          {
+            findTerms,
+            locationTerms,
+            pdfOnly,
+            maxResults,
+            resultsPerQuery,
+            maxTotalLeads,
+            minLeads,
+            maxDurationMinutes,
+            emailDomains,
+            webmailPlatforms,
+            verifyWebmail,
+          },
           push,
           delay,
         );

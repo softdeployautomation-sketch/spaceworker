@@ -231,6 +231,21 @@ export async function POST(req: Request) {
   const findTerms = sanitizeStringArray(rawParams.findTerms, 300);
   const locationTerms = sanitizeStringArray(rawParams.locationTerms, 300);
 
+  // Webmail platform targeting (worker/filters/webmail_platforms.py) — two
+  // independent modes, both opt-in and mutually exclusive at the job level
+  // (SEARCH mode ignores verifyWebmail if both are somehow sent — see
+  // _search_and_extract's `verify_webmail = ... and not webmail_platforms`):
+  //   webmailPlatforms: non-empty -> SEARCH mode, find webmail login pages
+  //     directly via intitle: dorks (fast, no extra per-lead requests).
+  //   verifyWebmail: true -> VERIFY mode, probe each normally-found lead's
+  //     own domain for a webmail signature before keeping it (slower — real
+  //     extra network requests per lead).
+  const WEBMAIL_PLATFORM_CODES = ["roundcube", "squirrelmail", "rainloop", "zimbra", "open-xchange"];
+  const webmailPlatforms = sanitizeStringArray(rawParams.webmailPlatforms, 5).filter((p) =>
+    WEBMAIL_PLATFORM_CODES.includes(p),
+  );
+  const verifyWebmail = rawParams.verifyWebmail === true;
+
   const params = {
     engine,
     ...(maxResults !== undefined ? { maxResults } : {}),
@@ -242,6 +257,8 @@ export async function POST(req: Request) {
     queries: uniqueQueries,
     ...(findTerms.length > 0 ? { findTerms } : {}),
     ...(locationTerms.length > 0 ? { locationTerms } : {}),
+    ...(webmailPlatforms.length > 0 ? { webmailPlatforms } : {}),
+    ...(verifyWebmail ? { verifyWebmail } : {}),
     template,
   };
   const displayQuery = uniqueQueries.length === 1 ? uniqueQueries[0] : uniqueQueries.join(" | ");

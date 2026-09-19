@@ -62,6 +62,11 @@ from filters.email_domain_rules import (
     email_matches_rules,
     parse_email_domain_allowlist,
 )
+from filters.webmail_platforms import (
+    apply_webmail_bias_to_query,
+    candidate_webmail_urls,
+    detect_webmail_platform,
+)
 from pypdf import PdfReader
 
 def is_rdp_session() -> bool:
@@ -914,10 +919,20 @@ async def search_phase(query: str, params: dict, job_dir: str,
     except (ValueError, TypeError):
         pages_per_query = DEFAULT_PAGES_PER_QUERY
 
+    # Webmail platform SEARCH mode (filters/webmail_platforms.py) replaces the
+    # PDF bias entirely rather than stacking with it — a webmail login page is
+    # never a PDF, and `filetype:pdf` would just zero out these results.
+    webmail_platforms = [p for p in (params.get("webmailPlatforms") or []) if isinstance(p, str)]
+
+    def _biased_query(q: str) -> str:
+        if webmail_platforms:
+            return apply_webmail_bias_to_query(q, webmail_platforms)
+        return _bias_query_toward_pdfs(q)
+
     if engine == "google":
         # Real crawler (Task 13): visit multiple result pages per query, bounded
         # independently the same way max_results is.
-        pdf_query = _bias_query_toward_pdfs(query)
+        pdf_query = _biased_query(query)
         try:
             return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
         except _BlockedByCaptchaError:
@@ -949,7 +964,7 @@ async def search_phase(query: str, params: dict, job_dir: str,
                 except _BlockedByCaptchaError:
                     return await _duckduckgo_with_exit_nodes(pdf_query, max_results, job_dir)
 
-    pdf_query = _bias_query_toward_pdfs(query)
+    pdf_query = _biased_query(query)
 
     # DDG's default path only ever fetched page 1 REGARDLESS of pagesPerQuery
     # (confirmed live: neither duckduckgo_search_http nor its Playwright
@@ -1225,8 +1240,98 @@ def extract_lead_pdf(result: SearchResult) -> list[dict]:
     return _build_leads(result, emails, phones, contact_names)
 
 
+def extract_webmail_lead(
+    result: SearchResult,
+    platform_codes: list[str],
+    on_step: Optional[SyncStepCallable] = None,
+) -> list[dict]:
+    """SEARCH-mode webmail extraction (see filters/webmail_platforms.py):
+    result.url is itself a webmail LOGIN page found via an intitle: dork, not
+    a business directory page — it has no name/email/phone to extract. Fetch
+    it once to CONFIRM the platform (a title-based dork hit alone isn't proof;
+    some unrelated indexed page could coincidentally share the title text),
+    then produce exactly one lead with the DOMAIN as the actionable result and
+    email/phone/contactName left null — there is genuinely nothing else to
+    extract from a login form. This deliberately breaks from _build_leads'
+    "zero contact info = zero leads" rule (Task 13): that rule exists to stop
+    guessing from an unrelated page's content, but here the domain itself
+    (not a guess) IS the lead this search mode exists to find.
+    """
+    try:
+        resp = requests.get(
+            result.url,
+            headers={"User-Agent": BROWSER_USER_AGENT},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        html = resp.text
+    except Exception:
+        return []
+
+    platform = detect_webmail_platform(html, platform_codes)
+    if not platform:
+        # Title dork hit but no confirmed fingerprint — a false positive
+        # (unrelated page, or the platform changed its markup). Drop it
+        # rather than reporting an unverified guess.
+        return []
+
+    if on_step is not None:
+        on_step(f"Confirmed {platform} at {result.url}")
+
+    netloc = urlparse(result.url).netloc
+    root_domain = netloc.removeprefix("www.")
+    business_name = _extract_business_name(result.title, result.url, result.snippet) or root_domain
+
+    return [{
+        "email": None,
+        "phone": None,
+        "contactName": None,
+        "businessName": business_name,
+        "website": f"https://{root_domain}" if root_domain else result.url,
+        "sourceUrl": result.url,
+        "snippet": f"Detected: {platform} webmail",
+    }]
+
+
+def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict | None:
+    """VERIFY/PROBE mode (see filters/webmail_platforms.py): given a lead
+    already found the normal way (has an email, therefore a domain), actively
+    check a short, bounded list of candidate URLs on that domain for a
+    self-hosted webmail platform. Returns the lead (annotated in `snippet`)
+    if confirmed, else None. Short-circuits on the first confirmed match —
+    real extra network requests per lead, so this stays as cheap as possible.
+    """
+    email = lead.get("email") or ""
+    if "@" not in email:
+        return None
+    domain = email.rsplit("@", 1)[-1].strip().lower()
+    if not domain:
+        return None
+
+    for url in candidate_webmail_urls(domain):
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": BROWSER_USER_AGENT},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            if resp.status_code >= 400:
+                continue
+            platform = detect_webmail_platform(resp.text, platform_codes)
+        except Exception:
+            continue
+        if platform:
+            annotated = dict(lead)
+            existing_snippet = annotated.get("snippet") or ""
+            note = f"Detected: {platform} webmail"
+            annotated["snippet"] = f"{existing_snippet} — {note}" if existing_snippet else note
+            return annotated
+    return None
+
+
 def _extract_result(result: SearchResult,
-                    on_step: Optional[SyncStepCallable] = None) -> list[dict]:
+                    on_step: Optional[SyncStepCallable] = None,
+                    webmail_platforms: Optional[list[str]] = None) -> list[dict]:
     """Dispatch one search result to the right extractor (PDF vs real page).
 
     Shared by _search_and_extract() for every result on every page — keeps the
@@ -1238,6 +1343,12 @@ def _extract_result(result: SearchResult,
     therefore can't await; _search_and_extract() hands it a thread-safe adapter.
     """
     try:
+        if webmail_platforms:
+            # SEARCH-mode webmail job: every result is a login page found via
+            # an intitle: dork, never a PDF/directory page — see
+            # extract_webmail_lead's docstring for why this skips the normal
+            # PDF/HTML branching entirely.
+            return extract_webmail_lead(result, webmail_platforms, on_step)
         if _is_pdf_result(result):
             if on_step is not None:
                 on_step(f"Reading a PDF at {result.url}")
@@ -1360,6 +1471,19 @@ async def _search_and_extract(
     """
     loop = asyncio.get_event_loop()
 
+    # Webmail platform targeting (see filters/webmail_platforms.py) — two
+    # independent, mutually-exclusive-per-lead modes:
+    #   SEARCH (webmail_platforms non-empty): every result IS a webmail login
+    #     page (search_phase biased the query itself); _extract_result routes
+    #     to extract_webmail_lead instead of the normal PDF/HTML branch.
+    #   VERIFY (verify_webmail): leads are found the NORMAL way, then each one
+    #     is probed on its own domain and dropped unless a platform confirms —
+    #     real extra network requests per lead, so it's opt-in and separate.
+    webmail_platforms: list[str] = [
+        p for p in (params.get("webmailPlatforms") or []) if isinstance(p, str)
+    ]
+    verify_webmail = params.get("verifyWebmail") is True and not webmail_platforms
+
     if len(query_list) == 1:
         # Single-query path: preserve the original failure semantics — a solo
         # query's own search failure propagates instead of being swallowed.
@@ -1421,7 +1545,9 @@ async def _search_and_extract(
         # other user's queued job too) freezing indefinitely.
         try:
             leads = await asyncio.wait_for(
-                loop.run_in_executor(_EXTRACTION_EXECUTOR, _extract_result, result, report_step_sync),
+                loop.run_in_executor(
+                    _EXTRACTION_EXECUTOR, _extract_result, result, report_step_sync, webmail_platforms or None
+                ),
                 timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
@@ -1432,9 +1558,19 @@ async def _search_and_extract(
         for lead in leads:
             # Filter at the point of emission so on_progress stream and final list
             # stay in sync — leads that don't match are never stored or returned.
-            if domain_rules is not None and not domain_rules.is_empty():
+            # Skipped entirely for SEARCH-mode webmail leads: they never have an
+            # email (there's nothing to match a domain allowlist against), and
+            # dropping them here would silently discard every result.
+            if not webmail_platforms and domain_rules is not None and not domain_rules.is_empty():
                 if not email_matches_rules(lead.get("email") or "", domain_rules):
                     continue
+            if verify_webmail:
+                # Real extra network request — off the event loop, same
+                # per-result executor as everything else here.
+                probed = await loop.run_in_executor(_EXTRACTION_EXECUTOR, probe_lead_for_webmail, lead, None)
+                if probed is None:
+                    continue
+                lead = probed
             await on_progress(lead)
             kept.append(lead)
         return kept

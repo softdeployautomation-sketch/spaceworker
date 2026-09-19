@@ -13,10 +13,11 @@
  *   - the main page's raw HTML is still handed to email extraction for mailto:.
  */
 import { extractEmails } from "./extractors/email";
-import { extractContactNames, extractNamesFromEmail } from "./extractors/name";
+import { extractBusinessName, extractContactNames, extractNamesFromEmail } from "./extractors/name";
 import { extractPhones } from "./extractors/phone";
 import { buildLeads, type Lead, type SearchResult } from "./lead";
 import { findContactLinks, findEmbeddedPdfLinks, htmlToText, CRAWL_USER_AGENT, type Anchor } from "./html";
+import { candidateWebmailUrls, detectWebmailPlatform } from "./filters/webmail-platforms";
 
 /** Page/PDF retrieval hooks — injectable so the crawl layer runs in isolation. */
 export interface CrawlDeps {
@@ -140,4 +141,78 @@ export function defaultFetcher(userAgent: string = CRAWL_USER_AGENT): CrawlDeps 
       }
     },
   };
+}
+
+/**
+ * SEARCH-mode webmail extraction — TypeScript port of automation.py's
+ * extract_webmail_lead. result.url is itself a webmail LOGIN page found via
+ * an intitle: dork, not a business directory page — it has no name/email/
+ * phone to extract. Fetch it once to CONFIRM the platform (a title-based
+ * dork hit alone isn't proof), then produce exactly one lead with the DOMAIN
+ * as the actionable result and email/phone/contactName left null. This
+ * deliberately breaks from buildLeads' "zero contact info = zero leads"
+ * rule: the domain itself (not a guess) IS the lead this mode exists to find.
+ */
+export async function extractWebmailLead(
+  result: SearchResult,
+  platformCodes: string[],
+  fetcher: CrawlDeps,
+  onStep?: (message: string) => void,
+): Promise<Lead[]> {
+  const html = await fetcher.fetchHtml(result.url);
+  if (!html) return [];
+
+  const platform = detectWebmailPlatform(html, platformCodes);
+  if (!platform) return [];
+
+  if (onStep) onStep(`Confirmed ${platform} at ${result.url}`);
+
+  let rootDomain = "";
+  try {
+    rootDomain = new URL(result.url).hostname.replace(/^www\./, "");
+  } catch {
+    rootDomain = "";
+  }
+  const businessName = extractBusinessName(result.title, result.url, result.snippet) || rootDomain;
+
+  return [{
+    email: null,
+    phone: null,
+    contactName: null,
+    businessName,
+    website: rootDomain ? `https://${rootDomain}` : result.url,
+    sourceUrl: result.url,
+    snippet: `Detected: ${platform} webmail`,
+  }];
+}
+
+/**
+ * VERIFY/PROBE mode — TypeScript port of automation.py's probe_lead_for_webmail.
+ * Given a lead already found the normal way (has an email, therefore a
+ * domain), actively check a short, bounded list of candidate URLs on that
+ * domain for a self-hosted webmail platform. Returns the lead (annotated in
+ * `snippet`) if confirmed, else null. Short-circuits on the first confirmed
+ * match — real extra network requests per lead.
+ */
+export async function probeLeadForWebmail(
+  lead: Lead,
+  platformCodes: string[] | undefined,
+  fetcher: CrawlDeps,
+): Promise<Lead | null> {
+  const email = lead.email ?? "";
+  const at = email.lastIndexOf("@");
+  if (at < 0 || at === email.length - 1) return null;
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  if (!domain) return null;
+
+  for (const url of candidateWebmailUrls(domain)) {
+    const html = await fetcher.fetchHtml(url);
+    if (!html) continue;
+    const platform = detectWebmailPlatform(html, platformCodes);
+    if (platform) {
+      const note = `Detected: ${platform} webmail`;
+      return { ...lead, snippet: lead.snippet ? `${lead.snippet} — ${note}` : note };
+    }
+  }
+  return null;
 }
