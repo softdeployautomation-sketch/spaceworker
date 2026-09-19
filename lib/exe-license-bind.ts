@@ -42,25 +42,24 @@ export class LicenseBindError extends Error {
 }
 
 /**
- * One machine, one account — never the other way round. Finds a DIFFERENT,
- * still-valid ExeLicense row (any user) currently bound to `machineId`.
- * Confirmed live (2026-09-19): nothing previously stopped a second account
- * from binding to a machine another account's license was already active
- * on — same test VM used for two buyer accounts produced two simultaneously
- * "Licensed" rows, a real cross-account collision, not per-license reuse.
- * Checked before every write that sets boundMachineId (bind AND transfer).
+ * One machine, one account — never the other way round. True when a
+ * DIFFERENT user's still-valid ExeLicense row is currently bound to
+ * `machineId`. A duplicate row under the SAME user (pre-existing debris, not
+ * this check's job) is deliberately excluded by filtering on userId in the
+ * query itself, not just by license id. Confirmed live (2026-09-19): nothing
+ * previously stopped a second account from binding to a machine another
+ * account's license was already active on — same test VM used for two buyer
+ * accounts produced two simultaneously "Licensed" rows, a real cross-account
+ * collision, not per-license reuse. Checked before every write that sets
+ * boundMachineId (bind AND transfer).
  */
-async function findConflictingBinding(
-  machineId: string,
-  excludeExeLicenseId: string,
-): Promise<{ userId: string } | null> {
+async function machineTakenByAnotherAccount(machineId: string, licenseUserId: string): Promise<boolean> {
   const now = new Date();
   const candidates = await db.exeLicense.findMany({
-    where: { boundMachineId: machineId, id: { not: excludeExeLicenseId } },
-    select: { userId: true, licenseKey: true },
+    where: { boundMachineId: machineId, userId: { not: licenseUserId } },
+    select: { licenseKey: true },
   });
-  const conflict = candidates.find((c) => keyExpiryIsAfter(c.licenseKey, now));
-  return conflict ? { userId: conflict.userId } : null;
+  return candidates.some((c) => keyExpiryIsAfter(c.licenseKey, now));
 }
 
 export interface BindExeLicenseResult {
@@ -137,8 +136,7 @@ export async function bindExeLicenseToMachine(input: {
 
   // One machine, one account: refuse to bind onto a device another buyer's
   // license already occupies.
-  const conflict = await findConflictingBinding(machineId, license.id);
-  if (conflict && conflict.userId !== license.userId) {
+  if (await machineTakenByAnotherAccount(machineId, license.userId)) {
     throw new LicenseBindError(
       "This device already has an active license under a different account. Deactivate it there first, or contact support.",
       "machine_taken",
@@ -325,8 +323,7 @@ export async function transferExeLicenseToMachine(input: {
 
   // One machine, one account: refuse to move onto a device another buyer's
   // license already occupies.
-  const conflict = await findConflictingBinding(machineId, license.id);
-  if (conflict && conflict.userId !== license.userId) {
+  if (await machineTakenByAnotherAccount(machineId, license.userId)) {
     throw new LicenseTransferError(
       "This device already has an active license under a different account. Deactivate it there first, or contact support.",
       "machine_taken",
