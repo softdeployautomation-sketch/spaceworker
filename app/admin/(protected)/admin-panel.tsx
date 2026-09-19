@@ -2251,10 +2251,100 @@ function ExeLicensesTab() {
         </div>
       )}
 
+      <RecentLicensesTable />
+
       <ExeLicenseClaimSection />
     </div>
   );
 }
+
+// Confirmed live (2026-09-19) — before this, the only way to see a license at
+// all was to already know the buyer's email and search for it; a freshly
+// issued or self-service-bound license had no visibility anywhere in admin
+// unless someone thought to look for that specific person. Loads on mount,
+// no email needed — the 100 most recent licenses across every buyer, same
+// live table every issue/bind/transfer/unbind action already writes to.
+function RecentLicensesTable() {
+  const [rows, setRows] = useState<AdminLicenseRow[] | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/exe-licenses");
+      const data = (await res.json().catch(() => ({}))) as { licenses?: AdminLicenseRow[]; error?: string };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Couldn't load recent licenses.");
+        setRows([]);
+        return;
+      }
+      setRows(data.licenses ?? []);
+    } catch {
+      setError("Network error loading recent licenses.");
+      setRows([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <div className="mt-8">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold tracking-tight">Recent licenses (every buyer)</h3>
+        <button
+          onClick={() => void load()}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        >
+          Refresh
+        </button>
+      </div>
+      {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {rows === null ? (
+        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No licenses issued yet.</p>
+      ) : (
+        <div className="mt-3 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">Buyer</th>
+                <th className="px-4 py-3 font-medium">Product</th>
+                <th className="px-4 py-3 font-medium">Issued</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="px-4 py-3">{r.email ?? "—"}</td>
+                  <td className="px-4 py-3">{r.productName}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {new Date(r.issuedAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    {r.boundMachineId ? (
+                      <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                        Bound{r.boundMachineLabel ? ` — ${r.boundMachineLabel}` : ""}
+                      </span>
+                    ) : (
+                      <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs font-medium text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400">
+                        Unclaimed
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Task 47 — CLAIM an existing (unbound) license to a machine. The admin manual
 // tool that actually locks a real customer's license to one device. Uses the
 // SAME existing generator route (/api/admin/exe-licenses), extended with an
@@ -2262,6 +2352,7 @@ function ExeLicensesTab() {
 
 type AdminLicenseRow = {
   id: string;
+  email?: string;
   product: string;
   productName: string;
   issuedAt: string;

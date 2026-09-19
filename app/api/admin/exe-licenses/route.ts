@@ -318,6 +318,15 @@ async function issueLicense(
 
 // ---- GET ?email=... — list a buyer's licenses for the claim picker -----------
 
+// Confirmed live (2026-09-19) — this used to REQUIRE ?email=..., 400ing
+// otherwise. That meant an admin had no way to see who recently got a
+// license (issued, self-service auto-bound, or claimed) without already
+// knowing their email — a real "user goes missing from admin" gap, not just
+// an inconvenience. Now: no email -> the 100 most recent licenses across
+// EVERY buyer (mirrors Vantra's admin exe-licenses page, same shape), so a
+// freshly issued or bound license always surfaces here immediately, live off
+// the same table every action already writes to. Email still narrows to one
+// buyer's licenses, unchanged, for the claim/transfer/unbind actions below.
 export async function GET(req: Request) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
@@ -325,23 +334,30 @@ export async function GET(req: Request) {
   }
 
   const email = new URL(req.url).searchParams.get("email")?.trim() ?? "";
-  if (!email || !email.includes("@")) {
-    return NextResponse.json({ error: "Pass ?email=... to list a buyer's licenses." }, { status: 400 });
-  }
 
-  const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
-  if (!user) {
-    return NextResponse.json({ licenses: [] });
+  let userId: string | undefined;
+  if (email) {
+    if (!email.includes("@")) {
+      return NextResponse.json({ error: "Enter a valid email." }, { status: 400 });
+    }
+    const user = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+    if (!user) {
+      return NextResponse.json({ licenses: [] });
+    }
+    userId = user.id;
   }
 
   const licenses = await prisma.exeLicense.findMany({
-    where: { userId: user.id },
+    where: userId ? { userId } : {},
     orderBy: { issuedAt: "desc" },
+    take: 100,
+    include: { user: { select: { email: true } } },
   });
 
   return NextResponse.json({
     licenses: licenses.map((l) => ({
       id: l.id,
+      email: l.user.email,
       product: l.product,
       productName: EXE_PRODUCTS.find((p) => p.id === l.product)?.name ?? l.product,
       issuedAt: l.issuedAt.toISOString(),
