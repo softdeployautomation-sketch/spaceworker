@@ -75,11 +75,19 @@ export function buildWebmailDorkClause(platformCodes: string[]): string {
 }
 
 /** Mutually exclusive with PDF-biasing — a webmail login page is never a PDF. */
-export function applyWebmailBiasToQuery(query: string, platformCodes: string[]): string {
-  const clause = buildWebmailDorkClause(platformCodes);
-  const q = (query ?? "").trim();
-  if (!clause) return q;
-  return q ? `${q} ${clause}`.trim() : clause;
+// Confirmed live (2026-09-19) — returns the webmail dork clause ALONE; the
+// caller's free-text query is deliberately DROPPED, not appended. This used
+// to append the clause to the caller's "find in location" text, which
+// produced zero real results: manually tested against real search results, a
+// combined query like `law firm in Lagos (intitle:"RoundCube Webmail" OR ...)`
+// made the search engine silently drop the intitle: constraints and fall back
+// to generic business-search hits. `intitle:"RoundCube Webmail"` ALONE
+// reliably returns real, live login pages (confirmed with real samples —
+// webmail.digipen.edu, mail.egr.msu.edu, webmail.supremecluster.com, and
+// others) — a webmail login page's title has nothing to do with what
+// business runs it, so there's no shared text for a combined query to match.
+export function applyWebmailBiasToQuery(_query: string, platformCodes: string[]): string {
+  return buildWebmailDorkClause(platformCodes);
 }
 
 export function detectWebmailPlatform(html: string, platformCodes?: string[]): string | null {

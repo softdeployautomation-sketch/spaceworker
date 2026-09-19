@@ -808,7 +808,12 @@ export function WebExtractPage() {
                 <p className="mt-2 text-xs text-brand-700 dark:text-brand-400">
                   Search mode: finds indexed webmail login pages directly (fast — no extra requests per
                   lead). Each match becomes a lead with no email (the login page has none) — just the
-                  business&apos;s domain and which platform it&apos;s running.
+                  business&apos;s domain and which platform it&apos;s running.{" "}
+                  <strong>Your Find/Location text above is ignored in this mode</strong> — a webmail
+                  login page&apos;s title never mentions the business or city running it, so combining
+                  them just breaks the search. Want a business/location match instead? Uncheck the
+                  platforms and use &quot;Verify each lead&apos;s mail platform&quot; below with a normal
+                  Find search.
                 </p>
               ) : (
                 <label className="mt-2 flex items-center gap-1.5 text-sm">

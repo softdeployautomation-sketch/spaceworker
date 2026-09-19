@@ -96,14 +96,23 @@ def build_webmail_dork_clause(platform_codes: list[str]) -> str:
 
 
 def apply_webmail_bias_to_query(query: str, platform_codes: list[str]) -> str:
-    """Append the webmail dork clause to a user query, same shape as
-    _bias_query_toward_pdfs — mutually exclusive with PDF-biasing (a webmail
-    login page is never a PDF), so callers choose ONE, not both."""
-    clause = build_webmail_dork_clause(platform_codes)
-    q = query.strip()
-    if not clause:
-        return q
-    return f"{q} {clause}".strip() if q else clause
+    """Returns the webmail dork clause ALONE — the caller's free-text query is
+    deliberately DROPPED, not appended.
+
+    Confirmed live (2026-09-19) — this used to append the dork clause to the
+    caller's "find in location" text (same shape as _bias_query_toward_pdfs),
+    which sounded reasonable but produced zero real results: manually tested
+    against real search results, a query like
+    `law firm in Lagos (intitle:"RoundCube Webmail" OR intitle:"SquirrelMail" ...)`
+    made the search engine silently DROP the intitle: constraints entirely and
+    fall back to generic "law firm in Lagos" hits — confirmed by the search
+    results themselves, not assumed. A webmail login page's title has nothing
+    to do with what business runs it, so there's no text on that page for a
+    combined query to legitimately match anyway. `intitle:"RoundCube Webmail"`
+    ALONE (no other terms) reliably returns real, live login pages — confirmed
+    with multiple real samples (webmail.digipen.edu, mail.egr.msu.edu,
+    webmail.supremecluster.com, mail.ovh.net, and others)."""
+    return build_webmail_dork_clause(platform_codes)
 
 
 def detect_webmail_platform(html: str, platform_codes: list[str] | None = None) -> str | None:
