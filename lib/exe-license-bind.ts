@@ -390,7 +390,16 @@ function parsePythonIsoformat(value: string): Date | null {
 }
 
 /** The exact `expires_at` of a key's payload, as a Date (UTC). */
-function originalExpiry(licenseKey: string): Date {
+export function originalExpiry(licenseKey: string): Date {
   const payload = decodeLicenseKey(licenseKey);
   return parsePythonIsoformat(payload?.expires_at ?? "") ?? new Date(0);
+}
+
+/**
+ * True when a key's decoded `expires_at` is after `now` (unreadable/absent =
+ * expired). Exported for the admin issue action's duplicate-prevention check
+ * (2026-09-19) — "does this user already have a usable license".
+ */
+export function keyExpiryIsAfter(licenseKey: string, now: Date): boolean {
+  return originalExpiry(licenseKey).getTime() > now.getTime();
 }

@@ -4,7 +4,7 @@ import { requireAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
 import { EXE_PRODUCTS } from "@/lib/products";
 import { generateLicenseKey } from "@/lib/exe-license";
-import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense } from "@/lib/exe-license-bind";
+import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense, keyExpiryIsAfter, originalExpiry } from "@/lib/exe-license-bind";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
 //   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
@@ -262,6 +262,36 @@ async function issueLicense(
       );
     }
     durationDays = n;
+  }
+
+  // Confirmed live (2026-09-19) — this used to mint a BRAND NEW row every
+  // single call, with no check for an existing one first. One buyer ended up
+  // with several separate ExeLicense rows for the same product after
+  // repeated admin "issue" clicks — confusing in admin, and no real reason
+  // for a user to ever have more than one usable license per product at a
+  // time. Reuse an existing non-expired one if there is one, whatever its
+  // bind state — only mint a genuinely new row when none exists or the
+  // existing one(s) have actually expired.
+  const now = new Date();
+  const existingRows = await prisma.exeLicense.findMany({
+    where: { userId: user.id, product: product.id },
+    orderBy: { issuedAt: "desc" },
+  });
+  const reusable = existingRows.find((l) => keyExpiryIsAfter(l.licenseKey, now));
+  if (reusable) {
+    return NextResponse.json({
+      reused: true,
+      licenseKey: reusable.licenseKey,
+      product: reusable.product,
+      productName: product.name,
+      licensee: user.email,
+      expiresAt: originalExpiry(reusable.licenseKey).toISOString(),
+      exeLicenseId: reusable.id,
+      boundMachineId: reusable.boundMachineId,
+      mustClaimNote: reusable.boundMachineId
+        ? "This buyer already has a usable license, already bound to a device — nothing new was created."
+        : "This buyer already has a usable, unclaimed license — nothing new was created. Claim (bind) it below.",
+    });
   }
 
   let key;

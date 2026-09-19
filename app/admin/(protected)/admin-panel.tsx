@@ -2119,6 +2119,7 @@ type IssuedLicenseResult = {
   licensee: string;
   expiresAt: string;
   exeLicenseId: string;
+  reused?: boolean;
 };
 
 function ExeLicensesTab() {
@@ -2232,7 +2233,9 @@ function ExeLicensesTab() {
         <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-900 dark:bg-emerald-950">
           <div className="flex items-center justify-between">
             <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
-              License issued for {result.productName}
+              {result.reused
+                ? `Reused this buyer's existing license for ${result.productName}`
+                : `License issued for ${result.productName}`}
             </p>
             <button
               onClick={copyKey}
