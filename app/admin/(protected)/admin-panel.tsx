@@ -109,11 +109,12 @@ function StatusBadge({ status }: { status: string }) {
       ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
       : status === "rejected"
         ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
-        : status === "flagged"
+        : status === "flagged" || status === "approved_no_license"
           ? "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400"
           : "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400";
+  const label = status === "approved_no_license" ? "approved — no license" : status;
   return (
-    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{status}</span>
+    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${styles}`}>{label}</span>
   );
 }
 
@@ -316,7 +317,7 @@ function PaymentsTab() {
     load();
   }, []);
 
-  async function act(id: string, action: "approve" | "reject") {
+  async function act(id: string, action: "approve" | "reject" | "retry-license") {
     setError("");
     try {
       const res = await fetch(`/api/admin/payments/${id}/${action}`, { method: "POST" });
@@ -343,7 +344,8 @@ function PaymentsTab() {
         </button>
       </div>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        Flagged and pending payments awaiting review.
+        Flagged and pending payments awaiting review, plus any payment marked
+        approved that never got a license (2026-09-19 reconciliation).
       </p>
 
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
@@ -397,18 +399,29 @@ function PaymentsTab() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2">
-                      <button
-                        onClick={() => act(p.id, "approve")}
-                        className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
-                      >
-                        Approve
-                      </button>
-                      <button
-                        onClick={() => act(p.id, "reject")}
-                        className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500"
-                      >
-                        Reject
-                      </button>
+                      {p.status === "approved_no_license" ? (
+                        <button
+                          onClick={() => act(p.id, "retry-license")}
+                          className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+                        >
+                          Retry license
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => act(p.id, "approve")}
+                            className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500"
+                          >
+                            Approve
+                          </button>
+                          <button
+                            onClick={() => act(p.id, "reject")}
+                            className="rounded-lg bg-red-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-red-500"
+                          >
+                            Reject
+                          </button>
+                        </>
+                      )}
                     </div>
                   </td>
                 </tr>

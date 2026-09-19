@@ -38,7 +38,28 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
     await bumpWebTier(payment.userId);
     return;
   }
-  await issueExeLicense(payment);
+  try {
+    await issueExeLicense(payment);
+  } catch (err) {
+    // Confirmed live (2026-09-19) — every caller marks the payment "approved"
+    // BEFORE calling this function, with no try/catch of their own. Left
+    // unhandled, a throw here (e.g. an unrecognized product id) permanently
+    // stranded the payment "approved" with no ExeLicense ever created and
+    // nothing to retry it — a real buyer pays, admin confirms, and nothing
+    // happens, silently. Revert to "flagged" so it reappears in the admin
+    // review queue (same Approve button retries this exact idempotent path
+    // once the underlying issue is fixed) and log an audit attempt, matching
+    // the existing verification-attempt pattern elsewhere in this flow.
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[exe-license] payment ${paymentId} approved but license issuance failed:`, message);
+    await db.payment
+      .update({ where: { id: paymentId }, data: { status: "flagged" } })
+      .catch(() => {});
+    await db.paymentVerificationAttempt
+      .create({ data: { paymentId, success: false, note: `license issuance failed: ${message}` } })
+      .catch(() => {});
+    throw err;
+  }
 }
 
 async function bumpWebTier(userId: string): Promise<void> {
