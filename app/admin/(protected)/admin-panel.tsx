@@ -2288,6 +2288,7 @@ type AdminTransferResult = {
 };
 
 function ExeLicenseClaimSection() {
+  const confirm = useConfirm();
   const [email, setEmail] = useState("");
   const [licenses, setLicenses] = useState<AdminLicenseRow[] | null>(null);
   const [selectedId, setSelectedId] = useState("");
@@ -2304,6 +2305,11 @@ function ExeLicenseClaimSection() {
   const [transferNote, setTransferNote] = useState("");
   const [transferResult, setTransferResult] = useState<AdminTransferResult | null>(null);
   const [transferError, setTransferError] = useState("");
+
+  // Unbind — clear a binding back to "unclaimed" (support/testing reset).
+  const [unbindSelectedId, setUnbindSelectedId] = useState("");
+  const [unbindResult, setUnbindResult] = useState<string | null>(null);
+  const [unbindError, setUnbindError] = useState("");
 
   async function loadLicenses() {
     if (!email.includes("@")) {
@@ -2332,6 +2338,9 @@ function ExeLicenseClaimSection() {
       setTransferSelectedId(firstBound ? firstBound.id : "");
       setTransferResult(null);
       setTransferError("");
+      setUnbindSelectedId(firstBound ? firstBound.id : "");
+      setUnbindResult(null);
+      setUnbindError("");
     } catch {
       setError("Network error loading licenses.");
       setLicenses([]);
@@ -2410,6 +2419,42 @@ function ExeLicenseClaimSection() {
       await loadLicenses();
     } catch {
       setTransferError("Network error transferring the license.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unbind() {
+    if (!unbindSelectedId || busy) return;
+    if (
+      !(await confirm({
+        title: "Clear this license's device binding?",
+        description:
+          "The current machine's key stops working immediately, and the license goes back to unclaimed — ready for a fresh bind.",
+        confirmLabel: "Unbind",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setBusy(true);
+    setUnbindError("");
+    setUnbindResult(null);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unbind", email, exeLicenseId: unbindSelectedId }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { unbound?: boolean; error?: string };
+      if (!res.ok) {
+        setUnbindError(typeof data.error === "string" ? data.error : "Unbind failed.");
+        return;
+      }
+      setUnbindResult("License unbound — it's unclaimed again and ready for a fresh bind.");
+      await loadLicenses();
+    } catch {
+      setUnbindError("Network error unbinding the license.");
     } finally {
       setBusy(false);
     }
@@ -2595,6 +2640,51 @@ return (
               </p>
             </div>
           )}
+
+          <hr className="my-5 border-zinc-200 dark:border-zinc-800" />
+          <div className="pt-2">
+            <div className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+              Unbind a license{" "}
+              <span className="font-normal text-zinc-500">
+                (support/testing reset — clears the binding entirely, no replacement device)
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Resets a bound license back to unclaimed, same as a license that&rsquo;s never been
+              claimed — the next bind (self-service or here) issues a fresh activation key. Use this
+              to reset a test account, or when a buyer needs a clean re-claim instead of a straight
+              device-to-device move.
+            </p>
+
+            {bound.length > 0 && (
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={unbindSelectedId}
+                  onChange={(e) => setUnbindSelectedId(e.target.value)}
+                  className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-2/3"
+                >
+                  {bound.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.productName} (#{r.id.slice(0, 8)}) — bound to {r.boundMachineId}
+                      {r.boundMachineLabel ? ` (${r.boundMachineLabel})` : ""}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={unbind}
+                  disabled={busy || !unbindSelectedId}
+                  className="rounded-lg bg-zinc-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-600 disabled:opacity-50"
+                >
+                  {busy ? "Unbinding…" : "Unbind"}
+                </button>
+              </div>
+            )}
+
+            {unbindError && <p className="mt-1 text-sm text-red-600 dark:text-red-400">{unbindError}</p>}
+            {unbindResult && (
+              <p className="mt-2 text-sm text-emerald-700 dark:text-emerald-400">{unbindResult}</p>
+            )}
+          </div>
         </div>
       </div>
     </div>

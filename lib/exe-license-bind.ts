@@ -352,6 +352,31 @@ export async function transferExeLicenseToMachine(input: {
   };
 }
 
+/**
+ * Clears an ExeLicense's machine binding entirely, returning it to the
+ * "unclaimed" state a freshly-issued license starts in — the next bind
+ * (self-service or admin) re-signs a fresh bound key from the ORIGINAL
+ * unbound licenseKey, exactly as if this license had never been claimed.
+ * Admin-only support/testing action (e.g. resetting a test account's
+ * license to walk through the real signup flow again) — deliberately NOT
+ * exposed to self-service, same reasoning as transfer: a buyer stripping
+ * their own binding and handing the license to someone else is the exact
+ * DRM hole bindExeLicenseToMachine's one-machine invariant exists to close.
+ * Idempotent: unbinding an already-unbound license is a harmless no-op.
+ */
+export async function unbindExeLicense(exeLicenseId: string): Promise<{ id: string; wasBound: boolean }> {
+  const license = await db.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license) {
+    throw new LicenseBindError("License not found.", "not_found");
+  }
+  const wasBound = !!license.boundMachineId;
+  await db.exeLicense.update({
+    where: { id: exeLicenseId },
+    data: { boundMachineId: null, boundMachineLabel: null, boundLicenseKey: null, boundAt: null },
+  });
+  return { id: exeLicenseId, wasBound };
+}
+
 async function buyerEmail(userId: string): Promise<string | null> {
   const user = await db.user.findUnique({ where: { id: userId }, select: { email: true } });
   return user?.email ?? null;

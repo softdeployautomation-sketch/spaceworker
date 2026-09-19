@@ -4,7 +4,7 @@ import { requireAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
 import { EXE_PRODUCTS } from "@/lib/products";
 import { generateLicenseKey } from "@/lib/exe-license";
-import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError } from "@/lib/exe-license-bind";
+import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense } from "@/lib/exe-license-bind";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
 //   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
@@ -66,14 +66,53 @@ export async function POST(req: Request) {
     );
   }
 
-  const action = body.action === "transfer" ? "transfer" : body.action === "bind" ? "bind" : "issue";
+  const action =
+    body.action === "transfer" ? "transfer" : body.action === "bind" ? "bind" : body.action === "unbind" ? "unbind" : "issue";
   if (action === "bind") {
     return bindLicense(user.id, user.email, body);
   }
   if (action === "transfer") {
     return transferLicense(user.id, user.email, body);
   }
+  if (action === "unbind") {
+    return unbindLicense(user.id, user.email, body);
+  }
   return issueLicense(user, body);
+}
+
+// ---- unbind (clear a binding back to "unclaimed" — admin support/testing) ----
+// Resets a license to the same state a fresh, never-claimed issue starts in, so
+// the next bind (self-service or admin) re-signs from the ORIGINAL unbound key
+// exactly as if this one had never been claimed. Same ownership gate as bind/
+// transfer. No self-service equivalent — same DRM reasoning as transfer.
+
+async function unbindLicense(
+  userId: string,
+  userEmail: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const exeLicenseId = typeof body.exeLicenseId === "string" ? body.exeLicenseId.trim() : "";
+  if (!exeLicenseId) {
+    return NextResponse.json({ error: "Pick which license to unbind." }, { status: 400 });
+  }
+
+  const license = await prisma.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license || license.userId !== userId) {
+    return NextResponse.json(
+      { error: `No license for ${userEmail} matches that selection.` },
+      { status: 400 },
+    );
+  }
+
+  try {
+    const result = await unbindExeLicense(exeLicenseId);
+    return NextResponse.json({ unbound: true, exeLicenseId: result.id, wasBound: result.wasBound });
+  } catch (err) {
+    if (err instanceof LicenseBindError) {
+      return NextResponse.json({ error: err.message, code: err.code }, { status: err.code === "not_found" ? 404 : 400 });
+    }
+    throw err;
+  }
 }
 
 // ---- bind (claim an existing license to a machine) --------------------------
