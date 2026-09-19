@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Store } from "@/components/store";
+import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 
 // Task 42 — the redesigned "SpaceWorker OS" landing page (marketing page +
 // app store). Hero + capability grid + the store section + footer, built
@@ -33,11 +34,11 @@ export default function HomePage() {
             ))}
           </nav>
           <div className="flex items-center gap-3">
-            <Link href="/login" className="text-sm font-semibold text-fg-muted hover:text-fg">
+            <Link href={accountHref("/login")} className="text-sm font-semibold text-fg-muted hover:text-fg">
               Sign in
             </Link>
             <Link
-              href="/signup"
+              href={accountHref("/signup")}
               className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
             >
               Get started
@@ -62,7 +63,7 @@ export default function HomePage() {
         </p>
         <div className="mt-8 flex justify-center gap-3">
           <Link
-            href="/signup"
+            href={accountHref("/signup")}
             className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-brand-700"
           >
             Start free
@@ -91,9 +92,27 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* Store */}
+      {/* Store — confirmed live (2026-09-19): inside the EXE's bundled local
+          runtime, /api/store/prices has no DATABASE_URL either (same gap as
+          the auth links above), so the Store component's fetch always fails
+          there ("Failed to load the store."). Hand off to the real hosted
+          store instead of showing a broken/empty section. */}
       <section id="store" className="mx-auto max-w-5xl px-4 py-16 sm:px-6 scroll-mt-24">
-        <Store />
+        {isLocalExeRuntime() ? (
+          <div className="rounded-xl border border-border bg-card p-6 text-center">
+            <p className="text-sm text-fg-muted">
+              Store pricing needs a live connection to our website.
+            </p>
+            <Link
+              href={accountHref("/#store")}
+              className="mt-3 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+            >
+              Open the store on spaceworker.instaweb.top
+            </Link>
+          </div>
+        ) : (
+          <Store />
+        )}
       </section>
 
       {/* Footer */}

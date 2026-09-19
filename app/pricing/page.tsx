@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import { Store } from "@/components/store";
+import { accountHref } from "@/lib/exe-runtime";
 
 // Task 42, item 8 — a standalone /pricing route rendering the same store
 // component as the homepage (#store), so it's linkable/indexable on its own and
@@ -18,10 +19,10 @@ export default function PricingPage() {
             <span>SpaceWorker OS</span>
           </Link>
           <div className="flex items-center gap-3">
-            <Link href="/login" className="text-sm font-semibold text-fg-muted hover:text-fg">
+            <Link href={accountHref("/login")} className="text-sm font-semibold text-fg-muted hover:text-fg">
               Sign in
             </Link>
-            <Link href="/signup" className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
+            <Link href={accountHref("/signup")} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700">
               Get started
             </Link>
           </div>

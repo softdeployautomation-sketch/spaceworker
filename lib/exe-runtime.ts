@@ -22,3 +22,23 @@ import "server-only";
 export function isLocalExeRuntime(): boolean {
   return process.env.SPACEWORKER_LOCAL_EXE === "true";
 }
+
+// Confirmed live (2026-09-19): the marketing homepage/pricing page compile into
+// the EXE's bundled local runtime same as everything else, but that runtime has
+// NO DATABASE_URL (runtime-assemble.mjs deliberately strips the repo .env before
+// packing it — see that script's own comment). Clicking "Sign in" / "Get
+// started" from inside the EXE hit the LOCAL /api/auth/login|signup, which threw
+// immediately (Prisma with no database) — a real internal-error page, not a
+// hypothetical. There is no account to create or session to start locally;
+// these always need the real server. Hardcoded rather than read from lib/env.ts
+// because APP_BASE_URL is NOT one of the vars the assembler writes into the
+// EXE's .env.local either — reading it here would throw at import time inside
+// the very runtime this guards.
+const HOSTED_APP_URL = "https://spaceworker.instaweb.top";
+
+/** Resolves an account path ("/signup", "/login") to the hosted app's real URL
+ * when rendering inside the local EXE runtime; unchanged (relative) everywhere
+ * else, including the real deployed web app. */
+export function accountHref(path: string): string {
+  return isLocalExeRuntime() ? `${HOSTED_APP_URL}${path}` : path;
+}
