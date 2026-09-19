@@ -6,9 +6,11 @@ import { getProduct } from "./products";
 
 // Task 47 — the shared "claim a license to one machine" mechanism.
 //
-// Both the admin tool (app/api/admin/exe-licenses) and the buyer's self-service
-// form (app/api/exe-license/bind) call this one function. It is the ONLY place a
-// machine binding is written:
+// The admin tool (app/api/admin/exe-licenses) and the desktop EXE's own
+// auto-bind call (app/api/exe-license/auto-bind, triggered by pasting a fresh
+// key straight into the app — no manual Device ID entry anywhere, see that
+// route's comment) call this one function. It is the ONLY place a machine
+// binding is written:
 //
 //   1. Rejects a license already bound to a DIFFERENT machine — never silently
 //      overwrite (that's the DRM hole this task closes).

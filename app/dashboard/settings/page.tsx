@@ -6,7 +6,7 @@ import { ChangePasswordForm } from "@/components/change-password-form";
 import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
@@ -27,7 +27,7 @@ export default async function SettingsPage() {
           <h1 className="text-2xl font-bold text-fg">Settings</h1>
           <p className="mt-1 text-sm text-fg-muted">Licensing and preferences for this device.</p>
         </div>
-        <ExeLicensePanel />
+        <ExeLicensePanel buyHref={accountHref("/pricing")} />
       </div>
     );
   }

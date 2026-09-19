@@ -4,7 +4,7 @@ import { BuildTargetProvider } from "@/components/build-target-context";
 import { LicenseGate } from "@/components/license-gate";
 import { Shell } from "@/components/shell";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getCurrentUser } from "@/lib/session-user";
 
 export default async function DashboardLayout({
@@ -36,7 +36,7 @@ export default async function DashboardLayout({
       // menu bar, the dashboard overview page's tiles, ...) via context — see
       // lib/exe-build-target.ts and components/build-target-context.tsx.
       <BuildTargetProvider value={build}>
-        <LicenseGate build={build}>
+        <LicenseGate build={build} buyHref={accountHref("/pricing")}>
           <Shell buildTarget={build}>{children}</Shell>
         </LicenseGate>
       </BuildTargetProvider>

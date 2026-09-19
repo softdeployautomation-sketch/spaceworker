@@ -15,7 +15,11 @@ import { LicenseActivationForm } from "@/components/license-activation-form";
 //     straight into the dashboard and the local trial timer starts behind it.
 //   - Trial exhausted (this machine, reported by POST /api/exe-license/status)
 //     -> the gate blocks the dashboard with License key + Email + Activate, plus
-//     a "Buy a license" link that deep-links back to the landing page's store.
+//     a "Get a license" link out to the real website's pricing page. `buyHref`
+//     is resolved by the (server) caller via accountHref() — lib/exe-runtime.ts
+//     is `server-only`, so this client component can't call it itself — so a
+//     locked-out buyer can go buy/manage a license there instead of dead-ending
+//     inside the app (2026-09-19).
 //
 // Backed by the local runtime (no server round-trip for validation): status and
 // activate hit the app's own /api/exe-license/* routes, which validate offline
@@ -29,13 +33,13 @@ type Status =
 export interface LicenseGateProps {
   /** Tier slug passed by the EXE shell: extractor | mailer | combined | automation. */
   build: string;
-  /** Deep link to the landing page's store section. Defaults to the homepage store. */
-  buyHref?: string;
+  /** Link out to get/manage a license — pass accountHref("/pricing") from a server caller. */
+  buyHref: string;
   /** The dashboard UI to render while licensed or in trial. */
   children: React.ReactNode;
 }
 
-export function LicenseGate({ build, buyHref = "/#store", children }: LicenseGateProps) {
+export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
   const [status, setStatus] = useState<Status>({ mode: "loading" });
 
   // Check the local license status on mount (first launch starts the 24h trial
@@ -87,9 +91,11 @@ export function LicenseGate({ build, buyHref = "/#store", children }: LicenseGat
             actionSlot={
               <a
                 href={buyHref}
+                target="_blank"
+                rel="noreferrer"
                 className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
               >
-                Buy a license →
+                Get a license on the website →
               </a>
             }
           />

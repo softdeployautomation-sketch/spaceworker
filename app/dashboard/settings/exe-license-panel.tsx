@@ -70,7 +70,7 @@ async function fetchLicenseStatus(): Promise<LicenseStatus> {
   }
 }
 
-export function ExeLicensePanel() {
+export function ExeLicensePanel({ buyHref }: { buyHref: string }) {
   const [status, setStatus] = useState<LicenseStatus>({ mode: "loading" });
 
   // Re-fetch after an activation/replacement (called from event handlers only).
@@ -145,6 +145,16 @@ export function ExeLicensePanel() {
                 setStatus({ mode: "loading" });
                 void refresh();
               }}
+              actionSlot={
+                <a
+                  href={buyHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
+                >
+                  Get a license on the website →
+                </a>
+              }
             />
           </div>
         </div>
@@ -161,6 +171,16 @@ export function ExeLicensePanel() {
                 void refresh();
               }}
               autoFocus
+              actionSlot={
+                <a
+                  href={buyHref}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
+                >
+                  Get a license on the website →
+                </a>
+              }
             />
           </div>
         </div>

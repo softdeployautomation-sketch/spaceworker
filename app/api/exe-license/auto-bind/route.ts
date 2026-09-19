@@ -4,7 +4,12 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { decodeLicenseKey, exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
-import { bindExeLicenseToMachine, LicenseBindError } from "@/lib/exe-license-bind";
+import {
+  bindExeLicenseToMachine,
+  transferExeLicenseToMachine,
+  LicenseBindError,
+  LicenseTransferError,
+} from "@/lib/exe-license-bind";
 
 export const dynamic = "force-dynamic";
 
@@ -71,8 +76,31 @@ export async function POST(req: Request) {
     });
     return NextResponse.json({ ok: true, boundLicenseKey: bound.boundLicenseKey });
   } catch (err) {
+    if (err instanceof LicenseBindError && err.code === "already_bound") {
+      // Auto-transfer (2026-09-19): the key's signature and licensee email
+      // already proved this is the SAME account re-activating from a new/
+      // reinstalled machine — the exact trust bar bindExeLicenseToMachine's
+      // first-activation-wins invariant exists to enforce, just re-asserted
+      // on a second device instead of the first. Re-signing supersedes the
+      // OLD machine's bound key instantly, so it self-revokes on its next
+      // status check. No admin step, no manual device ID anywhere.
+      try {
+        const transferred = await transferExeLicenseToMachine({
+          exeLicenseId: license.id,
+          newMachineId: parsed.machineId,
+          newMachineLabel: parsed.machineLabel ?? undefined,
+          note: "Auto-transferred on re-activation from a new device.",
+        });
+        return NextResponse.json({ ok: true, boundLicenseKey: transferred.boundLicenseKey });
+      } catch (transferErr) {
+        if (transferErr instanceof LicenseTransferError) {
+          return NextResponse.json({ error: transferErr.message }, { status: 400 });
+        }
+        throw transferErr;
+      }
+    }
     if (err instanceof LicenseBindError) {
-      const status = err.code === "not_found" ? 404 : err.code === "already_bound" ? 409 : 400;
+      const status = err.code === "not_found" ? 404 : 400;
       return NextResponse.json({ error: err.message }, { status });
     }
     throw err;

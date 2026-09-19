@@ -4,7 +4,6 @@ import Link from "next/link";
 import { CopyButton } from "@/components/copy-button";
 import { Badge, Card } from "@/components/ui";
 import { LicenseUpgradeForm } from "@/components/license-upgrade-form";
-import { LicenseBindCard } from "@/components/license-bind-card";
 import { getSession } from "@/lib/auth";
 import { getCurrentUser } from "@/lib/session-user";
 import { prisma } from "@/lib/prisma";
@@ -87,10 +86,6 @@ export default async function LicensesPage() {
             const name = product?.name ?? lic.product;
             const validUntil = new Date(lic.issuedAt.getTime() + EXE_LICENSE_DAYS * 24 * 60 * 60 * 1000);
             const isBound = lic.boundMachineId != null && lic.boundMachineId !== "";
-            // Task 47 — once a buyer claims the license, the ORIGINAL key becomes a
-            // mere purchase reference too; the real activation key is the re-signed,
-            // machine-bound one produced by the claim (stored in boundLicenseKey).
-            const shownKey = isBound ? (lic.boundLicenseKey ?? lic.licenseKey) : lic.licenseKey;
             const issuedLabel = lic.issuedAt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
             const validUntilLabel = validUntil.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
             return (
@@ -105,15 +100,18 @@ export default async function LicensesPage() {
                 </div>
 
                 <dl className="mt-4 space-y-2 text-sm">
-                  <div className="flex items-center justify-between gap-4">
-                    <dt className="text-fg-muted">
-                      {isBound ? "Activation key" : "Purchase reference"}
-                    </dt>
-                    <dd className="flex items-center gap-2">
-                      <code className="max-w-[420px] truncate break-all text-xs">{shownKey}</code>
-                      <CopyButton value={shownKey} />
-                    </dd>
-                  </div>
+                  {/* Gated once bound (2026-09-19): the real activation key and the
+                      device it's locked to are only ever needed inside the desktop
+                      app itself — nothing to copy or manage from the web anymore. */}
+                  {!isBound && (
+                    <div className="flex items-center justify-between gap-4">
+                      <dt className="text-fg-muted">Purchase reference</dt>
+                      <dd className="flex items-center gap-2">
+                        <code className="max-w-[420px] truncate break-all text-xs">{lic.licenseKey}</code>
+                        <CopyButton value={lic.licenseKey} />
+                      </dd>
+                    </div>
+                  )}
                   <div className="flex items-center justify-between gap-4">
                     <dt className="text-fg-muted">Issued</dt>
                     <dd>{issuedLabel}</dd>
@@ -127,39 +125,20 @@ export default async function LicensesPage() {
                       <span className="text-fg-muted"> ({EXE_LICENSE_DAYS} days from issue)</span>
                     </dd>
                   </div>
-                  {isBound && (
-                    <div className="flex items-center justify-between gap-4">
-                      <dt className="text-fg-muted">Bound to device</dt>
-                      <dd>
-                        <code className="text-xs">{lic.boundMachineId}</code>
-                        {lic.boundMachineLabel ? <span className="text-fg-muted"> — {lic.boundMachineLabel}</span> : null}
-                      </dd>
-                    </div>
-                  )}
                 </dl>
 
                 {isBound ? (
                   <p className="mt-4 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg-muted">
-                    This license is locked to a single device. To move it to a new machine,
-                    contact support — a transfer is a deliberate admin action.
+                    This license is locked to a single device. Activating it in the desktop
+                    app on a new machine moves it there automatically.
                   </p>
                 ) : (
                   <p className="mt-4 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg-muted">
-                    <strong>Download coming soon</strong> — we&rsquo;ll email you the moment the
-                    desktop app is ready. Until then this license isn&rsquo;t active anywhere: the key
-                    above is only a purchase reference. When the app is out, claim it to your device
-                    below to get the real activation key.
+                    Not activated anywhere yet — the key above is a purchase reference. Open
+                    the desktop app, paste this key and your email into its License screen,
+                    and it locks to that device automatically. There&rsquo;s nothing to set up
+                    here.
                   </p>
-                )}
-
-                {!isBound && (
-                  <div className="mt-4">
-                    <LicenseBindCard
-                      exeLicenseId={lic.id}
-                      productName={name}
-                      expiresAtLabel={validUntilLabel}
-                    />
-                  </div>
                 )}
               </Card>
             );
