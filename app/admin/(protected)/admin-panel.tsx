@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
 import { EXE_PRODUCTS } from "@/lib/products";
+import { copyToClipboard } from "@/lib/clipboard";
 
 type AdminUser = {
   id: string;
@@ -2165,11 +2166,11 @@ function ExeLicensesTab() {
 
   async function copyKey() {
     if (!result) return;
-    try {
-      await navigator.clipboard.writeText(result.licenseKey);
+    const ok = await copyToClipboard(result.licenseKey);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch {
+    } else {
       setError("Copy failed — select the key below manually.");
     }
   }

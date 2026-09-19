@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Modal } from "@/components/modal";
 import { Badge, Button, Card } from "@/components/ui";
+import { copyToClipboard } from "@/lib/clipboard";
 
 type Product = {
   id: string;
@@ -143,6 +144,8 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<{ status: string; note?: string } | null>(null);
+  const [addressCopied, setAddressCopied] = useState(false);
+  const [addressCopyFailed, setAddressCopyFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -168,8 +171,16 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
     };
   }, [kind, product.id]);
 
-  function copy(value: string) {
-    void navigator.clipboard?.writeText(value);
+  async function copy(value: string) {
+    const ok = await copyToClipboard(value);
+    if (ok) {
+      setAddressCopied(true);
+      setAddressCopyFailed(false);
+      setTimeout(() => setAddressCopied(false), 2000);
+    } else {
+      setAddressCopyFailed(true);
+      setTimeout(() => setAddressCopyFailed(false), 2000);
+    }
   }
 
   async function submit() {
@@ -282,7 +293,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
                   {checkout.toAddress}
                 </code>
                 <Button variant="secondary" type="button" onClick={() => copy(checkout.toAddress)}>
-                  Copy
+                  {addressCopied ? "Copied!" : addressCopyFailed ? "Copy failed — select manually" : "Copy"}
                 </Button>
               </div>
               <p className="mt-2 text-sm text-fg-muted">

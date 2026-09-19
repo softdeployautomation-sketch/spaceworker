@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { copyToClipboard } from "@/lib/clipboard";
+
 type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
 
 type PaymentInfo = {
@@ -33,13 +35,16 @@ function kindLabel(kind: string): string {
 
 function CopyButton({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
   async function copy() {
-    try {
-      await navigator.clipboard.writeText(value);
+    const ok = await copyToClipboard(value);
+    if (ok) {
       setCopied(true);
+      setFailed(false);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // clipboard unavailable — ignore
+    } else {
+      setFailed(true);
+      setTimeout(() => setFailed(false), 2000);
     }
   }
   return (
@@ -47,7 +52,7 @@ function CopyButton({ value }: { value: string }) {
       onClick={copy}
       className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
     >
-      {copied ? "Copied!" : "Copy"}
+      {copied ? "Copied!" : failed ? "Copy failed — select manually" : "Copy"}
     </button>
   );
 }
