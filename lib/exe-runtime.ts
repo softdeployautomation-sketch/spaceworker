@@ -34,7 +34,7 @@ export function isLocalExeRuntime(): boolean {
 // because APP_BASE_URL is NOT one of the vars the assembler writes into the
 // EXE's .env.local either — reading it here would throw at import time inside
 // the very runtime this guards.
-const HOSTED_APP_URL = "https://spaceworker.instaweb.top";
+export const HOSTED_APP_URL = "https://spaceworker.instaweb.top";
 
 /** Resolves an account path ("/signup", "/login") to the hosted app's real URL
  * when rendering inside the local EXE runtime; unchanged (relative) everywhere
