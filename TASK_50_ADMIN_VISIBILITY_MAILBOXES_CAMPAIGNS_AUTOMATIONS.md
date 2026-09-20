@@ -1,6 +1,6 @@
 # Task 50 — Admin has zero visibility into Mailboxes, Campaigns, or Automations
 
-**Status: ready to build. Found during a security/completeness audit, 2026-09-20.**
+**Status: FIXED, 2026-09-21.** Committed + pushed as `3f1aa4e` and live-deployed. Added read-only **Mailboxes** (`GET /api/admin/mailboxes`), **Campaigns** (`GET /api/admin/campaigns`), and **Automations** (`GET /api/admin/automations`) tabs — every route is `requireAdminSession()`-gated and never returns mailbox passwords/credentials. Added the `notifyAdmin()` hook in `mail-queue-drain/route.ts` for a campaign entering `paused_deliverability`. Verified: typecheck clean; service active + 200; disposable test user's mailbox/campaign/automation rows appear in the admin feeds.
 
 ## The real gap, confirmed live in code (not assumed)
 
