@@ -896,6 +896,26 @@ async def _duckduckgo_with_exit_nodes(pdf_query: str, max_results: int, job_dir:
     )
 
 
+async def resilient_ddg_search(query: str, max_results: int, job_dir: str) -> list[SearchResult]:
+    """The same 3-tier DuckDuckGo fallback chain search_phase() uses
+    (plain HTTP -> Playwright -> SpaceWorker's own exit nodes), factored out
+    for callers outside the job-queue pipeline (Advanced Search's
+    /discover-domains in api.py). Confirmed necessary live, not
+    theoretical: this VPS's own IP was already blocked on the plain-HTTP
+    path the moment /discover-domains first ran in production (2026-09-20)
+    — a caller that skips this chain fails outright instead of degrading
+    gracefully like every other search path here does.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        return await loop.run_in_executor(_EXTRACTION_EXECUTOR, duckduckgo_search_http, query, max_results)
+    except DDGBlockedError:
+        try:
+            return await duckduckgo_search_playwright(query, max_results, job_dir)
+        except _BlockedByCaptchaError:
+            return await _duckduckgo_with_exit_nodes(query, max_results, job_dir)
+
+
 async def search_phase(query: str, params: dict, job_dir: str,
                        on_step: Optional[AsyncStepCallable] = None) -> list[SearchResult]:
     engine = params.get("engine", "duckduckgo")

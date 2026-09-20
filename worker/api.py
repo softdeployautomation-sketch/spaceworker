@@ -35,9 +35,9 @@ from pydantic import BaseModel, Field
 
 from automation import (
     DDGBlockedError,
-    duckduckgo_search_http,
     extract_root_domain,
     probe_domain_for_webmail,
+    resilient_ddg_search,
     run_automation,
 )
 
@@ -345,15 +345,20 @@ async def discover_domains(req: DiscoverDomainsRequest) -> dict:
         raise HTTPException(status_code=400, detail="query is required")
     max_candidates = max(1, min(req.maxCandidates, 50))
 
-    loop = asyncio.get_event_loop()
+    # Throwaway browser-profile dir, same lifecycle as create_job()'s job_dir —
+    # only Playwright-tier fallback (below) actually uses it; the plain-HTTP
+    # first attempt doesn't touch disk.
+    job_id = str(uuid.uuid4())
+    job_dir = os.path.join(os.getenv("WORKER_JOB_DIR", JOB_DIR_DEFAULT), job_id)
+    os.makedirs(job_dir, exist_ok=True)
     try:
         # Over-fetch (3x) since several results often share one root domain —
         # deduped below to reach max_candidates distinct domains where possible.
-        results = await loop.run_in_executor(
-            None, duckduckgo_search_http, query, max_candidates * 3
-        )
+        results = await resilient_ddg_search(query, max_candidates * 3, job_dir)
     except DDGBlockedError:
         raise HTTPException(status_code=502, detail="Search engine blocked this request — try again shortly")
+    finally:
+        shutil.rmtree(job_dir, ignore_errors=True)
 
     seen: set[str] = set()
     candidates: list[dict] = []
