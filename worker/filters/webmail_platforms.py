@@ -104,10 +104,43 @@ WEBMAIL_PLATFORMS: dict[str, WebmailPlatform] = {
 # WEBMAIL_PLATFORMS, since callers that only do HTML-fingerprint matching
 # (extract_webmail_lead, detect_webmail_platform) have no way to act on
 # these — only probe_domain_for_webmail's MX-aware path does.
+#
+# Sourced the same way the self-hosted fingerprints above were — Wappalyzer's
+# open dataset (github.com/enthec/webappanalyzer, category 75 "Email") — 2026
+# -09-20, rather than hand-picking providers one at a time. Filtered to
+# genuine staff-inbox hosting (a business's team actually reads mail here),
+# excluding marketing/transactional senders in that same category (Mailchimp,
+# Sendgrid, Mailgun, Mailjet, SparkPost, Amazon SES, Sendinblue) — those are
+# what a business uses to SEND from an app, not where staff read mail, so
+# matching them would misrepresent what platform a business is "on".
+#
+# "other-hosted" is not a named provider: selecting it means "show me a
+# domain's real MX host even when it doesn't match any of the named
+# providers above" (see detect_hosted_email_provider's include_unrecognized
+# param) — the direct answer to "why do we manually add each one": every
+# curated list is necessarily incomplete, so this is the escape hatch that
+# surfaces what's actually there instead of silently dropping it.
 HOSTED_EMAIL_PROVIDERS: dict[str, str] = {
     "google-workspace": "Google Workspace",
     "microsoft-365": "Microsoft 365",
+    "zoho-mail": "Zoho Mail",
+    "icloud-mail": "Apple iCloud Mail",
+    "proton-mail": "Proton Mail",
 }
+
+# code -> (MX substring to match, display label). Checked in order; first
+# match wins. Zoho's pattern is corrected from Wappalyzer's own listed one
+# (a TXT check for "transmail.net", which is their separate transactional-
+# email product, not Zoho Mail's real inbox hosting) — confirmed directly
+# against zoho.com's own MX records (smtpin*.zoho.com), 2026-09-20.
+HOSTED_PROVIDER_MX_PATTERNS: list[tuple[str, str]] = [
+    ("aspmx.l.google.com", "Google Workspace"),
+    ("googlemail.com", "Google Workspace"),
+    ("outlook.com", "Microsoft 365"),
+    ("mail.icloud.com", "Apple iCloud Mail"),
+    ("protonmail.ch", "Proton Mail"),
+    ("zoho.com", "Zoho Mail"),
+]
 
 # Reasonable, bounded candidate paths for the PROBE mode — checked in this
 # order, stopping at the first confirmed match (see the automation.py caller).

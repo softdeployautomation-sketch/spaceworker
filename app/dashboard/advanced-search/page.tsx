@@ -25,9 +25,17 @@ import { Badge, Button, Card, Input, Label, Spinner } from "@/components/ui";
 // on shared hosting) plus hosted providers (MX-record match, dominant in
 // the US/Canada/Australia — added 2026-09-20 since real validation showed
 // the self-hosted-only set matched under 2% of Western domains checked).
+// "Other" is not a named provider: it means "also count a domain with real,
+// working mail even when it's not one of the named ones below" — no curated
+// list is ever complete, so this is what keeps a candidate from being
+// silently dropped just for running something not yet named here.
 const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "google-workspace", label: "Google Workspace" },
   { value: "microsoft-365", label: "Microsoft 365" },
+  { value: "zoho-mail", label: "Zoho Mail" },
+  { value: "icloud-mail", label: "Apple iCloud Mail" },
+  { value: "proton-mail", label: "Proton Mail" },
+  { value: "other-hosted", label: "Other (show unrecognized providers)" },
   { value: "roundcube", label: "RoundCube" },
   { value: "squirrelmail", label: "SquirrelMail" },
   { value: "rainloop", label: "RainLoop" },

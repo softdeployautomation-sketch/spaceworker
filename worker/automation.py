@@ -64,6 +64,7 @@ from filters.email_domain_rules import (
 )
 from filters.webmail_platforms import (
     HOSTED_EMAIL_PROVIDERS,
+    HOSTED_PROVIDER_MX_PATTERNS,
     WEBMAIL_PLATFORMS,
     apply_webmail_bias_to_query,
     candidate_webmail_urls,
@@ -1315,15 +1316,21 @@ def extract_webmail_lead(
     }]
 
 
-def detect_hosted_email_provider(domain: str) -> str | None:
-    """Google Workspace / Microsoft 365 detection via MX record — added
-    2026-09-20 (see filters/webmail_platforms.py's module docstring for why).
-    Neither provider hosts a login page on the business's own domain the way
-    the self-hosted platforms do, so candidate_webmail_urls()'s HTTP probing
-    can't see them — the business's domain only shows up in its MX records,
-    pointing at Google's or Microsoft's own mail servers. Uses Google's public
-    DNS-over-HTTPS API (no new dependency — reuses `requests`, same as every
-    other probe in this file) rather than a DNS library.
+def detect_hosted_email_provider(domain: str, include_unrecognized: bool = False) -> str | None:
+    """Hosted mail provider detection via MX record — added 2026-09-20 (see
+    filters/webmail_platforms.py's module docstring for why). None of these
+    providers host a login page on the business's own domain the way the
+    self-hosted platforms do, so candidate_webmail_urls()'s HTTP probing
+    can't see them — the business's domain only shows up in its MX records.
+    Uses Google's public DNS-over-HTTPS API (no new dependency — reuses
+    `requests`, same as every other probe in this file) rather than a DNS
+    library.
+
+    `include_unrecognized`: when the domain has real, working MX records but
+    they match none of HOSTED_PROVIDER_MX_PATTERNS — a curated list is
+    necessarily incomplete — return "Other (<raw MX host>)" instead of None,
+    so the caller can still surface it as a real, working inbox rather than
+    silently treating it the same as "no mail at all".
     """
     try:
         resp = requests.get(
@@ -1337,24 +1344,49 @@ def detect_hosted_email_provider(domain: str) -> str | None:
         return None
     # MX record type is 15 (RFC 1035) — dns.google's JSON API returns the
     # numeric type, not a mnemonic, so filter on that rather than a string.
-    mx_hosts = " ".join(a.get("data", "").lower() for a in answers if a.get("type") == 15)
+    mx_records = [a for a in answers if a.get("type") == 15]
+    mx_hosts = " ".join(a.get("data", "").lower() for a in mx_records)
     if not mx_hosts:
         return None
-    if "google.com" in mx_hosts or "googlemail.com" in mx_hosts:
-        return "Google Workspace"
-    if "protection.outlook.com" in mx_hosts:
-        return "Microsoft 365"
+    for pattern, label in HOSTED_PROVIDER_MX_PATTERNS:
+        if pattern in mx_hosts:
+            return label
+    if include_unrecognized:
+        first_host = mx_records[0].get("data", "").rstrip(".")
+        return f"Other ({first_host})"
     return None
 
 
 def _resolve_platform_codes(platform_codes: list[str] | None) -> tuple[list[str], set[str]]:
     """Splits a caller's platform_codes (or the full default set, when None —
     matching detect_webmail_platform's existing "empty means everything"
-    convention) into (self_hosted_codes, hosted_provider_codes)."""
+    convention) into (self_hosted_codes, hosted_provider_codes). "other-hosted"
+    is a valid hosted code but deliberately excluded from the implicit
+    default set — it's an opt-in "also show unrecognized providers" flag,
+    not a platform of its own, so a caller that didn't ask for anything in
+    particular shouldn't get raw MX hostnames mixed into "confirmed" leads.
+    """
     codes = platform_codes if platform_codes else list(WEBMAIL_PLATFORMS.keys()) + list(HOSTED_EMAIL_PROVIDERS.keys())
     self_hosted = [c for c in codes if c in WEBMAIL_PLATFORMS]
-    hosted = {c for c in codes if c in HOSTED_EMAIL_PROVIDERS}
+    hosted = {c for c in codes if c in HOSTED_EMAIL_PROVIDERS or c == "other-hosted"}
     return self_hosted, hosted
+
+
+def _check_hosted_provider(domain: str, hosted_codes: set[str]) -> str | None:
+    """Shared by probe_lead_for_webmail and probe_domain_for_webmail: resolves
+    hosted_codes against a real MX lookup, honoring "other-hosted" as "also
+    accept an unrecognized-but-real provider"."""
+    if not hosted_codes:
+        return None
+    want_other = "other-hosted" in hosted_codes
+    provider = detect_hosted_email_provider(domain, include_unrecognized=want_other)
+    if not provider:
+        return None
+    if provider.startswith("Other ("):
+        return provider if want_other else None
+    if any(HOSTED_EMAIL_PROVIDERS.get(c) == provider for c in hosted_codes):
+        return provider
+    return None
 
 
 def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict | None:
@@ -1375,14 +1407,13 @@ def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict
 
     self_hosted_codes, hosted_codes = _resolve_platform_codes(platform_codes)
 
-    if hosted_codes:
-        provider = detect_hosted_email_provider(domain)
-        if provider and any(HOSTED_EMAIL_PROVIDERS[c] == provider for c in hosted_codes):
-            annotated = dict(lead)
-            existing_snippet = annotated.get("snippet") or ""
-            note = f"Detected: {provider}"
-            annotated["snippet"] = f"{existing_snippet} — {note}" if existing_snippet else note
-            return annotated
+    hosted_match = _check_hosted_provider(domain, hosted_codes)
+    if hosted_match:
+        annotated = dict(lead)
+        existing_snippet = annotated.get("snippet") or ""
+        note = f"Detected: {hosted_match}"
+        annotated["snippet"] = f"{existing_snippet} — {note}" if existing_snippet else note
+        return annotated
 
     if not self_hosted_codes:
         return None
@@ -1424,10 +1455,9 @@ def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> s
     """
     self_hosted_codes, hosted_codes = _resolve_platform_codes(platform_codes)
 
-    if hosted_codes:
-        provider = detect_hosted_email_provider(domain)
-        if provider and any(HOSTED_EMAIL_PROVIDERS[c] == provider for c in hosted_codes):
-            return provider
+    hosted_match = _check_hosted_provider(domain, hosted_codes)
+    if hosted_match:
+        return hosted_match
 
     if not self_hosted_codes:
         return None

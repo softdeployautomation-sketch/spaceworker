@@ -14,6 +14,14 @@ import { getSession } from "@/lib/session";
 
 const MAX_DOMAINS_PER_REQUEST = 50;
 
+// Self-hosted platform labels, exactly as worker/filters/webmail_platforms.py's
+// WEBMAIL_PLATFORMS labels them — used only to decide whether a confirmed
+// result's snippet needs " webmail" appended (see below). Hosted providers
+// and the dynamic "Other (<mx host>)" fallback read correctly without it.
+const SELF_HOSTED_LABELS = new Set([
+  "RoundCube", "SquirrelMail", "RainLoop", "Zimbra", "Open-Xchange", "cPanel Webmail",
+]);
+
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -89,7 +97,14 @@ export async function POST(req: Request) {
           email: null,
           website: `https://${r.domain}`,
           sourceUrl: `https://${r.domain}`,
-          snippet: `Detected: ${r.platform} webmail`,
+          // Self-hosted platforms read naturally with "webmail" appended
+          // ("Detected: RoundCube webmail"); hosted providers and the
+          // "Other (<mx host>)" fallback already read correctly on their
+          // own ("Detected: Google Workspace", "Detected: Other
+          // (mx1.example.com)") — appending "webmail" to those would be
+          // wrong/awkward, so only self-hosted platforms (WEBMAIL_PLATFORM_OPTIONS'
+          // last 6 entries) get the suffix.
+          snippet: `Detected: ${r.platform}${SELF_HOSTED_LABELS.has(r.platform as string) ? " webmail" : ""}`,
           businessName: r.domain,
         })),
         skipDuplicates: true,

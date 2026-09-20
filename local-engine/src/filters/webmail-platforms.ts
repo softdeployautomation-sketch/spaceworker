@@ -84,10 +84,37 @@ export const WEBMAIL_PLATFORMS: Record<string, WebmailPlatform> = {
 // Hosted providers — MX-record detection, not an HTML fingerprint (see file
 // header). Kept separate from WEBMAIL_PLATFORMS since HTML-fingerprint-only
 // callers (detectWebmailPlatform) have no way to act on these.
+//
+// Sourced from Wappalyzer's open dataset (category 75 "Email"), filtered to
+// genuine staff-inbox hosting — excludes marketing/transactional senders
+// (Mailchimp, Sendgrid, etc.) in that same category, which a business uses
+// to SEND from an app, not where staff read mail.
+//
+// "other-hosted" is the escape hatch: not a named provider, it means "show
+// me the real MX host even when it matches none of the named ones" — the
+// direct answer to "why manually add each one": any curated list is
+// necessarily incomplete, so this surfaces what's actually there instead of
+// silently dropping it.
 export const HOSTED_EMAIL_PROVIDERS: Record<string, string> = {
   "google-workspace": "Google Workspace",
   "microsoft-365": "Microsoft 365",
+  "zoho-mail": "Zoho Mail",
+  "icloud-mail": "Apple iCloud Mail",
+  "proton-mail": "Proton Mail",
 };
+
+// code -> (MX substring, label). Checked in order; first match wins. Zoho's
+// pattern is corrected from Wappalyzer's own listed one (a TXT check for
+// "transmail.net" — their separate transactional-email product, not Zoho
+// Mail's real inbox hosting) — confirmed against zoho.com's own MX records.
+export const HOSTED_PROVIDER_MX_PATTERNS: Array<[string, string]> = [
+  ["aspmx.l.google.com", "Google Workspace"],
+  ["googlemail.com", "Google Workspace"],
+  ["outlook.com", "Microsoft 365"],
+  ["mail.icloud.com", "Apple iCloud Mail"],
+  ["protonmail.ch", "Proton Mail"],
+  ["zoho.com", "Zoho Mail"],
+];
 
 // Bounded probe candidates — checked in order, stopping at the first
 // confirmed match. Deliberately short: adds real wall-clock time per lead.
