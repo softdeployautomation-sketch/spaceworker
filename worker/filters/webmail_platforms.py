@@ -16,10 +16,21 @@ Self-hosted webmail platform targeting — two independent modes:
 
 Fingerprints below are sourced directly from Wappalyzer's open-source
 technology database (github.com/enthec/webappanalyzer, category 30 "Webmail"),
-restricted to the self-hosted platforms a "roundcube kind of webmail" request
-actually means — Google Workspace / Microsoft 365 / Proton Mail / iCloud Mail
-are deliberately excluded; they're exactly what this feature is meant to find
-alternatives to, not targets for it.
+covering the self-hosted platforms a "roundcube kind of webmail" request
+actually means.
+
+Google Workspace / Microsoft 365 (HOSTED_EMAIL_PROVIDERS below) were
+originally excluded here on the theory that self-hosted webmail was the
+whole point of the feature. Reversed 2026-09-20 on direct owner instruction:
+real validation (521 confirmed leads across 3 rounds the same day) showed
+the self-hosted-only set matches under 2% of US/Canada/Australia business
+domains — those markets are overwhelmingly on Google Workspace/Microsoft
+365, and the owner's actual customers ARE those markets, not the emerging
+markets where self-hosted webmail is common. Detecting these two is NOT an
+HTML fingerprint match like the platforms below — see
+detect_hosted_email_provider() in automation.py, which checks MX records
+instead, since Workspace/M365 never host a login page on the business's own
+domain.
 """
 from __future__ import annotations
 
@@ -85,6 +96,17 @@ WEBMAIL_PLATFORMS: dict[str, WebmailPlatform] = {
         dork_title="Webmail Login",
         html_patterns=(r"cPanel_magic_revision", r"/unprotected/cpanel/"),
     ),
+}
+
+# Hosted providers — detected via MX record, not an HTML fingerprint (see
+# module docstring for why these were added and detect_hosted_email_provider
+# in automation.py for how). Kept as a separate dict, not merged into
+# WEBMAIL_PLATFORMS, since callers that only do HTML-fingerprint matching
+# (extract_webmail_lead, detect_webmail_platform) have no way to act on
+# these — only probe_domain_for_webmail's MX-aware path does.
+HOSTED_EMAIL_PROVIDERS: dict[str, str] = {
+    "google-workspace": "Google Workspace",
+    "microsoft-365": "Microsoft 365",
 }
 
 # Reasonable, bounded candidate paths for the PROBE mode — checked in this

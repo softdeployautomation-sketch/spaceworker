@@ -14,9 +14,17 @@
  *    own domain and check for a fingerprint match.
  *
  * Fingerprints sourced from Wappalyzer's open-source technology database
- * (github.com/enthec/webappanalyzer, category 30 "Webmail"), restricted to
- * the self-hosted platforms — Google Workspace / Microsoft 365 / Proton Mail
- * / iCloud Mail are deliberately excluded.
+ * (github.com/enthec/webappanalyzer, category 30 "Webmail"), covering the
+ * self-hosted platforms.
+ *
+ * Google Workspace / Microsoft 365 (HOSTED_EMAIL_PROVIDERS below) were
+ * originally excluded on the theory that self-hosted webmail was the whole
+ * point. Reversed 2026-09-20 on direct owner instruction: real validation
+ * (521 confirmed leads, 2026-09-20) showed the self-hosted-only set matches
+ * under 2% of US/Canada/Australia business domains — the owner's actual
+ * customers are those markets. Detecting these two needs an MX-record
+ * lookup, not an HTML fingerprint (they never host a login page on the
+ * business's own domain) — see the worker's detect_hosted_email_provider().
  */
 
 export interface WebmailPlatform {
@@ -71,6 +79,14 @@ export const WEBMAIL_PLATFORMS: Record<string, WebmailPlatform> = {
     dorkTitle: "Webmail Login",
     htmlPatterns: [/cPanel_magic_revision/i, /\/unprotected\/cpanel\//i],
   },
+};
+
+// Hosted providers — MX-record detection, not an HTML fingerprint (see file
+// header). Kept separate from WEBMAIL_PLATFORMS since HTML-fingerprint-only
+// callers (detectWebmailPlatform) have no way to act on these.
+export const HOSTED_EMAIL_PROVIDERS: Record<string, string> = {
+  "google-workspace": "Google Workspace",
+  "microsoft-365": "Microsoft 365",
 };
 
 // Bounded probe candidates — checked in order, stopping at the first

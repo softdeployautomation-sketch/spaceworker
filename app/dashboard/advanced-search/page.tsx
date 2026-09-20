@@ -21,7 +21,13 @@ import { Badge, Button, Card, Input, Label, Spinner } from "@/components/ui";
 // instead of one opaque combined action, so you can see exactly which real
 // domains a query turns up before spending a probe on any of them.
 
+// Self-hosted platforms (HTTP fingerprint match, common in emerging markets
+// on shared hosting) plus hosted providers (MX-record match, dominant in
+// the US/Canada/Australia — added 2026-09-20 since real validation showed
+// the self-hosted-only set matched under 2% of Western domains checked).
 const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "google-workspace", label: "Google Workspace" },
+  { value: "microsoft-365", label: "Microsoft 365" },
   { value: "roundcube", label: "RoundCube" },
   { value: "squirrelmail", label: "SquirrelMail" },
   { value: "rainloop", label: "RainLoop" },
@@ -145,7 +151,7 @@ export default function AdvancedSearchPage() {
         </div>
 
         <div>
-          <Label>Webmail platforms to check for in Stage 2</Label>
+          <Label>Mail platforms to check for in Stage 2</Label>
           <div className="flex flex-wrap gap-x-4 gap-y-1.5">
             {WEBMAIL_PLATFORM_OPTIONS.map((opt) => (
               <label key={opt.value} className="flex items-center gap-1.5 text-sm">

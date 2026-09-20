@@ -63,6 +63,8 @@ from filters.email_domain_rules import (
     parse_email_domain_allowlist,
 )
 from filters.webmail_platforms import (
+    HOSTED_EMAIL_PROVIDERS,
+    WEBMAIL_PLATFORMS,
     apply_webmail_bias_to_query,
     candidate_webmail_urls,
     detect_webmail_platform,
@@ -1313,13 +1315,56 @@ def extract_webmail_lead(
     }]
 
 
+def detect_hosted_email_provider(domain: str) -> str | None:
+    """Google Workspace / Microsoft 365 detection via MX record — added
+    2026-09-20 (see filters/webmail_platforms.py's module docstring for why).
+    Neither provider hosts a login page on the business's own domain the way
+    the self-hosted platforms do, so candidate_webmail_urls()'s HTTP probing
+    can't see them — the business's domain only shows up in its MX records,
+    pointing at Google's or Microsoft's own mail servers. Uses Google's public
+    DNS-over-HTTPS API (no new dependency — reuses `requests`, same as every
+    other probe in this file) rather than a DNS library.
+    """
+    try:
+        resp = requests.get(
+            "https://dns.google/resolve",
+            params={"name": domain, "type": "MX"},
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        answers = resp.json().get("Answer", [])
+    except Exception:
+        return None
+    # MX record type is 15 (RFC 1035) — dns.google's JSON API returns the
+    # numeric type, not a mnemonic, so filter on that rather than a string.
+    mx_hosts = " ".join(a.get("data", "").lower() for a in answers if a.get("type") == 15)
+    if not mx_hosts:
+        return None
+    if "google.com" in mx_hosts or "googlemail.com" in mx_hosts:
+        return "Google Workspace"
+    if "protection.outlook.com" in mx_hosts:
+        return "Microsoft 365"
+    return None
+
+
+def _resolve_platform_codes(platform_codes: list[str] | None) -> tuple[list[str], set[str]]:
+    """Splits a caller's platform_codes (or the full default set, when None —
+    matching detect_webmail_platform's existing "empty means everything"
+    convention) into (self_hosted_codes, hosted_provider_codes)."""
+    codes = platform_codes if platform_codes else list(WEBMAIL_PLATFORMS.keys()) + list(HOSTED_EMAIL_PROVIDERS.keys())
+    self_hosted = [c for c in codes if c in WEBMAIL_PLATFORMS]
+    hosted = {c for c in codes if c in HOSTED_EMAIL_PROVIDERS}
+    return self_hosted, hosted
+
+
 def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict | None:
     """VERIFY/PROBE mode (see filters/webmail_platforms.py): given a lead
-    already found the normal way (has an email, therefore a domain), actively
-    check a short, bounded list of candidate URLs on that domain for a
-    self-hosted webmail platform. Returns the lead (annotated in `snippet`)
-    if confirmed, else None. Short-circuits on the first confirmed match —
-    real extra network requests per lead, so this stays as cheap as possible.
+    already found the normal way (has an email, therefore a domain), checks
+    it against whichever of self-hosted webmail (HTTP fingerprint) and/or
+    Google Workspace/Microsoft 365 (MX record) the caller asked for. Returns
+    the lead (annotated in `snippet`) if confirmed, else None. Short-circuits
+    on the first confirmed match — real extra network requests per lead, so
+    this stays as cheap as possible.
     """
     email = lead.get("email") or ""
     if "@" not in email:
@@ -1328,6 +1373,19 @@ def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict
     if not domain:
         return None
 
+    self_hosted_codes, hosted_codes = _resolve_platform_codes(platform_codes)
+
+    if hosted_codes:
+        provider = detect_hosted_email_provider(domain)
+        if provider and any(HOSTED_EMAIL_PROVIDERS[c] == provider for c in hosted_codes):
+            annotated = dict(lead)
+            existing_snippet = annotated.get("snippet") or ""
+            note = f"Detected: {provider}"
+            annotated["snippet"] = f"{existing_snippet} — {note}" if existing_snippet else note
+            return annotated
+
+    if not self_hosted_codes:
+        return None
     for url in candidate_webmail_urls(domain):
         try:
             resp = requests.get(
@@ -1337,7 +1395,7 @@ def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict
             )
             if resp.status_code >= 400:
                 continue
-            platform = detect_webmail_platform(resp.text, platform_codes)
+            platform = detect_webmail_platform(resp.text, self_hosted_codes)
         except Exception:
             continue
         if platform:
@@ -1358,11 +1416,21 @@ def extract_root_domain(url: str) -> str:
 def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> str | None:
     """Advanced Search's VERIFY step: given a bare domain the user picked from
     a Discover-step candidate list (see /discover-domains, /verify-domains in
-    api.py) — not yet a lead with an email — probe it for a self-hosted
-    webmail signature, same mechanics as probe_lead_for_webmail but
-    domain-first, since this flow never extracts an email before verifying.
-    Returns the matched platform's label, or None.
+    api.py) — not yet a lead with an email — checks it against whichever of
+    self-hosted webmail (HTTP fingerprint) and/or Google Workspace/Microsoft
+    365 (MX record) the caller asked for. Domain-first, same mechanics as
+    probe_lead_for_webmail, since this flow never extracts an email before
+    verifying. Returns the matched provider/platform's label, or None.
     """
+    self_hosted_codes, hosted_codes = _resolve_platform_codes(platform_codes)
+
+    if hosted_codes:
+        provider = detect_hosted_email_provider(domain)
+        if provider and any(HOSTED_EMAIL_PROVIDERS[c] == provider for c in hosted_codes):
+            return provider
+
+    if not self_hosted_codes:
+        return None
     for url in candidate_webmail_urls(domain):
         try:
             resp = requests.get(
@@ -1372,7 +1440,7 @@ def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> s
             )
             if resp.status_code >= 400:
                 continue
-            platform = detect_webmail_platform(resp.text, platform_codes)
+            platform = detect_webmail_platform(resp.text, self_hosted_codes)
         except Exception:
             continue
         if platform:
