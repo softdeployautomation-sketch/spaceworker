@@ -36,6 +36,7 @@ from pydantic import BaseModel, Field
 from automation import (
     DDGBlockedError,
     extract_root_domain,
+    is_directory_or_infrastructure_domain,
     probe_domain_for_webmail,
     resilient_ddg_search,
     run_automation,
@@ -365,6 +366,8 @@ async def discover_domains(req: DiscoverDomainsRequest) -> dict:
     for r in results:
         domain = extract_root_domain(r.url)
         if not domain or domain in seen:
+            continue
+        if is_directory_or_infrastructure_domain(domain, r.title):
             continue
         seen.add(domain)
         candidates.append({"domain": domain, "sourceUrl": r.url, "title": r.title})

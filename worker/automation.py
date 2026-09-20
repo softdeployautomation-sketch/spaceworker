@@ -1447,6 +1447,42 @@ def extract_root_domain(url: str) -> str:
     return urlparse(url).netloc.removeprefix("www.").strip().lower()
 
 
+# Never a real business, no matter what a search result's URL says — the
+# search engine's own domain, or a generic platform. Confirmed live
+# 2026-09-20: duckduckgo.com itself showed up as a "lead" in a 521-lead
+# Advanced Search validation batch — a self-referential link on DDG's own
+# result page got parsed as if it were a real result.
+_EXCLUDED_INFRASTRUCTURE_DOMAINS = frozenset({
+    "duckduckgo.com", "google.com", "bing.com", "yahoo.com", "wikipedia.org",
+    "facebook.com", "linkedin.com", "youtube.com", "twitter.com", "x.com",
+    "instagram.com", "scribd.com", "pinterest.com", "reddit.com",
+})
+
+# Domain-name substrings and result-title prefixes that reliably mean "this
+# is a business DIRECTORY/listing page about many businesses, not one
+# business" — confirmed live 2026-09-20: the same 521-lead batch's leads
+# table included bizdir24.com, kenyabizlist.com, johannesburglists.com,
+# africalistings.com, and 20+ others self-describing this way in their own
+# domain name (real, working mail on the directory's OWN domain, correctly
+# detected — just not a prospective customer). Applied at Discover time so
+# neither the candidate checklist nor anything downstream ever sees these.
+_DIRECTORY_DOMAIN_SUBSTRINGS = (
+    "directory", "list", "listing", "guide", "yellow", "bizdir",
+    "top10", "thetop", "findlocal", "searchguide",
+)
+_DIRECTORY_TITLE_PREFIXES = ("top ", "best ", "list of", "directory of")
+
+
+def is_directory_or_infrastructure_domain(domain: str, title: str = "") -> bool:
+    d = domain.lower()
+    if d in _EXCLUDED_INFRASTRUCTURE_DOMAINS:
+        return True
+    if any(s in d for s in _DIRECTORY_DOMAIN_SUBSTRINGS):
+        return True
+    t = title.strip().lower()
+    return any(t.startswith(p) for p in _DIRECTORY_TITLE_PREFIXES)
+
+
 def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> str | None:
     """Advanced Search's VERIFY step: given a bare domain the user picked from
     a Discover-step candidate list (see /discover-domains, /verify-domains in

@@ -308,3 +308,34 @@ export function extractRootDomain(url: string): string {
     return "";
   }
 }
+
+// Never a real business, no matter what a search result's URL says — the
+// search engine's own domain, or a generic platform. Confirmed live
+// 2026-09-20: duckduckgo.com itself showed up as a "lead" in a 521-lead
+// Advanced Search validation batch — a self-referential link on DDG's own
+// result page got parsed as if it were a real result. TypeScript mirror of
+// worker/automation.py's is_directory_or_infrastructure_domain().
+const EXCLUDED_INFRASTRUCTURE_DOMAINS = new Set([
+  "duckduckgo.com", "google.com", "bing.com", "yahoo.com", "wikipedia.org",
+  "facebook.com", "linkedin.com", "youtube.com", "twitter.com", "x.com",
+  "instagram.com", "scribd.com", "pinterest.com", "reddit.com",
+]);
+
+// Domain-name substrings and result-title prefixes that reliably mean "this
+// is a business DIRECTORY/listing page about many businesses, not one
+// business" — confirmed live 2026-09-20 (see the Python original's comment
+// for the full list of real examples found: bizdir24.com, kenyabizlist.com,
+// johannesburglists.com, africalistings.com, and 20+ others).
+const DIRECTORY_DOMAIN_SUBSTRINGS = [
+  "directory", "list", "listing", "guide", "yellow", "bizdir",
+  "top10", "thetop", "findlocal", "searchguide",
+];
+const DIRECTORY_TITLE_PREFIXES = ["top ", "best ", "list of", "directory of"];
+
+export function isDirectoryOrInfrastructureDomain(domain: string, title = ""): boolean {
+  const d = domain.toLowerCase();
+  if (EXCLUDED_INFRASTRUCTURE_DOMAINS.has(d)) return true;
+  if (DIRECTORY_DOMAIN_SUBSTRINGS.some((s) => d.includes(s))) return true;
+  const t = title.trim().toLowerCase();
+  return DIRECTORY_TITLE_PREFIXES.some((p) => t.startsWith(p));
+}

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
-import { extractRootDomain } from "@/local-engine/src/filters/webmail-platforms";
+import { extractRootDomain, isDirectoryOrInfrastructureDomain } from "@/local-engine/src/filters/webmail-platforms";
 import { duckDuckGoSearch } from "../../extract/search";
 
 // Advanced Search Stage 1 — "Discover", running entirely inside the EXE's own
@@ -54,6 +54,7 @@ export async function POST(req: NextRequest) {
   for (const r of results) {
     const domain = extractRootDomain(r.url);
     if (!domain || seen.has(domain)) continue;
+    if (isDirectoryOrInfrastructureDomain(domain, r.title)) continue;
     seen.add(domain);
     candidates.push({ domain, sourceUrl: r.url, title: r.title });
     if (candidates.length >= maxCandidates) break;
