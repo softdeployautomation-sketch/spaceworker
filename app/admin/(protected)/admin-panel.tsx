@@ -942,7 +942,22 @@ function AdmissionControlPanel() {
 // atomically in the backend, then the worker process killed.
 type WorkerControlState = { activeState: string; subState: string; memoryMb: number | null };
 
-function WorkerControlPanel({ onChanged }: { onChanged?: () => void }) {
+// Confirmed live (2026-09-21) — this panel used to show ONLY the systemd
+// process's own liveness (activeState/subState "active"/"running"). That
+// reads as "work is happening right now" but actually just means "the
+// service is up and idle" — a real user report: "I see a running worker
+// showing active but there is no runs at all". `runningCount`/`queuedCount`
+// come from the SAME job list the Search Queue table below already loads
+// (no new endpoint needed) so the two views can never disagree.
+function WorkerControlPanel({
+  onChanged,
+  runningCount,
+  queuedCount,
+}: {
+  onChanged?: () => void;
+  runningCount: number;
+  queuedCount: number;
+}) {
   const confirm = useConfirm();
   const [state, setState] = useState<WorkerControlState | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1024,11 +1039,21 @@ function WorkerControlPanel({ onChanged }: { onChanged?: () => void }) {
               {state?.subState && (
                 <span className="text-xs text-zinc-500 dark:text-zinc-400">{state.subState}</span>
               )}
+              <span
+                className={`rounded px-1.5 py-0.5 text-xs font-medium ${
+                  runningCount > 0
+                    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                    : "bg-zinc-100 text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                }`}
+                title="Actual job activity — distinct from the process status to the left, which is just 'is the worker process alive', not 'is it doing anything right now'"
+              >
+                {runningCount} running · {queuedCount} queued
+              </span>
             </div>
             <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
               {state?.memoryMb != null
                 ? `${state.memoryMb} MB RSS`
-                : "memory unavailable"}{" "}·{" "}{active ? "accepting jobs" : "dispatch paused"}
+                : "memory unavailable"}{" "}·{" "}{active ? "process alive, accepting jobs" : "dispatch paused"}
             </p>
           </div>
           <button
@@ -1137,7 +1162,11 @@ function QueueTab() {
     <div>
       <div className="grid items-start gap-6 lg:grid-cols-2">
         <AdmissionControlPanel />
-        <WorkerControlPanel onChanged={load} />
+        <WorkerControlPanel
+          onChanged={load}
+          runningCount={jobs.filter((j) => j.jobStatus === "running").length}
+          queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
+        />
       </div>
 
       <div className="flex items-center justify-between">
