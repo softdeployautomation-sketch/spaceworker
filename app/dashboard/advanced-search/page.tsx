@@ -123,10 +123,13 @@ export default function AdvancedSearchPage() {
     <div className="mx-auto max-w-3xl space-y-6 p-6">
       <div>
         <h1 className="text-xl font-semibold text-fg">Advanced Search</h1>
-        <p className="mt-1 text-sm text-fg-muted">
-          Search for real businesses first, pick which ones to check, then verify only those for
-          self-hosted webmail — nothing is saved until you confirm a selection.
-        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-fg-muted">
+          <span><span className="font-semibold text-fg">1. Search</span> a business type + place</span>
+          <span aria-hidden="true">→</span>
+          <span><span className="font-semibold text-fg">2. Pick</span> which domains to check</span>
+          <span aria-hidden="true">→</span>
+          <span><span className="font-semibold text-fg">3. Verify</span> — matches save as leads automatically</span>
+        </div>
       </div>
 
       <Card className="space-y-4 p-5">
