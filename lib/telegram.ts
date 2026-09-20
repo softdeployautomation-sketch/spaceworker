@@ -18,6 +18,23 @@ export function telegramConfigured(): boolean {
 }
 
 /**
+ * Fire-and-forget operational alert to the OWNER's fixed Telegram chat (never
+ * a customer's) — for events they want to know about immediately: an EXE
+ * license binding/transferring to a device, or a new account signing up. A
+ * one-line no-op when either the bot token or ADMIN_TELEGRAM_CHAT_ID is
+ * unset, and swallows send failures — an alert channel must never be able to
+ * break the flow (a license bind, a signup) it's just reporting on.
+ */
+export async function notifyAdmin(text: string): Promise<void> {
+  if (!telegramConfigured() || !env.adminTelegramChatId) return;
+  try {
+    await sendTelegramMessage(env.adminTelegramChatId, text);
+  } catch (err) {
+    console.error("[telegram] admin alert failed:", err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
  * Thin wrapper around `POST https://api.telegram.org/bot<token>/sendMessage`.
  * Throws when Telegram is unconfigured or the API returns ok:false. Writes a
  * NotificationLog row (best-effort) so the audit trail shows the attempt.

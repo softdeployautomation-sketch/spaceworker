@@ -2195,7 +2195,9 @@ function ExeLicensesTab() {
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Manually issue a desktop-app license outside the checkout flow — a comp, an off-platform
         payment, or a support replacement. The key is signed for exactly one SpaceWorker tool
-        (the same as a real purchase), so it can only be activated in that tool&apos;s EXE.
+        (the same as a real purchase), so it can only be activated in that tool&apos;s EXE. If no
+        account exists for the email yet, one is created automatically and sent a welcome email
+        with the license + a link to set up account access — same as a real signup.
       </p>
 
       <div className="mt-5 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
@@ -2206,7 +2208,7 @@ function ExeLicensesTab() {
           <input
             value={email}
             onChange={(e) => setEmail(e.target.value)}
-            placeholder="Buyer email (must match an existing account)"
+            placeholder="Buyer email (any email — creates an account if needed)"
             className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
           />
           <div className="flex flex-col gap-3 sm:flex-row">

@@ -217,3 +217,53 @@ export function exeLicenseIssuedEmailHtml(opts: {
   </body>
 </html>`;
 }
+
+// 2026-09-20 — owner: an admin-issued license for an email with no existing
+// account should "just work like a real signup", not silently require one to
+// already exist. lib/find-or-create-user.ts creates the account (unknowable
+// random password — nobody signs in with it); this is the actual welcome
+// message that account's owner ever sees, so it reads as a real welcome, not
+// a purchase receipt. The claim link IS the account access: opening it proves
+// email ownership and grants a license_only session, from which Settings
+// already lets them set a real password with no "current password" needed
+// (see app/api/settings/change-password/route.ts) — so this is a genuine,
+// working "set your password" flow, not a promise of one.
+export function exeLicenseWelcomeEmailHtml(opts: {
+  productName: string;
+  licenseKey: string;
+  expiresAt: Date;
+  claimUrl: string;
+}): string {
+  const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">Welcome to SpaceWorker</p>
+      <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        An account has been set up for you with a ${opts.productName} license, valid until
+        <strong style="color:#b91c1c;">${plainDate}</strong>.
+      </p>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <strong style="color:#111827;">Get started:</strong> open the link below to access your
+        account — from there you can view your license, set a password for future sign-ins, and
+        get the activation key for the desktop app.<br/>
+        <a href="${opts.claimUrl}" style="color:#4f46e5;word-break:break-all;">${opts.claimUrl}</a>
+      </p>
+      <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;word-break:break-all;">
+        <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">
+          Purchase reference (this is <strong style="color:#b91c1c;">not</strong> your activation key — use the link above)
+        </p>
+        <p style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#111827;margin:0;">${opts.licenseKey}</p>
+      </div>
+      <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:12px 0 0;">
+        Keep this email safe — the link above is single-use and tied to this account.
+      </p>
+    </div>
+  </body>
+</html>`;
+}

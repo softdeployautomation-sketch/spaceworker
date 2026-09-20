@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { sendEmail, tier1UpgradeEmailHtml, verificationEmailHtml } from "@/lib/email";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
+import { notifyAdmin } from "@/lib/telegram";
 import { issueVerificationCode } from "@/lib/verify-code";
 
 const signupSchema = z.object({
@@ -59,6 +60,7 @@ export async function POST(request: Request) {
     // than relying solely on the schema default of 1 for clarity.
     data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date(), tier: 1 },
   });
+  void notifyAdmin(`New SpaceWorker signup: ${email}`);
 
   // Issue a 6-digit verification code (15-min expiry) and email it.
   // No client/site provisioning step exists here — that was Vantra-specific,

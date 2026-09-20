@@ -1,12 +1,10 @@
 import { NextResponse } from "next/server";
-import { randomBytes } from "crypto";
 import { prisma } from "@/lib/prisma";
-import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
-import { hashPassword } from "@/lib/auth";
+import { findOrCreateUser } from "@/lib/find-or-create-user";
 import { getProduct, WEB_SUBSCRIPTION } from "@/lib/products";
 
 const KINDS = ["btc", "usdt_trc20", "usdt_erc20"] as const;
@@ -70,7 +68,7 @@ export async function POST(req: Request) {
           { status: 400 },
         );
       }
-      userId = await findOrCreateUser(email.trim().toLowerCase());
+      userId = (await findOrCreateUser(email.trim().toLowerCase())).userId;
     }
   }
 
@@ -161,25 +159,4 @@ export async function POST(req: Request) {
   });
 
   return NextResponse.json({ paymentId: payment.id, status, note: result.note });
-}
-
-async function findOrCreateUser(email: string): Promise<string> {
-  const existing = await db.user.findUnique({ where: { email } });
-  if (existing) return existing.id;
-
-  // Inline account for an EXE buyer who isn't signed up yet. A random password
-  // (no one signs in with it) tied to emailVerified:true keeps the account
-  // usable after a future password reset; the license itself is delivered by
-  // email regardless of login state.
-  const randomPassword = randomBytes(24).toString("hex");
-  const passwordHash = await hashPassword(randomPassword);
-  // Tier 1 trial — MUST pin tier: 0 explicitly. The schema default is now 1
-  // (trial), but this inline EXE buyer must stay tier 0: the login route keeps
-  // them license_only while `tier < 5` AND acceptedTermsAt is null, so a trial
-  // tier here would silently hand the entire web product to a non-signup buyer.
-  // (campaign-templates.ts already pins its template-owner account to 0.)
-  const created = await db.user.create({
-    data: { email, passwordHash, emailVerified: true, tier: 0 },
-  });
-  return created.id;
 }

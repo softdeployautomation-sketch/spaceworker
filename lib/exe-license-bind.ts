@@ -3,6 +3,7 @@ import "server-only";
 import { decodeLicenseKey, exeLicenseSecret, generateLicenseKey } from "./exe-license";
 import { db } from "./db";
 import { getProduct } from "./products";
+import { notifyAdmin } from "./telegram";
 
 // Task 47 — the shared "claim a license to one machine" mechanism.
 //
@@ -185,6 +186,10 @@ export async function bindExeLicenseToMachine(input: {
       boundAt: now,
     },
   });
+
+  void notifyAdmin(
+    `EXE license bound: ${original.licensee} — ${getProduct(license.product)?.name ?? license.product} — device "${input.machineLabel?.trim() || machineId}"`,
+  );
 
   return {
     boundLicenseKey: bound.licenseKey,
@@ -390,6 +395,10 @@ export async function transferExeLicenseToMachine(input: {
       },
     });
   });
+
+  void notifyAdmin(
+    `EXE license TRANSFERRED: ${original.licensee} — ${getProduct(license.product)?.name ?? license.product} — moved to device "${newMachineLabel || machineId}"${note ? ` (${note})` : ""}`,
+  );
 
   return {
     boundLicenseKey: bound.licenseKey,

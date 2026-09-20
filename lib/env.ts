@@ -58,6 +58,15 @@ export const env = {
   telegramBotUsername: process.env.TELEGRAM_BOT_USERNAME ?? "",
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
 
+  // 2026-09-20 — owner: wants a Telegram ping for every EXE license bind/
+  // transfer and every new signup. Distinct from telegramBotToken's per-USER
+  // notifications (each customer links their own chat via /start): this is
+  // the OWNER's own chat id, a single fixed destination for operational
+  // alerts. Same bot/token — just a second, fixed recipient. Blank => the
+  // alert helper no-ops (fail-soft, same discipline as every other optional
+  // notification channel here).
+  adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID ?? "",
+
   port: number("PORT", 3400),
 };
 

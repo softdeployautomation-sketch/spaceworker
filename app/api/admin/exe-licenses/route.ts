@@ -5,6 +5,11 @@ import { prisma } from "@/lib/prisma";
 import { EXE_PRODUCTS } from "@/lib/products";
 import { generateLicenseKey } from "@/lib/exe-license";
 import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense, keyExpiryIsAfter, originalExpiry } from "@/lib/exe-license-bind";
+import { findOrCreateUser } from "@/lib/find-or-create-user";
+import { generateLicenseClaimToken, hashLicenseClaimToken, LICENSE_CLAIM_TTL_MS } from "@/lib/license-claim";
+import { exeLicenseIssuedEmailHtml, exeLicenseWelcomeEmailHtml, sendEmail } from "@/lib/email";
+import { env } from "@/lib/env";
+import { notifyAdmin } from "@/lib/telegram";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
 //   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
@@ -58,14 +63,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Enter the buyer's email address." }, { status: 400 });
   }
 
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) {
-    return NextResponse.json(
-      { error: `No SpaceWorker user exists for ${email}.` },
-      { status: 400 },
-    );
-  }
-
   const action =
     body.action === "transfer"
       ? "transfer"
@@ -76,6 +73,25 @@ export async function POST(req: Request) {
           : body.action === "delete"
             ? "delete"
             : "issue";
+
+  // Owner-requested 2026-09-20: "any email the admin inputs automatically
+  // gets signed up and generate license" — issue is the one action that
+  // creates something out of nothing, so it's the one action allowed to
+  // create the account too. bind/transfer/unbind/delete all operate on an
+  // EXISTING license, which can only exist for an existing user — requiring
+  // one there is correct, not a gap.
+  if (action === "issue") {
+    const { userId, created } = await findOrCreateUser(email);
+    return issueLicense({ id: userId, email, isNewAccount: created }, body);
+  }
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    return NextResponse.json(
+      { error: `No SpaceWorker user exists for ${email}.` },
+      { status: 400 },
+    );
+  }
   if (action === "bind") {
     return bindLicense(user.id, user.email, body);
   }
@@ -85,10 +101,7 @@ export async function POST(req: Request) {
   if (action === "unbind") {
     return unbindLicense(user.id, user.email, body);
   }
-  if (action === "delete") {
-    return deleteLicense(user.id, user.email, body);
-  }
-  return issueLicense(user, body);
+  return deleteLicense(user.id, user.email, body);
 }
 
 // ---- delete (remove a superseded/duplicate license row outright — admin cleanup) --
@@ -284,7 +297,7 @@ async function transferLicense(
 // ---- issue (a brand-new license, unchanged behaviour) ------------------------
 
 async function issueLicense(
-  user: { id: string; email: string },
+  user: { id: string; email: string; isNewAccount: boolean },
   body: Record<string, unknown>,
 ): Promise<NextResponse> {
   const productId = typeof body.product === "string" ? body.product.trim() : "";
@@ -380,6 +393,57 @@ async function issueLicense(
     });
   });
 
+  // Owner-requested 2026-09-20: "a welcome email get sent to that email just
+  // like a signup flow... the license is used to sign up to the exe". Same
+  // single-use claim-link mechanism the real checkout flow already uses
+  // (lib/license-service.ts's issueExeLicense) — opening it proves email
+  // ownership and grants a license_only session, from which Settings already
+  // lets them set a real password with no current-password check. For a
+  // brand-new account this IS the signup email; for an admin comp on an
+  // existing customer, the existing "purchase confirmed" wording still fits.
+  const claimToken = generateLicenseClaimToken();
+  const claimExpiresAt = new Date(Date.now() + LICENSE_CLAIM_TTL_MS);
+  await prisma.exeLicense.update({
+    where: { id: license.id },
+    data: {
+      licenseClaimTokenHash: hashLicenseClaimToken(claimToken),
+      licenseClaimTokenExpiresAt: claimExpiresAt,
+    },
+  });
+  const claimUrl = `${env.appBaseUrl}/api/exe-license/claim?token=${encodeURIComponent(claimToken)}`;
+  try {
+    await sendEmail({
+      to: user.email,
+      subject: user.isNewAccount ? "Welcome to SpaceWorker" : `Your ${product.name} license`,
+      html: user.isNewAccount
+        ? exeLicenseWelcomeEmailHtml({
+            productName: product.name,
+            licenseKey: key.licenseKey,
+            expiresAt: key.expiresAt,
+            claimUrl,
+          })
+        : exeLicenseIssuedEmailHtml({
+            productName: product.name,
+            licenseKey: key.licenseKey,
+            expiresAt: key.expiresAt,
+            claimUrl,
+          }),
+      eventType: "exe_license_issued",
+    });
+  } catch (err) {
+    // The license row + key are already saved and returned to the admin UI —
+    // a failed send doesn't lose the license, just the automatic email. Log
+    // loudly so it's noticed; the admin can still hand the key/link over
+    // manually from this response.
+    console.error(
+      `[exe-license] admin-issued license ${license.id} but failed to email it:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  void notifyAdmin(
+    `EXE license issued: ${user.email} — ${product.name}${user.isNewAccount ? " (new account created)" : ""}`,
+  );
+
   return NextResponse.json({
     licenseKey: key.licenseKey,
     product: product.id,
@@ -387,6 +451,8 @@ async function issueLicense(
     licensee: user.email,
     expiresAt: key.expiresAt.toISOString(),
     exeLicenseId: license.id,
+    isNewAccount: user.isNewAccount,
+    claimUrl,
   });
 }
 
