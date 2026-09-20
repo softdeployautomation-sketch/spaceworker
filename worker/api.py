@@ -33,7 +33,13 @@ load_dotenv()
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from automation import run_automation
+from automation import (
+    DDGBlockedError,
+    duckduckgo_search_http,
+    extract_root_domain,
+    probe_domain_for_webmail,
+    run_automation,
+)
 
 JOB_DIR_DEFAULT = "/tmp/spaceworker-jobs"
 LANES = ("light", "heavy")
@@ -320,6 +326,71 @@ async def pause_job(job_id: str) -> dict:
         raise HTTPException(status_code=400, detail="Job is not running")
     state.pause_requested = True
     return {"ok": True}
+
+
+class DiscoverDomainsRequest(BaseModel):
+    """Advanced Search Stage 1 — a plain, unbiased business search (the
+    caller's real query text, verbatim, no intitle: dork bias applied — that
+    combination is confirmed unreliable, see apply_webmail_bias_to_query's
+    docstring). Returns candidate domains for the caller to review/select
+    before Stage 2 probes any of them."""
+    query: str
+    maxCandidates: int = 20
+
+
+@app.post("/discover-domains")
+async def discover_domains(req: DiscoverDomainsRequest) -> dict:
+    query = req.query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    max_candidates = max(1, min(req.maxCandidates, 50))
+
+    loop = asyncio.get_event_loop()
+    try:
+        # Over-fetch (3x) since several results often share one root domain —
+        # deduped below to reach max_candidates distinct domains where possible.
+        results = await loop.run_in_executor(
+            None, duckduckgo_search_http, query, max_candidates * 3
+        )
+    except DDGBlockedError:
+        raise HTTPException(status_code=502, detail="Search engine blocked this request — try again shortly")
+
+    seen: set[str] = set()
+    candidates: list[dict] = []
+    for r in results:
+        domain = extract_root_domain(r.url)
+        if not domain or domain in seen:
+            continue
+        seen.add(domain)
+        candidates.append({"domain": domain, "sourceUrl": r.url, "title": r.title})
+        if len(candidates) >= max_candidates:
+            break
+    return {"candidates": candidates}
+
+
+class VerifyDomainsRequest(BaseModel):
+    """Advanced Search Stage 2 — probe exactly the domains the caller selected
+    from Stage 1's candidate list (never more; this never re-searches)."""
+    domains: list[str]
+    platformCodes: Optional[list[str]] = None
+
+
+@app.post("/verify-domains")
+async def verify_domains(req: VerifyDomainsRequest) -> dict:
+    domains = [d.strip().lower() for d in req.domains if isinstance(d, str) and d.strip()][:50]
+    if not domains:
+        raise HTTPException(status_code=400, detail="domains is required")
+
+    loop = asyncio.get_event_loop()
+
+    async def probe_one(domain: str) -> dict:
+        platform = await loop.run_in_executor(
+            None, probe_domain_for_webmail, domain, req.platformCodes
+        )
+        return {"domain": domain, "platform": platform}
+
+    results = await asyncio.gather(*(probe_one(d) for d in domains))
+    return {"results": results}
 
 
 if __name__ == "__main__":

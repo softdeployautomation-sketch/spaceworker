@@ -1329,6 +1329,37 @@ def probe_lead_for_webmail(lead: dict, platform_codes: list[str] | None) -> dict
     return None
 
 
+def extract_root_domain(url: str) -> str:
+    """netloc minus a leading www., matching the normalization
+    candidate_webmail_urls()/extract_webmail_lead() already use."""
+    return urlparse(url).netloc.removeprefix("www.").strip().lower()
+
+
+def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> str | None:
+    """Advanced Search's VERIFY step: given a bare domain the user picked from
+    a Discover-step candidate list (see /discover-domains, /verify-domains in
+    api.py) — not yet a lead with an email — probe it for a self-hosted
+    webmail signature, same mechanics as probe_lead_for_webmail but
+    domain-first, since this flow never extracts an email before verifying.
+    Returns the matched platform's label, or None.
+    """
+    for url in candidate_webmail_urls(domain):
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": BROWSER_USER_AGENT},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            if resp.status_code >= 400:
+                continue
+            platform = detect_webmail_platform(resp.text, platform_codes)
+        except Exception:
+            continue
+        if platform:
+            return platform
+    return None
+
+
 def _extract_result(result: SearchResult,
                     on_step: Optional[SyncStepCallable] = None,
                     webmail_platforms: Optional[list[str]] = None) -> list[dict]:

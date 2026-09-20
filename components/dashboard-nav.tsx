@@ -8,6 +8,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Megaphone,
+  Radar,
   Search,
   Settings,
   Zap,
@@ -30,6 +31,7 @@ export interface NavItem {
 const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   { href: "/dashboard/extract", label: "Extract", icon: Search },
+  { href: "/dashboard/advanced-search", label: "Advanced Search", icon: Radar },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/automations", label: "Automations", icon: Zap },
   { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
@@ -45,6 +47,7 @@ const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
   extractor: new Set([
     "/dashboard",
     "/dashboard/extract",
+    "/dashboard/advanced-search",
     "/dashboard/licenses",
     "/dashboard/settings",
   ]),
