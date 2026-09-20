@@ -71,26 +71,28 @@ export async function POST(req: NextRequest) {
     results.push({ domain, platform, contacts });
   }
 
+  // Bug fix (2026-09-20): a domain with no crawlable email used to still
+  // save one blank row. Confirmed live this reads as broken — owner: "we
+  // dont want empty spaces. if its empty then it should be deleted." Blank
+  // rows are dropped now; a confirmed-but-quiet domain still shows up in
+  // `results` for the UI's badge, it just isn't saved as an empty lead.
   const confirmed = results.filter((r) => r.platform !== null);
   let runId: string | null = null;
   let leadsCreated = 0;
-  if (confirmed.length > 0) {
+  const rowsToSave = confirmed.flatMap((r) => r.contacts.filter((c) => c.email).map((c) => ({ r, c })));
+  if (rowsToSave.length > 0) {
     runId = newRunId();
-    for (const r of confirmed) {
-      const emailed = r.contacts.filter((c) => c.email);
-      const rows = emailed.length > 0 ? emailed : [{ email: null, phone: null, contactName: null }];
-      for (const c of rows) {
-        appendLeadRow(runId, {
-          email: c.email ?? null,
-          phone: c.phone ?? null,
-          contactName: c.contactName ?? null,
-          businessName: r.domain,
-          website: `https://${r.domain}`,
-          sourceUrl: `https://${r.domain}`,
-          snippet: `Detected: ${r.platform}`,
-        });
-        leadsCreated += 1;
-      }
+    for (const { r, c } of rowsToSave) {
+      appendLeadRow(runId, {
+        email: c.email ?? null,
+        phone: c.phone ?? null,
+        contactName: c.contactName ?? null,
+        businessName: r.domain,
+        website: `https://${r.domain}`,
+        sourceUrl: `https://${r.domain}`,
+        snippet: `Detected: ${r.platform}`,
+      });
+      leadsCreated += 1;
     }
   }
 

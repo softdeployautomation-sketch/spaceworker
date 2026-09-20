@@ -106,9 +106,16 @@ export async function POST(req: Request) {
     // "one domain can have multiple users" (owner, 2026-09-20): a
     // contact/team page can legitimately list several people at one
     // domain, each a real, separately-reachable lead — one Lead row PER
-    // crawled email, not collapsed to one per domain. A domain with no
-    // crawlable email still gets ONE domain-only row (as before) so a
-    // confirmed-but-quiet domain isn't lost entirely.
+    // crawled email, not collapsed to one per domain.
+    //
+    // Bug fix (2026-09-20): a domain with no crawlable email used to still
+    // get ONE domain-only blank row "so a confirmed-but-quiet domain isn't
+    // lost". Confirmed live this reads as broken, not a feature: a real
+    // 41-lead run showed only 3 with an actual email, 38 blank. Owner: "we
+    // dont want empty spaces. if its empty then it should be deleted."
+    // Blank rows are dropped now, not saved — a confirmed-but-quiet domain
+    // still shows up in results.platform for the UI's badge, it just isn't
+    // persisted as a Lead with nothing in it.
     const rows = confirmed.flatMap((r) => {
       const snippet = `Detected: ${r.platform}${SELF_HOSTED_LABELS.has(r.platform as string) ? " webmail" : ""}`;
       const base = {
@@ -120,9 +127,6 @@ export async function POST(req: Request) {
         businessName: r.domain,
       };
       const contacts = (r.contacts ?? []).filter((c) => c.email);
-      if (contacts.length === 0) {
-        return [{ ...base, email: null, phone: null, contactName: null }];
-      }
       return contacts.map((c) => ({
         ...base,
         email: c.email ?? null,

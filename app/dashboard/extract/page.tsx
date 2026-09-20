@@ -222,7 +222,12 @@ export function WebExtractPage() {
   const [advancedDomainInput, setAdvancedDomainInput] = useState("");
   // "we have some blank leads" (owner, 2026-09-20) — opt OUT of the
   // default "confirmed-but-no-email domain still saves one blank row".
-  const [advancedRequireEmail, setAdvancedRequireEmail] = useState(false);
+  // Bug fix (2026-09-20): defaulted to false (keep blank domain-only rows)
+  // — confirmed live this reads as broken, not a feature: a real 41-lead
+  // run showed only 3 with an actual email, 38 blank. Owner: "we dont want
+  // empty spaces. if its empty then it should be deleted." Default flipped
+  // to true — keeping a blank row is now the opt-OUT, not opt-in.
+  const [advancedRequireEmail, setAdvancedRequireEmail] = useState(true);
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -347,10 +352,11 @@ export function WebExtractPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            // A display label is always required server-side — synthesize
-            // one from the domain count when running domain-filter-only
-            // (no search queries at all).
-            queries: queries.length > 0 ? queries : [`Domain filter: ${domains.length} domain(s)`],
+            // Can legitimately be empty (domain-filter-only) — the route
+            // synthesizes a real display label from the domain count in
+            // that case, not just here (defense in depth: works no matter
+            // what calls this API, not only this form).
+            queries,
             template: "advanced-search",
             params: {
               engine: "ddg",

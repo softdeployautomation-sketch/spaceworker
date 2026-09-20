@@ -89,11 +89,27 @@ export async function POST(req: Request) {
   // came from that UI.
   const MAX_QUERIES = 300;
   const uniqueQueries = [...new Set(queryList)].slice(0, MAX_QUERIES);
-  if (uniqueQueries.length === 0) {
-    return NextResponse.json({ error: "At least one search term is required" }, { status: 400 });
-  }
 
   const template = isTemplate(body.template) ? body.template : "lead";
+
+  // Bug fix (2026-09-20): the domain-filter path ("add domain filter to
+  // advance search, so users can add multiple domains they only want it
+  // to extract") legitimately has no search query at all — it skips
+  // search entirely. This check used to run before the route even knew
+  // about targetDomains, so a domain-filter-only request was rejected
+  // with "At least one search term is required" even though it doesn't
+  // need one. The page.tsx UI already works around this by synthesizing
+  // a display-label query — but that's a client-side workaround, not a
+  // fix; confirmed live it still fails for anything that calls this API
+  // directly (a hasTargetDomains request with an empty queries array).
+  const bodyParams = body.params && typeof body.params === "object" ? (body.params as Record<string, unknown>) : {};
+  const hasTargetDomains =
+    template === "advanced-search" &&
+    Array.isArray(bodyParams.targetDomains) &&
+    bodyParams.targetDomains.some((d) => typeof d === "string" && d.trim());
+  if (uniqueQueries.length === 0 && !hasTargetDomains) {
+    return NextResponse.json({ error: "At least one search term or target domain is required" }, { status: 400 });
+  }
   if (template === "upload") {
     // Uploads are only ever created by POST /api/leads/upload, never through the
     // normal job-creation endpoint — reject loud instead of silently running the
@@ -297,7 +313,14 @@ export async function POST(req: Request) {
     ...(requireEmail ? { requireEmail: true } : {}),
     template,
   };
-  const displayQuery = uniqueQueries.length === 1 ? uniqueQueries[0] : uniqueQueries.join(" | ");
+  const displayQuery =
+    uniqueQueries.length === 1
+      ? uniqueQueries[0]
+      : uniqueQueries.length > 1
+        ? uniqueQueries.join(" | ")
+        // Domain-filter-only (no search query at all) — synthesize a real
+        // label instead of an empty job title in the list.
+        : `Domain filter: ${targetDomains.length} domain(s)`;
   const resolvedLane = lane === "heavy" || engine === "google" ? "heavy" : "light";
 
   const user = await prisma.user.findUnique({
