@@ -46,6 +46,14 @@ const JUNK_PREFIXES = [
 // File extensions that look like email TLDs but aren't.
 const FALSE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".webp"];
 
+// A 24+ char local-part that's ALL hex characters is virtually never a real
+// human email — it's a tracking/session/error-report ID a JS SDK embedded in
+// the page (Sentry, analytics, error monitors) formatted email-shaped by
+// coincidence. Confirmed live 2026-09-20: a Sentry error-tracking ID was
+// saved as a real lead's email. Generic guard, not tied to one vendor's
+// domain, since new tracking domains appear constantly.
+const HEX_ID_RE = /^[a-f0-9]{24,}$/;
+
 // mailto: link capture — used only on HTML input.
 const MAILTO_PATTERN = /mailto:([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/g;
 
@@ -89,13 +97,21 @@ export function extractEmails(text: string, html = ""): string[] {
       if (local) email = `${local}@${email.slice(at + 1)}`;
     }
 
-    // Skip junk domains.
+    // Skip junk domains — subdomains too. Confirmed live 2026-09-20: an
+    // exact-match-only check missed "sentry-next.wixpress.com" despite
+    // "wixpress.com" already being listed, because it's a subdomain. A real
+    // subsidiary/regional site at a subdomain of a real business's own
+    // domain is not at risk here — every JUNK_DOMAINS entry is third-party
+    // platform/tracking infrastructure, never a business's own domain.
     const domain = email.includes("@") ? email.split("@").pop()! : "";
-    if (JUNK_DOMAINS.has(domain)) continue;
+    if (JUNK_DOMAINS.has(domain) || [...JUNK_DOMAINS].some((jd) => domain.endsWith("." + jd))) continue;
 
     // Skip junk prefixes.
     const prefix = email.includes("@") ? email.split("@")[0] : "";
     if (JUNK_PREFIXES.some((jp) => prefix.startsWith(jp))) continue;
+
+    // Skip machine-generated tracking/session IDs shaped like an email.
+    if (HEX_ID_RE.test(prefix)) continue;
 
     // Skip false extensions (e.g., image@2x.png).
     if (FALSE_EXTENSIONS.some((ext) => email.endsWith(ext))) continue;

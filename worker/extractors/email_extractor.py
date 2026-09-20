@@ -44,6 +44,16 @@ JUNK_PREFIXES = {
 # File extensions that look like email TLDs but aren't
 FALSE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".webp"}
 
+# A 24+ char local-part that's ALL hex characters is virtually never a real
+# human email — it's a tracking/session/error-report ID a JS SDK embedded in
+# the page (Sentry, analytics, error monitors) formatted email-shaped by
+# coincidence (hex-id@vendor-subdomain.com). Confirmed live 2026-09-20:
+# "18d2f96d279149989b95faf0a4b41882@sentry-next.wixpress.com" was saved as a
+# real lead's email — a Sentry error-tracking ID, not a person. Generic
+# guard, not tied to one vendor's domain, since new tracking domains appear
+# constantly and a domain blocklist alone can never be complete.
+_HEX_ID_RE = re.compile(r"^[a-f0-9]{24,}$")
+
 
 def extract_emails(text: str, html: str = "") -> list[str]:
     """
@@ -94,14 +104,26 @@ def extract_emails(text: str, html: str = "") -> list[str]:
             if local:
                 email = f"{local}@{domain_part}"
 
-        # Skip junk domains
+        # Skip junk domains — subdomains too. Confirmed live 2026-09-20: an
+        # exact-match-only check missed "sentry-next.wixpress.com" despite
+        # "wixpress.com" already being listed, because it's a subdomain, not
+        # the bare domain. A real subsidiary/regional site legitimately
+        # living at a subdomain of a real business's own domain is not at
+        # risk here — every entry in JUNK_DOMAINS is third-party platform/
+        # tracking infrastructure, never a business's own domain.
         domain = email.split("@")[-1] if "@" in email else ""
-        if domain in JUNK_DOMAINS:
+        if domain in JUNK_DOMAINS or any(domain.endswith("." + jd) for jd in JUNK_DOMAINS):
             continue
 
         # Skip junk prefixes
         prefix = email.split("@")[0] if "@" in email else ""
         if any(prefix.startswith(jp) for jp in JUNK_PREFIXES):
+            continue
+
+        # Skip machine-generated tracking/session IDs shaped like an email
+        # (see _HEX_ID_RE above) — a real person's local-part is never a
+        # bare 24+ char hex string.
+        if _HEX_ID_RE.match(prefix):
             continue
 
         # Skip false extensions (e.g., image@2x.png)
