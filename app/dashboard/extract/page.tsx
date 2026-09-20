@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Badge, Spinner } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
@@ -48,6 +48,89 @@ interface Lead {
 
 interface JobDetail extends Job {
   leads: Lead[];
+}
+
+// Task 54 — mirrors the export route's leadDomain(): normalizes a lead's email
+// or website into its comparable domain for the export filter. Handles BOTH a
+// bare email ("foo@gmail.com") and a website URL, stripping "www." + lowercasing.
+function leadDomain(email?: string | null, website?: string | null): string {
+  const emailDomain = (email ?? "").trim().split("@").pop()?.trim() ?? "";
+  if (emailDomain) return emailDomain.replace(/^www\./, "").trim().toLowerCase();
+  if (!website) return "";
+  try {
+    return new URL(website).hostname.replace(/^www\./, "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// Task 54 — builds the ?domains= query-suffix for the export links. Empty
+// selection → no suffix (unfiltered export), preserving the old URL exactly.
+function domainSuffix(domains: string[]): string {
+  if (!domains.length) return "";
+  return `&domains=${encodeURIComponent(domains.join(","))}`;
+}
+
+// Task 54 — a compact chip multi-select of the distinct domains present in the
+// selected job's leads. Pure presentational + local state via the parent, so the
+// parent (extract page) owns the selection used to build the export URLs.
+function DomainsFilterChips({
+  leads,
+  selected,
+  onChange,
+}: {
+  leads: Lead[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const domains = useMemo(() => {
+    const set = new Set<string>();
+    for (const lead of leads) {
+      const d = leadDomain(lead.email, lead.website);
+      if (d) set.add(d);
+    }
+    return [...set].sort();
+  }, [leads]);
+
+  if (!domains.length) return null;
+
+  const toggle = (d: string) => {
+    onChange(
+      selected.includes(d) ? selected.filter((x) => x !== d) : [...selected, d],
+    );
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+      <span className="text-[10px] uppercase tracking-wide text-fg-muted">Filter by domain:</span>
+      {selected.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange([])}
+          className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted hover:text-fg"
+        >
+          Clear
+        </button>
+      )}
+      {domains.map((d) => {
+        const on = selected.includes(d);
+        return (
+          <button
+            key={d}
+            type="button"
+            onClick={() => toggle(d)}
+            className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+              on
+                ? "border-brand-500 bg-brand-500 text-white"
+                : "border-border text-fg-muted hover:text-fg"
+            }`}
+          >
+            {d}
+          </button>
+        );
+      })}
+    </div>
+  );
 }
 
 type Template = "lead" | "hr" | "plain" | "advanced-search";
@@ -148,6 +231,13 @@ export function WebExtractPage() {
   const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set<string>());
   const [sessionMergeBusy, setSessionMergeBusy] = useState(false);
   const [sessionMergeError, setSessionMergeError] = useState("");
+
+  // Task 54 — export-time-only domain filter. When domains are chosen, the
+  // Export CSV / Emails only links append ?domains=. Selection is NOT a DB
+  // mutation — it only narrows the downloaded file (the owner's replace/fork
+  // decision is deliberately left untouched; this is the safe, export-only
+  // variant the batch guardrail asks for).
+  const [filterDomains, setFilterDomains] = useState<string[]>([]);
 
   // Task 26, Piece 3 — lead upload (import .csv/.txt/.json/.xlsx into a new job)
   // and per-job batch email validation. Both are additive UI on the existing job
@@ -1398,14 +1488,33 @@ export function WebExtractPage() {
                       Create email campaign
                     </Link>
                   )}
+                  {/* Task 54 — export-time domain filter. Distinct domains present
+                      in THIS job's leads, as toggleable chips. Selecting some
+                      narrows the export links below via ?domains=. Never mutates
+                      rows — the owner's replace/fork decision is out of scope. */}
+                  {selectedJob.leads.length > 0 && (
+                    <DomainsFilterChips
+                      leads={selectedJob.leads}
+                      selected={filterDomains}
+                      onChange={setFilterDomains}
+                    />
+                  )}
                   {selectedJob.leads.length > 0 && (
                     <Dropdown
                       label="Actions"
                       align="right"
                       className="h-7 border-brand-500 text-brand-600 hover:bg-brand-50 dark:text-brand-400 dark:hover:bg-brand-900/40"
                       items={[
-                        { label: "Export CSV", href: `/api/jobs/${selectedJob.id}/export.csv`, download: true },
-                        { label: "Emails only", href: `/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1`, download: true },
+                        {
+                          label: "Export CSV",
+                          href: `/api/jobs/${selectedJob.id}/export.csv${domainSuffix(filterDomains)}`,
+                          download: true,
+                        },
+                        {
+                          label: "Emails only",
+                          href: `/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1${domainSuffix(filterDomains)}`,
+                          download: true,
+                        },
                         {
                           label: validateBusy ? "Validating…" : "Validate all",
                           busy: validateBusy,

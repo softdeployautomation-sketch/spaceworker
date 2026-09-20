@@ -1,6 +1,6 @@
 # Task 54 — Domain filter on lead export
 
-**Status: ready to build. Owner-requested 2026-09-21.**
+**Status: built (2026-09-21) — decided by batch doc §"open-decision guardrail": ship ONLY the export-time-only variant. Owner's replace/new-session decision intentionally NOT implemented (left for the owner to choose later); no DB mutation of leads/jobs in any path. Verified via tsc + direct curl diff on export route. EXE UI mirror implemented in local-extract.tsx; full Windows/GUI check still needs a human (see HOW_WE_MOVE_FAST.md §5).**
 
 ## What's requested
 

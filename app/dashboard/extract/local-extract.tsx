@@ -169,6 +169,81 @@ function isPendingValidation(l: ExeLead): boolean {
   return !!l.email && l.email.trim().length > 0 && isUnchecked(l);
 }
 
+// Task 54 — EXE sibling of the web export route's leadDomain(): normalizes a
+// lead's email or website into a comparable domain for the export filter.
+function leadDomainExe(email?: string | null, website?: string | null): string {
+  const emailDomain = (email ?? "").trim().split("@").pop()?.trim() ?? "";
+  if (emailDomain) return emailDomain.replace(/^www\./, "").trim().toLowerCase();
+  if (!website) return "";
+  try {
+    return new URL(website).hostname.replace(/^www\./, "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+// Task 54 — compact chip multi-select of the distinct domains in a run's leads.
+// Pure presentational: selection lives in the page's filterExportDomains state,
+// which exportRun() reads to narrow the generated CSV (never mutates leads).
+function DomainsFilterChipsExe({
+  leads,
+  selected,
+  onChange,
+}: {
+  leads: ExeLead[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const domains = useMemo(() => {
+    const set = new Set<string>();
+    for (const l of leads) {
+      const d = leadDomainExe(l.email, l.website);
+      if (d) set.add(d);
+    }
+    return [...set].sort();
+  }, [leads]);
+
+  if (!domains.length) return null;
+
+  const toggle = (d: string) => {
+    onChange(
+      selected.includes(d) ? selected.filter((x) => x !== d) : [...selected, d],
+    );
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+      <span className="text-[10px] uppercase tracking-wide text-fg-muted">Filter:</span>
+      {selected.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange([])}
+          className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted hover:text-fg"
+        >
+          Clear
+        </button>
+      )}
+      {domains.map((d) => {
+        const on = selected.includes(d);
+        return (
+          <button
+            key={d}
+            type="button"
+            onClick={() => toggle(d)}
+            className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
+              on
+                ? "border-brand-500 bg-brand-500 text-white"
+                : "border-border text-fg-muted hover:text-fg"
+            }`}
+          >
+            {d}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** Trigger a browser download of a client-generated CSV (no server round-trip — the
  *  run's leads are already in memory). Mirrors the discrete file the web's
  *  /api/jobs/[id]/export.csv serves. */
@@ -240,6 +315,10 @@ export function LocalExtractPage() {
   const [validateBusy, setValidateBusy] = useState(false);
   const [validateError, setValidateError] = useState<string | null>(null);
   const [selectedLeadIndexes, setSelectedLeadIndexes] = useState<Set<number>>(new Set());
+  // Task 54 — export-time-only domain filter for the EXE's own CSV export
+  // (the local sibling of the web's /api/jobs/[id]/export.csv?domains=). Only
+  // narrows the downloaded file; the run's leads are never mutated.
+  const [filterExportDomains, setFilterExportDomains] = useState<string[]>([]);
   // Import modal state (mirrors the web's upload dialog).
   const [importOpen, setImportOpen] = useState(false);
   const importInputRef = useRef<HTMLInputElement | null>(null);
@@ -346,11 +425,22 @@ export function LocalExtractPage() {
   // RFC-4180 CSV with the same encoder lib/csv.ts the web route uses. The columns
   // follow the run's results-column mode (#1) so "what you see is what you get".
   function exportRun(run: RunRecord, forceEmailsOnly: boolean) {
+    // Task 54 — optional export-time domain filter. When domains are selected,
+    // only leads whose email/website domain matches are written to the file.
+    const leads = filterExportDomains.length
+      ? run.leads.filter((l) => {
+          const domain = leadDomainExe(l.email, l.website);
+          return (
+            !!domain &&
+            filterExportDomains.some((d) => domain === d || domain.endsWith(`.${d}`))
+          );
+        })
+      : run.leads;
     const rows: string[] = [];
     if (forceEmailsOnly || run.resultMode === "emailsOnly") {
       rows.push(encodeCsvRow(["email"]));
       const seen = new Set<string>();
-      for (const l of run.leads) {
+      for (const l of leads) {
         const email = (l.email ?? "").trim();
         if (!email || seen.has(email.toLowerCase())) continue;
         seen.add(email.toLowerCase());
@@ -358,10 +448,10 @@ export function LocalExtractPage() {
       }
     } else if (run.resultMode === "namesEmails") {
       rows.push(encodeCsvRow(["contactName", "email"]));
-      for (const l of run.leads) rows.push(encodeCsvRow([l.contactName, l.email]));
+      for (const l of leads) rows.push(encodeCsvRow([l.contactName, l.email]));
     } else {
       rows.push(encodeCsvRow(["businessName", "contactName", "email", "phone", "website", "sourceUrl", "snippet"]));
-      for (const l of run.leads) {
+      for (const l of leads) {
         rows.push(
           encodeCsvRow([l.businessName, l.contactName, l.email, l.phone, l.website, l.sourceUrl, l.snippet]),
         );
@@ -1280,6 +1370,15 @@ export function LocalExtractPage() {
                     <option value="full">Full details</option>
                   </select>
                 </label>
+                {/* Task 54 — export-time domain filter (EXE sibling of the web's
+                    export route ?domains=). Distinct domains in this run, as
+                    toggleable chips; selecting some narrows the CSV only, never
+                    the run's in-memory leads. */}
+                <DomainsFilterChipsExe
+                  leads={selectedRun.leads}
+                  selected={filterExportDomains}
+                  onChange={setFilterExportDomains}
+                />
                 <Dropdown
                   label="Actions"
                   className="text-xs"
