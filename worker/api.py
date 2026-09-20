@@ -394,23 +394,23 @@ class VerifyDomainsRequest(BaseModel):
     findContactInfo: bool = True
 
 
-def _crawl_contact_info(domain: str) -> dict:
+def _crawl_contact_info(domain: str) -> list[dict]:
     """Homepage + contact/about pages, reusing extract_lead_page exactly as
     the normal Extract pipeline does — the same crawl, just synthesizing a
     SearchResult for a domain we already know is real instead of one found
-    via search. Returns the first lead found, or {} if the site has no
-    extractable contact info (common — many sites only show a contact
-    FORM, not a plain-text email; not an error, just nothing to report)."""
+    via search. Returns EVERY distinct email extract_lead_page found (a
+    contact/team page can legitimately list several people at one domain —
+    owner-requested 2026-09-20: "one domain can have multiple users",
+    each is its own real, separately-reachable lead, not a duplicate to
+    collapse down to one). Empty list if the site has no extractable
+    contact info (common — many sites only show a contact FORM, not
+    plain-text email; not an error, just nothing to report)."""
     result = SearchResult(title=domain, url=f"https://{domain}/", snippet="")
     leads = extract_lead_page(result)
-    if not leads:
-        return {}
-    lead = leads[0]
-    return {
-        "email": lead.get("email"),
-        "phone": lead.get("phone"),
-        "contactName": lead.get("contactName"),
-    }
+    return [
+        {"email": l.get("email"), "phone": l.get("phone"), "contactName": l.get("contactName")}
+        for l in leads
+    ]
 
 
 @app.post("/verify-domains")
@@ -426,11 +426,11 @@ async def verify_domains(req: VerifyDomainsRequest) -> dict:
             None, probe_domain_for_webmail, domain, req.platformCodes
         )
         if not platform:
-            return {"domain": domain, "platform": None}
-        contact: dict = {}
+            return {"domain": domain, "platform": None, "contacts": []}
+        contacts: list[dict] = []
         if req.findContactInfo:
-            contact = await loop.run_in_executor(None, _crawl_contact_info, domain)
-        return {"domain": domain, "platform": platform, **contact}
+            contacts = await loop.run_in_executor(None, _crawl_contact_info, domain)
+        return {"domain": domain, "platform": platform, "contacts": contacts}
 
     results = await asyncio.gather(*(probe_one(d) for d in domains))
     return {"results": results}

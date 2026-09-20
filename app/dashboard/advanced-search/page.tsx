@@ -82,6 +82,10 @@ export default function AdvancedSearchPage() {
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [results, setResults] = useState<VerifyResultRow[] | null>(null);
   const [searchJobId, setSearchJobId] = useState<string | null>(null);
+  // Distinct from confirmedCount: a domain can yield 0 (no crawlable email —
+  // still saved as one domain-only lead), 1, or several leads (a contact/
+  // team page listing multiple people) — this is the real final count.
+  const [leadsCreated, setLeadsCreated] = useState<number | null>(null);
 
   async function runDiscover() {
     if (!query.trim() || runtime === "loading") return;
@@ -91,6 +95,7 @@ export default function AdvancedSearchPage() {
     setSelected(new Set());
     setResults(null);
     setSearchJobId(null);
+    setLeadsCreated(null);
     try {
       const res = await fetch(`${apiBase}/discover`, {
         method: "POST",
@@ -127,6 +132,7 @@ export default function AdvancedSearchPage() {
       // Web mode returns searchJobId (a real dashboard job); local/EXE mode
       // returns runId (a local file — see ../extract/storage.ts) instead.
       setSearchJobId(data.searchJobId ?? null);
+      setLeadsCreated(typeof data.leadsCreated === "number" ? data.leadsCreated : null);
     } catch (e) {
       setVerifyError(e instanceof Error ? e.message : "Verification failed.");
     } finally {
@@ -254,9 +260,17 @@ export default function AdvancedSearchPage() {
       {results && (
         <Card className="space-y-2 p-5">
           <p className="text-sm font-medium text-fg">
-            {confirmedCount} of {results.length} confirmed
+            {confirmedCount} of {results.length} domains confirmed
             {runtime === "local" ? " — saved locally on this machine." : " — saved to your leads."}
           </p>
+          {leadsCreated !== null && (
+            <p className="text-sm text-fg-muted">
+              <span className="font-semibold text-fg">{leadsCreated}</span> lead
+              {leadsCreated === 1 ? "" : "s"} saved — a domain with several published contacts
+              (a team/contact page) saves one per email, so this can run higher than the
+              domain count above.
+            </p>
+          )}
           {runtime === "web" && searchJobId && (
             <Link href="/dashboard/extract" className="text-sm text-brand-600 hover:underline dark:text-brand-400">
               View in Extract → job history

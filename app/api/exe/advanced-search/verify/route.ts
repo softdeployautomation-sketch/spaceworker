@@ -48,49 +48,51 @@ export async function POST(req: NextRequest) {
   // other lead: crawl the business's own site (extractLeadPage already
   // follows contact/about pages) for a real, published email.
   const fetcher = defaultFetcher();
-  const results: Array<{
-    domain: string;
-    platform: string | null;
-    email?: string | null;
-    phone?: string | null;
-    contactName?: string | null;
-  }> = [];
+  interface Contact { email?: string | null; phone?: string | null; contactName?: string | null }
+  const results: Array<{ domain: string; platform: string | null; contacts: Contact[] }> = [];
   for (const domain of domains) {
     const platform = await probeDomainForWebmail(domain, platformCodes);
     if (!platform) {
-      results.push({ domain, platform: null });
+      results.push({ domain, platform: null, contacts: [] });
       continue;
     }
     const homepage: SearchResult = { title: domain, url: `https://${domain}/`, snippet: "" };
-    let contact: { email?: string | null; phone?: string | null; contactName?: string | null } = {};
+    // "one domain can have multiple users" (owner, 2026-09-20): a contact/
+    // team page can legitimately list several people — keep every distinct
+    // email extractLeadPage finds, not just the first.
+    let contacts: Contact[] = [];
     try {
       const leads = await extractLeadPage(homepage, { fetcher });
-      if (leads.length > 0) {
-        contact = { email: leads[0].email, phone: leads[0].phone, contactName: leads[0].contactName };
-      }
+      contacts = leads.map((l) => ({ email: l.email, phone: l.phone, contactName: l.contactName }));
     } catch {
       // A bad page must never fail the whole verify pass — domain still
       // stays confirmed, just without contact info.
     }
-    results.push({ domain, platform, ...contact });
+    results.push({ domain, platform, contacts });
   }
 
   const confirmed = results.filter((r) => r.platform !== null);
   let runId: string | null = null;
+  let leadsCreated = 0;
   if (confirmed.length > 0) {
     runId = newRunId();
     for (const r of confirmed) {
-      appendLeadRow(runId, {
-        email: r.email ?? null,
-        phone: r.phone ?? null,
-        contactName: r.contactName ?? null,
-        businessName: r.domain,
-        website: `https://${r.domain}`,
-        sourceUrl: `https://${r.domain}`,
-        snippet: `Detected: ${r.platform}`,
-      });
+      const emailed = r.contacts.filter((c) => c.email);
+      const rows = emailed.length > 0 ? emailed : [{ email: null, phone: null, contactName: null }];
+      for (const c of rows) {
+        appendLeadRow(runId, {
+          email: c.email ?? null,
+          phone: c.phone ?? null,
+          contactName: c.contactName ?? null,
+          businessName: r.domain,
+          website: `https://${r.domain}`,
+          sourceUrl: `https://${r.domain}`,
+          snippet: `Detected: ${r.platform}`,
+        });
+        leadsCreated += 1;
+      }
     }
   }
 
-  return NextResponse.json({ results, confirmedCount: confirmed.length, runId });
+  return NextResponse.json({ results, confirmedCount: confirmed.length, leadsCreated, runId });
 }

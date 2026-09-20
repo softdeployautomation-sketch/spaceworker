@@ -71,14 +71,12 @@ export async function POST(req: Request) {
     results: Array<{
       domain: string;
       platform: string | null;
-      email?: string | null;
-      phone?: string | null;
-      contactName?: string | null;
+      contacts?: Array<{ email?: string | null; phone?: string | null; contactName?: string | null }>;
     }>;
   };
   const confirmed = data.results.filter((r) => r.platform !== null);
 
-  const job = await prisma.$transaction(async (tx) => {
+  const { searchJob: job, leadsCreated } = await prisma.$transaction(async (tx) => {
     const searchJob = await tx.searchJob.create({
       data: {
         userId: session.userId,
@@ -97,45 +95,53 @@ export async function POST(req: Request) {
       select: { id: true },
     });
 
-    if (confirmed.length > 0) {
-      await tx.lead.createMany({
-        data: confirmed.map((r) => ({
-          userId: session.userId,
-          searchJobId: searchJob.id,
-          // Owner-requested 2026-09-20: a domain confirmed to run real mail
-          // has no email of its own to extract (the webmail login page has
-          // none) — same gap every lead-gen tool has, solved the same way
-          // they solve it (confirmed via research: Hunter.io's own stated
-          // methodology): crawl the business's own site for a real,
-          // published email. worker/api.py's findContactInfo does exactly
-          // that (reusing the same extract_lead_page crawl the normal
-          // Extract flow uses) before this route ever runs — r.email/phone/
-          // contactName are real crawled values when present, not guesses.
-          email: r.email ?? null,
-          phone: r.phone ?? null,
-          contactName: r.contactName ?? null,
-          website: `https://${r.domain}`,
-          sourceUrl: `https://${r.domain}`,
-          // Self-hosted platforms read naturally with "webmail" appended
-          // ("Detected: RoundCube webmail"); hosted providers and the
-          // "Other (<mx host>)" fallback already read correctly on their
-          // own ("Detected: Google Workspace", "Detected: Other
-          // (mx1.example.com)") — appending "webmail" to those would be
-          // wrong/awkward, so only self-hosted platforms (WEBMAIL_PLATFORM_OPTIONS'
-          // last 6 entries) get the suffix.
-          snippet: `Detected: ${r.platform}${SELF_HOSTED_LABELS.has(r.platform as string) ? " webmail" : ""}`,
-          businessName: r.domain,
-        })),
-        skipDuplicates: true,
-      });
+    // Owner-requested 2026-09-20: a domain confirmed to run real mail has
+    // no email of its own to extract (the webmail login page has none) —
+    // same gap every lead-gen tool has, solved the same way they solve it
+    // (confirmed via research: Hunter.io's own stated methodology): crawl
+    // the business's own site for real, published emails. worker/api.py's
+    // findContactInfo does exactly that (reusing the same extract_lead_page
+    // crawl the normal Extract flow uses) before this route ever runs.
+    //
+    // "one domain can have multiple users" (owner, 2026-09-20): a
+    // contact/team page can legitimately list several people at one
+    // domain, each a real, separately-reachable lead — one Lead row PER
+    // crawled email, not collapsed to one per domain. A domain with no
+    // crawlable email still gets ONE domain-only row (as before) so a
+    // confirmed-but-quiet domain isn't lost entirely.
+    const rows = confirmed.flatMap((r) => {
+      const snippet = `Detected: ${r.platform}${SELF_HOSTED_LABELS.has(r.platform as string) ? " webmail" : ""}`;
+      const base = {
+        userId: session.userId,
+        searchJobId: searchJob.id,
+        website: `https://${r.domain}`,
+        sourceUrl: `https://${r.domain}`,
+        snippet,
+        businessName: r.domain,
+      };
+      const contacts = (r.contacts ?? []).filter((c) => c.email);
+      if (contacts.length === 0) {
+        return [{ ...base, email: null, phone: null, contactName: null }];
+      }
+      return contacts.map((c) => ({
+        ...base,
+        email: c.email ?? null,
+        phone: c.phone ?? null,
+        contactName: c.contactName ?? null,
+      }));
+    });
+
+    if (rows.length > 0) {
+      await tx.lead.createMany({ data: rows, skipDuplicates: true });
     }
 
-    return searchJob;
+    return { searchJob, leadsCreated: rows.length };
   });
 
   return NextResponse.json({
     searchJobId: job.id,
     results: data.results,
     confirmedCount: confirmed.length,
+    leadsCreated,
   });
 }
