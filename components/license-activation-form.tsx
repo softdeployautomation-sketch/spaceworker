@@ -81,6 +81,9 @@ export function LicenseActivationForm({
   // device. Never auto-transferred: the person has to see this and click
   // through it themselves.
   const [needsTransferConfirm, setNeedsTransferConfirm] = useState(false);
+  // "key" mode only — a real confirmation code emailed to the account on
+  // file (Task 49 fix: a client-supplied boolean was never real consent).
+  const [transferCodeInput, setTransferCodeInput] = useState("");
 
   // ---- Buy tab state ----
   const [payKind, setPayKind] = useState<PayKind>("btc");
@@ -129,6 +132,7 @@ export function LicenseActivationForm({
     setError("");
     setNeedsTransferConfirm(false);
     setPassword("");
+    setTransferCodeInput("");
   }
 
   async function submitPayment() {
@@ -198,8 +202,14 @@ export function LicenseActivationForm({
     setActivating(true);
     try {
       const url = mode === "key" ? "/api/exe-license/activate" : "/api/exe-license/password-activate";
+      // "key" mode no longer sends a bare confirmTransfer boolean — the
+      // server requires a real emailed code (Task 49 fix). "password" mode
+      // keeps the boolean: reaching that branch already required a correct
+      // password, a genuine server-verified credential, unlike a boolean.
       const body =
-        mode === "key" ? { licenseKey, email, confirmTransfer } : { email, password, confirmTransfer };
+        mode === "key"
+          ? { licenseKey, email, transferCode: transferCodeInput.trim() || undefined }
+          : { email, password, confirmTransfer };
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -209,14 +219,19 @@ export function LicenseActivationForm({
       if (res.ok && data.licensed) {
         setNeedsTransferConfirm(false);
         setPassword("");
+        setTransferCodeInput("");
         onActivated?.();
-      } else if (data.code === "already_bound" && !confirmTransfer) {
+      } else if (data.code === "already_bound" && !(mode === "key" ? transferCodeInput.trim() : confirmTransfer)) {
         setNeedsTransferConfirm(true);
         setError(
           typeof data.error === "string"
             ? data.error
             : "This license is already active on another device.",
         );
+      } else if (data.code === "invalid_transfer_code") {
+        // Keep the code-entry UI open so they can retry without starting over.
+        setNeedsTransferConfirm(true);
+        setError(typeof data.error === "string" ? data.error : "That code is incorrect.");
       } else {
         setNeedsTransferConfirm(false);
         setError(
@@ -425,7 +440,46 @@ export function LicenseActivationForm({
         </p>
       )}
 
-      {needsTransferConfirm ? (
+      {needsTransferConfirm && mode === "key" ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
+          <p className="text-sm text-amber-800 dark:text-amber-200">
+            We emailed a confirmation code to the account on file — enter it below to move this license here.
+            The other device will be signed out.
+          </p>
+          <div className="mt-3">
+            <Input
+              type="text"
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              value={transferCodeInput}
+              onChange={(e) => setTransferCodeInput(e.target.value)}
+              placeholder="6-digit code"
+            />
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-3">
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => {
+                setNeedsTransferConfirm(false);
+                setTransferCodeInput("");
+              }}
+              disabled={activating}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              type="button"
+              onClick={() => submit()}
+              disabled={activating || !transferCodeInput.trim()}
+            >
+              {activating ? "Confirming…" : "Confirm move"}
+            </Button>
+          </div>
+        </div>
+      ) : needsTransferConfirm ? (
         <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
           <p className="text-sm text-amber-800 dark:text-amber-200">
             Moving it here will sign the other device out of this license — only do this if that device is no

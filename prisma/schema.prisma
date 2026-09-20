@@ -71,6 +71,13 @@ model VerificationCode {
   expiresAt  DateTime
   consumedAt DateTime?
   attempts   Int       @default(0)
+  // 2026-09-20 — Task 49 fix: a device-transfer confirmation code now reuses
+  // this exact table/mechanism instead of inventing a new one, but issuing
+  // one must never invalidate an unrelated pending signup-verification code
+  // (or vice versa) for the same user — hence scoping by purpose. Every
+  // pre-existing row is a real signup code, so the default keeps them
+  // correctly classified with no backfill needed.
+  purpose    String    @default("signup")
 }
 
 model RateLimitEvent {

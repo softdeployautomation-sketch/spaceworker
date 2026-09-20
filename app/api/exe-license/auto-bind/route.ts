@@ -4,6 +4,10 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { decodeLicenseKey, exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
+import { getProduct } from "@/lib/products";
+import { sendEmail, exeTransferCodeEmailHtml } from "@/lib/email";
+import { issueVerificationCode, consumeVerificationCode } from "@/lib/verify-code";
+import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import {
   bindExeLicenseToMachine,
   transferExeLicenseToMachine,
@@ -13,7 +17,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// POST /api/exe-license/auto-bind — body: { licenseKey, email, machineId, machineLabel?, confirmTransfer? }
+// POST /api/exe-license/auto-bind — body: { licenseKey, email, machineId, machineLabel?, transferCode? }
 //
 // Self-service redesign (2026-09-19) — called by the DESKTOP EXE's local
 // /api/exe-license/activate route, over the network, the first time someone
@@ -25,37 +29,48 @@ export const dynamic = "force-dynamic";
 // genuinely valid key + matching email wins the binding, exactly like a
 // manual claim would.
 //
-// Fix (2026-09-20) — owner: "i need to be sure a user with the exe doesnt
-// get using this exe without my consent... can only be transferred by
-// revoking the previous one to get a new one". The route used to catch
-// bindExeLicenseToMachine's "already_bound" error and silently call
-// transferExeLicenseToMachine — the SAME function every comment in
-// lib/exe-license-bind.ts documents as admin/support-only, precisely
-// because it overwrites an existing binding with zero consent from whoever
-// is actively using it. Confirmed live: the only gate was the key's
-// signature + a matching email, both of which just sit in the plaintext key
-// string — anyone holding a copy of a customer's key could silently steal
-// the binding to their own machine. Now `confirmTransfer` must be explicitly
-// true (only ever sent after the person on the NEW machine has seen an
-// "already active on another device — move it here?" prompt and clicked
-// through it — see LicenseActivationForm). Without it, an already-bound key
-// is rejected exactly like bindExeLicenseToMachine already rejects it for
-// every OTHER caller, with a distinguishable `code` so the client can offer
-// that confirmation instead of a dead-end error.
+// Task 49 fix (2026-09-20, security audit) — the PREVIOUS version of this
+// fix (2026-09-20 earlier the same day) required a `confirmTransfer: true`
+// boolean before transferring an already-bound license. That looked like a
+// real gate but wasn't one: `confirmTransfer` is just a client-supplied JSON
+// field — anyone holding a copy of a customer's plaintext license key + the
+// matching purchase email (leaked, phished, shared) could set it themselves
+// with a single curl request and silently steal the binding, exactly the
+// "no consent" scenario the owner asked to close ("i need to be sure a user
+// with the exe doesnt get using this exe without my consent"). A client-
+// asserted boolean can never BE consent.
+//
+// Real fix: when a key is already bound elsewhere, this route now emails a
+// short confirmation code to the email BAKED INTO THE LICENSE KEY AT
+// ISSUANCE (never the request body's email — that field is attacker-
+// controlled, the key's embedded licensee is not) and requires that code on
+// a follow-up request before calling transferExeLicenseToMachine. Reuses the
+// same VerificationCode mechanism the signup flow already uses (lib/verify-
+// code.ts), scoped by purpose ("exe_transfer") so it can never collide with
+// an unrelated pending signup code for the same user. Rate-limited per IP so
+// the code can't be brute-forced or the email-send spammed.
 //
 // Not session-gated — the EXE has no web session to send. The key's
-// signature (proves we genuinely issued it) plus the matching licensee email
-// is the authorization, the same trust bar the offline activate route
-// already applies before this is ever called.
+// signature (proves we genuinely issued it) is what lets this route act at
+// all; a transfer additionally requires proving control of the licensee's
+// actual inbox, not just knowledge of two semi-public strings.
 const bodySchema = z.object({
   licenseKey: z.string().trim().min(1, "Missing license key."),
   email: z.string().trim().email("Missing a valid email."),
   machineId: z.string().trim().min(1, "Missing device ID."),
   machineLabel: z.string().trim().max(80).optional().nullable(),
-  confirmTransfer: z.boolean().optional(),
+  transferCode: z.string().trim().optional(),
 });
 
+const TRANSFER_CODE_PURPOSE = "exe_transfer";
+
 export async function POST(req: Request) {
+  const ip = await getClientIp();
+  const allowed = await allowAndRecord(ip, "exe-auto-bind");
+  if (!allowed) {
+    return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
+  }
+
   let parsed: z.infer<typeof bodySchema>;
   try {
     parsed = bodySchema.parse(await req.json());
@@ -96,30 +111,61 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, boundLicenseKey: bound.boundLicenseKey });
   } catch (err) {
     if (err instanceof LicenseBindError && err.code === "already_bound") {
-      // Require an explicit, human confirmation before ever moving a
-      // binding away from whoever is currently using it — see the file-top
-      // comment. Key + email alone is not consent from the CURRENT device.
-      if (!parsed.confirmTransfer) {
+      const productName = getProduct(license.product)?.name ?? license.product;
+      const machineLabel = parsed.machineLabel?.trim() || parsed.machineId;
+
+      if (!parsed.transferCode) {
+        // No code presented yet — issue one and email it to the address
+        // baked into the key at issuance (decoded.licensee), never the
+        // request body's email. Best-effort send; a failure here must not
+        // reveal whether the license exists differently than success would.
+        const { code } = await issueVerificationCode(license.userId, TRANSFER_CODE_PURPOSE);
+        try {
+          await sendEmail({
+            to: decoded.licensee,
+            subject: `Confirm moving your ${productName} license`,
+            html: exeTransferCodeEmailHtml({ productName, code, machineLabel }),
+            eventType: "exe_transfer_code",
+          });
+        } catch (sendErr) {
+          console.error(
+            "[exe-license] transfer code issued but email failed:",
+            sendErr instanceof Error ? sendErr.message : String(sendErr),
+          );
+        }
         return NextResponse.json(
           {
             error:
-              "This license is already active on another device. If that device is no longer in use, you can move it here.",
+              "This license is already active on another device. We emailed a confirmation code to the account on file — enter it to move it here.",
             code: "already_bound",
           },
           { status: 409 },
         );
       }
-      // The person on the NEW machine has now explicitly confirmed they want
-      // to move the license here, knowing it will revoke the other device.
-      // Same underlying transferExeLicenseToMachine the admin tool uses,
-      // with its own audit row, just triggered by the licensee's own
-      // deliberate action instead of an admin's.
+
+      // A code was presented — it must actually match what was emailed to
+      // the real licensee. This is the genuine consent check; everything
+      // before it (key signature, email match) only established WHICH
+      // license, never permission to move it.
+      const result = await consumeVerificationCode(license.userId, parsed.transferCode, TRANSFER_CODE_PURPOSE);
+      if (!result.ok) {
+        const message =
+          result.reason === "expired"
+            ? "That code has expired — request a new one."
+            : result.reason === "attempts_exhausted"
+              ? "Too many incorrect attempts — request a new code."
+              : result.reason === "no_code"
+                ? "No pending confirmation for this license — request a new code."
+                : "That code is incorrect.";
+        return NextResponse.json({ error: message, code: "invalid_transfer_code" }, { status: 400 });
+      }
+
       try {
         const transferred = await transferExeLicenseToMachine({
           exeLicenseId: license.id,
           newMachineId: parsed.machineId,
           newMachineLabel: parsed.machineLabel ?? undefined,
-          note: "Self-service transfer: licensee confirmed moving this license to a new device.",
+          note: "Self-service transfer: licensee confirmed via emailed code.",
         });
         return NextResponse.json({ ok: true, boundLicenseKey: transferred.boundLicenseKey });
       } catch (transferErr) {

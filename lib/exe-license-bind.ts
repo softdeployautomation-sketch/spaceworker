@@ -4,6 +4,7 @@ import { decodeLicenseKey, exeLicenseSecret, generateLicenseKey } from "./exe-li
 import { db } from "./db";
 import { getProduct } from "./products";
 import { notifyAdmin } from "./telegram";
+import { sendEmail, exeTransferCompletedEmailHtml } from "./email";
 
 // Task 47 — the shared "claim a license to one machine" mechanism.
 //
@@ -399,6 +400,22 @@ export async function transferExeLicenseToMachine(input: {
   void notifyAdmin(
     `EXE license TRANSFERRED: ${original.licensee} — ${getProduct(license.product)?.name ?? license.product} — moved to device "${newMachineLabel || machineId}"${note ? ` (${note})` : ""}`,
   );
+  // Task 49 fix — the licensee must find out immediately, not just the
+  // operator (notifyAdmin above). Best-effort: a failed send must never
+  // undo an already-committed transfer, and every caller of this function
+  // (admin, password-login, the code-confirmed auto-bind path, a fresh
+  // purchase's payment-status) gets this for free from one place.
+  void sendEmail({
+    to: original.licensee,
+    subject: `Your ${getProduct(license.product)?.name ?? "SpaceWorker"} license moved devices`,
+    html: exeTransferCompletedEmailHtml({
+      productName: getProduct(license.product)?.name ?? license.product,
+      machineLabel: newMachineLabel || machineId,
+    }),
+    eventType: "exe_license_transferred",
+  }).catch((err) => {
+    console.error("[exe-license] transfer succeeded but owner notification failed:", err instanceof Error ? err.message : String(err));
+  });
 
   return {
     boundLicenseKey: bound.licenseKey,

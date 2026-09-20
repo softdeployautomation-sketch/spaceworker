@@ -267,3 +267,51 @@ export function exeLicenseWelcomeEmailHtml(opts: {
   </body>
 </html>`;
 }
+
+// Task 49 security fix (2026-09-20) — a `confirmTransfer: true` boolean in a
+// POST body is not real consent: anyone holding a copy of a customer's
+// license key + matching email could set it and silently steal the device
+// binding, exactly the "no consent" scenario this session's earlier fix was
+// supposed to close. Real consent requires something only the licensee's own
+// inbox can produce — this code, sent to the email baked into the license
+// key at issuance (never the request body's email, so an attacker can't
+// redirect it to themselves).
+export function exeTransferCodeEmailHtml(opts: { productName: string; code: string; machineLabel: string }): string {
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:18px;font-weight:700;margin:0 0 12px;color:#111827;">Move your ${opts.productName} license?</p>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Someone requested to activate your license on a new device (&ldquo;${opts.machineLabel}&rdquo;). If this
+        is you, enter this code in the app to confirm:
+      </p>
+      <p style="font-size:32px;font-weight:700;letter-spacing:4px;text-align:center;margin:0 0 16px;color:#111827;">
+        ${opts.code}
+      </p>
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
+        Expires in 15 minutes. If you didn&rsquo;t request this, ignore this email — your license stays exactly
+        where it is; nothing changes until this code is entered.
+      </p>
+    </div>
+  </body>
+</html>`;
+}
+
+export function exeTransferCompletedEmailHtml(opts: { productName: string; machineLabel: string }): string {
+  return `<!doctype html>
+<html>
+  <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
+    <div style="max-width:480px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
+      <p style="font-size:18px;font-weight:700;margin:0 0 12px;color:#111827;">Your ${opts.productName} license moved devices</p>
+      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        Your license is now active on &ldquo;${opts.machineLabel}&rdquo;. It's no longer active on its previous
+        device.
+      </p>
+      <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0;">
+        Didn&rsquo;t do this? Contact support right away.
+      </p>
+    </div>
+  </body>
+</html>`;
+}

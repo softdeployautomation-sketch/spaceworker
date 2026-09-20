@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  let body: { licenseKey?: unknown; email?: unknown; confirmTransfer?: unknown };
+  let body: { licenseKey?: unknown; email?: unknown; transferCode?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
 
   const licenseKey = typeof body.licenseKey === "string" ? body.licenseKey.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim() : "";
-  const confirmTransfer = body.confirmTransfer === true;
+  const transferCode = typeof body.transferCode === "string" ? body.transferCode.trim() : undefined;
   if (!licenseKey) {
     return NextResponse.json({ error: "Enter your license key." }, { status: 400 });
   }
@@ -112,7 +112,7 @@ export async function POST(req: Request) {
       res = await fetch(`${HOSTED_APP_URL}/api/exe-license/auto-bind`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey, email, machineId: currentMachineId, confirmTransfer }),
+        body: JSON.stringify({ licenseKey, email, machineId: currentMachineId, transferCode }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
