@@ -81,14 +81,33 @@ interface RunRecord {
   // params); set from the form at run creation, editable from the detail pane.
   resultMode: ResultMode;
   // How this run came to be — search / import / merge — for labels and clarity.
-  source?: "search" | "import" | "merge";
+  source?: "search" | "import" | "merge" | "advanced-search";
+  // Advanced Search-only fields (source === "advanced-search") — kept
+  // separate from the Lead Search fields above rather than repurposing
+  // them, since the concepts genuinely differ (a query LIST here, not one
+  // cross-multiplied Find/Location pair).
+  advQueries?: string;
+  advDomains?: string;
+  advPlatforms?: string[];
+  advRequireEmail?: boolean;
 }
 
 // Self-hosted webmail platforms this app can target — mirrors the web
 // dashboard's Extract page; worker/filters/webmail_platforms.py (server) and
 // local-engine/src/filters/webmail-platforms.ts (this EXE) are the shared
 // source of truth for the codes and their actual detection fingerprints.
-const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+// Advanced Search's fuller platform list (self-hosted + hosted providers +
+// "other-hosted") — matches app/dashboard/extract/page.tsx's
+// ADVANCED_SEARCH_PLATFORM_OPTIONS exactly, same codes worker/filters/
+// webmail_platforms.py and local-engine/src/filters/webmail-platforms.ts
+// (this EXE's copy) already detect.
+const ADVANCED_SEARCH_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "google-workspace", label: "Google Workspace" },
+  { value: "microsoft-365", label: "Microsoft 365" },
+  { value: "zoho-mail", label: "Zoho Mail" },
+  { value: "icloud-mail", label: "Apple iCloud Mail" },
+  { value: "proton-mail", label: "Proton Mail" },
+  { value: "other-hosted", label: "Other (show unrecognized providers)" },
   { value: "roundcube", label: "RoundCube" },
   { value: "squirrelmail", label: "SquirrelMail" },
   { value: "rainloop", label: "RainLoop" },
@@ -110,7 +129,14 @@ function clampNumber(v: number, lo: number, hi: number, fallback: number): numbe
 }
 
 /** Compact human summary of a run's search (the EXE sibling of the web's summarizeQuery). */
-function summarizeRun(run: Pick<RunRecord, "findTerms" | "locationTerms">): string {
+function summarizeRun(run: Pick<RunRecord, "findTerms" | "locationTerms" | "source" | "advQueries" | "advDomains">): string {
+  if (run.source === "advanced-search") {
+    const q = run.advQueries?.trim();
+    const d = run.advDomains?.trim();
+    if (q) return q;
+    if (d) return `Domain filter: ${d.split(/[,\n;|]+/).filter(Boolean).length} domain(s)`;
+    return "Advanced Search";
+  }
   const parts = [run.findTerms.trim(), run.locationTerms.trim()].filter(Boolean);
   return parts.join("  ·  ") || "Lead search";
 }
@@ -177,6 +203,27 @@ export function LocalExtractPage() {
   // Webmail platform targeting — mirrors the web dashboard's Extract page.
   const [webmailPlatforms, setWebmailPlatforms] = useState<string[]>([]);
   const [verifyWebmail, setVerifyWebmail] = useState(false);
+
+  // Owner-requested 2026-09-20: "we need all in the exe, build an
+  // equivalent in the exe that would run locally, no difference since
+  // they still can make http calls." Advanced Search as a second mode,
+  // same real local-engine crawl (DDG search, MX lookup, page crawl) the
+  // web's background job uses, streamed over SSE from
+  // /api/exe/advanced-search/run exactly like Lead Search already streams
+  // from /api/exe/extract — same runs list, same live activity, just a
+  // different engine underneath.
+  const [mode, setMode] = useState<"lead" | "advanced-search">("lead");
+  const [advQueries, setAdvQueries] = useState("");
+  const [advDomains, setAdvDomains] = useState("");
+  const [advPlatforms, setAdvPlatforms] = useState<string[]>(
+    ADVANCED_SEARCH_PLATFORM_OPTIONS.map((p) => p.value),
+  );
+  const [advMinLeads, setAdvMinLeads] = useState(0);
+  const [advMaxDurationMinutes, setAdvMaxDurationMinutes] = useState(30);
+  const [advResultMode, setAdvResultMode] = useState<ResultMode>("namesEmails");
+  // Bug fix (2026-09-20, same as web): default true — "we dont want empty
+  // spaces. if its empty then it should be deleted."
+  const [advRequireEmail, setAdvRequireEmail] = useState(true);
 
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -669,9 +716,149 @@ export function LocalExtractPage() {
     void readerRef.current?.cancel();
   }
 
+  // Owner-requested 2026-09-20: the EXE-local equivalent of the web's
+  // background-job Advanced Search — same real crawl (DDG search, MX
+  // lookup, page crawl via /api/exe/advanced-search/run), streamed the
+  // exact same way startSearch() above streams from /api/exe/extract, so
+  // it shows up in the SAME runs list with the SAME live activity.
+  async function startAdvancedSearch() {
+    const queries = advQueries.trim();
+    const domains = advDomains.trim();
+    if (!queries && !domains) {
+      setError("Enter at least one search query or domain");
+      return;
+    }
+
+    cancelRef.current = false;
+    setError(undefined);
+
+    const runId = nextRunId.current++;
+    const run: RunRecord = {
+      id: runId,
+      findTerms: "",
+      locationTerms: "",
+      pdfOnly: false,
+      scope: 0,
+      resultsPerQuery: 0,
+      minLeads: advMinLeads,
+      maxTotalLeads: 0,
+      maxDurationMinutes: advMaxDurationMinutes,
+      emailFilter: "",
+      webmailPlatforms: [],
+      verifyWebmail: false,
+      leads: [],
+      steps: [],
+      total: 0,
+      leadFile: null,
+      status: "running",
+      stoppedReason: null,
+      createdAt: new Date().toISOString(),
+      resultMode: advResultMode,
+      source: "advanced-search",
+      advQueries: queries,
+      advDomains: domains,
+      advPlatforms: advPlatforms,
+      advRequireEmail: advRequireEmail,
+    };
+    setRuns((prev) => [run, ...prev]);
+    setSelectedRunId(runId);
+    setSelectedLeadIndexes(new Set());
+    setRunning(true);
+
+    try {
+      const res = await fetch("/api/exe/advanced-search/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          queries,
+          targetDomains: domains,
+          platformCodes: advPlatforms,
+          minLeads: advMinLeads,
+          maxDurationMinutes: advMaxDurationMinutes,
+          requireEmail: advRequireEmail,
+        }),
+      });
+
+      if (res.status === 404) {
+        patchRun(runId, { status: "failed" });
+        setError("Advanced Search is only available in the local Extractor EXE.");
+        return;
+      }
+      if (!res.ok) {
+        patchRun(runId, { status: "failed" });
+        setError(await res.text().catch(() => "Search failed."));
+        return;
+      }
+      if (!res.body) {
+        patchRun(runId, { status: "failed" });
+        setError("No response stream.");
+        return;
+      }
+
+      const reader = res.body.getReader();
+      readerRef.current = reader;
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (!cancelRef.current) {
+        const { done, value } = await reader.read();
+        if (cancelRef.current) break;
+        if (value && value.length) buffer += decoder.decode(value, { stream: !done });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const data = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!data) continue;
+          let ev: ExtractEvent;
+          try {
+            ev = JSON.parse(data.slice(6)) as ExtractEvent;
+          } catch {
+            continue;
+          }
+          if (ev.type === "step" && ev.message) {
+            appendRun(runId, "step", ev.message);
+          } else if (ev.type === "lead" && ev.lead) {
+            appendRun(runId, "lead", ev.lead);
+            requestAnimationFrame(() => {
+              if (leadsScrollRef.current) leadsScrollRef.current.scrollTop = leadsScrollRef.current.scrollHeight;
+            });
+          } else if (ev.type === "done") {
+            patchRun(runId, {
+              status: "done",
+              total: ev.total ?? 0,
+              leadFile: ev.leadFile ?? null,
+              stoppedReason: ev.stoppedReason ?? null,
+            });
+          }
+        }
+        if (done) break;
+      }
+    } catch (err) {
+      if (!cancelRef.current) {
+        patchRun(runId, { status: "failed" });
+        setError(`Search failed: ${String(err)}`);
+      }
+    } finally {
+      setRunning(false);
+      readerRef.current = null;
+    }
+  }
+
   // Load a past run's search back into the form (the web's Load action) so it can
   // be edited and resubmitted as a NEW run — the original run stays untouched.
   function loadRunIntoForm(run: RunRecord) {
+    if (run.source === "advanced-search") {
+      setMode("advanced-search");
+      setAdvQueries(run.advQueries ?? "");
+      setAdvDomains(run.advDomains ?? "");
+      setAdvPlatforms(run.advPlatforms ?? ADVANCED_SEARCH_PLATFORM_OPTIONS.map((p) => p.value));
+      setAdvMinLeads(run.minLeads);
+      setAdvMaxDurationMinutes(run.maxDurationMinutes);
+      setAdvResultMode(run.resultMode);
+      setAdvRequireEmail(run.advRequireEmail ?? true);
+      setError(undefined);
+      return;
+    }
+    setMode("lead");
     setFindTerms(run.findTerms);
     setLocationTerms(run.locationTerms);
     setPdfOnly(run.pdfOnly);
@@ -700,7 +887,36 @@ export function LocalExtractPage() {
             other page; no separate shortcut needed here either. */}
       </div>
 
+      {/* Mode toggle — owner-requested 2026-09-20: a real EXE-local
+          equivalent of the web's Advanced Search, not just a link out to
+          the standalone preview page. */}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => setMode("lead")}
+          className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
+            mode === "lead"
+              ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+              : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+          }`}
+        >
+          Lead Search
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("advanced-search")}
+          className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
+            mode === "advanced-search"
+              ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+              : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+          }`}
+        >
+          Advanced Search
+        </button>
+      </div>
+
       {/* Search bar */}
+      {mode === "lead" && (
       <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
         <div className="flex flex-col flex-wrap gap-3 md:flex-row md:flex-wrap md:items-center">
           <label className="flex min-w-[13rem] flex-1 flex-col gap-1">
@@ -824,54 +1040,12 @@ export function LocalExtractPage() {
           </label>
         </div>
 
-        {/* Webmail platform targeting — two independent modes, mirroring the
-            web dashboard's Extract page exactly. */}
-        <div className="mt-3 rounded-lg border border-border bg-input/40 p-3">
-          <p className="text-sm font-medium text-fg">Self-hosted webmail (RoundCube, SquirrelMail, etc.)</p>
-          <p className="mt-1 text-xs text-fg-muted">
-            Target businesses running their own webmail instead of Gmail/Outlook/Google Workspace.
-          </p>
-          <div className="mt-2 flex flex-wrap gap-3 text-sm">
-            {WEBMAIL_PLATFORM_OPTIONS.map((opt) => (
-              <label key={opt.value} className="flex items-center gap-1.5">
-                <input
-                  type="checkbox"
-                  checked={webmailPlatforms.includes(opt.value)}
-                  onChange={(e) => {
-                    setWebmailPlatforms((prev) =>
-                      e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
-                    );
-                  }}
-                  className="h-4 w-4 cursor-pointer"
-                />
-                {opt.label}
-              </label>
-            ))}
-          </div>
-          {webmailPlatforms.length > 0 ? (
-            <p className="mt-2 text-xs text-brand-600 dark:text-brand-400">
-              Search mode: finds indexed webmail login pages directly (fast — no extra requests per
-              lead). Each match becomes a lead with no email — just the domain and detected platform.{" "}
-              <strong>Your Find/Location text above is ignored in this mode</strong> — a webmail login
-              page&apos;s title never mentions the business or city running it, so combining them just
-              breaks the search. Want a business/location match instead? Uncheck the platforms and use
-              &quot;Verify each lead&apos;s mail platform&quot; below with a normal Find search.
-            </p>
-          ) : (
-            <label className="mt-2 flex items-center gap-1.5 text-sm">
-              <input
-                type="checkbox"
-                checked={verifyWebmail}
-                onChange={(e) => setVerifyWebmail(e.target.checked)}
-                className="h-4 w-4 cursor-pointer"
-              />
-              Verify each lead&apos;s mail platform
-              <span className="text-xs text-fg-muted">
-                (slower — probes every found lead&apos;s domain and drops non-matches)
-              </span>
-            </label>
-          )}
-        </div>
+        {/* The self-hosted-webmail checkbox section that used to live here
+            was removed 2026-09-20 — Advanced Search (its own mode, below,
+            with all 12 platforms including hosted providers) is the real,
+            working home for this now. webmailPlatforms/verifyWebmail state
+            stays harmlessly unused rather than ripping out the params
+            plumbing that still reads them correctly if ever needed again. */}
 
         {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
         <p className="mt-2 text-[11px] text-fg-muted">
@@ -880,6 +1054,117 @@ export function LocalExtractPage() {
             : "Results are held in this window + a temp local JSONL file for this slice — a SQLite schema replaces that later."}
         </p>
       </div>
+      )}
+
+      {/* Advanced Search bar — owner-requested 2026-09-20: real local
+          equivalent of the web's background-job Advanced Search, streamed
+          from /api/exe/advanced-search/run (see startAdvancedSearch). */}
+      {mode === "advanced-search" && (
+      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        <div className="flex flex-col gap-3">
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">
+              Search queries (comma/newline-separated — runs each one after another in the same run)
+            </span>
+            <textarea
+              value={advQueries}
+              onChange={(e) => setAdvQueries(e.target.value)}
+              placeholder={'e.g. "law firms in usa"\n"accounting firms in texas"'}
+              rows={2}
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Domain filter (optional, comma-separated) — skips search, probes exactly these</span>
+            <input
+              type="text"
+              value={advDomains}
+              onChange={(e) => setAdvDomains(e.target.value)}
+              placeholder="e.g. acmelaw.com, otherfirm.com"
+              className="w-full rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+            />
+          </label>
+          <div>
+            <p className="mb-1.5 text-xs text-fg-muted">Mail platforms to confirm</p>
+            <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+              {ADVANCED_SEARCH_PLATFORM_OPTIONS.map((opt) => (
+                <label key={opt.value} className="flex items-center gap-1.5 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={advPlatforms.includes(opt.value)}
+                    onChange={(e) =>
+                      setAdvPlatforms((prev) =>
+                        e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
+                      )
+                    }
+                    className="h-4 w-4 cursor-pointer"
+                  />
+                  {opt.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4 text-sm">
+            <label className="flex items-center gap-2">
+              <span className="text-fg-muted">Keep going until (leads):</span>
+              <input
+                type="number"
+                min={0}
+                value={advMinLeads}
+                onChange={(e) => setAdvMinLeads(Number(e.target.value) || 0)}
+                className="w-24 rounded border border-border bg-input px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-fg-muted">Max duration (min):</span>
+              <input
+                type="number"
+                min={1}
+                max={180}
+                value={advMaxDurationMinutes}
+                onChange={(e) => setAdvMaxDurationMinutes(Number(e.target.value) || 30)}
+                className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
+              />
+            </label>
+            <label className="flex items-center gap-2">
+              <span className="text-fg-muted">Results table:</span>
+              <select
+                value={advResultMode}
+                onChange={(e) => setAdvResultMode(e.target.value as ResultMode)}
+                className="rounded-lg border border-border bg-input px-2 py-2 text-sm"
+              >
+                <option value="namesEmails">Names + Emails</option>
+                <option value="emailsOnly">Emails only</option>
+                <option value="full">Full details</option>
+              </select>
+            </label>
+            <div className="shrink-0">
+              {running ? (
+                <Button variant="primary" type="button" onClick={stopSearch}>Stop</Button>
+              ) : (
+                <Button variant="primary" type="button" onClick={() => void startAdvancedSearch()}>Search</Button>
+              )}
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={advRequireEmail}
+              onChange={(e) => setAdvRequireEmail(e.target.checked)}
+              className="h-4 w-4 cursor-pointer"
+            />
+            Only keep leads with a real email
+            <span className="text-xs text-fg-muted">(skips saving a confirmed domain with no crawlable contact email)</span>
+          </label>
+          {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
+          <p className="text-[11px] text-fg-muted">
+            {running
+              ? `Running… ${runs[0]?.leads.length ?? 0} lead(s) so far.`
+              : "Runs entirely on this machine — real DDG search, MX lookups, and page crawls, no VPS involved."}
+          </p>
+        </div>
+      </div>
+      )}
 
       {/* Web-matching information architecture: LEFT = session/run history,
           RIGHT = the selected run's detail (activity + leads together). */}
