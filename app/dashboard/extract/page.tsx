@@ -1193,7 +1193,22 @@ export function WebExtractPage() {
                           label: validateBusy ? "Validating…" : "Validate all",
                           busy: validateBusy,
                           onSelect: () => void validateAll(),
-                          disabled: validateBusy || !selectedJob.leads.some((l) => !l.validationStatus || l.validationStatus === "unchecked"),
+                          // Bug fix (2026-09-20): only counted validationStatus,
+                          // not whether a lead even HAS an email — a lead with no
+                          // email sits in "unchecked" forever (nothing to check;
+                          // /api/jobs/[id]/validate deliberately skips it), so
+                          // this stayed enabled even with nothing genuinely left
+                          // to validate. Confirmed real on Advanced Search jobs,
+                          // where most leads are domain-only by design — flagged
+                          // by the owner as "these are all already validated"
+                          // when really there was just nothing to check.
+                          disabled:
+                            validateBusy ||
+                            !selectedJob.leads.some(
+                              (l) =>
+                                l.email && l.email.trim().length > 0 &&
+                                (!l.validationStatus || l.validationStatus === "unchecked"),
+                            ),
                         },
                       ]}
                     />

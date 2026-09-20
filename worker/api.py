@@ -35,6 +35,8 @@ from pydantic import BaseModel, Field
 
 from automation import (
     DDGBlockedError,
+    SearchResult,
+    extract_lead_page,
     extract_root_domain,
     is_directory_or_infrastructure_domain,
     probe_domain_for_webmail,
@@ -381,6 +383,34 @@ class VerifyDomainsRequest(BaseModel):
     from Stage 1's candidate list (never more; this never re-searches)."""
     domains: list[str]
     platformCodes: Optional[list[str]] = None
+    # Owner-requested 2026-09-20: a domain confirmed to run real mail has no
+    # contact email/phone/name of its own — the webmail login page has none
+    # to extract (see extract_webmail_lead's docstring). Real lead-gen tools
+    # (confirmed via research: Hunter.io's own stated methodology) solve this
+    # the same way this app's normal Extract flow already does for every
+    # other lead: crawl the business's own site (contact/about pages
+    # included) for a real, published email — not a guessed one. Opt-in
+    # (default true) since it's real extra requests per confirmed domain.
+    findContactInfo: bool = True
+
+
+def _crawl_contact_info(domain: str) -> dict:
+    """Homepage + contact/about pages, reusing extract_lead_page exactly as
+    the normal Extract pipeline does — the same crawl, just synthesizing a
+    SearchResult for a domain we already know is real instead of one found
+    via search. Returns the first lead found, or {} if the site has no
+    extractable contact info (common — many sites only show a contact
+    FORM, not a plain-text email; not an error, just nothing to report)."""
+    result = SearchResult(title=domain, url=f"https://{domain}/", snippet="")
+    leads = extract_lead_page(result)
+    if not leads:
+        return {}
+    lead = leads[0]
+    return {
+        "email": lead.get("email"),
+        "phone": lead.get("phone"),
+        "contactName": lead.get("contactName"),
+    }
 
 
 @app.post("/verify-domains")
@@ -395,7 +425,12 @@ async def verify_domains(req: VerifyDomainsRequest) -> dict:
         platform = await loop.run_in_executor(
             None, probe_domain_for_webmail, domain, req.platformCodes
         )
-        return {"domain": domain, "platform": platform}
+        if not platform:
+            return {"domain": domain, "platform": None}
+        contact: dict = {}
+        if req.findContactInfo:
+            contact = await loop.run_in_executor(None, _crawl_contact_info, domain)
+        return {"domain": domain, "platform": platform, **contact}
 
     results = await asyncio.gather(*(probe_one(d) for d in domains))
     return {"results": results}

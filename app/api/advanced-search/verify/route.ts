@@ -56,7 +56,7 @@ export async function POST(req: Request) {
         "Content-Type": "application/json",
         Authorization: `Bearer ${process.env.WORKER_AUTH_TOKEN}`,
       },
-      body: JSON.stringify({ domains, platformCodes }),
+      body: JSON.stringify({ domains, platformCodes, findContactInfo: true }),
     });
   } catch {
     return NextResponse.json({ error: "Could not reach the search worker." }, { status: 502 });
@@ -67,7 +67,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: detail?.detail ?? "Verification failed." }, { status: 500 });
   }
 
-  const data = (await res.json()) as { results: Array<{ domain: string; platform: string | null }> };
+  const data = (await res.json()) as {
+    results: Array<{
+      domain: string;
+      platform: string | null;
+      email?: string | null;
+      phone?: string | null;
+      contactName?: string | null;
+    }>;
+  };
   const confirmed = data.results.filter((r) => r.platform !== null);
 
   const job = await prisma.$transaction(async (tx) => {
@@ -94,7 +102,18 @@ export async function POST(req: Request) {
         data: confirmed.map((r) => ({
           userId: session.userId,
           searchJobId: searchJob.id,
-          email: null,
+          // Owner-requested 2026-09-20: a domain confirmed to run real mail
+          // has no email of its own to extract (the webmail login page has
+          // none) — same gap every lead-gen tool has, solved the same way
+          // they solve it (confirmed via research: Hunter.io's own stated
+          // methodology): crawl the business's own site for a real,
+          // published email. worker/api.py's findContactInfo does exactly
+          // that (reusing the same extract_lead_page crawl the normal
+          // Extract flow uses) before this route ever runs — r.email/phone/
+          // contactName are real crawled values when present, not guesses.
+          email: r.email ?? null,
+          phone: r.phone ?? null,
+          contactName: r.contactName ?? null,
           website: `https://${r.domain}`,
           sourceUrl: `https://${r.domain}`,
           // Self-hosted platforms read naturally with "webmail" appended

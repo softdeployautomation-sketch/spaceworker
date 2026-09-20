@@ -35,9 +35,13 @@ function DockIcon({ href, label, icon: Icon, active }: NavItem) {
       href={href}
       aria-label={label}
       title={label}
-      className="group relative flex flex-col items-center gap-1.5 rounded-2xl px-1 py-1"
+      className="group relative flex flex-col items-center gap-1 rounded-2xl px-1 py-1"
     >
-      {/* Hover tooltip */}
+      {/* Hover tooltip — kept alongside the always-visible label below since
+          the label alone truncates on the narrowest items ("Advanced
+          Search"); confirmed live 2026-09-20 that icon-only (no visible
+          label) was genuinely hard to tell apart at dock size — a user
+          repeatedly couldn't identify which icon was which. */}
       <span className="pointer-events-none absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-border bg-black/90 px-2 py-1 text-[11px] font-medium text-white opacity-0 shadow-lg transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
         {label}
       </span>
@@ -64,13 +68,13 @@ function DockIcon({ href, label, icon: Icon, active }: NavItem) {
 
       <span
         className={cn(
-          "h-1 w-1 rounded-full transition-colors",
-          active
-            ? "bg-brand-400"
-            : "bg-transparent group-hover:bg-gray-300 dark:group-hover:bg-border",
+          "max-w-[52px] truncate text-center text-[9px] font-medium leading-tight transition-colors",
+          active ? "text-brand-600 dark:text-brand-300" : "text-fg-muted",
         )}
         aria-hidden="true"
-      />
+      >
+        {label}
+      </span>
     </Link>
   );
 }
