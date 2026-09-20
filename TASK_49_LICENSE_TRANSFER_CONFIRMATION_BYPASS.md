@@ -1,6 +1,6 @@
 # Task 49 — `confirmTransfer` is a bare client-supplied boolean, not real consent
 
-**Status: ready to build. Found during a security audit, 2026-09-20, directly contradicts the intent of this session's own Task 47/auto-bind "no silent theft" fix.**
+**Status: FIXED, same day (2026-09-20).** Found during a security audit, directly contradicting the intent of this session's own Task 47/auto-bind "no silent theft" fix. `auto-bind` no longer accepts a `confirmTransfer` boolean at all — an already-bound key now triggers a 6-digit confirmation code (reusing `lib/verify-code.ts`, scoped by a new `purpose` column so it can't collide with a pending signup code) emailed to the licensee address baked into the key at issuance, never the request body's email. The code must be submitted on a follow-up request before `transferExeLicenseToMachine` runs. The route is also rate-limited (`exe-auto-bind`, 10/hr/IP), and `transferExeLicenseToMachine` now emails the account owner on every completed transfer (any caller — admin, password-login, or this route), not just a Telegram ping to the operator. Verified live against the deployed server (see session log) — an unconfirmed re-bind attempt is rejected and triggers an email; a correct code completes the transfer; an incorrect/expired code is rejected without consuming the pending one.
 
 ## The real gap, confirmed live in code (not assumed)
 
