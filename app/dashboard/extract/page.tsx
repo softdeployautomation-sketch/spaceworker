@@ -712,16 +712,28 @@ export function WebExtractPage() {
           <h1 className="text-2xl font-semibold">Extract Leads</h1>
           <p className="mt-1 text-sm text-fg-muted">Pick a search template and extract structured results.</p>
         </div>
-        {/* Task 26, Piece 3 — bulk import entry point. Uploads land as a new "done"
-            job in the SAME list below, so the imported leads reuse the existing
-            table (and its new validate/merge actions). */}
-        <button
-          type="button"
-          onClick={openUploadModal}
-          className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
-        >
-          Import leads
-        </button>
+        <div className="flex items-center gap-2">
+          {/* Owner-requested 2026-09-20: a direct, unmissable link, not a dock
+              icon — the dock icon alone was repeatedly hard to find/identify
+              across several rounds of feedback. This is the primary entry
+              point now; the dock icon still works too. */}
+          <Link
+            href="/dashboard/advanced-search"
+            className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500"
+          >
+            Advanced Search
+          </Link>
+          {/* Task 26, Piece 3 — bulk import entry point. Uploads land as a new "done"
+              job in the SAME list below, so the imported leads reuse the existing
+              table (and its new validate/merge actions). */}
+          <button
+            type="button"
+            onClick={openUploadModal}
+            className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+          >
+            Import leads
+          </button>
+        </div>
       </div>
 
       {/* Template picker */}

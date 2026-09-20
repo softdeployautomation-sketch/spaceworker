@@ -20,6 +20,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import Link from "next/link";
 import { Badge, Button } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
 import { useConfirm } from "@/components/confirm-provider";
@@ -688,11 +689,21 @@ export function LocalExtractPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden p-6">
-      <div>
-        <h1 className="font-display text-2xl font-bold tracking-tight text-fg">Extract leads</h1>
-        <p className="mt-1 text-sm text-fg-muted">
-          Find terms + location, then run the local engine. Results stream in as they&apos;re found.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-bold tracking-tight text-fg">Extract leads</h1>
+          <p className="mt-1 text-sm text-fg-muted">
+            Find terms + location, then run the local engine. Results stream in as they&apos;re found.
+          </p>
+        </div>
+        {/* Owner-requested 2026-09-20: a direct, unmissable link, not a dock
+            icon — the dock icon alone was repeatedly hard to find/identify. */}
+        <Link
+          href="/dashboard/advanced-search"
+          className="shrink-0 rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500"
+        >
+          Advanced Search
+        </Link>
       </div>
 
       {/* Search bar */}
