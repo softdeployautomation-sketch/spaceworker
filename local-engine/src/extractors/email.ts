@@ -41,6 +41,9 @@ const JUNK_PREFIXES = [
   "webmaster",
   "abuse",
   "admin@wordpress",
+  // Confirmed live 2026-09-20: "example@mysite.com" was saved as a real
+  // lead — "example@" is a placeholder prefix regardless of domain.
+  "example",
 ];
 
 // Exact full addresses, not prefix/domain patterns — well-known HTML form
