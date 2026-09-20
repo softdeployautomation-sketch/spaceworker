@@ -50,7 +50,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai" | "licenses";
+type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "users", label: "Users" },
@@ -63,6 +63,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
   { id: "licenses", label: "Licenses" },
+  { id: "mailboxes", label: "Mailboxes" },
+  { id: "campaigns", label: "Campaigns" },
+  { id: "automations", label: "Automations" },
 ];
 
 // Task 42 — human labels for Payment.product in the admin review table.
@@ -171,6 +174,9 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
         {tab === "licenses" && <ExeLicensesTab />}
+        {tab === "mailboxes" && <MailboxesTab />}
+        {tab === "campaigns" && <CampaignsTab />}
+        {tab === "automations" && <AutomationsTab />}
       </main>
     </div>
   );
@@ -2407,7 +2413,288 @@ function ActiveTrialsSection() {
     </div>
   );
 }
+// ============================================================================
+// Task 50 — read-only admin visibility into the customer-facing outbound email
+// surface (Mailboxes / Campaigns / Automations). Previously the admin API never
+// queried any of these tables, so connected SMTP accounts and mass-campaign
+// sends were invisible to the owner. These three tabs are deliberately READ-
+// ONLY accountability surfaces — no pause/delete/edit lives here.
+// ============================================================================
 
+type AdminMailboxRow = {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  fromAddresses: string[];
+  secure: boolean;
+  active: boolean;
+  dailyLimit: number;
+  sentToday: number;
+  sentTodayDate: string | null;
+  lastTestedAt: string | null;
+  lastTestOk: boolean | null;
+  queuedItems: number;
+  userEmail: string;
+  createdAt: string;
+};
+
+type AdminCampaignRow = {
+  id: string;
+  name: string;
+  status: string;
+  recipientCount: number;
+  sentCount: number;
+  searchJobId: string | null;
+  batchSize: number;
+  minSendDelaySeconds: number;
+  maxSendDelaySeconds: number;
+  sendingStartedAt: string | null;
+  userEmail: string;
+  createdAt: string;
+};
+
+type AdminAutomationRow = {
+  id: string;
+  name: string;
+  leadSource: string;
+  triggerMode: string;
+  scheduleHour: number | null;
+  scheduleEnabled: boolean;
+  runCount: number;
+  lastRunAt: string | null;
+  lastRunStatus: string | null;
+  lastRunStartedAt: string | null;
+  lastRunCompletedAt: string | null;
+  userEmail: string;
+  createdAt: string;
+};
+
+function MailboxesTab() {
+  const [rows, setRows] = useState<AdminMailboxRow[] | null>(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/mailboxes");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.mailboxes)) setRows(data.mailboxes);
+      else setError(typeof data.error === "string" ? data.error : "Failed to load mailboxes.");
+    } catch {
+      setError("Network error loading mailboxes.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div>
+          <h3 className="text-lg font-semibold tracking-tight">Mailboxes</h3>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Every connected SMTP mailbox across all users. Read-only — the credentials and the content are never shown.
+          </p>
+        </div>
+        <button type="button" onClick={() => void load()} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+          Refresh
+        </button>
+      </div>
+      {error && <p className="px-4 pb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {rows === null && !error && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
+      {rows && rows.length === 0 && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">No mailboxes connected.</p>}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-t border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Label</th>
+                <th className="px-4 py-2">SMTP host</th>
+                <th className="px-4 py-2">User</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2">Sent today</th>
+                <th className="px-4 py-2">Queue</th>
+                <th className="px-4 py-2">Last test</th>
+                <th className="px-4 py-2">Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="px-4 py-2 font-medium" title={`${r.username}@${r.host}`}>{r.label}</td>
+                  <td className="px-4 py-2 font-mono text-xs">{r.host}:{r.port}</td>
+                  <td className="px-4 py-2 font-mono text-xs">{r.username}</td>
+                  <td className="px-4 py-2"><StatusBadge status={r.active ? "approved" : "rejected"} /></td>
+                  <td className="px-4 py-2">
+                    <span className={r.sentToday >= r.dailyLimit ? "font-semibold text-red-600 dark:text-red-400" : ""}>
+                      {r.sentToday} / {r.dailyLimit}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2">{r.queuedItems}</td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">
+                    {(r.lastTestOk === null ? "never" : r.lastTestOk ? "ok" : "failed") +
+                      (r.lastTestedAt ? ` · ${new Date(r.lastTestedAt).toLocaleString()}` : "")}
+                  </td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">{r.userEmail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CampaignsTab() {
+  const [rows, setRows] = useState<AdminCampaignRow[] | null>(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/campaigns");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.campaigns)) setRows(data.campaigns);
+      else setError(typeof data.error === "string" ? data.error : "Failed to load campaigns.");
+    } catch {
+      setError("Network error loading campaigns.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div>
+          <h3 className="text-lg font-semibold tracking-tight">Campaigns</h3>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Every EmailCampaign across all users with send progress. Read-only.
+          </p>
+        </div>
+        <button type="button" onClick={() => void load()} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+          Refresh
+        </button>
+      </div>
+      {error && <p className="px-4 pb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {rows === null && !error && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
+      {rows && rows.length === 0 && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">No campaigns yet.</p>}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-t border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Name</th>
+                <th className="px-4 py-2">Status</th>
+                <th className="px-4 py-2">Recipients</th>
+                <th className="px-4 py-2">Sent</th>
+                <th className="px-4 py-2">Batch</th>
+                <th className="px-4 py-2">Pace (s)</th>
+                <th className="px-4 py-2">Sending since</th>
+                <th className="px-4 py-2">Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="px-4 py-2 font-medium" title={r.id}>{r.name}</td>
+                  <td className="px-4 py-2"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${r.status === "paused_deliverability" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}`}>{r.status}</span></td>
+                  <td className="px-4 py-2">{r.recipientCount}</td>
+                  <td className="px-4 py-2">{r.sentCount}</td>
+                  <td className="px-4 py-2">{r.batchSize}</td>
+                  <td className="px-4 py-2">{r.minSendDelaySeconds}–{r.maxSendDelaySeconds}</td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">{r.sendingStartedAt ? new Date(r.sendingStartedAt).toLocaleString() : "—"}</td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">{r.userEmail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AutomationsTab() {
+  const [rows, setRows] = useState<AdminAutomationRow[] | null>(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/automations");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.automations)) setRows(data.automations);
+      else setError(typeof data.error === "string" ? data.error : "Failed to load automations.");
+    } catch {
+      setError("Network error loading automations.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div>
+          <h3 className="text-lg font-semibold tracking-tight">Automations</h3>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Every recurring/scheduled CampaignAutomation across all users with last-run outcome. Read-only.
+          </p>
+        </div>
+        <button type="button" onClick={() => void load()} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+          Refresh
+        </button>
+      </div>
+      {error && <p className="px-4 pb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {rows === null && !error && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>}
+      {rows && rows.length === 0 && <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">No automations yet.</p>}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-t border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Name</th>
+                <th className="px-4 py-2">Source</th>
+                <th className="px-4 py-2">Trigger</th>
+                <th className="px-4 py-2">Schedule</th>
+                <th className="px-4 py-2">Runs</th>
+                <th className="px-4 py-2">Last run</th>
+                <th className="px-4 py-2">Last status</th>
+                <th className="px-4 py-2">Owner</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="px-4 py-2 font-medium">{r.name}</td>
+                  <td className="px-4 py-2">{r.leadSource}</td>
+                  <td className="px-4 py-2">{r.triggerMode}</td>
+                  <td className="px-4 py-2">
+                    {r.triggerMode === "daily" && r.scheduleHour !== null ? `daily ${r.scheduleHour}:00 UTC` : r.scheduleEnabled ? "on" : "paused"}
+                  </td>
+                  <td className="px-4 py-2">{r.runCount}</td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">{r.lastRunAt ? new Date(r.lastRunAt).toLocaleString() : "never"}</td>
+                  <td className="px-4 py-2"><span className={`rounded-full px-2 py-0.5 text-xs font-medium ${r.lastRunStatus === "failed" ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" : "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300"}`}>{r.lastRunStatus ?? "—"}</span></td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">{r.userEmail}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
 // Confirmed live (2026-09-19) — before this, the only way to see a license at
 // all was to already know the buyer's email and search for it; a freshly
 // issued or self-service-bound license had no visibility anywhere in admin

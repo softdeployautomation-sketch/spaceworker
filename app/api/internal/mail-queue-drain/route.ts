@@ -7,6 +7,7 @@ import { transporterForMailbox } from "@/lib/mailer-send";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
 import { notifyUser } from "@/lib/notify";
+import { notifyAdmin } from "@/lib/telegram";
 import { finalizeMailerStretch } from "@/lib/trial";
 
 // Task 33 — a campaign's active pinned-override window (EmailCampaign.pinnedOverride
@@ -435,6 +436,15 @@ export async function POST(req: Request) {
       // Best-effort; the pause + DeliverabilityCheck (already recorded by the
       // probe) persist regardless.
     }
+
+    // Task 50 — the OWNER gets an admin-level Telegram alert too (distinct from
+    // the user-facing fan-out above): paused_deliverability is the platform's
+    // own sending reputation at stake, not just the customer's, and the admin
+    // previously had no notification hook for it at all. Fire-and-forget like
+    // every notifyAdmin call — never able to break the drain.
+    void notifyAdmin(
+      `⚠️ [ADMIN] Campaign "${c.name}" (${c.userId}) paused on a deliverability check — landedIn=${probe.landedIn ?? "unknown"}. Open ${env.appBaseUrl}/dashboard/campaigns/${c.id}`,
+    );
   }
 
   // Task 33 — persist the live `remaining` for pins that are still running this
