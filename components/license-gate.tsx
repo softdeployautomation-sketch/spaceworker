@@ -88,6 +88,7 @@ export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
           <LicenseActivationForm
             onActivated={() => setStatus({ mode: "ok" })}
             autoFocus
+            showBuyTab
             actionSlot={
               <a
                 href={buyHref}

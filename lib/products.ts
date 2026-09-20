@@ -25,6 +25,15 @@ export interface StoreProduct {
   // For EXE products, the plan slug embedded in the license key payload (matches
   // the purchased tier). Web subscription has no key, so plan is undefined.
   plan?: string;
+  // 2026-09-20 — owner: "add a try for free on the store... so users can get
+  // the exe for free". A public download link (GitHub Release asset) for a
+  // product whose build has actually been verified working. The EXE itself
+  // already grants a silent 24h trial with zero account/payment needed
+  // (components/license-gate.tsx) — this is just giving people a way to GET
+  // the installer without emailing support first. Only set once a variant's
+  // build is confirmed working; absent => the store still only offers "Buy"
+  // for it (unchanged), never a broken/unverified download link.
+  downloadUrl?: string;
 }
 
 // The AdminSetting fields that carry each product's launch price (all real,
@@ -54,6 +63,8 @@ export const EXTRACTOR_EXE: StoreProduct = {
   priceField: "extractorExePriceUsd",
   kind: "exe",
   plan: "extractor",
+  downloadUrl:
+    "https://github.com/softdeployautomation-sketch/spaceworker/releases/download/extractor-v0.1.0/SpaceWorker.OS.-.Lead.Extractor_0.1.0_x64-setup.exe",
 };
 
 export const MAILER_EXE: StoreProduct = {

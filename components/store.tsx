@@ -13,6 +13,7 @@ type Product = {
   tagline: string;
   kind: "web" | "exe";
   priceUsd: number;
+  downloadUrl?: string;
 };
 
 type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
@@ -24,8 +25,8 @@ type CheckoutInfo = {
   note: string;
 };
 
-const EXE_DISCLOSURE =
-  "Desktop app — license issued instantly; download link emailed once the build is ready.";
+const EXE_DISCLOSURE = "Desktop app — license issued instantly, download link emailed right away.";
+const EXE_TRIAL_DISCLOSURE = "Free to try for 24 hours, no account or payment needed. Buy anytime to keep going.";
 
 export function Store() {
   const [products, setProducts] = useState<Product[] | null>(null);
@@ -124,10 +125,22 @@ function StoreCard({
           </>
         ) : (
           <>
-            <p className="text-xs text-fg-muted">{EXE_DISCLOSURE}</p>
-            <Button variant="primary" className="mt-2 w-full" onClick={() => onBuy(product)}>
-              Buy
-            </Button>
+            <p className="text-xs text-fg-muted">
+              {product.downloadUrl ? EXE_TRIAL_DISCLOSURE : EXE_DISCLOSURE}
+            </p>
+            <div className="mt-2 flex gap-2">
+              {product.downloadUrl && (
+                <a
+                  href={product.downloadUrl}
+                  className="flex-1 inline-flex items-center justify-center rounded-lg border border-border px-4 py-2 text-sm font-semibold text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  Try for free
+                </a>
+              )}
+              <Button variant="primary" className="flex-1" onClick={() => onBuy(product)}>
+                Buy
+              </Button>
+            </div>
           </>
         )}
       </div>

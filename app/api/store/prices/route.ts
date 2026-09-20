@@ -14,6 +14,7 @@ export async function GET() {
     tagline: p.tagline,
     kind: p.kind,
     priceUsd: settings[p.priceField],
+    downloadUrl: p.downloadUrl,
   }));
   return NextResponse.json({ products });
 }
