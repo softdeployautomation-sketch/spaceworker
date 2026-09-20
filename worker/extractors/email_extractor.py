@@ -41,6 +41,19 @@ JUNK_PREFIXES = {
     "admin@wordpress",
 }
 
+# Exact full addresses, not prefix/domain patterns — well-known HTML form
+# PLACEHOLDER text (e.g. <input placeholder="you@email.com">) that leaks
+# into extracted page text as if it were a real address. Confirmed live
+# 2026-09-20: "you@email.com" was saved as a real lead on 360dentalcare.co.uk.
+# "email.com" itself is a real, legitimate domain (a legacy free webmail
+# provider) so it can't be blanket-excluded the way JUNK_DOMAINS entries
+# are — only these specific well-known placeholder addresses are.
+JUNK_EMAILS = {
+    "you@email.com", "your@email.com", "user@email.com", "name@email.com",
+    "email@email.com", "your.email@email.com", "yourname@email.com",
+    "youremail@email.com",
+}
+
 # File extensions that look like email TLDs but aren't
 FALSE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".webp"}
 
@@ -103,6 +116,10 @@ def extract_emails(text: str, html: str = "") -> list[str]:
             local = local.lstrip(".")
             if local:
                 email = f"{local}@{domain_part}"
+
+        # Skip known placeholder addresses (see JUNK_EMAILS above).
+        if email in JUNK_EMAILS:
+            continue
 
         # Skip junk domains — subdomains too. Confirmed live 2026-09-20: an
         # exact-match-only check missed "sentry-next.wixpress.com" despite

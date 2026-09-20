@@ -43,6 +43,18 @@ const JUNK_PREFIXES = [
   "admin@wordpress",
 ];
 
+// Exact full addresses, not prefix/domain patterns — well-known HTML form
+// PLACEHOLDER text that leaks into extracted page text as if real.
+// Confirmed live 2026-09-20: "you@email.com" was saved as a real lead.
+// "email.com" itself is a real domain (legacy free webmail) so it can't be
+// blanket-excluded the way JUNK_DOMAINS entries are — only these specific
+// well-known placeholder addresses are.
+const JUNK_EMAILS = new Set([
+  "you@email.com", "your@email.com", "user@email.com", "name@email.com",
+  "email@email.com", "your.email@email.com", "yourname@email.com",
+  "youremail@email.com",
+]);
+
 // File extensions that look like email TLDs but aren't.
 const FALSE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".gif", ".svg", ".css", ".js", ".webp"];
 
@@ -96,6 +108,9 @@ export function extractEmails(text: string, html = ""): string[] {
       const local = email.slice(0, at).replace(/^\.+/, "");
       if (local) email = `${local}@${email.slice(at + 1)}`;
     }
+
+    // Skip known placeholder addresses (see JUNK_EMAILS above).
+    if (JUNK_EMAILS.has(email)) continue;
 
     // Skip junk domains — subdomains too. Confirmed live 2026-09-20: an
     // exact-match-only check missed "sentry-next.wixpress.com" despite
