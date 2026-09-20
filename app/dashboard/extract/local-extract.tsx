@@ -887,37 +887,40 @@ export function LocalExtractPage() {
             other page; no separate shortcut needed here either. */}
       </div>
 
-      {/* Mode toggle — owner-requested 2026-09-20: a real EXE-local
-          equivalent of the web's Advanced Search, not just a link out to
-          the standalone preview page. */}
-      <div className="flex gap-2">
-        <button
-          type="button"
-          onClick={() => setMode("lead")}
-          className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
-            mode === "lead"
-              ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
-              : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
-          }`}
-        >
-          Lead Search
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("advanced-search")}
-          className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${
-            mode === "advanced-search"
-              ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
-              : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
-          }`}
-        >
-          Advanced Search
-        </button>
-      </div>
+      {/* Template picker — owner-requested 2026-09-20: "the advance shoud be
+          as a sub tab", matching web's exact picker (app/dashboard/extract/
+          page.tsx's TEMPLATES.map row) instead of a separate floating
+          two-button toggle. One bordered card wraps the tab row AND the
+          active mode's fields, same as web. */}
+      <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-4">
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setMode("lead")}
+            className={`flex-1 rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+              mode === "lead"
+                ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+                : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+            }`}
+          >
+            Lead Search
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("advanced-search")}
+            className={`flex-1 rounded-lg border px-4 py-2 text-sm font-medium transition-colors ${
+              mode === "advanced-search"
+                ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+                : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+            }`}
+          >
+            Advanced Search
+          </button>
+        </div>
 
-      {/* Search bar */}
-      {mode === "lead" && (
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+        {/* Search bar */}
+        {mode === "lead" && (
+        <>
         <div className="flex flex-col flex-wrap gap-3 md:flex-row md:flex-wrap md:items-center">
           <label className="flex min-w-[13rem] flex-1 flex-col gap-1">
             <span className="text-xs text-fg-muted">Find</span>
@@ -1053,14 +1056,13 @@ export function LocalExtractPage() {
             ? `Running… ${runs[0]?.leads.length ?? 0} lead(s) so far.`
             : "Results are held in this window + a temp local JSONL file for this slice — a SQLite schema replaces that later."}
         </p>
-      </div>
+        </>
       )}
 
       {/* Advanced Search bar — owner-requested 2026-09-20: real local
           equivalent of the web's background-job Advanced Search, streamed
           from /api/exe/advanced-search/run (see startAdvancedSearch). */}
       {mode === "advanced-search" && (
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
         <div className="flex flex-col gap-3">
           <label className="flex flex-col gap-1">
             <span className="text-xs text-fg-muted">
@@ -1163,8 +1165,8 @@ export function LocalExtractPage() {
               : "Runs entirely on this machine — real DDG search, MX lookups, and page crawls, no VPS involved."}
           </p>
         </div>
-      </div>
       )}
+      </div>
 
       {/* Web-matching information architecture: LEFT = session/run history,
           RIGHT = the selected run's detail (activity + leads together). */}
