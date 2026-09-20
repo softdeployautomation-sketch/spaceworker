@@ -330,12 +330,20 @@ const DIRECTORY_DOMAIN_SUBSTRINGS = [
   "directory", "list", "listing", "guide", "yellow", "bizdir",
   "top10", "thetop", "findlocal", "searchguide",
 ];
+// Prefix-only — a real business's title legitimately says "Best Dental
+// Clinic in Lahore" as marketing copy (confirmed live: dentalart.net.pk's
+// real title is exactly that), so these can only safely be checked at the
+// START of a title.
 const DIRECTORY_TITLE_PREFIXES = ["top ", "best ", "list of", "directory of"];
+// Contains-anywhere — confirmed live 2026-09-20: nairobionline.com passed
+// the domain-name check but its title was "...in Nairobi • Directory".
+const DIRECTORY_TITLE_CONTAINS = ["directory", "listing"];
 
 export function isDirectoryOrInfrastructureDomain(domain: string, title = ""): boolean {
   const d = domain.toLowerCase();
   if (EXCLUDED_INFRASTRUCTURE_DOMAINS.has(d)) return true;
   if (DIRECTORY_DOMAIN_SUBSTRINGS.some((s) => d.includes(s))) return true;
   const t = title.trim().toLowerCase();
-  return DIRECTORY_TITLE_PREFIXES.some((p) => t.startsWith(p));
+  if (DIRECTORY_TITLE_PREFIXES.some((p) => t.startsWith(p))) return true;
+  return DIRECTORY_TITLE_CONTAINS.some((s) => t.includes(s));
 }

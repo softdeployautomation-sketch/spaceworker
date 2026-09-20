@@ -1470,7 +1470,17 @@ _DIRECTORY_DOMAIN_SUBSTRINGS = (
     "directory", "list", "listing", "guide", "yellow", "bizdir",
     "top10", "thetop", "findlocal", "searchguide",
 )
+# Prefix-only — a real business's title legitimately says "Best Dental
+# Clinic in Lahore" or "Top Rated Law Firm" as marketing copy (confirmed
+# live: dentalart.net.pk's real title is exactly that), so these can only
+# safely be checked at the START of a title, not anywhere in it.
 _DIRECTORY_TITLE_PREFIXES = ("top ", "best ", "list of", "directory of")
+# Contains-anywhere — confirmed live 2026-09-20: nairobionline.com passed
+# the domain-name check (its domain doesn't say "directory") but its title
+# was "Accounting & Bookkeeping Firms in Nairobi • Directory" — the word
+# appearing anywhere in a result title is a safe signal a real business
+# wouldn't organically use as its own page title.
+_DIRECTORY_TITLE_CONTAINS = ("directory", "listing")
 
 
 def is_directory_or_infrastructure_domain(domain: str, title: str = "") -> bool:
@@ -1480,7 +1490,9 @@ def is_directory_or_infrastructure_domain(domain: str, title: str = "") -> bool:
     if any(s in d for s in _DIRECTORY_DOMAIN_SUBSTRINGS):
         return True
     t = title.strip().lower()
-    return any(t.startswith(p) for p in _DIRECTORY_TITLE_PREFIXES)
+    if any(t.startswith(p) for p in _DIRECTORY_TITLE_PREFIXES):
+        return True
+    return any(s in t for s in _DIRECTORY_TITLE_CONTAINS)
 
 
 def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> str | None:
