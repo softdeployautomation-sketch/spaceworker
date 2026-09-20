@@ -18,6 +18,15 @@ On the VPS, `/opt/spaceworker/` is the **repo root** — `app/`, `components/`, 
 - **Commands that need the Next app dir** (`npm run build`, `npm run dev`): run from `/opt/spaceworker/app`.
 - Confirm you're in the right one before running anything destructive: `pwd` first if unsure.
 
+## 1a. `proxy.ts` (Next.js 16 middleware) — a second, nastier file-location trap
+
+Task 56 lost most of a session to this. Next.js 16 renamed `middleware.ts` to `proxy.ts`, and the real one **must live at the repo root** (`/opt/spaceworker/proxy.ts` locally, sibling to `next.config.ts`/`package.json`), never inside `app/`. Next.js gives **zero warning or error** if you put one at `app/proxy.ts` by mistake — it's just silently never executed, forever, with no signal anything is wrong.
+
+- **`middleware-manifest.json` is not trustworthy verification in this Next.js version (16.2.9 + Turbopack).** It can read `"middleware": {}` (empty) even when the real, correctly-placed `proxy.ts` genuinely IS executing — confirmed directly: its pre-existing session-gate logic was provably running (redirects firing correctly) while the manifest still showed empty. **Never conclude "middleware isn't running" from this file alone.**
+- **The only reliable way to confirm `proxy.ts` is actually executing**: an observable side effect from code you know is inside it — an existing redirect/header, or a temporary `console.log(...)` read back via `journalctl -u spaceworker.service --since '1 minute ago'` after hitting the route with `curl`. Delete the debug log once confirmed; don't leave it in.
+- `proxy.ts` runs in an **isolated bundle** — Next's own docs literally say "Proxy is meant to be invoked separately of your render code ... you should not attempt relying on shared modules or globals." A module-scope cache (or any other in-memory state) imported into `proxy.ts` is a **separate instance** from the one the rest of the app (API routes, etc.) touches — writes/invalidations from elsewhere in the app will NOT reach it. Design anything proxy.ts reads to tolerate that (a short TTL that naturally self-refreshes is fine; relying on an explicit cross-module invalidation call to reach proxy is not).
+- When gating by path prefix in `proxy.ts`, remember `/admin/**` (pages) and `/api/admin/**` (routes) are **different prefixes** — excluding only one from a broad gate (e.g. a maintenance-mode check) can lock the admin out of the very endpoint needed to turn the gate back off. This happened live on 2026-09-20 and needed a hand DB restore to recover. Always check both when the intent is "admin bypasses this."
+
 ## 2. Deploy sequence (web changes, no schema change)
 
 ```bash

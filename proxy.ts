@@ -1,6 +1,8 @@
 import { jwtVerify, type JWTPayload } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 
+import { getMaintenanceFlags, MAINTENANCE_PAGE_HTML } from "@/lib/maintenance";
+
 // Next.js 16 renamed `middleware` to `proxy` (the `middleware.ts` convention is
 // deprecated). This file provides the same auth-gate behavior from the plan:
 // gate /dashboard/** behind a valid CUSTOMER session cookie, and /admin/** behind
@@ -83,6 +85,38 @@ export async function proxy(request: NextRequest) {
   // was absent/invalid; in local-exe there is deliberately no cookie to check.
   if (process.env.SPACEWORKER_LOCAL_EXE === "true") {
     return NextResponse.next();
+  }
+
+  // Task 56 — admin-toggleable maintenance windows, checked before every other
+  // gate. Cached (see lib/maintenance.ts, ~8s TTL) so this doesn't add a DB
+  // round-trip to every request — note that cache lives in proxy's own
+  // isolated bundle (Next explicitly documents proxy as "invoked separately
+  // ... do not rely on shared modules or globals" with the rest of the app),
+  // so the admin route's invalidateMaintenanceCache() call never reaches this
+  // copy; a flip only ever becomes visible here on this cache's own TTL, up
+  // to ~8s later — expected, not a bug, matches the task's own "5-10s is
+  // plenty" design.
+  //
+  // Never gates /admin/** OR /api/admin/** — found live 2026-09-20: excluding
+  // only the page path let a web-maintenance flip lock the admin OUT of the
+  // very API route that turns it back off (/api/admin/maintenance), since
+  // that path starts with /api/admin, not /admin. Had to hand-restore the DB
+  // row via a disposable script to recover — never repeat this exclusion gap.
+  const isExeApiPath = pathname.startsWith("/api/exe") || pathname.startsWith("/api/exe-license");
+  const isAdminPath = pathname.startsWith("/admin") || pathname.startsWith("/api/admin");
+  if (isExeApiPath) {
+    const flags = await getMaintenanceFlags();
+    if (flags.exeApi) {
+      return NextResponse.json({ maintenance: true, error: "Maintenance" }, { status: 503 });
+    }
+  } else if (!isAdminPath) {
+    const flags = await getMaintenanceFlags();
+    if (flags.web) {
+      return new NextResponse(MAINTENANCE_PAGE_HTML, {
+        status: 503,
+        headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+      });
+    }
   }
 
   // Resolve the customer session's scope (if present). We need it to decide
@@ -174,5 +208,11 @@ function redirectTo(request: NextRequest, path: string) {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/admin/:path*", "/api/:path*"],
+  // Task 56 broadened this from the original ["/dashboard/:path*",
+  // "/admin/:path*", "/api/:path*"] to the whole site (minus Next's own static
+  // asset paths) — maintenance mode needs to catch public pages like "/",
+  // "/pricing", "/login" too, which the narrower matcher never reached. Every
+  // path below /admin and /api still only runs the session/scope logic those
+  // branches already gate on; this only changes what proxy() gets INVOKED for.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
