@@ -70,6 +70,21 @@ WEBMAIL_PLATFORMS: dict[str, WebmailPlatform] = {
         dork_title="Open-Xchange",
         html_patterns=(r"open-xchange-appsuite", r"#io-ox-core"),
     ),
+    # Added 2026-09-20 after real probing of 12 live business domains across
+    # Nigeria, Kenya, Ghana, the US and the UK (see chat/commit): cPanel's own
+    # webmail portal (its title/theme selector in front of RoundCube/Horde/
+    # SquirrelMail) was the SINGLE MOST COMMON self-hosted webmail wrapper
+    # found — 7 of 12 real hits, vs 1 for raw RoundCube (our only prior
+    # match). dork_title is deliberately weak/noisy here ("Webmail Login" is
+    # cPanel's generic page title, shared by countless unrelated products) —
+    # this platform's real value is VERIFY/PROBE mode, matched on structural
+    # markers instead of the title.
+    "cpanel": WebmailPlatform(
+        code="cpanel",
+        label="cPanel Webmail",
+        dork_title="Webmail Login",
+        html_patterns=(r"cPanel_magic_revision", r"/unprotected/cpanel/"),
+    ),
 }
 
 # Reasonable, bounded candidate paths for the PROBE mode — checked in this

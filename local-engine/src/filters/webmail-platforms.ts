@@ -57,6 +57,20 @@ export const WEBMAIL_PLATFORMS: Record<string, WebmailPlatform> = {
     dorkTitle: "Open-Xchange",
     htmlPatterns: [/open-xchange-appsuite/i, /#io-ox-core/i],
   },
+  // Added 2026-09-20 after real probing of 12 live business domains across
+  // Nigeria, Kenya, Ghana, the US and the UK: cPanel's own webmail portal
+  // (its title/theme selector in front of RoundCube/Horde/SquirrelMail) was
+  // the SINGLE MOST COMMON self-hosted webmail wrapper found — 7 of 12 real
+  // hits, vs 1 for raw RoundCube (our only prior match). dorkTitle is
+  // deliberately weak/noisy here ("Webmail Login" is cPanel's generic page
+  // title, shared by countless unrelated products) — this platform's real
+  // value is VERIFY/PROBE mode, matched on structural markers instead.
+  cpanel: {
+    code: "cpanel",
+    label: "cPanel Webmail",
+    dorkTitle: "Webmail Login",
+    htmlPatterns: [/cPanel_magic_revision/i, /\/unprotected\/cpanel\//i],
+  },
 };
 
 // Bounded probe candidates — checked in order, stopping at the first

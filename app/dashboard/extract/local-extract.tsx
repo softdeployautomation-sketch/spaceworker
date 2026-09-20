@@ -94,6 +94,7 @@ const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "rainloop", label: "RainLoop" },
   { value: "zimbra", label: "Zimbra" },
   { value: "open-xchange", label: "Open-Xchange" },
+  { value: "cpanel", label: "cPanel Webmail" },
 ];
 
 const MAX_CHOICES: { value: number; label: string }[] = [
