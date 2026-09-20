@@ -13,7 +13,7 @@ import {
 
 export const dynamic = "force-dynamic";
 
-// POST /api/exe-license/auto-bind — body: { licenseKey, email, machineId, machineLabel? }
+// POST /api/exe-license/auto-bind — body: { licenseKey, email, machineId, machineLabel?, confirmTransfer? }
 //
 // Self-service redesign (2026-09-19) — called by the DESKTOP EXE's local
 // /api/exe-license/activate route, over the network, the first time someone
@@ -25,6 +25,24 @@ export const dynamic = "force-dynamic";
 // genuinely valid key + matching email wins the binding, exactly like a
 // manual claim would.
 //
+// Fix (2026-09-20) — owner: "i need to be sure a user with the exe doesnt
+// get using this exe without my consent... can only be transferred by
+// revoking the previous one to get a new one". The route used to catch
+// bindExeLicenseToMachine's "already_bound" error and silently call
+// transferExeLicenseToMachine — the SAME function every comment in
+// lib/exe-license-bind.ts documents as admin/support-only, precisely
+// because it overwrites an existing binding with zero consent from whoever
+// is actively using it. Confirmed live: the only gate was the key's
+// signature + a matching email, both of which just sit in the plaintext key
+// string — anyone holding a copy of a customer's key could silently steal
+// the binding to their own machine. Now `confirmTransfer` must be explicitly
+// true (only ever sent after the person on the NEW machine has seen an
+// "already active on another device — move it here?" prompt and clicked
+// through it — see LicenseActivationForm). Without it, an already-bound key
+// is rejected exactly like bindExeLicenseToMachine already rejects it for
+// every OTHER caller, with a distinguishable `code` so the client can offer
+// that confirmation instead of a dead-end error.
+//
 // Not session-gated — the EXE has no web session to send. The key's
 // signature (proves we genuinely issued it) plus the matching licensee email
 // is the authorization, the same trust bar the offline activate route
@@ -34,6 +52,7 @@ const bodySchema = z.object({
   email: z.string().trim().email("Missing a valid email."),
   machineId: z.string().trim().min(1, "Missing device ID."),
   machineLabel: z.string().trim().max(80).optional().nullable(),
+  confirmTransfer: z.boolean().optional(),
 });
 
 export async function POST(req: Request) {
@@ -77,19 +96,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: true, boundLicenseKey: bound.boundLicenseKey });
   } catch (err) {
     if (err instanceof LicenseBindError && err.code === "already_bound") {
-      // Auto-transfer (2026-09-19): the key's signature and licensee email
-      // already proved this is the SAME account re-activating from a new/
-      // reinstalled machine — the exact trust bar bindExeLicenseToMachine's
-      // first-activation-wins invariant exists to enforce, just re-asserted
-      // on a second device instead of the first. Re-signing supersedes the
-      // OLD machine's bound key instantly, so it self-revokes on its next
-      // status check. No admin step, no manual device ID anywhere.
+      // Require an explicit, human confirmation before ever moving a
+      // binding away from whoever is currently using it — see the file-top
+      // comment. Key + email alone is not consent from the CURRENT device.
+      if (!parsed.confirmTransfer) {
+        return NextResponse.json(
+          {
+            error:
+              "This license is already active on another device. If that device is no longer in use, you can move it here.",
+            code: "already_bound",
+          },
+          { status: 409 },
+        );
+      }
+      // The person on the NEW machine has now explicitly confirmed they want
+      // to move the license here, knowing it will revoke the other device.
+      // Same underlying transferExeLicenseToMachine the admin tool uses,
+      // with its own audit row, just triggered by the licensee's own
+      // deliberate action instead of an admin's.
       try {
         const transferred = await transferExeLicenseToMachine({
           exeLicenseId: license.id,
           newMachineId: parsed.machineId,
           newMachineLabel: parsed.machineLabel ?? undefined,
-          note: "Auto-transferred on re-activation from a new device.",
+          note: "Self-service transfer: licensee confirmed moving this license to a new device.",
         });
         return NextResponse.json({ ok: true, boundLicenseKey: transferred.boundLicenseKey });
       } catch (transferErr) {

@@ -37,20 +37,34 @@ export function LicenseActivationForm({
   const [email, setEmail] = useState("");
   const [error, setError] = useState("");
   const [activating, setActivating] = useState(false);
+  // Set only when the server rejected activation with code "already_bound" —
+  // this key is genuinely valid, it's just active on a different device.
+  // Never auto-transferred (see auto-bind route.ts): the person has to see
+  // this and click through it themselves before a transfer happens.
+  const [needsTransferConfirm, setNeedsTransferConfirm] = useState(false);
 
-  async function activate() {
+  async function activate(confirmTransfer = false) {
     setError("");
     setActivating(true);
     try {
       const res = await fetch("/api/exe-license/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey, email }),
+        body: JSON.stringify({ licenseKey, email, confirmTransfer }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.licensed) {
+        setNeedsTransferConfirm(false);
         onActivated?.();
+      } else if (data.code === "already_bound" && !confirmTransfer) {
+        setNeedsTransferConfirm(true);
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : "This license is already active on another device.",
+        );
       } else {
+        setNeedsTransferConfirm(false);
         setError(
           typeof data.error === "string"
             ? data.error
@@ -58,6 +72,7 @@ export function LicenseActivationForm({
         );
       }
     } catch {
+      setNeedsTransferConfirm(false);
       setError("Network error — could not reach the local licensing service.");
     } finally {
       setActivating(false);
@@ -97,13 +112,35 @@ export function LicenseActivationForm({
         </p>
       )}
 
-      <div className="flex items-center justify-between gap-3">
-        {actionSlot}
-        <div className="flex-1" />
-        <Button variant="primary" type="button" onClick={activate} disabled={activating}>
-          {activating ? "Activating…" : submitLabel}
-        </Button>
-      </div>
+      {needsTransferConfirm ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/40">
+          <p className="text-sm text-amber-800 dark:text-amber-200">
+            Moving it here will sign the other device out of this license — only do this if that device is no
+            longer in use.
+          </p>
+          <div className="mt-3 flex items-center justify-end gap-3">
+            <Button
+              variant="secondary"
+              type="button"
+              onClick={() => setNeedsTransferConfirm(false)}
+              disabled={activating}
+            >
+              Cancel
+            </Button>
+            <Button variant="primary" type="button" onClick={() => activate(true)} disabled={activating}>
+              {activating ? "Moving…" : "Move license to this device"}
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between gap-3">
+          {actionSlot}
+          <div className="flex-1" />
+          <Button variant="primary" type="button" onClick={() => activate(false)} disabled={activating}>
+            {activating ? "Activating…" : submitLabel}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

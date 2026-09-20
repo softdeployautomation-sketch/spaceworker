@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  let body: { licenseKey?: unknown; email?: unknown };
+  let body: { licenseKey?: unknown; email?: unknown; confirmTransfer?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -44,6 +44,7 @@ export async function POST(req: Request) {
 
   const licenseKey = typeof body.licenseKey === "string" ? body.licenseKey.trim() : "";
   const email = typeof body.email === "string" ? body.email.trim() : "";
+  const confirmTransfer = body.confirmTransfer === true;
   if (!licenseKey) {
     return NextResponse.json({ error: "Enter your license key." }, { status: 400 });
   }
@@ -111,7 +112,7 @@ export async function POST(req: Request) {
       res = await fetch(`${HOSTED_APP_URL}/api/exe-license/auto-bind`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey, email, machineId: currentMachineId }),
+        body: JSON.stringify({ licenseKey, email, machineId: currentMachineId, confirmTransfer }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch {
@@ -122,8 +123,14 @@ export async function POST(req: Request) {
     }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      // "already_bound" is not a dead-end error — surface the code so the
+      // activation form can offer an explicit "move it here" confirmation
+      // instead of just failing (see auto-bind's file-top comment).
       return NextResponse.json(
-        { error: typeof data.error === "string" ? data.error : "Couldn't activate this license." },
+        {
+          error: typeof data.error === "string" ? data.error : "Couldn't activate this license.",
+          code: typeof data.code === "string" ? data.code : undefined,
+        },
         { status: res.status },
       );
     }
