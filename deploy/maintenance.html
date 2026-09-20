@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<!--
+  Task 56, Mechanism 1 — nginx-level maintenance fallback for the literal
+  restart window (the app process is briefly not listening during
+  `systemctl restart spaceworker.service`). Served directly by nginx via
+  `error_page 502 503 504 /maintenance.html` — no dependency on the app being
+  reachable. Install this at /opt/spaceworker/static/maintenance.html on the
+  VPS. Keep in sync with lib/maintenance.ts's MAINTENANCE_PAGE_HTML (the
+  app-level / proxy variant of the same page).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>We're updating — SpaceWorker</title>
+    <style>
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.5rem;
+        font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        background: #0b0b0f;
+        color: #e7e7ea;
+        text-align: center;
+      }
+      .ring {
+        border: 3px solid #6366f1;
+        border-top-color: transparent;
+        border-radius: 50%;
+        width: 44px;
+        height: 44px;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      h1 { margin: 0; font-size: 1.5rem; font-weight: 650; }
+      p { margin: 0; font-size: 1rem; color: #a1a1aa; max-width: 30rem; }
+    </style>
+  </head>
+  <body>
+    <div class="ring" aria-hidden="true"></div>
+    <h1>We're updating</h1>
+    <p>SpaceWorker is getting better right now. This page reloads automatically — check back in a few minutes.</p>
+    <script>
+      // Poll the same URL (bypassing caches) and hard-reload the instant it
+      // answers with a real 2xx/3xx page instead of another 5xx or connection
+      // error. Keeps reloading until the update is cleared and the real page loads.
+      (function () {
+        var inFlight = false;
+        setInterval(function () {
+          if (document.visibilityState === "hidden" || inFlight) return;
+          inFlight = true;
+          fetch(location.href, { cache: "no-store" })
+            .then(function (r) {
+              if (r.ok || (r.status >= 300 && r.status < 400)) location.reload();
+            })
+            .catch(function () {})
+            .finally(function () { inFlight = false; });
+        }, 4000);
+      })();
+    </script>
+  </body>
+</html>

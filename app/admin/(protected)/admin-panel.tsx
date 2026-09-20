@@ -1834,6 +1834,131 @@ function AiTab() {
   );
 }
 
+// Task 56 — admin-toggleable maintenance windows. Independent toggles for the
+// web page (served by proxy.ts for everything but /admin/** + static) and the
+// EXE-API traffic (/api/exe* + /api/exe-license*). Lives in ServicesTab because
+// it's the same "operator flips a switch before/after risky work" category as the
+// worker start/stop controls.
+function MaintenanceControls() {
+  const [flags, setFlags] = useState<{ web: boolean; exeApi: boolean } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busyField, setBusyField] = useState<"web" | "exeApi" | null>(null);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/maintenance");
+      if (!res.ok) throw new Error("Failed to load maintenance mode");
+      setFlags((await res.json()) as { web: boolean; exeApi: boolean });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load maintenance mode");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function toggle(field: "web" | "exeApi") {
+    if (!flags) return;
+    setBusyField(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/maintenance", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ field, value: !flags[field] }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update maintenance mode");
+      } else {
+        setFlags(data as { web: boolean; exeApi: boolean });
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setBusyField(null);
+    }
+  }
+
+  const rows = [
+    {
+      key: "web" as const,
+      label: "Web maintenance mode",
+      hint: "Shows the \"We're updating\" page for the whole site except /admin/** and static assets. Flip on before a deploy or DNS change.",
+    },
+    {
+      key: "exeApi" as const,
+      label: "EXE API maintenance mode",
+      hint: "Makes /api/exe* + /api/exe-license* return 503 { maintenance: true }; the desktop EXE retries with a friendly state until cleared.",
+    },
+  ];
+
+  return (
+    <div className="mt-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+          Maintenance mode
+        </h3>
+        <button
+          onClick={load}
+          disabled={loading}
+          className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+        >
+          Refresh
+        </button>
+      </div>
+      <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+        Both flags are off by default and separate (web vs EXE-API) so they stay
+        correct once EXE-API moves to its own hostname. Flipping a flag takes
+        effect within a few seconds — proxy reads are cached, and admin writes
+        invalidate the cache immediately. Never locks out /admin/** itself.
+      </p>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {loading && !flags ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 space-y-4">
+          {rows.map(({ key, label, hint }) => (
+            <div
+              key={key}
+              className="flex items-start justify-between gap-4 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+            >
+              <div>
+                <p className="text-sm font-medium text-zinc-800 dark:text-zinc-100">{label}</p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{hint}</p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(flags?.[key])}
+                disabled={busyField === key || !flags}
+                onClick={() => toggle(key)}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                  flags?.[key] ? "bg-brand-600" : "bg-zinc-300 dark:bg-zinc-700"
+                }`}
+              >
+                <span
+                  className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${
+                    flags?.[key] ? "translate-x-5" : "translate-x-0.5"
+                  }`}
+                />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServicesTab() {
   const confirm = useConfirm();
   const [services, setServices] = useState<AdminServiceState[]>([]);
@@ -1992,6 +2117,8 @@ function ServicesTab() {
       <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
         Stopping does not survive a VPS reboot as "stopped" — a reboot brings it back.
       </p>
+
+      <MaintenanceControls />
     </div>
   );
 }

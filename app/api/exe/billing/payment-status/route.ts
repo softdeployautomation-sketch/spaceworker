@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
 import { getMachineId } from "@/lib/machine-id";
 import { saveActivation } from "@/lib/license-state";
 
@@ -27,20 +28,14 @@ export async function POST(req: Request) {
   }
 
   const currentMachineId = (await getMachineId()).toLowerCase();
-  let res: Response;
-  try {
-    res = await fetch(`${HOSTED_APP_URL}/api/exe-license/payment-status`, {
+  const { response: res } = await hostedFetch(
+    "/api/exe-license/payment-status",
+    {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ paymentId, machineId: currentMachineId, confirmTransfer }),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    return NextResponse.json(
-      { error: "Couldn't reach the license server. Check your connection and try again." },
-      { status: 502 },
-    );
-  }
+    },
+    { maxRetries: MAX_MAINTENANCE_RETRIES, timeoutMs: 15_000 },
+  );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     return NextResponse.json(

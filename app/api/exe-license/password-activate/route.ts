@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 import { getMachineId } from "@/lib/machine-id";
 import { saveActivation } from "@/lib/license-state";
@@ -46,20 +47,14 @@ export async function POST(req: Request) {
   const currentMachineId = (await getMachineId()).toLowerCase();
   const product = `${exeBuildTarget()}_exe`;
 
-  let res: Response;
-  try {
-    res = await fetch(`${HOSTED_APP_URL}/api/exe-license/password-login`, {
+  const { response: res } = await hostedFetch(
+    "/api/exe-license/password-login",
+    {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password, product, machineId: currentMachineId, confirmTransfer }),
-      signal: AbortSignal.timeout(15_000),
-    });
-  } catch {
-    return NextResponse.json(
-      { error: "Couldn't reach the license server to sign in. Check your connection and try again." },
-      { status: 502 },
-    );
-  }
+    },
+    { maxRetries: MAX_MAINTENANCE_RETRIES, timeoutMs: 15_000 },
+  );
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     return NextResponse.json(

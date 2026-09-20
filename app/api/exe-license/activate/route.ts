@@ -3,7 +3,8 @@ import { NextResponse } from "next/server";
 import { exeLicenseSecret, decodeLicenseKey } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
 import { getMachineId } from "@/lib/machine-id";
 import { getProduct } from "@/lib/products";
 import { saveActivation } from "@/lib/license-state";
@@ -107,21 +108,15 @@ export async function POST(req: Request) {
     // machine now, server-side, instead of sending the buyer to claim it
     // manually first. One network call; everything else on this route stays
     // fully offline.
-    let res: Response;
-    try {
-      res = await fetch(`${HOSTED_APP_URL}/api/exe-license/auto-bind`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ licenseKey, email, machineId: currentMachineId, transferCode }),
-        signal: AbortSignal.timeout(15_000),
-      });
-    } catch {
-      return NextResponse.json(
-        { error: "Couldn't reach the license server to activate this device. Check your connection and try again." },
-        { status: 502 },
+    const { response: res } = await hostedFetch(
+        "/api/exe-license/auto-bind",
+        {
+          method: "POST",
+          body: JSON.stringify({ licenseKey, email, machineId: currentMachineId, transferCode }),
+        },
+        { maxRetries: MAX_MAINTENANCE_RETRIES, timeoutMs: 15_000 },
       );
-    }
-    const data = await res.json().catch(() => ({}));
+      const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       // "already_bound" is not a dead-end error — surface the code so the
       // activation form can offer an explicit "move it here" confirmation

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
+import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 
 // POST /api/exe/billing/submit — body: { kind, txHash?, email } — proxies the
@@ -24,11 +25,13 @@ export async function POST(req: Request) {
   }
 
   const product = `${exeBuildTarget()}_exe`;
-  let res: Response;
-  try {
-    res = await fetch(`${HOSTED_APP_URL}/api/billing/submit`, {
+  // Task 56, Mechanism 3 — hostedFetch rides out the deploy window (bounded
+  // retry through 502/503 { maintenance: true }), so a purchase the user clicks
+  // during an update still lands instead of surfacing a scary generic error.
+  const { response: res } = await hostedFetch(
+    "/api/billing/submit",
+    {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         kind: body.kind,
         txHash: body.txHash,
@@ -36,11 +39,9 @@ export async function POST(req: Request) {
         durationDays: body.durationDays,
         product,
       }),
-      signal: AbortSignal.timeout(20_000),
-    });
-  } catch {
-    return NextResponse.json({ error: "Couldn't reach the store. Check your connection and try again." }, { status: 502 });
-  }
+    },
+    { maxRetries: MAX_MAINTENANCE_RETRIES, timeoutMs: 20_000 },
+  );
   const data = await res.json().catch(() => ({}));
   return NextResponse.json(data, { status: res.status });
 }

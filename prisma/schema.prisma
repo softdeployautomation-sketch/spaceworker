@@ -133,6 +133,17 @@ model AdminSetting {
   dispatchHeavyMaxConcurrent   Int     @default(1)
   browserSessionsEnabled       Boolean @default(true)
   browserSessionsMaxConcurrent Int     @default(3)
+
+  // Task 56 — admin-toggleable maintenance windows. Two SEPARATE flags, not one:
+  // web pages and the EXE-API traffic share one backend today but will split onto
+  // their own hostname under the domain-separation plan, so keep them independent
+  // now rather than refactor later. maintenanceModeWeb is checked by app/proxy.ts
+  // (which serves the maintenance page for everything but /admin/** and static
+  // assets); maintenanceModeExeApi is checked for /api/exe* + /api/exe-license*
+  // requests, which return 503 { maintenance: true } instead of proceeding — the
+  // EXE's hosted-fetch wrapper watches for that shape.
+  maintenanceModeWeb    Boolean @default(false)
+  maintenanceModeExeApi Boolean @default(false)
 }
 
 model Mailbox {
