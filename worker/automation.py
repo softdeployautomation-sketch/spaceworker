@@ -1352,7 +1352,10 @@ def detect_hosted_email_provider(domain: str, include_unrecognized: bool = False
         if pattern in mx_hosts:
             return label
     if include_unrecognized:
-        first_host = mx_records[0].get("data", "").rstrip(".")
+        # MX "data" is "<priority> <hostname>." (e.g. "10 in1-smtp.example.com.") —
+        # strip the priority number, keep just the hostname for display.
+        raw = mx_records[0].get("data", "").rstrip(".")
+        first_host = raw.split(" ", 1)[-1] if " " in raw else raw
         return f"Other ({first_host})"
     return None
 
