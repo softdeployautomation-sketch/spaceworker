@@ -1749,6 +1749,12 @@ async def _search_and_extract(
     # the result page) does not.
     advanced_search_mode = params.get("advancedSearch") is True
     advanced_platform_codes: Optional[list[str]] = None
+    # Owner-requested 2026-09-20: "we have some blank leads" — a confirmed
+    # domain with no crawlable email still saves ONE domain-only lead by
+    # default (so a real, confirmed-but-quiet domain isn't silently lost).
+    # requireEmail opts OUT of that — only leads with a real crawled email
+    # are kept.
+    require_email = params.get("requireEmail") is True
     if advanced_search_mode:
         raw_codes = params.get("platformCodes")
         if isinstance(raw_codes, list):
@@ -1838,8 +1844,11 @@ async def _search_and_extract(
             # "one domain can have multiple users" (owner, 2026-09-20): one
             # lead PER crawled email, not collapsed to one per domain. A
             # domain with no crawlable email still gets one domain-only
-            # lead so a confirmed-but-quiet domain isn't lost.
+            # lead so a confirmed-but-quiet domain isn't lost — UNLESS
+            # require_email opted out of that (see its own comment above).
             emailed = [c for c in contacts if c.get("email")]
+            if not emailed and require_email:
+                return []
             rows = emailed if emailed else [{"email": None, "phone": None, "contactName": None}]
             kept: list[dict] = []
             for c in rows:
@@ -2209,5 +2218,135 @@ async def run_automation(
                 "foundLeads": prior_found + len(all_leads),
                 "pauseReason": pause_reason,
             },
+        )
+    return AutomationResult(leads=all_leads, status="done", resume_state=None)
+
+
+async def run_advanced_search_target_domains(
+    query: str,
+    params: dict,
+    job_dir: str,
+    on_progress: AsyncCallable,
+    should_stop: Optional[Callable[[], Awaitable[bool]]] = None,
+    on_step: Optional[AsyncStepCallable] = None,
+) -> AutomationResult:
+    """Advanced Search's domain-filter mode (owner-requested 2026-09-20:
+    "add domain filter to advance search, so users can add multiple domains
+    they only want it to extract"). Skips search/discovery entirely — the
+    caller already knows which businesses they want — and directly probes +
+    crawls exactly the domains given in params["targetDomains"]. Mirrors
+    run_automation's contract (AutomationResult, pause/resume via
+    resume_state) but with a much simpler loop: a domain list is already
+    finite and ordered, nothing to lazily expand the way query text is.
+
+    `query`/`job_dir` are accepted-but-unused (kept for signature symmetry
+    with run_automation, so worker/api.py's dispatch is a one-line branch).
+    """
+    raw_domains = params.get("targetDomains")
+    seen: set[str] = set()
+    ordered_domains: list[str] = []
+    if isinstance(raw_domains, list):
+        for d in raw_domains:
+            if isinstance(d, str) and d.strip():
+                dd = d.strip().lower()
+                if dd not in seen:
+                    seen.add(dd)
+                    ordered_domains.append(dd)
+
+    raw_codes = params.get("platformCodes")
+    platform_codes: Optional[list[str]] = None
+    if isinstance(raw_codes, list):
+        platform_codes = [c for c in raw_codes if isinstance(c, str)] or None
+    require_email = params.get("requireEmail") is True
+
+    raw_duration = params.get("maxDurationMinutes")
+    max_duration_minutes = DEFAULT_MAX_DURATION_MINUTES
+    if isinstance(raw_duration, (int, float, str)):
+        try:
+            parsed = int(float(raw_duration))
+            if parsed > 0:
+                max_duration_minutes = parsed
+        except (ValueError, TypeError):
+            pass
+    deadline = time.monotonic() + max_duration_minutes * 60
+
+    resume_state = params.get("resumeState")
+    start_index = 0
+    if isinstance(resume_state, dict):
+        idx = resume_state.get("nextDomainIndex")
+        if isinstance(idx, int) and idx > 0:
+            start_index = min(idx, len(ordered_domains))
+
+    loop = asyncio.get_event_loop()
+    all_leads: list[dict] = []
+    BATCH_SIZE = 5
+
+    async def probe_one(domain: str) -> list[dict]:
+        def report(text: str) -> None:
+            if on_step is not None:
+                asyncio.run_coroutine_threadsafe(on_step(text), loop)
+
+        report(f"Checking {domain}…")
+        try:
+            platform = await asyncio.wait_for(
+                loop.run_in_executor(_EXTRACTION_EXECUTOR, probe_domain_for_webmail, domain, platform_codes),
+                timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            report(f"Skipped (timed out): {domain}")
+            return []
+        if not platform:
+            return []
+        report(f"Confirmed {platform} at {domain} — looking for a contact email…")
+        try:
+            contacts = await asyncio.wait_for(
+                loop.run_in_executor(_EXTRACTION_EXECUTOR, crawl_contact_info, domain),
+                timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            contacts = []
+        emailed = [c for c in contacts if c.get("email")]
+        if not emailed and require_email:
+            return []
+        rows = emailed if emailed else [{"email": None, "phone": None, "contactName": None}]
+        kept: list[dict] = []
+        for c in rows:
+            lead = {
+                "email": c.get("email"),
+                "phone": c.get("phone"),
+                "contactName": c.get("contactName"),
+                "businessName": domain,
+                "website": f"https://{domain}",
+                "sourceUrl": f"https://{domain}",
+                "snippet": f"Detected: {platform}",
+            }
+            await on_progress(lead)
+            kept.append(lead)
+        return kept
+
+    i = start_index
+    paused = False
+    stopped_at = start_index
+    while i < len(ordered_domains):
+        if should_stop is not None and await should_stop():
+            paused = True
+            stopped_at = i
+            break
+        if time.monotonic() >= deadline:
+            paused = True
+            stopped_at = i
+            break
+        batch = ordered_domains[i : i + BATCH_SIZE]
+        batch_results = await asyncio.gather(*(probe_one(d) for d in batch), return_exceptions=True)
+        for r in batch_results:
+            if isinstance(r, list):
+                all_leads.extend(r)
+        i += len(batch)
+
+    if paused:
+        return AutomationResult(
+            leads=all_leads,
+            status="paused",
+            resume_state={"nextDomainIndex": stopped_at, "targetDomains": ordered_domains},
         )
     return AutomationResult(leads=all_leads, status="done", resume_state=None)

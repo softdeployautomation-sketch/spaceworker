@@ -52,18 +52,6 @@ interface JobDetail extends Job {
 
 type Template = "lead" | "hr" | "plain" | "advanced-search";
 
-// Self-hosted webmail platforms this app can target (worker/filters/
-// webmail_platforms.py is the single source of truth for the codes and their
-// actual detection fingerprints — this list is just the UI's checkbox
-// labels, kept in the same order/codes).
-const WEBMAIL_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
-  { value: "roundcube", label: "RoundCube" },
-  { value: "squirrelmail", label: "SquirrelMail" },
-  { value: "rainloop", label: "RainLoop" },
-  { value: "zimbra", label: "Zimbra" },
-  { value: "open-xchange", label: "Open-Xchange" },
-  { value: "cpanel", label: "cPanel Webmail" },
-];
 
 const STATUS_COLORS: Record<JobStatus, string> = {
   queued:  "bg-yellow-100 text-yellow-800 dark:bg-yellow-900/40 dark:text-yellow-200",
@@ -210,16 +198,31 @@ export function WebExtractPage() {
   // email, not the full business/phone/website table.
   const [resultMode, setResultMode] = useState<"namesEmails" | "full" | "emailsOnly">("namesEmails");
 
-  // Advanced Search fields — a single query (not Find x Location
-  // cross-multiplied like Lead Search; matches the standalone Advanced
-  // Search page's simpler one-query UX) + which mail platforms to confirm.
-  // Reuses minResults/maxDurationMinutes above for its own "keep going
-  // until N leads" / duration cap — same meaning, same worker params, just
-  // rendered in this template's own section below.
-  const [advancedQuery, setAdvancedQuery] = useState("");
+  // Advanced Search fields. Reuses minResults/maxDurationMinutes above for
+  // its own "keep going until N leads" / duration cap, and resultMode
+  // above for its own results-table display preference — same meaning,
+  // same worker params, just rendered in this template's own section below.
+  //
+  // Multiple queries (owner-requested 2026-09-20: "add like law firm in
+  // usa the next query accountant firm in texas... when it's done with
+  // one it moves to the other, so one run can accumulate more leads") —
+  // chips, same UI pattern as Lead Search's findTerms; the worker already
+  // supports a query LIST natively (run_automation reads params.queries),
+  // this is purely surfacing it for this template too.
+  const [advancedQueries, setAdvancedQueries] = useState<string[]>([]);
+  const [advancedQueryInput, setAdvancedQueryInput] = useState("");
   const [advancedPlatforms, setAdvancedPlatforms] = useState<string[]>(
     ADVANCED_SEARCH_PLATFORM_OPTIONS.map((p) => p.value),
   );
+  // Domain filter (owner-requested 2026-09-20: "add domain filter to
+  // advance search, so users can add multiple domains they only want it
+  // to extract") — when set, the job skips search entirely and probes
+  // exactly these domains (run_advanced_search_target_domains).
+  const [advancedDomains, setAdvancedDomains] = useState<string[]>([]);
+  const [advancedDomainInput, setAdvancedDomainInput] = useState("");
+  // "we have some blank leads" (owner, 2026-09-20) — opt OUT of the
+  // default "confirmed-but-no-email domain still saves one blank row".
+  const [advancedRequireEmail, setAdvancedRequireEmail] = useState(false);
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -328,12 +331,14 @@ export function WebExtractPage() {
       // Owner-requested 2026-09-20: Advanced Search as a real background
       // job, same engine as Lead Search — min leads / max duration / live
       // activity / pause-resume all reused unchanged (see
-      // worker/automation.py's advanced_search_mode). A single query, not
-      // Find x Location cross-multiplied — matches the standalone Advanced
-      // Search page's simpler UX.
-      const q = advancedQuery.trim();
-      if (!q) {
-        setFormError("Enter a search query");
+      // worker/automation.py's advanced_search_mode). Multiple queries
+      // (chips, like Lead Search's Find) accumulate leads across all of
+      // them in one run; a domain filter skips search entirely and probes
+      // exactly the given domains instead (run_advanced_search_target_domains).
+      const queries = advancedQueries.map((q) => q.trim()).filter(Boolean);
+      const domains = advancedDomains.map((d) => d.trim()).filter(Boolean);
+      if (queries.length === 0 && domains.length === 0) {
+        setFormError("Add at least one search query or domain");
         return;
       }
       setSubmitting(true);
@@ -342,7 +347,10 @@ export function WebExtractPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            query: q,
+            // A display label is always required server-side — synthesize
+            // one from the domain count when running domain-filter-only
+            // (no search queries at all).
+            queries: queries.length > 0 ? queries : [`Domain filter: ${domains.length} domain(s)`],
             template: "advanced-search",
             params: {
               engine: "ddg",
@@ -351,6 +359,8 @@ export function WebExtractPage() {
               maxDurationMinutes,
               resultMode,
               platformCodes: advancedPlatforms,
+              ...(domains.length > 0 ? { targetDomains: domains } : {}),
+              ...(advancedRequireEmail ? { requireEmail: true } : {}),
             },
           }),
         });
@@ -794,16 +804,10 @@ export function WebExtractPage() {
           <p className="mt-1 text-sm text-fg-muted">Pick a search template and extract structured results.</p>
         </div>
         <div className="flex items-center gap-2">
-          {/* Owner-requested 2026-09-20: a direct, unmissable link, not a dock
-              icon — the dock icon alone was repeatedly hard to find/identify
-              across several rounds of feedback. This is the primary entry
-              point now; the dock icon still works too. */}
-          <Link
-            href="/dashboard/advanced-search"
-            className="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-500"
-          >
-            Advanced Search
-          </Link>
+          {/* The standalone "Advanced Search" link (added 2026-09-20) was
+              removed the same day once Advanced Search became a real
+              template tab below — that tab is the entry point now,
+              redundant to also link the separate one-shot preview page here. */}
           {/* Task 26, Piece 3 — bulk import entry point. Uploads land as a new "done"
               job in the SAME list below, so the imported leads reuse the existing
               table (and its new validate/merge actions). */}
@@ -871,60 +875,16 @@ export function WebExtractPage() {
               })}
             </div>
 
-            {/* Webmail platform targeting — two independent modes. Picking any
-                platform below switches to SEARCH mode (finds webmail login
-                pages directly, fast); the Verify toggle is a separate mode
-                that only applies when no platform is checked. */}
-            <div className="rounded-lg border border-border bg-bg-elevated/50 p-3">
-              <p className="text-sm font-medium text-fg">Self-hosted webmail (RoundCube, SquirrelMail, etc.)</p>
-              <p className="mt-1 text-xs text-fg-muted">
-                Target businesses running their own webmail instead of Gmail/Outlook/Google Workspace —
-                the classic &quot;still on old self-hosted email&quot; signal migration/IT-services outreach looks for.
-              </p>
-              <div className="mt-2 flex flex-wrap gap-3 text-sm">
-                {WEBMAIL_PLATFORM_OPTIONS.map((opt) => (
-                  <label key={opt.value} className="flex items-center gap-1.5">
-                    <input
-                      type="checkbox"
-                      checked={webmailPlatforms.includes(opt.value)}
-                      onChange={(e) => {
-                        setWebmailPlatforms((prev) =>
-                          e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
-                        );
-                      }}
-                      className="h-4 w-4 cursor-pointer"
-                    />
-                    {opt.label}
-                  </label>
-                ))}
-              </div>
-              {webmailPlatforms.length > 0 ? (
-                <p className="mt-2 text-xs text-brand-700 dark:text-brand-400">
-                  Search mode: finds indexed webmail login pages directly (fast — no extra requests per
-                  lead). Each match becomes a lead with no email (the login page has none) — just the
-                  business&apos;s domain and which platform it&apos;s running.{" "}
-                  <strong>Your Find/Location text above is ignored in this mode</strong> — a webmail
-                  login page&apos;s title never mentions the business or city running it, so combining
-                  them just breaks the search. Want a business/location match instead? Uncheck the
-                  platforms and use &quot;Verify each lead&apos;s mail platform&quot; below with a normal
-                  Find search.
-                </p>
-              ) : (
-                <label className="mt-2 flex items-center gap-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={verifyWebmail}
-                    onChange={(e) => setVerifyWebmail(e.target.checked)}
-                    className="h-4 w-4 cursor-pointer"
-                  />
-                  Verify each lead&apos;s mail platform
-                  <span className="text-xs text-fg-muted">
-                    (slower — probes every found lead&apos;s domain for a webmail signature and drops
-                    leads that don&apos;t match; use with a normal Find search instead of the checkboxes above)
-                  </span>
-                </label>
-              )}
-            </div>
+            {/* The self-hosted-webmail checkbox section (RoundCube/SquirrelMail/
+                etc. + "Verify each lead's mail platform") that used to live
+                here was removed 2026-09-20 — Advanced Search (its own
+                template tab, with all 12 platforms including hosted
+                providers) is the real, working home for this now; keeping
+                a second, narrower copy of it on Lead Search was redundant
+                and confusing. webmailPlatforms/verifyWebmail state stays
+                harmlessly unused (always empty/false — nothing sets them
+                anymore) rather than ripping out the params plumbing that
+                still reads them correctly if ever needed again. */}
 
             <div className="flex flex-wrap gap-4 items-center text-sm">
               <label className="flex items-center gap-2">
@@ -1079,14 +1039,87 @@ export function WebExtractPage() {
         {/* --- Advanced Search --- */}
         {template === "advanced-search" && (
           <div className="flex flex-col gap-3">
-            <input
-              type="text"
-              value={advancedQuery}
-              onChange={(e) => setAdvancedQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") void submitJob(); }}
-              placeholder='e.g. "law firms in Lagos Nigeria"'
-              className="rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
-            />
+            <div>
+              <p className="mb-1 text-sm font-medium text-fg">Search queries</p>
+              <p className="mb-1.5 text-xs text-fg-muted">
+                Add as many as you like — the job runs them one after another in the SAME run, accumulating
+                leads across all of them (e.g. &quot;law firms in usa&quot;, then &quot;accounting firms in
+                texas&quot;). Leave empty if you&apos;re only using the domain filter below.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {advancedQueries.map((q, i) => (
+                  <span key={`${q}-${i}`} className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-sm text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                    {q}
+                    <button
+                      type="button"
+                      onClick={() => removeChip(advancedQueries, setAdvancedQueries, i)}
+                      className="text-brand-700 hover:text-red-600"
+                      aria-label={`Remove ${q}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="text"
+                  value={advancedQueryInput}
+                  onChange={(e) => setAdvancedQueryInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") addChip(advancedQueries, setAdvancedQueries, advancedQueryInput, setAdvancedQueryInput); }}
+                  placeholder='e.g. "law firms in Lagos Nigeria", press Enter'
+                  className="flex-1 rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => addChip(advancedQueries, setAdvancedQueries, advancedQueryInput, setAdvancedQueryInput)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-1 text-sm font-medium text-fg">Domain filter (optional)</p>
+              <p className="mb-1.5 text-xs text-fg-muted">
+                Add specific domains to check instead of/alongside a search — the job skips search
+                entirely for these and probes exactly the domains you list here.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {advancedDomains.map((d, i) => (
+                  <span key={`${d}-${i}`} className="inline-flex items-center gap-1.5 rounded-full bg-brand-50 px-3 py-1 text-sm text-brand-700 dark:bg-brand-900/30 dark:text-brand-300">
+                    {d}
+                    <button
+                      type="button"
+                      onClick={() => removeChip(advancedDomains, setAdvancedDomains, i)}
+                      className="text-brand-700 hover:text-red-600"
+                      aria-label={`Remove ${d}`}
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="mt-2 flex gap-2">
+                <input
+                  type="text"
+                  value={advancedDomainInput}
+                  onChange={(e) => setAdvancedDomainInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") addChip(advancedDomains, setAdvancedDomains, advancedDomainInput, setAdvancedDomainInput); }}
+                  placeholder='e.g. "acmelaw.com", press Enter'
+                  className="flex-1 rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => addChip(advancedDomains, setAdvancedDomains, advancedDomainInput, setAdvancedDomainInput)}
+                  className="rounded-lg border border-border px-3 py-2 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  Add
+                </button>
+              </div>
+            </div>
+
             <div>
               <p className="mb-1.5 text-sm font-medium text-fg">Mail platforms to confirm</p>
               <div className="flex flex-wrap gap-x-4 gap-y-1.5">
@@ -1107,6 +1140,7 @@ export function WebExtractPage() {
                 ))}
               </div>
             </div>
+
             <div className="flex flex-wrap items-center gap-4 text-sm">
               <label className="flex items-center gap-2">
                 <span className="text-fg-muted">Keep going until (leads):</span>
@@ -1129,10 +1163,34 @@ export function WebExtractPage() {
                   className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
                 />
               </label>
-              <span className="text-xs text-fg-muted">
-                Runs as a real background job — live activity, pause/resume, same as Lead Search.
-              </span>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Results table:</span>
+                <select
+                  value={resultMode}
+                  onChange={(e) => setResultMode(e.target.value as "namesEmails" | "full" | "emailsOnly")}
+                  className="rounded border border-border bg-input px-2 py-1 text-sm"
+                >
+                  <option value="namesEmails">Names + Emails</option>
+                  <option value="emailsOnly">Emails only</option>
+                  <option value="full">Full (business, phone, website)</option>
+                </select>
+              </label>
             </div>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={advancedRequireEmail}
+                onChange={(e) => setAdvancedRequireEmail(e.target.checked)}
+                className="h-4 w-4 cursor-pointer"
+              />
+              Only keep leads with a real email
+              <span className="text-xs text-fg-muted">
+                (skips saving a confirmed domain that has no crawlable contact email — fewer, cleaner rows)
+              </span>
+            </label>
+            <span className="text-xs text-fg-muted">
+              Runs as a real background job — live activity, pause/resume, same as Lead Search.
+            </span>
           </div>
         )}
 

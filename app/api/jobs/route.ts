@@ -268,6 +268,16 @@ export async function POST(req: Request) {
         WEBMAIL_PLATFORM_CODES.includes(p),
       )
     : [];
+  // Domain filter (owner-requested 2026-09-20): "add domain filter to
+  // advance search, so users can add multiple domains they only want it to
+  // extract" — a non-empty list means the worker skips search/discovery
+  // entirely and probes exactly these domains (run_advanced_search_target_domains).
+  const targetDomains = advancedSearch
+    ? sanitizeStringArray(rawParams.targetDomains, 1000).map((d) => d.toLowerCase())
+    : [];
+  // "we have some blank leads" (owner, 2026-09-20): opt OUT of the default
+  // "confirmed-but-no-email domain still saves one blank row" behavior.
+  const requireEmail = advancedSearch && rawParams.requireEmail === true;
 
   const params = {
     engine,
@@ -283,6 +293,8 @@ export async function POST(req: Request) {
     ...(webmailPlatforms.length > 0 ? { webmailPlatforms } : {}),
     ...(verifyWebmail ? { verifyWebmail } : {}),
     ...(advancedSearch ? { advancedSearch: true, platformCodes } : {}),
+    ...(targetDomains.length > 0 ? { targetDomains } : {}),
+    ...(requireEmail ? { requireEmail: true } : {}),
     template,
   };
   const displayQuery = uniqueQueries.length === 1 ? uniqueQueries[0] : uniqueQueries.join(" | ");

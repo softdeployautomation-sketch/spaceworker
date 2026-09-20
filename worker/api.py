@@ -40,6 +40,7 @@ from automation import (
     is_directory_or_infrastructure_domain,
     probe_domain_for_webmail,
     resilient_ddg_search,
+    run_advanced_search_target_domains,
     run_automation,
 )
 
@@ -213,7 +214,17 @@ async def create_job(req: JobRequest, request: Request) -> dict:
             await sem.acquire()
             acquired = True
             try:
-                result = await run_automation(
+                # Owner-requested 2026-09-20: Advanced Search's domain
+                # filter — a non-empty targetDomains list means "probe
+                # exactly these, skip search entirely" (run_automation has
+                # no domain-list mode of its own; this is a real branch,
+                # not a params flag it reads).
+                has_target_domains = (
+                    isinstance(req.params.get("targetDomains"), list)
+                    and len(req.params.get("targetDomains")) > 0
+                )
+                run_fn = run_advanced_search_target_domains if has_target_domains else run_automation
+                result = await run_fn(
                     req.query,
                     req.params,
                     job_dir,
