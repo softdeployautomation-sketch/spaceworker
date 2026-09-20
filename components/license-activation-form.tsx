@@ -93,25 +93,40 @@ export function LicenseActivationForm({
 
   useEffect(() => {
     if (mode !== "buy" || paymentId) return;
+    // Cancellation guard — crypto sends are irreversible, so a stale response
+    // from a currency the user already switched away from must never land
+    // (a rapid BTC -> USDT-TRC20 -> USDT-ERC20 click sequence can resolve
+    // out of order). Mirrors components/store.tsx's CheckoutModal effect.
+    let cancelled = false;
+    setCheckout(null);
     setCheckoutLoading(true);
     setCheckoutError("");
     fetch(`/api/exe/billing/checkout?kind=${payKind}`)
       .then((r) => r.json())
       .then((data) => {
+        if (cancelled) return;
         if (typeof data.toAddress === "string" && typeof data.amountUsd === "number") {
           setCheckout({ toAddress: data.toAddress, amountUsd: data.amountUsd, note: data.note ?? "" });
         } else {
           setCheckoutError(typeof data.error === "string" ? data.error : "Couldn't load payment instructions.");
         }
       })
-      .catch(() => setCheckoutError("Network error — couldn't reach the store."))
-      .finally(() => setCheckoutLoading(false));
+      .catch(() => {
+        if (!cancelled) setCheckoutError("Network error — couldn't reach the store.");
+      })
+      .finally(() => {
+        if (!cancelled) setCheckoutLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [mode, payKind, paymentId]);
 
   function switchMode(next: Mode) {
     setMode(next);
     setError("");
     setNeedsTransferConfirm(false);
+    setPassword("");
   }
 
   async function submitPayment() {
@@ -191,6 +206,7 @@ export function LicenseActivationForm({
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.licensed) {
         setNeedsTransferConfirm(false);
+        setPassword("");
         onActivated?.();
       } else if (data.code === "already_bound" && !confirmTransfer) {
         setNeedsTransferConfirm(true);

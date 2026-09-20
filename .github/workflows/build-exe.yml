@@ -60,7 +60,13 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILD_TARGET: extractor
+          # Was hardcoded to "extractor" regardless of the selected variant —
+          # harmless today since the dropdown below only offers "extractor"
+          # yet, but a real bug waiting to bite silently (exeBuildTarget()
+          # defaults to "extractor" rather than failing closed) the moment
+          # another variant's option/tauri-config is added. Fixed to track
+          # the actual input now, before that happens.
+          BUILD_TARGET: ${{ github.event.inputs.variant }}
           SPACEWORKER_LOCAL_EXE: "true"
           EXE_LICENSE_SECRET: ${{ secrets.EXE_LICENSE_SECRET }}
           # For a release build the whole app (incl. admin/api) compiles, and its
