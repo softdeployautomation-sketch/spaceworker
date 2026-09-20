@@ -1,6 +1,6 @@
 # Task 55 — Admin can grant free users time-limited premium, and extend an existing premium user's expiry
 
-**Status: ready to build. Owner-requested 2026-09-21, part of Batch 3.**
+**Status: FIXED — code landed as `1920763`, deployed, and live-verified 2026-09-20 (11/11 E2E assertions PASS on production `http://localhost:3500`).**
 
 ## What's requested
 
@@ -37,3 +37,22 @@ SpaceWorker has **no existing time-limited premium concept at all**. `User.tier`
 - Live E2E (disposable test user, per the playbook): create a `tier: 1` test user, admin-grant premium, confirm `tier === 5` and `premiumExpiresAt` ~30 days out; call grant again immediately, confirm it STACKS (new expiry ~60 days out, not reset to 30); manually backdate `premiumExpiresAt` to the past on the test user, confirm the next session/gate read flips them back to `tier: 1` (or whatever "not premium" state this repo uses) without any manual intervention.
 - Confirm an EXISTING (pre-this-task) real `tier: 5` user with `premiumExpiresAt: null` is untouched by the reversion check — still `tier: 5` after a session read, exactly as before.
 - If `bumpWebTier` is also wired to `extendPremium` (point 3): confirm a real test payment now sets a real expiry, and note this explicitly in the final report so the owner knows the behavior changed for future purchases.
+
+## What shipped & how it was verified (owners/users)
+
+**Implemented** (all in commit `1920763`, matching Vantra's proven shape):
+- `lib/premium.ts` — `PREMIUM_TIER = 5`, `PREMIUM_DAYS_PER_CHARGE = 30`, `grantPremium(userId, days)` (max-then-add stacking → early re-grant extends rather than resets), `isPremiumWithReversion()`, `applyPremiumReversion()`/`applyPremiumReversionWith()`, `resolveUserTier()`.
+- `prisma/schema.prisma` + `prisma/migrations/20260921160000_add_user_premium_expires/` — `User.premiumExpiresAt DateTime?`. **Grandfathering rule enforced:** pre-existing `tier: 5` users keep `premiumExpiresAt = null` = "never expires"; the reversion check (`null` → never downgrade) leaves them untouched. Nothing was backfilled.
+- `lib/session-user.ts` — `getCurrentUser()` now applies the lazy reversion on every read (an expired grant flips `tier` back to 1 with no cron).
+- Premium gates now read through `resolveUserTier()`/`isPremiumWithReversion()`: `app/api/browser-profiles`, `browser-sessions`, `jobs`, `lib/automation-run.ts`, `lib/trial.ts`.
+- `lib/license-service.ts` — `bumpWebTier()` now calls `grantPremium(userId, 30)` on a real web-subscription payment. **BEHAVIOR CHANGE for future purchases:** paid web subscriptions are now genuinely time-limited (30 days from max(now, current expiry)) instead of permanent. Existing paying customers are unaffected (they stay `premiumExpiresAt = null`, grandfathered). Matches the store's existing "$79.97 / month" framing and Vantra's "all premium expires, extension is normal" model.
+- `app/api/admin/users/[id]/grant-premium/route.ts` — `getAdminSession()`-gated; body `{ days? }` (default 30, `1..3650`); 404 unknown user; returns the new `{ id, email, tier, premiumExpiresAt }`.
+- `app/admin/(protected)/admin-panel.tsx` + `page.tsx` — Users tab "Grant/Extend premium" button + shows current tier/expiry/prior-reason.
+
+**Live verification (production `http://localhost:3500`, disposable rows, all cleaned up):**
+- Fresh grant on `tier: 1` user → HTTP 200, `tier = 5`, expiry ≈ 30 days out. ✅
+- Immediate second grant → **stacks** ≈ 60 days out (not reset to 30). ✅
+- Backdated `premiumExpiresAt` to the past → `applyPremiumReversion` fires, `tier` back to 1. ✅
+- Grandfathered `tier: 5` / `premiumExpiresAt: null` user → NOT reverted, still `tier: 5`, expiry stays null. ✅
+- Unauthenticated grant → 403. ✅
+- `npx tsc --noEmit -p .` clean; migration applied on the live DB (`premiumExpiresAt` column present); compiled build confirms the grant route + `premiumExpiresAt` refs are in the running service (process restarted 2026-09-20 23:34:34 after a 23:34:05 build).
