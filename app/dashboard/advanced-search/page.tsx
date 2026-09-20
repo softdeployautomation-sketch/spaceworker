@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Badge, Button, Card, Input, Label, Spinner } from "@/components/ui";
 
 // Advanced Search — a two-stage flow, deliberately separate from the
@@ -56,6 +56,22 @@ interface VerifyResultRow {
 }
 
 export default function AdvancedSearchPage() {
+  // Same dispatcher pattern the Extract page uses: ping /api/exe/extract —
+  // it 200s only inside the EXE's local runtime, 404s on the hosted web app.
+  // Web mode calls the VPS worker (deliberately 127.0.0.1-only, unreachable
+  // from a customer's machine); EXE mode runs Discover/Verify locally
+  // instead (see app/api/exe/advanced-search/*) — same query, same
+  // detection logic, no VPS dependency either way.
+  const [runtime, setRuntime] = useState<"loading" | "web" | "local">("loading");
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/exe/extract", { method: "GET" })
+      .then((r) => { if (!cancelled) setRuntime(r.ok ? "local" : "web"); })
+      .catch(() => { if (!cancelled) setRuntime("web"); });
+    return () => { cancelled = true; };
+  }, []);
+  const apiBase = runtime === "local" ? "/api/exe/advanced-search" : "/api/advanced-search";
+
   const [query, setQuery] = useState("");
   const [platforms, setPlatforms] = useState<string[]>(WEBMAIL_PLATFORM_OPTIONS.map((p) => p.value));
   const [discovering, setDiscovering] = useState(false);
@@ -68,7 +84,7 @@ export default function AdvancedSearchPage() {
   const [searchJobId, setSearchJobId] = useState<string | null>(null);
 
   async function runDiscover() {
-    if (!query.trim()) return;
+    if (!query.trim() || runtime === "loading") return;
     setDiscovering(true);
     setDiscoverError(null);
     setCandidates([]);
@@ -76,7 +92,7 @@ export default function AdvancedSearchPage() {
     setResults(null);
     setSearchJobId(null);
     try {
-      const res = await fetch("/api/advanced-search/discover", {
+      const res = await fetch(`${apiBase}/discover`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, maxCandidates: 20 }),
@@ -95,12 +111,12 @@ export default function AdvancedSearchPage() {
   }
 
   async function runVerify() {
-    if (selected.size === 0) return;
+    if (selected.size === 0 || runtime === "loading") return;
     setVerifying(true);
     setVerifyError(null);
     setResults(null);
     try {
-      const res = await fetch("/api/advanced-search/verify", {
+      const res = await fetch(`${apiBase}/verify`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query, domains: Array.from(selected), platformCodes: platforms }),
@@ -108,6 +124,8 @@ export default function AdvancedSearchPage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Verification failed.");
       setResults(data.results ?? []);
+      // Web mode returns searchJobId (a real dashboard job); local/EXE mode
+      // returns runId (a local file — see ../extract/storage.ts) instead.
       setSearchJobId(data.searchJobId ?? null);
     } catch (e) {
       setVerifyError(e instanceof Error ? e.message : "Verification failed.");
@@ -236,9 +254,10 @@ export default function AdvancedSearchPage() {
       {results && (
         <Card className="space-y-2 p-5">
           <p className="text-sm font-medium text-fg">
-            {confirmedCount} of {results.length} confirmed — saved to your leads.
+            {confirmedCount} of {results.length} confirmed
+            {runtime === "local" ? " — saved locally on this machine." : " — saved to your leads."}
           </p>
-          {searchJobId && (
+          {runtime === "web" && searchJobId && (
             <Link href="/dashboard/extract" className="text-sm text-brand-600 hover:underline dark:text-brand-400">
               View in Extract → job history
             </Link>

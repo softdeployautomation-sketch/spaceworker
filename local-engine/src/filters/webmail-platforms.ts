@@ -27,6 +27,8 @@
  * business's own domain) — see the worker's detect_hosted_email_provider().
  */
 
+import { CRAWL_USER_AGENT } from "../html";
+
 export interface WebmailPlatform {
   code: string;
   label: string;
@@ -169,4 +171,140 @@ export function candidateWebmailUrls(domain: string): string[] {
   for (const sub of CANDIDATE_SUBDOMAINS) urls.push(`https://${sub}.${d}/`);
   for (const path of CANDIDATE_PATHS) urls.push(`https://${d}${path}`);
   return urls;
+}
+
+const HTTP_TIMEOUT_MS = 10_000;
+
+/**
+ * Hosted mail provider detection via MX record — TypeScript port of the
+ * worker's detect_hosted_email_provider(). Added so Advanced Search's
+ * Discover/Verify flow can run entirely inside the EXE's own bundled local
+ * runtime (see app/api/exe/advanced-search/*): the VPS worker this used to
+ * call is deliberately bound to 127.0.0.1 only (security — never reachable
+ * from outside that box), so a customer's own machine has no path to reach
+ * it. This needed no VPS dependency in the first place — DDG search, HTTP
+ * probing, and a DNS lookup are all plain outbound requests any machine
+ * with internet access can make on its own, exactly the way the same logic
+ * runs on the VPS. Uses Google's public DNS-over-HTTPS API (no new
+ * dependency — global `fetch`, same as everything else here).
+ *
+ * `includeUnrecognized`: when real MX records exist but match none of
+ * HOSTED_PROVIDER_MX_PATTERNS, return "Other (<raw MX host>)" instead of
+ * null — a curated list is never complete, so this keeps a domain with
+ * real, working mail from looking identical to "no mail at all".
+ */
+export async function detectHostedEmailProvider(
+  domain: string,
+  includeUnrecognized = false,
+): Promise<string | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+  let answers: Array<{ type: number; data: string }>;
+  try {
+    const res = await fetch(
+      `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=MX`,
+      { signal: controller.signal },
+    );
+    if (!res.ok) return null;
+    const json = (await res.json()) as { Answer?: Array<{ type: number; data: string }> };
+    answers = json.Answer ?? [];
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // MX record type is 15 (RFC 1035) — dns.google's JSON API returns the
+  // numeric type, not a mnemonic.
+  const mxRecords = answers.filter((a) => a.type === 15);
+  const mxHosts = mxRecords.map((a) => a.data.toLowerCase()).join(" ");
+  if (!mxHosts) return null;
+
+  for (const [pattern, label] of HOSTED_PROVIDER_MX_PATTERNS) {
+    if (mxHosts.includes(pattern)) return label;
+  }
+  if (includeUnrecognized && mxRecords.length > 0) {
+    // "data" is "<priority> <hostname>." — strip the priority, keep the host.
+    const raw = mxRecords[0].data.replace(/\.$/, "");
+    const firstHost = raw.includes(" ") ? raw.split(" ").slice(1).join(" ") : raw;
+    return `Other (${firstHost})`;
+  }
+  return null;
+}
+
+/** Splits a caller's platformCodes (or the full default set, when undefined)
+ * into (self-hosted codes, hosted-provider codes). "other-hosted" is valid
+ * but excluded from the implicit default — it's an opt-in flag, not a
+ * platform of its own. */
+function resolvePlatformCodes(platformCodes: string[] | undefined): {
+  selfHosted: string[];
+  hosted: Set<string>;
+} {
+  const codes = platformCodes && platformCodes.length > 0
+    ? platformCodes
+    : [...Object.keys(WEBMAIL_PLATFORMS), ...Object.keys(HOSTED_EMAIL_PROVIDERS)];
+  const selfHosted = codes.filter((c) => c in WEBMAIL_PLATFORMS);
+  const hosted = new Set(codes.filter((c) => c in HOSTED_EMAIL_PROVIDERS || c === "other-hosted"));
+  return { selfHosted, hosted };
+}
+
+async function checkHostedProvider(domain: string, hostedCodes: Set<string>): Promise<string | null> {
+  if (hostedCodes.size === 0) return null;
+  const wantOther = hostedCodes.has("other-hosted");
+  const provider = await detectHostedEmailProvider(domain, wantOther);
+  if (!provider) return null;
+  if (provider.startsWith("Other (")) return wantOther ? provider : null;
+  for (const code of hostedCodes) {
+    if (HOSTED_EMAIL_PROVIDERS[code] === provider) return provider;
+  }
+  return null;
+}
+
+/**
+ * Advanced Search's VERIFY step, running locally inside the EXE (see
+ * app/api/exe/advanced-search/verify/route.ts) — TypeScript port of the
+ * worker's probe_domain_for_webmail(). Given a bare domain the user picked
+ * from a Discover-step candidate list, checks it against whichever of
+ * self-hosted webmail (HTTP fingerprint) and/or hosted providers (MX
+ * record) the caller asked for. Returns the matched provider/platform's
+ * label, or null.
+ */
+export async function probeDomainForWebmail(
+  domain: string,
+  platformCodes: string[] | undefined,
+): Promise<string | null> {
+  const { selfHosted, hosted } = resolvePlatformCodes(platformCodes);
+
+  const hostedMatch = await checkHostedProvider(domain, hosted);
+  if (hostedMatch) return hostedMatch;
+
+  if (selfHosted.length === 0) return null;
+  for (const url of candidateWebmailUrls(domain)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, {
+        headers: { "User-Agent": CRAWL_USER_AGENT },
+        signal: controller.signal,
+      });
+      if (!res.ok) continue;
+      const html = await res.text();
+      const platform = detectWebmailPlatform(html, selfHosted);
+      if (platform) return platform;
+    } catch {
+      continue;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return null;
+}
+
+/** netloc minus a leading www., matching candidateWebmailUrls' normalization. */
+export function extractRootDomain(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "").trim().toLowerCase();
+  } catch {
+    return "";
+  }
 }
