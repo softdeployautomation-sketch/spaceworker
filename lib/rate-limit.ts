@@ -15,7 +15,10 @@ export type RateLimitKind =
   | "admin-login"
   | "change-password"
   | "exe-password-login"
-  | "exe-auto-bind";
+  | "exe-auto-bind"
+  | "mailbox-test"
+  | "billing-submit"
+  | "trial-ping";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -44,6 +47,16 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   "change-password": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   "exe-password-login": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   "exe-auto-bind": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  // Task 51 — "Test connection" does a raw outbound SMTP attempt per call, so
+  // cap the rate (session-gated already; this is IP-scoped like the other routes).
+  "mailbox-test": [{ limit: 20, windowMs: 60 * 60 * 1000 }],
+  // Task 52 — the no-session EXE buy path of billing/submit creates User +
+  // Payment rows on demand; cap it so a script can't flood the admin review queue.
+  "billing-submit": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  // Task 52 — trial-ping is intentionally unauthenticated (the EXE has no web
+  // session) and feeds the admin's active-trial-devices view; a modest per-IP cap
+  // covers the one-ping-per-device-per-session real pattern while blocking spam.
+  "trial-ping": [{ limit: 20, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {

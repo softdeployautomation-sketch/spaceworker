@@ -5,6 +5,7 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
 import { findOrCreateUser } from "@/lib/find-or-create-user";
+import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import {
   getProduct,
   WEB_SUBSCRIPTION,
@@ -73,6 +74,14 @@ export async function POST(req: Request) {
     if (session) {
       userId = session.userId;
     } else {
+      // Task 52 — this no-session path creates a User + Payment row on demand,
+      // so it must be rate-limited (IP-based) to stop a script from flooding the
+      // admin's manual-review queue and growing the User/Payment tables unbounded.
+      const ip = await getClientIp();
+      const allowed = await allowAndRecord(ip, "billing-submit");
+      if (!allowed) {
+        return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
+      }
       const email = body.email;
       if (!isEmail(email)) {
         return NextResponse.json(

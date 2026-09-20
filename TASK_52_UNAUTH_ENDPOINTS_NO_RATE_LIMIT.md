@@ -1,6 +1,6 @@
 # Task 52 — Two unauthenticated write endpoints have no rate limit: `billing/submit` (EXE path) and `exe-license/trial-ping`
 
-**Status: ready to build. Found during a security audit, 2026-09-20.**
+**Status: FIXED, 2026-09-20.** Found during a security audit, 2026-09-20. Two new rate-limit kinds were added to `lib/rate-limit.ts` and wired into the two unauthenticated write endpoints: `trial-ping` (20/hr/IP) in `app/api/exe-license/trial-ping/route.ts` (called up front, before any DB write) and `billing-submit` (10/hr/IP) on the no-session EXE path of `app/api/billing/submit/route.ts` (before `findOrCreateUser`/Payment creation). The EXE buy path already refused obviously-junk emails with `400`; the rate limit is the load-bearing fix, and one is now enforced in both routes. Verified live against the deployed server via a disposable E2E (hitting the real routes on localhost; test rows rate-events cleaned up after): 25 rapid `trial-ping` calls from one IP → exactly 20 allowed then `429` (5 blocked); 12 rapid no-session `billing/submit` EXE calls with a fabricated email → exactly 10 pass the gate then `429`, and no User/Payment row was created (email rejected). `npx tsc --noEmit` is clean.
 
 ## The real gap, confirmed live in code (not assumed)
 

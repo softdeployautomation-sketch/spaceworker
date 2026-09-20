@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalBearer } from "@/lib/internal-auth";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resumeJob } from "@/lib/job-resume";
@@ -73,8 +74,7 @@ function buildLeadRows(job: { userId: string; id: string }, leads: WorkerLead[])
 const LANE_LOCK_ID: Record<string, number> = { light: 1001, heavy: 1002 };
 
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
+  if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

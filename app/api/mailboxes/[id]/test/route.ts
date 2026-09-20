@@ -23,7 +23,7 @@ export async function POST(
   let ok = false;
   let error: string | undefined;
   try {
-    const transport = transporterForMailbox(mailbox);
+    const transport = await transporterForMailbox(mailbox);
     await transport.verify();
     ok = true;
   } catch (e) {

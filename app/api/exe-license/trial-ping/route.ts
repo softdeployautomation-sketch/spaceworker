@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { db } from "@/lib/db";
 import { getProduct } from "@/lib/products";
+import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +29,16 @@ const bodySchema = z.object({
 });
 
 export async function POST(req: Request) {
+  // Task 52 — intentionally unauthenticated endpoint (the EXE has no web
+  // session), so an IP-based rate limit is the only knob: enough headroom for
+  // one ping per real device per session while blocking a machineId-spam script
+  // from growing ExeTrialSession unbounded and polluting the admin trial view.
+  const ip = await getClientIp();
+  const allowed = await allowAndRecord(ip, "trial-ping");
+  if (!allowed) {
+    return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
+  }
+
   let parsed: z.infer<typeof bodySchema>;
   try {
     parsed = bodySchema.parse(await req.json());

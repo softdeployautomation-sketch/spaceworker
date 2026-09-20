@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
+import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 
 export async function GET() {
   const session = await getSession();
@@ -56,6 +57,18 @@ export async function POST(req: Request) {
   if (!label || !host || !username || !password || !Number.isInteger(port) || port <= 0) {
     return NextResponse.json(
       { error: "label, host, port, username and password are required" },
+      { status: 400 }
+    );
+  }
+
+  // Task 51 — reject loopback/private/link-local/non-routable hosts at SAVE time
+  // so a mailbox whose host points at an internal address can never be stored
+  // (that also protects the real send path, which only ever reads saved hosts).
+  try {
+    await validatePublicSmtpHost(host);
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Invalid SMTP host" },
       { status: 400 }
     );
   }

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { buildSmtpTransport } from "@/lib/mailer-send";
+import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
+import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 
 // Task 26, Piece 5a — PRE-SAVE mailbox connection test.
 // POST /api/mailboxes/test-connection   body: { host, port, username, password, allowInsecure }
@@ -18,6 +20,13 @@ export async function POST(req: Request) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // Task 51 — each call makes a raw outbound SMTP attempt, so cap the rate.
+  const ip = await getClientIp();
+  const allowed = await allowAndRecord(ip, "mailbox-test");
+  if (!allowed) {
+    return NextResponse.json({ error: "Too many attempts. Please try again later." }, { status: 429 });
   }
 
   let body: {
@@ -42,6 +51,20 @@ export async function POST(req: Request) {
   if (!host || !username || !password || !Number.isInteger(port) || port <= 0) {
     return NextResponse.json(
       { error: "host, port, username and password are required" },
+      { status: 400 }
+    );
+  }
+
+  // Task 51 — reject loopback/private/link-local/non-routable hosts BEFORE any
+  // network call, so this endpoint can't be used as an internal port-scan oracle.
+  // Resolves the hostname and checks its actual addresses (catches DNS-rebinding
+  // too), closing the gap where a user could point it at 127.0.0.1 / the VPS's
+  // own internal ranges / a cloud metadata endpoint.
+  try {
+    await validatePublicSmtpHost(host);
+  } catch (err) {
+    return NextResponse.json(
+      { ok: false, error: err instanceof Error ? err.message : "Invalid SMTP host" },
       { status: 400 }
     );
   }

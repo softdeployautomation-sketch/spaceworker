@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
@@ -8,8 +9,7 @@ const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 // POST only. Gated by bearer token; run via deploy/payment-verify.service timer.
 // Re-checks all pending payments and approves those now confirmed on-chain.
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
+  if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

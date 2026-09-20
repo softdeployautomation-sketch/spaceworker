@@ -1,6 +1,7 @@
 import "server-only";
 import nodemailer, { type Transporter } from "nodemailer";
 import { decryptSecret } from "./mailbox-crypto";
+import { validatePublicSmtpHost } from "./smtp-host-guard";
 
 export interface TransporterMailbox {
   host: string;
@@ -71,7 +72,13 @@ export function buildSmtpTransport(opts: SmtpTransportOptions): Transporter {
   });
 }
 
-export function transporterForMailbox(mailbox: TransporterMailbox): Transporter {
+export async function transporterForMailbox(mailbox: TransporterMailbox): Promise<Transporter> {
+  // Task 51 — guard the REAL send path too, not just save/test time. Save-time
+  // validation (app/api/mailboxes/route.ts) stops NEW private-IP mailboxes from
+  // being stored, but a mailbox saved before the fix could otherwise drive an
+  // outbound connection straight at an internal address. Resolve + validate the
+  // host here before building any transport, then connect.
+  await validatePublicSmtpHost(mailbox.host);
   const password = decryptSecret(
     mailbox.encryptedPassword,
     mailbox.passwordIv,

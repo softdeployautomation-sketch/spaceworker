@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalBearer } from "@/lib/internal-auth";
 import { sweepCreateDueDailyRuns, sweepAdvanceFinishedRuns } from "@/lib/automation-run";
 
 // Task 27, Part B — the automation scheduler, a sibling of app/api/internal/dispatch
@@ -14,8 +15,7 @@ import { sweepCreateDueDailyRuns, sweepAdvanceFinishedRuns } from "@/lib/automat
 // This is NOT a long-lived in-process scheduler — it matches this repo's
 // existing dispatcher/queue-drain convention exactly.
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
+  if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

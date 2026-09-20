@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
+import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import type { Prisma } from "@prisma/client";
 
 export async function PUT(
@@ -61,6 +62,19 @@ export async function PUT(
     data.encryptedPassword = ciphertext;
     data.passwordIv = iv;
     data.passwordTag = tag;
+  }
+
+  // Task 51 — if the host is being changed, reject loopback/private/link-local /
+  // non-routable addresses at save time (same gate as CREATE and test-connection).
+  if (data.host !== undefined && typeof data.host === "string") {
+    try {
+      await validatePublicSmtpHost(data.host);
+    } catch (err) {
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "Invalid SMTP host" },
+        { status: 400 }
+      );
+    }
   }
 
   const mailbox = await prisma.mailbox.update({

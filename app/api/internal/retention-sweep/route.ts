@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 
 // Task 26, Piece 7d — 30-day SearchJob auto-deletion policy.
@@ -17,8 +18,7 @@ import { prisma } from "@/lib/prisma";
 // Anything else is left alone even when old: silently deleting a lead the user is
 // actively relying on would be a data-loss bug, not a cleanup.
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
+  if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 

@@ -1,6 +1,6 @@
 # Task 51 — Mailbox "Test connection" is an authenticated SSRF / internal port-scan oracle
 
-**Status: ready to build. Found during a security audit, 2026-09-20.**
+**Status: FIXED, 2026-09-20.** Found during a security audit, 2026-09-20. `app/api/mailboxes/test-connection/route.ts` now runs the host through `validatePublicSmtpHost()` (new `lib/smtp-host-guard.ts`) BEFORE any `buildSmtpTransport`/`verify()` call — it does a real DNS resolution (both IPv4+IPv6 families via `dns/promises`) and rejects loopback, RFC1918 private, link-local, CGNAT, and other non-routable ranges, failing closed if the host doesn't resolve at all. The same guard is applied at mailbox save time (`app/api/mailboxes/route.ts` create + `app/api/mailboxes/[id]/route.ts` update) so a private-IP host can never be stored, AND inside `transporterForMailbox` (`lib/mailer-send.ts`, now async) so the REAL send path — not just test/save — is guarded against any mailbox saved before the fix (the pre-existing-gap the original fix had missed). The route also got a `mailbox-test` rate limit (20/hr/IP). Verified live against the deployed server via a disposable E2E: a test-connection against `127.0.0.1:587` is rejected with `400` mentioning "non-routable" before any network call, while `smtp.gmail.com` passes the guard and reaches the SMTP attempt; `npx tsc --noEmit` is clean.
 
 ## The real gap, confirmed live in code (not assumed)
 
@@ -24,3 +24,7 @@ This is a fast oracle: the response is immediate and distinguishes connection-re
 - Confirm a test-connection request against `127.0.0.1:3500` (or any private-range host) is rejected before any network call is made.
 - Confirm a legitimate external SMTP host (e.g. a real Gmail/SMTP-relay test account) still passes.
 - Confirm repeated rapid test-connection calls from one account/IP get rate-limited.
+
+## Known follow-up (not in this batch)
+
+The guard resolves the host once at save/test time and checks that result, but nodemailer does its own independent DNS resolution later when it actually connects — a potential TOCTOU/DNS-rebinding gap (an attacker's DNS answers public at validation but private at connect, via a short TTL). Fully closing it would mean connecting to the already-validated IP directly (passing the resolved address as the connect host, keeping the original hostname only for TLS SNI/cert verification) rather than re-resolving at connect time. Out of scope for this task; worth its own follow-up if a higher-threat deployment needs it.

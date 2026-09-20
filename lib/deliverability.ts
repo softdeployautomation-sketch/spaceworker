@@ -72,7 +72,7 @@ export async function runTestSend(opts: {
   let sendError: string | undefined;
 
   try {
-    const transport = transporterForMailbox(opts.mailbox);
+    const transport = await transporterForMailbox(opts.mailbox);
     await transport.sendMail({
       // Task 30, item 4 — a test send is a one-shot per mailbox (no per-recipient
       // rotation has run here), so use the mailbox's first configured From

@@ -1,5 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
+import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { transporterForMailbox } from "@/lib/mailer-send";
@@ -30,8 +31,7 @@ type PinnedOverride = {
 //    just renders that item's variant subject/body with the recipient's CSV merge
 //    variables at send time, and still respects each mailbox's dailyLimit/sentToday.
 export async function POST(req: Request) {
-  const auth = req.headers.get("authorization");
-  if (auth !== `Bearer ${process.env.INTERNAL_BEARER_TOKEN}`) {
+  if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -160,11 +160,11 @@ export async function POST(req: Request) {
     }
     if (admit.length === 0) return;
 
-    let transport: ReturnType<typeof transporterForMailbox> | undefined;
+    let transport: Awaited<ReturnType<typeof transporterForMailbox>> | undefined;
     try {
-      transport = transporterForMailbox(mailbox);
+      transport = await transporterForMailbox(mailbox);
     } catch (e) {
-      const error = e instanceof Error ? e.message : "Unable to decrypt mailbox credentials";
+      const error = e instanceof Error ? e.message : "Unable to build SMTP transport";
       await prisma.emailQueueItem.updateMany({
         where: { id: { in: admit.map((i) => i.id) } },
         data: { status: "failed", error },
