@@ -63,6 +63,7 @@ from filters.email_domain_rules import (
     parse_email_domain_allowlist,
 )
 from filters.webmail_platforms import (
+    EXCLUDED_MX_GATEWAY_SUBSTRINGS,
     HOSTED_EMAIL_PROVIDERS,
     HOSTED_PROVIDER_MX_PATTERNS,
     WEBMAIL_PLATFORMS,
@@ -948,6 +949,14 @@ async def search_phase(query: str, params: dict, job_dir: str,
     webmail_platforms = [p for p in (params.get("webmailPlatforms") or []) if isinstance(p, str)]
 
     def _biased_query(q: str) -> str:
+        # Advanced Search job mode (see _search_and_extract's advanced_search_mode):
+        # a plain, unbiased query — same reasoning as the standalone Advanced
+        # Search page's Discover step (apply_webmail_bias_to_query's own
+        # docstring: combining intitle: with free text breaks search-engine
+        # relevance). PDF-biasing is equally wrong here — an Advanced Search
+        # result is a candidate BUSINESS DOMAIN to probe, not a document.
+        if params.get("advancedSearch") is True:
+            return q
         if webmail_platforms:
             return apply_webmail_bias_to_query(q, webmail_platforms)
         return _bias_query_toward_pdfs(q)
@@ -1351,6 +1360,12 @@ def detect_hosted_email_provider(domain: str, include_unrecognized: bool = False
     for pattern, label in HOSTED_PROVIDER_MX_PATTERNS:
         if pattern in mx_hosts:
             return label
+    # Spam-filter/security gateways (confirmed live 2026-09-20:
+    # "a1.spambusters.email" surfaced as an "Other" result) sit in front of
+    # a business's real mailbox rather than hosting it — real, but not what
+    # this fallback exists to report.
+    if any(s in mx_hosts for s in EXCLUDED_MX_GATEWAY_SUBSTRINGS):
+        return None
     if include_unrecognized:
         # MX "data" is "<priority> <hostname>." (e.g. "10 in1-smtp.example.com.") —
         # strip the priority number, keep just the hostname for display.
@@ -1474,13 +1489,19 @@ _DIRECTORY_DOMAIN_SUBSTRINGS = (
 # Clinic in Lahore" or "Top Rated Law Firm" as marketing copy (confirmed
 # live: dentalart.net.pk's real title is exactly that), so these can only
 # safely be checked at the START of a title, not anywhere in it.
-_DIRECTORY_TITLE_PREFIXES = ("top ", "best ", "list of", "directory of")
+_DIRECTORY_TITLE_PREFIXES = ("top ", "best ", "the best ", "list of", "directory of")
 # Contains-anywhere — confirmed live 2026-09-20: nairobionline.com passed
 # the domain-name check (its domain doesn't say "directory") but its title
 # was "Accounting & Bookkeeping Firms in Nairobi • Directory" — the word
 # appearing anywhere in a result title is a safe signal a real business
-# wouldn't organically use as its own page title.
-_DIRECTORY_TITLE_CONTAINS = ("directory", "listing")
+# wouldn't organically use as its own page title. "ranked"/"biggest"/
+# "largest"/"prestigious" added the same way after a broad, cityless query
+# ("law firms in usa") surfaced nothing BUT ranking/listicle pages using
+# exactly these words (thelawyersglobal.org, ilrg.com "350 Biggest Law
+# Firms", jdjournal.com "...Ranked 2025", legalcareerpath.com "10 Largest
+# Law Firms") — same "not something a real individual business's own title
+# organically says" reasoning as "directory"/"listing".
+_DIRECTORY_TITLE_CONTAINS = ("directory", "listing", "ranked", "biggest", "largest", "prestigious")
 
 
 def is_directory_or_infrastructure_domain(domain: str, title: str = "") -> bool:
@@ -1527,6 +1548,28 @@ def probe_domain_for_webmail(domain: str, platform_codes: list[str] | None) -> s
         if platform:
             return platform
     return None
+
+
+def crawl_contact_info(domain: str) -> list[dict]:
+    """Homepage + contact/about pages, reusing extract_lead_page exactly as
+    the normal Extract pipeline does — the same crawl, just synthesizing a
+    SearchResult for a domain already known to be real (confirmed by
+    probe_domain_for_webmail/probe_lead_for_webmail) instead of one found
+    via search. Returns EVERY distinct email found (a contact/team page can
+    legitimately list several people at one domain — each is its own real,
+    separately-reachable lead, not a duplicate to collapse to one). Empty
+    list if the site has no extractable contact info (common — many sites
+    only show a contact FORM, not plain-text email; not an error). Shared
+    by worker/api.py's /verify-domains (Advanced Search's interactive
+    Stage 2) and run_automation's advanced-search job mode (this module) —
+    one crawl implementation, not two.
+    """
+    result = SearchResult(title=domain, url=f"https://{domain}/", snippet="")
+    leads = extract_lead_page(result)
+    return [
+        {"email": l.get("email"), "phone": l.get("phone"), "contactName": l.get("contactName")}
+        for l in leads
+    ]
 
 
 def _extract_result(result: SearchResult,
@@ -1658,10 +1701,18 @@ async def _search_and_extract(
     seen_urls: set[str],
     domain_rules,
     on_step: Optional[AsyncStepCallable] = None,
+    seen_domains: Optional[set[str]] = None,
 ) -> list[dict]:
     """One pass: search every term in query_list, dedup against the SHARED
     seen_urls set (so a later expansion round never reprocesses a page an
     earlier round already extracted), then extract leads concurrently.
+
+    `seen_domains` (Advanced Search mode only — params["advancedSearch"] is
+    True): a SEPARATE shared dedup set, keyed by root domain rather than
+    exact URL, since Advanced Search's unit of work is "have we already
+    probed this domain" — the same business can legitimately appear under
+    several different result URLs (homepage, a directory listing it, a
+    news mention) that all resolve to one domain worth probing only once.
     Factored out of run_automation so the min-results loop can call this
     once per expansion round without duplicating the search/extract logic.
 
@@ -1683,6 +1734,25 @@ async def _search_and_extract(
         p for p in (params.get("webmailPlatforms") or []) if isinstance(p, str)
     ]
     verify_webmail = params.get("verifyWebmail") is True and not webmail_platforms
+
+    # Owner-requested 2026-09-20: Advanced Search as a real long-running
+    # background job — "keep going just the way the normal search works...
+    # up to 10000 leads... show the activity." Reuses this ENTIRE engine
+    # (lazy query growth, pause/resume, batching, deadline) unchanged;
+    # only process_one's per-result handling forks below. A plain,
+    # unbiased query (search_phase bypasses PDF/webmail-dork biasing when
+    # this flag is set — see search_phase's _biased_query) discovers
+    # candidate DOMAINS directly, independent of whether the search
+    # result's own page shows a plaintext email — the real gap the
+    # standalone Advanced Search page's Discover+Verify+Crawl flow filled
+    # that plain verify_webmail (which requires an email already found on
+    # the result page) does not.
+    advanced_search_mode = params.get("advancedSearch") is True
+    advanced_platform_codes: Optional[list[str]] = None
+    if advanced_search_mode:
+        raw_codes = params.get("platformCodes")
+        if isinstance(raw_codes, list):
+            advanced_platform_codes = [c for c in raw_codes if isinstance(c, str)] or None
 
     if len(query_list) == 1:
         # Single-query path: preserve the original failure semantics — a solo
@@ -1726,6 +1796,65 @@ async def _search_and_extract(
         def report_step_sync(text: str) -> None:
             if on_step is not None:
                 asyncio.run_coroutine_threadsafe(on_step(text), loop)
+
+        if advanced_search_mode:
+            # Candidate DOMAIN first (not a page extraction) — the real
+            # distinction from verify_webmail above: this works even when
+            # the search result's own page shows no plaintext email, since
+            # probe_domain_for_webmail + crawl_contact_info independently
+            # check candidate webmail URLs / MX records and crawl the
+            # domain's own contact/about pages, regardless of what DDG's
+            # snippet or homepage happened to show.
+            domain = extract_root_domain(result.url)
+            if not domain:
+                return []
+            if seen_domains is not None:
+                if domain in seen_domains:
+                    return []
+                seen_domains.add(domain)
+            if is_directory_or_infrastructure_domain(domain, result.title):
+                return []
+            report_step_sync(f"Checking {domain}…")
+            try:
+                platform = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        _EXTRACTION_EXECUTOR, probe_domain_for_webmail, domain, advanced_platform_codes
+                    ),
+                    timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                report_step_sync(f"Skipped (timed out): {domain}")
+                return []
+            if not platform:
+                return []
+            report_step_sync(f"Confirmed {platform} at {domain} — looking for a contact email…")
+            try:
+                contacts = await asyncio.wait_for(
+                    loop.run_in_executor(_EXTRACTION_EXECUTOR, crawl_contact_info, domain),
+                    timeout=PER_RESULT_HARD_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                contacts = []
+            # "one domain can have multiple users" (owner, 2026-09-20): one
+            # lead PER crawled email, not collapsed to one per domain. A
+            # domain with no crawlable email still gets one domain-only
+            # lead so a confirmed-but-quiet domain isn't lost.
+            emailed = [c for c in contacts if c.get("email")]
+            rows = emailed if emailed else [{"email": None, "phone": None, "contactName": None}]
+            kept: list[dict] = []
+            for c in rows:
+                lead = {
+                    "email": c.get("email"),
+                    "phone": c.get("phone"),
+                    "contactName": c.get("contactName"),
+                    "businessName": domain,
+                    "website": f"https://{domain}",
+                    "sourceUrl": f"https://{domain}",
+                    "snippet": f"Detected: {platform}",
+                }
+                await on_progress(lead)
+                kept.append(lead)
+            return kept
 
         # Hard per-result timeout: asyncio.gather() (below) has NO overall
         # timeout of its own -- if even ONE result's extraction hangs
@@ -1918,6 +2047,10 @@ async def run_automation(
                 break
 
     seen_urls: set[str] = set()
+    # Advanced Search job mode only (see _search_and_extract) — domain-level
+    # dedup, separate from seen_urls' exact-URL dedup (see that param's
+    # docstring for why a domain needs its own set).
+    seen_domains: set[str] = set()
     all_leads: list[dict] = []
 
     # -- Resume hooks: skip queries already fully processed in a prior paused run
@@ -1939,6 +2072,11 @@ async def run_automation(
             for u in prior_seen:
                 if isinstance(u, str):
                     seen_urls.add(u)
+        prior_seen_domains = resume_state.get("seenDomains")
+        if isinstance(prior_seen_domains, list):
+            for d in prior_seen_domains:
+                if isinstance(d, str):
+                    seen_domains.add(d)
 
     # -- Max-duration cap: wall-clock deadline checked at each query boundary
     # (behaves exactly like a pause when hit, so a duration-capped job can still be
@@ -1992,7 +2130,8 @@ async def run_automation(
         # — same isolation the old multi-query gather's return_exceptions gave.
         try:
             return await _search_and_extract(
-                [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step
+                [term], params, job_dir, on_progress, seen_urls, domain_rules, on_step,
+                seen_domains=seen_domains,
             )
         except Exception as e:  # noqa: BLE001 — deliberately captured, converted below
             return e
@@ -2066,6 +2205,7 @@ async def run_automation(
                 "processedQueries": ordered_queries[:stopped_at],
                 "nextQueryIndex": stopped_at,
                 "seenUrls": sorted(seen_urls),
+                "seenDomains": sorted(seen_domains),
                 "foundLeads": prior_found + len(all_leads),
                 "pauseReason": pause_reason,
             },

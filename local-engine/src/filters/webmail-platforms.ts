@@ -109,13 +109,27 @@ export const HOSTED_EMAIL_PROVIDERS: Record<string, string> = {
 // pattern is corrected from Wappalyzer's own listed one (a TXT check for
 // "transmail.net" — their separate transactional-email product, not Zoho
 // Mail's real inbox hosting) — confirmed against zoho.com's own MX records.
+//
+// Google's is "google.com" (broad), not just "aspmx.l.google.com" —
+// confirmed live 2026-09-20: jdjournal.com's real MX is "smtp.google.com"
+// (a newer Workspace MX format), which the narrower pattern missed.
 export const HOSTED_PROVIDER_MX_PATTERNS: Array<[string, string]> = [
-  ["aspmx.l.google.com", "Google Workspace"],
+  ["google.com", "Google Workspace"],
   ["googlemail.com", "Google Workspace"],
   ["outlook.com", "Microsoft 365"],
   ["mail.icloud.com", "Apple iCloud Mail"],
   ["protonmail.ch", "Proton Mail"],
   ["zoho.com", "Zoho Mail"],
+];
+
+// Excluded from the "Other (<mx host>)" unrecognized-provider fallback —
+// confirmed live 2026-09-20: "a1.spambusters.email" was surfaced as an
+// "Other" result. Spam-filtering/security gateways sit IN FRONT of a
+// business's real mailbox rather than hosting it — real, but not
+// informative about what platform the business is actually "on".
+export const EXCLUDED_MX_GATEWAY_SUBSTRINGS = [
+  "spambusters", "mimecast", "proofpoint", "barracudanetworks",
+  "barracuda.com", "trendmicro", "forcepoint",
 ];
 
 // Bounded probe candidates — checked in order, stopping at the first
@@ -223,6 +237,9 @@ export async function detectHostedEmailProvider(
   for (const [pattern, label] of HOSTED_PROVIDER_MX_PATTERNS) {
     if (mxHosts.includes(pattern)) return label;
   }
+  // Spam-filter/security gateways sit in front of a business's real mailbox
+  // rather than hosting it — real, but not what "Other" exists to report.
+  if (EXCLUDED_MX_GATEWAY_SUBSTRINGS.some((s) => mxHosts.includes(s))) return null;
   if (includeUnrecognized && mxRecords.length > 0) {
     // "data" is "<priority> <hostname>." — strip the priority, keep the host.
     const raw = mxRecords[0].data.replace(/\.$/, "");
@@ -334,10 +351,13 @@ const DIRECTORY_DOMAIN_SUBSTRINGS = [
 // Clinic in Lahore" as marketing copy (confirmed live: dentalart.net.pk's
 // real title is exactly that), so these can only safely be checked at the
 // START of a title.
-const DIRECTORY_TITLE_PREFIXES = ["top ", "best ", "list of", "directory of"];
+const DIRECTORY_TITLE_PREFIXES = ["top ", "best ", "the best ", "list of", "directory of"];
 // Contains-anywhere — confirmed live 2026-09-20: nairobionline.com passed
 // the domain-name check but its title was "...in Nairobi • Directory".
-const DIRECTORY_TITLE_CONTAINS = ["directory", "listing"];
+// "ranked"/"biggest"/"largest"/"prestigious" added the same way after a
+// broad, cityless query ("law firms in usa") surfaced nothing but
+// ranking/listicle pages using exactly these words.
+const DIRECTORY_TITLE_CONTAINS = ["directory", "listing", "ranked", "biggest", "largest", "prestigious"];
 
 export function isDirectoryOrInfrastructureDomain(domain: string, title = ""): boolean {
   const d = domain.toLowerCase();

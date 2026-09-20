@@ -50,7 +50,7 @@ interface JobDetail extends Job {
   leads: Lead[];
 }
 
-type Template = "lead" | "hr" | "plain";
+type Template = "lead" | "hr" | "plain" | "advanced-search";
 
 // Self-hosted webmail platforms this app can target (worker/filters/
 // webmail_platforms.py is the single source of truth for the codes and their
@@ -113,6 +113,32 @@ const TEMPLATES: { id: Template; label: string; description: string }[] = [
   { id: "lead", label: "Lead Search", description: "Find businesses and their contact info" },
   { id: "hr", label: "HR / Recruiting", description: "Find candidates / job postings" },
   { id: "plain", label: "Plain Search", description: "Open-ended web search" },
+  {
+    id: "advanced-search",
+    label: "Advanced Search",
+    description: "Find candidate domains, confirm their mail platform, crawl for a real contact email",
+  },
+];
+
+// Same 12 codes app/api/jobs/route.ts validates against — self-hosted
+// platforms (HTTP fingerprint) + hosted providers (MX record) + the
+// "other-hosted" opt-in for unrecognized-but-real providers. Owner-requested
+// 2026-09-20: Advanced Search as a real background job, same engine as
+// Lead Search (min leads / max duration / live activity / pause-resume),
+// not the standalone page's one-shot interactive checklist.
+const ADVANCED_SEARCH_PLATFORM_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: "google-workspace", label: "Google Workspace" },
+  { value: "microsoft-365", label: "Microsoft 365" },
+  { value: "zoho-mail", label: "Zoho Mail" },
+  { value: "icloud-mail", label: "Apple iCloud Mail" },
+  { value: "proton-mail", label: "Proton Mail" },
+  { value: "other-hosted", label: "Other (show unrecognized providers)" },
+  { value: "roundcube", label: "RoundCube" },
+  { value: "squirrelmail", label: "SquirrelMail" },
+  { value: "rainloop", label: "RainLoop" },
+  { value: "zimbra", label: "Zimbra" },
+  { value: "open-xchange", label: "Open-Xchange" },
+  { value: "cpanel", label: "cPanel Webmail" },
 ];
 
 const EXPERIENCE_LEVELS = ["", "Junior", "Mid", "Senior"];
@@ -183,6 +209,17 @@ export function WebExtractPage() {
   // matches the "the search we need is mostly emails for sending" ask: name +
   // email, not the full business/phone/website table.
   const [resultMode, setResultMode] = useState<"namesEmails" | "full" | "emailsOnly">("namesEmails");
+
+  // Advanced Search fields — a single query (not Find x Location
+  // cross-multiplied like Lead Search; matches the standalone Advanced
+  // Search page's simpler one-query UX) + which mail platforms to confirm.
+  // Reuses minResults/maxDurationMinutes above for its own "keep going
+  // until N leads" / duration cap — same meaning, same worker params, just
+  // rendered in this template's own section below.
+  const [advancedQuery, setAdvancedQuery] = useState("");
+  const [advancedPlatforms, setAdvancedPlatforms] = useState<string[]>(
+    ADVANCED_SEARCH_PLATFORM_OPTIONS.map((p) => p.value),
+  );
 
   // HR / Recruiting fields (scoped; automation coming soon)
   const [jobTitles, setJobTitles] = useState<string[]>(["Software Engineer"]);
@@ -284,6 +321,50 @@ export function WebExtractPage() {
           ? "HR / Recruiting automation is coming soon. Lead Search is ready end-to-end today."
           : "Plain Search automation is coming soon. Lead Search is ready end-to-end today."
       );
+      return;
+    }
+
+    if (template === "advanced-search") {
+      // Owner-requested 2026-09-20: Advanced Search as a real background
+      // job, same engine as Lead Search — min leads / max duration / live
+      // activity / pause-resume all reused unchanged (see
+      // worker/automation.py's advanced_search_mode). A single query, not
+      // Find x Location cross-multiplied — matches the standalone Advanced
+      // Search page's simpler UX.
+      const q = advancedQuery.trim();
+      if (!q) {
+        setFormError("Enter a search query");
+        return;
+      }
+      setSubmitting(true);
+      try {
+        const res = await fetch("/api/jobs", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            query: q,
+            template: "advanced-search",
+            params: {
+              engine: "ddg",
+              maxResults,
+              ...(minResults > 0 ? { minResults } : {}),
+              maxDurationMinutes,
+              resultMode,
+              platformCodes: advancedPlatforms,
+            },
+          }),
+        });
+        if (res.ok) {
+          void fetchJobs();
+        } else {
+          const d = (await res.json()) as { error?: string };
+          setFormError(d.error ?? "Failed to submit");
+        }
+      } catch {
+        setFormError("Network error");
+      } finally {
+        setSubmitting(false);
+      }
       return;
     }
 
@@ -995,6 +1076,66 @@ export function WebExtractPage() {
           </div>
         )}
 
+        {/* --- Advanced Search --- */}
+        {template === "advanced-search" && (
+          <div className="flex flex-col gap-3">
+            <input
+              type="text"
+              value={advancedQuery}
+              onChange={(e) => setAdvancedQuery(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") void submitJob(); }}
+              placeholder='e.g. "law firms in Lagos Nigeria"'
+              className="rounded-lg border border-border bg-input px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-500"
+            />
+            <div>
+              <p className="mb-1.5 text-sm font-medium text-fg">Mail platforms to confirm</p>
+              <div className="flex flex-wrap gap-x-4 gap-y-1.5">
+                {ADVANCED_SEARCH_PLATFORM_OPTIONS.map((opt) => (
+                  <label key={opt.value} className="flex items-center gap-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={advancedPlatforms.includes(opt.value)}
+                      onChange={(e) =>
+                        setAdvancedPlatforms((prev) =>
+                          e.target.checked ? [...prev, opt.value] : prev.filter((v) => v !== opt.value),
+                        )
+                      }
+                      className="h-4 w-4 cursor-pointer"
+                    />
+                    {opt.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Keep going until (leads):</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={minResults}
+                  onChange={(e) => setMinResults(Number(e.target.value) || 0)}
+                  className="w-24 rounded border border-border bg-input px-2 py-1 text-sm"
+                />
+              </label>
+              <label className="flex items-center gap-2">
+                <span className="text-fg-muted">Max duration (min):</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={180}
+                  value={maxDurationMinutes}
+                  onChange={(e) => setMaxDurationMinutes(Number(e.target.value) || 30)}
+                  className="w-20 rounded border border-border bg-input px-2 py-1 text-sm"
+                />
+              </label>
+              <span className="text-xs text-fg-muted">
+                Runs as a real background job — live activity, pause/resume, same as Lead Search.
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="flex gap-2 items-center">
           <button
             onClick={() => void submitJob()}
@@ -1003,7 +1144,7 @@ export function WebExtractPage() {
           >
             {submitting ? "Submitting…" : "Search"}
           </button>
-          {template !== "lead" && (
+          {template !== "lead" && template !== "advanced-search" && (
             <span className="text-xs text-fg-muted">Automation for this template ships separately — Lead Search is ready now.</span>
           )}
         </div>

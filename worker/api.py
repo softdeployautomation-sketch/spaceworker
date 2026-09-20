@@ -35,8 +35,7 @@ from pydantic import BaseModel, Field
 
 from automation import (
     DDGBlockedError,
-    SearchResult,
-    extract_lead_page,
+    crawl_contact_info,
     extract_root_domain,
     is_directory_or_infrastructure_domain,
     probe_domain_for_webmail,
@@ -394,23 +393,11 @@ class VerifyDomainsRequest(BaseModel):
     findContactInfo: bool = True
 
 
-def _crawl_contact_info(domain: str) -> list[dict]:
-    """Homepage + contact/about pages, reusing extract_lead_page exactly as
-    the normal Extract pipeline does — the same crawl, just synthesizing a
-    SearchResult for a domain we already know is real instead of one found
-    via search. Returns EVERY distinct email extract_lead_page found (a
-    contact/team page can legitimately list several people at one domain —
-    owner-requested 2026-09-20: "one domain can have multiple users",
-    each is its own real, separately-reachable lead, not a duplicate to
-    collapse down to one). Empty list if the site has no extractable
-    contact info (common — many sites only show a contact FORM, not
-    plain-text email; not an error, just nothing to report)."""
-    result = SearchResult(title=domain, url=f"https://{domain}/", snippet="")
-    leads = extract_lead_page(result)
-    return [
-        {"email": l.get("email"), "phone": l.get("phone"), "contactName": l.get("contactName")}
-        for l in leads
-    ]
+# crawl_contact_info now lives in automation.py — shared with
+# run_automation's advanced-search job mode so there's one crawl
+# implementation, not two. Kept as a plain alias here since every call
+# site below already says `_crawl_contact_info`.
+_crawl_contact_info = crawl_contact_info
 
 
 @app.post("/verify-domains")

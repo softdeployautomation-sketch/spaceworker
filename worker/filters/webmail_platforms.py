@@ -133,14 +133,32 @@ HOSTED_EMAIL_PROVIDERS: dict[str, str] = {
 # (a TXT check for "transmail.net", which is their separate transactional-
 # email product, not Zoho Mail's real inbox hosting) — confirmed directly
 # against zoho.com's own MX records (smtpin*.zoho.com), 2026-09-20.
+#
+# Google's is "google.com" (broad), not just "aspmx.l.google.com" — confirmed
+# live 2026-09-20: jdjournal.com's real MX is "smtp.google.com" (a newer
+# Workspace MX format), which the narrower pattern missed and fell through
+# to the generic "Other" fallback.
 HOSTED_PROVIDER_MX_PATTERNS: list[tuple[str, str]] = [
-    ("aspmx.l.google.com", "Google Workspace"),
+    ("google.com", "Google Workspace"),
     ("googlemail.com", "Google Workspace"),
     ("outlook.com", "Microsoft 365"),
     ("mail.icloud.com", "Apple iCloud Mail"),
     ("protonmail.ch", "Proton Mail"),
     ("zoho.com", "Zoho Mail"),
 ]
+
+# Excluded from the "Other (<mx host>)" unrecognized-provider fallback —
+# confirmed live 2026-09-20: "a1.spambusters.email" was surfaced as an
+# "Other" result. Spam-filtering/security gateways sit IN FRONT of a
+# business's real mailbox (proxying/scanning mail, not hosting it) — real,
+# but not informative about what platform the business is actually "on",
+# the whole point of this fallback. Not exhaustive; add to this as more
+# gateway vendors turn up the same way this one did (real data, not
+# speculation).
+EXCLUDED_MX_GATEWAY_SUBSTRINGS = (
+    "spambusters", "mimecast", "proofpoint", "barracudanetworks",
+    "barracuda.com", "trendmicro", "forcepoint",
+)
 
 # Reasonable, bounded candidate paths for the PROBE mode — checked in this
 # order, stopping at the first confirmed match (see the automation.py caller).

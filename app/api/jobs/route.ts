@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { createSearchJob } from "@/lib/create-search-job";
 
-const TEMPLATES = ["lead", "hr", "plain", "upload"] as const;
+const TEMPLATES = ["lead", "hr", "plain", "upload", "advanced-search"] as const;
 type Template = (typeof TEMPLATES)[number];
 
 function isTemplate(value: unknown): value is Template {
@@ -103,7 +103,7 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
-  if (template !== "lead") {
+  if (template !== "lead" && template !== "advanced-search") {
     // HR/Plain Search have no automation backend yet (per PLAN.md Addendum 5 they
     // need their own pipeline, not this lead engine). Refuse to run the lead engine
     // against their input — never silently run the wrong engine.
@@ -240,11 +240,34 @@ export async function POST(req: Request) {
   //   verifyWebmail: true -> VERIFY mode, probe each normally-found lead's
   //     own domain for a webmail signature before keeping it (slower — real
   //     extra network requests per lead).
-  const WEBMAIL_PLATFORM_CODES = ["roundcube", "squirrelmail", "rainloop", "zimbra", "open-xchange"];
-  const webmailPlatforms = sanitizeStringArray(rawParams.webmailPlatforms, 5).filter((p) =>
+  // Bug fix (2026-09-20): this list predated cPanel Webmail and the 6
+  // Google Workspace/Microsoft 365/etc. hosted-provider codes added the
+  // same day — any of those sent here were silently dropped by the
+  // `.includes(p)` filter. Keep in sync with
+  // local-engine/src/filters/webmail-platforms.ts's WEBMAIL_PLATFORMS +
+  // HOSTED_EMAIL_PROVIDERS keys (+ "other-hosted").
+  const WEBMAIL_PLATFORM_CODES = [
+    "roundcube", "squirrelmail", "rainloop", "zimbra", "open-xchange", "cpanel",
+    "google-workspace", "microsoft-365", "zoho-mail", "icloud-mail", "proton-mail", "other-hosted",
+  ];
+  const webmailPlatforms = sanitizeStringArray(rawParams.webmailPlatforms, WEBMAIL_PLATFORM_CODES.length).filter((p) =>
     WEBMAIL_PLATFORM_CODES.includes(p),
   );
   const verifyWebmail = rawParams.verifyWebmail === true;
+
+  // Advanced Search as a real background job (owner-requested 2026-09-20:
+  // "keep going just the way the normal search works... up to 10000
+  // leads... show the activity") — reuses this whole route/dispatcher/
+  // worker pipeline unchanged; only worker/automation.py's process_one
+  // forks its per-result handling on params.advancedSearch (see that
+  // module for why: discovers candidate DOMAINS directly rather than
+  // requiring an email already found on the search result's own page).
+  const advancedSearch = template === "advanced-search";
+  const platformCodes = advancedSearch
+    ? sanitizeStringArray(rawParams.platformCodes, WEBMAIL_PLATFORM_CODES.length).filter((p) =>
+        WEBMAIL_PLATFORM_CODES.includes(p),
+      )
+    : [];
 
   const params = {
     engine,
@@ -259,6 +282,7 @@ export async function POST(req: Request) {
     ...(locationTerms.length > 0 ? { locationTerms } : {}),
     ...(webmailPlatforms.length > 0 ? { webmailPlatforms } : {}),
     ...(verifyWebmail ? { verifyWebmail } : {}),
+    ...(advancedSearch ? { advancedSearch: true, platformCodes } : {}),
     template,
   };
   const displayQuery = uniqueQueries.length === 1 ? uniqueQueries[0] : uniqueQueries.join(" | ");
