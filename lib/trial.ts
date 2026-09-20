@@ -1,6 +1,7 @@
 import "server-only";
 
 import { Prisma } from "@prisma/client";
+import { resolveUserTier } from "./premium";
 
 // Tier 1 trial — for all free users: 15 min/day per tool, never prioritized
 // over Premium.
@@ -213,11 +214,8 @@ export async function finalizeMailerStretch(
   campaign: { id: string; userId: string; sendingStartedAt: Date | null },
 ): Promise<void> {
   if (!campaign.sendingStartedAt) return;
-  const owner = await tx.user.findUnique({
-    where: { id: campaign.userId },
-    select: { tier: true },
-  });
-  if (owner && !isPremiumTier(owner.tier)) {
+  const ownerTier = await resolveUserTier(tx, campaign.userId);
+  if (ownerTier !== null && !isPremiumTier(ownerTier)) {
     await recordTrialRun(tx, {
       userId: campaign.userId,
       tool: MAILER_TOOL,

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { createProfileDir } from "@/lib/browser-profiles";
 import { PROFILE_SAFE_SELECT } from "@/lib/browser-profile-safe-select";
+import { resolveUserTier } from "@/lib/premium";
 
 // GET /api/browser-profiles — list the signed-in user's profiles.
 export async function GET() {
@@ -49,14 +50,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { tier: true },
-  });
+  const tier = await resolveUserTier(prisma, session.userId);
   // Tier 1 trial — only Premium (tier 5) has Pro features; tier 1 is the free
   // trial and must NOT get them (previously `tier < 1`, which would have let a
   // trial user through once the default became 1).
-  if (!user || user.tier < 5) {
+  if (tier === null || tier < 5) {
     return NextResponse.json(
       { error: "Pro plan required to create browser profiles" },
       { status: 403 }

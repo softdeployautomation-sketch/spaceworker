@@ -10,6 +10,7 @@ import {
 } from "./license-claim";
 import { getProduct } from "./products";
 import { env } from "./env";
+import { grantPremium, PREMIUM_DAYS_PER_CHARGE } from "./premium";
 
 // Task 42, item 5 — the one place that finalizes an APPROVED payment into its
 // product's consequence. All three approval paths funnel through here:
@@ -66,7 +67,13 @@ async function bumpWebTier(userId: string): Promise<void> {
   // Tier 1 trial — Premium is tier 5 (was 1). tier 1 is now the free trial;
   // a real web-subscription payment must always grant the FULL paid tier and
   // never the trial. No-op-safe: idempotent for an already-5 account.
-  await db.user.update({ where: { id: userId }, data: { tier: 5 } });
+  //
+  // Task 55 — now time-limited: real web-subscription payments get a 30-day
+  // premium term (matching how the store page already markets "$79.97 / month"
+  // as a recurring charge). Existing pre-task tier-5 users with premiumExpiresAt
+  // null stay grandfathered forever (see lib/premium.ts). Behavior change for
+  // FUTURE purchases only — flagged in the Task 55 report.
+  await grantPremium(userId, PREMIUM_DAYS_PER_CHARGE);
 }
 
 async function issueExeLicense(payment: {

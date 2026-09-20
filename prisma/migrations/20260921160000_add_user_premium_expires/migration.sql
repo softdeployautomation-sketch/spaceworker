@@ -1,0 +1,13 @@
+-- Task 55 — time-limited premium for SpaceWorker (per-User, mirrors Vantra's
+-- per-Org model but on User.tier).
+--
+-- Semantics (see the schema comment / lib/premium.ts — careful, DIFFERENT from
+-- Vantra): premiumExpiresAt NULL on an EXISTING tier-5 user (created before this
+-- field) means GRANDFATHERED / never expires — the check-on-read reversion never
+-- touches them. NOTHING is backfilled here on purpose: backfilling a fake date
+-- would silently downgrade real paying customers at the first read.
+--
+-- New grants (admin comp or future web-sub payments via grantPremium/bumpWebTier)
+-- always write a real, non-null premiumExpiresAt; once it passes, the lazy
+-- reversion in lib/premium.ts flips tier back to 1 on the next gate read.
+ALTER TABLE "User" ADD COLUMN "premiumExpiresAt" TIMESTAMP(3);

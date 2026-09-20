@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { createSearchJob } from "@/lib/create-search-job";
+import { resolveUserTier } from "@/lib/premium";
 
 const TEMPLATES = ["lead", "hr", "plain", "upload", "advanced-search"] as const;
 type Template = (typeof TEMPLATES)[number];
@@ -323,11 +324,8 @@ export async function POST(req: Request) {
         : `Domain filter: ${targetDomains.length} domain(s)`;
   const resolvedLane = lane === "heavy" || engine === "google" ? "heavy" : "light";
 
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { tier: true },
-  });
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const tier = await resolveUserTier(prisma, session.userId);
+  if (tier === null) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const job = await createSearchJob({
     userId: session.userId,
@@ -335,7 +333,7 @@ export async function POST(req: Request) {
     template,
     params: params as Prisma.InputJsonValue,
     lane: resolvedLane,
-    priorityTier: user.tier,
+    priorityTier: tier,
   });
 
   return NextResponse.json(job, { status: 201 });

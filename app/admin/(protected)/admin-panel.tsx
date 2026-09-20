@@ -10,6 +10,7 @@ type AdminUser = {
   id: string;
   email: string;
   tier: number;
+  premiumExpiresAt: string | null;
   emailVerified: boolean;
   createdAt: string;
   // Tier 1 trial — today's usage per tool in seconds, keyed by tool name
@@ -186,6 +187,8 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [grantingId, setGrantingId] = useState<string | null>(null);
+  const [grantMsg, setGrantMsg] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
   async function saveTier(userId: string) {
@@ -222,6 +225,34 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
     }
   }
 
+  async function grantPremium(userId: string) {
+    setError("");
+    setGrantingId(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/grant-premium`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === data.id ? { ...u, tier: data.tier, premiumExpiresAt: data.premiumExpiresAt } : u)),
+        );
+        setGrantMsg((prev) => ({
+          ...prev,
+          [userId]: `✓ expired ${new Date(data.premiumExpiresAt).toLocaleDateString()}`,
+        }));
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to grant premium");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setGrantingId(null);
+    }
+  }
+
   return (
     <div>
       <h2 className="text-2xl font-semibold tracking-tight">Users</h2>
@@ -237,7 +268,8 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               <th className="px-4 py-3 font-medium">Email</th>
               <th className="px-4 py-3 font-medium">Tier</th>
-              <th className="px-4 py-3 font-medium">Today's usage</th>
+              <th className="px-4 py-3 font-medium">Premium / Usage</th>
+              <th className="px-4 py-3 font-medium">Grant</th>
               <th className="px-4 py-3 font-medium">Verified</th>
               <th className="px-4 py-3 font-medium">Created</th>
             </tr>
@@ -269,12 +301,31 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
                 </td>
                 <td className="px-4 py-3">
                   {user.tier >= 5 ? (
-                    <span className="text-xs text-zinc-400 dark:text-zinc-500">Premium — unmetered</span>
+                    <div className="space-y-0.5">
+                      <span className="text-xs text-zinc-400 dark:text-zinc-500">Premium</span>
+                      <span className="block text-xs text-zinc-500 dark:text-zinc-400">
+                        {user.premiumExpiresAt === null
+                          ? "— never expires (grandfathered)"
+                          : `expires ${new Date(user.premiumExpiresAt).toLocaleDateString()}`}
+                      </span>
+                    </div>
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
                       <UsageBadge seconds={user.usageToday.extractor ?? 0} />
                       <UsageBadge seconds={user.usageToday.mailer ?? 0} />
                     </div>
+                  )}
+                </td>
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => grantPremium(user.id)}
+                    disabled={grantingId === user.id}
+                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                  >
+                    {grantingId === user.id ? "Granting…" : user.tier >= 5 ? "+30 days" : "Grant 30d"}
+                  </button>
+                  {grantMsg[user.id] && (
+                    <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
                   )}
                 </td>
                 <td className="px-4 py-3">

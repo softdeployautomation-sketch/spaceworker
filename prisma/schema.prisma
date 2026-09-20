@@ -22,6 +22,16 @@ model User {
   // IMPORTANT: every "has Pro" branch must test `>= 5`, never `>= 1`, or a trial
   // user would silently get a paid feature and a paying customer would lose one.
   tier             Int                @default(1)
+  // Task 55 — time-limited premium. In SpaceWorker, tier is per-User (unlike
+  // Vantra's per-Organization). NULLABLE semantics differ from Vantra by design:
+  //   - NULL on an EXISTING tier:5 user (created BEFORE this field existed) =
+  //     GRANDFATHERED, never expires. The reversion check (premiumExpiresAt ===
+  //     null) never touches them — never backfill a date here or you'd silently
+  //     downgrade every existing paying customer.
+  //   - NULL on a tier < 5 user = "not premium / free", meaningless.
+  //   - non-NULL = a real premium term; every NEW grant / web-sub charge sets
+  //     this. When it passes, the lazy check-on-read flips tier back to 1.
+  premiumExpiresAt DateTime?
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links

@@ -9,7 +9,7 @@ export default async function AdminPage() {
   if (!isAdmin) redirect("/admin/login");
 
   const users = await prisma.user.findMany({
-    select: { id: true, email: true, tier: true, emailVerified: true, createdAt: true },
+    select: { id: true, email: true, tier: true, premiumExpiresAt: true, emailVerified: true, createdAt: true },
     orderBy: { createdAt: "desc" },
   });
 
@@ -34,6 +34,7 @@ export default async function AdminPage() {
       initialUsers={users.map((u) => ({
         ...u,
         createdAt: u.createdAt.toISOString(),
+        premiumExpiresAt: u.premiumExpiresAt ? u.premiumExpiresAt.toISOString() : null,
         usageToday: usageByUser.get(u.id) ?? {},
       }))}
     />

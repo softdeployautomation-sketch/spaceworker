@@ -6,6 +6,7 @@ import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { getAdminSettings } from "@/lib/admin-settings";
+import { resolveUserTier } from "@/lib/premium";
 import {
   proxyServerValue as buildProxyArg,
   checkIpThroughProxy,
@@ -100,12 +101,9 @@ export async function POST(req: Request) {
   }
 
   // Pro tier required (browser profiles are a Pro feature too).
-  const user = await prisma.user.findUnique({
-    where: { id: session.userId },
-    select: { tier: true },
-  });
+  const tier = await resolveUserTier(prisma, session.userId);
   // Tier 1 trial — only Premium (tier 5) has Pro features.
-  if (!user || user.tier < 5) {
+  if (tier === null || tier < 5) {
     return NextResponse.json(
       { error: "Pro plan required to start a browser session" },
       { status: 403 }

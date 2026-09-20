@@ -7,6 +7,7 @@ import { leadToRecipient, type RecipientInput } from "@/lib/campaign-recipients"
 import { notifyUser } from "@/lib/notify";
 import { env } from "@/lib/env";
 import { usableTemplateWhere } from "@/lib/campaign-templates";
+import { resolveUserTier } from "@/lib/premium";
 
 // Task 27, Part B — the run orchestrator shared by POST /api/automations/[id]/run
 // and the internal daily sweep. There is deliberately NO new extraction or send
@@ -256,10 +257,7 @@ export async function kickOffRun(automation: AutomationShape): Promise<{ runId: 
     return { runId: run.id };
   }
 
-  const user = await prisma.user.findUnique({
-    where: { id: automation.userId },
-    select: { tier: true },
-  });
+  const userTier = await resolveUserTier(prisma, automation.userId);
   const rawParams = (automation.params ?? {}) as Record<string, unknown>;
   const engine = rawParams.engine === "google" ? "google" : "duckduckgo";
   const lane = engine === "google" ? "heavy" : "light";
@@ -277,7 +275,7 @@ export async function kickOffRun(automation: AutomationShape): Promise<{ runId: 
     template: "lead",
     params,
     lane,
-    priorityTier: user?.tier ?? 0,
+    priorityTier: userTier ?? 0,
   });
 
   await prisma.campaignAutomationRun.update({
