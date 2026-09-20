@@ -371,6 +371,14 @@ model Payment {
   // product that has ever existed. "web_subscription" | "extractor_exe" |
   // "mailer_exe" | "combined_exe" | "automation_exe".
   product      String                       @default("web_subscription")
+  // 2026-09-20 — owner: "if anyone wants to buy more on there license they
+  // can buy for 1 year, and also for 1 month, just let the calculator do
+  // its thing". EXE-only; null means "the product's standard term"
+  // (EXE_LICENSE_DAYS, 180 = 6 months) — every pre-existing row and every
+  // web_subscription payment stays null, unaffected. Set at checkout time,
+  // read back by issueExeLicense (lib/license-service.ts) to mint the
+  // license for the ACTUAL term paid for instead of always 180 days.
+  durationDays Int?
   status       String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
   autoApproved Boolean                      @default(false)
   createdAt    DateTime                     @default(now())
@@ -468,6 +476,32 @@ model ExeLicenseTransfer {
 
   @@index([exeLicenseId, transferredAt])
   @@index([userId])
+}
+
+// 2026-09-20 — owner: "a subtab showing every free users device active for
+// that 24hrs, and can leave after they get binded." Server-side visibility
+// into the EXE's silent 24h trial (lib/license-state.ts), which is otherwise
+// ENTIRELY local to each machine — the admin has no way to see it today.
+// Pinged (upsert) by the EXE-local /api/exe-license/status route whenever a
+// device is in trial, fire-and-forget, same as every other admin-alert
+// integration this session — a ping failure must never affect the trial
+// gate itself. No user/email FK: a trial is anonymous by design, identified
+// only by machineId (+ product, since one machine could run more than one
+// EXE variant). The admin subtab computes "still active" as
+// now - startedAt < 24h (the exact same rule lib/license-state.ts's
+// trialActive() uses) and excludes any row whose machineId+product now has a
+// bound ExeLicense — "leaves" the trial list once claimed, since it's no
+// longer a free/trial device at that point.
+model ExeTrialSession {
+  id           String   @id @default(cuid())
+  machineId    String
+  product      String
+  machineLabel String?
+  startedAt    DateTime
+  lastSeenAt   DateTime @default(now())
+
+  @@unique([machineId, product])
+  @@index([startedAt])
 }
 
 model PaymentVerificationAttempt {

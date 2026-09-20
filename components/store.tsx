@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Modal } from "@/components/modal";
 import { Badge, Button, Card } from "@/components/ui";
 import { copyToClipboard } from "@/lib/clipboard";
+import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products";
 
 type Product = {
   id: string;
@@ -107,8 +108,9 @@ function StoreCard({
 
       <p className="mt-4 text-2xl font-bold text-fg">
         ${product.priceUsd.toFixed(2)}
-        {isWeb && <span className="text-sm font-normal text-fg-muted"> / month</span>}
+        <span className="text-sm font-normal text-fg-muted"> / {isWeb ? "month" : "6 months"}</span>
       </p>
+      {!isWeb && <p className="text-xs text-fg-muted">1 month and 1 year terms available at checkout.</p>}
 
       <div className="mt-auto pt-4">
         {isWeb ? (
@@ -150,6 +152,7 @@ function StoreCard({
 
 function CheckoutModal({ product, onClose }: { product: Product; onClose: () => void }) {
   const [kind, setKind] = useState<Kind>("btc");
+  const [durationDays, setDurationDays] = useState(DEFAULT_EXE_DURATION_DAYS);
   const [checkout, setCheckout] = useState<CheckoutInfo | null>(null);
   const [loadingInfo, setLoadingInfo] = useState(false);
   const [email, setEmail] = useState("");
@@ -169,9 +172,9 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
       setCheckout(null);
       setError("");
       setLoadingInfo(true);
-      const res = await fetch(
-        `/api/billing/checkout?kind=${kind}&product=${encodeURIComponent(product.id)}`,
-      );
+      const qs = new URLSearchParams({ kind, product: product.id });
+      if (product.kind === "exe") qs.set("durationDays", String(durationDays));
+      const res = await fetch(`/api/billing/checkout?${qs.toString()}`);
       const data = await res.json().catch(() => ({}));
       if (!cancelled) {
         setLoadingInfo(false);
@@ -182,7 +185,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
     return () => {
       cancelled = true;
     };
-  }, [kind, product.id]);
+  }, [kind, product.id, product.kind, durationDays]);
 
   async function copy(value: string) {
     const ok = await copyToClipboard(value);
@@ -216,6 +219,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
           txHash: hash,
           product: product.id,
           email: email.trim().toLowerCase() || undefined,
+          durationDays: product.kind === "exe" ? durationDays : undefined,
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -282,6 +286,28 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
               ))}
             </div>
           </div>
+
+          {product.kind === "exe" && (
+            <div>
+              <p className="text-sm font-medium text-fg">License term</p>
+              <div className="mt-2 flex gap-2">
+                {EXE_DURATION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.days}
+                    type="button"
+                    onClick={() => setDurationDays(opt.days)}
+                    className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
+                      durationDays === opt.days
+                        ? "bg-brand-600 text-white"
+                        : "border border-border bg-bg-elevated text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <label className="block">
             <span className="text-sm font-medium text-fg">Email for your license key</span>

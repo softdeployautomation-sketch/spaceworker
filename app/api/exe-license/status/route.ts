@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
+import { hostname } from "os";
 
 import { exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
-import { isLocalExeRuntime } from "@/lib/exe-runtime";
+import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
+import { exeBuildTarget } from "@/lib/exe-build-target";
 import { getMachineId, validateMachineId } from "@/lib/machine-id";
 import {
   readLocalState,
@@ -11,6 +13,33 @@ import {
   trialHoursLeft,
   TRIAL_HOURS,
 } from "@/lib/license-state";
+
+// Owner-requested 2026-09-20: "a subtab showing every free users device
+// active for that 24hrs". Fire-and-forget — never awaited by the caller,
+// never allowed to affect the trial gate this route exists to answer. Best-
+// effort hostname for the admin subtab's display only, never a security
+// boundary (matches every other machineLabel in this codebase).
+function pingTrialStatus(machineId: string, trialStartedAt: string): void {
+  void fetch(`${HOSTED_APP_URL}/api/exe-license/trial-ping`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      machineId,
+      product: `${exeBuildTarget()}_exe`,
+      trialStartedAt,
+      machineLabel: (() => {
+        try {
+          return hostname();
+        } catch {
+          return undefined;
+        }
+      })(),
+    }),
+    signal: AbortSignal.timeout(8_000),
+  }).catch(() => {
+    // Best-effort only — a failed ping must never surface to the trial gate.
+  });
+}
 
 // POST /api/exe-license/status — the LOCAL licensing gate status, read from this
 // machine's filesystem (no database, no session auth — see lib/exe-runtime.ts
@@ -71,6 +100,10 @@ export async function POST() {
 
   if (trialActive(started, now)) {
     const hoursLeft = trialHoursLeft(started, now);
+    if (started.trialStartedAt) {
+      const currentMachineId = (await getMachineId()).toLowerCase();
+      pingTrialStatus(currentMachineId, started.trialStartedAt);
+    }
     return NextResponse.json({
       licensed: false,
       inTrial: true,

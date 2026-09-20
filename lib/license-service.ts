@@ -73,6 +73,7 @@ async function issueExeLicense(payment: {
   id: string;
   userId: string;
   product: string;
+  durationDays?: number | null;
   user: { id: string; email: string };
 }): Promise<void> {
   const productId = payment.product;
@@ -86,9 +87,14 @@ async function issueExeLicense(payment: {
     throw new Error(`Unknown EXE product for payment ${payment.id}: "${productId}"`);
   }
 
+  // The term actually paid for (1/6/12 months) — null/unset means the
+  // product's standard 180-day term, unchanged from before this existed.
+  const daysValid = payment.durationDays ?? undefined;
+
   const { licenseKey, expiresAt } = generateLicenseKey({
     licensee: payment.user.email,
     plan: product.plan,
+    daysValid,
     product: productId,
   });
 

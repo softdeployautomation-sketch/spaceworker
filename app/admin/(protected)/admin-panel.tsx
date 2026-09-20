@@ -2271,7 +2271,110 @@ function ExeLicensesTab() {
 
       <RecentLicensesTable />
 
+      <ActiveTrialsSection />
+
       <ExeLicenseClaimSection />
+    </div>
+  );
+}
+
+interface AdminTrialRow {
+  id: string;
+  machineId: string;
+  machineLabel: string | null;
+  product: string;
+  productName: string;
+  startedAt: string;
+  lastSeenAt: string;
+  endsAt: string;
+  hoursLeft: number;
+}
+
+// Owner-requested 2026-09-20: "a subtab showing every free users device
+// active for that 24hrs, and can leave after they get binded." Server-side
+// visibility into the EXE's otherwise entirely-local 24h trial (pinged by
+// /api/exe-license/status whenever a device reports inTrial:true). Rows
+// disappear on their own once the 24h window lapses (the GET route filters
+// server-side) or once that machine claims a real license (also filtered
+// server-side) — nothing to manually clear here.
+function ActiveTrialsSection() {
+  const [rows, setRows] = useState<AdminTrialRow[] | null>(null);
+  const [error, setError] = useState("");
+
+  async function load() {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/exe-trials");
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.trials)) {
+        setRows(data.trials);
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to load active trials.");
+      }
+    } catch {
+      setError("Network error loading active trials.");
+    }
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  return (
+    <div className="mt-8 rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex items-center justify-between px-4 py-3">
+        <div>
+          <h3 className="text-lg font-semibold tracking-tight">Active trials (last 24h)</h3>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            Unlicensed devices currently inside their free 24h trial window. Leaves this list once bound
+            to a license, or once the trial lapses.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+        >
+          Refresh
+        </button>
+      </div>
+      {error && <p className="px-4 pb-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {rows === null && !error && (
+        <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      )}
+      {rows && rows.length === 0 && (
+        <p className="px-4 pb-4 text-sm text-zinc-500 dark:text-zinc-400">No active trials right now.</p>
+      )}
+      {rows && rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="border-t border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+              <tr>
+                <th className="px-4 py-2">Device</th>
+                <th className="px-4 py-2">Product</th>
+                <th className="px-4 py-2">Started</th>
+                <th className="px-4 py-2">Time left</th>
+                <th className="px-4 py-2">Last seen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id} className="border-t border-zinc-100 dark:border-zinc-800">
+                  <td className="px-4 py-2 font-mono text-xs" title={r.machineId}>
+                    {r.machineLabel ?? r.machineId.slice(0, 16) + "…"}
+                  </td>
+                  <td className="px-4 py-2">{r.productName}</td>
+                  <td className="px-4 py-2">{new Date(r.startedAt).toLocaleString()}</td>
+                  <td className="px-4 py-2">{r.hoursLeft.toFixed(1)}h</td>
+                  <td className="px-4 py-2 text-zinc-500 dark:text-zinc-400">
+                    {new Date(r.lastSeenAt).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

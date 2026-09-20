@@ -5,7 +5,13 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
 import { findOrCreateUser } from "@/lib/find-or-create-user";
-import { getProduct, WEB_SUBSCRIPTION } from "@/lib/products";
+import {
+  getProduct,
+  WEB_SUBSCRIPTION,
+  DEFAULT_EXE_DURATION_DAYS,
+  isValidExeDurationDays,
+  calculateExePrice,
+} from "@/lib/products";
 
 const KINDS = ["btc", "usdt_trc20", "usdt_erc20"] as const;
 type Kind = (typeof KINDS)[number];
@@ -14,17 +20,23 @@ function isEmail(v: unknown): v is string {
   return typeof v === "string" && v.trim().length > 0 && v.includes("@");
 }
 
-// POST /api/billing/submit — body: { kind, txHash, product?, email? }
+// POST /api/billing/submit — body: { kind, txHash, product?, email?, durationDays? }
 //
 // product defaults to web_subscription (back-compat). For a web subscription an
 // existing session is required and the email is ignored. For an EXE product the
 // buyer may be a not-yet-signed-up visitor: an email is required then, and a
 // User row is created inline if one doesn't exist yet (the license is delivered
 // to that address) — Task 27 Part A's "no account required first" buy path.
+//
+// durationDays (EXE only, owner 2026-09-20): the client-echoed value from
+// /api/billing/checkout is NEVER trusted for the actual charge — re-validated
+// and re-priced here independently, same discipline as every other
+// server-computed amount in this route (amountUsd was never client-supplied
+// either). Ignored entirely for web_subscription.
 export async function POST(req: Request) {
   const session = await getSession();
 
-  let body: { kind?: unknown; txHash?: unknown; product?: unknown; email?: unknown };
+  let body: { kind?: unknown; txHash?: unknown; product?: unknown; email?: unknown; durationDays?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -72,6 +84,18 @@ export async function POST(req: Request) {
     }
   }
 
+  let durationDays: number | null = null;
+  if (product.kind === "exe") {
+    durationDays = DEFAULT_EXE_DURATION_DAYS;
+    if (body.durationDays !== undefined && body.durationDays !== null) {
+      const parsed = Number(body.durationDays);
+      if (!Number.isInteger(parsed) || !isValidExeDurationDays(parsed)) {
+        return NextResponse.json({ error: "Invalid license term." }, { status: 400 });
+      }
+      durationDays = parsed;
+    }
+  }
+
   const settings = await getAdminSettings();
   const toAddress =
     paymentKind === "btc"
@@ -92,12 +116,18 @@ export async function POST(req: Request) {
     }
   }
 
+  const amountUsd =
+    product.kind === "exe" && durationDays !== null
+      ? calculateExePrice(settings[product.priceField], durationDays)
+      : settings[product.priceField];
+
   const payment = await prisma.payment.create({
     data: {
       userId,
       kind: paymentKind,
       product: product.id,
-      amountUsd: settings[product.priceField],
+      amountUsd,
+      durationDays,
       txHash,
       toAddress,
       status: "pending",

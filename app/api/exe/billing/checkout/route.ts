@@ -13,14 +13,16 @@ export async function GET(req: NextRequest) {
   if (!isLocalExeRuntime()) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const kind = req.nextUrl.searchParams.get("kind") ?? "";
+  const durationDays = req.nextUrl.searchParams.get("durationDays") ?? "";
   const product = `${exeBuildTarget()}_exe`;
 
   let res: Response;
   try {
-    res = await fetch(
-      `${HOSTED_APP_URL}/api/billing/checkout?kind=${encodeURIComponent(kind)}&product=${encodeURIComponent(product)}`,
-      { signal: AbortSignal.timeout(15_000) },
-    );
+    const qs = new URLSearchParams({ kind, product });
+    if (durationDays) qs.set("durationDays", durationDays);
+    res = await fetch(`${HOSTED_APP_URL}/api/billing/checkout?${qs.toString()}`, {
+      signal: AbortSignal.timeout(15_000),
+    });
   } catch {
     return NextResponse.json({ error: "Couldn't reach the store. Check your connection and try again." }, { status: 502 });
   }

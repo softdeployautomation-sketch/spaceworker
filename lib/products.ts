@@ -113,6 +113,33 @@ export function getProduct(id: string): StoreProduct | null {
   return product ?? null;
 }
 
+// 2026-09-20 — owner: "the spaceworker price is listed for 6 months, if
+// anyone wants to buy more on there license they can buy for 1 year, and
+// also for 1 month, just let the calculator do its thing." An EXE product's
+// admin-set price (AdminSetting[priceField]) is always the STANDARD 6-month
+// (EXE_LICENSE_DAYS = 180) term; every other offered term is a straight
+// linear scale of that same per-day rate — no separate admin field per term,
+// exactly "let the calculator do its thing" rather than a manually-priced
+// tier. Shared by both checkout routes AND the client-side pickers (store.tsx,
+// license-activation-form.tsx) so the displayed price always matches what the
+// server will actually charge.
+export const EXE_DURATION_OPTIONS: { days: number; label: string }[] = [
+  { days: 30, label: "1 month" },
+  { days: 180, label: "6 months" },
+  { days: 365, label: "1 year" },
+];
+export const STANDARD_EXE_TERM_DAYS = 180;
+export const DEFAULT_EXE_DURATION_DAYS = STANDARD_EXE_TERM_DAYS;
+
+export function isValidExeDurationDays(days: number): boolean {
+  return EXE_DURATION_OPTIONS.some((o) => o.days === days);
+}
+
+/** The price for `durationDays` given a product's standard 6-month price. */
+export function calculateExePrice(standardPriceUsd: number, durationDays: number): number {
+  return Math.round((standardPriceUsd * (durationDays / STANDARD_EXE_TERM_DAYS)) * 100) / 100;
+}
+
 export function isExeProduct(id: string): boolean {
   const product = BY_ID.get(id);
   return !!product && product.kind === "exe";

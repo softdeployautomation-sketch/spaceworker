@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { Button, Input, Label } from "@/components/ui";
+import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products";
 
 // Shared EXE license activation form — POSTs to the app's own
 // /api/exe-license/activate (license key), /api/exe-license/password-activate
@@ -83,6 +84,7 @@ export function LicenseActivationForm({
 
   // ---- Buy tab state ----
   const [payKind, setPayKind] = useState<PayKind>("btc");
+  const [durationDays, setDurationDays] = useState(DEFAULT_EXE_DURATION_DAYS);
   const [checkout, setCheckout] = useState<{ toAddress: string; amountUsd: number; note: string } | null>(null);
   const [checkoutError, setCheckoutError] = useState("");
   const [checkoutLoading, setCheckoutLoading] = useState(false);
@@ -101,7 +103,7 @@ export function LicenseActivationForm({
     setCheckout(null);
     setCheckoutLoading(true);
     setCheckoutError("");
-    fetch(`/api/exe/billing/checkout?kind=${payKind}`)
+    fetch(`/api/exe/billing/checkout?kind=${payKind}&durationDays=${durationDays}`)
       .then((r) => r.json())
       .then((data) => {
         if (cancelled) return;
@@ -120,7 +122,7 @@ export function LicenseActivationForm({
     return () => {
       cancelled = true;
     };
-  }, [mode, payKind, paymentId]);
+  }, [mode, payKind, paymentId, durationDays]);
 
   function switchMode(next: Mode) {
     setMode(next);
@@ -140,7 +142,7 @@ export function LicenseActivationForm({
       const res = await fetch("/api/exe/billing/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: payKind, txHash: txHash.trim() || undefined, email }),
+        body: JSON.stringify({ kind: payKind, txHash: txHash.trim() || undefined, email, durationDays }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && typeof data.paymentId === "string") {
@@ -335,6 +337,22 @@ export function LicenseActivationForm({
                     }`}
                   >
                     {k.label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                {EXE_DURATION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.days}
+                    type="button"
+                    onClick={() => setDurationDays(opt.days)}
+                    className={`flex-1 rounded-lg border px-2 py-1.5 text-xs font-medium transition-colors ${
+                      durationDays === opt.days
+                        ? "border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
+                        : "border-border bg-transparent text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    {opt.label}
                   </button>
                 ))}
               </div>

@@ -16,7 +16,7 @@ import { exeBuildTarget } from "@/lib/exe-build-target";
 export async function POST(req: Request) {
   if (!isLocalExeRuntime()) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  let body: { kind?: unknown; txHash?: unknown; email?: unknown };
+  let body: { kind?: unknown; txHash?: unknown; email?: unknown; durationDays?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -29,7 +29,13 @@ export async function POST(req: Request) {
     res = await fetch(`${HOSTED_APP_URL}/api/billing/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ kind: body.kind, txHash: body.txHash, email: body.email, product }),
+      body: JSON.stringify({
+        kind: body.kind,
+        txHash: body.txHash,
+        email: body.email,
+        durationDays: body.durationDays,
+        product,
+      }),
       signal: AbortSignal.timeout(20_000),
     });
   } catch {
