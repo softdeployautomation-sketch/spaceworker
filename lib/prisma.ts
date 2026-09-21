@@ -1,25 +1,33 @@
 import "server-only";
-import { PrismaClient } from "@prisma/client";
+import type { PrismaClient } from "@prisma/client";
 
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
-// Lazy — constructing PrismaClient eagerly throws immediately when
-// DATABASE_URL is absent (the EXE-local runtime, which never touches the DB
-// by design and deliberately ships without this var). Deferring construction
-// to first actual property access means merely IMPORTING this module — which
-// happens transitively through layout.tsx's auth/session chain even on
-// request paths that never call the DB — can never crash the EXE. A real
-// query attempt in EXE mode would still throw here, same as before; nothing
-// in EXE-local code should ever reach that point (all EXE routes gate on
-// isLocalExeRuntime() and stay DB-free by design), so this only removes the
-// FALSE crash on mere import, not real DB-touching bugs.
+// Lazy — importing "@prisma/client" AT ALL throws in the EXE-local runtime
+// (Next standalone marks it external and the module fails to load where the
+// runtime deliberately ships without DATABASE_URL / the generated client).
+// So there is deliberately NO static import here — only `import type`
+// (erased at compile time). The real module is require()d inside the getter,
+// meaning merely IMPORTING this module — which happens transitively through
+// layout.tsx's auth/session chain even on request paths that never call the
+// DB — can never crash the EXE. Only an actual query attempt loads the
+// client; nothing in EXE-local code should ever reach that point (all EXE
+// routes gate on isLocalExeRuntime() and stay DB-free by design).
+/* eslint-disable @typescript-eslint/no-require-imports */
+function loadClient(): PrismaClient {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client");
+  const c = globalForPrisma.prisma ?? new PrismaClient();
+  if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = c;
+  return c;
+}
+/* eslint-enable @typescript-eslint/no-require-imports */
 let client: PrismaClient | undefined;
 export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
   get(_target, prop, receiver) {
-    if (!client) {
-      client = globalForPrisma.prisma ?? new PrismaClient();
-      if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = client;
-    }
-    return Reflect.get(client, prop, receiver);
+    if (prop === "then") return undefined;
+    if (!client) client = loadClient();
+    const value = Reflect.get(client, prop, receiver);
+    return typeof value === "function" ? value.bind(client) : value;
   },
 });
