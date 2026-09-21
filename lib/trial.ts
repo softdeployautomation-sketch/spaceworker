@@ -1,6 +1,6 @@
 import "server-only";
 
-import { Prisma } from "@prisma/client";
+import type { Prisma } from "@prisma/client";
 import { resolveUserTier } from "./premium";
 
 // Tier 1 trial — for all free users: 15 min/day per tool, never prioritized
