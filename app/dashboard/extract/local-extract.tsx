@@ -244,12 +244,17 @@ function DomainsFilterChipsExe({
   );
 }
 
-/** Trigger a browser download of a client-generated CSV (no server round-trip — the
- *  run's leads are already in memory). Mirrors the discrete file the web's
- *  /api/jobs/[id]/export.csv serves. */
-function downloadCsv(filename: string, rows: string[]): void {
+/** True when running inside the Tauri EXE shell (WebView2), detected the standard
+ *  way (the runtime bridge object that the plugins speak through). Absent in a
+ *  normal browser tab, so the hosted web product always takes the browser path. */
+function isTauri(): boolean {
+  return typeof window !== "undefined" && !!(window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__;
+}
+
+/** Browser (web product) download path — Blob → object URL → synthetic click. */
+function browserDownload(filename: string, contents: string): void {
   if (typeof document === "undefined") return;
-  const blob = new Blob([rows.join("")], { type: "text/csv;charset=utf-8" });
+  const blob = new Blob([contents], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -258,6 +263,35 @@ function downloadCsv(filename: string, rows: string[]): void {
   a.click();
   a.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Save a client-generated CSV of a run's leads (no server round-trip — the leads
+ *  are already in memory; mirrors /api/jobs/[id]/export.csv). Inside the Tauri EXE
+ *  the browser `<a download>` pattern silently no-ops in WebView2 (Task 57 Bug 2),
+ *  so branch to the native Save-As dialog + fs write there; the browser path is
+ *  kept for the hosted web product. The dialog/full plugin modules are imported
+ *  lazily so they're only ever evaluated inside the EXE, never in the web bundle. */
+async function downloadCsv(filename: string, rows: string[]): Promise<void> {
+  const contents = rows.join("");
+  if (isTauri()) {
+    try {
+      const [{ save }, { writeTextFile }] = await Promise.all([
+        import("@tauri-apps/plugin-dialog"),
+        import("@tauri-apps/plugin-fs"),
+      ]);
+      const path = await save({
+        defaultPath: filename,
+        filters: [{ name: "CSV", extensions: ["csv"] }],
+      });
+      if (path) await writeTextFile(path, contents);
+    } catch {
+      // Native save failed for any reason — fall back to the browser download so
+      // collected leads are never trapped by a broken native path.
+      browserDownload(filename, contents);
+    }
+    return;
+  }
+  browserDownload(filename, contents);
 }
 
 export function LocalExtractPage() {
@@ -306,6 +340,11 @@ export function LocalExtractPage() {
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const cancelRef = useRef<boolean>(false);
   const readerRef = useRef<{ cancel(): Promise<unknown> } | null>(null);
+  // Track WHICH run is currently streaming (only one streams at a time, so a
+  // single id ref is correct). stopSearch() reads this to know which run's
+  // status to flip to "stopped" — without it the manual-stop path could never
+  // patch the right run (Task 57: Stop left the run pill stuck on "running").
+  const activeRunIdRef = useRef<number | null>(null);
   const nextRunId = useRef(1);
   const leadsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -457,7 +496,7 @@ export function LocalExtractPage() {
         );
       }
     }
-    downloadCsv(
+    void downloadCsv(
       `spaceworker-leads-${run.id}${forceEmailsOnly || run.resultMode === "emailsOnly" ? "-emails" : ""}.csv`,
       rows,
     );
@@ -754,6 +793,7 @@ export function LocalExtractPage() {
 
       const reader = res.body.getReader();
       readerRef.current = reader;
+      activeRunIdRef.current = runId;
       const decoder = new TextDecoder();
       let buffer = "";
       while (!cancelRef.current) {
@@ -798,12 +838,20 @@ export function LocalExtractPage() {
     } finally {
       setRunning(false);
       readerRef.current = null;
+      activeRunIdRef.current = null;
     }
   }
 
   function stopSearch() {
     cancelRef.current = true;
     void readerRef.current?.cancel();
+    // The stream loop exits the while() with a silent break on a manual stop
+    // (deliberately NOT surfaced as "failed"), so flip the run to "stopped"
+    // here or it stays stuck on "running" — Task 57. patchRun is a plain merge,
+    // so the already-collected leads are preserved and remain exportable.
+    if (activeRunIdRef.current !== null) {
+      patchRun(activeRunIdRef.current, { status: "done", stoppedReason: "stopped" });
+    }
   }
 
   // Owner-requested 2026-09-20: the EXE-local equivalent of the web's
@@ -887,6 +935,7 @@ export function LocalExtractPage() {
 
       const reader = res.body.getReader();
       readerRef.current = reader;
+      activeRunIdRef.current = runId;
       const decoder = new TextDecoder();
       let buffer = "";
       while (!cancelRef.current) {
@@ -930,6 +979,7 @@ export function LocalExtractPage() {
     } finally {
       setRunning(false);
       readerRef.current = null;
+      activeRunIdRef.current = null;
     }
   }
 

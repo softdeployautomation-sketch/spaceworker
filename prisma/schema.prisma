@@ -524,6 +524,11 @@ model ExeTrialSession {
   id           String   @id @default(cuid())
   machineId    String
   product      String
+  // Task 58 — the email the user entered at trial-start (required before a NEW
+  // trial can begin; no more anonymous first launch). Nullable only for legacy
+  // rows created before this field existed — the first email-carrying request
+  // from the same device back-fills it.
+  email        String?
   machineLabel String?
   startedAt    DateTime
   lastSeenAt   DateTime @default(now())

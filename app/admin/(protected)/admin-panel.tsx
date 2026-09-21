@@ -2495,6 +2495,7 @@ interface AdminTrialRow {
   id: string;
   machineId: string;
   machineLabel: string | null;
+  email: string | null;
   product: string;
   productName: string;
   startedAt: string;
@@ -2564,6 +2565,7 @@ function ActiveTrialsSection() {
             <thead className="border-t border-zinc-200 text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               <tr>
                 <th className="px-4 py-2">Device</th>
+                <th className="px-4 py-2">Email</th>
                 <th className="px-4 py-2">Product</th>
                 <th className="px-4 py-2">Started</th>
                 <th className="px-4 py-2">Time left</th>
@@ -2575,6 +2577,13 @@ function ActiveTrialsSection() {
                 <tr key={r.id} className="border-t border-zinc-100 dark:border-zinc-800">
                   <td className="px-4 py-2 font-mono text-xs" title={r.machineId}>
                     {r.machineLabel ?? r.machineId.slice(0, 16) + "…"}
+                  </td>
+                  <td className="px-4 py-2">
+                    {r.email ? (
+                      <span className="font-medium" title={r.email}>{r.email}</span>
+                    ) : (
+                      <span className="text-xs text-zinc-400 dark:text-zinc-500">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-2">{r.productName}</td>
                   <td className="px-4 py-2">{new Date(r.startedAt).toLocaleString()}</td>

@@ -28,6 +28,11 @@ export interface ExeLicenseLocalState {
   version: 1;
   /** ISO (UTC) timestamp of first launch (trial start). Absent pre-first-run. */
   trialStartedAt?: string;
+  /** The email the user entered at trial-start (Task 58 — required before a NEW
+   *  trial can begin; no more anonymous first launch). Stored here so a returning
+   *  user's later pings carry the same identity, and so the admin trial view can
+   *  attribute a device to a real person. */
+  email?: string;
   /** Present once the user has activated a valid key on this machine. */
   activation?: ExeLicenseActivation;
 }
@@ -97,6 +102,19 @@ export async function startTrialIfNeeded(now?: Date): Promise<ExeLicenseLocalSta
     state.trialStartedAt = (now ?? new Date()).toISOString();
     await writeLocalState(state);
   }
+  return state;
+}
+
+/** Persists the trial's authoritative start time and the bound email. Called
+ *  with the server-returned `startedAt` so a returning machine (local file
+ *  reinstated/deleted) keeps its TRUE original start, never a fresh 24h. */
+export async function writeTrialStart(
+  input: { trialStartedAt: string; email?: string },
+): Promise<ExeLicenseLocalState> {
+  const state = await readLocalState();
+  if (input.trialStartedAt) state.trialStartedAt = input.trialStartedAt;
+  if (input.email) state.email = input.email;
+  await writeLocalState(state);
   return state;
 }
 

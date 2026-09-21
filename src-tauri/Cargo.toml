@@ -19,6 +19,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 
+# Task 57 Bug 2 — the EXE's Export CSV silently no-ops because WebView2 swallows the
+# browser Blob→<a download> pattern. These two plugins give the EXE the standard
+# native "Save As" flow (plugin-dialog for the file picker, plugin-fs for the actual
+# write to the user-chosen path), registered in main.rs. The selected path is
+# auto-scoped by the dialog plugin, so capabilities only needs dialog:default plus
+# fs:allow-write-text-file — no broad fs write grant.
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
+
 # Keep the dependency surface intentionally thin. The packaged EXE spawns the
 # bundled Node/Next runtime (the production sidecar, see scripts/runtime-assemble.mjs)
 # using std::process::Command in main.rs — no extra Tauri plugin is needed. serde

@@ -51,6 +51,11 @@ export async function GET() {
         id: s.id,
         machineId: s.machineId,
         machineLabel: s.machineLabel,
+        // Task 58 — the email captured at trial-start (null only for legacy rows
+        // created before the email column existed / never updated). This turns the
+        // admin "subtab showing every free user's device" from a machine label into
+        // a real identity — the owner's explicit ask.
+        email: s.email ?? null,
         product: s.product,
         productName: getProduct(s.product)?.name ?? s.product,
         startedAt: s.startedAt.toISOString(),

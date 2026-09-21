@@ -104,6 +104,11 @@ fn wait_for_runtime(period: Duration, attempts: u32) -> bool {
 
 fn main() {
     tauri::Builder::default()
+        // Task 57 Bug 2 — native "Save As" for the EXE's Export CSV (WebView2
+        // swallows the browser download; plugin-dialog picks the path, plugin-fs
+        // writes it).
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(LocalRuntime(Mutex::new(None)))
         .setup(|app| {
             if !cfg!(debug_assertions) {

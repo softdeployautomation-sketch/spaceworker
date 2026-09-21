@@ -1,6 +1,6 @@
 # Task 58 — EXE trial not showing in admin, and not actually server-bound (resettable)
 
-**Status: ready to build. Owner-requested 2026-09-21**, found live: "i just loaded the spaceworker, and it should have shown in the admin under active trials... can you investigate why i cant see it, and if the trial license is actually binding, so anonymous users dont just use it on notice."
+**Status: built & type-checked (2026-09-21).** Owner-requested 2026-09-21, found live: "i just loaded the spaceworker, and it should have shown in the admin under active trials... can you investigate why i cant see it, and if the trial license is actually binding, so anonymous users dont just use it on notice."
 
 Two separate questions, two separate findings.
 

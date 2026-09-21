@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Default capability set for the SpaceWorker OS desktop shell.",
   "windows": ["*"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "fs:allow-write-text-file"
+  ]
 }
