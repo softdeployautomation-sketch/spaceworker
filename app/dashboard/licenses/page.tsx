@@ -4,6 +4,8 @@ import Link from "next/link";
 import { CopyButton } from "@/components/copy-button";
 import { Badge, Card } from "@/components/ui";
 import { LicenseUpgradeForm } from "@/components/license-upgrade-form";
+import { ExeLicensePanel } from "@/app/dashboard/settings/exe-license-panel";
+import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getSession } from "@/lib/auth";
 import { getCurrentUser } from "@/lib/session-user";
 import { prisma } from "@/lib/prisma";
@@ -23,6 +25,27 @@ export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
 // middleware.ts convention to proxy.ts), not by hiding a nav
 // link.
 export default async function LicensesPage() {
+  // Desktop EXE runs fully offline — this page's DB reads below (a real user
+  // session + prisma.exeLicense.findMany) have no meaning in the local runtime,
+  // same reasoning as app/dashboard/layout.tsx and settings/page.tsx. Found
+  // live 2026-09-21: this page had NO exe-mode branch at all (unlike those two),
+  // so the dock's "Licenses" link — and Next's own automatic prefetch of it,
+  // which fires just from the link being visible, no click needed — 500'd
+  // every time in the EXE. Reuse the same ExeLicensePanel Settings already
+  // shows (it talks exclusively to /api/exe-license/*, never the DB) instead of
+  // duplicating that UI here.
+  if (isLocalExeRuntime()) {
+    return (
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Licenses</h1>
+        <p className="mt-2 text-sm text-fg-muted">Licensing for this device.</p>
+        <div className="mt-6">
+          <ExeLicensePanel buyHref={accountHref("/pricing")} />
+        </div>
+      </div>
+    );
+  }
+
   const user = await getCurrentUser();
   if (!user) return null; // dashboard layout gates auth anyway
 

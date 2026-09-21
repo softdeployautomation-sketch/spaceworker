@@ -294,6 +294,34 @@ async function downloadCsv(filename: string, rows: string[]): Promise<void> {
   browserDownload(filename, contents);
 }
 
+/** Owner-requested 2026-09-21: a one-click export that writes straight to the
+ *  user's Documents folder — no Save-As dialog, no dependency on the Actions
+ *  dropdown menu (whose native WebView2 rendering is separately under
+ *  investigation for a blank-menu bug found live the same day). Tauri-only;
+ *  falls back to the same dialog-based downloadCsv() everywhere else (the
+ *  hosted web product, or if BaseDirectory.Document somehow isn't writable —
+ *  same fail-safe reasoning downloadCsv() already uses for its own fallback).
+ *  Requires capabilities/default.json to scope fs:allow-write-text-file to
+ *  $DOCUMENT/* — a bare grant has no accessible directory by default in
+ *  Tauri v2's capability model. */
+async function quickExportToDocuments(filename: string, rows: string[]): Promise<"saved" | "fallback"> {
+  const contents = rows.join("");
+  if (!isTauri()) {
+    browserDownload(filename, contents);
+    return "fallback";
+  }
+  try {
+    const { writeTextFile, BaseDirectory } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(filename, contents, { baseDir: BaseDirectory.Document });
+    return "saved";
+  } catch {
+    // Couldn't write straight to Documents (permission/capability issue on this
+    // machine) — fall back to the dialog path so leads are never trapped.
+    await downloadCsv(filename, rows);
+    return "fallback";
+  }
+}
+
 export function LocalExtractPage() {
   // Controlled form fields (converted from refs so a past run's search can be
   // "Load"ed back into the form, exactly like the web's Load action).
@@ -463,9 +491,11 @@ export function LocalExtractPage() {
   // The run's leads are already in memory, so no round-trip is needed — we build an
   // RFC-4180 CSV with the same encoder lib/csv.ts the web route uses. The columns
   // follow the run's results-column mode (#1) so "what you see is what you get".
-  function exportRun(run: RunRecord, forceEmailsOnly: boolean) {
-    // Task 54 — optional export-time domain filter. When domains are selected,
-    // only leads whose email/website domain matches are written to the file.
+  // Task 54's domain filter + the resultMode column selection, shared by both
+  // downloadCsv() (Actions dropdown, Save-As dialog) and quickExportToDocuments()
+  // (the standalone button, straight to Documents) — one source of truth for
+  // what a run's CSV actually contains.
+  function buildCsvRows(run: RunRecord, forceEmailsOnly: boolean): string[] {
     const leads = filterExportDomains.length
       ? run.leads.filter((l) => {
           const domain = leadDomainExe(l.email, l.website);
@@ -496,10 +526,28 @@ export function LocalExtractPage() {
         );
       }
     }
-    void downloadCsv(
-      `spaceworker-leads-${run.id}${forceEmailsOnly || run.resultMode === "emailsOnly" ? "-emails" : ""}.csv`,
-      rows,
-    );
+    return rows;
+  }
+
+  function csvFilename(run: RunRecord, forceEmailsOnly: boolean): string {
+    return `spaceworker-leads-${run.id}${forceEmailsOnly || run.resultMode === "emailsOnly" ? "-emails" : ""}.csv`;
+  }
+
+  function exportRun(run: RunRecord, forceEmailsOnly: boolean) {
+    void downloadCsv(csvFilename(run, forceEmailsOnly), buildCsvRows(run, forceEmailsOnly));
+  }
+
+  const [quickExportState, setQuickExportState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  async function quickExportRun(run: RunRecord) {
+    setQuickExportState("saving");
+    try {
+      const outcome = await quickExportToDocuments(csvFilename(run, false), buildCsvRows(run, false));
+      setQuickExportState(outcome === "saved" ? "saved" : "idle");
+    } catch {
+      setQuickExportState("error");
+    } finally {
+      setTimeout(() => setQuickExportState("idle"), 2500);
+    }
   }
 
   // ── Local validation (web POST /api/jobs/[id]/validate → /api/exe/extract/validate) ──
@@ -1429,6 +1477,27 @@ export function LocalExtractPage() {
                   selected={filterExportDomains}
                   onChange={setFilterExportDomains}
                 />
+                {/* Owner-requested 2026-09-21 — a direct, one-click export
+                    (straight to the Documents folder, no Save-As dialog),
+                    ahead of the Actions dropdown rather than only inside it.
+                    Not a replacement for the dropdown's Export CSV/Emails
+                    only/Validate all — an additional fast path. */}
+                <Button
+                  variant="secondary"
+                  type="button"
+                  className="text-xs"
+                  disabled={quickExportState === "saving" || selectedRun.leads.length === 0}
+                  onClick={() => void quickExportRun(selectedRun)}
+                  title="Save this run's leads straight to your Documents folder"
+                >
+                  {quickExportState === "saving"
+                    ? "Saving…"
+                    : quickExportState === "saved"
+                      ? "Saved to Documents ✓"
+                      : quickExportState === "error"
+                        ? "Save failed"
+                        : "Export CSV"}
+                </Button>
                 <Dropdown
                   label="Actions"
                   className="text-xs"
