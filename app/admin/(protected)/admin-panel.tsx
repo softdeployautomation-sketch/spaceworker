@@ -3085,13 +3085,25 @@ function RecentLicensesTable() {
                       Issued {new Date(r.issuedAt).toLocaleString()}
                     </span>
                     {statusBadge(r)}
-                    {r.boundMachineId && (
+                    {r.boundMachineId ? (
                       <button
                         onClick={() => void revokeRow(r)}
                         disabled={revokingId === r.id}
                         className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
                       >
                         {revokingId === r.id ? "Revoking…" : "Revoke"}
+                      </button>
+                    ) : (
+                      // Owner-requested 2026-09-21 — an unclaimed license had no
+                      // action here at all; "revoke" for a never-bound license
+                      // means deleting the row outright (no binding to clear).
+                      // Same deleteRow() the history list already uses.
+                      <button
+                        onClick={() => void deleteRow(r)}
+                        disabled={deletingId === r.id}
+                        className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                      >
+                        {deletingId === r.id ? "Revoking…" : "Revoke"}
                       </button>
                     )}
                   </div>
