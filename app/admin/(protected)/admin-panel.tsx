@@ -2900,6 +2900,7 @@ function RecentLicensesTable() {
   const [error, setError] = useState("");
   const [openHistoryGroup, setOpenHistoryGroup] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -2952,6 +2953,56 @@ function RecentLicensesTable() {
       setError("Network error deleting the license.");
     } finally {
       setDeletingId(null);
+    }
+  }
+
+  // Owner-requested 2026-09-21 — a direct "Revoke" button right on the
+  // current/bound row, instead of only via the separate "Unbind a license"
+  // form further down the page (which requires re-typing the email and
+  // re-selecting the license). Reuses the SAME existing action:"unbind" call
+  // deleteRow's sibling already makes.
+  //
+  // IMPORTANT LIMITATION (checked live in app/api/exe-license/status/route.ts,
+  // 2026-09-21): this clears the SERVER-side binding, but an already-activated
+  // device validates ITS stored key purely LOCALLY (signature + machine-id,
+  // offline) — it never calls back to the server to re-check the binding is
+  // still current. So Revoke does NOT immediately cut off a device that's
+  // already running and activated; it takes effect the next time that
+  // device's local state is lost/reset or it goes through activate/claim
+  // again. Unlike Vantra, there is currently no live re-validation ping for
+  // an already-activated device — true instant cutoff would need one (a
+  // periodic check mirroring Vantra's stillValidLive), which doesn't exist
+  // yet. Said plainly in the confirm dialog below rather than overclaiming.
+  // The license row itself survives, unclaimed and ready for a fresh bind, exactly like a
+  // never-claimed issue.
+  async function revokeRow(r: AdminLicenseRow) {
+    if (
+      !(await confirm({
+        title: "Revoke this license?",
+        description: `Clears ${r.boundMachineLabel || "this device"}'s binding server-side and frees the license for a new bind. Note: an already-running activated app validates locally and won't be cut off immediately — this takes effect once that device re-activates or its local state resets.`,
+        confirmLabel: "Revoke",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+    setRevokingId(r.id);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "unbind", email: r.email, exeLicenseId: r.id }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Couldn't revoke the license.");
+        return;
+      }
+      await load();
+    } catch {
+      setError("Network error revoking the license.");
+    } finally {
+      setRevokingId(null);
     }
   }
 
@@ -3034,6 +3085,15 @@ function RecentLicensesTable() {
                       Issued {new Date(r.issuedAt).toLocaleString()}
                     </span>
                     {statusBadge(r)}
+                    {r.boundMachineId && (
+                      <button
+                        onClick={() => void revokeRow(r)}
+                        disabled={revokingId === r.id}
+                        className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                      >
+                        {revokingId === r.id ? "Revoking…" : "Revoke"}
+                      </button>
+                    )}
                   </div>
                 ))}
 
