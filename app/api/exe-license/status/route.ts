@@ -8,6 +8,7 @@ import { exeBuildTarget } from "@/lib/exe-build-target";
 import { validateMachineId } from "@/lib/machine-id";
 import { getCachedMachineId } from "@/lib/license-state";
 import {
+  clearActivation,
   readLocalState,
   writeTrialStart,
   trialActive,
@@ -76,6 +77,33 @@ async function reconcileServerStart(machineId: string): Promise<string | null> {
   }
 }
 
+/**
+ * Fixed 2026-09-21 (owner: "unbind doesn't mean revoke") — a faithful port
+ * of Vantra's stillValidLive (app/api/exe-license/status/route.ts there,
+ * live since 2026-09-18). Before this, an admin Unbind/Delete/Transfer only
+ * ever changed the SERVER record — this route validated the locally stored
+ * key purely offline, so an already-activated device kept working
+ * indefinitely with no way to notice revocation. Offline-first: any network
+ * failure fails OPEN (still valid) so a legitimately offline user is never
+ * locked out — this is "catch it when we can reach the server," not a hard
+ * guarantee, matching the rest of this app's offline-capable design.
+ */
+async function stillValidLive(email: string, licenseKey: string, product: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${HOSTED_APP_URL}/api/exe-license/eligibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email, licenseKey, product }),
+      signal: AbortSignal.timeout(6_000),
+    });
+    if (!res.ok) return true; // request/server trouble, not proof of revocation — fail open
+    const data = await res.json().catch(() => ({}));
+    return data.eligible !== false;
+  } catch {
+    return true; // unreachable (offline, DNS, timeout, ...) — fail open
+  }
+}
+
 // POST /api/exe-license/status — the LOCAL licensing gate status, read from this
 // machine's filesystem (no database, no session auth — see lib/exe-runtime.ts
 // for why that's safe: SPACEWORKER_LOCAL_EXE gates this to the Tauri-bundled
@@ -108,6 +136,27 @@ export async function POST() {
       });
 
       if (validation.valid && validateMachineId(state.activation.machineId, currentMachineId)) {
+        // Fixed 2026-09-21 — the offline signature check above only proves
+        // the key was validly signed and bound to THIS machine at activation
+        // time; it can never know an admin has since unbound/deleted/
+        // transferred it, since it has no DB access by design. This is the
+        // one place that can catch it. Best-effort and offline-tolerant
+        // (see stillValidLive) — never blocks legitimate offline use, only
+        // catches it when reachable.
+        const stillValid = await stillValidLive(
+          validation.licensee,
+          state.activation.licenseKey,
+          validation.product,
+        );
+        if (!stillValid) {
+          await clearActivation();
+          return NextResponse.json({
+            licensed: false,
+            inTrial: false,
+            message: "This license has been revoked. Contact support if this wasn't expected.",
+          });
+        }
+
         return NextResponse.json({
           licensed: true,
           licensee: validation.licensee,

@@ -16,6 +16,7 @@ export type RateLimitKind =
   | "change-password"
   | "exe-password-login"
   | "exe-auto-bind"
+  | "exe-license-eligibility"
   | "mailbox-test"
   | "billing-submit"
   | "trial-ping";
@@ -47,6 +48,10 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   "change-password": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   "exe-password-login": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   "exe-auto-bind": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  // Fixed 2026-09-21 — the live revocation check every status poll makes.
+  // Generous: legitimately called on every app launch (and future periodic
+  // polls), possibly by several devices behind the same NAT/IP.
+  "exe-license-eligibility": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
   // Task 51 — "Test connection" does a raw outbound SMTP attempt per call, so
   // cap the rate (session-gated already; this is IP-scoped like the other routes).
   "mailbox-test": [{ limit: 20, windowMs: 60 * 60 * 1000 }],
