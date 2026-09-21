@@ -105,12 +105,27 @@ export async function proxy(request: NextRequest) {
   const isExeApiPath = pathname.startsWith("/api/exe") || pathname.startsWith("/api/exe-license");
   const isAdminPath = pathname.startsWith("/admin") || pathname.startsWith("/api/admin");
   if (isExeApiPath) {
-    const flags = await getMaintenanceFlags();
+    // EXE local runtime note: no DATABASE_URL by design (assembler strips
+    // it), so a failed flag read means "no maintenance toggled", never 500.
+    let flags = { web: false, exeApi: false };
+    try {
+      flags = await getMaintenanceFlags();
+    } catch {
+      /* fail open: a failed flag read means no maintenance toggled */
+    }
     if (flags.exeApi) {
       return NextResponse.json({ maintenance: true, error: "Maintenance" }, { status: 503 });
     }
   } else if (!isAdminPath) {
-    const flags = await getMaintenanceFlags();
+    // Same fail-open as the exeApi branch above: proxy runs on EVERY
+    // request, so an uncaught DB throw here white-screens the whole EXE
+    // (seen live 2026-09-21: bundled runtime has no DATABASE_URL).
+    let flags = { web: false, exeApi: false };
+    try {
+      flags = await getMaintenanceFlags();
+    } catch {
+      /* fail open: a failed flag read means no maintenance toggled */
+    }
     if (flags.web) {
       return new NextResponse(MAINTENANCE_PAGE_HTML, {
         status: 503,
