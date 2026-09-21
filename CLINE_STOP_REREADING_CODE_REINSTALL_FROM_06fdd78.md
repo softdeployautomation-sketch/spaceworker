@@ -1,3 +1,21 @@
+**UPDATE 2026-09-21, after the verified-fresh reinstall still failed identically — read this part first.**
+
+The byte-identical reinstall from run `35553462499` (`06fdd78`) is confirmed and it STILL shows the blank white "Internal Server Error" on launch. That rules out "stale build" — the install itself is now proven correct. Two things I checked that narrow this further:
+
+1. **Admin's "Active trials" list currently shows 3 rows — none of them are this Windows VM.** They're `MacBook-Pro.local` ×2 (my own local test session against the real prod backend) and `cli-live-test` (Cline's much earlier synthetic-ping test, from before Task 58 existed — that's why its email column is `—`, it predates the email requirement entirely; not a live bug, just an old leftover row, fine to ignore or delete later). **The real Windows VM has never once reached `trial-start` or even `status` successfully** — meaning whatever's crashing is happening BEFORE that call, consistent with the screenshot showing blank white immediately with no email form ever rendering.
+
+2. **This VM has been installed/uninstalled many times today across many different code versions** (per the whole session's EXE testing history). Uninstallers do not normally clear `%APPDATA%` — so `%APPDATA%\SpaceWorkerOS\exe-license-state.json` may still hold a leftover file from an OLDER build, in a shape today's code doesn't expect (e.g., missing fields, an old activation, whatever the last-installed-before-today version wrote). This is cheap to rule out and hasn't been checked yet:
+   - On the VM: `Get-Content "$env:APPDATA\SpaceWorkerOS\exe-license-state.json"` — see what's actually in it before touching anything.
+   - Then delete it (`Remove-Item "$env:APPDATA\SpaceWorkerOS\exe-license-state.json"`) and relaunch. If the crash disappears, the local state file's old shape was the cause — figure out which field NEW code chokes on (compare against the current `ExeLicenseLocalState` interface in `lib/license-state.ts`) and either migrate old shapes gracefully or document that a version bump requires clearing this file.
+   - If the crash is IDENTICAL even with that file freshly deleted (truly clean slate, confirmed by re-running the `Get-Content` check first to prove it was gone), this hypothesis is dead — move straight to point 3 below.
+
+3. **The decisive next step, if #2 doesn't fix it**: this is now almost certainly a genuine Windows/WebView2-only runtime failure that cannot be diagnosed from source reading — my own local build of the IDENTICAL source runs perfectly end-to-end against the real production backend (see "Proof current `main` is clean" below, still accurate). Get the actual browser-level evidence from the VM itself:
+   - Right-click inside the SpaceWorker OS window → **Inspect** (WebView2 exposes normal Chromium devtools this way) → Console tab → read the real JS error/stack, or the Network tab to see which specific request actually returned the "Internal Server Error" body.
+   - If right-click Inspect is disabled/unavailable, check **Windows Event Viewer → Windows Logs → Application** for a crash record from `SpaceWorker OS.exe` or the bundled `node.exe` around the launch timestamp — a Rust-side panic during `tauri::Builder`'s `.setup()` (e.g. a plugin failing to initialize on this Windows version) would show up there and would also explain why the request never even reaches `status`.
+   - Report back the literal error text/stack. Don't guess further from source — that's what's cost the time so far.
+
+---
+
 # Stop re-reading source — the code is clean, the install is almost certainly stale
 
 You've been reading `proxy.ts`, `machine-id.ts`, `license-gate.tsx`, `main.rs`, `runtime-assemble.mjs` for a while with nothing found. I just proved why: **there's nothing to find in the current code.**
