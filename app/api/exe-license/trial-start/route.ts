@@ -4,7 +4,7 @@ import { z } from "zod";
 
 import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { getMachineId } from "@/lib/machine-id";
+import { getCachedMachineId } from "@/lib/license-state";
 import { writeTrialStart } from "@/lib/license-state";
 
 export const dynamic = "force-dynamic";
@@ -43,7 +43,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const machineId = (await getMachineId()).toLowerCase();
+  const machineId = (await getCachedMachineId()).toLowerCase();
   const product = `${exeBuildTarget()}_exe`;
   const machineLabel = (() => {
     try {

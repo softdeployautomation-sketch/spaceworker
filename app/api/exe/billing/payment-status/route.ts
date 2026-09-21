@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
-import { getMachineId } from "@/lib/machine-id";
+import { getCachedMachineId } from "@/lib/license-state";
 import { saveActivation } from "@/lib/license-state";
 
 // POST /api/exe/billing/payment-status — body: { paymentId, confirmTransfer? }
@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing payment id." }, { status: 400 });
   }
 
-  const currentMachineId = (await getMachineId()).toLowerCase();
+  const currentMachineId = (await getCachedMachineId()).toLowerCase();
   const { response: res } = await hostedFetch(
     "/api/exe-license/payment-status",
     {

@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { getMachineId } from "@/lib/machine-id";
+import { getCachedMachineId } from "@/lib/license-state";
 import { saveActivation } from "@/lib/license-state";
 
 // POST /api/exe-license/password-activate — body: { email, password, confirmTransfer? }
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Enter your password." }, { status: 400 });
   }
 
-  const currentMachineId = (await getMachineId()).toLowerCase();
+  const currentMachineId = (await getCachedMachineId()).toLowerCase();
   const product = `${exeBuildTarget()}_exe`;
 
   const { response: res } = await hostedFetch(

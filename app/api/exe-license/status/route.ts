@@ -5,7 +5,8 @@ import { exeLicenseSecret } from "@/lib/exe-license";
 import { validateLicenseKey } from "@/lib/exe-license-validator";
 import { isLocalExeRuntime, HOSTED_APP_URL } from "@/lib/exe-runtime";
 import { exeBuildTarget } from "@/lib/exe-build-target";
-import { getMachineId, validateMachineId } from "@/lib/machine-id";
+import { validateMachineId } from "@/lib/machine-id";
+import { getCachedMachineId } from "@/lib/license-state";
 import {
   readLocalState,
   writeTrialStart,
@@ -101,7 +102,7 @@ export async function POST() {
   if (state.activation) {
     try {
       const secret = exeLicenseSecret();
-      const currentMachineId = (await getMachineId()).toLowerCase();
+      const currentMachineId = (await getCachedMachineId()).toLowerCase();
       const validation = await validateLicenseKey(state.activation.licenseKey, secret, {
         currentMachineId,
       });
@@ -134,7 +135,7 @@ export async function POST() {
 
   // 2. No activation yet.
   const now = new Date();
-  const currentMachineId = (await getMachineId()).toLowerCase();
+  const currentMachineId = (await getCachedMachineId()).toLowerCase();
 
   // A machine with NO local trialStartedAt is brand-new (or its local state file
   // was deleted). Task 58: a trial can NO LONGER start silently here, and the

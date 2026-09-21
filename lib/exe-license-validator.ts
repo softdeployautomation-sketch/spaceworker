@@ -3,7 +3,8 @@ import "server-only";
 import { createHmac, timingSafeEqual } from "crypto";
 
 import { decodeLicenseKey, LicensePayload } from "./exe-license";
-import { getMachineId, validateMachineId } from "./machine-id";
+import { validateMachineId } from "./machine-id";
+import { getCachedMachineId } from "./license-state";
 
 // Offline license validation — a faithful port of ~/lead-extractor/app/license/
 // validator.py. The desktop EXE validates keys FULLY offline with no server
@@ -92,7 +93,7 @@ export async function validateLicenseKey(
   }
 
   // 4. Machine binding — machine_ids (any match) or machine_id (exact match).
-  const currentMachineId = opts.currentMachineId ?? (await getMachineId()).toLowerCase();
+  const currentMachineId = opts.currentMachineId ?? (await getCachedMachineId()).toLowerCase();
   if (payload.machine_ids && payload.machine_ids.length > 0) {
     const allowed = payload.machine_ids.map((m) => m.toLowerCase());
     if (!allowed.includes(currentMachineId)) {

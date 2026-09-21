@@ -5,7 +5,7 @@ import { validateLicenseKey } from "@/lib/exe-license-validator";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 import { isLocalExeRuntime } from "@/lib/exe-runtime";
 import { hostedFetch, MAX_MAINTENANCE_RETRIES } from "@/lib/hosted-fetch";
-import { getMachineId } from "@/lib/machine-id";
+import { getCachedMachineId } from "@/lib/license-state";
 import { getProduct } from "@/lib/products";
 import { saveActivation } from "@/lib/license-state";
 
@@ -63,7 +63,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const currentMachineId = (await getMachineId()).toLowerCase();
+  const currentMachineId = (await getCachedMachineId()).toLowerCase();
   const validation = await validateLicenseKey(licenseKey, secret, {
     currentMachineId,
   });

@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import { homedir } from "os";
 import path from "path";
 
+import { getMachineId } from "./machine-id";
+
 // Local, per-machine persistence for the EXE's licensing gate. Holds (a) when
 // the 24-hour unlicensed trial started, and (b) once the user activates — which
 // license key + email are bound to THIS machine. This is the "same tier of
@@ -35,6 +37,8 @@ export interface ExeLicenseLocalState {
   email?: string;
   /** Present once the user has activated a valid key on this machine. */
   activation?: ExeLicenseActivation;
+  /** Fixed 2026-09-21 — see getCachedMachineId() below for why this exists. */
+  cachedMachineId?: string;
 }
 
 const DEFAULT_STATE: ExeLicenseLocalState = { version: 1 };
@@ -89,6 +93,35 @@ async function writeLocalState(state: ExeLicenseLocalState): Promise<void> {
   const filePath = licenseStatePath();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(state, null, 2), "utf8");
+}
+
+/**
+ * Fixed 2026-09-21 (found live: the same physical device produced TWO
+ * different machineId values ~2h apart — a bound license on one id, a fresh
+ * trial-session ping on another, same hostname). getMachineId()
+ * (lib/machine-id.ts) recomputes from live hardware queries (wmic/PowerShell
+ * on Windows) on EVERY single call — status/route.ts alone calls it on
+ * essentially every app launch/poll. If either underlying command
+ * intermittently fails or times out (WMI queries are known to be less
+ * reliable under a Remote Desktop session than an interactive console
+ * session — the owner's own report was specifically about RDP users), the
+ * resulting hash differs even though it's the same machine, silently
+ * fragmenting one device's identity across license binding / trial tracking
+ * / the admin views that key off it.
+ *
+ * Fix: compute once, cache in the SAME local state file every other
+ * licensing fact already lives in, and reuse forever after — a transient
+ * hardware-query hiccup on a LATER call can never change an already-settled
+ * identity. Every getMachineId() call site should go through this instead of
+ * calling it directly (machine-id.ts itself stays pure/hardware-only,
+ * unaware of caching — this file already owns local file I/O).
+ */
+export async function getCachedMachineId(): Promise<string> {
+  const state = await readLocalState();
+  if (state.cachedMachineId) return state.cachedMachineId;
+  const fresh = (await getMachineId()).toLowerCase();
+  await writeLocalState({ ...state, cachedMachineId: fresh });
+  return fresh;
 }
 
 /**
