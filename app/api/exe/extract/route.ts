@@ -342,6 +342,13 @@ async function runExtraction(
       } catch {
         leads = []; // a bad page/PDF must never abort the run
       }
+      if (leads.length === 0) {
+        // Fixed 2026-09-21: this used to be completely silent (the activity
+        // log just moved on with no explanation), which made a real page
+        // that legitimately had no extractable contact info indistinguishable
+        // from a search-engine block or a code failure. Say so explicitly.
+        push({ type: "step", message: `No contact info found on ${result.url}` });
+      }
 
       for (let lead of leads) {
         if (total >= payload.maxTotalLeads) break;

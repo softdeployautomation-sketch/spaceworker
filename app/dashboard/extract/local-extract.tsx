@@ -487,6 +487,52 @@ export function LocalExtractPage() {
     }
   }, [someVisibleSelected, allVisibleSelected]);
 
+  // ── Real local persistence (2026-09-21) ─────────────────────────────────
+  // Replaces the old "deliberately in-memory, lost on restart" design — see
+  // lib/extract-runs-state.ts. `hydrated` gates the persist effect below so
+  // the empty initial `runs=[]` can never race ahead of the GET and wipe out
+  // a real saved history before it's loaded.
+  const hydratedRef = useRef(false);
+  useEffect(() => {
+    let active = true;
+    fetch("/api/exe/extract/runs")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!active) return;
+        const loaded = Array.isArray(data.runs) ? (data.runs as RunRecord[]) : [];
+        if (loaded.length > 0) {
+          setRuns(loaded);
+          setSelectedRunId(loaded[loaded.length - 1].id);
+        }
+        if (typeof data.nextRunId === "number" && data.nextRunId > nextRunId.current) {
+          nextRunId.current = data.nextRunId;
+        }
+      })
+      .catch(() => {
+        // No persisted history (first run, or read failure) — start empty, as before.
+      })
+      .finally(() => {
+        if (active) hydratedRef.current = true;
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!hydratedRef.current) return; // don't persist until the initial load has resolved
+    const t = setTimeout(() => {
+      void fetch("/api/exe/extract/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runs, nextRunId: nextRunId.current }),
+      }).catch(() => {
+        // Best-effort — a save failure must never surface as an error to the user.
+      });
+    }, 1500); // debounced: an active run streams many leads/steps in quick succession
+    return () => clearTimeout(t);
+  }, [runs]);
+
   // ── Export (client-side sibling of the web's /api/jobs/[id]/export.csv) ────────
   // The run's leads are already in memory, so no round-trip is needed — we build an
   // RFC-4180 CSV with the same encoder lib/csv.ts the web route uses. The columns
@@ -1498,6 +1544,25 @@ export function LocalExtractPage() {
                         ? "Save failed"
                         : "Export CSV"}
                 </Button>
+                {/* Owner-requested 2026-09-21 — same reasoning as the Export CSV
+                    button above: "Validate all" lives inside the Actions dropdown,
+                    which has a known WebView2 blank-menu rendering bug (still
+                    under separate investigation). Applies to ANY run's leads
+                    regardless of source — search, import, or merge — so pulling
+                    it out here fixes "can't validate imported leads" too, since
+                    that was the same dropdown bug, not a separate validator
+                    limitation (runValidation() already treats every run the
+                    same way). Not a replacement for the dropdown's copy. */}
+                <Button
+                  variant="secondary"
+                  type="button"
+                  className="text-xs"
+                  disabled={validateBusy || !selectedRun.leads.some((l) => isPendingValidation(l))}
+                  onClick={() => void validateSelectedRun()}
+                  title="Check every unvalidated lead's email in this run"
+                >
+                  {validateBusy ? "Validating…" : "Validate all"}
+                </Button>
                 <Dropdown
                   label="Actions"
                   className="text-xs"
@@ -1624,12 +1689,27 @@ export function LocalExtractPage() {
                                   className="h-3.5 w-3.5 accent-brand-600"
                                 />
                               </td>
-                              {selectedRun.resultMode !== "emailsOnly" && <td className="py-2 pr-3">{lead.contactName ?? "—"}</td>}
+                              {/* Fixed 2026-09-21: a lead can be phone/business-only (buildLeads()
+                                  in local-engine's lead.ts returns a lead with no email/contactName
+                                  when only a phone or business name was found on the page) — outside
+                                  "Full details" mode, Business/Phone have no column, so that real
+                                  lead rendered as a totally blank —/—/— row, indistinguishable from
+                                  an empty result. Fall back to businessName/phone here so the row
+                                  always shows the best identifying info it actually has. */}
+                              {selectedRun.resultMode !== "emailsOnly" && (
+                                <td className="py-2 pr-3">{lead.contactName || lead.businessName || "—"}</td>
+                              )}
                               {selectedRun.resultMode === "full" && <td className="py-2 pr-3">{lead.businessName || "—"}</td>}
                               <td className="py-2 pr-3">
-                                {lead.email
-                                  ? <a href={`mailto:${lead.email}`} className="text-brand-600 hover:underline">{lead.email}</a>
-                                  : "—"}
+                                {lead.email ? (
+                                  <a href={`mailto:${lead.email}`} className="text-brand-600 hover:underline">{lead.email}</a>
+                                ) : lead.phone ? (
+                                  <span className="text-fg-muted" title="No email found — showing the extracted phone number instead">
+                                    {lead.phone} <span className="text-[0.65rem]">(phone)</span>
+                                  </span>
+                                ) : (
+                                  "—"
+                                )}
                               </td>
                               {selectedRun.resultMode === "full" && (
                                 <>
