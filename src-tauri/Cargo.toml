@@ -17,7 +17,15 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+
+# "devtools" — Tauri strips right-click "Inspect Element" from release builds by
+# default; without this, diagnosing a real WebView2-only rendering bug (like the
+# blank Actions-dropdown one found live 2026-09-21) requires guessing blind or
+# fighting WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS (which Tauri doesn't honor —
+# tried it live, no listener ever came up on the requested debug port). This is
+# a debugging aid only — it doesn't change any user-facing behavior, the panel
+# stays closed unless someone deliberately right-clicks and opens it.
+tauri = { version = "2", features = ["devtools"] }
 
 # Task 57 Bug 2 — the EXE's Export CSV silently no-ops because WebView2 swallows the
 # browser Blob→<a download> pattern. These two plugins give the EXE the standard
