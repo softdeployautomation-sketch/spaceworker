@@ -21,6 +21,7 @@ Move a user's browser environment (profiles, sessions, cookies, extensions) from
 4. **Egress relay enforcement**: relay through the work PC as launch/runtime policy — launch MUST FAIL (never silently fall back) if required relay is down (`RelayHealth` gate).
 5. **Panic switch integration**: global kill covers clone jobs + active sessions (extend the Task 92 panic primitive — no isolated revocation path).
 6. **UI**: clone section in device detail (start/stop/status); active sessions visible; email-when-off works: (a) IMAP mailboxes via existing plumbing, (b) webmail via hosted clone browser; drafts → gated proposal either way.
+7. **Admin limits (CROSS-TRACK RULE 7):** hosted clone PCs are RAM consumers — clone-session concurrency, per-user concurrent clone cap, and hosted-PC pool size are AdminSetting keys in the admin panel (pattern: admission-control's enabled + max + live counts). No hardwired limits.
 
 ## Michael MT-1 contract (isolated build → owner integrates)
 - **Deliverable**: device-side scripts for **browser profile capture/restore** — Chrome, Edge, Firefox. PowerShell (Windows first); runs headless under the Vantra agent; args: `--browser <name> --mode capture|restore --out <path> [--profile <name>]`.

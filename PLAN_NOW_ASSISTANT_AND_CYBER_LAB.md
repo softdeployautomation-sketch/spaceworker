@@ -226,6 +226,22 @@ finalization with Michael's feedback (M7).
 6. **Panic switch is total:** one operation stops pending device actions,
    clone jobs, active clone sessions, browser/session capabilities, and
    device-side agent operations together.
+7. **RAM/limits are admin-configurable per feature (owner, 2026-09-22):**
+   anything that consumes RAM on the VPS — or anything that needs per-user
+   limits so usage never goes over what the owner sets (dispatch lanes,
+   browser sessions, device jobs, clone sessions, lab ranges, digest AI
+   spend, …) — MUST ship with its own AdminSetting keys surfaced in the
+   admin panel (pattern: `app/api/admin/admission-control`: enabled +
+   maxConcurrent per mechanism, admin-visible live counts). No new
+   RAM-consuming feature may launch with hardwired limits. Applies to
+   Tasks 93/95/96/97/98/99 — each task's acceptance includes "admin can
+   set/see this feature's limits in the panel".
+8. **Manual-first device parity (owner, 2026-09-22):** users get EVERY
+   manual function available in Vantra's UI exposed in SpaceWorker (Devices
+   tab: commands, scripts, remote session, power, moves — all proposal-
+   gated) BEFORE/alongside the agent being able to do the same. The agent
+   and the user share the same underlying DeviceCapability/DeviceAction
+   layer; the agent never gets a power users don't have.
 
 ## SCHEMA (consolidated draft)
 

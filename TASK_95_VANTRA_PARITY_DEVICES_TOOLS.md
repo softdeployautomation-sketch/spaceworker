@@ -10,7 +10,7 @@
 - SpaceWorker design tokens: `app/globals.css`, `components/ui.tsx` (Night Studio).
 
 ## Goal
-SpaceWorker web does everything Vantra's user surface does — users/staff never open Vantra.
+SpaceWorker web does everything Vantra's user surface does — users/staff never open Vantra. **Manual-first (owner, 2026-09-22): every manual function available in Vantra must be user-reachable in SpaceWorker BEFORE/alongside the agent doing it — the agent shares the same DeviceCapability/DeviceAction layer and never gets a power users don't have (plan CROSS-TRACK RULE 8).**
 
 ## Deliverables
 1. **Devices core (V1)**: device grid/cards w/ status (from Task 92 `Device`), device detail (specs, health, history), add-device via SpaceWorker-issued Vantra-agent install link (from Task 93), auto-move + private-move rules re-skinned.
@@ -23,5 +23,7 @@ Account surfaces/billing/tickets/desktop-mode (Task 101); staff-badge admin RMM 
 
 ## Acceptance
 - Parity walk-through on the VM: add device → see it in grid → detail → wake/reboot/script-run via gated proposals → device moves (auto/private) work → admin granted a private agent for a test user → audit rows everywhere.
+- **Manual-first check (CROSS-TRACK RULE 8):** every Vantra UI function has a user-reachable manual control in SpaceWorker, all flowing through the SAME DeviceCapability/DeviceAction layer the agent uses.
+- **Admin limits (CROSS-TRACK RULE 7):** device job concurrency is an AdminSetting (enabled + maxConcurrent) surfaced in the admin panel with live counts — no hardwired limits.
 - No Vantra login needed at any point; all Vantra tokens server-side only.
 - `tsc --noEmit` clean; §2 deploy; live curl checks on the new routes; mobile viewport sane.

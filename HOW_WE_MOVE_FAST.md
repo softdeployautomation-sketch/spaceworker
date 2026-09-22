@@ -138,7 +138,36 @@ SPACEWORKER_LOCAL_EXE=true BUILD_TARGET=extractor npm run dev -- -p 3400
 ```
 Then hit `http://localhost:3400/api/exe/...` with real `curl`/`fetch` requests — exercises the exact same code the packaged EXE runs, in seconds instead of ~10+ minutes, without a Windows VM at all. Use the full build+install cycle only when the change is genuinely about the packaged installer or the native shell itself.
 
-## 6. General discipline
+## 6. Gotchas learned live (append-only — read before building/deploying)
+
+Added 2026-09-22 (Task 92):
+
+- **Next.js forbids sibling dynamic slug name mismatches.** Two routes at the
+  same dynamic level must use the SAME slug: `app/api/admin/users/[id]/...` +
+  `app/api/admin/users/[userId]/...` compiled fine (`tsc` clean, `next build`
+  succeeded) but **crashed the whole app at boot** with
+  `You cannot use different slug names for the same dynamic path ('id' !== 'userId')`
+  — landing returned 500 and journalctl spammed unhandled rejections. Before
+  adding a nested dynamic route, `ls` the sibling directories and copy the
+  existing slug name exactly (admin user routes use `[id]`).
+- **Hand-written migration SQL: empty text-array default is
+  `DEFAULT ARRAY[]::TEXT[]`** (or `'{}'`), never `ARRAY()::TEXT[]` — the
+  latter is a Postgres syntax error that fails the whole migration mid-deploy
+  (recover with `npx prisma migrate resolve --rolled-back <name>` after
+  fixing the SQL). Also: quote EVERY camelCase column in manual psql
+  verification (`"grantedAt"`, not `grantedAt` — unquoted folds to lowercase
+  and errors).
+- **`.next` ownership breaks the trmm build.** A build ever run as root on
+  the VPS leaves root-owned files in `/opt/spaceworker/.next`; the next
+  `sudo -u trmm npm run build` dies with `EACCES ... unlink` mid-build and the
+  service can end up stuck `activating`. Fix: `chown -R trmm:trmm
+  /opt/spaceworker/.next`, then rebuild. Always build as `trmm` (per §2) and
+  check ownership first when an EACCES unlink appears.
+- (Also from Task 92) `systemctl status` prints the substituted
+  `%INTERNAL_BEARER_TOKEN%` from unit files — don't paste raw status output
+  into logs/screenshots when a token-bearing unit was involved.
+
+## 7. General discipline
 
 - Full-project `npx tsc --noEmit -p .` after every batch of edits, before deploying — catches JSX/type breakage immediately (caught a bad JSX restructure this way mid-session).
 - Commit messages should state what a security/audit finding actually was and how it was verified fixed (see this repo's `TASK_49...md` + its matching commit for the pattern) — future-you (or Cline) reading `git log` should be able to tell a real fix from a claimed one.

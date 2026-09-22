@@ -16,6 +16,7 @@ Internal staff-only attack lab on personal VMs: run real scenarios, record episo
 2. **L2 Staff badge**: SpaceWorker-side staff flag (mirror of Vantra's admin pattern) grants full lab access; everything audited; panic switch freezes all ranges; no customer data on lab VMs.
 3. **L3 Detection pipeline**: episode → candidate rule (Sigma-class) → validate against episode telemetry → `DetectionPack` → surfaced via the Assistant security toolbelt (digest + checks) to real users.
 4. **Migration**: `LabScenario`, `LabRange`, `LabEpisode`, `LabFinding`, `DetectionPack`, `LabConsent` + `AgentPendingAction` kind "lab-action" (lab runs are gated like everything else).
+5. **Admin limits (CROSS-TRACK RULE 7):** lab VMs + Caldera are RAM consumers on lab hosts — concurrent ranges, concurrent Caldera runs, and per-staff range caps are AdminSetting keys surfaced in the admin panel with live counts. No hardwired limits.
 
 ## Michael MT-2 + MT-3 contracts (isolated build → owner integrates)
 - **MT-2 Scenario pack**: 5 launch scenarios (ATT&CK-mapped Caldera adversary profiles + Atomic tests), e.g. password spraying, RDP lateral movement, persistence via run-keys, kerberoasting, ransomware staging. Deliverable: Caldera profiles (YAML) + per-scenario doc (expected telemetry the Vantra agent should emit, blast radius, cleanup). Repo: `michael-fork` branch `michael/cyber-lab-scenarios`, folder `michael/cyber-lab/scenarios/` + README per template.
