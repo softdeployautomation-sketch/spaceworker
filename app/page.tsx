@@ -107,7 +107,7 @@ export default function HomePage() {
               href={accountHref("/#store")}
               className="mt-3 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
             >
-              Open the store on spaceworker.instaweb.top
+              Open the store on spaceworker.top
             </Link>
           </div>
         ) : (

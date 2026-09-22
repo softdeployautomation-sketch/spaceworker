@@ -7,7 +7,7 @@ import { ConfirmDialog } from "@/components/modal";
 // Replaces every window.confirm(...) in this app with the same in-app,
 // themed dialog already used elsewhere (components/modal.tsx's ConfirmDialog)
 // — a native browser confirm() breaks the illusion that this is a real app
-// (it renders with the page's raw hostname in the title, "spaceworker.instaweb.top
+// (it renders with the page's raw hostname in the title, "spaceworker.top
 // says", ignores the dark theme, and looks especially out of place once this
 // app ships as a desktop EXE per Task 27, where there's no browser chrome to
 // blame it on). Mounted once at the root layout, right next to ToastProvider.
