@@ -19,7 +19,36 @@ import {
 // switch_subject mutate a campaign's deliverability decision; diagnostics runs the
 // isolation probes (seed-mailbox mode is the ONE autonomous agent action, override
 // mode stays approval-gated).
-export type AgentActionKind = "job" | "campaign" | "pin" | "switch_subject" | "diagnostics";
+//
+// Task 92 — the device-layer kinds are RESERVED in the type now (plan §SCHEMA)
+// so later tasks (93/94/96/97/98) extend the SAME union — but approving one
+// still fails closed below until its real executor ships (never silently
+// no-op, never fall through to executeJob).
+export type AgentActionKind =
+  | "job"
+  | "campaign"
+  | "pin"
+  | "switch_subject"
+  | "diagnostics"
+  | "device"
+  | "email-reply"
+  | "power"
+  | "wake"
+  | "browser-clone"
+  | "clone-control"
+  | "lab-action";
+
+// Kinds whose real executors have NOT shipped yet — approve is rejected with a
+// clear 4xx rather than falling through to an unintended branch.
+const RESERVED_ACTION_KINDS = new Set<AgentActionKind>([
+  "device",
+  "email-reply",
+  "power",
+  "wake",
+  "browser-clone",
+  "clone-control",
+  "lab-action",
+]);
 
 // Task 31, item 3 — the approval EXECUTOR. This is the ONLY place a pending
 // AgentPendingAction is turned into a REAL SearchJob / EmailCampaign, and it
@@ -83,6 +112,17 @@ export async function approvePendingAction(opts: {
 
   const action = await prisma.agentPendingAction.findUnique({ where: { id: opts.actionId } });
   if (!action) throw new AgentActionError("not_found", "Proposal not found.", 404);
+
+  // Task 92 — reserved device-layer kinds fail closed here until their real
+  // executor ships (Tasks 93/94/96/97/98). The approve route's catch frees
+  // the proposal back to "pending" so nothing is lost.
+  if (RESERVED_ACTION_KINDS.has(action.kind as AgentActionKind)) {
+    throw new AgentActionError(
+      "not_yet_executable",
+      "This action type is reserved and cannot be approved yet — its executor ships in a later task.",
+      400,
+    );
+  }
 
   if (action.kind === "campaign") {
     const id = await executeCampaign(opts.userId, action.payload as Record<string, unknown>);

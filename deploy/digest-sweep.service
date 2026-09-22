@@ -1,0 +1,11 @@
+# Install: sudo cp digest-sweep.service /etc/systemd/system/ (after replacing
+# %INTERNAL_BEARER_TOKEN% with the real value from /opt/spaceworker/.env).
+# PORT 3500 — matches spaceworker.service (same convention as automations-sweep.service).
+[Unit]
+Description=SpaceWorker assistant digest sweep (Task 92)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -s -X POST \
+  -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
+  http://localhost:3500/api/internal/digest-sweep

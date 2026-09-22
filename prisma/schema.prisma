@@ -52,6 +52,12 @@ model User {
   // more" to a power user live, per the ask. Enforced in runAgentTurn against a
   // SUM over today's AiUsageLog rows (append-only, race-safe — see AiUsageLog).
   aiDailyCapHundredthsCent Int              @default(20000)
+  // Task 92 — assistant foundation. digestEnabled gates the nightly assistant
+  // digest (digest-sweep skips users who turn it off); deviceTelemetryEnabled
+  // is the master WEB toggle for device telemetry ingest (heartbeat upsert
+  // refuses when false — no tray in SpaceWorker, per plan decision M-scope).
+  digestEnabled          Boolean   @default(true)
+  deviceTelemetryEnabled Boolean   @default(true)
   createdAt        DateTime           @default(now())
   verifications    VerificationCode[]
   rateLimits       RateLimitEvent[]
@@ -71,6 +77,14 @@ model User {
   toolUsageLogs    ToolUsageLog[]
   exeLicenses      ExeLicense[]
   exeLicenseTransfers ExeLicenseTransfer[]
+  // Task 92 — assistant foundation device layer + entitlements.
+  devices             Device[]
+  deviceJobs          DeviceJob[]
+  deviceActions       DeviceAction[]
+  deviceRelationships DeviceRelationship[]
+  activityRollups     ActivityRollup[]
+  userEntitlements    UserEntitlement[]
+  agentActionAudits   AgentActionAudit[]
 }
 
 model VerificationCode {
@@ -953,4 +967,241 @@ model ToolUsageLog {
 
   @@index([userId, tool, usedOn])
   @@index([userId, createdAt])
+}
+
+// ============================================================================
+// Task 92 — Assistant foundation (device layer + entitlements core).
+// Plan: PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md §SCHEMA + §CROSS-TRACK RULES.
+// The Device* family is the SHARED device layer every device-side feature
+// (Vantra plugin, Browser Clone, Cyber Lab) must consume — nobody invents
+// their own identity, approval, audit, or panic primitives (Michael directive).
+// Audit rows deliberately survive the deletion of the thing they audited:
+// pendingActionId/cloneId are PLAIN SCALARS (no FK, no cascade) on purpose.
+// ============================================================================
+
+model Device {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  name          String
+  // "workstation" | "hosted" — hosted = a SpaceWorker-run PC (Browser Clone
+  // destination, arriving in Task 97); everything else is the user's own.
+  deviceKind    String   @default("workstation")
+  // Device identity = the user's Vantra agent (plan: VantraLink arrives in
+  // Task 93, so this is nullable until provisioning wires it). Unique so a
+  // heartbeat can look the device up by agent id alone.
+  vantraAgentId String?  @unique
+  // "online" | "offline" | "asleep" | "unknown" — derived from heartbeat age.
+  status        String   @default("unknown")
+  osName        String?
+  osVersion     String?
+  // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
+  hardwareSummary Json?
+  lastSeenAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  heartbeats  DeviceHeartbeat[]
+  capabilities DeviceCapability[]
+  jobs        DeviceJob[]
+  actions     DeviceAction[]
+  powerPolicy DevicePowerPolicy?
+  outgoingRelationships DeviceRelationship[] @relation("sourceDevice")
+  incomingRelationships DeviceRelationship[] @relation("targetDevice")
+  audits      DeviceAudit[]
+
+  @@index([userId])
+  @@index([userId, status])
+}
+
+model DeviceHeartbeat {
+  id        String   @id @default(cuid())
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id])
+  agentVersion String?
+  ipAddress String?
+  // Strictly whitelisted telemetry ONLY (heartbeats, sampling counters, reach
+  // flags). Never generalized into a "collect arbitrary data" sink — plan
+  // CROSS-TRACK RULE 2 (telemetry is a lesser secrets class but still scoped).
+  telemetry Json?
+  createdAt DateTime @default(now())
+
+  @@index([deviceId, createdAt])
+}
+
+model DeviceCapability {
+  id        String   @id @default(cuid())
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id])
+  // e.g. "wake" | "script-run" | "remote-session" | "browser-clone-source".
+  // Metadata only — the ABILITY to do something, not a queued thing to do.
+  capability String
+  enabled   Boolean  @default(true)
+  meta      Json?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([deviceId, capability])
+  @@index([deviceId])
+}
+
+model DeviceJob {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id])
+  jobType   String
+  // "queued" | "running" | "succeeded" | "failed" | "cancelled".
+  status    String   @default("queued")
+  payload   Json?
+  result    Json?
+  error     String?
+  startedAt DateTime?
+  finishedAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([deviceId, status])
+}
+
+model DeviceAction {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id])
+  deviceId        String
+  device          Device   @relation(fields: [deviceId], references: [id])
+  // PLAIN SCALAR on purpose — the device-side lifecycle must survive a
+  // pendingAction being deleted; the AgentPendingAction row itself is the
+  // approval gate, this row is the device-side realization of it.
+  pendingActionId String?
+  actionType      String
+  // "requested" | "approved" | "executing" | "executed" | "failed" |
+  // "rejected" | "expired" | "cancelled".
+  status          String   @default("requested")
+  payload         Json?
+  result          Json?
+  error           String?
+  requestedAt     DateTime @default(now())
+  approvedAt      DateTime?
+  executedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([userId])
+  @@index([deviceId, status])
+  @@index([pendingActionId])
+}
+
+model DeviceAudit {
+  id        String   @id @default(cuid())
+  deviceId  String
+  device    Device   @relation(fields: [deviceId], references: [id])
+  // "user" | "agent" | "admin" | "system" | "device".
+  actor     String   @default("system")
+  // "web" | "telegram" | "api" | "device" | null.
+  channel   String?
+  event     String
+  detail    Json?
+  createdAt DateTime @default(now())
+
+  @@index([deviceId, createdAt])
+}
+
+model DeviceRelationship {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id])
+  sourceDeviceId String
+  sourceDevice   Device   @relation("sourceDevice", fields: [sourceDeviceId], references: [id])
+  targetDeviceId String
+  targetDevice   Device   @relation("targetDevice", fields: [targetDeviceId], references: [id])
+  // "same-org-peer" | "relay" | "clone-source" | "clone-destination".
+  relationType   String
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([sourceDeviceId, targetDeviceId, relationType])
+  @@index([userId])
+}
+
+model DevicePowerPolicy {
+  id        String    @id @default(cuid())
+  deviceId  String    @unique
+  device    Device    @relation(fields: [deviceId], references: [id])
+  // "off" | "timed" | "indefinite" (keep-awake; WoL state rides Device.status).
+  mode      String    @default("off")
+  until     DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+}
+
+model ActivityRollup {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id])
+  // UTC midnight of the covered day; unique per user so a re-fired sweep
+  // can't double-digest (idempotency guard).
+  rollupDate    DateTime
+  digestText    String
+  // Plain scalar — the rollup must survive thread deletion.
+  agentThreadId String?
+  // REAL Channelry cost of producing this digest (AiUsageLog eventType
+  // "assistant_digest" holds the matching spend row).
+  aiCostHundredthsCent Int @default(0)
+  deliveredChannels String[] @default([])
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, rollupDate])
+  @@index([userId, rollupDate])
+}
+
+// Task 92 + plan §COMMERCIAL C1 — THE entitlement gate. Every feature checks
+// capabilities here, never tiers (lib/entitlements.ts is the only reader).
+// Tier 5 implicitly allows every key (premium reversion from lib/premium.ts),
+// so a row is only needed for grants that must survive a downgrade.
+// Expiry mirrors Task 55 lazy semantics: expired => deny + stamp revokedAt once.
+model UserEntitlement {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  // One of lib/entitlements.ts ENTITLEMENT_KEYS ("extractor" | "mailer" |
+  // "assistant" | "devices" | "cyberlab").
+  key       String
+  // "module" | "admin_grant" | "trial".
+  source    String    @default("module")
+  // NULL = never expires; non-NULL = lazy-reverted on read (Task 55 pattern).
+  expiresAt DateTime?
+  grantedAt DateTime  @default(now())
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([userId, key])
+  @@index([userId])
+}
+
+// Plan §SCHEMA — canonical PRODUCT audit for gated agent/device actions.
+// pendingActionId / sourceDeviceId / destinationDeviceId / cloneId are plain
+// scalars so audits survive deletion of the audited object (same rule as
+// DeviceAction). Low-level RMM/Mesh logs stay infrastructure-only.
+model AgentActionAudit {
+  id               String   @id @default(cuid())
+  userId           String?
+  user             User?    @relation(fields: [userId], references: [id])
+  pendingActionId  String?
+  action           String
+  // "created" | "approved" | "rejected" | "executed" | "failed" | "expired".
+  status           String
+  initiatingChannel String  @default("web") // "web" | "telegram" | "api" | "system"
+  approvalChannel  String? // "web" | "telegram" | "admin"
+  sourceDeviceId   String?
+  destinationDeviceId String?
+  cloneId          String?
+  detail           Json?
+  createdAt        DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([pendingActionId])
 }

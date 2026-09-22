@@ -8,6 +8,7 @@ import {
   KeyRound,
   LayoutDashboard,
   Megaphone,
+  Monitor,
   Radar,
   Search,
   Settings,
@@ -30,6 +31,9 @@ export interface NavItem {
 // other (or from the destinations each dashboard page actually implements).
 const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
+  // Task 92 — devices placeholder (grid/detail arrive with Task 95). Web-only:
+  // the extractor build's BUILD_ALLOWED_HREFS set below already excludes it.
+  { href: "/dashboard/devices", label: "Devices", icon: Monitor },
   { href: "/dashboard/extract", label: "Extract", icon: Search },
   { href: "/dashboard/advanced-search", label: "Advanced Search", icon: Radar },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },

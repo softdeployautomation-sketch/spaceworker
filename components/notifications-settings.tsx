@@ -9,6 +9,8 @@ interface NotificationPrefs {
   notifyEmail: boolean;
   notifyTelegram: boolean;
   notifyAgent: boolean;
+  digestEnabled: boolean;
+  deviceTelemetryEnabled: boolean;
   linked: boolean;
   connectUrl: string | null;
 }
@@ -124,6 +126,20 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.notifyAgent}
         disabled={busy !== null}
         onToggle={(v) => void patch({ notifyAgent: v }, "Agent chat preference saved")}
+      />
+      <Toggle
+        label="Daily assistant digest"
+        description="A once-a-day summary of your workspace and device activity."
+        checked={prefs.digestEnabled}
+        disabled={busy !== null}
+        onToggle={(v) => void patch({ digestEnabled: v }, "Digest preference saved")}
+      />
+      <Toggle
+        label="Device telemetry"
+        description="Master switch for device heartbeats and reachability. Off stops all device ingest."
+        checked={prefs.deviceTelemetryEnabled}
+        disabled={busy !== null}
+        onToggle={(v) => void patch({ deviceTelemetryEnabled: v }, "Telemetry preference saved")}
       />
       <div className="rounded-lg border border-border bg-bg-elevated p-3 text-sm">
         <div className="flex items-center justify-between gap-3">

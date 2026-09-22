@@ -1,0 +1,13 @@
+# Install: sudo cp digest-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now digest-sweep.timer
+[Unit]
+Description=Run the SpaceWorker assistant digest sweep once a day
+
+# Daily cadence (Task 92 digest covers the previous UTC day; the rollup's
+# unique userId+rollupDate makes an accidental re-fire a no-op).
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* 08:30:00 UTC
+Unit=digest-sweep.service
+
+[Install]
+WantedBy=timers.target

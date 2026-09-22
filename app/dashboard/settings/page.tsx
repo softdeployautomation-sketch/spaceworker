@@ -119,6 +119,8 @@ export default async function SettingsPage() {
               notifyEmail: user.notifyEmail,
               notifyTelegram: user.notifyTelegram,
               notifyAgent: user.notifyAgent,
+              digestEnabled: user.digestEnabled,
+              deviceTelemetryEnabled: user.deviceTelemetryEnabled,
               linked: user.telegramChatId !== null,
               connectUrl,
             }}

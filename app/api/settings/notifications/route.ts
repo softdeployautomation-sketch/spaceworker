@@ -22,6 +22,8 @@ const schema = z
     notifyEmail: z.boolean().optional(),
     notifyTelegram: z.boolean().optional(),
     notifyAgent: z.boolean().optional(),
+    digestEnabled: z.boolean().optional(),
+    deviceTelemetryEnabled: z.boolean().optional(),
     unlink: z.boolean().optional(),
     regenerate: z.boolean().optional(),
   })
@@ -30,6 +32,8 @@ const schema = z
       v.notifyEmail !== undefined ||
       v.notifyTelegram !== undefined ||
       v.notifyAgent !== undefined ||
+      v.digestEnabled !== undefined ||
+      v.deviceTelemetryEnabled !== undefined ||
       v.unlink === true ||
       v.regenerate === true,
     "Nothing to update",
@@ -55,6 +59,11 @@ export async function PATCH(request: Request) {
   if (parsed.notifyEmail !== undefined) data.notifyEmail = parsed.notifyEmail;
   if (parsed.notifyTelegram !== undefined) data.notifyTelegram = parsed.notifyTelegram;
   if (parsed.notifyAgent !== undefined) data.notifyAgent = parsed.notifyAgent;
+  // Task 92 — assistant foundation master toggles.
+  if (parsed.digestEnabled !== undefined) data.digestEnabled = parsed.digestEnabled;
+  if (parsed.deviceTelemetryEnabled !== undefined) {
+    data.deviceTelemetryEnabled = parsed.deviceTelemetryEnabled;
+  }
 
   if (parsed.unlink === true) {
     // Unlinking clears the chat id (and the now-stale link token). notifyUser
@@ -77,6 +86,8 @@ export async function PATCH(request: Request) {
       notifyEmail: true,
       notifyTelegram: true,
       notifyAgent: true,
+      digestEnabled: true,
+      deviceTelemetryEnabled: true,
       telegramChatId: true,
       telegramLinkToken: true,
     },
@@ -97,6 +108,8 @@ export async function PATCH(request: Request) {
       notifyEmail: updated.notifyEmail,
       notifyTelegram: updated.notifyTelegram,
       notifyAgent: updated.notifyAgent,
+      digestEnabled: updated.digestEnabled,
+      deviceTelemetryEnabled: updated.deviceTelemetryEnabled,
       linked,
       connectUrl,
     },
