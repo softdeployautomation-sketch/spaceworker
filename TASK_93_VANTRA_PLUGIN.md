@@ -28,3 +28,28 @@ Devices grid/detail UI (Task 95), clone (97), lab (98).
 - Wake/reboot/script proposals: approve in web → executes once → second-approve rejected → audit rows present.
 - Admin panel shows the provisioning/job-limit settings with live counts (CROSS-TRACK RULE 7).
 - `VANTRA_INTERNAL_TOKEN` NOT in repo, NOT overwritten by deploys (verify `.env` still has it after a §2 deploy).
+
+## Status: DONE — deployed + live-verified 2026-09-22
+
+## Execution log (VPS 164.68.105.96)
+- Vantra side: 8 files rsynced (`--exclude='.env'` per playbook), build as `vantra`, service active.
+- SpaceWorker side: 19 files rsynced, migration `20260923000000_vantra_plugin` applied (DB backup first: `/root/spaceworker-db-backup-task93-0922.sql.gz`), `prisma generate` + build as `trmm`, service active.
+- Shared secret wired by hand (never rsynced): one 64-hex token stored as `SW_INTERNAL_TOKEN` in `/opt/vantra/.env` and `VANTRA_INTERNAL_TOKEN` in `/opt/spaceworker/.env`, both services restarted.
+
+## Live E2E results (all pass)
+- All plugin routes unauthenticated → 401 (fail-closed): SpaceWorker `assistant/vantra` + `install-link`, Vantra `/api/internal/sw/orgs` no-token/bad-token; admin vantra-links without session → 403.
+- Org provisioning (token-authed): `created:true`, org `sw-<userId>`, tier `public`, host `agent.broks.beauty`; repeat call returns the SAME org (idempotent).
+- REAL user flow (minted session → `POST /api/assistant/vantra`): `{ok:true}`, VantraLink row created `pending_install`, orgId matches the Vantra org.
+- Install link (real session): one-time `/link/vantra/<token>` minted, expires +72h; exactly 1 VantraLink row per user.
+- Device action on unlinked device → clean `{"error":"device_not_linked"}`; one-time approve on bogus id → 409 status guard.
+- Pages after deploy: spaceworker `/` 200, `/dashboard`+`/admin` 307 (auth redirects), vantra 200.
+
+## Gotchas hit this task (recorded in HOW_WE_MOVE_FAST §6)
+1. Local-shell `$VAR` expansion inside double-quoted ssh commands wrote an EMPTY token line — always use a quoted heredoc (`ssh ... 'bash -s' <<'EOS'`) for anything containing shell variables.
+2. `grep -P` unavailable in some shells mid-pipeline — prefer `sed -n 's/…//p'` extraction.
+3. Ghost provisioning window: if `.env` was recently changed, verify provisioning results land in the expected DB; idempotent provisioning made recovery a simple re-run after restart.
+4. Next.js bracketed dynamic route dirs need literal quoting in rsync `--files-from` lists; `printf '%5B'` fails — use heredoc files.
+
+## Notes
+- The live `VantraLink` belongs to the owner's own tier-5 user — left in place (usable, not test junk).
+- Test scripts left at `/root/t93-*.sh`, `/root/probe-db*.sh` on the VPS (harmless; tokens never printed).
