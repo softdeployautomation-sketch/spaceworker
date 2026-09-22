@@ -26,8 +26,8 @@ const nextConfig: NextConfig = {
     root: __dirname,
   },
   // 2026-09-14 — SpaceWorker's admin panel is embedded (iframed) inside Vantra's
-  // unified Ops Console at vantra.instaweb.top, which needs framing allowed
-  // there. There was previously no frame-ancestors restriction at all (any site
+  // unified Ops Console, which needs framing allowed there (console moved to
+  // vantra.spaceworker.top in Task 84). There was previously no frame-ancestors restriction at all (any site
   // could iframe this app, a latent clickjacking gap) — this both enables the
   // console embed AND closes that gap by allowing exactly one trusted origin
   // instead of leaving it wide open.
@@ -38,7 +38,7 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: "frame-ancestors 'self' https://vantra.instaweb.top;",
+            value: "frame-ancestors 'self' https://vantra.spaceworker.top;",
           },
         ],
       },
