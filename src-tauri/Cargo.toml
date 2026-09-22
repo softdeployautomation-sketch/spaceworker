@@ -25,7 +25,7 @@ tauri-build = { version = "2", features = [] }
 # tried it live, no listener ever came up on the requested debug port). This is
 # a debugging aid only — it doesn't change any user-facing behavior, the panel
 # stays closed unless someone deliberately right-clicks and opens it.
-tauri = { version = "2", features = ["devtools"] }
+tauri = { version = "2", features = [] }
 
 # Task 57 Bug 2 — the EXE's Export CSV silently no-ops because WebView2 swallows the
 # browser Blob→<a download> pattern. These two plugins give the EXE the standard
