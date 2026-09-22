@@ -62,13 +62,27 @@ export interface VantraLinkView {
   installTokenExpiresAt: Date | null;
   lastSyncedAt: Date | null;
   lastError: string | null;
+  // Tier model (2026-10 console follow-up): the Add-a-device panel's
+  // Public/Private toggle reads these. `privateAllowed` is the premium/admin
+  // gate ("devices" entitlement — tier 5 covers it); `privateOrgId` is set
+  // once the private companion org is provisioned in Vantra.
+  orgTier: string;
+  privateAllowed: boolean;
+  privateOrgId: string | null;
+  privatePsCommand: string | null;
+  privatePsExpiresAt: Date | null;
 }
 
-function toView(link: {
-  id: string; orgId: string; orgName: string; status: string;
-  installUrl: string | null; installTokenExpiresAt: Date | null;
-  lastSyncedAt: Date | null; lastError: string | null;
-}): VantraLinkView {
+function toView(
+  link: {
+    id: string; orgId: string; orgName: string; status: string;
+    installUrl: string | null; installTokenExpiresAt: Date | null;
+    lastSyncedAt: Date | null; lastError: string | null;
+    orgTier: string; privateOrgId: string | null;
+    privatePsCommand: string | null; privatePsExpiresAt: Date | null;
+  },
+  privateAllowed = false,
+): VantraLinkView {
   return {
     id: link.id,
     orgId: link.orgId,
@@ -78,7 +92,27 @@ function toView(link: {
     installTokenExpiresAt: link.installTokenExpiresAt,
     lastSyncedAt: link.lastSyncedAt,
     lastError: link.lastError,
+    orgTier: link.orgTier,
+    privateAllowed,
+    privateOrgId: link.privateOrgId,
+    privatePsCommand: link.privatePsCommand,
+    privatePsExpiresAt: link.privatePsExpiresAt,
   };
+}
+
+async function isPrivateAllowed(userId: string): Promise<boolean> {
+  return (await hasEntitlement(userId, "devices")).allowed;
+}
+
+/**
+ * Read-only dual-tier view (no provisioning): the device-list and console
+ * panels call this instead of ensureVantraLink so a render never mints an
+ * org as a side effect. `privateAllowed` reflects the live entitlement.
+ */
+export async function getVantraLinkView(userId: string): Promise<VantraLinkView | null> {
+  const link = await db.vantraLink.findUnique({ where: { userId } });
+  if (!link || link.status === "revoked") return null;
+  return toView(link, await isPrivateAllowed(userId));
 }
 
 /**
@@ -89,7 +123,9 @@ function toView(link: {
  */
 export async function ensureVantraLink(userId: string): Promise<VantraLinkView> {
   const existing = await db.vantraLink.findUnique({ where: { userId } });
-  if (existing && existing.status !== "error") return toView(existing);
+  if (existing && existing.status !== "error") {
+    return toView(existing, await isPrivateAllowed(userId));
+  }
 
   const decision = await hasEntitlement(userId, "assistant");
   if (!decision.allowed) throw new Error("entitlement_required");
@@ -101,10 +137,9 @@ export async function ensureVantraLink(userId: string): Promise<VantraLinkView> 
     if (count >= settings.vantraLinksMax) throw new Error("vantra_links_limit");
   }
 
-  const provisioned = await vantraFetch<{ ok: boolean; org: { id: string; name: string } }>(
-    "/api/internal/sw/orgs",
-    { method: "POST", body: JSON.stringify({ swUserId: userId }) },
-  );
+  const provisioned = await vantraFetch<{
+    ok: boolean; org: { id: string; name: string; agentDomainTier?: string };
+  }>("/api/internal/sw/orgs", { method: "POST", body: JSON.stringify({ swUserId: userId }) });
 
   const link = await db.vantraLink.upsert({
     where: { userId },
@@ -128,7 +163,38 @@ export async function ensureVantraLink(userId: string): Promise<VantraLinkView> 
     initiatingChannel: "system",
     detail: { orgId: link.orgId, orgName: link.orgName },
   });
-  return toView(link);
+  return toView(link, await isPrivateAllowed(userId));
+}
+
+/**
+ * Private-tier companion org (`sw-<userId>-p` in Vantra) — the premium side
+ * of the tier model. Gated on the "devices" entitlement (premium tier 5
+ * covers it; free/trial users are 403'd — they get the public agent only).
+ * Idempotent: Vantra keys the org by its deterministic name, repeat calls
+ * return the same org. The companion is what the Add-a-device Private tab
+ * installs against AND where devices added via the public link silently
+ * auto-move (Vantra Task 64), so the public domain never manages devices.
+ */
+export async function ensurePrivateOrg(userId: string): Promise<VantraLinkView> {
+  const link = await db.vantraLink.findUnique({ where: { userId } });
+  if (!link || link.status === "revoked") throw new Error("no_link");
+  if (!(await isPrivateAllowed(userId))) throw new Error("private_not_granted");
+
+  const provisioned = await vantraFetch<{ ok: boolean; org: { id: string; name: string } }>(
+    "/api/internal/sw/orgs",
+    { method: "POST", body: JSON.stringify({ swUserId: userId, private: true }) },
+  );
+  const updated = await db.vantraLink.update({
+    where: { id: link.id },
+    data: { privateOrgId: provisioned.org.id },
+  });
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_private_org_provisioned",
+    status: "executed",
+    detail: { orgId: provisioned.org.id },
+  });
+  return toView(updated, true);
 }
 
 function sha256(value: string): string {
@@ -136,14 +202,49 @@ function sha256(value: string): string {
 }
 
 /**
- * One-time install link: mints a fresh TRMM deployment via Vantra and stores
- * a SHA-256 of the one-time token in the link row. The URL is OUR wrapper
- * (/link/vantra/<token>), which resolves the real download server-side so
- * the raw TRMM deployment URL never needs to be re-shared or stay valid.
+ * Install assets, per tier (2026-10 console follow-up):
+ *   kind "public"  → one-time wrapper link /link/vantra/<token> (the panel
+ *                    shows ONLY that path — never the agent host). Devices
+ *                    added through it auto-move into the private companion.
+ *   kind "private" → PowerShell install command baked against the private
+ *                    companion org's API base (premium, admin-granted).
+ * Both expire in 72h; re-mint any time.
  */
-export async function mintInstallLink(userId: string): Promise<VantraLinkView> {
+export async function mintInstallLink(
+  userId: string,
+  kind: "public" | "private" = "public",
+): Promise<VantraLinkView> {
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
+
+  if (kind === "private") {
+    if (!(await isPrivateAllowed(userId))) throw new Error("private_not_granted");
+    // Provision the companion on first use, then mint against IT.
+    const privOrgId =
+      link.privateOrgId ?? (await ensurePrivateOrg(userId)).privateOrgId;
+    if (!privOrgId) throw new Error("private_not_provisioned");
+
+    const minted = await vantraFetch<{ ok: boolean; command: string }>(
+      `/api/internal/sw/orgs/${privOrgId}/install-link`,
+      { method: "POST", body: "{}" },
+    );
+    const updated = await db.vantraLink.update({
+      where: { id: link.id },
+      data: {
+        privateOrgId: privOrgId,
+        privatePsCommand: minted.command,
+        privatePsExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+        lastError: null,
+      },
+    });
+    await recordAgentActionAudit({
+      userId,
+      action: "vantra_private_install_minted",
+      status: "executed",
+      detail: { orgId: privOrgId },
+    });
+    return toView(updated, true);
+  }
 
   await vantraFetch<{ ok: boolean; downloadUrl: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
@@ -165,7 +266,7 @@ export async function mintInstallLink(userId: string): Promise<VantraLinkView> {
     status: "executed",
     detail: { orgId: link.orgId },
   });
-  return toView(updated);
+  return toView(updated, await isPrivateAllowed(userId));
 }
 
 /** Resolves a one-time install token to the real (server-only) download URL. */
@@ -200,16 +301,31 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
   try {
-    const list = await vantraFetch<{
-      ok: boolean;
-      devices: Array<{
-        vantraAgentId: string; name: string; online: boolean; status: string;
-        osName: string | null; operatingSystem: string | null; lastSeen: string;
-      }>;
-    }>(`/api/internal/sw/devices?orgId=${encodeURIComponent(link.orgId)}`);
-
+    // Tier model: agents can live in the public org AND the private
+    // companion (`sw-<uid>-p`) — a device added via the public link silently
+    // auto-moves (Vantra Task 64) into the companion, so BOTH lists must be
+    // merged or the device would vanish from the console after the move.
+    const orgIds = link.privateOrgId ? [link.orgId, link.privateOrgId] : [link.orgId];
+    const lists = await Promise.all(
+      orgIds.map((orgId) =>
+        vantraFetch<{
+          ok: boolean;
+          devices: Array<{
+            vantraAgentId: string; name: string; online: boolean; status: string;
+            osName: string | null; operatingSystem: string | null; lastSeen: string;
+          }>;
+        }>(`/api/internal/sw/devices?orgId=${encodeURIComponent(orgId)}`).catch(() => null),
+      ),
+    );
+    type SwAgentRow = NonNullable<(typeof lists)[number]>["devices"][number];
+    const merged = new Map<string, SwAgentRow>();
+    for (const list of lists) {
+      if (!list) continue;
+      for (const d of list.devices) merged.set(d.vantraAgentId, d);
+    }
     const now = new Date();
-    for (const d of list.devices) {
+    const devices = [...merged.values()];
+    for (const d of devices) {
       await db.device.upsert({
         where: { vantraAgentId: d.vantraAgentId },
         update: {
@@ -234,13 +350,17 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       data: {
         lastSyncedAt: now,
         lastError: null,
-        ...(list.devices.length > 0 && link.status === "pending_install"
-          ? { status: "active" }
+        // Keep the tier honest: the private companion existing in Vantra is
+        // the ground truth for "user has both" — even if the SW-side flag
+        // flipped earlier (e.g. entitlement revoked, org stays until admin
+        // cleanup, panel keeps working off the entitlement check).
+        ...(devices.length > 0 && link.status === "pending_install"
+          ? { status: "active" as const }
           : {}),
       },
     });
     return {
-      devices: list.devices.map((d) => ({
+      devices: devices.map((d) => ({
         vantraAgentId: d.vantraAgentId,
         name: d.name,
         online: d.online,
@@ -376,18 +496,60 @@ export async function approveDeviceAction(opts: {
   });
   if (claimed.count === 0) throw new Error("not_pending");
 
-  await db.deviceAction.updateMany({
-    where: { pendingActionId: pending.id, status: "requested" },
-    data: { status: "approved", approvedAt: new Date() },
-  });
-  await recordAgentActionAudit({
-    userId: opts.userId,
-    pendingActionId: pending.id,
-    action: `device_${payload.action}`,
-    status: "approved",
-    approvalChannel: opts.approvalChannel ?? "web",
-    sourceDeviceId: payload.deviceId,
-  });
+  try {
+    // Probe reachability FIRST for anything that needs the device alive —
+    // burning the one-time approval on a 503 left the user with an approved
+    // action and "no active grant" (the grant was consumed by the failed
+    // mint). An offline device keeps its approval and re-arms below.
+    if (
+      payload.action === "remote-control" ||
+      payload.action === "maintenance-start" ||
+      payload.action === "maintenance-stop" ||
+      payload.action === "pin-request"
+    ) {
+      const probe = await vantraFetch<{ ok: boolean }>(
+        `/api/internal/sw/devices/${encodeURIComponent(payload.vantraAgentId)}/mesh-urls`,
+      ).catch((err) => {
+        if (String(err).startsWith("vantra_503")) throw new Error("device_offline");
+        throw err;
+      });
+      void probe;
+    }
+
+    await db.deviceAction.updateMany({
+      where: { pendingActionId: pending.id, status: "requested" },
+      data: { status: "approved", approvedAt: new Date() },
+    });
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      pendingActionId: pending.id,
+      action: `device_${payload.action}`,
+      status: "approved",
+      approvalChannel: opts.approvalChannel ?? "web",
+      sourceDeviceId: payload.deviceId,
+    });
+  } catch (err) {
+    // Offline (or probe failure) BEFORE the grant was ever minted: hand the
+    // approval back untouched so the user can retry the moment the device
+    // checks in — nothing was consumed, nothing was executed.
+    await db.agentPendingAction.updateMany({
+      where: { id: pending.id, status: "approved" },
+      data: { status: "pending" },
+    });
+    if (err instanceof Error && err.message === "device_offline") {
+      await recordAgentActionAudit({
+        userId: opts.userId,
+        pendingActionId: pending.id,
+        action: `device_${payload.action}`,
+        status: "failed",
+        approvalChannel: opts.approvalChannel ?? "web",
+        sourceDeviceId: payload.deviceId,
+        detail: { error: "device_offline — approval NOT consumed, retry when online" },
+      });
+      throw new Error("device_offline");
+    }
+    throw err;
+  }
 
   try {
     // Task 95 kinds execute through lib/device-tools (their own internal Vantra

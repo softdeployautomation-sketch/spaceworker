@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getSession } from "@/lib/session";
 import { db } from "@/lib/db";
-import { ensureVantraLink, syncDevices } from "@/lib/vantra-link";
+import { ensureVantraLink, getVantraLinkView, syncDevices } from "@/lib/vantra-link";
 
 export const dynamic = "force-dynamic";
 
@@ -16,8 +16,8 @@ export async function POST() {
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   try {
-    const link = await ensureVantraLink(session.userId);
-    return NextResponse.json({ ok: true, link });
+    const view = await ensureVantraLink(session.userId);
+    return NextResponse.json({ ok: true, link: view });
   } catch (err) {
     const code = err instanceof Error ? err.message : "provision_failed";
     const status =
@@ -39,10 +39,14 @@ export async function GET() {
   }
   try {
     const { devices } = await syncDevices(session.userId);
-    return NextResponse.json({ link, devices });
+    // Enriched dual-tier view (public + private companion + entitlement) —
+    // the Add-a-device panel's Public/Private toggle reads this.
+    const view = await getVantraLinkView(session.userId);
+    return NextResponse.json({ link: view, devices });
   } catch (err) {
+    const view = await getVantraLinkView(session.userId).catch(() => null);
     return NextResponse.json({
-      link,
+      link: view ?? link,
       devices: [],
       syncError: err instanceof Error ? err.message : "sync_failed",
     });

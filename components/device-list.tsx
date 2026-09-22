@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Activity, Moon, Monitor, PlugZap, RefreshCw, Search } from "lucide-react";
+import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search } from "lucide-react";
 
 import { PanicButton } from "@/components/panic-button";
 import { cn } from "@/lib/cn";
@@ -47,14 +47,24 @@ export function DeviceList() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
+  // Tier model: the Add-a-device panel exposes the user's TWO install paths.
+  // "public" = the shareable one-time link; "private" = a PowerShell install
+  // command against the private agent domain (premium/admin-granted only —
+  // the toggle is disabled when the user has just one tier).
+  const [installKind, setInstallKind] = useState<"public" | "private">("public");
   const [link, setLink] = useState<{
     status: string;
     installUrl: string | null;
     lastError: string | null;
+    orgTier: string;
+    privateAllowed: boolean;
+    privateOrgId: string | null;
+    privatePsCommand: string | null;
   } | null>(null);
+  const [psRevealed, setPsRevealed] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState("");
 
   const loadLink = useCallback(async () => {
     try {
@@ -63,7 +73,15 @@ export function DeviceList() {
       const data = await res.json();
       setLink(
         data.link
-          ? { status: data.link.status, installUrl: data.link.installUrl, lastError: data.link.lastError }
+          ? {
+              status: data.link.status,
+              installUrl: data.link.installUrl,
+              lastError: data.link.lastError,
+              orgTier: data.link.orgTier ?? "public",
+              privateAllowed: data.link.privateAllowed === true,
+              privateOrgId: data.link.privateOrgId ?? null,
+              privatePsCommand: data.link.privatePsCommand ?? null,
+            }
           : null,
       );
     } catch {
@@ -110,17 +128,30 @@ export function DeviceList() {
     }
   }
 
-  async function mintInstallLink() {
-    setBusy("install");
+  async function mintInstallLink(kind: "public" | "private") {
+    setBusy(`install-${kind}`);
     setError("");
     try {
-      const res = await fetch("/api/assistant/vantra/install-link", { method: "POST" });
+      const res = await fetch("/api/assistant/vantra/install-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind }),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok)
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't mint install link");
       setLink((prev) =>
-        prev ? { ...prev, installUrl: data.link.installUrl, status: data.link.status } : prev,
+        prev
+          ? {
+              ...prev,
+              status: data.link.status,
+              installUrl: data.link.installUrl ?? prev.installUrl,
+              privateOrgId: data.link.privateOrgId ?? prev.privateOrgId,
+              privatePsCommand: data.link.privatePsCommand ?? (kind === "private" ? null : prev.privatePsCommand),
+            }
+          : prev,
       );
+      if (kind === "private") setPsRevealed(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't mint install link");
     } finally {
@@ -128,15 +159,23 @@ export function DeviceList() {
     }
   }
 
-  async function copyInstallLink() {
-    if (!link?.installUrl) return;
+  async function copyText(key: string, value: string) {
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}${link.installUrl}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setCopied(key);
+      setTimeout(() => setCopied(""), 2000);
     } catch {
-      // clipboard unavailable — the URL stays visible for manual copy
+      // clipboard unavailable — the text stays visible for manual copy
     }
+  }
+
+  // The PRIVATE PowerShell command as stored is fully buildable; the panel
+  // shows it MASKED until the user explicitly reveals it (shoulder-surfing).
+  function maskCommand(cmd: string): string {
+    return cmd
+      .split("\n")
+      .map((line) => (line.trim().length > 24 ? `${line.slice(0, 18)}••••••••${line.slice(-4)}` : line))
+      .join("\n");
   }
 
   const counts = useMemo(() => {
@@ -157,6 +196,193 @@ export function DeviceList() {
 
   return (
     <div className="space-y-5">
+      {/* Add-a-device — TOP of the page (owner request), tier-aware. The user
+          picks Public (shareable one-time link) or Private (PowerShell
+          command on the private agent domain); the toggle is DISABLED for a
+          free/trial (public-only) or private-only account. The public path
+          shows ONLY the wrapper link path — never the agent host/domain. */}
+      <div className="rounded-xl border border-border bg-bg-elevated">
+        <button
+          onClick={() => setAdding((v) => !v)}
+          className="flex w-full items-center justify-between px-4 py-3 text-left"
+        >
+          <span className="flex items-center gap-2 text-sm font-medium text-fg">
+            <Plus className="h-4 w-4" /> Add a device
+          </span>
+          <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
+        </button>
+        {adding && (
+          <div className="border-t border-border px-4 py-4">
+            {link === null ? (
+              <div>
+                <p className="text-sm text-fg-muted">
+                  Link your SpaceWorker account to the device agent service, then install the agent
+                  on the machine you want to reach.
+                </p>
+                <button
+                  onClick={enable}
+                  disabled={busy === "enable"}
+                  className="mt-3 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+                >
+                  {busy === "enable" ? "Enabling…" : "Enable device link"}
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* Public / Private toggle — disabled with a single tier */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex overflow-hidden rounded-lg border border-border">
+                    <button
+                      onClick={() => setInstallKind("public")}
+                      disabled={!link.privateAllowed}
+                      title={
+                        link.privateAllowed
+                          ? "Public agent — the shareable link"
+                          : "Your account is public-tier only (premium grants the private agent)"
+                      }
+                      className={cn(
+                        "px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed",
+                        installKind === "public"
+                          ? "bg-black/10 font-medium text-fg dark:bg-white/10"
+                          : "text-fg-muted hover:text-fg",
+                        !link.privateAllowed && installKind !== "public" && "opacity-50",
+                      )}
+                    >
+                      Public device
+                    </button>
+                    <button
+                      onClick={() => setInstallKind("private")}
+                      disabled={!link.privateAllowed}
+                      title={
+                        link.privateAllowed
+                          ? "Private agent — PowerShell command on the private domain"
+                          : "Private agent requires a premium plan (admin-granted)"
+                      }
+                      className={cn(
+                        "px-3 py-1.5 text-xs transition-colors disabled:cursor-not-allowed",
+                        installKind === "private"
+                          ? "bg-black/10 font-medium text-fg dark:bg-white/10"
+                          : "text-fg-muted hover:text-fg",
+                        !link.privateAllowed && "opacity-50",
+                      )}
+                    >
+                      Private device{!link.privateAllowed ? " 🔒" : ""}
+                    </button>
+                  </div>
+                  <span className="text-xs text-fg-muted">
+                    {link.privateAllowed
+                      ? "Public link is safe to share — devices silently move to your private agent."
+                      : "Public link only — the private agent unlocks with premium."}
+                  </span>
+                </div>
+
+                {installKind === "public" ? (
+                  <div className="space-y-3">
+                    <p className="text-sm text-fg-muted">
+                      1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
+                      &nbsp;·&nbsp; 3 · It appears here, then silently moves to your private agent.
+                    </p>
+                    {!link.installUrl ? (
+                      <button
+                        onClick={() => mintInstallLink("public")}
+                        disabled={busy === "install-public"}
+                        className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+                      >
+                        {busy === "install-public" ? "Generating…" : "Generate link"}
+                      </button>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-2">
+                        {/* Only the wrapper PATH — never the agent host/domain */}
+                        <code className="max-w-full truncate rounded bg-bg px-2 py-1.5 text-xs text-fg-muted">
+                          {link.installUrl}
+                        </code>
+                        <button
+                          onClick={() =>
+                            copyText(
+                              "public",
+                              `${typeof window !== "undefined" ? window.location.origin : ""}${link.installUrl}`,
+                            )
+                          }
+                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                        >
+                          {copied === "public" ? "Copied ✓" : "Copy link"}
+                        </button>
+                        <button
+                          onClick={() => mintInstallLink("public")}
+                          disabled={busy === "install-public"}
+                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+                        >
+                          {busy === "install-public" ? "Generating…" : "New link"}
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-xs text-fg-muted">
+                      One-time link, valid 72 hours — run it on the machine you want linked.
+                    </p>
+                    {link.status === "pending_install" && (
+                      <p className="text-xs text-amber-500">
+                        Waiting for install — the machine appears here the moment the agent checks in.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-sm text-fg-muted">
+                      Private installs use a PowerShell command on the private agent domain — no
+                      shareable link exists for this tier.
+                    </p>
+                    {!link.privatePsCommand ? (
+                      <button
+                        onClick={() => mintInstallLink("private")}
+                        disabled={busy === "install-private"}
+                        className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+                      >
+                        {busy === "install-private" ? "Generating…" : "Generate PowerShell command"}
+                      </button>
+                    ) : (
+                      <>
+                        <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
+                          {psRevealed ? link.privatePsCommand : maskCommand(link.privatePsCommand)}
+                        </pre>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => setPsRevealed((v) => !v)}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                          >
+                            {psRevealed ? "Hide" : "Reveal"}
+                          </button>
+                          <button
+                            onClick={() => copyText("private", link.privatePsCommand ?? "")}
+                            disabled={!psRevealed}
+                            title={psRevealed ? undefined : "Reveal first, then copy"}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                          >
+                            {copied === "private" ? "Copied ✓" : "Copy command"}
+                          </button>
+                          <button
+                            onClick={() => mintInstallLink("private")}
+                            disabled={busy === "install-private"}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+                          >
+                            {busy === "install-private" ? "Generating…" : "New command"}
+                          </button>
+                        </div>
+                        <p className="text-xs text-fg-muted">
+                          Run in an elevated PowerShell on the target machine. Valid 72 hours —
+                          agents on this domain check in privately.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
+                {link.lastError && <p className="text-xs text-red-500">Sync error: {link.lastError}</p>}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {error && <p className="text-sm text-red-500">{error}</p>}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-semibold text-fg">Devices</h1>
@@ -279,82 +505,6 @@ export function DeviceList() {
                 </Link>
               );
             })}
-          </div>
-        )}
-      </div>
-
-
-      {/* Add-a-device: collapsed by default; carries the one-time install link */}
-      <div className="rounded-xl border border-border bg-bg-elevated">
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="flex w-full items-center justify-between px-4 py-3 text-left"
-        >
-          <span className="text-sm font-medium text-fg">Add a device</span>
-          <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
-        </button>
-        {adding && (
-          <div className="border-t border-border px-4 py-4">
-            {link === null ? (
-              <div>
-                <p className="text-sm text-fg-muted">
-                  Link your SpaceWorker account to the device agent service, then install the agent
-                  on the machine you want to reach.
-                </p>
-                <button
-                  onClick={enable}
-                  disabled={busy === "enable"}
-                  className="mt-3 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
-                >
-                  {busy === "enable" ? "Enabling…" : "Enable device link"}
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-sm text-fg-muted">
-                  1 · Mint a one-time install link &nbsp;·&nbsp; 2 · Run it on the target machine
-                  &nbsp;·&nbsp; 3 · It appears here on first heartbeat.
-                </p>
-                {!link.installUrl ? (
-                  <button
-                    onClick={mintInstallLink}
-                    disabled={busy === "install"}
-                    className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
-                  >
-                    {busy === "install" ? "Minting…" : "Mint install link"}
-                  </button>
-                ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <code className="max-w-full truncate rounded bg-bg px-2 py-1.5 text-xs text-fg-muted">
-                      {`${typeof window !== "undefined" ? window.location.origin : ""}${link.installUrl}`}
-                    </code>
-                    <button
-                      onClick={copyInstallLink}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-                      disabled={copied}
-                    >
-                      {copied ? "Copied ✓" : "Copy link"}
-                    </button>
-                    <button
-                      onClick={mintInstallLink}
-                      disabled={busy === "install"}
-                      className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
-                    >
-                      {busy === "install" ? "Minting…" : "New link"}
-                    </button>
-                  </div>
-                )}
-                <p className="text-xs text-fg-muted">
-                  One-time link, valid 72 hours — shown once, run it on the machine you want linked.
-                </p>
-                {link.status === "pending_install" && (
-                  <p className="text-xs text-amber-500">
-                    Waiting for install — the machine appears here the moment the agent checks in.
-                  </p>
-                )}
-                {link.lastError && <p className="text-xs text-red-500">Sync error: {link.lastError}</p>}
-              </div>
-            )}
           </div>
         )}
       </div>

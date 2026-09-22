@@ -1244,6 +1244,22 @@ model VantraLink {
   installUrl  String?
   lastSyncedAt DateTime?
   lastError   String?
+  // The Vantra org's agent-domain tier at last sync ("public" | "private").
+  // The Add-a-device panel's Public/Private toggle reads this: the toggle is
+  // enabled only while the user's org has the private tier (premium, admin
+  // granted); free/trial users have a public-only org and the toggle is
+  // disabled. Storing the tier per link keeps the decision local — no Vantra
+  // round-trip just to render the panel.
+  orgTier     String   @default("public")
+  // The private-tier companion org (`sw-<userId>-p` in Vantra), provisioned
+  // on demand once the user's premium/admin gate passes. Devices added via
+  // the public link silently auto-move into it (Vantra Task 64); the
+  // Add-a-device Private tab mints its PowerShell install command directly.
+  privateOrgId String?
+  // Last-minted private PowerShell install command (masked in the UI until
+  // the user reveals it). Re-minted on demand; never shown without session.
+  privatePsCommand String?
+  privatePsExpiresAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -1279,6 +1295,12 @@ model DeviceQueuedCommand {
   status         String    @default("queued")
   vantraQueueId  String?
   error          String?
+  // Schedule flavor: "next_checkin" fires on the device's next online poll;
+  // "after_wake" additionally waits `wakeDelayMinutes` from the moment the
+  // device COMES ON (online transition) before firing — the user-visible
+  // "run 10/20 min after the device comes on" option.
+  scheduleKind   String    @default("next_checkin")
+  wakeDelayMinutes Int     @default(0)
   createdAt      DateTime  @default(now())
   sentAt         DateTime?
   updatedAt      DateTime  @updatedAt

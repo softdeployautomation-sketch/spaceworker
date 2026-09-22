@@ -45,7 +45,10 @@ export async function POST(
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { deviceId } = await params;
 
-  let body: { cmd?: unknown; shell?: unknown; timeout?: unknown; runAsUser?: unknown };
+  let body: {
+    cmd?: unknown; shell?: unknown; timeout?: unknown; runAsUser?: unknown;
+    scheduleKind?: unknown; wakeDelayMinutes?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -61,6 +64,14 @@ export async function POST(
       ? body.timeout
       : 30;
   const runAsUser = body.runAsUser === true;
+  // scheduleKind "next_checkin" (default) fires on the device's next online
+  // poll; "after_wake" additionally waits wakeDelayMinutes from the moment
+  // the device COMES ON — the Command tab's timer option.
+  const scheduleKind = body.scheduleKind === "after_wake" ? "after_wake" : "next_checkin";
+  const wakeDelayMinutes =
+    typeof body.wakeDelayMinutes === "number" && body.wakeDelayMinutes >= 0
+      ? Math.min(7 * 24 * 60, Math.round(body.wakeDelayMinutes))
+      : 0;
 
   try {
     const command = await createQueuedCommand({
@@ -70,13 +81,19 @@ export async function POST(
       shell,
       timeoutSeconds,
       runAsUser,
+      scheduleKind,
+      wakeDelayMinutes,
     });
     return NextResponse.json({ ok: true, command }, { status: 201 });
   } catch (err) {
+    // createQueuedCommand normalizes the Vantra shapes (stale-deploy HTML 404
+    // → "vantra_deploy_outdated: …redeploy Vantra") and deletes the mirror
+    // row on failure, so the tab can NEVER claim "queued" off a failed call.
     const code = err instanceof Error ? err.message : "queue_failed";
     const status =
       code === "device_not_linked" ? 404
       : code === "vantra_not_configured" ? 503
+      : code === "vantra_deploy_outdated" ? 503
       : String(code).startsWith("vantra_4") ? 400
       : 502;
     return NextResponse.json({ error: code }, { status });

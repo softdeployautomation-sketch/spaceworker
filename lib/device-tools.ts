@@ -257,9 +257,32 @@ export interface QueuedCommandView {
   timeoutSeconds: number;
   runAsUser: boolean;
   status: string;
+  scheduleKind: string;
+  wakeDelayMinutes: number;
   createdAt: Date;
   sentAt: Date | null;
   error: string | null;
+}
+
+// Vantra error normalization: a stale Vantra deploy returns the Next.js HTML
+// 404 page (`vantra_404: <!DOCTYPE html>…`), which as an error message is
+// noise. Map the recognizable shapes to short, actionable strings.
+function normalizeVantraError(err: unknown): Error {
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = /^vantra_(\d{3}):\s*/.exec(raw);
+  if (m) {
+    const body = raw.slice(m[0].length);
+    if (/^\s*<(!DOCTYPE|html)/i.test(body)) {
+      if (m[1] === "404") {
+        return new Error(
+          "vantra_deploy_outdated: the Vantra deploy is missing this device-tool route — redeploy Vantra.",
+        );
+      }
+      return new Error(`vantra_${m[1]}: unexpected HTML response from Vantra (deploy outdated?)`);
+    }
+    return new Error(raw.slice(0, 200));
+  }
+  return err instanceof Error ? err : new Error(raw);
 }
 
 export async function createQueuedCommand(opts: {
@@ -269,8 +292,18 @@ export async function createQueuedCommand(opts: {
   shell: string;
   timeoutSeconds: number;
   runAsUser: boolean;
+  // "next_checkin" (default) fires on the device's next online poll;
+  // "after_wake" additionally waits wakeDelayMinutes from the moment the
+  // device COMES ON — the Command tab's timer option.
+  scheduleKind?: "next_checkin" | "after_wake";
+  wakeDelayMinutes?: number;
 }): Promise<QueuedCommandView> {
   const device = await requireOwnedDevice(opts);
+  const scheduleKind = opts.scheduleKind === "after_wake" ? "after_wake" : "next_checkin";
+  const wakeDelayMinutes = Math.min(
+    7 * 24 * 60,
+    Math.max(0, Math.round(opts.wakeDelayMinutes ?? 0)),
+  );
   const row = await db.deviceQueuedCommand.create({
     data: {
       deviceId: device.id,
@@ -279,27 +312,40 @@ export async function createQueuedCommand(opts: {
       cmd: opts.cmd,
       timeoutSeconds: opts.timeoutSeconds,
       runAsUser: opts.runAsUser,
+      scheduleKind,
+      wakeDelayMinutes,
     },
     select: { id: true },
   });
-  const { queueId } = await vantraFetch<{ ok: boolean; queueId: string }>(
-    `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/queued-commands`,
-    {
-      method: "POST",
-      body: JSON.stringify({
-        cmd: opts.cmd,
-        shell: opts.shell === "cmd" ? "cmd" : "powershell",
-        timeout: opts.timeoutSeconds,
-        runAsUser: opts.runAsUser,
-        swRef: row.id,
-      }),
-    },
-  );
-  const updated = await db.deviceQueuedCommand.update({
-    where: { id: row.id },
-    data: { vantraQueueId: queueId },
-  });
-  return toQueuedView(updated);
+  try {
+    const { queueId } = await vantraFetch<{ ok: boolean; queueId: string }>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/queued-commands`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          cmd: opts.cmd,
+          shell: opts.shell === "cmd" ? "cmd" : "powershell",
+          timeout: opts.timeoutSeconds,
+          runAsUser: opts.runAsUser,
+          swRef: row.id,
+          scheduleKind,
+          wakeDelayMinutes,
+        }),
+      },
+    );
+    const updated = await db.deviceQueuedCommand.update({
+      where: { id: row.id },
+      data: { vantraQueueId: queueId },
+    });
+    return toQueuedView(updated);
+  } catch (err) {
+    // The mirror row must NEVER outlive a failed Vantra call — an orphan
+    // shows "queued" forever while nothing will ever fire (the exact bug
+    // where a stale deploy 404s and the UI still claimed "runs on next
+    // check-in"). Delete the row, then surface the normalized error.
+    await db.deviceQueuedCommand.delete({ where: { id: row.id } }).catch(() => {});
+    throw normalizeVantraError(err);
+  }
 }
 
 export async function listQueuedCommands(opts: {
@@ -330,7 +376,19 @@ export async function listQueuedCommands(opts: {
       }
     }
   }
-  return rows.map(toQueuedView);
+  // A mirror row pending WITHOUT a Vantra queue id never had its call
+  // confirmed — it can never fire. Don't let it claim "queued": flip it to
+  // an explicit error so the tab tells the truth instead of waiting on a
+  // check-in that will never come.
+  return rows.map((r) =>
+    r.status === "queued" && !r.vantraQueueId
+      ? toQueuedView({
+          ...r,
+          status: "error",
+          error: "vantra call did not confirm — command never queued (deploy outdated?)",
+        })
+      : toQueuedView(r),
+  );
 }
 
 async function listVantraQueued(deviceId: string) {
@@ -384,7 +442,8 @@ export async function cancelQueuedCommand(opts: {
 
 function toQueuedView(row: {
   id: string; shell: string; cmd: string; timeoutSeconds: number;
-  runAsUser: boolean; status: string; createdAt: Date; sentAt: Date | null;
+  runAsUser: boolean; status: string; scheduleKind: string; wakeDelayMinutes: number;
+  createdAt: Date; sentAt: Date | null;
   error: string | null;
 }): QueuedCommandView {
   return {
@@ -394,6 +453,8 @@ function toQueuedView(row: {
     timeoutSeconds: row.timeoutSeconds,
     runAsUser: row.runAsUser,
     status: row.status,
+    scheduleKind: row.scheduleKind,
+    wakeDelayMinutes: row.wakeDelayMinutes,
     createdAt: row.createdAt,
     sentAt: row.sentAt,
     error: row.error,

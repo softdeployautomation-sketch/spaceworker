@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
+  ChevronDown,
   ChevronRight,
   Clock,
   KeyRound,
@@ -55,6 +56,8 @@ type QueuedRow = {
   timeoutSeconds: number;
   runAsUser: boolean;
   status: string;
+  scheduleKind?: string;
+  wakeDelayMinutes?: number;
   createdAt: string;
   sentAt: string | null;
   error: string | null;
@@ -135,6 +138,10 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
   const [cmd, setCmd] = useState("");
   const [shell, setShell] = useState<"powershell" | "cmd">("powershell");
   const [timeout_, setTimeout_] = useState(30);
+  // Command tab schedule: "next_checkin" runs on the next poll; "after_wake"
+  // waits `wakeDelay` minutes from the moment the device COMES ON.
+  const [scheduleKind, setScheduleKind] = useState<"next_checkin" | "after_wake">("next_checkin");
+  const [wakeDelay, setWakeDelay] = useState(20);
 
   const [pins, setPins] = useState<PinRow[]>([]);
   const [pinLen, setPinLen] = useState(6);
@@ -280,7 +287,39 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
     }
   }
 
-  // ---- queued commands (the offline-device tool) ---------------------------
+  // ---- manual connect / disconnect (2026-10 owner follow-up) --------------
+  // The console's own Connect is a NORMAL action: mint the viewer URLs right
+  // away — no proposal, no approval rail. The approval flow stays exclusively
+  // for AGENT-initiated requests (those pop up when the agent asks).
+  async function connect() {
+    setBusy("connect");
+    setError("");
+    setMeshErr("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/mesh-urls`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error.replace("vantra_503: ", "").replace("vantra_404: ", "")
+            : "Couldn't open the viewer",
+        );
+      }
+      setMesh(data.urls);
+    } catch (e) {
+      setMesh(null);
+      setMeshErr(e instanceof Error ? e.message : "Couldn't open the viewer");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  function disconnect() {
+    setMesh(null);
+    setMeshErr("");
+  }
+
+  // ---- queued commands (schedule: run now / N min after the device comes on)
   async function queueCommand() {
     if (!cmd.trim()) return;
     setBusy("queue");
@@ -289,11 +328,22 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
       const res = await fetch(`/api/devices/${deviceId}/queued-commands`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cmd, shell, timeout: timeout_ }),
+        body: JSON.stringify({
+          cmd,
+          shell,
+          timeout: timeout_,
+          runAsUser: false,
+          scheduleKind,
+          wakeDelayMinutes: wakeDelay,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok)
-        throw new Error(typeof data.error === "string" ? data.error : "Queue failed");
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error.replace("vantra_503: ", "").replace("vantra_404: ", "")
+            : "Queue failed",
+        );
       setCmd("");
       await loadToolData();
     } catch (e) {
@@ -401,7 +451,15 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
         <div className="space-y-4 p-4">
           {tab === "summary" && <SummaryTab device={device} loaded={loaded} />}
           {tab === "control" && (
-            <ControlTab isOnline={!!isOnline} mesh={mesh} meshErr={meshErr} busy={busy} propose={propose} />
+            <ControlTab
+              isOnline={!!isOnline}
+              mesh={mesh}
+              meshErr={meshErr}
+              busy={busy}
+              connect={connect}
+              disconnect={disconnect}
+              propose={propose}
+            />
           )}
           {tab === "command" && (
             <CommandTab
@@ -412,6 +470,10 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
               setShell={setShell}
               timeout={timeout_}
               setTimeout={setTimeout_}
+              scheduleKind={scheduleKind}
+              setScheduleKind={setScheduleKind}
+              wakeDelay={wakeDelay}
+              setWakeDelay={setWakeDelay}
               busy={busy}
               queueCommand={queueCommand}
               cancelQueued={cancelQueued}
@@ -504,90 +566,177 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
 }
 
 // ---- Remote control --------------------------------------------------------
+// 2026-10 owner follow-up: MANUAL connect is a normal action — no approval.
+// The approval-gated flow stays for AGENT-initiated requests only (those pop
+// up when the agent wants something). The live viewer is ONE screen with a
+// toolbox line on top: a ▾ dropdown opens a TRANSPARENT tool panel overlaying
+// the screen (you keep seeing the desktop behind it), while the view switches
+// (Desktop / Terminal / Files) stay on the same toolbox line.
 function ControlTab({
   isOnline,
   mesh,
   meshErr,
   busy,
+  connect,
+  disconnect,
   propose,
 }: {
   isOnline: boolean;
   mesh: MeshUrls | null;
   meshErr: string;
   busy: string;
+  connect: () => Promise<void>;
+  disconnect: () => void;
   propose: (kind: string, extra?: Record<string, unknown>) => Promise<void>;
 }) {
+  const [view, setView] = useState<"control" | "terminal" | "file">("control");
+  const [toolsOpen, setToolsOpen] = useState(false);
+
+  const viewUrl = mesh
+    ? view === "control"
+      ? mesh.control
+      : view === "terminal"
+        ? mesh.terminal
+        : mesh.file
+    : null;
+  const VIEWS: Array<[typeof view, string, typeof Monitor]> = [
+    ["control", "Desktop", Monitor],
+    ["terminal", "Terminal", Terminal],
+    ["file", "Files", Wrench],
+  ];
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={() => propose("remote-control")}
-          disabled={busy === "remote-control"}
-          className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
-        >
-          <Monitor className="h-4 w-4" />
-          {busy === "remote-control" ? "Requesting…" : "Request remote control"}
-        </button>
+        {!mesh ? (
+          <button
+            onClick={connect}
+            disabled={busy === "connect" || !isOnline}
+            title={!isOnline ? "The machine is offline" : "Open the live viewer now"}
+            className="flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+          >
+            <Monitor className="h-4 w-4" />
+            {busy === "connect" ? "Connecting…" : "Connect"}
+          </button>
+        ) : (
+          <button
+            onClick={disconnect}
+            className="flex items-center gap-1.5 rounded-lg border border-border px-4 py-2 text-sm font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+          >
+            <X className="h-4 w-4" /> Disconnect
+          </button>
+        )}
         <span className="text-xs text-fg-muted">
-          Approval opens the live viewer below (desktop · terminal · files).
+          {!isOnline
+            ? "The machine is offline — connect retries the moment it checks in."
+            : "Manual connect opens the live viewer directly — no approval needed."}
         </span>
       </div>
 
-      {meshErr && <p className="text-sm text-red-500">{meshErr}</p>}
+      {meshErr && (
+        <p className="text-sm text-red-500">
+          {meshErr.includes("offline")
+            ? "This device is currently offline — the viewer opens the moment it checks in."
+            : meshErr}
+        </p>
+      )}
 
-      {mesh ? (
-        <div className="space-y-3">
-          <SessionFrame title="Desktop" url={mesh.control} icon={<Monitor className="h-3.5 w-3.5" />} />
-          <SessionFrame title="Terminal" url={mesh.terminal} icon={<Terminal className="h-3.5 w-3.5" />} />
-          <SessionFrame title="Files" url={mesh.file} icon={<Wrench className="h-3.5 w-3.5" />} />
+      {mesh && viewUrl ? (
+        // ONE screen + toolbox line ON TOP of it. The ▾ dropdown opens a
+        // transparent panel OVER the screen (the desktop stays visible behind
+        // it); the view switchers live on the same toolbox line.
+        <div className="relative overflow-hidden rounded-lg border border-border">
+          <div className="relative z-10 flex flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
+            <div className="relative">
+              <button
+                onClick={() => setToolsOpen((v) => !v)}
+                title="Session tools"
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                  toolsOpen ? "bg-black/30 text-fg" : "text-fg-muted hover:text-fg",
+                )}
+              >
+                <Wrench className="h-3.5 w-3.5" />
+                Tools
+                <ChevronDown className={cn("h-3 w-3 transition-transform", toolsOpen && "rotate-180")} />
+              </button>
+              {toolsOpen && (
+                <>
+                  {/* click-away catcher */}
+                  <div className="fixed inset-0 z-10" onClick={() => setToolsOpen(false)} />
+                  <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-lg border border-border bg-bg-elevated/70 p-1.5 shadow-xl backdrop-blur-md">
+                    <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                      Session tools
+                    </p>
+                    <button
+                      onClick={() => {
+                        setToolsOpen(false);
+                        propose("maintenance-start");
+                      }}
+                      disabled={busy === "maintenance-start"}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                    >
+                      <Wrench className="h-3.5 w-3.5" /> Maintenance overlay
+                    </button>
+                    <button
+                      onClick={() => {
+                        setToolsOpen(false);
+                        propose("maintenance-stop");
+                      }}
+                      disabled={busy === "maintenance-stop"}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                    >
+                      <X className="h-3.5 w-3.5" /> Stop overlay
+                    </button>
+                    <div className="my-1 border-t border-border" />
+                    <button
+                      onClick={() => {
+                        setToolsOpen(false);
+                        disconnect();
+                      }}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-red-500 transition-colors hover:bg-red-500/10"
+                    >
+                      <X className="h-3.5 w-3.5" /> Disconnect session
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="mx-1 h-4 w-px bg-border" />
+            {VIEWS.map(([key, label, Icon]) => (
+              <button
+                key={key}
+                onClick={() => setView(key)}
+                className={cn(
+                  "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+                  view === key ? "bg-black/30 font-medium text-fg" : "text-fg-muted hover:text-fg",
+                )}
+              >
+                <Icon className="h-3.5 w-3.5" /> {label}
+              </button>
+            ))}
+          </div>
+          <iframe
+            key={view}
+            src={viewUrl}
+            title={`Remote ${view}`}
+            className="h-[480px] w-full bg-black"
+            sandbox="allow-scripts allow-same-origin allow-forms"
+          />
         </div>
       ) : (
         !meshErr && (
           <p className="rounded-lg border border-border bg-bg px-3 py-3 text-sm text-fg-muted">
-            No active session. Request remote control, approve it, and the MeshCentral viewer
-            (desktop / terminal / files) opens right here.
+            No active session. Press <span className="font-medium text-fg">Connect</span> and the
+            MeshCentral viewer opens right here (Desktop / Terminal / Files from the toolbox line).
           </p>
         )
       )}
-
-      <div className="flex flex-wrap gap-2 border-t border-border pt-3">
-        <button
-          onClick={() => propose("maintenance-start")}
-          disabled={busy === "maintenance-start"}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-        >
-          <Wrench className="h-3.5 w-3.5" /> Maintenance overlay
-        </button>
-        <button
-          onClick={() => propose("maintenance-stop")}
-          disabled={busy === "maintenance-stop"}
-          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-        >
-          <X className="h-3.5 w-3.5" /> Stop overlay
-        </button>
-      </div>
     </div>
   );
 }
 
-function SessionFrame({ title, url, icon }: { title: string; url: string; icon: React.ReactNode }) {
-  return (
-    <div className="overflow-hidden rounded-lg border border-border">
-      <div className="flex items-center gap-2 border-b border-border bg-black/20 px-3 py-1.5 text-xs text-fg-muted dark:bg-black/40">
-        {icon}
-        {title}
-      </div>
-      <iframe
-        src={url}
-        title={title}
-        className="h-[380px] w-full bg-black"
-        sandbox="allow-scripts allow-same-origin allow-forms"
-      />
-    </div>
-  );
-}
-
-// ---- Command (queued commands for offline machines) ------------------------
+// ---- Command (queued commands: run now, or N min after the device comes on)
 function CommandTab({
   queue,
   cmd,
@@ -596,6 +745,10 @@ function CommandTab({
   setShell,
   timeout,
   setTimeout,
+  scheduleKind,
+  setScheduleKind,
+  wakeDelay,
+  setWakeDelay,
   busy,
   queueCommand,
   cancelQueued,
@@ -607,6 +760,10 @@ function CommandTab({
   setShell: (v: "powershell" | "cmd") => void;
   timeout: number;
   setTimeout: (v: number) => void;
+  scheduleKind: "next_checkin" | "after_wake";
+  setScheduleKind: (v: "next_checkin" | "after_wake") => void;
+  wakeDelay: number;
+  setWakeDelay: (v: number) => void;
   busy: string;
   queueCommand: () => Promise<void>;
   cancelQueued: (id: string) => Promise<void>;
@@ -618,7 +775,7 @@ function CommandTab({
           <ListPlus className="h-3.5 w-3.5" /> Queue a command
         </p>
         <p className="mt-1 text-xs text-fg-muted">
-          For an offline machine: it runs the moment the agent checks in.
+          Runs on the device&apos;s next check-in — or on a timer after it comes on.
         </p>
         <textarea
           value={cmd}
@@ -628,6 +785,52 @@ function CommandTab({
           className="mt-2 w-full rounded-lg border border-border bg-bg-elevated px-3 py-2 font-mono text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
         />
         <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-lg border border-border">
+            {([["next_checkin", "Run on next check-in"], ["after_wake", "Timer after it comes on"]] as const).map(
+              ([k, label]) => (
+                <button
+                  key={k}
+                  onClick={() => setScheduleKind(k)}
+                  className={cn(
+                    "px-3 py-1.5 text-xs transition-colors",
+                    scheduleKind === k
+                      ? "bg-black/10 font-medium text-fg dark:bg-white/10"
+                      : "text-fg-muted hover:text-fg",
+                  )}
+                >
+                  {label}
+                </button>
+              ),
+            )}
+          </div>
+          {scheduleKind === "after_wake" && (
+            <label className="flex items-center gap-1.5 text-xs text-fg-muted">
+              run
+              <input
+                type="number"
+                min={1}
+                max={10080}
+                value={wakeDelay}
+                onChange={(e) => setWakeDelay(Math.min(10080, Math.max(1, Number(e.target.value) || 20)))}
+                className="w-16 rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-sm text-fg focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+              />
+              min after it comes on
+              <span className="flex gap-1">
+                {[10, 20, 30, 60].map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setWakeDelay(m)}
+                    className={cn(
+                      "rounded border border-border px-1.5 py-0.5 transition-colors",
+                      wakeDelay === m ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+                    )}
+                  >
+                    {m}m
+                  </button>
+                ))}
+              </span>
+            </label>
+          )}
           <div className="flex overflow-hidden rounded-lg border border-border">
             {(["powershell", "cmd"] as const).map((s) => (
               <button
@@ -707,7 +910,11 @@ function CommandTab({
               </div>
               <p className="mt-1 text-xs text-fg-muted">
                 queued {relTime(q.createdAt)}
-                {q.sentAt ? ` · sent ${relTime(q.sentAt)}` : " · runs on next check-in"}
+                {q.sentAt
+                  ? ` · sent ${relTime(q.sentAt)}`
+                  : q.scheduleKind === "after_wake"
+                    ? ` · runs ${q.wakeDelayMinutes ?? 0} min after the device comes on`
+                    : " · runs on next check-in"}
                 {q.error ? ` · ${q.error}` : ""}
               </p>
             </div>
