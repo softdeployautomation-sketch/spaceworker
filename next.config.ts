@@ -38,7 +38,15 @@ const nextConfig: NextConfig = {
         headers: [
           {
             key: "Content-Security-Policy",
-            value: "frame-ancestors 'self' https://vantra.spaceworker.top;",
+            value:
+              "frame-ancestors 'self' https://vantra.spaceworker.top; " +
+              // Task 95 — Devices v2 remote control: MeshCentral's desktop /
+              // terminal / file panes load in iframes on the device console.
+              // The exact MeshCentral public origin lives in VPS env (TRMM's
+              // meshcentral hostname / MESH_WSS_URL) — set MESH_FRAME_ORIGINS
+              // in /opt/spaceworker/.env at deploy (space-separated https://
+              // origins). Default keeps the mikeolab.com family allowed.
+              `frame-src 'self' ${process.env.MESH_FRAME_ORIGINS ?? "https://trmm.mikeolab.com https://*.mikeolab.com"};`,
           },
         ],
       },

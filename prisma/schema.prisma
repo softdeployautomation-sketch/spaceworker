@@ -86,6 +86,9 @@ model User {
   userEntitlements    UserEntitlement[]
   agentActionAudits   AgentActionAudit[]
   vantraLink          VantraLink?
+  // Task 95 — Devices v2 tool parity.
+  deviceQueuedCommands DeviceQueuedCommand[]
+  devicePinRequests    DevicePinRequest[]
 }
 
 model VerificationCode {
@@ -1014,6 +1017,8 @@ model Device {
   capabilities DeviceCapability[]
   jobs        DeviceJob[]
   actions     DeviceAction[]
+  queuedCommands DeviceQueuedCommand[]
+  pinRequests DevicePinRequest[]
   powerPolicy DevicePowerPolicy?
   outgoingRelationships DeviceRelationship[] @relation("sourceDevice")
   incomingRelationships DeviceRelationship[] @relation("targetDevice")
@@ -1244,4 +1249,66 @@ model VantraLink {
 
   @@index([orgId])
   @@index([status])
+}
+
+// ============================================================================
+// Task 95 — Devices v2 tool parity (remote control / maintenance / PIN /
+// queued commands). SpaceWorker-side mirrors of the Vantra plugin mechanics,
+// keyed to OUR Device rows so ownership + audit stay in OUR db.
+// ============================================================================
+
+// Mirror of Vantra's QueuedAgentCommand (Task 18 there): a command queued for
+// an OFFLINE device, fired by the online-transition sweep on the Vantra side
+// (app/api/internal/telegram-device-check fireQueuedCommands). SpaceWorker
+// stores its own row so the user sees/cancels THEIR commands with OUR
+// ownership checks; vantraQueueId links to the Vantra row for status polling.
+// timeoutSeconds matches Vantra's ceiling (90) so a queued command can never
+// outrun what a live run allows.
+model DeviceQueuedCommand {
+  id             String    @id @default(cuid())
+  deviceId       String
+  device         Device    @relation(fields: [deviceId], references: [id])
+  userId         String
+  user           User      @relation(fields: [userId], references: [id])
+  // "cmd" | "powershell" (Vantra's shell enum).
+  shell          String    @default("powershell")
+  cmd            String
+  timeoutSeconds Int       @default(30)
+  runAsUser      Boolean   @default(false)
+  // "queued" | "sent" | "failed" | "cancelled".
+  status         String    @default("queued")
+  vantraQueueId  String?
+  error          String?
+  createdAt      DateTime  @default(now())
+  sentAt         DateTime?
+  updatedAt      DateTime  @updatedAt
+
+  @@index([deviceId, status])
+  @@index([userId, createdAt])
+}
+
+// Task 95 — one PIN-unlock request (Vantra's DeviceCredentialRequest pattern,
+// minimized): a one-time token goes into the on-device prompt; the device
+// POSTs the typed PIN to OUR public callback, we store it HERE and the user
+// copies it from the Devices page. The pin is stored as the user gave it
+// (short-lived secret, row prunable) — never logged, never in audit detail.
+model DevicePinRequest {
+  id          String    @id @default(cuid())
+  deviceId    String
+  device      Device    @relation(fields: [deviceId], references: [id])
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  pinLength   Int
+  // "pending" | "submitted" | "expired" | "cancelled".
+  status      String    @default("pending")
+  tokenHash   String    @unique
+  expiresAt   DateTime
+  pin         String?
+  submittedAt DateTime?
+  sourceIp    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([deviceId, status])
+  @@index([userId, createdAt])
 }

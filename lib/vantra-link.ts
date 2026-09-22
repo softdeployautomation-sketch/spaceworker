@@ -6,6 +6,12 @@ import { db } from "./db";
 import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
 import { recordAgentActionAudit } from "./devices";
+import {
+  executePinRequest,
+  startMaintenanceOverlayAction,
+  stopMaintenanceOverlayAction,
+  type MeshUrlsView,
+} from "./device-tools";
 
 // Task 93 — the Vantra plugin provisioning + device-action service.
 //
@@ -249,7 +255,17 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
   }
 }
 
-export type DeviceActionKind = "wake" | "reboot" | "shutdown" | "run-script" | "cmd";
+export type DeviceActionKind =
+  | "wake"
+  | "reboot"
+  | "shutdown"
+  | "run-script"
+  | "cmd"
+  // Task 95 — Devices v2 tool parity.
+  | "remote-control"
+  | "maintenance-start"
+  | "maintenance-stop"
+  | "pin-request";
 
 /**
  * Creates a gated device-action proposal (DeviceAction "requested" +
@@ -332,7 +348,7 @@ export async function approveDeviceAction(opts: {
   userId: string;
   pendingActionId: string;
   approvalChannel?: string;
-}): Promise<{ output: string | null }> {
+}): Promise<{ output: string | null; urls?: MeshUrlsView; pinRequestId?: string; pinExpiresAt?: Date }> {
   const pending = await db.agentPendingAction.findFirst({
     where: {
       id: opts.pendingActionId,
@@ -347,6 +363,7 @@ export async function approveDeviceAction(opts: {
   const payload = pending.payload as {
     deviceId?: string; vantraAgentId?: string; action?: DeviceActionKind;
     scriptId?: number; args?: string[]; timeout?: number; command?: string;
+    pinLength?: number;
   };
   if (!payload.vantraAgentId || !payload.action || !payload.deviceId) {
     throw new Error("bad_payload");
@@ -373,6 +390,75 @@ export async function approveDeviceAction(opts: {
   });
 
   try {
+    // Task 95 kinds execute through lib/device-tools (their own internal Vantra
+    // routes + audit detail); Task 93 kinds go through the shared action route.
+    if (payload.action === "remote-control") {
+      const { fetchMeshUrls } = await import("./device-tools");
+      const urls = await fetchMeshUrls({
+        userId: opts.userId,
+        deviceId: payload.deviceId,
+        pendingActionId: pending.id,
+      });
+      const now = new Date();
+      await db.agentPendingAction.update({ where: { id: pending.id }, data: { status: "executed" } });
+      await db.deviceAction.updateMany({
+        where: { pendingActionId: pending.id, status: "approved" },
+        data: { status: "executed", executedAt: now, result: { granted: true } as object },
+      });
+      await recordAgentActionAudit({
+        userId: opts.userId,
+        pendingActionId: pending.id,
+        action: "device_remote-control",
+        status: "executed",
+        approvalChannel: opts.approvalChannel ?? "web",
+        sourceDeviceId: payload.deviceId,
+      });
+      return { output: null, urls };
+    }
+
+    if (payload.action === "maintenance-start" || payload.action === "maintenance-stop") {
+      if (payload.action === "maintenance-start") {
+        await startMaintenanceOverlayAction({
+          userId: opts.userId,
+          deviceId: payload.deviceId,
+          pendingActionId: pending.id,
+          approvalChannel: opts.approvalChannel,
+        });
+      } else {
+        await stopMaintenanceOverlayAction({
+          userId: opts.userId,
+          deviceId: payload.deviceId,
+          pendingActionId: pending.id,
+          approvalChannel: opts.approvalChannel,
+        });
+      }
+      const now = new Date();
+      await db.agentPendingAction.update({ where: { id: pending.id }, data: { status: "executed" } });
+      await db.deviceAction.updateMany({
+        where: { pendingActionId: pending.id, status: "approved" },
+        data: { status: "executed", executedAt: now, result: { overlay: payload.action === "maintenance-start" ? "started" : "stopped" } as object },
+      });
+      return { output: null };
+    }
+
+    if (payload.action === "pin-request") {
+      const pinLength = Number(payload.pinLength) === 6 ? 6 : Number(payload.pinLength) === 8 ? 8 : 4;
+      const pin = await executePinRequest({
+        userId: opts.userId,
+        deviceId: payload.deviceId,
+        pendingActionId: pending.id,
+        pinLength,
+        approvalChannel: opts.approvalChannel,
+      });
+      const now = new Date();
+      await db.agentPendingAction.update({ where: { id: pending.id }, data: { status: "executed" } });
+      await db.deviceAction.updateMany({
+        where: { pendingActionId: pending.id, status: "approved" },
+        data: { status: "executed", executedAt: now, result: { pinRequestId: pin.pinRequestId } as object },
+      });
+      return { output: null, pinRequestId: pin.pinRequestId, pinExpiresAt: pin.expiresAt };
+    }
+
     const result = await vantraFetch<{ ok: boolean; output: string | null }>(
       `/api/internal/sw/devices/${encodeURIComponent(payload.vantraAgentId)}/action`,
       {

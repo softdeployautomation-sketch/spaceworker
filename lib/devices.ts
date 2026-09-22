@@ -33,6 +33,40 @@ export function deviceStatus(device: { status: string; lastSeenAt: Date | null }
   return isDeviceOnline(device.lastSeenAt) ? "online" : "offline";
 }
 
+// ---------------------------------------------------------------------------
+// Task 95 — read models for the device console. ONE selector definition, so
+// the list page and the per-device console can never disagree about status
+// (the old page double-listed machines with two different statuses).
+// ---------------------------------------------------------------------------
+
+export const deviceListSelector = {
+  id: true,
+  name: true,
+  deviceKind: true,
+  vantraAgentId: true,
+  status: true,
+  osName: true,
+  osVersion: true,
+  lastSeenAt: true,
+  createdAt: true,
+  powerPolicy: { select: { mode: true, until: true } },
+} satisfies Prisma.DeviceSelect;
+
+export type DeviceWithPolicy = Prisma.DeviceGetPayload<{
+  select: typeof deviceListSelector;
+}>;
+
+/**
+ * The canonical status view the API layer maps rows through — the single
+ * derivation every devices surface shares.
+ */
+export function toDeviceView(device: DeviceWithPolicy) {
+  return {
+    ...device,
+    effectiveStatus: deviceStatus(device),
+  };
+}
+
 export interface HeartbeatInput {
   vantraAgentId: string;
   name?: string;

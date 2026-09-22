@@ -10,7 +10,18 @@ export const dynamic = "force-dynamic";
 
 // Task 93 — create a gated device-action proposal. The device-side effect
 // happens ONLY on approval (POST /api/devices/actions/[pendingActionId]).
-const KINDS: readonly string[] = ["wake", "reboot", "shutdown", "run-script", "cmd"];
+const KINDS: readonly string[] = [
+  "wake",
+  "reboot",
+  "shutdown",
+  "run-script",
+  "cmd",
+  // Task 95 — Devices v2 tool parity.
+  "remote-control",
+  "maintenance-start",
+  "maintenance-stop",
+  "pin-request",
+];
 
 export async function POST(
   req: Request,
@@ -20,7 +31,14 @@ export async function POST(
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { deviceId } = await params;
 
-  let body: { kind?: unknown; scriptId?: unknown; args?: unknown; timeout?: unknown; command?: unknown };
+  let body: {
+    kind?: unknown;
+    scriptId?: unknown;
+    args?: unknown;
+    timeout?: unknown;
+    command?: unknown;
+    pinLength?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -36,6 +54,14 @@ export async function POST(
   if (Array.isArray(body.args)) payload.args = body.args.map(String);
   if (body.timeout !== undefined) payload.timeout = Number(body.timeout);
   if (typeof body.command === "string") payload.command = body.command;
+  // Task 95 — PIN length (4/6/8), validated at execution time too.
+  if (body.pinLength !== undefined) {
+    const pinLength = Number(body.pinLength);
+    if (pinLength !== 4 && pinLength !== 6 && pinLength !== 8) {
+      return NextResponse.json({ error: "pinLength must be 4, 6, or 8" }, { status: 400 });
+    }
+    payload.pinLength = pinLength;
+  }
 
   try {
     const result = await createDeviceActionProposal({
