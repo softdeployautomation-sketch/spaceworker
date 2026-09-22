@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Badge, Card } from "@/components/ui";
 import { PanicButton } from "@/components/panic-button";
+import { VantraConnect } from "@/components/vantra-connect";
 import { getSession } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { deviceStatus } from "@/lib/devices";
@@ -50,6 +51,8 @@ export default async function DevicesPage() {
         </div>
         <PanicButton />
       </div>
+
+      <VantraConnect />
 
       {devices.length === 0 ? (
         <Card className="p-8 text-center text-sm text-fg-muted">

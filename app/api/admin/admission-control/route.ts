@@ -11,7 +11,12 @@ import { getAdminSettings } from "@/lib/admin-settings";
 // can see "2 of 3 in use" while deciding whether to raise or lower a limit, not
 // just the static setting.
 
-type MechanismKey = "dispatchLight" | "dispatchHeavy" | "browserSessions";
+type MechanismKey =
+  | "dispatchLight"
+  | "dispatchHeavy"
+  | "browserSessions"
+  | "vantraLinks"
+  | "deviceActions";
 
 const MECHANISMS: Record<
   MechanismKey,
@@ -20,15 +25,30 @@ const MECHANISMS: Record<
   dispatchLight: { enabledField: "dispatchLightEnabled", maxField: "dispatchLightMaxConcurrent" },
   dispatchHeavy: { enabledField: "dispatchHeavyEnabled", maxField: "dispatchHeavyMaxConcurrent" },
   browserSessions: { enabledField: "browserSessionsEnabled", maxField: "browserSessionsMaxConcurrent" },
+  // Task 93 (CROSS-TRACK RULE 7) — Vantra plugin per-feature limits.
+  vantraLinks: { enabledField: "vantraLinksEnabled", maxField: "vantraLinksMax" },
+  deviceActions: { enabledField: "deviceActionsEnabled", maxField: "deviceActionsMaxConcurrent" },
 };
 
 async function liveCounts(): Promise<Record<MechanismKey, number>> {
-  const [light, heavy, sessions] = await Promise.all([
+  const [light, heavy, sessions, links, deviceActions] = await Promise.all([
     prisma.searchJob.count({ where: { lane: "light", status: "running" } }),
     prisma.searchJob.count({ where: { lane: "heavy", status: "running" } }),
     prisma.browserSession.count({ where: { status: { in: ["starting", "running"] } } }),
+    // Live counts for the Task 93 mechanisms. For links, "active" = links NOT
+    // revoked (the number the vantraLinksMax cap applies to). For device
+    // actions, it's the open (requested/approved/executing) proposals — the
+    // same pool createDeviceActionProposal counts against the cap.
+    prisma.vantraLink.count({ where: { status: { not: "revoked" } } }),
+    prisma.deviceAction.count({ where: { status: { in: ["requested", "approved", "executing"] } } }),
   ]);
-  return { dispatchLight: light, dispatchHeavy: heavy, browserSessions: sessions };
+  return {
+    dispatchLight: light,
+    dispatchHeavy: heavy,
+    browserSessions: sessions,
+    vantraLinks: links,
+    deviceActions,
+  };
 }
 
 export async function GET() {

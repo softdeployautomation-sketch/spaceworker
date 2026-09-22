@@ -862,12 +862,18 @@ function QueueJobStatusBadge({ status }: { status: string }) {
 // start/stop controls (the Services tab), for saving RAM / raising throughput
 // without needing to touch a whole service.
 type AdmissionMechanism = { enabled: boolean; maxConcurrent: number; active: number };
-type AdmissionControlState = Record<"dispatchLight" | "dispatchHeavy" | "browserSessions", AdmissionMechanism>;
+type AdmissionControlState = Record<
+  "dispatchLight" | "dispatchHeavy" | "browserSessions" | "vantraLinks" | "deviceActions",
+  AdmissionMechanism
+>;
 
 const ADMISSION_ROWS: Array<{ key: keyof AdmissionControlState; label: string; hint: string }> = [
   { key: "dispatchLight", label: "Lead extraction searches — light lane", hint: "How many searches using DuckDuckGo/Bing can run at once. Each running search is a real Playwright + Chromium process." },
   { key: "dispatchHeavy", label: "Lead extraction searches — heavy lane", hint: "How many Google-engine searches can run at once (kept separate — Google is the slower, more resource-hungry engine). Same real per-job Chromium cost as the light lane." },
   { key: "browserSessions", label: "Interactive browser sessions", hint: "How many live browser sessions can be open at once. Each is a full Neko browser-streaming container." },
+  // Task 93 (CROSS-TRACK RULE 7) — Vantra plugin per-feature dials.
+  { key: "vantraLinks", label: "Vantra links (assistant device provisioning)", hint: "How many users can hold an active Vantra link (org + device sync). 'Active' counts non-revoked links. Pause stops NEW provisioning only." },
+  { key: "deviceActions", label: "Device actions (wake / reboot / scripts)", hint: "How many open device-action proposals one user may have at once (requested/approved/executing). Each approved action is one live Vantra/TRMM call." },
 ];
 
 function AdmissionControlPanel() {
@@ -984,6 +990,110 @@ function AdmissionControlPanel() {
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Task 93 — admin visibility + revoke for Vantra links (owner's per-user
+// device-provisioning surface). Read-only table of every link + a revoke
+// button (audited through AgentActionAudit on the backend).
+
+type VantraLinkRow = {
+  id: string;
+  email: string;
+  orgId: string;
+  orgName: string;
+  status: string;
+  deviceCount: number;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+};
+
+function VantraLinksPanel() {
+  const [links, setLinks] = useState<VantraLinkRow[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/vantra-links");
+      if (!res.ok) throw new Error("Failed to load Vantra links");
+      const data = await res.json();
+      setLinks(data.links as VantraLinkRow[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load Vantra links");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function revoke(linkId: string) {
+    setBusy(linkId);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/vantra-links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ linkId }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.error === "string" ? data.error : "Revoke failed");
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Revoke failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Vantra links</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Every user's assistant device link (hidden sw-* org in Vantra). Revoking tears the
+        install surface down and is audited.
+      </p>
+      {error && <p className="mt-2 text-sm text-red-500">{error}</p>}
+      {links === null ? (
+        <p className="mt-3 text-sm text-zinc-500">Loading…</p>
+      ) : links.length === 0 ? (
+        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No Vantra links yet.</p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {links.map((l) => (
+            <div
+              key={l.id}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+            >
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">{l.email}</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  {l.orgName} · {l.status} · {l.deviceCount} device{l.deviceCount === 1 ? "" : "s"}
+                  {l.lastSyncedAt ? ` · synced ${new Date(l.lastSyncedAt).toLocaleString()}` : ""}
+                </p>
+                {l.lastError && (
+                  <p className="mt-0.5 text-xs text-red-500">Last error: {l.lastError}</p>
+                )}
+              </div>
+              {l.status !== "revoked" && (
+                <button
+                  onClick={() => revoke(l.id)}
+                  disabled={busy === l.id}
+                  className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:opacity-50"
+                >
+                  {busy === l.id ? "Revoking…" : "Revoke"}
+                </button>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -1225,6 +1335,8 @@ function QueueTab() {
           queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
         />
       </div>
+
+      <VantraLinksPanel />
 
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Search Queue</h2>

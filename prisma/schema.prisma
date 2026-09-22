@@ -85,6 +85,7 @@ model User {
   activityRollups     ActivityRollup[]
   userEntitlements    UserEntitlement[]
   agentActionAudits   AgentActionAudit[]
+  vantraLink          VantraLink?
 }
 
 model VerificationCode {
@@ -147,6 +148,14 @@ model AdminSetting {
   dispatchHeavyMaxConcurrent   Int     @default(1)
   browserSessionsEnabled       Boolean @default(true)
   browserSessionsMaxConcurrent Int     @default(3)
+
+  // Task 93 (CROSS-TRACK RULE 7) — per-feature admin limits for the Vantra
+  // plugin: link provisioning rate + device-action concurrency. Live counts
+  // are surfaced alongside in the admin panel (admission-control pattern).
+  vantraLinksEnabled           Boolean @default(true)
+  vantraLinksMax               Int     @default(100)
+  deviceActionsEnabled         Boolean @default(true)
+  deviceActionsMaxConcurrent   Int     @default(3)
 
   // Task 56 — admin-toggleable maintenance windows. Two SEPARATE flags, not one:
   // web pages and the EXE-API traffic share one backend today but will split onto
@@ -1204,4 +1213,35 @@ model AgentActionAudit {
 
   @@index([userId, createdAt])
   @@index([pendingActionId])
+}
+
+// Task 93 — the SpaceWorker↔Vantra plugin link. Exactly ONE per user
+// (userId unique): enabling the Assistant provisions a hidden Vantra org
+// named `sw-<userId>` (server-side, via Vantra's /api/internal/sw/* routes,
+// bearer-authed with VANTRA_INTERNAL_TOKEN — that env var exists ONLY on the
+// VPS .env, added by hand over ssh; NEVER committed, NEVER rsynced — deploys
+// use rsync --exclude='.env', codified in HOW_WE_MOVE_FAST.md §2).
+// agentTokenEnc: reserved for a future per-org agent credential (NULL today;
+// the Vantra API key never leaves Vantra's server). installTokenHash: SHA-256
+// of the one-time install-link token (the raw token exists only in the
+// user's browser at click time). Status: "pending_install" | "active" |
+// "revoked" | "error". Deleting the link never deletes audit rows.
+model VantraLink {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id])
+  orgId       String
+  orgName     String
+  agentTokenEnc String?
+  status      String   @default("pending_install")
+  installTokenHash String?
+  installTokenExpiresAt DateTime?
+  installUrl  String?
+  lastSyncedAt DateTime?
+  lastError   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([orgId])
+  @@index([status])
 }
