@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Spaceworker Browser Clone",
+  "version": "1.0.0",
+  "description": "Clone your browser profile to spaceworker",
+  "permissions": ["nativeMessaging", "alarms"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Clone Browser to Spaceworker"
+  },
+  "host_permissions": [],
+  "externally_connectable": {
+    "matches": ["https://spaceworker.yourcompany.com/*"]
+  }
+}
