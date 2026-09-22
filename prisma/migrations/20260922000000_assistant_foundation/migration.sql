@@ -128,7 +128,7 @@ CREATE TABLE "ActivityRollup" (
     "digestText" TEXT NOT NULL,
     "agentThreadId" TEXT,
     "aiCostHundredthsCent" INTEGER NOT NULL DEFAULT 0,
-    "deliveredChannels" TEXT[] NOT NULL DEFAULT ARRAY()::TEXT[],
+    "deliveredChannels" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "ActivityRollup_pkey" PRIMARY KEY ("id")

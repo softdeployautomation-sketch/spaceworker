@@ -14,13 +14,15 @@ import { recordAgentActionAudit } from "@/lib/devices";
 // implicitly covers every key (see lib/entitlements.ts), so a grant is only
 // needed to outlive a premium downgrade.
 
-type RouteContext = { params: Promise<{ userId: string }> };
+type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_req: Request, ctx: RouteContext) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const { userId } = await ctx.params;
+  // NOTE: the slug is [id] to match the sibling grant-premium/tier routes —
+  // Next.js forbids different slug names at the same dynamic level.
+  const { id: userId } = await ctx.params;
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
 
@@ -32,7 +34,7 @@ export async function POST(req: Request, ctx: RouteContext) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const { userId } = await ctx.params;
+  const { id: userId } = await ctx.params;
   let body: Record<string, unknown>;
   try {
     body = (await req.json()) as Record<string, unknown>;
@@ -71,7 +73,7 @@ export async function DELETE(req: Request, ctx: RouteContext) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
-  const { userId } = await ctx.params;
+  const { id: userId } = await ctx.params;
   const key = new URL(req.url).searchParams.get("key");
   if (!isEntitlementKey(key)) {
     return NextResponse.json({ error: "key query param required" }, { status: 400 });
