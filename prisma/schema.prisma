@@ -164,25 +164,32 @@ model AdminSetting {
   deviceActionsEnabled       Boolean @default(true)
   deviceActionsMaxConcurrent Int     @default(3)
 
-  // Task 97 (CROSS-TRACK RULE 7 + TASK_105 governor) — Browser Clone limits.
+  // Task 97/107 (CROSS-TRACK RULE 7 + TASK_105 governor) — Browser Clone limits.
   // A cloned browser is a live Chromium process on the POOLED hosted PC, so it
-  // is a first-class RAM consumer like the two mechanisms above.
-  //   cloneSessions*  = concurrent live clone browsers (the pool as a whole)
-  //   clonePerUserMax = how many of those one user may hold at once
-  //   hostedPoolSize  = how many hosted clone PCs are provisioned to serve them
-  // Q1 (DESIGN_BROWSER_CLONE_UI_AND_FLOW §7) is still pending owner sign-off on
-  // the two TTL numbers — they are shipped as the proposed defaults and stamped
-  // per job at creation, so a change here never retroactively kills a live
-  // session. Everything is admin-adjustable at runtime; nothing is hardwired.
+  // is a first-class RAM consumer like the two mechanisms above. These key names
+  // ARE the contract (TASK_107 deliverable 2); TASK_109/112 read them only
+  // through lib/clone-settings.ts and never touch this table directly.
+  //   cloneSessionsEnabled         = master on/off; a pause blocks NEW starts only
+  //   cloneMaxConcurrent           = concurrent live clone sessions (engine-wide)
+  //   clonePerUserCap              = of those, how many one user may hold at once
+  //   hostedPoolSize               = hosted clone PCs provisioned to serve them
+  //   cloneIdleTtlMinutes          = idle TTL before teardown (Q1: 60)
+  //   cloneHardTtlMinutes          = absolute ceiling, even while in use (Q1: 480 = 8 h)
+  //   clonePurgeAfterDays          = inactive-record purge window (owner 2026-10-01: 30)
+  //   cloneDirectEgressPremiumOnly = direct egress is premium-only (owner 2026-10-01)
+  //   cloneRelayRequired           = relay mode FAILS CLOSED when the relay is down
+  // Both TTL numbers are stamped onto each CloneJob at creation, so changing a
+  // value here never retroactively kills an already-running session. Everything
+  // is admin-adjustable at runtime; nothing is hardwired.
   cloneSessionsEnabled         Boolean @default(true)
-  cloneSessionsMaxConcurrent   Int     @default(2)
-  clonePerUserMax              Int     @default(1)
+  cloneMaxConcurrent           Int     @default(2)
+  clonePerUserCap              Int     @default(1)
   hostedPoolSize               Int     @default(1)
   cloneIdleTtlMinutes          Int     @default(60)
-  cloneHardTtlHours            Int     @default(8)
+  cloneHardTtlMinutes          Int     @default(480)
   clonePurgeAfterDays          Int     @default(30)
-  // Direct egress (`--proxy-optional`) is PREMIUM ONLY (owner 2026-10-01).
   cloneDirectEgressPremiumOnly Boolean @default(true)
+  cloneRelayRequired           Boolean @default(true)
 
   // Task 56 — admin-toggleable maintenance windows. Two SEPARATE flags, not one:
   // web pages and the EXE-API traffic share one backend today but will split onto
@@ -1452,8 +1459,12 @@ model CloneJob {
   destinationDevice   Device?      @relation("cloneDestination", fields: [destinationDeviceId], references: [id])
   relayId             String?
   relay               RelayHealth? @relation(fields: [relayId], references: [id])
-  // Lifecycle: "pending" | "capturing" | "transferring" | "injecting" |
-  // "active" | "expired" | "revoked" | "failed".
+  // Lifecycle (TASK_109 canonical union — TEXT, not a DB enum, the codebase's
+  // style, with this list as the documented value set):
+  //   requested | awaiting_source | capturing | captured | transferring
+  //   | received | injecting | ready | launching | active
+  //   terminal: expired_idle | expired_hard | revoked | deleted | failed
+  // Forward-only; the UI maps these to human copy, never raw enums (DESIGN §3).
   status              String       @default("pending")
   // Kept separate from `status` because a clone can be fully captured and
   // transferred yet never launched, and a launched clone can be stopped without
@@ -1461,13 +1472,23 @@ model CloneJob {
   launchState         String       @default("not_launched")
   // The ONE gate. Set when the clone came from an approved agent-initiated
   // proposal; NULL for a manual owner-initiated clone (no approval — owner rule:
-  // approvals are for agents only).
+  // approvals are for agents only). PLAIN SCALAR, deliberately FK-less: an audit
+  // row must survive the thing it audited (plan RULE 5), so revoking/purging the
+  // proposal can never cascade a clone record away.
   pendingActionId     String?
+  // The ENGINE-side registry id (`hack-browser-clone` clone id on the work PC).
+  // Also a plain scalar, not a row in this DB: it is stamped into every
+  // AgentActionAudit row (action "browser-clone") so this record and the engine's
+  // own append-only audit can be correlated. NULL until the capture step returns.
+  cloneId             String?
   // Egress policy ACTUALLY used: "relay" (same IP as the work PC — default,
   // fails closed) | "direct" (hosted PC's own IP — PREMIUM ONLY, explicit
   // `--proxy-optional` path). Never a silent fallback; also written to the audit.
   egressMode          String       @default("relay")
   browser             String
+  // TASK_97/PLAN call this `browserProfileRef` — kept as `profileName` because
+  // DESIGN_BROWSER_CLONE_UI_AND_FLOW §3 maps the UI's "Browser / profile" column
+  // to exactly `browser, profileName`. Same value: the engine profile name.
   profileName         String?
   // Encrypted capture location on the hosted PC. Cleared (and the material
   // deleted) on revoke/expiry/purge — records outlive material by design.
@@ -1479,7 +1500,7 @@ model CloneJob {
   captureExitCode     Int?
   error               String?
   // Q1 (DESIGN_BROWSER_CLONE_UI_AND_FLOW §7): both come from AdminSetting
-  // (cloneIdleTtlMinutes / cloneHardTtlHours) and are stamped per job so a later
+  // (cloneIdleTtlMinutes / cloneHardTtlMinutes) and are stamped per job so a later
   // admin change never retroactively expires a live session.
   idleExpiresAt       DateTime?
   expiresAt           DateTime?
@@ -1492,15 +1513,23 @@ model CloneJob {
 
   session HostedBrowserSession?
 
+  // Read paths the UI + sweeps actually use (TASK_107 deliverable 1):
+  //   history list            -> userId + createdAt
+  //   "clones of this device" -> sourceDeviceId / destinationDeviceId + status
+  //   idle-TTL sweep          -> status + idleExpiresAt
+  //   hard-TTL sweep          -> status + expiresAt
+  //   record purge sweep      -> status + purgeAfter
   @@index([userId, createdAt])
   @@index([sourceDeviceId, status])
   @@index([destinationDeviceId, status])
+  @@index([status, idleExpiresAt])
+  @@index([status, expiresAt])
   @@index([status, purgeAfter])
 }
 
 // The live browser process on the hosted PC that a clone launched. This is the
-// RAM consumer the admin caps (`cloneSessionsMaxConcurrent`) and the thing the
-// panic switch must kill. Exists only while the session runs.
+// RAM consumer the admin caps (`cloneMaxConcurrent` / `clonePerUserCap`) and the
+// thing the panic switch must kill. Exists only while the session runs.
 model HostedBrowserSession {
   id         String    @id @default(cuid())
   userId     String

@@ -996,6 +996,249 @@ function AdmissionControlPanel() {
   );
 }
 
+// TASK_107 (B1) — Browser Clone limits. Same shape as admission control above
+// (enabled + a limit + a LIVE count per row) because a cloned browser is a live
+// Chromium process on the pooled hosted PC, i.e. another real RAM consumer. Every
+// value is an AdminSetting (CROSS-TRACK RULE 7); this block is how the owner sees
+// and changes them without a deploy. The two policy switches are labelled
+// explicitly because they change what a clone is ALLOWED to do, not just how much.
+type CloneLimits = {
+  maxConcurrent: number;
+  perUserCap: number;
+  hostedPoolSize: number;
+  idleTtlMinutes: number;
+  hardTtlMinutes: number;
+  purgeAfterDays: number;
+};
+
+type CloneLimitsState = {
+  enabled: boolean;
+  limits: CloneLimits;
+  policy: { directEgressPremiumOnly: boolean; relayRequired: boolean };
+  live: {
+    activeSessions: number;
+    activeJobs: number;
+    pooledHosts: number;
+    sessionHosts: number;
+    relaysUp: number;
+    relaysDown: number;
+    relaysUnknown: number;
+  };
+};
+
+type CloneLimitField = keyof CloneLimits;
+
+const CLONE_LIMIT_ROWS: Array<{
+  field: CloneLimitField;
+  label: string;
+  hint: string;
+  live?: (s: CloneLimitsState) => string;
+}> = [
+  {
+    field: "maxConcurrent",
+    label: "Concurrent clone sessions (engine-wide)",
+    hint: "How many cloned browsers may be live at once. Each one is a real Chromium process on the pooled hosted PC.",
+    live: (s) => `${s.live.activeSessions} of ${s.limits.maxConcurrent} live right now`,
+  },
+  {
+    field: "perUserCap",
+    label: "Clones per user",
+    hint: "How many of those live sessions a single user may hold at once.",
+  },
+  {
+    field: "hostedPoolSize",
+    label: "Hosted PC pool size",
+    hint: "How many hosted clone PCs are provisioned to serve sessions. Clones beyond this wait in the resource governor's queue.",
+    live: (s) => `${s.live.sessionHosts} of ${s.live.pooledHosts} pooled host(s) in use`,
+  },
+  {
+    field: "idleTtlMinutes",
+    label: "Idle TTL (minutes)",
+    hint: "Close a clone after this long with no activity. Stamped per clone at creation, so changing it never kills a running session.",
+  },
+  {
+    field: "hardTtlMinutes",
+    label: "Hard TTL (minutes)",
+    hint: "Absolute ceiling even while the clone is in use (480 minutes = 8 hours). Stamped per clone.",
+    live: (s) => `${s.live.activeJobs} clone job(s) in flight`,
+  },
+  {
+    field: "purgeAfterDays",
+    label: "Purge inactive records after (days)",
+    hint: "Terminal clone records older than this are deleted by the sweep. Active sessions are never purged.",
+  },
+];
+
+type ClonePolicyField = keyof CloneLimitsState["policy"];
+
+const CLONE_POLICY_ROWS: Array<{ field: ClonePolicyField; label: string; hint: string }> = [
+  {
+    field: "directEgressPremiumOnly",
+    label: "Direct egress is premium-only",
+    hint: "Launching with the hosted PC's own IP instead of the work PC's (the engine's --proxy-optional path) stays premium-only. Turning it off lets standard users pick it — their carried sessions may re-authenticate or trip fraud checks.",
+  },
+  {
+    field: "relayRequired",
+    label: "Relay required (fail closed)",
+    hint: "On: a clone refuses to launch while the relay is down instead of silently switching to the hosted PC's IP.",
+  },
+];
+
+function CloneLimitsPanel() {
+  const [state, setState] = useState<CloneLimitsState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/clone-limits");
+      if (!res.ok) throw new Error("Failed to load clone limits");
+      setState((await res.json()) as CloneLimitsState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load clone limits");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // The route returns the whole state back, so one PATCH refreshes everything
+  // (limits AND live counts) without a second round-trip.
+  async function patch(field: string, body: Record<string, boolean | number>) {
+    setSaving(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/clone-limits", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState(data as CloneLimitsState);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Browser clone limits</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Dials for the cloned-browser feature. A live clone is a real Chromium process on the pooled hosted PC, so these
+        are RAM dials like admission control above — a pause or a lower limit blocks NEW clones only and never interrupts
+        a running session.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">Browser clone</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.live.activeSessions} live session(s) · {state.live.activeJobs} job(s) in flight · relays{" "}
+                  {state.live.relaysUp} up / {state.live.relaysDown} down
+                  {state.live.relaysUnknown > 0 ? ` / ${state.live.relaysUnknown} unknown` : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => patch("enabled", { enabled: !state.enabled })}
+                disabled={saving === "enabled"}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.enabled ? "Enabled" : "Paused"}
+              </button>
+            </div>
+          </div>
+
+          {CLONE_LIMIT_ROWS.map((row) => {
+            const current = state.limits[row.field];
+            const draft = drafts[row.field];
+            return (
+              <div
+                key={row.field}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">{row.label}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                  {row.live && (
+                    <p className="mt-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">{row.live(state)}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={1}
+                    value={draft ?? String(current)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                    className="w-24 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
+                  <button
+                    onClick={() => {
+                      const n = Number(draft ?? current);
+                      if (!Number.isFinite(n) || n < 1) {
+                        setError(`${row.label} must be a positive integer`);
+                        return;
+                      }
+                      patch(row.field, { [row.field]: Math.floor(n) });
+                    }}
+                    disabled={saving === row.field || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Set
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+
+          {CLONE_POLICY_ROWS.map((row) => (
+            <div
+              key={row.field}
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+            >
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">{row.label}</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+              </div>
+              <button
+                onClick={() => patch(row.field, { [row.field]: !state.policy[row.field] })}
+                disabled={saving === row.field}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.policy[row.field] ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.policy[row.field] ? "On" : "Off"}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
 // Task 93 — admin visibility + revoke for Vantra links (owner's per-user
 // device-provisioning surface). Read-only table of every link + a revoke
 // button (audited through AgentActionAudit on the backend).
@@ -1335,6 +1578,9 @@ function QueueTab() {
           queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
         />
       </div>
+
+      {/* TASK_107 (B1) — Browser Clone caps/TTLs, same tab as the other RAM dials. */}
+      <CloneLimitsPanel />
 
       <VantraLinksPanel />
 
