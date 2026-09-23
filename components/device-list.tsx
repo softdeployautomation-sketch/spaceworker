@@ -223,14 +223,16 @@ export function DeviceList() {
 
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
 
-  // Task 106 (bit C1) — status + idle label for each row. Offline devices
-  // never show an idle value (MeshCentral `idletime` is stale once
-  // disconnected) — they show "last seen …" instead. Never raw values.
+  // Task 106 (bit C1) — the row's ONLY status + last-seen / idle rendering.
+  // Owner 2026-09-23: this used to be duplicated by a dedicated "Last seen"
+  // column right next to it (same timestamp twice on one row), so that column
+  // is gone and this chip owns it — "offline · last seen …" when disconnected,
+  // "online · idle …" when connected. Idle exists only while connected
+  // (MeshCentral `idletime` goes stale offline), and a missing idle signal
+  // degrades to the plain status rather than reading as "online · unknown".
   const statusIdleLabel = (d: DeviceRow): string => {
     const online = d.status === "online" || d.status === "asleep";
     if (!online) return `offline · last seen ${relTime(d.lastSeenAt)}`;
-    // No idle signal (MeshCentral unavailable or node unmatched) → show the
-    // plain status. Missing decoration must never read as "online · unknown".
     if (d.idleSeconds === null) return statusWord(d.status);
     return `${statusWord(d.status)} · ${formatIdle(d.idleSeconds)}`;
   };
@@ -518,7 +520,7 @@ export function DeviceList() {
                 <Link
                   key={d.id}
                   href={`/dashboard/devices/${d.id}`}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-black/5 md:grid-cols-[minmax(0,1fr)_140px_150px_130px_36px] dark:hover:bg-white/5"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-black/5 md:grid-cols-[minmax(0,1fr)_140px_200px_36px] dark:hover:bg-white/5"
                 >
                   <span className="flex min-w-0 items-center gap-2.5">
                     {online ? (
@@ -535,7 +537,10 @@ export function DeviceList() {
                       {statusIdleLabel(d)}
                     </span>
                   </span>
-                  <span className="hidden text-sm text-fg-muted md:block">{relTime(d.lastSeenAt)}</span>
+                  {/* Owner 2026-09-23 — the dedicated "Last seen" column that
+                      used to sit here rendered the SAME timestamp as the status
+                      chip right beside it, so it was removed; the chip owns
+                      last-seen. TASK_103 (MISSING-1) puts the Ping button here. */}
                   <span className="hidden justify-end md:flex">
                     {online ? (
                       <PlugZap className="h-4 w-4 text-fg-muted" />

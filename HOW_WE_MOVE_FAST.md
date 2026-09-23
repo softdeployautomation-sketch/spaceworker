@@ -219,7 +219,14 @@ Added 2026-09-22 (Task 92):
   `MESH_LOGIN_USER=user//vantra-service___4` (snapshot:
   `/root/vantra.env.bak-t106fix-*`); (2) `makeLoginToken()` normalises a bare name to
   `user//<name>` (Vantra `8296f47`) so a bare value can't silently break mesh auth
-  again. This also repaired the pre-existing **mesh view-only session** flow.
+  again. This also repaired the pre-existing **mesh view-only session** flow —
+  **closed out 2026-09-23** by exercising Vantra's real functions against the live
+  socket: `listMeshNodes()` with the deployed full userid → 3 nodes; with a BARE
+  override → still 3 nodes (normalisation works); `findMeshNodeIdByHostname("Sc")`
+  → `node//…`; `createViewOnlyShareLink()` → share URL; `GET <share url>` →
+  **HTTP 200, 149135 bytes**. Lesson: a bare-vs-qualified identity string failed at
+  the *transport* layer and every caller swallowed it (fail-soft by design) — probe
+  the socket directly, don't read logs.
   Lesson for next time: a bare-vs-qualified identity string failed at the *transport*
   layer and every caller swallowed it — when mesh lookups go quietly empty, probe the
   socket directly instead of reading application logs.

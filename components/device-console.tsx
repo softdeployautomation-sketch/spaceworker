@@ -731,13 +731,18 @@ function SummaryTab({ device, loaded }: { device: DeviceView | null; loaded: boo
         label="Operating system"
         value={osLabel(device.osName) + (device.osVersion ? ` · ${device.osVersion}` : "")}
       />
-      <Info label="Last seen" value={relTime(device.lastSeenAt)} />
+      {/* Owner 2026-09-23 — one last-seen display per screen. The console header
+          chip already renders "offline · last seen …" / "online · idle …", and
+          this row printed the SAME timestamp a second time right below it. The
+          chip wins (always visible, even when Summary is scrolled), so the
+          duplicate row is gone and "User activity" only reports idle — which
+          exists only for a connected device (idletime goes stale offline). */}
       <Info
         label="User activity"
         value={
           device.status === "online" || device.status === "asleep"
             ? formatIdle(device.idleSeconds)
-            : `last seen ${relTime(device.lastSeenAt)}`
+            : "—"
         }
       />
       <Info

@@ -43,6 +43,7 @@
 | # | Task file | Scope | Depends on | Status |
 |---|---|---|---|---|
 | C1 | `TASK_106_DEVICE_IDLE_AND_LIVE_REFRESH.md` | Device idle time (MeshCentral `idletime`) + live auto-refresh of the device list | — | **DONE · DEPLOYED · VERIFIED 2026-09-23** (both halves live) |
+| C1-fu | (no new file — owner request) | **One last-seen per screen**: the duplicate display was removed in BOTH surfaces; the freed list cell is reserved for Ping (C2/MISSING-1) | — | **DONE · DEPLOYED 2026-09-23** |
 | C2 | `TASK_103_CONSOLE_FULLSCREEN_TOOLBOX_SPLIT_PING_REBOOT.md` | ⤢ true full-screen console, toolbox split (4 groups), **Ping**, **Reboot** | — | RECORDED |
 | C3 | `TASK_104_OVERLAY_SHELL_POPUPS_AND_SILENT_LAUNCHER.md` | Overlay shell-popup (Start menu / right-click) debug + silent app launcher toolbelt | — | RECORDED |
 | G1 | `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` | Server-side resource governor that queues high-RAM features | — | NOT STARTED |
@@ -82,8 +83,22 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   and the two-part fix are in `HOW_WE_MOVE_FAST.md` §6 ("MeshCentral login-token auth
   — RESOLVED"). One-line version: the token's `u` must be the **full userid**
   (`user//name`) and the env had a **bare** name.
-- **Follow-on win (free):** that fix also repairs the pre-existing **mesh view-only
-  session** flow, which had been failing for exactly the same reason.
+- **Follow-on win (free): VERIFIED + CLOSED 2026-09-23.** That same fix repairs the
+  pre-existing **mesh view-only session** flow (it had been failing for exactly the
+  same reason). Proven by running Vantra's *real* functions against the live socket —
+  deployed full userid → 3 nodes; a **bare** override → still 3 nodes (normalisation
+  works); `findMeshNodeIdByHostname("Sc")` → `node//…`; `createViewOnlyShareLink()` →
+  share URL; `GET <share url>` → **HTTP 200, 149135 bytes**. Nothing left to do here;
+  do not re-open.
+- **C1 follow-up (owner request, same day): one last-seen per screen.** The list row
+  printed the same timestamp twice — the status chip (`offline · last seen 23 min
+  ago`, `device-list.tsx`) and a dedicated "Last seen" column rendered *identically*
+  right beside it; the console had the same duplication (`Summary` "Last seen" row vs
+  the header chip). The **chip wins** (always visible, survives scrolling), so the
+  duplicate column/row was removed in both files and **the freed list cell is now the
+  reserved slot for the Ping button** (TASK_103 MISSING-1) so the row keeps its grid
+  shape when that lands. `User activity` now reports idle only (idle exists only while
+  connected) and shows `—` when offline instead of restating last-seen.
 - **Visibility caveat:** idle renders only for devices SpaceWorker counts as
   `online`/`asleep` (its own heartbeat window). A device MeshCentral still sees as
   connected but SW marks `offline` shows `offline · last seen …` instead — that's by
@@ -138,7 +153,15 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   name (Vantra `8296f47`, rebuilt + redeployed, build `EXIT:0`). Verified end-to-end
   live: `fetchUserIdle -> {"Sc":35,"WilkSF9":0}` and `JOIN -> 2/2 device rows got a
   real idle value`. **Bonus:** the pre-existing **mesh view-only session** flow is
-  repaired by the same fix. Full trail in `HOW_WE_MOVE_FAST.md` §6.
+  repaired by the same fix — **verified + closed 2026-09-23** (real
+  `findMeshNodeIdByHostname` + `createViewOnlyShareLink` against the live socket:
+  share URL minted, `GET` → HTTP 200 / 149135 bytes, and a bare-username override
+  still authenticates). Full trail in `HOW_WE_MOVE_FAST.md` §6.
+- 2026-09-23 — **C1-fu (owner request): one last-seen per screen.** Removed the
+  duplicate last-seen rendering in BOTH surfaces (list column beside the status chip;
+  console Summary row below the header chip). Chip wins; the freed list cell is the
+  reserved slot for Ping (C2/MISSING-1). `User activity` reports idle only, `—` when
+  offline.
   Also during this deploy: fixed the stale "build from `/opt/spaceworker/app`" line
   in `HOW_WE_MOVE_FAST.md` §1, recorded the **Vantra builds as `vantra`, not `trmm`**
   `.next`-ownership trap (§6), and wrote up the MeshCentral `noauth` root-cause trail
