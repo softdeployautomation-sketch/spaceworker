@@ -42,7 +42,7 @@
 
 | # | Task file | Scope | Depends on | Status |
 |---|---|---|---|---|
-| C1 | `TASK_106_DEVICE_IDLE_AND_LIVE_REFRESH.md` | Device idle time (MeshCentral `idletime`) + live auto-refresh of the device list | — | **NOT STARTED** |
+| C1 | `TASK_106_DEVICE_IDLE_AND_LIVE_REFRESH.md` | Device idle time (MeshCentral `idletime`) + live auto-refresh of the device list | — | **DEPLOYED 2026-09-23** (refresh live; idle plumbing live but dark — see below) |
 | C2 | `TASK_103_CONSOLE_FULLSCREEN_TOOLBOX_SPLIT_PING_REBOOT.md` | ⤢ true full-screen console, toolbox split (4 groups), **Ping**, **Reboot** | — | RECORDED |
 | C3 | `TASK_104_OVERLAY_SHELL_POPUPS_AND_SILENT_LAUNCHER.md` | Overlay shell-popup (Start menu / right-click) debug + silent app launcher toolbelt | — | RECORDED |
 | G1 | `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` | Server-side resource governor that queues high-RAM features | — | NOT STARTED |
@@ -62,6 +62,32 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
     │           └─ B6
              (G1 feeds B4's caps enforcement)
 ```
+
+### C1 deployed state (2026-09-23) — read before touching idle
+
+**Shipped and live:** both halves are deployed (Vantra `0424b7b`, SpaceWorker
+`589292f` + verify-fix `71853dd`), services active, builds clean.
+
+- **Live auto-refresh: WORKING.** The device list re-polls `/api/devices` every 20 s
+  (paused while the tab is hidden; refreshes on becoming visible), clearing the
+  original complaint that the list only updated on reload.
+- **Idle values: LIVE BUT DARK.** `idleSeconds` is plumbed end-to-end and the
+  transport is verified working (SpaceWorker authenticates to Vantra's new bulk
+  route and gets a map back), but the map is **empty** because **MeshCentral
+  refuses Vantra's login token** (`cause:"noauth"`) — see the `HOW_WE_MOVE_FAST.md`
+  §6 entry "MeshCentral login-token auth currently FAILS". That is **pre-existing
+  and not caused by C1**: the same unchanged token helper backs the older
+  `findMeshNodeIdByHostname()` and the mesh view-only route, which fail identically.
+- So every `idleSeconds` is `null` today and every label renders as plain
+  `online` / `offline · last seen …` — **no visual regression** (the "· unknown"
+  label was removed in `71853dd` for exactly this case).
+- **When the mesh token auth is fixed, idle lights up with ZERO further code
+  changes.** Nothing in this pipeline needs re-touching for that.
+- **Unit is settled, don't re-investigate:** MeshCentral's `idletime` is in
+  **seconds** (`agents/meshcore.js` → `win-deskutils.idle.getSecondsAllSessions()`,
+  sampled ~every 5 min, most-recently-active session on the box). The shipped
+  `MESHCENTRAL_IDLETIME_UNIT = "seconds"` is correct.
+
 
 ### Owner-confirmed decisions this pipeline encodes (do not re-litigate)
 
@@ -94,3 +120,11 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 ## Status log
 
 - 2026-10-02 — pipeline created; C1–C3, G1, B1–B6 registered above.
+- 2026-09-23 — **C1 verified + DEPLOYED** (Vantra `0424b7b`, SpaceWorker `589292f`,
+  verify-fix `71853dd`). Live refresh works; idle plumbing live but dark on the
+  pre-existing MeshCentral `noauth` blocker (full detail in the C1 section above).
+  Also during this deploy: fixed the stale "build from `/opt/spaceworker/app`" line
+  in `HOW_WE_MOVE_FAST.md` §1, recorded the **Vantra builds as `vantra`, not `trmm`**
+  `.next`-ownership trap (§6), and wrote up the MeshCentral `noauth` root-cause trail
+  (§6) so no future agent re-investigates it.
+

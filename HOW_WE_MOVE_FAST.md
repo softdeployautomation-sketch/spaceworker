@@ -15,7 +15,7 @@ On the VPS, `/opt/spaceworker/` is the **repo root** — `app/`, `components/`, 
 
 - **rsync destination**: always `root@164.68.105.96:/opt/spaceworker/` (trailing slash, repo root) with an explicit `--files-from` list of repo-relative paths (e.g. `app/api/exe-license/auto-bind/route.ts`, `lib/products.ts`). Never a bare directory sync, never a relative `..` in the remote target — a `..`-containing remote path once resolved to the wrong directory and overwrote the real landing page mid-session. If a path needs `..`, stop and rewrite it as an absolute path instead.
 - **Commands that need the repo root** (prisma migrate/generate): run from `/opt/spaceworker`. (Not `git` — see §0, there's no git repo on the VPS at all.)
-- **Commands that need the Next app dir** (`npm run build`, `npm run dev`): run from `/opt/spaceworker/app`.
+- **Commands that need the Next app dir** (`npm run build`, `npm run dev`): run from **`/opt/spaceworker`** — the repo root IS the Next project root (that's where `package.json`, `next.config.ts` and `.next/` live, and `spaceworker.service` runs `next start` with `WorkingDirectory=/opt/spaceworker`). `/opt/spaceworker/app/` is the **router directory only** and has no `package.json`; running `npm run build` inside it fails. (Corrected 2026-09-23 after the stale "run from `/opt/spaceworker/app`" line below wasted a deploy attempt. Same shape in Vantra: build from `/opt/vantra`, its repo root.)
 - Confirm you're in the right one before running anything destructive: `pwd` first if unsure.
 
 ## 1a. `proxy.ts` (Next.js 16 middleware) — a second, nastier file-location trap
@@ -163,6 +163,17 @@ Added 2026-09-22 (Task 92):
   service can end up stuck `activating`. Fix: `chown -R trmm:trmm
   /opt/spaceworker/.next`, then rebuild. Always build as `trmm` (per §2) and
   check ownership first when an EACCES unlink appears.
+  **Vantra is a DIFFERENT user — this cost a deploy on 2026-09-23.** `vantra.service`
+  runs `User=vantra` and `/opt/vantra/.next` is `vantra:vantra`, so building it as
+  `trmm` fails instantly with `EACCES: permission denied, open
+  '/opt/vantra/.next/trace-build'`. Build Vantra as its own user:
+  `cd /opt/vantra && sudo -u vantra npm run build`. Per-repo rule:
+  **SpaceWorker → `trmm`, Vantra → `vantra`** — check with
+  `systemctl cat <svc> | grep ^User=` before the first build of a session.
+  **Rsynced files land as your local uid (502), not the service user.** After any
+  rsync, `chown` the deployed files to `trmm:trmm` (that's what the sibling route
+  dirs use, even inside Vantra) — `ls -la` a sibling first to confirm the local
+  convention.
 - (Also from Task 92) `systemctl status` prints the substituted
   `%INTERNAL_BEARER_TOKEN%` from unit files — don't paste raw status output
   into logs/screenshots when a token-bearing unit was involved.
@@ -182,6 +193,35 @@ Added 2026-09-22 (Task 92):
   resolution built on assumed numeric fields fails silently → every guarded
   route 404s "Device not found" on healthy, correctly-installed agents.
 - **2026-09-23 (MeshCentral iframe auth): SameSite=None needs the webserver.js
+- **2026-09-23 (MeshCentral login-token auth currently FAILS — `cause:"noauth"`).**
+  Vantra's MeshCentral websocket login (`lib/meshcentral-api.ts::listMeshNodes`,
+  and therefore the older `findMeshNodeIdByHostname` and the mesh view-only route)
+  is refused with `{"action":"close","cause":"noauth","msg":"noauth"}`. That exact
+  message comes from `webserver.js` ≈L7399 — the branch where `PerformWSSessionAuth`
+  returned `user == null` and no `x-meshauth: *` header was sent, i.e. the `?auth=`
+  token was **not decrypted into a user**. It fails at the websocket auth layer
+  *before* any application code runs, so it is never a bug in the caller and never a
+  regression from whichever task you happen to be on. Don't chase it in app code.
+  Where the real fix lives: `webserver.js` ≈L9116 decrypts `?auth=` with
+  `obj.parent.loginCookieEncryptionKey` (`decodeCookie(..., 60)`), so
+  `MESH_LOGIN_KEY` in `/opt/vantra/.env` must equal MeshCentral's
+  **`LoginCookieEncryptionKey` record `key`** — NOT a `loginkey` field (this
+  deployment has none: config.json has `allowLoginToken:true` but no `loginkey`,
+  and neither do its two `.bak` copies). The env value is 160 hex chars / 80 bytes,
+  which is the shape MeshCentral expects (`meshctrl.js` treats
+  `loginkey.length != 160` as "not a key"). Compare the two server-side; never print
+  either.
+  Symptom to recognise: idle/idletime enrichment (Task 106 C1) silently returns
+  `{"ok":true,"idleByHostname":{}}` so every `idleSeconds` is `null`. Every caller is
+  fail-soft by design, so this failure mode is **silent** — probe the socket, don't
+  read logs for it.
+  MeshCentral's live store here is **Postgres** (`settings.postgres` in config.json;
+  DB `meshcentral`, doc table `main` with columns `doc,id,type,domain`) — the
+  `meshcentral-data/meshcentral.db.json` file is stale and is NOT the live store.
+  Still true and handy: per-node `idletime` is in **seconds**
+  (`agents/meshcore.js`: `win-deskutils.idle.getSecondsAllSessions()`), sampled
+  roughly every 5 minutes, and reflects the most recently active session on the box.
+
   patch RE-APPLIED after every MeshCentral update.** The `xid` cookie's
   SameSite comes from `settings.sessionsamesite` (config.json — now "none"),
   but its Secure flag is `secure: (obj.args.tlsoffload == null)` in
