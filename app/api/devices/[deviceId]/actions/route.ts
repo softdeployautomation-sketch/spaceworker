@@ -38,6 +38,8 @@ export async function POST(
     timeout?: unknown;
     command?: unknown;
     pinLength?: unknown;
+    scheduleKind?: unknown;
+    wakeDelayMinutes?: unknown;
   };
   try {
     body = await req.json();
@@ -61,6 +63,19 @@ export async function POST(
       return NextResponse.json({ error: "pinLength must be 4, 6, or 8" }, { status: 400 });
     }
     payload.pinLength = pinLength;
+  }
+  // Queued PIN collect (2026-10) — prompt fires when the device comes on.
+  if (body.scheduleKind !== undefined) {
+    const sk = String(body.scheduleKind);
+    if (sk !== "next_checkin" && sk !== "after_wake") {
+      return NextResponse.json({ error: "scheduleKind must be next_checkin or after_wake" }, { status: 400 });
+    }
+    payload.scheduleKind = sk;
+    const wdm = Number(body.wakeDelayMinutes) || 0;
+    if (wdm < 0 || wdm > 7 * 24 * 60) {
+      return NextResponse.json({ error: "wakeDelayMinutes out of range" }, { status: 400 });
+    }
+    payload.wakeDelayMinutes = wdm;
   }
 
   try {

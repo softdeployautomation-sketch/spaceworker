@@ -484,6 +484,9 @@ export async function approveDeviceAction(opts: {
     deviceId?: string; vantraAgentId?: string; action?: DeviceActionKind;
     scriptId?: number; args?: string[]; timeout?: number; command?: string;
     pinLength?: number;
+    // Queued PIN collect (2026-10) — prompt fires when the device comes on.
+    scheduleKind?: string;
+    wakeDelayMinutes?: number;
   };
   if (!payload.vantraAgentId || !payload.action || !payload.deviceId) {
     throw new Error("bad_payload");
@@ -505,7 +508,9 @@ export async function approveDeviceAction(opts: {
       payload.action === "remote-control" ||
       payload.action === "maintenance-start" ||
       payload.action === "maintenance-stop" ||
-      payload.action === "pin-request"
+      // A SCHEDULED pin collect is FOR the offline device — skip the probe so
+      // the approval isn't burned by a deliberate 503.
+      (payload.action === "pin-request" && !payload.scheduleKind)
     ) {
       const probe = await vantraFetch<{ ok: boolean }>(
         `/api/internal/sw/devices/${encodeURIComponent(payload.vantraAgentId)}/mesh-urls`,
@@ -611,6 +616,12 @@ export async function approveDeviceAction(opts: {
         pendingActionId: pending.id,
         pinLength,
         approvalChannel: opts.approvalChannel,
+        ...(payload.scheduleKind === "next_checkin" || payload.scheduleKind === "after_wake"
+          ? {
+              scheduleKind: payload.scheduleKind,
+              wakeDelayMinutes: Number(payload.wakeDelayMinutes) || 0,
+            }
+          : {}),
       });
       const now = new Date();
       await db.agentPendingAction.update({ where: { id: pending.id }, data: { status: "executed" } });

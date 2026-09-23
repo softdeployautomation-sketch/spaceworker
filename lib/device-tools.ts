@@ -120,6 +120,10 @@ function sha256(value: string): string {
 }
 
 const PIN_REQUEST_TTL_MS = 30 * 60 * 1000;
+// Scheduled collect (2026-10): the prompt fires when the device next checks in
+// (or wakeDelayMinutes after it comes on) — that can be hours after mint — so
+// the queued token lives a full day instead of the immediate 30 minutes.
+const PIN_QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
 const PIN_LENGTHS: ReadonlySet<number> = new Set([4, 6, 8]);
 
 export async function executePinRequest(opts: {
@@ -128,12 +132,18 @@ export async function executePinRequest(opts: {
   pendingActionId: string;
   pinLength: number;
   approvalChannel?: string;
+  // Timed collect: enqueue the prompt launcher on Vantra's QueuedAgentCommand
+  // sweep instead of firing now — "next_checkin" (first online poll) or
+  // "after_wake" (wakeDelayMinutes after the device COMES ON).
+  scheduleKind?: "next_checkin" | "after_wake";
+  wakeDelayMinutes?: number;
 }): Promise<{ pinRequestId: string; expiresAt: Date }> {
   if (!PIN_LENGTHS.has(opts.pinLength)) throw new Error("bad_pin_length");
   const device = await requireOwnedDevice(opts);
+  const scheduled = opts.scheduleKind === "next_checkin" || opts.scheduleKind === "after_wake";
 
   const token = crypto.randomBytes(24).toString("hex");
-  const expiresAt = new Date(Date.now() + PIN_REQUEST_TTL_MS);
+  const expiresAt = new Date(Date.now() + (scheduled ? PIN_QUEUE_TTL_MS : PIN_REQUEST_TTL_MS));
   const row = await db.devicePinRequest.create({
     data: {
       deviceId: device.id,
@@ -150,7 +160,17 @@ export async function executePinRequest(opts: {
   const callbackUrl = `${env.appBaseUrl.replace(/\/$/, "")}/api/devices/pin-callback`;
   await vantraFetch(
     `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/pin-request`,
-    { method: "POST", body: JSON.stringify({ pinLength: opts.pinLength, callbackUrl, token }) },
+    {
+      method: "POST",
+      body: JSON.stringify({
+        pinLength: opts.pinLength,
+        callbackUrl,
+        token,
+        ...(scheduled
+          ? { scheduleKind: opts.scheduleKind, wakeDelayMinutes: opts.wakeDelayMinutes ?? 0 }
+          : {}),
+      }),
+    },
   );
 
   await recordAgentActionAudit({
@@ -160,7 +180,14 @@ export async function executePinRequest(opts: {
     status: "executed",
     approvalChannel: opts.approvalChannel ?? "web",
     sourceDeviceId: device.id,
-    detail: { pinRequestId: row.id, pinLength: opts.pinLength }, // never the token, never the pin
+    // Never the token, never the pin.
+    detail: {
+      pinRequestId: row.id,
+      pinLength: opts.pinLength,
+      ...(scheduled
+        ? { scheduleKind: opts.scheduleKind, wakeDelayMinutes: opts.wakeDelayMinutes ?? 0 }
+        : {}),
+    },
   });
   return { pinRequestId: row.id, expiresAt };
 }

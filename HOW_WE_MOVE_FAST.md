@@ -181,6 +181,17 @@ Added 2026-09-22 (Task 92):
   name) + `site` (numeric) and NO `client_id`/`client_name`. Any tenant/auth
   resolution built on assumed numeric fields fails silently → every guarded
   route 404s "Device not found" on healthy, correctly-installed agents.
+- **2026-09-23 (MeshCentral iframe auth): SameSite=None needs the webserver.js
+  patch RE-APPLIED after every MeshCentral update.** The `xid` cookie's
+  SameSite comes from `settings.sessionsamesite` (config.json — now "none"),
+  but its Secure flag is `secure: (obj.args.tlsoffload == null)` in
+  `/meshcentral/node_modules/meshcentral/webserver.js` (~L7025). `tlsOffload`
+  is set, so vanilla MC emits SameSite=None WITHOUT Secure → Chrome/Firefox
+  reject the cookie and the cross-site iframe still fails with "Unable to
+  perform authentication". Patch that line to `secure: true` (browser always
+  talks HTTPS in front of the tlsOffload terminator, so Secure is correct).
+  Verified via `curl -D-` on a minted control URL: `xid=…; samesite=none;
+  secure; httponly`. Backups: `/root/config.json.bak-*`, `/root/webserver.js.bak-*`.
 
 ## 7. General discipline
 

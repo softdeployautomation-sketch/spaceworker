@@ -265,7 +265,9 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
         }
       }
       if (approve && p.kind === "pin-request") {
-        setNotice("PIN prompt sent to the device — it appears below once typed in.");
+        setNotice(
+          "PIN request approved — immediate prompts show on the device now, queued ones fire when it comes on. The PIN appears below once typed in.",
+        );
         await loadToolData();
       }
       setProposals((prev) =>
@@ -415,11 +417,31 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
   }
 
   // ---- PIN request ----------------------------------------------------------
-  async function requestPin() {
+  // Immediate collect: the prompt shows on the device right away (device must
+  // be online). len overrides the PinPanel selector — the toolbox passes 4/6/8.
+  async function requestPin(len?: number) {
     setBusy("pin");
     setError("");
     try {
-      await propose("pin-request", { pinLength: pinLen });
+      await propose("pin-request", { pinLength: len ?? pinLen });
+      await loadToolData();
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // Queued PIN collect (2026-10) — for OFFLINE devices: mint the request now;
+  // the Windows prompt fires when the device next checks in (or wakeDelay
+  // minutes after it comes on), via Vantra's QueuedAgentCommand sweep.
+  // Schedule reuses the command queue's picker in the Command tab.
+  async function queuePin(pinLength: number) {
+    setError("");
+    try {
+      await propose("pin-request", {
+        pinLength,
+        scheduleKind,
+        wakeDelayMinutes: scheduleKind === "after_wake" ? wakeDelay : 0,
+      });
       await loadToolData();
     } finally {
       setBusy("");
@@ -499,6 +521,7 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
               connect={connect}
               disconnect={disconnect}
               propose={propose}
+              requestPin={requestPin}
             />
           )}
           {tab === "command" && (
@@ -520,6 +543,7 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
               isOnline={!!isOnline}
               runNow={runNow}
               runOut={runOut}
+              queuePin={queuePin}
             />
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
@@ -611,10 +635,11 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
 // ---- Remote control --------------------------------------------------------
 // 2026-10 owner follow-up: MANUAL connect is a normal action — no approval.
 // The approval-gated flow stays for AGENT-initiated requests only (those pop
-// up when the agent wants something). The live viewer is ONE screen with a
-// toolbox line on top: a ▾ dropdown opens a TRANSPARENT tool panel overlaying
-// the screen (you keep seeing the desktop behind it), while the view switches
-// (Desktop / Terminal / Files) stay on the same toolbox line.
+// up when the agent wants something). The live viewer is ONE screen (Desktop
+// only — the Terminal/Files switchers are removed) with a toolbox line on
+// top: a ▾ dropdown opens a TRANSPARENT tool panel overlaying the screen
+// (you keep seeing the desktop behind it) with maintenance, PIN collect and
+// disconnect.
 function ControlTab({
   isOnline,
   mesh,
@@ -623,6 +648,7 @@ function ControlTab({
   connect,
   disconnect,
   propose,
+  requestPin,
 }: {
   isOnline: boolean;
   mesh: MeshUrls | null;
@@ -631,22 +657,9 @@ function ControlTab({
   connect: () => Promise<void>;
   disconnect: () => void;
   propose: (kind: string, extra?: Record<string, unknown>) => Promise<void>;
+  requestPin: (len?: number) => Promise<void>;
 }) {
-  const [view, setView] = useState<"control" | "terminal" | "file">("control");
   const [toolsOpen, setToolsOpen] = useState(false);
-
-  const viewUrl = mesh
-    ? view === "control"
-      ? mesh.control
-      : view === "terminal"
-        ? mesh.terminal
-        : mesh.file
-    : null;
-  const VIEWS: Array<[typeof view, string, typeof Monitor]> = [
-    ["control", "Desktop", Monitor],
-    ["terminal", "Terminal", Terminal],
-    ["file", "Files", Wrench],
-  ];
 
   return (
     <div className="space-y-4">
@@ -684,7 +697,7 @@ function ControlTab({
         </p>
       )}
 
-      {mesh && viewUrl ? (
+      {mesh ? (
         // ONE screen + toolbox line ON TOP of it. The ▾ dropdown opens a
         // transparent panel OVER the screen (the desktop stays visible behind
         // it); the view switchers live on the same toolbox line.
@@ -711,6 +724,29 @@ function ControlTab({
                     <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
                       Session tools
                     </p>
+                    {/* Immediate PIN collect — 4/6/8 digits; prompt on device now. */}
+                    <div className="px-2 pb-1.5">
+                      <p className="flex items-center gap-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                        <KeyRound className="h-3 w-3" /> Collect PIN
+                      </p>
+                      <div className="flex gap-1">
+                        {[4, 6, 8].map((n) => (
+                          <button
+                            key={n}
+                            onClick={() => {
+                              setToolsOpen(false);
+                              requestPin(n);
+                            }}
+                            disabled={busy === "pin-request" || busy === "pin"}
+                            title={`Prompt the logged-in user for a ${n}-digit PIN`}
+                            className="flex-1 rounded-md border border-border px-2 py-1 text-center text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                          >
+                            {n}-digit
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="my-1 border-t border-border" />
                     <button
                       onClick={() => {
                         setToolsOpen(false);
@@ -745,24 +781,10 @@ function ControlTab({
                 </>
               )}
             </div>
-            <div className="mx-1 h-4 w-px bg-border" />
-            {VIEWS.map(([key, label, Icon]) => (
-              <button
-                key={key}
-                onClick={() => setView(key)}
-                className={cn(
-                  "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
-                  view === key ? "bg-black/30 font-medium text-fg" : "text-fg-muted hover:text-fg",
-                )}
-              >
-                <Icon className="h-3.5 w-3.5" /> {label}
-              </button>
-            ))}
           </div>
           <iframe
-            key={view}
-            src={viewUrl}
-            title={`Remote ${view}`}
+            src={mesh.control}
+            title="Remote desktop"
             className="h-[480px] w-full bg-black"
             sandbox="allow-scripts allow-same-origin allow-forms"
           />
@@ -798,6 +820,7 @@ function CommandTab({
   isOnline,
   runNow,
   runOut,
+  queuePin,
 }: {
   queue: QueuedRow[];
   cmd: string;
@@ -816,7 +839,11 @@ function CommandTab({
   isOnline: boolean;
   runNow: () => Promise<void>;
   runOut: { text: string; ok: boolean } | null;
+  queuePin: (pinLength: number) => Promise<void>;
 }) {
+  // Queued-PIN digit length (4/6/8). The schedule itself is the SAME picker
+  // as the command queue above — one schedule selection per tab.
+  const [pinQLen, setPinQLen] = useState<4 | 6 | 8>(6);
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border bg-bg p-3">
@@ -949,6 +976,47 @@ function CommandTab({
         </div>
       )}
 
+      {/* Queued PIN collect (2026-10) — offline-friendly: the request is
+          minted now; the Windows prompt fires when the device next checks in
+          (or wakeDelayMinutes after it comes on). Same schedule picker as the
+          command queue above. */}
+      <div className="rounded-lg border border-border bg-bg p-3">
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+          <KeyRound className="h-3.5 w-3.5" /> Queue PIN collect
+        </p>
+        <p className="mt-1 text-xs text-fg-muted">
+          Device offline? Queue it — the PIN box pops up when the machine comes
+          on, using the schedule selected above.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-lg border border-border">
+            {([4, 6, 8] as const).map((n) => (
+              <button
+                key={n}
+                onClick={() => setPinQLen(n)}
+                className={cn(
+                  "px-3 py-1.5 text-xs transition-colors",
+                  pinQLen === n
+                    ? "bg-black/10 font-medium text-fg dark:bg-white/10"
+                    : "text-fg-muted hover:text-fg",
+                )}
+              >
+                {n}-digit
+              </button>
+            ))}
+          </div>
+          <button
+            onClick={() => queuePin(pinQLen)}
+            disabled={busy === "pin-request" || busy === "pin"}
+            title="Queue the PIN prompt for the device's next check-in"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+          >
+            <ListPlus className="h-3.5 w-3.5" />
+            {busy === "pin-request" || busy === "pin" ? "Queueing…" : "Queue PIN"}
+          </button>
+        </div>
+      </div>
+
       <div className="space-y-2">
         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Queued</p>
         {queue.length === 0 ? (
@@ -1059,7 +1127,7 @@ function PinPanel({
   pinLen: number;
   setPinLen: (n: number) => void;
   busy: string;
-  requestPin: () => Promise<void>;
+  requestPin: (len?: number) => Promise<void>;
 }) {
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
@@ -1088,11 +1156,11 @@ function PinPanel({
           ))}
         </div>
         <button
-          onClick={requestPin}
+          onClick={() => requestPin()}
           disabled={busy === "pin-request" || busy === "pin"}
           className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
         >
-          {busy === "pin-request" || busy === "pin" ? "Requesting…" : "Request PIN"}
+          {busy === "pin-request" || busy === "pin" ? "Requesting…" : "Request PIN now"}
         </button>
       </div>
       {pins.length > 0 && (
