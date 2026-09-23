@@ -138,11 +138,37 @@ switch covers clone jobs and live sessions.
    (§2–§3).
 4. **Extras**: direct-egress toggle (explicit, labeled), revoke-all, admin caps.
 
-## 7. Open questions for owner
+## 7. Owner decisions (2026-10-01) + one still-open question
 
-- **Q1** Session TTL default (proposal: 60 min idle / 8 h hard cap)?
-- **Q2** Direct-egress mode: per-clone toggle for all users, or admin/premium only?
-- **Q3** Keep clone *records* forever (audit) but always delete staging material on
-  expiry — confirm.
-- **Q4** Hosted PC: dedicated device per user vs pooled (affects the admin cap keys)?
+- **Direct egress mode** (`--proxy-optional`): **PREMIUM ONLY.** Free/standard users
+  get relay mode only (same IP); the labeled direct-egress toggle is unlocked by the
+  premium entitlement.
+- **Clone records:** kept, and **users may delete their own**. **Inactive clones are
+  auto-purged after 30 days** (`createdAt`/`lastUsedAt` older than 30 days and not
+  `active`) — purge removes the record + staging material together. Active sessions
+  are never purged by the sweep; they must expire or be revoked first.
+- **Hosted PC:** **pooled** (not one-per-user) for now — the host is a shared resource.
+  **Admin sets the pool cap**, same admin-panel mechanism as the other RAM consumers
+  (CROSS-TRACK RULE 7 / admission-control). See **TASK_105** for the resource-governor
+  automation that enforces caps across ALL high-RAM features, with premium priority and
+  premium-queued-under-load behaviour.
+
+### OPEN — Q1: what "session TTL" means (needs a yes/no)
+
+A cloned browser session is a **live Chromium process + profile on the pooled host**;
+it holds RAM the whole time it runs. TTL is what stops it running forever:
+
+- **Idle timeout** = nobody touched the session for N minutes → close it. (Proposal: **60 min**)
+- **Hard cap** = even if it's being actively used, close it after N hours. (Proposal: **8 h**)
+
+The proposal is therefore: *"a clone closes after 60 minutes of no activity, and in any
+case never stays open longer than 8 hours."* Both numbers are admin-adjustable keys.
+
+Pick one:
+- **(a)** accept 60 min idle / 8 h hard cap;
+- **(b)** same but different numbers;
+- **(c)** no automatic close — only the user closes it (not recommended: a forgotten
+  session pins RAM on the pooled host indefinitely);
+- **(d)** idle-only, no hard cap.
+
 

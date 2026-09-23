@@ -316,7 +316,14 @@ the next until the current one is integrated AND deployed AND owner-verified.
 3. **TASK_103 — Console bugs:** ⤢ full-screen expand (new top-level route +
    `?tab=` persistence), toolbox split into **Session / Power / Security /
    Diagnostics**, **Ping** button, **Reboot** in the toolbox (manual-direct).
-4. Then resume the product order: TASK_94 (Telegram approval) → TASK_96 (WoL) →
+4. **TASK_105 — Resource Governor: automatic queue for every high-RAM feature.**
+   One server-side governor (`lib/resource-governor.ts` + pressure thresholds in
+   `AdminSetting`) that watches real RAM/swap/load and **queues** any high-RAM feature
+   at its limit: premium priority when healthy, **premium queued too** when the box is
+   genuinely full, FIFO within class, starvation promotion, queue survives restarts,
+   per-feature queued counts in the admin panel. First consumer = Browser Clone
+   (pooled host + clone sessions). Build alongside TASK_97.
+5. Then resume the product order: TASK_94 (Telegram approval) → TASK_96 (WoL) →
    TASK_99 / TASK_101 / TASK_100 / TASK_98, and TASK_102 phases 2–4 when Wilk is
    online (see that file).
 
@@ -324,7 +331,10 @@ the next until the current one is integrated AND deployed AND owner-verified.
 - Manual own-device actions execute **directly**; only **agent-initiated**
   actions use the approval gate.
 - Any RAM-consuming feature ships with its **admin-settable limits** (CROSS-TRACK
-  RULE 7) — never hardwired.
+  RULE 7) — never hardwired. **AND** it must route through the **resource governor**
+  (`TASK_105_RESOURCE_GOVERNOR_QUEUE.md`): automatic queueing under load, premium
+  priority, premium also queued when the box is genuinely full. A new high-RAM
+  consumer that skips `requestSlot()` is a bug, not a shortcut.
 - Deploys follow `HOW_WE_MOVE_FAST.md` §2 exactly (`--exclude='.env'`, backup
   first, build as the service user, restart, live-verify).
 
