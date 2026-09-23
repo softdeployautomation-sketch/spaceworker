@@ -1,8 +1,9 @@
 # Task 97 — Browser Clone (P2) — hosted-PC act-as-you + Michael MT-1 contract
 
-**Status: NEXT (build order position #1). Michael's MT-1 deliverable has LANDED
-as PR #2 (`michael/browser-clone-scripts`, +9,329/−0, open) — review → test →
-integrate, then build the CloneJob pipeline on top of it.**
+**Status: MT-1 REVIEWED + VM-TESTED (2026-09-23) → DO NOT MERGE YET — BLOCKED on
+F1/F2. PR #2 (`michael/browser-clone-scripts`, +9,329/−0) is open. Every gate result
+and the blocking findings are in "Review + VM test results" below. The CloneJob
+pipeline is PAUSED until cookie capture (F1) and cookie re-protection (F2) are resolved.**
 **Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY (P2), §SCHEMA, §CROSS-TRACK RULES.**
 
 ## Read first (mandatory)
@@ -68,5 +69,84 @@ Review checklist (in this order):
 
 **Record results here** (date, VM, browsers tested, pass/fail per script, and any
 deviation from the MT-1 contract that we accepted):
-- _pending_
+
+## Review + VM test results (2026-09-23 — VM 192.168.0.108, Windows PowerShell 5.1.26100.9444)
+
+**Verdict: DO NOT MERGE YET — BLOCKED (F1/F2).** The Go engine is substantial and its
+suite passes; the PowerShell contract skin is clean and fails closed. But the clone
+**cannot currently deliver the flagship use case** (restore a logged-in session), so the
+CloneJob pipeline must not start until F1+F2 are resolved.
+
+### Gates executed (measured, not assumed)
+
+| Gate | Result |
+|---|---|
+| `michael/browser-clone/README.md` present, contract documented | PASS |
+| Contract args / exit codes 0-1-2 / container format | PASS (matches MT-1) |
+| **Security gate — no secrets in stdout or logs** | PASS (ps1 + Go greps clean; archive plaintext scan = NONE) |
+| Static parse on VM (`Parser::ParseFile`, no execution) | **9/9 PARSE_OK** |
+| Self-test with job key (CNG/BCrypt path) | **12/12 PASS** |
+| Self-test without key (DPAPI path) | 11 PASS + 1 SKIP (key-only case) |
+| Real Chrome capture | exit 0; `SWCLN1`; protection byte 1 (AES-GCM); **job key never on disk** |
+| Real restore fidelity | **5/5 SHA256 match** (Preferences, Bookmarks, Login Data, Web Data, History) |
+| Failure paths (5 cases) | 5/5 correct — incl. **wrong key → exit 2, fail-closed, NO partial plaintext** |
+| Engine build/test | `go build ./...` + `go test ./...` green (stdlib only, 0 deps); Windows cross-compile → 3 binaries |
+
+Exit codes observed: missing browser → 2 · missing archive → 2 · wrong key → 2 ·
+no `-In` → 2 · bad key length → 2.
+
+### Findings
+
+**F1 — BLOCKING. The MT-1 PowerShell path captures ZERO cookies.**
+Proof: decrypted the archive the PS path produced → 31 entries,
+`ZIP_HAS_COOKIES=False`, `ZIP_HAS_NETWORK=False`. Cause: `lib/ProfilePaths.ps1`
+searches `Cookies` at the profile root and `Local State` at the profile root, but on
+current Chrome the cookie store is `<profile>\Network\Cookies` and `Local State` lives at
+the **User Data root** (parent of the profile) — so neither pattern can ever match.
+The test profile contains 7 real cookies including **`proton.me`** (the flagship
+webmail case); none are captured. A clone therefore restores a browser with no sessions.
+Fix is small: add `Network\*` and resolve `Local State` from the User Data root.
+
+**F2 — BLOCKING. Cookie values are machine-bound and nothing re-protects them.**
+Proof: every cookie value on the VM begins `v20` (hex `763230`) = Chrome app-bound
+encryption; the engine manifest (425 files) contains **no `Local State`**; and
+`grep -riE 'v20|app_bound'` across the whole engine returns **zero** hits — there is no
+cookie re-protection anywhere (passwords get re-protected; cookies ship raw).
+Impact: even on the engine path, a clone restored on another machine cannot decrypt
+cookie values → still not logged in.
+
+**F3 — NEEDS CONFIRMATION. Chrome credential decryption is legacy-only.**
+`DecryptChromeValue` is AES-**CBC** with a `v10` strip, and `DecodeChromeKey` has no
+`app_bound_encrypted_key` case, while modern Chrome uses AES-**GCM** (`v10`) and
+app-bound (`v20`). The engine's GCM (`SealGCM`/`OpenGCM`) is its own transport crypto,
+not Chrome-value decryption. Decrypt errors are swallowed (`continue`), so this would
+fail silently. Not provable on this profile (0 saved passwords) — needs a test with a
+real saved password.
+
+**F4 — documentation only.** This task text said "bad key → exit 1"; the implementation
+returns **2** (fail). 2 is correct per the 0/1/2 contract (1 = partial). No code change.
+
+**F5 — documentation only.** The README states "Local State is included in captures";
+neither path captures it (the engine reads it only to derive the key; the PS path looks
+in the wrong directory).
+
+**F6 — engine path is the one to use.** The Go engine walks the profile recursively
+(`collectProfileFiles`, depth < 6) and its `skipPath` excludes only images/fonts/tmp/cache —
+so it captures `Network/Cookies`, `TransportSecurity`, `Trust Tokens`, `Device Bound
+Sessions`, Safe Browsing cookies, and more (manifest: **425 files / 27,408,805 B**,
+HMAC-SHA256 signed, `validation=OK:integrity-verified`). Confirms the PS path must not be
+the production path.
+
+### Evidence artifacts left in place
+- VM: `C:\DepTest\pr2\` (source under test), `C:\DepTest\realcap\`, `C:\DepTest\inspect\`,
+  `C:\DepTest\failpath\`, `C:\DepTest\eng\94c56a61-…/manifest.json`, `C:\DepTest\bin\` (engine binaries)
+- Local: `/tmp/pr2/`, `/tmp/eng-manifest.json`, `/tmp/vm-cookies.db`
+- Reusable gates: `C:\DepTest\parse-gate.ps1`, `run-selftest.ps1`, `real-capture-test.ps1`,
+  `failpath-test.ps1`, `capture-inspect.ps1`
+
+**Next action (owner decision):** F1 is a small fix in `lib/ProfilePaths.ps1`
+(Michael's deliverable — recommend he patches it, keeping device-side authorship clean);
+F2/F3 are design-level and need Michael's call on the cookie re-protection approach
+(decrypt-and-reprotect with v20/app-bound support, vs. injecting a fresh key + Local State
+into the destination profile and re-encrypting). Pipeline work stays paused until then.
 

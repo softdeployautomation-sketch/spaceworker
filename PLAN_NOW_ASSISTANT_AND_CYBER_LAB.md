@@ -296,9 +296,15 @@ The product BUILD ORDER above is unchanged; this is the **immediate tactical
 queue** the owner set after live testing. Each item is a task doc; do not start
 the next until the current one is integrated AND deployed AND owner-verified.
 
-1. **TASK_97 — Browser Clone: pull Michael's PR #2, test it, integrate it.**
-   (`michael/browser-clone-scripts`, open, +9,329). Review → static-parse gate →
-   VM functional test → integrate, then build the CloneJob pipeline.
+1. **TASK_97 — Browser Clone: MT-1 reviewed + VM-tested 2026-09-23 → BLOCKED, do not
+   merge yet.** All gates run: 9/9 parse, 12/12 self-test (CNG), capture/restore
+   fidelity 5/5 SHA256, 5/5 failure paths (wrong key fails closed), engine
+   `go build`+`go test` green, Windows cross-compile OK. **But F1 (PS path captures
+   ZERO cookies — looks in the wrong directory) and F2 (cookie values are `v20`
+   app-bound and nothing re-protects them, so a cross-machine clone still isn't logged
+   in) block the flagship use case.** F1 is a small fix in `lib/ProfilePaths.ps1`;
+   F2/F3 are design-level. Full evidence in the task file. Pipeline work is PAUSED
+   pending Michael's cookie re-protection approach.
 2. **TASK_104 — Overlay: shell popups above the maintenance screen.** Debug with
    the new `overlay-status.log` + log-only mode (identify local-vs-injected
    trigger and the owning shell process), then ship the best suppression

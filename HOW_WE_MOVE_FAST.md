@@ -193,6 +193,31 @@ Added 2026-09-22 (Task 92):
   Verified via `curl -D-` on a minted control URL: `xid=…; samesite=none;
   secure; httponly`. Backups: `/root/config.json.bak-*`, `/root/webserver.js.bak-*`.
 
+- **2026-09-23 (browser-clone review): "encrypted at rest" ≠ "usable on another
+  machine". Verify the KEY SHIPS, not just the data.** Chrome cookie/password values
+  are AES-encrypted with a key that lives (DPAPI-wrapped) in `<User Data>\Local State`;
+  on current Chrome the values are `v20` **app-bound** (check: the value begins hex
+  `763230`). Copying the raw `Cookies`/`Login Data` files to another PC therefore
+  produces values that CANNOT be decrypted there → the "clone" restores a browser with
+  no sessions. Any cross-machine secret move needs an explicit **re-protection** step
+  (decrypt on source → re-encrypt for destination, or inject a fresh key + `Local State`
+  into the destination profile). Passwords were re-protected in the engine; cookies were
+  not — asymmetry like that is the thing to look for.
+- **2026-09-23 (browser-clone review): ALWAYS verify a capture/backup by DECRYPTING it
+  and listing entries — counts and "exit 0" lie.** The PS path reported success, wrote a
+  390 KB archive, and contained 31 entries — and **zero** cookie files, because it looked
+  for `Cookies` at the profile root while current Chrome keeps it at
+  `<profile>\Network\Cookies` (and `Local State` at the **User Data root**, one level
+  ABOVE the profile). Rule: after any capture, decrypt + enumerate and grep for the files
+  that carry the feature's value (here: cookies). A green exit code is not evidence.
+- **2026-09-23: device-side deliverable gates (add to every such task).** For PowerShell:
+  `Parser::ParseFile` AST gate on the target Windows host (proves syntax without
+  executing). For Go: `go build ./...` + `go test ./...` + `GOOS=windows GOARCH=amd64
+  go build ./...` (and confirm `go.mod` needs no external deps for clean cross-compiles).
+  Run these BEFORE functional tests so a syntax/compile failure can never masquerade as a
+  logic bug. This review's gates found a blocking defect that a "looks fine" read would
+  have missed.
+
 ## 7. General discipline
 
 - Full-project `npx tsc --noEmit -p .` after every batch of edits, before deploying — catches JSX/type breakage immediately (caught a bad JSX restructure this way mid-session).
