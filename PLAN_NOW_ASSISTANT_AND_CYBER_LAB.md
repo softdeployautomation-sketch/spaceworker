@@ -296,15 +296,18 @@ The product BUILD ORDER above is unchanged; this is the **immediate tactical
 queue** the owner set after live testing. Each item is a task doc; do not start
 the next until the current one is integrated AND deployed AND owner-verified.
 
-1. **TASK_97 — Browser Clone: MT-1 reviewed + VM-tested 2026-09-23 → BLOCKED, do not
-   merge yet.** All gates run: 9/9 parse, 12/12 self-test (CNG), capture/restore
-   fidelity 5/5 SHA256, 5/5 failure paths (wrong key fails closed), engine
-   `go build`+`go test` green, Windows cross-compile OK. **But F1 (PS path captures
-   ZERO cookies — looks in the wrong directory) and F2 (cookie values are `v20`
-   app-bound and nothing re-protects them, so a cross-machine clone still isn't logged
-   in) block the flagship use case.** F1 is a small fix in `lib/ProfilePaths.ps1`;
-   F2/F3 are design-level. Full evidence in the task file. Pipeline work is PAUSED
-   pending Michael's cookie re-protection approach.
+1. **TASK_97 — Browser Clone: MT-1 INTEGRATED (PR #2 merged `be88e29`, fixes `6a9cbcc`)
+   → NEXT: build the CloneJob pipeline, then one real end-to-end clone, then the UI.**
+   All gates passed: 9/9 parse, 12/12 self-test (CNG), capture/restore fidelity 5/5
+   SHA256, 5/5 failure paths (wrong key fails closed), engine `go build`+`go test`
+   green, Windows cross-compile OK. The two blocking findings were fixed by the owner:
+   **F1** (capture looked in only one cookie DB location → zero cookies) and **F2** (a
+   sessionless clone could ship as success). Mechanics re-verified independently via a
+   Libre CDP harness on macOS (2,373 cookies / 632 domains). **UI placement + launch
+   modes + the "same-IP router" findings are settled in
+   `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md`** (5th console tab + Summary card + new-tab
+   session; relay / direct-egress / wake-then-clone; hidden-window recommendation).
+   Order: pipeline → one real clone → UI → extras.
 2. **TASK_104 — Overlay: shell popups above the maintenance screen.** Debug with
    the new `overlay-status.log` + log-only mode (identify local-vs-injected
    trigger and the owning shell process), then ship the best suppression

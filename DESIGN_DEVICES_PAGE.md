@@ -57,7 +57,7 @@
 ## 5. Non-goals for this pass
 
 - No new backend: the console reads existing `/api/devices` + adds list/detail/proposal endpoints per TASK_95's contract.
-- Browser Clone renders only as a disabled "coming soon" action (TASK_97 fills it).
+- Browser Clone now has a **dedicated console tab** (not a disabled action) — see `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` §2. The console's `TABS` array gains `["clone", "Browser clone", Globe]` and the Summary gains a compact clone card. Session views open in a new full-screen tab.
 - No mobile-specific layout beyond responsive stacking (phone approvals happen in Telegram per TASK_94).
 
 ## 6. Implementation split (when signed off)

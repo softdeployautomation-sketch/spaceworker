@@ -11,6 +11,7 @@ cookies / 632 domains). NEXT: build the CloneJob pipeline (deliverables below).*
 ## Read first (mandatory)
 - **`HOW_WE_MOVE_FAST.md`** §0–§3 (as TASK_92) — note: hosted clone PCs are dedicated devices (start on the personal-VM/lab host), NEVER the production VPS.
 - **`PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`** §PRIORITY P2 (full directive), §CROSS-TRACK RULES 1/2/5/6 (singular gate; secrets classes; shared primitives; total panic switch).
+- **`DESIGN_BROWSER_CLONE_UI_AND_FLOW.md`** — UI placement (5th console tab + Summary card + new-tab session), per-clone record/history, the three launch modes ("same-IP" relay vs direct egress vs wake-then-clone), and the hidden-window findings. Read this before building any UI or launch policy.
 - **`browser-server/`** in this repo — the existing headless-Chromium stack to reuse for the hosted runtime.
 - Michael's directive in the plan §PRIORITY P2 (topology, relay policy, security boundary).
 
@@ -25,6 +26,8 @@ Move a user's browser environment (profiles, sessions, cookies, extensions) from
 5. **Panic switch integration**: global kill covers clone jobs + active sessions (extend the Task 92 panic primitive — no isolated revocation path).
 6. **UI**: clone section in device detail (start/stop/status); active sessions visible; email-when-off works: (a) IMAP mailboxes via existing plumbing, (b) webmail via hosted clone browser; drafts → gated proposal either way.
 7. **Admin limits (CROSS-TRACK RULE 7):** hosted clone PCs are RAM consumers — clone-session concurrency, per-user concurrent clone cap, and hosted-PC pool size are AdminSetting keys in the admin panel (pattern: admission-control's enabled + max + live counts). No hardwired limits.
+8. **UI surface (after the first real clone passes):** `Browser clone` tab + Summary card + clone history (date/status/egress/TTL/Open·Revoke) + session view in a new full-screen tab. Exact spec + launch-mode policy in `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` — do NOT improvise placement.
+9. **Egress policy is explicit, never a silent fallback:** relay mode fails closed when the work PC/relay is down (engine `[IP CHECK 2]`); direct egress requires the labeled `--proxy-optional` path; the mode actually used is recorded on the CloneJob and in the audit.
 
 ## Michael MT-1 contract (isolated build → owner integrates)
 - **Deliverable**: device-side scripts for **browser profile capture/restore** — Chrome, Edge, Firefox. PowerShell (Windows first); runs headless under the Vantra agent; args: `--browser <name> --mode capture|restore --out <path> [--profile <name>]`.
