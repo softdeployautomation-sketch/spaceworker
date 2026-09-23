@@ -19,7 +19,7 @@ cookies / 632 domains). NEXT: build the CloneJob pipeline (deliverables below).*
 Move a user's browser environment (profiles, sessions, cookies, extensions) from work PC → hosted SpaceWorker PC; agent operates it there; egress stays the user's network identity.
 
 ## Deliverables
-1. **Migration**: `CloneJob` (userId, sourceDeviceId, destinationDeviceId, relayId, lifecycle, launchState, browserProfileRef) + `RelayHealth` + `HostedBrowserSession`.
+1. **Migration**: `CloneJob` (userId, sourceDeviceId, destinationDeviceId, relayId, lifecycle, launchState, `profileName`) + `RelayHealth` + `HostedBrowserSession`.
 2. **Clone flow (all through the ONE gate)**: proposal (kind "browser-clone") → approve (web/Telegram) → CloneJob → source-device agent runs capture (MT-1 scripts) → secure transfer → hosted device agent validates/injects → session active → audit (`AgentActionAudit` with sourceDeviceId/destinationDeviceId/cloneId).
 3. **Hosted device provisioning**: hosted PCs register as Devices (Device B in the plan topology); hosted browser runtime = `browser-server` profile per CloneJob; TTL + teardown.
 4. **Egress relay enforcement**: relay through the work PC as launch/runtime policy — launch MUST FAIL (never silently fall back) if required relay is down (`RelayHealth` gate).
@@ -168,14 +168,21 @@ resume point:
   `RelayHealth`, `CloneJob`, `HostedBrowserSession`; `Device.cloneSourceJobs` /
   `cloneDestinationJobs` / `relays` / `hostedSessions`; `User.cloneJobs` /
   `relays` / `hostedBrowserSessions`; AdminSetting `cloneSessionsEnabled`,
-  `cloneSessionsMaxConcurrent`, `clonePerUserMax`, `hostedPoolSize`,
-  `cloneIdleTtlMinutes`, `cloneHardTtlHours`, `clonePurgeAfterDays`,
-  `cloneDirectEgressPremiumOnly`.
+  `cloneMaxConcurrent`, `clonePerUserCap`, `hostedPoolSize`,
+  `cloneIdleTtlMinutes`, `cloneHardTtlMinutes`, `clonePurgeAfterDays`,
+  `cloneDirectEgressPremiumOnly`, `cloneRelayRequired`.
 - `prisma/migrations/20261002000000_browser_clone_pipeline/migration.sql`
   (hand-written, per repo convention) — **verified line-by-line against
   `prisma migrate diff --from-schema-datamodel <old> --to-schema-datamodel <new>`**:
   every table, index, FK and AdminSetting column matches Prisma's own expected
   output. Nothing was applied to any database.
+
+> **Superseded by TASK_107 (bit B1), 2026-09-23.** B1 audited this work before it
+> was ever applied and made three fixes in place (AdminSetting key names —
+> `cloneMaxConcurrent` / `clonePerUserCap` / `cloneHardTtlMinutes` /
+> `cloneRelayRequired`; added `CloneJob.cloneId`; added the two expiry-sweep
+> indexes) and reconciled the name `profileName` as canonical (TASK_97/PLAN said
+> `browserProfileRef`). See `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md`.
 
 **NEXT (in order):**
 1. `prisma migrate deploy` on the VPS (after the usual `.env` + DB snapshots) and

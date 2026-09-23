@@ -36,7 +36,7 @@ intended contract:
 - `RelayHealth` — doubles as relay registry **and** health (one row per source
   device, unique `deviceId`, only the **SHA-256** of the relay token stored).
 - `CloneJob` — `userId`, `sourceDeviceId`, `destinationDeviceId`, `relayId`,
-  lifecycle, launch state, `browserProfileRef`, `pendingActionId`, `cloneId`,
+  lifecycle, launch state, `profileName`, `pendingActionId`, `cloneId`,
   `stagingRef`, TTL/expiry timestamps.
 - `HostedBrowserSession` — the hosted-side session record.
 - Records are **kept**; only **staging material** is deleted on revoke/expiry.

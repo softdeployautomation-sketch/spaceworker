@@ -257,7 +257,7 @@ finalization with Michael's feedback (M7).
 - **Browser Clone (capability; seams reserved now, built after device
   control):** `CloneJob` (userId, sourceDeviceId, destinationDeviceId,
   relayId, lifecycle pending→transferring→active→revoked/expired,
-  launchState, browserProfileRef) + `RelayHealth` — rides the common layer.
+  launchState, profileName) + `RelayHealth` — rides the common layer.
 - `HostedBrowserSession` (cloneJobId, state, ttl) — hosted-PC browser runtime.
 - Cookie vault: DEFERRED to a later phase; shares ONE browser credential
   boundary with Clone (expiry/revocation/panic), informed by clone design.
