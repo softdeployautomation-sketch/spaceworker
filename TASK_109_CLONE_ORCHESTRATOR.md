@@ -1,6 +1,11 @@
 # Task 109 (bit B3) — Clone orchestrator (`lib/clone.ts`)
 
-**Status: NOT STARTED.**
+**Status: IMPLEMENTED — COMMIT ONLY, NOT DEPLOYED (2026-09-23), branch
+`agent/task-109-clone-orchestrator`.** `lib/clone.ts` (state machine, TTL, egress
+gate, panic leg, read model) + the panic extension in `lib/devices.ts`.
+`tsc --noEmit` + `eslint` clean; 37/37 local state-machine assertions pass.
+Owner-run acceptance (real capture/launch, relay-down refusal, panic on a live
+session) still pending — see "Report back" below.
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **B3**). Depends on **B1** (`TASK_107`) + **B2** (`TASK_108`).
 **Plan:** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY P2, §CROSS-TRACK RULES 1/5/6/7.
 

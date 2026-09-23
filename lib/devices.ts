@@ -187,14 +187,18 @@ export async function recordAgentActionAudit(opts: {
  * THE panic switch (plan CROSS-TRACK RULE 6 — total, singular). For this
  * user, in one sweep: expire every pending agent proposal, cancel every
  * queued/running device job, kill requested/approved device actions, switch
- * power policies off. Clone sessions and lab ranges (later tasks) extend
- * THIS function — they must not build a separate revocation path.
+ * power policies off, and revoke pending/active browser clones (TASK_109 —
+ * sessions torn down, terminal audit written). Clone sessions and lab ranges
+ * (later tasks) extend THIS function — they must not build a separate
+ * revocation path.
  */
 export async function panicStopAllDevices(userId: string, actor = "user"): Promise<{
   expiredProposals: number;
   cancelledJobs: number;
   cancelledActions: number;
   policiesOff: number;
+  clonesRevoked: number;
+  cloneSessionsStopped: number;
 }> {
   const now = new Date();
   const expiredProposals = await db.agentPendingAction.updateMany({
@@ -214,6 +218,15 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
     data: { mode: "off", until: null },
   });
 
+  // TASK_109 (TASK_97 deliverable 5) — the clone leg rides THIS switch; there
+  // is no sibling clone kill path. It revokes every non-terminal clone and
+  // tears down every live session through the same TASK_108 transport + audit
+  // path as any other device action. Lazy import on purpose: lib/clone.ts
+  // imports deviceStatus/recordAgentActionAudit from THIS module, so a static
+  // import here would close an import cycle.
+  const { revokeClonesForPanic } = await import("./clone");
+  const cloneLeg = await revokeClonesForPanic(userId, actor);
+
   // Per-device audit rows for the panic event itself.
   const devices = await db.device.findMany({ where: { userId }, select: { id: true } });
   if (devices.length > 0) {
@@ -227,6 +240,8 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
           expiredProposals: expiredProposals.count,
           cancelledJobs: cancelledJobs.count,
           cancelledActions: cancelledActions.count,
+          clonesRevoked: cloneLeg.clonesRevoked,
+          cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
         },
       })),
     });
@@ -240,6 +255,9 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
       cancelledJobs: cancelledJobs.count,
       cancelledActions: cancelledActions.count,
       policiesOff: policiesOff.count,
+      clonesRevoked: cloneLeg.clonesRevoked,
+      cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
+      cloneErrors: cloneLeg.errors,
     },
   });
   return {
@@ -247,5 +265,7 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
     cancelledJobs: cancelledJobs.count,
     cancelledActions: cancelledActions.count,
     policiesOff: policiesOff.count,
+    clonesRevoked: cloneLeg.clonesRevoked,
+    cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
   };
 }
