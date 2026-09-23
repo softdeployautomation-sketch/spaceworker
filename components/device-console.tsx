@@ -14,6 +14,7 @@ import {
   Terminal,
   Wrench,
   X,
+  Zap,
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
@@ -138,6 +139,8 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
   const [cmd, setCmd] = useState("");
   const [shell, setShell] = useState<"powershell" | "cmd">("powershell");
   const [timeout_, setTimeout_] = useState(30);
+  // "Run now" instant-command result (2026-10): shown as a panel under the form.
+  const [runOut, setRunOut] = useState<{ text: string; ok: boolean } | null>(null);
   // Command tab schedule: "next_checkin" runs on the next poll; "after_wake"
   // waits `wakeDelay` minutes from the moment the device COMES ON.
   const [scheduleKind, setScheduleKind] = useState<"next_checkin" | "after_wake">("next_checkin");
@@ -374,6 +377,43 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
     }
   }
 
+  // ---- instant command ("Run now", 2026-10) --------------------------------
+  // ONLINE device: execute synchronously through Vantra — no approval rail,
+  // same owner call as manual Connect / maintenance. Output shows in-tab.
+  async function runNow() {
+    if (!cmd.trim()) return;
+    setBusy("runnow");
+    setError("");
+    setRunOut(null);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/run-command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cmd, shell, timeout: timeout_, runAsUser: false }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { output?: unknown; error?: unknown };
+      if (!res.ok) {
+        const msg =
+          typeof data.error === "string"
+            ? data.error
+                .replace("vantra_503: ", "")
+                .replace("vantra_404: ", "")
+                .replace("vantra_deploy_outdated: ", "Vantra deploy outdated — ")
+            : "Run failed";
+        throw new Error(msg);
+      }
+      setRunOut({
+        text: typeof data.output === "string" && data.output ? data.output : "(no output)",
+        ok: true,
+      });
+      setCmd("");
+    } catch (e) {
+      setRunOut({ text: e instanceof Error ? e.message : "Run failed", ok: false });
+    } finally {
+      setBusy("");
+    }
+  }
+
   // ---- PIN request ----------------------------------------------------------
   async function requestPin() {
     setBusy("pin");
@@ -477,6 +517,9 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
               busy={busy}
               queueCommand={queueCommand}
               cancelQueued={cancelQueued}
+              isOnline={!!isOnline}
+              runNow={runNow}
+              runOut={runOut}
             />
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
@@ -752,6 +795,9 @@ function CommandTab({
   busy,
   queueCommand,
   cancelQueued,
+  isOnline,
+  runNow,
+  runOut,
 }: {
   queue: QueuedRow[];
   cmd: string;
@@ -767,6 +813,9 @@ function CommandTab({
   busy: string;
   queueCommand: () => Promise<void>;
   cancelQueued: (id: string) => Promise<void>;
+  isOnline: boolean;
+  runNow: () => Promise<void>;
+  runOut: { text: string; ok: boolean } | null;
 }) {
   return (
     <div className="space-y-4">
@@ -775,7 +824,8 @@ function CommandTab({
           <ListPlus className="h-3.5 w-3.5" /> Queue a command
         </p>
         <p className="mt-1 text-xs text-fg-muted">
-          Runs on the device&apos;s next check-in — or on a timer after it comes on.
+          Device online? <span className="text-fg">Run now</span> executes immediately. Offline or
+          on a schedule: it queues for the next check-in — or N minutes after the device comes on.
         </p>
         <textarea
           value={cmd}
@@ -867,8 +917,37 @@ function CommandTab({
             <ListPlus className="h-3.5 w-3.5" />
             {busy === "queue" ? "Queueing…" : "Queue"}
           </button>
+          <button
+            onClick={runNow}
+            disabled={busy === "runnow" || !cmd.trim()}
+            title={
+              isOnline
+                ? "Run immediately on the device"
+                : "Device is offline — Run now needs an online device (use Queue instead)"
+            }
+            className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500 disabled:opacity-60"
+          >
+            <Zap className="h-3.5 w-3.5" />
+            {busy === "runnow" ? "Running…" : "Run now"}
+          </button>
         </div>
       </div>
+
+      {runOut && (
+        <div
+          className={cn(
+            "rounded-lg border px-3 py-2",
+            runOut.ok ? "border-border bg-bg" : "border-red-500/40 bg-red-500/5",
+          )}
+        >
+          <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
+            {runOut.ok ? "Output" : "Run failed"}
+          </p>
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-fg">
+            {runOut.text}
+          </pre>
+        </div>
+      )}
 
       <div className="space-y-2">
         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Queued</p>

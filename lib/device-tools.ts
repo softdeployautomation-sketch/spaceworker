@@ -96,10 +96,18 @@ export async function fetchMeshUrls(opts: {
     if (!pending) throw new Error("no_active_grant");
   }
 
-  const { urls } = await vantraFetch<{ ok: boolean; urls: MeshUrlsView }>(
-    `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/mesh-urls`,
-  );
-  return urls;
+  try {
+    const { urls } = await vantraFetch<{ ok: boolean; urls: MeshUrlsView }>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/mesh-urls`,
+    );
+    return urls;
+  } catch (err) {
+    // 2026-10 bug: a stale Vantra deploy 404s with its HTML error page, which
+    // used to land VERBATIM in the console's red error line ("<!DOCTYPE
+    // html>…"). Normalize here so the UI only ever sees the short,
+    // actionable message (hoisted fn — defined below).
+    throw normalizeVantraError(err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +288,13 @@ function normalizeVantraError(err: unknown): Error {
       }
       return new Error(`vantra_${m[1]}: unexpected HTML response from Vantra (deploy outdated?)`);
     }
+    // JSON error bodies ({"error":"This device is currently offline."}) —
+    // surface the human text but KEEP the `vantra_<code>: ` prefix: the API
+    // route's status mapping and the console's prefix-stripping both key on it.
+    const jm = /^\s*\{\s*"error"\s*:\s*"((?:[^"\\]|\\.)*)"\s*\}/.exec(body);
+    if (jm) {
+      return new Error(`vantra_${m[1]}: ${jm[1].replace(/\\n/g, " ").trim()}`);
+    }
     return new Error(raw.slice(0, 200));
   }
   return err instanceof Error ? err : new Error(raw);
@@ -438,6 +453,66 @@ export async function cancelQueuedCommand(opts: {
     });
   }
   await db.deviceQueuedCommand.update({ where: { id: row.id }, data: { status: "cancelled" } });
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10 console follow-up — INSTANT command ("Run now"). The owner's call:
+// on an ONLINE device a manual command runs synchronously through Vantra's
+// `/action` route (same bearer posture, same tenant assert, TRMM's blocking
+// /agents/<id>/cmd/) — no approval rail, exactly like manual Connect and
+// maintenance. The queued path stays for offline devices / timers.
+// ---------------------------------------------------------------------------
+
+export interface RunNowResult {
+  output: string | null;
+  ranAt: Date;
+}
+
+export async function runCommandNow(opts: {
+  userId: string;
+  deviceId: string;
+  cmd: string;
+  shell: string;
+  timeoutSeconds: number;
+  runAsUser: boolean;
+}): Promise<RunNowResult> {
+  const device = await requireOwnedDevice(opts);
+  const cmd = opts.cmd.trim();
+  if (!cmd || cmd.length > 8000) throw new Error("cmd_invalid");
+  const shell = opts.shell === "cmd" ? "cmd" : "powershell";
+  const timeoutSeconds = Math.min(90, Math.max(1, Math.round(opts.timeoutSeconds)));
+  try {
+    const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          action: "cmd",
+          command: cmd,
+          shell,
+          timeout: timeoutSeconds,
+          runAsUser: opts.runAsUser,
+        }),
+      },
+    );
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: "device_run_now",
+      status: "executed",
+      sourceDeviceId: device.id,
+      detail: { shell, timeoutSeconds, output: output?.slice(0, 2000) ?? null },
+    });
+    return { output: output ?? null, ranAt: new Date() };
+  } catch (err) {
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: "device_run_now",
+      status: "failed",
+      sourceDeviceId: device.id,
+      detail: { shell, timeoutSeconds, error: err instanceof Error ? err.message.slice(0, 500) : "run_failed" },
+    });
+    throw normalizeVantraError(err);
+  }
 }
 
 function toQueuedView(row: {

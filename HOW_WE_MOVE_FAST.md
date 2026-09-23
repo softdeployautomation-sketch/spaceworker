@@ -166,6 +166,21 @@ Added 2026-09-22 (Task 92):
 - (Also from Task 92) `systemctl status` prints the substituted
   `%INTERNAL_BEARER_TOKEN%` from unit files — don't paste raw status output
   into logs/screenshots when a token-bearing unit was involved.
+- **2026-10 (console bug batch): a "partial route dir" rsync silently 404s as
+  HTML.** Deploying only SOME sibling route dirs (e.g. `action/` +
+  `queued-commands/` without `mesh-urls/`) leaves the missing ones returning
+  Next.js's HTML 404 page — which callers then render verbatim in the UI
+  (`<!DOCTYPE html>…` in a red error line). When rsyncing route directories
+  under a shared dynamic segment, `ls` the LOCAL dir and deploy ALL siblings,
+  or rsync the parent dir wholesale. (Related, same incident: `sw-agent-tenant`
+  + the action route's local copy both read `client_id`/numeric `client`, but
+  today's TRMM payload returns `client` as the client NAME string — resolve
+  via the clients list; see lib/sw-agent-tenant.ts.)
+- **TRMM's agent serializer is not stable field-shape — assert on live
+  payloads, not memory.** `/agents/<id>/` currently returns `client` (string
+  name) + `site` (numeric) and NO `client_id`/`client_name`. Any tenant/auth
+  resolution built on assumed numeric fields fails silently → every guarded
+  route 404s "Device not found" on healthy, correctly-installed agents.
 
 ## 7. General discipline
 
