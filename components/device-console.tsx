@@ -580,9 +580,11 @@ export function DeviceConsole({
               <span className="flex shrink-0 items-center gap-1.5 text-xs">
                 <span className={cn("inline-block h-2 w-2 rounded-full", dot)} />
                 <span className={isOnline ? "text-emerald-500" : "text-fg-muted"}>
-                  {isOnline
-                    ? `${statusWord(device.status)} · ${formatIdle(device.idleSeconds)}`
-                    : `offline · last seen ${relTime(device.lastSeenAt)}`}
+                  {!isOnline
+                    ? `offline · last seen ${relTime(device.lastSeenAt)}`
+                    : device.idleSeconds === null
+                      ? statusWord(device.status)
+                      : `${statusWord(device.status)} · ${formatIdle(device.idleSeconds)}`}
                 </span>
               </span>
             )}

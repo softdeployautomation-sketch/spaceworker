@@ -229,6 +229,9 @@ export function DeviceList() {
   const statusIdleLabel = (d: DeviceRow): string => {
     const online = d.status === "online" || d.status === "asleep";
     if (!online) return `offline · last seen ${relTime(d.lastSeenAt)}`;
+    // No idle signal (MeshCentral unavailable or node unmatched) → show the
+    // plain status. Missing decoration must never read as "online · unknown".
+    if (d.idleSeconds === null) return statusWord(d.status);
     return `${statusWord(d.status)} · ${formatIdle(d.idleSeconds)}`;
   };
 
