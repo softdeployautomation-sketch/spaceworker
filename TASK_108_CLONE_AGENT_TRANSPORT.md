@@ -105,3 +105,70 @@ Plus:
 Files added · `tsc` result · exact route paths + verbs · which engine CLI verb each
 route wraps · anything you could not verify without a device.
 
+---
+
+# OWNER VERIFICATION LOG — 2026-09-23 (B2 DEPLOYED + VERIFIED)
+
+Both branches were merged to `main` and the transport is **live**:
+`vantra b7b42e4` → then hotfix `23f9919`; `spaceworker 68c6586`.
+
+**Deploy (per HOW_WE_MOVE_FAST §1–§3):** `.env` snapshotted first, rsync with
+`--exclude='.env'`, `chown`, rebuild as the service user (`vantra` / `trmm`), restart.
+`tsc --noEmit` clean in BOTH repos before deploy, and re-run after the hotfix.
+
+## Live evidence (all against the deployed apps)
+
+| Check | Result |
+|---|---|
+| Services after deploy | `vantra=active`, `spaceworker=active` |
+| Public sites | `spaceworker.top=200`, `vantra.spaceworker.top=200` |
+| 7 routes present in `/opt/vantra/app/api/internal/sw/devices/[agentId]/` | capture · receive · launch · revoke · status (clone/) + install · health (relay/) ✓ |
+| Vantra built bundle contains the command layer | `clone-engine` found in **7** compiled server files ✓ |
+| **Invalid secret → all 7 routes** | **401** each (central `verifySwSecret`, `Authorization: Bearer`) ✓ |
+| **Valid secret + unknown agent** | **404** `{"error":"Device not found."}` ✓ |
+| **Valid secret + real sw-linked agent** (`WilkSF9`) | guard PASSED → route reached its own zod check: `clone/status` without `cloneId` → **400** "Invalid query parameters." ✓ |
+| **Offline device** (`relay/health` on a real agent) | **503** `{"error":"This device is currently offline."}` ✓ |
+| New 500s / errors in the Vantra journal after the hotfix | **0** ✓ |
+| SpaceWorker deployed `lib/clone-transport.ts` | `git hash-object` **identical** to the commit (`b311e95f…`) ✓ |
+
+## Bug found and fixed during verification (Vantra `23f9919`)
+
+**The tenant guard returned 500 for an unknown agent, violating this task's
+"404 never 403" contract.** `getAgentDetail()` throws `Error("TRMM 404: …")` for an
+agent id that doesn't exist, and that exception escaped
+`assertAgentInSwOrg` — so every `sw-` route (not just clone/relay: `mesh-urls`,
+`maintenance`, `pin-request`, `action`) answered **500 + a stack trace** instead of
+404, which is both contract-breaking and journal noise.
+
+Fix: the shared guard now catches the lookup failure and returns `null` (routes then
+answer 404 and leak nothing); non-404 failures are logged as a warning so a genuine
+TRMM outage remains visible. Verified live: **valid secret + bogus agent → 500
+before, 404 after** (3/3 routes). Because the fix is in the shared guard, it repairs
+the same latent 500 in the other sw- routes too, and Vantra was rebuilt + restarted.
+
+## Findings to carry into B3/B4
+
+1. **Agent-RPC latency is up to ~62 s.** `relay/health` against an offline device
+   took **1m02s** before returning 503 — the routes pass `timeout: 60` to
+   `sendRawCmd`, and TRMM only reports "Unable to contact the agent" when it gives
+   up. **B3/B4's `lib/clone-transport.ts` callers must set a client timeout ABOVE
+   60 s** (or the routes should use a shorter agent timeout for status/probe), else
+   a live UI call can look hung and abort early.
+2. **`clone/status` requires `cloneId`** (8–64 chars, `[A-Za-z0-9-]`); `stagingRoot`
+   / `engineExe` are optional absolute Windows paths. `relay/health`'s only param
+   is an optional `port` (default `CLONE_DEFAULTS.relayPort`).
+3. **`lib/clone-transport.ts` is intentionally NOT in the SpaceWorker build yet**
+   (0 compiled references) — nothing imports it until B3/B4 wire it. Its deployed
+   source hash matches the commit, so the "missing from build" reading is expected,
+   not a deploy failure. Confirm it appears in the bundle when B3/B4 land.
+4. **Agent ids are TRMM `agent_id` values** (e.g. `TpvHNDsKSawsfKGLJPZZssSAygmdUJxecwRtaCEP`),
+   **not** hostnames. Passing a hostname (e.g. `WilkSF9`) correctly yields 404 —
+   useful to know when reading logs so it isn't mistaken for a tenant-guard bug.
+
+## Still owner-only (needs an ONLINE device; do not fake)
+
+Real capture cookie count (F1 guard), partial-vs-success (F2), relay-vs-direct launch
+with the relay stopped, and revoke's `tasklist` evidence. These need the device online
+and are best run after B4's gating so the run goes through the real product path.
+
+

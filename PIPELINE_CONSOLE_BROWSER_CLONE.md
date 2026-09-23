@@ -48,7 +48,7 @@
 | C3 | `TASK_104_OVERLAY_SHELL_POPUPS_AND_SILENT_LAUNCHER.md` | Overlay shell-popup (Start menu / right-click) debug + silent app launcher toolbelt | — | RECORDED |
 | G1 | `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` | Server-side resource governor that queues high-RAM features | — | NOT STARTED |
 | B1 | `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md` | Verify the paused CloneJob migration + admin cap/TTL settings | — | **DONE · DEPLOYED · VERIFIED 2026-09-23** |
-| B2 | `TASK_108_CLONE_AGENT_TRANSPORT.md` | Vantra-side clone endpoints on the shared Device layer (capture / receive+inject / launch / revoke / relay) | B1 | NOT STARTED |
+| B2 | `TASK_108_CLONE_AGENT_TRANSPORT.md` | Vantra-side clone endpoints on the shared Device layer (capture / receive+inject / launch / revoke / relay) | B1 | **DONE · DEPLOYED · VERIFIED 2026-09-23** (7 routes live; 401/404/400/503 boundaries proven; guard 500→404 hotfix `23f9919`; owner-only: real device capture/launch) |
 | B3 | `TASK_109_CLONE_ORCHESTRATOR.md` | SpaceWorker `lib/clone.ts` state machine + TTL + panic + staging lifecycle | B1, B2 | NOT STARTED |
 | B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | NOT STARTED |
 | B5 | `TASK_111_CLONE_CONSOLE_UI.md` | Browser clone tab + Summary card + history + full-screen session window | B4, C2 | NOT STARTED |
@@ -179,6 +179,21 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   `0` / unknown key / non-int all **400**; `/admin` 200 with the new block in the built
   chunk. Acceptance #2 (the shadow-DB test the agent couldn't run) satisfied against the
   **live** DB instead: drift filtered to clone objects = **none**.
+- 2026-09-23 — **B2 DEPLOYED + VERIFIED.** `spaceworker 68c6586` + `vantra b7b42e4`
+  merged to `main` and deployed (`.env` snapshotted, rsync `--exclude='.env'`, rebuild
+  as the service user, restart). Both services active, both sites 200. All **7**
+  clone/relay routes present; Vantra's bundle contains the command layer (7 compiled
+  files). Boundaries proven live: invalid secret → **401 ×7**; valid secret + unknown
+  agent → **404**; valid secret + real sw-linked agent → guard passes (route moved to
+  its own zod check, 400 for a missing `cloneId`); offline device → **503** "This
+  device is currently offline." Zero new 500s/errors in the journal; deployed
+  `lib/clone-transport.ts` hash matches the commit. **Bug found + fixed:** the shared
+  tenant guard let `getAgentDetail`'s `TRMM 404` throw escape, so every `sw-` route
+  answered **500 instead of 404** for an unknown agent (contract violation + journal
+  noise) — fixed in `23f9919`, verified 500→404. Two findings carried to B3/B4: agent
+  RPC can take **~62 s** (client timeouts must exceed 60 s), and `clone-transport.ts`
+  is intentionally absent from the SW build until B3/B4 import it. Remaining
+  owner-only acceptance: real device capture/launch (needs the device online).
 - 2026-09-23 — **OOB-1 filed (`TASK_113`) from B1's live drift check.** The 87-line drift
   is **entirely pre-existing Task-92** and contains **zero** clone references — B1 is
   clean. Real mechanism (corrected after reading `pg_constraint`): the FKs exist with the
