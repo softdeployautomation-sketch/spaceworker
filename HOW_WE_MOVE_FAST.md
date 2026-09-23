@@ -280,6 +280,28 @@ Added 2026-09-22 (Task 92):
   logic bug. This review's gates found a blocking defect that a "looks fine" read would
   have missed.
 
+- **2026-09-24 (TASK_109/B3): a deployed `lib/*.ts` module is verifiable live with
+  no route of its own — and a transport/relay refusal is reproducible for free.**
+  Recipe that produced 57/57 on the clone orchestrator (reusable for B4/B5/B6):
+  (1) `tsc` + `eslint` + `npm run build` locally, deploy, then `md5` the file on the
+  box — `md5` equality is the *only* proof the deployed code is the committed code;
+  (2) `grep -rl` a distinctive string from the module under
+  `/opt/spaceworker/.next/server` to prove it actually compiled into the bundle (an
+  imported-by-nothing `lib/*.ts` is NOT in there — that is how B2's
+  `clone-transport.ts` sat unbuilt until B3 imported it);
+  (3) a disposable tsx harness (§4 stub) that creates a temp user/device rows, drives
+  the real functions, and deletes everything in a `finally`, then re-checks residue
+  counts back to zero (`CloneJob`/`RelayHealth`/`HostedBrowserSession` = 0);
+  (4) **hit the real HTTP route** where one exists (mint a user session with
+  `createSessionToken()` from `lib/auth.ts` and send
+  `Cookie: spaceworker_session=<jwt>` — the user-session twin of the admin-token
+  trick in §4) rather than only calling the function — this is what proved the panic
+  leg through `POST /api/devices/panic` on the deployed build;
+  (5) point a temp device at an **unknown `vantraAgentId`**: a real Vantra route
+  answers 404 fast, which makes "fails closed before the next step" (e.g.
+  `relay_unreachable`, zero capture jobs, no session row) testable on live data with
+  no Windows device online.
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

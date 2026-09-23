@@ -1,11 +1,11 @@
 # Task 109 (bit B3) — Clone orchestrator (`lib/clone.ts`)
 
-**Status: IMPLEMENTED — COMMIT ONLY, NOT DEPLOYED (2026-09-23), branch
-`agent/task-109-clone-orchestrator`.** `lib/clone.ts` (state machine, TTL, egress
-gate, panic leg, read model) + the panic extension in `lib/devices.ts`.
-`tsc --noEmit` + `eslint` clean; 37/37 local state-machine assertions pass.
-Owner-run acceptance (real capture/launch, relay-down refusal, panic on a live
-session) still pending — see "Report back" below.
+**Status: DONE · DEPLOYED · VERIFIED 2026-09-24 (main `9e09145`).** `lib/clone.ts`
+(state machine, TTL, egress gate, panic leg, read model) + the panic extension in
+`lib/devices.ts`. Local gates: `tsc --noEmit` + `eslint` + `npm run build` all clean.
+Deployed live (hash-verified rsync, built as `trmm`, restarted) and acceptance-verified
+with a disposable live harness — **57/57 assertions PASS** (see "Verification" below).
+Still owner-only: real capture/launch against a physical Windows device.
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **B3**). Depends on **B1** (`TASK_107`) + **B2** (`TASK_108`).
 **Plan:** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY P2, §CROSS-TRACK RULES 1/5/6/7.
 
@@ -102,6 +102,57 @@ Hard rules for this module:
 - A `CloneJob` row inspected directly contains **no** secret-looking material
   (grep for cookie/key/token/plaintext).
 - Re-running `advanceClone` on the same id does not double-execute a step.
+
+## Verification (owner-run, deployed 2026-09-24)
+
+**Deploy mechanics (`HOW_WE_MOVE_FAST.md` §2 — no schema change):**
+`agent/task-109-clone-orchestrator` fast-forwarded into `main` (`9e09145`, pushed);
+`rsync --files-from … --exclude='.env'` of `lib/clone.ts` + `lib/devices.ts`
+(`clone-transport.ts`/`clone-settings.ts` were already byte-identical on the box);
+`md5` on the VPS matches local exactly; built as `trmm` from `/opt/spaceworker`
+(`✓ Compiled successfully`, exit 0); `spaceworker.service` restarted, active,
+landing/login 200. `lib_clone_ts_*.js` is present in `.next/server/chunks`, so the
+module really is in the deployed server bundle — this also resolves B2's note
+("`clone-transport.ts` is intentionally absent from the SW build"): B3 imports it,
+so it is now compiled and shipped. Zero new error lines in the journal.
+
+**Live acceptance harness** (disposable: temp user + 2 temp devices + relay +
+`clone-host` capability; every row deleted afterwards, then re-checked —
+`CloneJob`/`RelayHealth`/`HostedBrowserSession` = 0/0/0, users back to 10, devices 2,
+zero `browser-clone` or `panic_stop` audit rows left):
+
+**57/57 PASS**, covering every acceptance line that does not need a physical Windows box:
+
+- `captured → launching`, `active → capturing` and **every** transition out of a
+  terminal state throw; terminals have zero outgoing edges; `active` has no pipeline
+  edge; `deleted` is never reachable through the table (tombstone only).
+- 6/6 refusals rejected **and audited** (`no_entitlement`, `direct_requires_premium`,
+  `relay_not_registered`, `source_device_not_owned`, `bad_profile`, `bad_egress`); a
+  refusal creates **no** `CloneJob`.
+- `requestClone` → `CloneJob.status="requested"` with stamped idle/hard TTLs, plus the
+  admission `DeviceJob` (`browser-clone:request`, queued → succeeded on a granted slot).
+- **panic through the real HTTP route** (`POST /api/devices/panic`, minted session
+  cookie): 200, `clonesRevoked: 1`, clone → terminal `revoked` with `revokedAt` +
+  `purgeAfter`, terminal audit on the clone, one `panic_stop` audit carrying the clone
+  counts, and the per-device `DeviceAudit` row — the same call every other device
+  action uses (no clone-specific kill path).
+- **relay fails closed before capture**, through the real Vantra transport: unknown
+  agent → `relay_unreachable: vantra_404: Device not found. — relay must be up before
+  capture`; job `failed`, **zero** capture jobs, no session row, no engine `cloneId`.
+- write-ahead marker (`capturing`) re-entry → `interrupted_capturing`, step **not**
+  re-executed; an unknown `pending` status throws and the row is left untouched.
+- `deleteClone`: live record → throws; stranger → "not found"; terminal + owner →
+  `deleted`; second call → `already_deleted`; `revokeClone` on a terminal record is a no-op.
+- read model owner-scoped (`getClone` for a stranger → `null`); `expireClones` sweep is
+  safe/idempotent on live data.
+- no `CloneJob` row contains cookie/token/plaintext/password/jobkey material.
+
+**Still owner-only (needs a physical Windows device):** real capture → receive → inject
+→ launch → `active`; the `[INJECT CHECK 5]` resume path; a real relay-down refusal on a
+device whose agent exists (this run proved the *unknown-agent* refusal); panic on a
+**live** session (the run proved the pending/queued clone leg, which traverses the same
+`revokeClonesForPanic` → `terminalEndClone` code). The parcel byte-hop gap noted in
+`stepTransfer` is TASK_108 scope and unchanged.
 
 ## Report back
 

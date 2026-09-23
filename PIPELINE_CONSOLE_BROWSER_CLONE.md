@@ -49,7 +49,7 @@
 | G1 | `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` | Server-side resource governor that queues high-RAM features | — | NOT STARTED |
 | B1 | `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md` | Verify the paused CloneJob migration + admin cap/TTL settings | — | **DONE · DEPLOYED · VERIFIED 2026-09-23** |
 | B2 | `TASK_108_CLONE_AGENT_TRANSPORT.md` | Vantra-side clone endpoints on the shared Device layer (capture / receive+inject / launch / revoke / relay) | B1 | **DONE · DEPLOYED · VERIFIED 2026-09-23** (7 routes live; 401/404/400/503 boundaries proven; guard 500→404 hotfix `23f9919`; owner-only: real device capture/launch) |
-| B3 | `TASK_109_CLONE_ORCHESTRATOR.md` | SpaceWorker `lib/clone.ts` state machine + TTL + panic + staging lifecycle | B1, B2 | **IMPLEMENTED · COMMIT ONLY, NOT DEPLOYED 2026-09-23** (`tsc` clean; owner acceptance run pending) |
+| B3 | `TASK_109_CLONE_ORCHESTRATOR.md` | SpaceWorker `lib/clone.ts` state machine + TTL + panic + staging lifecycle | B1, B2 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (57/57 live harness; relay fails closed before capture; panic via the real route; owner-only: real device capture/launch) |
 | B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | NOT STARTED |
 | B5 | `TASK_111_CLONE_CONSOLE_UI.md` | Browser clone tab + Summary card + history + full-screen session window | B4, C2 | NOT STARTED |
 | B6 | `TASK_112_CLONE_EXPIRY_AND_PURGE.md` | TTL sweep, staging deletion, 30-day inactive purge, relay health cron | B3 | NOT STARTED |
@@ -208,4 +208,27 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   in `HOW_WE_MOVE_FAST.md` §1, recorded the **Vantra builds as `vantra`, not `trmm`**
   `.next`-ownership trap (§6), and wrote up the MeshCentral `noauth` root-cause trail
   (§6) so no future agent re-investigates it.
+
+
+- 2026-09-24 — **B3 DEPLOYED + VERIFIED.** `agent/task-109-clone-orchestrator`
+  fast-forwarded into `main` (`9e09145`, pushed; code-only bit → no migration).
+  `rsync --files-from … --exclude='.env'` of `lib/clone.ts` + `lib/devices.ts`
+  (`md5` on the box matches local byte-for-byte), built as `trmm` from
+  `/opt/spaceworker` (`✓ Compiled successfully`, exit 0), service restarted, active,
+  landing/login 200, zero new journal errors. `lib_clone_ts_*.js` is present in
+  `.next/server/chunks` — the orchestrator is genuinely in the shipped bundle, and it
+  pulls in `clone-transport.ts`, **closing B2's "intentionally absent from the SW
+  build" note**. Acceptance ran as a **disposable live harness** (temp user + devices +
+  relay + clone-host cap; every row deleted, residue re-checked to zero — CloneJob /
+  RelayHealth / HostedBrowserSession 0/0/0, users back to 10, no leftover audits):
+  **57/57 PASS** — illegal transitions throw, terminals are terminal (`deleted` is a
+  tombstone the table never returns), 6/6 refusals audited with **no** `CloneJob`
+  created, **panic through the real `POST /api/devices/panic` route** revokes the clone
+  (`clonesRevoked:1`, terminal audit + `purgeAfter` + per-device `DeviceAudit`),
+  **relay fails closed before capture** (`relay_unreachable: vantra_404: Device not
+  found.` with zero capture jobs and no session row), in-flight marker re-entry →
+  `interrupted_capturing` (step not re-executed), unknown `pending` never coerced,
+  `deleteClone` terminal-only + owner-scoped, and no secret-looking material on any
+  row. Remaining owner-only: real capture/launch against a physical Windows device
+  (TASK_110 supplies the routes that will drive it).
 
