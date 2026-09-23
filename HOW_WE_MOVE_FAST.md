@@ -193,24 +193,39 @@ Added 2026-09-22 (Task 92):
   resolution built on assumed numeric fields fails silently → every guarded
   route 404s "Device not found" on healthy, correctly-installed agents.
 - **2026-09-23 (MeshCentral iframe auth): SameSite=None needs the webserver.js
-- **2026-09-23 (MeshCentral login-token auth currently FAILS — `cause:"noauth"`).**
+- **2026-09-23 (MeshCentral login-token auth — RESOLVED; the outage was `cause:"noauth"`).**
   Vantra's MeshCentral websocket login (`lib/meshcentral-api.ts::listMeshNodes`,
   and therefore the older `findMeshNodeIdByHostname` and the mesh view-only route)
-  is refused with `{"action":"close","cause":"noauth","msg":"noauth"}`. That exact
+  was being refused with `{"action":"close","cause":"noauth","msg":"noauth"}`. That exact
   message comes from `webserver.js` ≈L7399 — the branch where `PerformWSSessionAuth`
   returned `user == null` and no `x-meshauth: *` header was sent, i.e. the `?auth=`
   token was **not decrypted into a user**. It fails at the websocket auth layer
   *before* any application code runs, so it is never a bug in the caller and never a
   regression from whichever task you happen to be on. Don't chase it in app code.
-  Where the real fix lives: `webserver.js` ≈L9116 decrypts `?auth=` with
-  `obj.parent.loginCookieEncryptionKey` (`decodeCookie(..., 60)`), so
-  `MESH_LOGIN_KEY` in `/opt/vantra/.env` must equal MeshCentral's
-  **`LoginCookieEncryptionKey` record `key`** — NOT a `loginkey` field (this
-  deployment has none: config.json has `allowLoginToken:true` but no `loginkey`,
-  and neither do its two `.bak` copies). The env value is 160 hex chars / 80 bytes,
-  which is the shape MeshCentral expects (`meshctrl.js` treats
-  `loginkey.length != 160` as "not a key"). Compare the two server-side; never print
-  either.
+  **Actual root cause (found + fixed 2026-09-23): the token's `u` must be the FULL
+  MeshCentral userid (`user//name`), not a bare username.** The key half was already
+  right: `webserver.js` ≈L9116 decrypts `?auth=` with
+  `obj.parent.loginCookieEncryptionKey` (`decodeCookie(..., 60)`), and
+  `MESH_LOGIN_KEY` in `/opt/vantra/.env` **does** byte-for-byte equal MeshCentral's
+  `LoginCookieEncryptionKey` record `key` (160 hex / 80 bytes — verified). The
+  rejection was one branch later, ≈L9127:
+  `... && (obj.users[cookie.u]) && (cookie.u.split('/')[1] == domain.id)`, commented
+  "Cookie of format { u: 'user//name', a: 3 }". `obj.users` is keyed by the **full
+  userid** (`user//vantra-service___4` in the store), so sending the bare name
+  `vantra-service___4` missed the lookup → `user == null` → `noauth`.
+  Proof, same socket, only `u` changed: `u:"vantra-service___4"` → `noauth`;
+  `u:"user//vantra-service___4"` → authenticated, 3 nodes returned.
+  **Two-part fix:** (1) `/opt/vantra/.env` now has
+  `MESH_LOGIN_USER=user//vantra-service___4` (snapshot:
+  `/root/vantra.env.bak-t106fix-*`); (2) `makeLoginToken()` normalises a bare name to
+  `user//<name>` (Vantra `8296f47`) so a bare value can't silently break mesh auth
+  again. This also repaired the pre-existing **mesh view-only session** flow.
+  Lesson for next time: a bare-vs-qualified identity string failed at the *transport*
+  layer and every caller swallowed it — when mesh lookups go quietly empty, probe the
+  socket directly instead of reading application logs.
+  (For reference, this deployment has no `loginkey` field anywhere: config.json has
+  `allowLoginToken:true` but no `loginkey`, and neither do its two `.bak` copies —
+  don't go looking for one.)
   Symptom to recognise: idle/idletime enrichment (Task 106 C1) silently returns
   `{"ok":true,"idleByHostname":{}}` so every `idleSeconds` is `null`. Every caller is
   fail-soft by design, so this failure mode is **silent** — probe the socket, don't
