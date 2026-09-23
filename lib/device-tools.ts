@@ -129,7 +129,9 @@ const PIN_LENGTHS: ReadonlySet<number> = new Set([4, 6, 8]);
 export async function executePinRequest(opts: {
   userId: string;
   deviceId: string;
-  pendingActionId: string;
+  // Manual collects execute directly (no proposal) — pendingActionId is only
+  // set on the AGENT-initiated approval path.
+  pendingActionId?: string;
   pinLength: number;
   approvalChannel?: string;
   // Timed collect: enqueue the prompt launcher on Vantra's QueuedAgentCommand
@@ -588,6 +590,29 @@ export async function listPinRequests(opts: {
     expiresAt: r.expiresAt,
     createdAt: r.createdAt,
   }));
+}
+
+/**
+ * Owner cancel of a still-pending request (2026-10) — a stale prompt (device
+ * went offline, user gave up) must never block or confuse a new collect. Only
+ * flips "pending" rows; submitted/expired/cancelled are terminal.
+ */
+export async function cancelPinRequest(opts: {
+  userId: string;
+  deviceId: string;
+  pinRequestId: string;
+}): Promise<number> {
+  await requireOwnedDevice(opts);
+  const res = await db.devicePinRequest.updateMany({
+    where: {
+      id: opts.pinRequestId,
+      userId: opts.userId,
+      deviceId: opts.deviceId,
+      status: "pending",
+    },
+    data: { status: "cancelled" },
+  });
+  return res.count;
 }
 
 

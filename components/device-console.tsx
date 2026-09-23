@@ -9,6 +9,7 @@ import {
   Clock,
   KeyRound,
   ListPlus,
+  Maximize2,
   Monitor,
   ShieldCheck,
   Terminal,
@@ -126,7 +127,13 @@ function WindowDots() {
   );
 }
 
-export function DeviceConsole({ deviceId }: { deviceId: string }) {
+export function DeviceConsole({
+  deviceId,
+  fullScreen = false,
+}: {
+  deviceId: string;
+  fullScreen?: boolean;
+}) {
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [tab, setTab] = useState<Tabs>("summary");
@@ -417,32 +424,68 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
   }
 
   // ---- PIN request ----------------------------------------------------------
-  // Immediate collect: the prompt shows on the device right away (device must
-  // be online). len overrides the PinPanel selector — the toolbox passes 4/6/8.
-  async function requestPin(len?: number) {
+  // MANUAL pin collect is a NORMAL action (2026-10 owner rule: the approval
+  // gate is exclusively for AGENT-initiated requests) — executes immediately,
+  // like Connect / Run now. len overrides the PinPanel selector (toolbox 4/6/8).
+  async function postPin(body: Record<string, unknown>, notice: string) {
     setBusy("pin");
     setError("");
     try {
-      await propose("pin-request", { pinLength: len ?? pinLen });
+      const res = await fetch(`/api/devices/${deviceId}/pin-requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok)
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error.replace("vantra_503: ", "").replace("vantra_deploy_outdated: ", "")
+            : "PIN request failed",
+        );
+      setNotice(notice);
       await loadToolData();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "PIN request failed");
     } finally {
       setBusy("");
     }
   }
 
-  // Queued PIN collect (2026-10) — for OFFLINE devices: mint the request now;
-  // the Windows prompt fires when the device next checks in (or wakeDelay
-  // minutes after it comes on), via Vantra's QueuedAgentCommand sweep.
-  // Schedule reuses the command queue's picker in the Command tab.
-  async function queuePin(pinLength: number) {
-    setError("");
-    try {
-      await propose("pin-request", {
+  function requestPin(len?: number) {
+    return postPin(
+      { pinLength: len ?? pinLen },
+      "PIN prompt sent to the device — the PIN appears below once typed in.",
+    );
+  }
+
+  // Queued PIN collect — for OFFLINE devices: minted now; the Windows prompt
+  // fires when the device next checks in (or wakeDelay minutes after it comes
+  // on), via Vantra's QueuedAgentCommand sweep.
+  function queuePin(pinLength: number) {
+    return postPin(
+      {
         pinLength,
         scheduleKind,
         wakeDelayMinutes: scheduleKind === "after_wake" ? wakeDelay : 0,
+      },
+      "PIN request queued — the prompt fires when the device comes on.",
+    );
+  }
+
+  // Cancel a stale pending request so it can't confuse a new collect.
+  async function cancelPin(id: string) {
+    setBusy(`pincancel-${id}`);
+    setError("");
+    try {
+      await fetch(`/api/devices/${deviceId}/pin-requests`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pinRequestId: id }),
       });
       await loadToolData();
+    } catch {
+      /* the 30-min/24h TTL still expires it */
     } finally {
       setBusy("");
     }
@@ -458,12 +501,14 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
 
   return (
     <div className="space-y-4">
-      <Link
-        href="/dashboard/devices"
-        className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
-      >
-        <ArrowLeft className="h-4 w-4" /> All devices
-      </Link>
+      {!fullScreen && (
+        <Link
+          href="/dashboard/devices"
+          className="inline-flex items-center gap-1.5 text-sm text-fg-muted transition-colors hover:text-fg"
+        >
+          <ArrowLeft className="h-4 w-4" /> All devices
+        </Link>
+      )}
 
       {error && <p className="text-sm text-red-500">{error}</p>}
 
@@ -485,8 +530,21 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
               </span>
             )}
           </div>
-          <span className="shrink-0 font-mono text-xs text-fg-muted">
-            {loaded && device ? osLabel(device.osName) : ""}
+          <span className="flex shrink-0 items-center gap-2">
+            <span className="font-mono text-xs text-fg-muted">
+              {loaded && device ? osLabel(device.osName) : ""}
+            </span>
+            {!fullScreen && (
+              <button
+                onClick={() =>
+                  window.open(`/dashboard/devices/${deviceId}?full=1`, "_blank", "noopener")
+                }
+                title="Open the console alone in a bigger window"
+                className="rounded-md border border-border p-1 text-fg-muted transition-colors hover:text-fg"
+              >
+                <Maximize2 className="h-3.5 w-3.5" />
+              </button>
+            )}
           </span>
         </div>
 
@@ -548,9 +606,16 @@ export function DeviceConsole({ deviceId }: { deviceId: string }) {
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
 
-          {/* PIN panel — shared across tabs (visible wherever an approval lands) */}
-          {(pins.length > 0 || busy === "pin-request" || busy === "pin") && (
-            <PinPanel pins={pins} pinLen={pinLen} setPinLen={setPinLen} busy={busy} requestPin={requestPin} />
+          {/* PIN panel — shared across tabs (visible wherever a collect lands) */}
+          {(pins.length > 0 || busy === "pin") && (
+            <PinPanel
+              pins={pins}
+              pinLen={pinLen}
+              setPinLen={setPinLen}
+              busy={busy}
+              requestPin={requestPin}
+              cancelPin={cancelPin}
+            />
           )}
         </div>
       </div>
@@ -737,7 +802,7 @@ function ControlTab({
                               setToolsOpen(false);
                               requestPin(n);
                             }}
-                            disabled={busy === "pin-request" || busy === "pin"}
+                            disabled={busy === "pin"}
                             title={`Prompt the logged-in user for a ${n}-digit PIN`}
                             className="flex-1 rounded-md border border-border px-2 py-1 text-center text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
                           >
@@ -1007,12 +1072,12 @@ function CommandTab({
           </div>
           <button
             onClick={() => queuePin(pinQLen)}
-            disabled={busy === "pin-request" || busy === "pin"}
+            disabled={busy === "pin"}
             title="Queue the PIN prompt for the device's next check-in"
             className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
           >
             <ListPlus className="h-3.5 w-3.5" />
-            {busy === "pin-request" || busy === "pin" ? "Queueing…" : "Queue PIN"}
+            {busy === "pin" ? "Queueing…" : "Queue PIN"}
           </button>
         </div>
       </div>
@@ -1122,12 +1187,14 @@ function PinPanel({
   setPinLen,
   busy,
   requestPin,
+  cancelPin,
 }: {
   pins: PinRow[];
   pinLen: number;
   setPinLen: (n: number) => void;
   busy: string;
   requestPin: (len?: number) => Promise<void>;
+  cancelPin: (id: string) => Promise<void>;
 }) {
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
@@ -1157,10 +1224,10 @@ function PinPanel({
         </div>
         <button
           onClick={() => requestPin()}
-          disabled={busy === "pin-request" || busy === "pin"}
+          disabled={busy === "pin"}
           className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
         >
-          {busy === "pin-request" || busy === "pin" ? "Requesting…" : "Request PIN now"}
+          {busy === "pin" ? "Requesting…" : "Request PIN now"}
         </button>
       </div>
       {pins.length > 0 && (
@@ -1178,8 +1245,20 @@ function PinPanel({
                   {p.pin}
                 </code>
               ) : (
-                <span className={cn("text-xs", p.status === "pending" ? "text-amber-500" : "text-fg-muted")}>
-                  {p.status}
+                <span className="flex items-center gap-2">
+                  <span className={cn("text-xs", p.status === "pending" ? "text-amber-500" : "text-fg-muted")}>
+                    {p.status}
+                  </span>
+                  {p.status === "pending" && (
+                    <button
+                      onClick={() => cancelPin(p.id)}
+                      disabled={busy === `pincancel-${p.id}`}
+                      title="Cancel this request — it won't block a new one"
+                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-red-500 disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                  )}
                 </span>
               )}
             </div>
