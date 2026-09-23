@@ -34,15 +34,25 @@ function Get-BrowserProfileDir {
 }
 
 function Get-ProfileFileList {
-    <# Directive §2 file set. Returns relative paths. #>
+    <#
+      Directive §2 file set. Returns paths RELATIVE TO $ProfileDir.
+
+      REVIEW FIX F1 (2026-09-23): modern Chromium keeps the cookie database at
+      <profile>\Network\Cookies (NOT <profile>\Cookies) and lives alongside the
+      transport-security / trust-token stores, so the Network\ subtree must be
+      enumerated. The old root-level 'Cookies' patterns are kept for legacy
+      installs. Verified on Chrome 153: the previous list matched nothing and a
+      capture silently contained zero cookies.
+    #>
     param([Parameter(Mandatory=$true)][string]$ProfileDir)
     $patterns = @(
         'Preferences', 'Secure Preferences', 'Bookmarks', 'Bookmarks.bak',
+        # legacy + current Chromium cookie locations
         'Cookies', 'Cookies-journal',
+        'Network\*',
         'Login Data', 'Login Data-journal', 'Login Data-wal', 'Login Data-shm',
         'Web Data', 'History', 'Favicons',
-        'Local State',
-        'Extensions\*\manifest.json',
+        'Extensions\*',
         'Local Storage\leveldb\*',
         'Session Storage\*',
         'Extension State\*', 'Sync Extension Settings\*'
@@ -79,9 +89,10 @@ function Invoke-Capture {
     param([Parameter(Mandatory=$true)][string]$Browser,
           [Parameter(Mandatory=$true)][string]$Out,
           [string]$ProfileName,
-          [byte[]]$Key)
+          [byte[]]$Key,
+          [bool]$WithCookies = $true)
     $profileDir = Get-BrowserProfileDir -Browser $Browser -ProfileName $ProfileName
-    return (Invoke-CaptureFromDir -ProfileDir $profileDir -Out $Out -Browser $Browser -Key $Key)
+    return (Invoke-CaptureFromDir -ProfileDir $profileDir -Out $Out -Browser $Browser -Key $Key -WithCookies $WithCookies)
 }
 
 function Invoke-CaptureFromDir {
@@ -89,7 +100,8 @@ function Invoke-CaptureFromDir {
     param([Parameter(Mandatory=$true)][string]$ProfileDir,
           [Parameter(Mandatory=$true)][string]$Out,
           [string]$Browser = 'chrome',
-          [byte[]]$Key)
+          [byte[]]$Key,
+          [bool]$WithCookies = $true)
     $rel = Get-ProfileFileList -ProfileDir $profileDir
     $stage = Join-Path ([System.IO.Path]::GetTempPath()) ("swclone-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
@@ -102,6 +114,40 @@ function Invoke-CaptureFromDir {
             if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
             if (Copy-WithRetry -Source $src -Dest $dst) { $copied++ } else { $skipped += $r }
         }
+
+        # ── session/cookie transfer (review fixes F1 + F2) ──────────────────
+        # `Local State` lives at the User Data ROOT (the profile's parent) and holds
+        # the machine-bound key material. It is captured for reference only and is
+        # deliberately NOT restored (DPAPI/app-bound keys do not survive a machine
+        # move); restore ignores the whole _meta\ subtree. Its presence is also the
+        # signal that this is a real Chromium layout — synthetic test profiles have
+        # none, so cookie transfer is skipped for them and tests stay hermetic.
+        $localState = Join-Path (Split-Path $profileDir -Parent) 'Local State'
+        $metaDir = Join-Path $stage '_meta'
+        if (Test-Path $localState) {
+            New-Item -ItemType Directory -Path $metaDir -Force | Out-Null
+            Copy-Item -LiteralPath $localState -Destination (Join-Path $metaDir 'Local State') -Force -ErrorAction SilentlyContinue
+        }
+
+        $cookieTransfer = 'none'
+        $cookieInfo = $null
+        if ($WithCookies -and @('chrome', 'edge') -contains $Browser) {
+            if (-not (Test-Path $localState)) {
+                $cookieTransfer = 'skipped:no-local-state'
+            } elseif (-not (Get-Command Export-CdpCookies -ErrorAction SilentlyContinue)) {
+                $cookieTransfer = 'skipped:cdp-module-not-loaded'
+            } else {
+                try {
+                    New-Item -ItemType Directory -Path $metaDir -Force | Out-Null
+                    $cookieInfo = Export-CdpCookies -Browser $Browser -ProfileDir $profileDir `
+                        -OutFile (Join-Path $metaDir 'cookies.json')
+                    $cookieTransfer = 'cdp'
+                } catch {
+                    $cookieTransfer = 'failed:' + $_.Exception.Message
+                }
+            }
+        }
+
         $zip = "$stage.zip"
         if (Test-Path $zip) { Remove-Item $zip -Force }
         Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -CompressionLevel Optimal
@@ -131,10 +177,22 @@ function Invoke-CaptureFromDir {
     }
 
     $exit = if ($skipped.Count -gt 0) { 1 } else { 0 }
+    # A failed cookie transfer means the session did not move — that is a partial
+    # clone (exit 1), not a clean one.
+    if ($cookieTransfer -like 'failed:*') { $exit = 1 }
+    # A cookie transfer that completed but moved ZERO cookies is also partial: the
+    # archive restores a browser with no logins (review fix F2, 2026-09-23).
+    if ($cookieTransfer -eq 'cdp' -and $cookieInfo -and $cookieInfo.count -eq 0) {
+        $cookieTransfer = 'cdp-zero'
+        $exit = 1
+    }
     [pscustomobject]@{
         op = 'capture'; browser = $Browser; profile_dir = $profileDir
         out = $Out; files_captured = $copied; files_skipped = $skipped.Count
         skipped_names = $skipped; protected_by = $(if ($Key) {'aes-256-gcm'} else {'dpapi-user'})
+        cookie_transfer = $cookieTransfer
+        cookies_captured = $(if ($cookieInfo) { $cookieInfo.count } else { 0 })
+        session_cookies = $(if ($cookieInfo) { $cookieInfo.session_only } else { 0 })
         exit_code = $exit
     }
 }
@@ -186,6 +244,10 @@ function Invoke-Restore {
             $full = (Resolve-Path $_.FullName).Path
             if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) { return }
             $rel = $full.Substring($root.Length + 1)
+            # _meta\ holds reference-only artifacts (source Local State + the
+            # decrypted cookie payload). Neither is restored as a file: the key
+            # material is machine-bound, and cookies go back through Chrome (CDP).
+            if ($rel -like '_meta\*' -or $rel -eq '_meta') { return }
             $dst = Join-Path $dest $rel
             $dstDir = Split-Path $dst -Parent
             if (-not (Test-Path $dstDir)) { New-Item -ItemType Directory -Path $dstDir -Force | Out-Null }
@@ -197,13 +259,39 @@ function Invoke-Restore {
             $l = Join-Path $dest $lock
             if (Test-Path $l) { Remove-Item $l -Force }
         }
+
+        # ── cookie re-injection through Chrome (review fixes F1 + F2) ───────
+        # The copied Cookies DB is unusable on this machine (its values are
+        # sealed with the SOURCE machine's key). Re-write the cookies via CDP so
+        # Chrome re-encrypts them with THIS machine's key.
+        $cookieTransfer = 'none'
+        $cookieResult = $null
+        $cookiePayload = Join-Path $stage '_meta\cookies.json'
+        if (Test-Path $cookiePayload) {
+            $browserForCdp = if ($BrowserHint -in @('chrome', 'edge')) { $BrowserHint } else { 'chrome' }
+            if (-not (Get-Command Import-CdpCookies -ErrorAction SilentlyContinue)) {
+                $cookieTransfer = 'skipped:cdp-module-not-loaded'
+            } else {
+                try {
+                    $cookieResult = Import-CdpCookies -Browser $browserForCdp -ProfileDir $dest -InFile $cookiePayload
+                    $cookieTransfer = 'cdp'
+                } catch {
+                    $cookieTransfer = 'failed:' + $_.Exception.Message
+                }
+            }
+        }
     }
     finally { Remove-Item $stage -Recurse -Force -ErrorAction SilentlyContinue }
 
+    $exit = 0
+    if ($cookieTransfer -like 'failed:*') { $exit = 1 }
     [pscustomobject]@{
         op = 'restore'; browser_hint = $BrowserHint; archive = $Archive
         out = $Out; files_restored = $restored; protection = $(if ($protection -eq 1) {'aes-256-gcm'} else {'dpapi-user'})
-        exit_code = 0
+        cookie_transfer = $cookieTransfer
+        cookies_restored = $(if ($cookieResult) { $cookieResult.set } else { 0 })
+        cookies_failed = $(if ($cookieResult) { $cookieResult.failed } else { 0 })
+        exit_code = $exit
     }
 }
 

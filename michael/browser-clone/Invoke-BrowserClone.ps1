@@ -34,7 +34,11 @@ param(
     [string]$Profile,
 
     # Delegate to the compiled engine if present (full-fidelity pipeline).
-    [switch]$PreferEngine
+    [switch]$PreferEngine,
+
+    # Review fix F1/F2: transfer session cookies (Chrome/Edge) through Chrome
+    # itself so they survive the machine move. On by default for the native path.
+    [switch]$SkipCookies
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,6 +98,9 @@ function Invoke-Engine {
 # ── main ────────────────────────────────────────────────────────────────────
 try {
     . (Join-Path $PSScriptRoot 'lib/GcmCrypto.ps1')
+    # CdpCookies must be loaded before ProfilePaths: the capture/restore pipeline
+    # probes for Export-CdpCookies / Import-CdpCookies at runtime.
+    . (Join-Path $PSScriptRoot 'lib/CdpCookies.ps1')
     . (Join-Path $PSScriptRoot 'lib/ProfilePaths.ps1')
 
     if ($PreferEngine) {
@@ -114,7 +121,7 @@ try {
         $key = $null
         if ($env:SPACEWORKER_CLONE_KEY) { $key = Get-CloneKey }
 
-        $result = Invoke-Capture -Browser $Browser -Out $Out -ProfileName $Profile -Key $key
+        $result = Invoke-Capture -Browser $Browser -Out $Out -ProfileName $Profile -Key $key -WithCookies (-not $SkipCookies)
         exit ($result.ExitCode)
     }
     else {
