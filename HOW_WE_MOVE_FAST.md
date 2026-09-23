@@ -202,3 +202,33 @@ Added 2026-09-22 (Task 92):
 
 - **APP_BASE_URL must be the PUBLIC URL.** Device-side callbacks (PIN collect) bake `${APP_BASE_URL}/api/devices/pin-callback` into the on-device prompt — it was `http://localhost:3400`, so the device posted the PIN to itself and it silently vanished. Fixed to `https://spaceworker.top`. Also affects license-claim and campaign links. Verify: `grep ^APP_BASE_URL /opt/spaceworker/.env`.
 - **rsync --files-from paths are relative to the SOURCE operand.** Using `/` as the source looks up `/lib/...` at filesystem root (code 23, nothing transferred — then a rebuild silently ships stale code). Always `cd <repo> && rsync ... . root@host:/opt/app/` with `.` as source.
+- **`--files-from` does NOT imply `-r`, even with `-a`.** A DIRECTORY entry in the
+  files-from list (e.g. `app/api/devices/`) deploys NOTHING and rsync still exits 0 —
+  the run reports `sent 344 bytes` and looks finished. Always pass explicit `-r`
+  (`rsync -azr`), and dry-run with `-n -i` first so the itemized file list is visible
+  before the real run. Cost a deploy 2026-10: the new
+  `app/api/devices/[deviceId]/maintenance/route.ts` silently never landed while two
+  single-file entries in the same run transferred fine. (Sibling trap to the source-
+  operand one above; both "the deploy looked fine and wasn't".)
+- **2026-10 console lifecycle rules (owner's calls — keep them consistent).**
+  • MANUAL tools execute DIRECTLY — Connect, Run now, PIN collect, maintenance
+    overlay start/stop, queued commands. NO proposal rail for a user acting on their
+    own device; the approval rail is for AGENT-initiated requests only. Anything manual
+    that starts asking "Approve & run" again is a regression.
+  • "Cancelled" means GONE from the UI. Queued commands: `listQueuedCommands` filters
+    `status != cancelled` (the mirror row survives as audit only). PIN requests:
+    `listPinRequests` PRUNES dead rows (cancelled / expired / pending-past-TTL /
+    submitted-without-a-pin) and `deletePinRequest` hard-deletes (cancel of a waiting
+    request = the row + its one-time token disappear, so a late PIN POST gets
+    `invalid_token`; delete of a collected PIN = "free the UI").
+  • A collected PIN is NEVER rendered in the clear: masked `••••` with an explicit
+    per-row Show/Hide, plus a delete. Only requests that came back with a PIN are kept.
+  • `/api/devices/[deviceId]/maintenance` exists precisely so manual start/stop skips
+    the proposal flow; the agent path still goes through `/actions` +
+    approval (lib/vantra-link.ts).
+- **Maintenance-overlay input invariant (Vantra side).** The overlay is a purely visual
+  layer: it must never touch cursor resources (`Hide-SystemCursor` broke technician
+  control 3/3 live tests — deliberately dead code now) and must never take foreground
+  keyboard focus (`WS_EX_NOACTIVATE`, applied pre-Show). Full story in
+  `../vantra/TASK_23_MAINTENANCE_OVERLAY_CLICK_THROUGH.md` + its 2026-10 section.
+

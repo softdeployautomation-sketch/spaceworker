@@ -228,10 +228,14 @@ export async function submitPinCallback(opts: {
 // Maintenance overlay — start/stop as a gated action.
 // ---------------------------------------------------------------------------
 
+// 2026-10 owner rule — MANUAL maintenance is a NORMAL action (like Connect /
+// Run now / PIN collect): it executes directly through the route. The approval
+// rail is exclusively for AGENT-initiated requests, so `pendingActionId` is
+// only set on that path and is optional here.
 export async function startMaintenanceOverlayAction(opts: {
   userId: string;
   deviceId: string;
-  pendingActionId: string;
+  pendingActionId?: string;
   customImageBase64?: string;
   customImageExt?: string;
   approvalChannel?: string;
@@ -262,7 +266,7 @@ export async function startMaintenanceOverlayAction(opts: {
 export async function stopMaintenanceOverlayAction(opts: {
   userId: string;
   deviceId: string;
-  pendingActionId: string;
+  pendingActionId?: string;
   approvalChannel?: string;
 }): Promise<void> {
   const device = await requireOwnedDevice(opts);
@@ -398,7 +402,14 @@ export async function listQueuedCommands(opts: {
 }): Promise<QueuedCommandView[]> {
   await requireOwnedDevice(opts);
   const rows = await db.deviceQueuedCommand.findMany({
-    where: { deviceId: opts.deviceId, userId: opts.userId },
+    where: {
+      deviceId: opts.deviceId,
+      userId: opts.userId,
+      // 2026-10 owner rule: a CANCELLED command LEAVES the console. The mirror
+      // row stays in the DB as the audit trace of the user's action, but the
+      // tab must never show a row the user already dismissed.
+      status: { not: "cancelled" },
+    },
     orderBy: { createdAt: "desc" },
     take: 50,
   });
@@ -577,6 +588,28 @@ export async function listPinRequests(opts: {
   Array<{ id: string; pinLength: number; status: string; pin: string | null; expiresAt: Date; createdAt: Date }>
 > {
   await requireOwnedDevice(opts);
+
+  // 2026-10 owner rule — "only save the request that came back with a PIN".
+  // A request that never produced a PIN has no value: it can't be read, it
+  // can't be acted on, and it only clutters the console. Drop the dead ones
+  // BEFORE reading, so the list can only ever contain something real:
+  //   • cancelled            — the owner dismissed (or deleted) it
+  //   • expired              — the row's own terminal state
+  //   • pending + past TTL   — the person never typed it in
+  //   • submitted + no pin   — defensive: nothing to show, nothing to keep
+  await db.devicePinRequest.deleteMany({
+    where: {
+      deviceId: opts.deviceId,
+      userId: opts.userId,
+      OR: [
+        { status: "cancelled" },
+        { status: "expired" },
+        { status: "pending", expiresAt: { lt: new Date() } },
+        { status: "submitted", pin: null },
+      ],
+    },
+  });
+
   const rows = await db.devicePinRequest.findMany({
     where: { deviceId: opts.deviceId, userId: opts.userId },
     orderBy: { createdAt: "desc" },
@@ -593,24 +626,30 @@ export async function listPinRequests(opts: {
 }
 
 /**
- * Owner cancel of a still-pending request (2026-10) — a stale prompt (device
- * went offline, user gave up) must never block or confuse a new collect. Only
- * flips "pending" rows; submitted/expired/cancelled are terminal.
+ * Owner delete (2026-10) — the SINGLE way a request leaves the console.
+ *
+ *  • A still-pending request is the device-side "cancel": the row (and with it
+ *    the one-time token hash) is gone, so a later PIN post fails `invalid_token`
+ *    — the stale prompt can never block or confuse a new collect.
+ *  • A submitted request is the "delete the PIN to free the UI" action once the
+ *    PIN has been read and used.
+ *
+ * Hard delete (not a status flip) is deliberate: it is the only way to purge a
+ * short-lived credential from the DB, and the audit trail for the *action*
+ * lives in AgentActionAudit (`device_pin-request`), not in this table.
  */
-export async function cancelPinRequest(opts: {
+export async function deletePinRequest(opts: {
   userId: string;
   deviceId: string;
   pinRequestId: string;
 }): Promise<number> {
   await requireOwnedDevice(opts);
-  const res = await db.devicePinRequest.updateMany({
+  const res = await db.devicePinRequest.deleteMany({
     where: {
       id: opts.pinRequestId,
       userId: opts.userId,
       deviceId: opts.deviceId,
-      status: "pending",
     },
-    data: { status: "cancelled" },
   });
   return res.count;
 }

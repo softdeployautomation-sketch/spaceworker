@@ -7,12 +7,15 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Eye,
+  EyeOff,
   KeyRound,
   ListPlus,
   Maximize2,
   Monitor,
   ShieldCheck,
   Terminal,
+  Trash2,
   Wrench,
   X,
   Zap,
@@ -22,8 +25,12 @@ import { cn } from "@/lib/cn";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
-// and tabs (Summary / Remote control / Command / Activity). Every mutating
-// tool is the gated proposal flow (create → explicit approve → one-shot).
+// and tabs (Summary / Remote control / Command / Activity).
+//
+// 2026-10 gating model: every MANUAL tool (Connect, Run now, PIN collect,
+// maintenance overlay, queued commands) executes immediately. The approval
+// rail in this component exists for AGENT-initiated requests only — manual
+// users never approve their own action.
 
 type DeviceView = {
   id: string;
@@ -106,6 +113,18 @@ function timeAt(iso: string | null): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// Vantra's error strings arrive prefixed (`vantra_503: This device is currently
+// offline.`). The console only ever shows the human half of the message.
+function cleanErr(value: unknown, fallback: string): string {
+  if (typeof value !== "string" || !value) return fallback;
+  const text = value
+    .replace("vantra_503: ", "")
+    .replace("vantra_404: ", "")
+    .replace("vantra_deploy_outdated: ", "Vantra deploy outdated — ")
+    .trim();
+  return text || fallback;
 }
 
 function osLabel(osName: string | null): string {
@@ -216,31 +235,13 @@ export function DeviceConsole({
     };
   }, [loadDevice, loadToolData]);
 
-  // ---- gated proposal flow -------------------------------------------------
-  async function propose(kind: string, extra: Record<string, unknown> = {}) {
-    setBusy(kind);
-    setError("");
-    setNotice("");
-    try {
-      const res = await fetch(`/api/devices/${deviceId}/actions`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, ...extra }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok)
-        throw new Error(typeof data.error === "string" ? data.error : "Proposal failed");
-      setProposals((prev) => [
-        ...prev,
-        { pendingActionId: data.pendingActionId, kind, result: null },
-      ]);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Proposal failed");
-    } finally {
-      setBusy("");
-    }
-  }
-
+  // ---- AGENT approval rail ------------------------------------------------
+  // 2026-10 owner rule: approvals exist for AGENT-initiated requests ONLY.
+  // Every MANUAL console tool (Connect, Run now, PIN collect, maintenance
+  // overlay, queued commands) executes directly — there is deliberately no
+  // "propose your own action, then approve yourself" path in this component
+  // any more. `decide()` stays because agent-initiated requests still land
+  // here for an explicit yes/no.
   async function decide(p: ProposalState, approve: boolean) {
     setBusy(p.pendingActionId);
     setError("");
@@ -329,6 +330,38 @@ export function DeviceConsole({
   function disconnect() {
     setMesh(null);
     setMeshErr("");
+  }
+
+  // ---- maintenance overlay (2026-10) ---------------------------------------
+  // MANUAL start/stop is a NORMAL action: it runs immediately — no proposal,
+  // no approval rail (approvals are for AGENT-initiated requests only). The
+  // overlay itself is device-side: the person at the machine sees the
+  // maintenance screen while the technician keeps full control of the desktop.
+  async function runMaintenance(action: "start" | "stop") {
+    const key = `maintenance-${action}`;
+    setBusy(key);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/maintenance`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(cleanErr(data.error, "Maintenance action failed"));
+      }
+      setNotice(
+        action === "start"
+          ? "Maintenance screen is on — the machine shows it, you keep full control of the desktop."
+          : "Maintenance screen stopped — the machine is back to its normal desktop.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Maintenance action failed");
+    } finally {
+      setBusy("");
+    }
   }
 
   // ---- queued commands (schedule: run now / N min after the device comes on)
@@ -473,19 +506,30 @@ export function DeviceConsole({
     );
   }
 
-  // Cancel a stale pending request so it can't confuse a new collect.
-  async function cancelPin(id: string) {
-    setBusy(`pincancel-${id}`);
+  // ONE delete for both halves of the PIN lifecycle (2026-10):
+  //  • a still-waiting request → cancels it (its one-time token goes with it,
+  //    so a late prompt can't block or confuse a new collect);
+  //  • a collected PIN         → deletes it to free the UI once it's been used.
+  // The row is dropped from local state immediately, so the list reacts at
+  // once instead of waiting for the next poll.
+  async function removePin(id: string) {
+    setBusy(`pin-${id}`);
     setError("");
     try {
-      await fetch(`/api/devices/${deviceId}/pin-requests`, {
+      const res = await fetch(`/api/devices/${deviceId}/pin-requests`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pinRequestId: id }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(cleanErr(data.error, "Couldn't delete the PIN"));
+      }
+      setPins((prev) => prev.filter((p) => p.id !== id));
       await loadToolData();
-    } catch {
-      /* the 30-min/24h TTL still expires it */
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't delete the PIN");
+      await loadToolData();
     } finally {
       setBusy("");
     }
@@ -578,7 +622,7 @@ export function DeviceConsole({
               busy={busy}
               connect={connect}
               disconnect={disconnect}
-              propose={propose}
+              runMaintenance={runMaintenance}
               requestPin={requestPin}
             />
           )}
@@ -606,17 +650,18 @@ export function DeviceConsole({
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
 
-          {/* PIN panel — shared across tabs (visible wherever a collect lands) */}
-          {(pins.length > 0 || busy === "pin") && (
-            <PinPanel
-              pins={pins}
-              pinLen={pinLen}
-              setPinLen={setPinLen}
-              busy={busy}
-              requestPin={requestPin}
-              cancelPin={cancelPin}
-            />
-          )}
+          {/* PIN panel — the collect tool itself (always available) plus
+              whatever came back: a live "waiting" line, and every collected
+              PIN masked behind an explicit reveal. Nothing that never produced
+              a PIN is ever shown. */}
+          <PinPanel
+            pins={pins}
+            pinLen={pinLen}
+            setPinLen={setPinLen}
+            busy={busy}
+            requestPin={requestPin}
+            removePin={removePin}
+          />
         </div>
       </div>
 
@@ -682,7 +727,8 @@ function SummaryTab({ device, loaded }: { device: DeviceView | null; loaded: boo
       />
       <p className="rounded-lg border border-border bg-bg px-3 py-2 text-xs text-fg-muted sm:col-span-2">
         Status is derived live from the agent&apos;s heartbeat (online window: 10 minutes).
-        Destructive tools send a proposal first — nothing runs until you approve it.
+        Your own tools run immediately — the approval prompt only appears for actions the
+        agent asks for on your behalf.
       </p>
     </div>
   );
@@ -705,6 +751,9 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
 // top: a ▾ dropdown opens a TRANSPARENT tool panel overlaying the screen
 // (you keep seeing the desktop behind it) with maintenance, PIN collect and
 // disconnect.
+//
+// Maintenance start/stop is ALSO manual and executes directly (2026-10): the
+// device shows the maintenance screen, the technician keeps full control.
 function ControlTab({
   isOnline,
   mesh,
@@ -712,7 +761,7 @@ function ControlTab({
   busy,
   connect,
   disconnect,
-  propose,
+  runMaintenance,
   requestPin,
 }: {
   isOnline: boolean;
@@ -721,7 +770,7 @@ function ControlTab({
   busy: string;
   connect: () => Promise<void>;
   disconnect: () => void;
-  propose: (kind: string, extra?: Record<string, unknown>) => Promise<void>;
+  runMaintenance: (action: "start" | "stop") => Promise<void>;
   requestPin: (len?: number) => Promise<void>;
 }) {
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -812,25 +861,31 @@ function ControlTab({
                       </div>
                     </div>
                     <div className="my-1 border-t border-border" />
+                    {/* Maintenance screen — manual, immediate, no approval.
+                        Device-side only: the machine shows it, control stays. */}
                     <button
                       onClick={() => {
                         setToolsOpen(false);
-                        propose("maintenance-start");
+                        runMaintenance("start");
                       }}
                       disabled={busy === "maintenance-start"}
+                      title="Show the maintenance screen on the device (you keep full control)"
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
                     >
-                      <Wrench className="h-3.5 w-3.5" /> Maintenance overlay
+                      <Wrench className="h-3.5 w-3.5" />
+                      {busy === "maintenance-start" ? "Starting…" : "Maintenance overlay"}
                     </button>
                     <button
                       onClick={() => {
                         setToolsOpen(false);
-                        propose("maintenance-stop");
+                        runMaintenance("stop");
                       }}
                       disabled={busy === "maintenance-stop"}
+                      title="Take the maintenance screen off the device"
                       className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
                     >
-                      <X className="h-3.5 w-3.5" /> Stop overlay
+                      <X className="h-3.5 w-3.5" />
+                      {busy === "maintenance-stop" ? "Stopping…" : "Stop overlay"}
                     </button>
                     <div className="my-1 border-t border-border" />
                     <button
@@ -858,7 +913,8 @@ function ControlTab({
         !meshErr && (
           <p className="rounded-lg border border-border bg-bg px-3 py-3 text-sm text-fg-muted">
             No active session. Press <span className="font-medium text-fg">Connect</span> and the
-            MeshCentral viewer opens right here (Desktop / Terminal / Files from the toolbox line).
+            MeshCentral desktop viewer opens right here, with the session tools (maintenance
+            overlay, PIN collect, disconnect) on the toolbar above it.
           </p>
         )
       )}
@@ -909,6 +965,11 @@ function CommandTab({
   // Queued-PIN digit length (4/6/8). The schedule itself is the SAME picker
   // as the command queue above — one schedule selection per tab.
   const [pinQLen, setPinQLen] = useState<4 | 6 | 8>(6);
+  // 2026-10 owner rule: a cancelled command LEAVES the console — the row is
+  // only ever shown while it can still fire (queued) or as the record of one
+  // that already fired (sent/error). The server filters these too; this keeps
+  // the tab exact even between polls.
+  const visibleQueue = queue.filter((q) => q.status !== "cancelled");
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border bg-bg p-3">
@@ -1084,12 +1145,12 @@ function CommandTab({
 
       <div className="space-y-2">
         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Queued</p>
-        {queue.length === 0 ? (
+        {visibleQueue.length === 0 ? (
           <p className="rounded-lg border border-border bg-bg px-3 py-3 text-sm text-fg-muted">
             Nothing queued.
           </p>
         ) : (
-          queue.map((q) => (
+          visibleQueue.map((q) => (
             <div key={q.id} className="rounded-lg border border-border bg-bg px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <code className="max-w-full truncate font-mono text-xs text-fg">
@@ -1181,21 +1242,34 @@ function ActivityTab({ activity }: { activity: ActivityRow[] }) {
 }
 
 // ---- PIN panel ---------------------------------------------------------------
+// 2026-10 owner rules:
+//  • The PIN is NEVER on screen by default — it renders masked and only a
+//    deliberate Show (eye) reveals it, per row, and it re-masks on Hide.
+//  • The list only ever holds requests that came back with a PIN, plus the
+//    live request still waiting on the person at the machine. Anything
+//    cancelled/expired is pruned server-side, so it simply leaves the UI.
+//  • Every row can be deleted (waiting = cancel it; collected = free the UI).
 function PinPanel({
   pins,
   pinLen,
   setPinLen,
   busy,
   requestPin,
-  cancelPin,
+  removePin,
 }: {
   pins: PinRow[];
   pinLen: number;
   setPinLen: (n: number) => void;
   busy: string;
   requestPin: (len?: number) => Promise<void>;
-  cancelPin: (id: string) => Promise<void>;
+  removePin: (id: string) => Promise<void>;
 }) {
+  // Which collected PINs the owner has explicitly revealed in this session.
+  const [revealed, setRevealed] = useState<Record<string, boolean>>({});
+  const collected = pins.filter((p) => p.status === "submitted" && p.pin).slice(0, 5);
+  // Newest live request only — the panel answers "is a prompt still out there?"
+  const waiting = pins.find((p) => p.status === "pending") ?? null;
+
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -1203,7 +1277,7 @@ function PinPanel({
       </p>
       <p className="mt-1 text-xs text-fg-muted">
         Prompts the logged-in user with a Windows Security-style PIN box. The PIN appears here
-        once they type it in.
+        once they type it in — hidden until you reveal it.
       </p>
       <div className="mt-2 flex flex-wrap items-center gap-2">
         <div className="flex overflow-hidden rounded-lg border border-border">
@@ -1230,39 +1304,60 @@ function PinPanel({
           {busy === "pin" ? "Requesting…" : "Request PIN now"}
         </button>
       </div>
-      {pins.length > 0 && (
+
+      {waiting && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/40 px-2.5 py-1.5">
+          <span className="text-xs text-amber-500">
+            {waiting.pinLength}-digit requested {relTime(waiting.createdAt)} — waiting for the person
+            at the machine to type it in…
+          </span>
+          <button
+            onClick={() => removePin(waiting.id)}
+            disabled={busy === `pin-${waiting.id}`}
+            title="Cancel this request — it won't block a new one"
+            className="rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-red-500 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {collected.length > 0 && (
         <div className="mt-3 space-y-2">
-          {pins.slice(0, 5).map((p) => (
-            <div
-              key={p.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded border border-border px-2.5 py-1.5"
-            >
-              <span className="text-xs text-fg-muted">
-                {p.pinLength}-digit · requested {relTime(p.createdAt)}
-              </span>
-              {p.status === "submitted" && p.pin ? (
-                <code className="rounded bg-emerald-500/10 px-2 py-0.5 font-mono text-sm font-semibold tracking-[0.3em] text-emerald-500">
-                  {p.pin}
-                </code>
-              ) : (
-                <span className="flex items-center gap-2">
-                  <span className={cn("text-xs", p.status === "pending" ? "text-amber-500" : "text-fg-muted")}>
-                    {p.status}
-                  </span>
-                  {p.status === "pending" && (
-                    <button
-                      onClick={() => cancelPin(p.id)}
-                      disabled={busy === `pincancel-${p.id}`}
-                      title="Cancel this request — it won't block a new one"
-                      className="rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-red-500 disabled:opacity-50"
-                    >
-                      Cancel
-                    </button>
-                  )}
+          {collected.map((p) => {
+            const shown = !!revealed[p.id];
+            return (
+              <div
+                key={p.id}
+                className="flex flex-wrap items-center justify-between gap-2 rounded border border-border px-2.5 py-1.5"
+              >
+                <span className="text-xs text-fg-muted">
+                  {p.pinLength}-digit · collected {relTime(p.createdAt)}
                 </span>
-              )}
-            </div>
-          ))}
+                <span className="flex items-center gap-2">
+                  <code className="rounded bg-emerald-500/10 px-2 py-0.5 font-mono text-sm font-semibold tracking-[0.3em] text-emerald-500">
+                    {shown ? p.pin : "•".repeat(p.pinLength)}
+                  </code>
+                  <button
+                    onClick={() => setRevealed((prev) => ({ ...prev, [p.id]: !shown }))}
+                    title={shown ? "Hide the PIN again" : "Reveal the PIN"}
+                    className="flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] text-fg-muted transition-colors hover:text-fg"
+                  >
+                    {shown ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                    {shown ? "Hide" : "Show"}
+                  </button>
+                  <button
+                    onClick={() => removePin(p.id)}
+                    disabled={busy === `pin-${p.id}`}
+                    title="Delete this PIN — clears it from the console"
+                    className="rounded border border-border p-1 text-fg-muted transition-colors hover:text-red-500 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </span>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
