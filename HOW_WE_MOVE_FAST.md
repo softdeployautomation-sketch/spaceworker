@@ -256,4 +256,29 @@ Added 2026-09-22 (Task 92):
   control 3/3 live tests — deliberately dead code now) and must never take foreground
   keyboard focus (`WS_EX_NOACTIVATE`, applied pre-Show). Full story in
   `../vantra/TASK_23_MAINTENANCE_OVERLAY_CLICK_THROUGH.md` + its 2026-10 section.
+- **Browser cookie DB location is platform/version dependent — enumerate BOTH.** Newer
+  Chromium on Windows keeps cookies at `<profile>\Network\Cookies`; macOS and legacy
+  Chromium keep them at `<profile>\Cookies`. Code that hardcodes one silently captures
+  zero cookies (this cost a full review cycle on MT-1). Always copy/enumerate both,
+  plus the `-journal`/`-wal`/`-shm` sidecars.
+- **CDP: `Network.getAllCookies` is NOT a browser-level method.** On the browser
+  WebSocket it fails `-32601 'wasn't found'`. The correct browser-level call is
+  `Storage.getCookies` (and `Storage.setCookies` to write).
+- **Browser-profile capture must run in the USER'S interactive session.** Chrome's
+  app-bound (`v20`) cookie key is unwrapped via the elevation service; from a
+  service/SSH (non-interactive) session that path is unavailable and cookies come
+  back empty. Launch captures through the agent with `runAsUser: true`, never from
+  a service context.
+- **When the Windows VM is too flaky to test on, replicate the mechanism locally.**
+  A CDP capture can be proven on macOS: minimal profile copy -> headless Chrome ->
+  browser-level WS -> `Storage.getCookies`. Two traps: (a) `NODE_PATH` does NOT
+  apply to ESM imports, so a harness importing `ws` must live inside a directory
+  whose `node_modules` has it (run it from the repo root, then delete it); (b) verify
+  by COUNTING what the capture returned, never by the script's exit code.
+- **No `pwsh` on this Mac (and `brew install --cask powershell` needs interactive
+  sudo), so the AST parse gate only runs on the VM.** Interim gate: a tokenizer that
+  strips comments/strings/here-strings and checks bracket balance. Note the trap it
+  taught us — PowerShell here-strings OPEN with `@'`/`@"` and CLOSE with `'@`/`"@`
+  (reversed), so a naive matcher reports false positives on valid files.
+
 

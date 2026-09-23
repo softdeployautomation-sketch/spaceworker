@@ -1,9 +1,11 @@
 # Task 97 — Browser Clone (P2) — hosted-PC act-as-you + Michael MT-1 contract
 
-**Status: MT-1 REVIEWED + VM-TESTED (2026-09-23) → DO NOT MERGE YET — BLOCKED on
-F1/F2. PR #2 (`michael/browser-clone-scripts`, +9,329/−0) is open. Every gate result
-and the blocking findings are in "Review + VM test results" below. The CloneJob
-pipeline is PAUSED until cookie capture (F1) and cookie re-protection (F2) are resolved.**
+**Status: MT-1 REVIEWED, FIXED + INTEGRATED (2026-09-23). PR #2 is MERGED into main
+(merge `be88e29`) with the two blocking findings fixed on top (`6a9cbcc`): F1
+(zero cookies captured — both cookie DB locations are now copied) and F2
+(sessionless clone could ship silently — hard guard + `cdp-zero` partial exit).
+Mechanics re-verified independently via a Libre CDP harness on macOS (2,373
+cookies / 632 domains). NEXT: build the CloneJob pipeline (deliverables below).**
 **Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY (P2), §SCHEMA, §CROSS-TRACK RULES.**
 
 ## Read first (mandatory)
