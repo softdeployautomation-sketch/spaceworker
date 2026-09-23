@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; width: 400px; padding: 20px; }
+    #status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+    button { padding: 10px 20px; background: #1f73e6; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #1f73e6; border-radius: 50%; animation: spin 1s linear infinite; }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h2>Spaceworker Clone</h2>
+  <button id="cloneBtn">Clone Browser</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
