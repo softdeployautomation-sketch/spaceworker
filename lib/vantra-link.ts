@@ -293,6 +293,46 @@ export interface SyncedDevice {
 }
 
 /**
+ * Task 106 (bit C1) — bulk idle enrichment. ONE org-scoped call per linked
+ * org returning `Record<hostname, idleSeconds>` (never N+1 per-agent calls).
+ * Best-effort: Vantra unreachable, no link, or no orgs → `{}` (callers render
+ * `idleSeconds: null`).
+ */
+export async function fetchOrgIdle(orgId: string): Promise<Record<string, number | null>> {
+  const data = await vantraFetch<{
+    ok: boolean;
+    idleByHostname: Record<string, number | null>;
+  }>(`/api/internal/sw/devices/idle?orgId=${encodeURIComponent(orgId)}`);
+  return data.idleByHostname ?? {};
+}
+
+/**
+ * Task 106 (bit C1) — idle for every org linked to this user (public org +
+ * private companion when present). Merges the per-org maps; best-effort —
+ * any failure yields `{}` so the device list still renders.
+ */
+export async function fetchUserIdle(userId: string): Promise<Record<string, number | null>> {
+  const link = await db.vantraLink.findUnique({
+    where: { userId },
+    select: { orgId: true, privateOrgId: true, status: true },
+  });
+  if (!link || link.status === "revoked") return {};
+  const orgIds = link.privateOrgId ? [link.orgId, link.privateOrgId] : [link.orgId];
+  const merged: Record<string, number | null> = {};
+  await Promise.all(
+    orgIds.map(async (orgId) => {
+      try {
+        const part = await fetchOrgIdle(orgId);
+        for (const [hostname, idle] of Object.entries(part)) merged[hostname] = idle;
+      } catch {
+        // best-effort — one org failing must not block the other
+      }
+    }),
+  );
+  return merged;
+}
+
+/**
  * Device sync: pulls the org's agent list from Vantra and upserts SpaceWorker
  * Device rows (identity = vantraAgentId, Task 92 layer). Also flips the link
  * to "active" the first time any device shows up.

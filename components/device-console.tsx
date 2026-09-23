@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { formatIdle } from "@/lib/device-idle";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -41,6 +42,8 @@ type DeviceView = {
   osVersion: string | null;
   lastSeenAt: string | null;
   powerPolicy: { mode: string; until: string | null } | null;
+  // Task 106 (bit C1) — MeshCentral `idletime` in seconds (null when unknown).
+  idleSeconds: number | null;
 };
 
 type Tabs = "summary" | "control" | "command" | "activity";
@@ -195,6 +198,14 @@ export function DeviceConsole({
         ...row,
         status: row.effectiveStatus ?? row.status ?? "unknown",
         powerPolicy: row.powerPolicy ?? null,
+        // Task 106 (bit C1) — idle rides the existing 15 s poll of
+        // `/api/devices` (no extra request; console poll cadence unchanged).
+        idleSeconds:
+          typeof row.idleSeconds === "number" &&
+          Number.isFinite(row.idleSeconds) &&
+          row.idleSeconds >= 0
+            ? row.idleSeconds
+            : null,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load device");
@@ -569,7 +580,9 @@ export function DeviceConsole({
               <span className="flex shrink-0 items-center gap-1.5 text-xs">
                 <span className={cn("inline-block h-2 w-2 rounded-full", dot)} />
                 <span className={isOnline ? "text-emerald-500" : "text-fg-muted"}>
-                  {statusWord(device.status)}
+                  {isOnline
+                    ? `${statusWord(device.status)} · ${formatIdle(device.idleSeconds)}`
+                    : `offline · last seen ${relTime(device.lastSeenAt)}`}
                 </span>
               </span>
             )}
@@ -717,6 +730,14 @@ function SummaryTab({ device, loaded }: { device: DeviceView | null; loaded: boo
         value={osLabel(device.osName) + (device.osVersion ? ` · ${device.osVersion}` : "")}
       />
       <Info label="Last seen" value={relTime(device.lastSeenAt)} />
+      <Info
+        label="User activity"
+        value={
+          device.status === "online" || device.status === "asleep"
+            ? formatIdle(device.idleSeconds)
+            : `last seen ${relTime(device.lastSeenAt)}`
+        }
+      />
       <Info
         label="Power policy"
         value={

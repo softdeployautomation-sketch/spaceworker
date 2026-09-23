@@ -6,6 +6,7 @@ import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search } from "lucid
 
 import { PanicButton } from "@/components/panic-button";
 import { cn } from "@/lib/cn";
+import { formatIdle } from "@/lib/device-idle";
 
 // Task 95 — Devices v2 list, ScreenConnect-style session grid. ONE device =
 // ONE row with ONE status (from /api/devices only, derived from OUR heartbeat
@@ -20,6 +21,9 @@ type DeviceRow = {
   osName: string | null;
   osVersion: string | null;
   lastSeenAt: string | null;
+  // Task 106 (bit C1) — MeshCentral `idletime`, normalised to seconds by
+  // Vantra (`/api/devices` enriches each row best-effort; null when unknown).
+  idleSeconds: number | null;
 };
 
 function relTime(iso: string | null): string {
@@ -99,6 +103,10 @@ export function DeviceList() {
         (data.devices ?? []).map((d: { effectiveStatus?: string; status?: string } & DeviceRow) => ({
           ...d,
           status: d.effectiveStatus ?? d.status ?? "unknown",
+          idleSeconds:
+            typeof d.idleSeconds === "number" && Number.isFinite(d.idleSeconds) && d.idleSeconds >= 0
+              ? d.idleSeconds
+              : null,
         })),
       );
     } catch (e) {
@@ -108,9 +116,30 @@ export function DeviceList() {
     }
   }, []);
 
+  // Task 106 (bit C1) — live refresh: re-poll `/api/devices` (+ the link
+  // panel) every 20 s, paused while the document is hidden so a background
+  // tab does not hammer the API. Manual Refresh button stays. Cleared on
+  // unmount.
   useEffect(() => {
     load();
     loadLink();
+    const tick = () => {
+      if (document.visibilityState === "hidden") return;
+      load();
+      loadLink();
+    };
+    const timer = setInterval(tick, 20_000);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        load();
+        loadLink();
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [load, loadLink]);
 
   async function enable() {
@@ -193,6 +222,15 @@ export function DeviceList() {
   }, [devices, filter, query]);
 
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
+
+  // Task 106 (bit C1) — status + idle label for each row. Offline devices
+  // never show an idle value (MeshCentral `idletime` is stale once
+  // disconnected) — they show "last seen …" instead. Never raw values.
+  const statusIdleLabel = (d: DeviceRow): string => {
+    const online = d.status === "online" || d.status === "asleep";
+    if (!online) return `offline · last seen ${relTime(d.lastSeenAt)}`;
+    return `${statusWord(d.status)} · ${formatIdle(d.idleSeconds)}`;
+  };
 
   return (
     <div className="space-y-5">
@@ -491,7 +529,7 @@ export function DeviceList() {
                   <span className="flex items-center gap-2 text-sm">
                     <span className={cn("inline-block h-2.5 w-2.5 shrink-0 rounded-full", dot)} />
                     <span className={cn(online ? "text-emerald-500" : "text-fg-muted")}>
-                      {statusWord(d.status)}
+                      {statusIdleLabel(d)}
                     </span>
                   </span>
                   <span className="hidden text-sm text-fg-muted md:block">{relTime(d.lastSeenAt)}</span>
