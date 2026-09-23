@@ -155,3 +155,48 @@ F2/F3 are design-level and need Michael's call on the cookie re-protection appro
 (decrypt-and-reprotect with v20/app-bound support, vs. injecting a fresh key + Local State
 into the destination profile and re-encrypting). Pipeline work stays paused until then.
 
+
+---
+
+## CloneJob pipeline build — PAUSED mid-flight (2026-10-02)
+
+Paused by owner to prioritise the Wilk / Task-102 agent-host cutover. Exact
+resume point:
+
+**DONE (uncommitted at pause; committed as WIP alongside this note):**
+- `prisma/schema.prisma`: three new models + relations + AdminSetting keys —
+  `RelayHealth`, `CloneJob`, `HostedBrowserSession`; `Device.cloneSourceJobs` /
+  `cloneDestinationJobs` / `relays` / `hostedSessions`; `User.cloneJobs` /
+  `relays` / `hostedBrowserSessions`; AdminSetting `cloneSessionsEnabled`,
+  `cloneSessionsMaxConcurrent`, `clonePerUserMax`, `hostedPoolSize`,
+  `cloneIdleTtlMinutes`, `cloneHardTtlHours`, `clonePurgeAfterDays`,
+  `cloneDirectEgressPremiumOnly`.
+- `prisma/migrations/20261002000000_browser_clone_pipeline/migration.sql`
+  (hand-written, per repo convention) — **verified line-by-line against
+  `prisma migrate diff --from-schema-datamodel <old> --to-schema-datamodel <new>`**:
+  every table, index, FK and AdminSetting column matches Prisma's own expected
+  output. Nothing was applied to any database.
+
+**NEXT (in order):**
+1. `prisma migrate deploy` on the VPS (after the usual `.env` + DB snapshots) and
+   `prisma generate`.
+2. `lib/clone.ts` — the service: relay registration + health probe, capture
+   orchestration through the agent (`michael/browser-clone/Invoke-BrowserClone.ps1
+   --mode capture`, run as the INTERACTIVE user — see HOW_WE_MOVE_FAST §6
+   "interactive session" gotcha), transfer to the pooled hosted PC, inject, launch
+   with `--proxy` (relay) or `--proxy-optional` (direct, premium-only), TTL
+   stamping from AdminSetting, teardown that deletes staging material.
+3. Fail-closed relay gate (deliverable 4) — launch aborts unless
+   `RelayHealth.status = "up"` for the job's relay; the mode actually used is
+   recorded on `CloneJob` + `AgentActionAudit`.
+4. Panic-switch extension (deliverable 5) — clone jobs + `HostedBrowserSession`
+   must be covered by `lib/devices.ts` `panicStopAllDevices`; no isolated
+   revocation path.
+5. Admin panel: the 8 clone AdminSetting keys with live counts
+   (admission-control pattern) + `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` wiring for
+   the premium/queue decision.
+6. Clone-sweep (idle TTL, hard TTL, 30-day purge) as a systemd timer mirroring
+   `deploy/digest-sweep.*`.
+7. UI last, per `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` (5th console tab + Summary
+   card + new-tab session) — only after the first real clone passes end-to-end.
+

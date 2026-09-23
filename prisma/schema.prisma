@@ -8,10 +8,10 @@ datasource db {
 }
 
 model User {
-  id               String             @id @default(cuid())
-  email            String             @unique
-  passwordHash     String
-  emailVerified    Boolean            @default(false)
+  id                       String                 @id @default(cuid())
+  email                    String                 @unique
+  passwordHash             String
+  emailVerified            Boolean                @default(false)
   // Tier 1 trial (Task: Tier 1 trial for all free users). Tier numbers:
   //   0 = legacy / nothing (inline EXE-buyer license_only accounts — see
   //       findOrCreateUser in app/api/billing/submit/route.ts, which MUST pin 0)
@@ -21,7 +21,7 @@ model User {
   // 2/3/4 are deliberately reserved/unused headroom for future paid plans.
   // IMPORTANT: every "has Pro" branch must test `>= 5`, never `>= 1`, or a trial
   // user would silently get a paid feature and a paying customer would lose one.
-  tier             Int                @default(1)
+  tier                     Int                    @default(1)
   // Task 55 — time-limited premium. In SpaceWorker, tier is per-User (unlike
   // Vantra's per-Organization). NULLABLE semantics differ from Vantra by design:
   //   - NULL on an EXISTING tier:5 user (created BEFORE this field existed) =
@@ -31,64 +31,68 @@ model User {
   //   - NULL on a tier < 5 user = "not premium / free", meaningless.
   //   - non-NULL = a real premium term; every NEW grant / web-sub charge sets
   //     this. When it passes, the lazy check-on-read flips tier back to 1.
-  premiumExpiresAt DateTime?
+  premiumExpiresAt         DateTime?
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links
   // their chat anyway). telegramChatId is set only via the bot-linking webhook;
   // telegramLinkToken is a short-lived random token backing the Connect deep link,
   // cleared on a successful link.
-  notifyEmail      Boolean            @default(true)
-  notifyTelegram   Boolean            @default(false)
-  notifyAgent      Boolean            @default(true)
-  telegramChatId   String?
-  telegramLinkToken String?
+  notifyEmail              Boolean                @default(true)
+  notifyTelegram           Boolean                @default(false)
+  notifyAgent              Boolean                @default(true)
+  telegramChatId           String?
+  telegramLinkToken        String?
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
   // account created before this field existed, not that they never agreed.
-  acceptedTermsAt  DateTime?
+  acceptedTermsAt          DateTime?
   // Task 40 — per-user daily AI cost cap, in hundredths of a cent. Default $2/day
   // (20000), a modest slice of the shared $50/day Channelry pool. Deliberately a
   // per-user, admin-adjustable value (not a global constant) so an admin can "add
   // more" to a power user live, per the ask. Enforced in runAgentTurn against a
   // SUM over today's AiUsageLog rows (append-only, race-safe — see AiUsageLog).
-  aiDailyCapHundredthsCent Int              @default(20000)
+  aiDailyCapHundredthsCent Int                    @default(20000)
   // Task 92 — assistant foundation. digestEnabled gates the nightly assistant
   // digest (digest-sweep skips users who turn it off); deviceTelemetryEnabled
   // is the master WEB toggle for device telemetry ingest (heartbeat upsert
   // refuses when false — no tray in SpaceWorker, per plan decision M-scope).
-  digestEnabled          Boolean   @default(true)
-  deviceTelemetryEnabled Boolean   @default(true)
-  createdAt        DateTime           @default(now())
-  verifications    VerificationCode[]
-  rateLimits       RateLimitEvent[]
-  mailboxes        Mailbox[]
-  emailCampaigns   EmailCampaign[]
-  payments         Payment[]
-  browserProfiles  BrowserProfile[]
-  browserSessions  BrowserSession[]
-  notificationLogs NotificationLog[]
-  searchJobs       SearchJob[]
-  leads            Lead[]
-  campaignAutomations CampaignAutomation[]
-  seedMailboxes    SeedMailbox[]
-  agentThreads     AgentThread[]
-  agentPendingActions AgentPendingAction[]
-  aiUsageLogs      AiUsageLog[]
-  toolUsageLogs    ToolUsageLog[]
-  exeLicenses      ExeLicense[]
-  exeLicenseTransfers ExeLicenseTransfer[]
+  digestEnabled            Boolean                @default(true)
+  deviceTelemetryEnabled   Boolean                @default(true)
+  createdAt                DateTime               @default(now())
+  verifications            VerificationCode[]
+  rateLimits               RateLimitEvent[]
+  mailboxes                Mailbox[]
+  emailCampaigns           EmailCampaign[]
+  payments                 Payment[]
+  browserProfiles          BrowserProfile[]
+  browserSessions          BrowserSession[]
+  notificationLogs         NotificationLog[]
+  searchJobs               SearchJob[]
+  leads                    Lead[]
+  campaignAutomations      CampaignAutomation[]
+  seedMailboxes            SeedMailbox[]
+  agentThreads             AgentThread[]
+  agentPendingActions      AgentPendingAction[]
+  aiUsageLogs              AiUsageLog[]
+  toolUsageLogs            ToolUsageLog[]
+  exeLicenses              ExeLicense[]
+  exeLicenseTransfers      ExeLicenseTransfer[]
   // Task 92 — assistant foundation device layer + entitlements.
-  devices             Device[]
-  deviceJobs          DeviceJob[]
-  deviceActions       DeviceAction[]
-  deviceRelationships DeviceRelationship[]
-  activityRollups     ActivityRollup[]
-  userEntitlements    UserEntitlement[]
-  agentActionAudits   AgentActionAudit[]
-  vantraLink          VantraLink?
+  devices                  Device[]
+  deviceJobs               DeviceJob[]
+  deviceActions            DeviceAction[]
+  deviceRelationships      DeviceRelationship[]
+  activityRollups          ActivityRollup[]
+  userEntitlements         UserEntitlement[]
+  agentActionAudits        AgentActionAudit[]
+  vantraLink               VantraLink?
   // Task 95 — Devices v2 tool parity.
-  deviceQueuedCommands DeviceQueuedCommand[]
-  devicePinRequests    DevicePinRequest[]
+  deviceQueuedCommands     DeviceQueuedCommand[]
+  devicePinRequests        DevicePinRequest[]
+  // Task 97 — Browser Clone lifecycle records + relay registry + hosted sessions.
+  cloneJobs                CloneJob[]
+  relays                   RelayHealth[]
+  hostedBrowserSessions    HostedBrowserSession[]
 }
 
 model VerificationCode {
@@ -120,24 +124,24 @@ model RateLimitEvent {
 }
 
 model AdminSetting {
-  id           String   @id @default("singleton")
-  updatedAt    DateTime @updatedAt
-  btcWallet    String?
-  usdtWallet   String? // USDT-TRC20 (Tron) — the original/default USDT chain
+  id                      String   @id @default("singleton")
+  updatedAt               DateTime @updatedAt
+  btcWallet               String?
+  usdtWallet              String? // USDT-TRC20 (Tron) — the original/default USDT chain
   // USDT-ERC20 (Ethereum) — a second USDT wallet so buyers on Ethereum-native
   // exchanges (which often don't support Tron withdrawals) can pay directly
   // instead of needing to bridge/swap first. Independent from usdtWallet —
   // both can be configured at once, admin picks which chains are live.
-  usdtErc20Wallet String?
+  usdtErc20Wallet         String?
   // Task 42 — one price per product sold on the store/landing page (all real
   // launch prices decided 2026-09-14, still admin-adjustable at runtime). The
   // old planPriceUsd field was renamed to webSubscriptionPriceUsd (same role,
   // new default 25 = the store's web-subscription price, superseding 9.99).
-  webSubscriptionPriceUsd Float @default(25)    // /month
-  extractorExePriceUsd     Float @default(50)   // one-time, 6-month term
-  mailerExePriceUsd        Float @default(50)   // one-time, 6-month term
-  combinedExePriceUsd      Float @default(70)   // one-time, 6-month term
-  automationExePriceUsd    Float @default(100)  // one-time, 6-month term — top tier
+  webSubscriptionPriceUsd Float    @default(25) // /month
+  extractorExePriceUsd    Float    @default(50) // one-time, 6-month term
+  mailerExePriceUsd       Float    @default(50) // one-time, 6-month term
+  combinedExePriceUsd     Float    @default(70) // one-time, 6-month term
+  automationExePriceUsd   Float    @default(100) // one-time, 6-month term — top tier
 
   // Task 46 — admin admission control for the two mechanisms that actually spend
   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
@@ -155,10 +159,30 @@ model AdminSetting {
   // Task 93 (CROSS-TRACK RULE 7) — per-feature admin limits for the Vantra
   // plugin: link provisioning rate + device-action concurrency. Live counts
   // are surfaced alongside in the admin panel (admission-control pattern).
-  vantraLinksEnabled           Boolean @default(true)
-  vantraLinksMax               Int     @default(100)
-  deviceActionsEnabled         Boolean @default(true)
-  deviceActionsMaxConcurrent   Int     @default(3)
+  vantraLinksEnabled         Boolean @default(true)
+  vantraLinksMax             Int     @default(100)
+  deviceActionsEnabled       Boolean @default(true)
+  deviceActionsMaxConcurrent Int     @default(3)
+
+  // Task 97 (CROSS-TRACK RULE 7 + TASK_105 governor) — Browser Clone limits.
+  // A cloned browser is a live Chromium process on the POOLED hosted PC, so it
+  // is a first-class RAM consumer like the two mechanisms above.
+  //   cloneSessions*  = concurrent live clone browsers (the pool as a whole)
+  //   clonePerUserMax = how many of those one user may hold at once
+  //   hostedPoolSize  = how many hosted clone PCs are provisioned to serve them
+  // Q1 (DESIGN_BROWSER_CLONE_UI_AND_FLOW §7) is still pending owner sign-off on
+  // the two TTL numbers — they are shipped as the proposed defaults and stamped
+  // per job at creation, so a change here never retroactively kills a live
+  // session. Everything is admin-adjustable at runtime; nothing is hardwired.
+  cloneSessionsEnabled         Boolean @default(true)
+  cloneSessionsMaxConcurrent   Int     @default(2)
+  clonePerUserMax              Int     @default(1)
+  hostedPoolSize               Int     @default(1)
+  cloneIdleTtlMinutes          Int     @default(60)
+  cloneHardTtlHours            Int     @default(8)
+  clonePurgeAfterDays          Int     @default(30)
+  // Direct egress (`--proxy-optional`) is PREMIUM ONLY (owner 2026-10-01).
+  cloneDirectEgressPremiumOnly Boolean @default(true)
 
   // Task 56 — admin-toggleable maintenance windows. Two SEPARATE flags, not one:
   // web pages and the EXE-API traffic share one backend today but will split onto
@@ -198,7 +222,7 @@ model Mailbox {
   // (requireTLS), even on port 587/25, so the old ambiguous "Use TLS checkbox" can
   // never silently pick the wrong handshake again. `secure` itself is derived from
   // port (port 465 => implicit TLS) at write time, not from this flag.
-  allowInsecure      Boolean          @default(false)
+  allowInsecure     Boolean          @default(false)
   dailyLimit        Int              @default(40)
   sentToday         Int              @default(0)
   sentTodayDate     String?
@@ -212,27 +236,27 @@ model Mailbox {
 }
 
 model EmailCampaign {
-  id          String           @id @default(cuid())
-  userId      String
-  user        User             @relation(fields: [userId], references: [id])
-  name        String
+  id                    String                @id @default(cuid())
+  userId                String
+  user                  User                  @relation(fields: [userId], references: [id])
+  name                  String
   // Legacy single-value fields — kept for back-compat only; new campaigns write
   // their content as 1+ CampaignVariant rows and leave these empty.
-  subject     String           @default("")
-  bodyHtml    String           @default("")
+  subject               String                @default("")
+  bodyHtml              String                @default("")
   // Task 29, item 4 — independent subject and body lists for cross-combined
   // rotation. Empty ([]) for legacy pair-based campaigns, which keep using
   // CampaignVariant rows (see EmailQueueItem.variantId below). When populated,
   // recipient *i* resolves to subjects[i % len] + bodies[i % len] independently —
   // a single-item list is held constant (i % 1 === 0) while the other dimension
   // still rotates. Additive, so every pre-Task-29 campaign path is untouched.
-  subjects    String[]         @default([])
-  bodies      String[]         @default([])
-  searchJobId String?
+  subjects              String[]              @default([])
+  bodies                String[]              @default([])
+  searchJobId           String?
   // "draft" | "pending_test_confirm" | "sending" | "done" | ...
   // New campaigns start at "pending_test_confirm": a real send is gated behind the
   // test-send-confirm step (the drain route only processes status "sending").
-  status      String           @default("pending_test_confirm")
+  status                String                @default("pending_test_confirm")
   // Tier 1 trial — when the CURRENT active-sending stretch began (null when not
   // actively sending). Set on every transition INTO "sending"; cleared (and the
   // stretch's elapsed seconds logged to ToolUsageLog) on every transition OUT of
@@ -241,19 +265,19 @@ model EmailCampaign {
   // nothing. One per running stretch, never a running total: today's mailer
   // usage is a SUM over ToolUsageLog rows (AiUsageLog precedent), so per-day
   // correctness survives pauses/resumes across UTC midnights.
-  sendingStartedAt DateTime?
+  sendingStartedAt      DateTime?
   // Which of the user's mailboxes this campaign's sends rotate across (true
   // in-run sender rotation, replacing the old single `mailboxId` at creation).
-  mailboxIds  String[]         @default([])
+  mailboxIds            String[]              @default([])
   // Task 26, Piece 5b — how many recipients share a mailbox/subject before the
   // rotation advances to the next. Default 1 = old per-recipient rotation
   // (non-breaking). Clamped server-side to [1, 1000]. Stored so the from-leads
   // add-to-existing route can keep rotating on the same cadence.
-  rotateEvery Int              @default(1)
+  rotateEvery           Int                   @default(1)
   // Task 29, item 6 — the batch gate: the mail-queue drain dispatches up to this
   // many recipients per campaign per tick, then re-checks deliverability on the
   // campaign's test mailbox and pauses if the probe didn't land in the inbox.
-  batchSize   Int              @default(50)
+  batchSize             Int                   @default(50)
   // Human-assisted deliverability fallback: when set, EVERY deliverability
   // probe for this campaign (the initial test-send-confirm gate AND every
   // later batch-gate check) targets this plain address instead of a
@@ -271,8 +295,8 @@ model EmailCampaign {
   // hardcoded `Math.random() * 40_000 + 5_000` exactly (zero behavior change for
   // existing campaigns). Bounds are clamped server-side so a user can never
   // configure a 0-0 "bot blast" — see POST /api/campaigns and the drain route.
-  minSendDelaySeconds Int @default(5)
-  maxSendDelaySeconds Int @default(45)
+  minSendDelaySeconds   Int                   @default(5)
+  maxSendDelaySeconds   Int                   @default(45)
   // Task 33 — a temporary, human-approved "pinned override" window: a specific
   // proven-good subject/body/from combination locked onto the campaign for a
   // fixed number of upcoming sends (requested pinCount). While set, the
@@ -285,12 +309,12 @@ model EmailCampaign {
   // during the window clears the pin and falls back to paused_deliverability.
   // Shape: { subject, bodyHtml, fromAddress, remaining }. null = not pinned.
   // Achieved as a JSON column — no separate table.
-  pinnedOverride Json?
-  createdAt   DateTime         @default(now())
-  variants    CampaignVariant[]
-  checks      DeliverabilityCheck[]
-  items       EmailQueueItem[]
-  linkRedirects LinkRedirect[]
+  pinnedOverride        Json?
+  createdAt             DateTime              @default(now())
+  variants              CampaignVariant[]
+  checks                DeliverabilityCheck[]
+  items                 EmailQueueItem[]
+  linkRedirects         LinkRedirect[]
 
   @@index([userId])
 }
@@ -308,38 +332,38 @@ model CampaignVariant {
 }
 
 model EmailQueueItem {
-  id         String           @id @default(cuid())
-  campaignId String
-  campaign   EmailCampaign    @relation(fields: [campaignId], references: [id])
+  id                  String           @id @default(cuid())
+  campaignId          String
+  campaign            EmailCampaign    @relation(fields: [campaignId], references: [id])
   // Assigned at queue-creation time via round-robin across the campaign's
   // mailboxIds (true in-run rotation lives here, not in the drain route).
-  mailboxId  String
-  mailbox    Mailbox          @relation(fields: [mailboxId], references: [id])
+  mailboxId           String
+  mailbox             Mailbox          @relation(fields: [mailboxId], references: [id])
   // Which variant (subject/body) this recipient actually resolved to.
-  variantId  String?
-  variant    CampaignVariant? @relation(fields: [variantId], references: [id])
-  toEmail    String
+  variantId           String?
+  variant             CampaignVariant? @relation(fields: [variantId], references: [id])
+  toEmail             String
   // Task 29, item 3 — how this recipient got onto the queue. "" (default) =
   // extracted/uploaded/picked lead; "manual_insert" = a test recipient a user
   // dropped into the queue at a chosen position. Lets the run-detail UI label it
   // distinctly from extracted/uploaded/picked leads.
-  source     String           @default("")
+  source              String           @default("")
   // Task 29, item 4 — resolved subject/body snapshots for decoupled campaigns
   // (EmailCampaign.subjects/bodies set). Populated on those; null on legacy
   // pair-based campaigns, which fall back to variant.subject / variant.bodyHtml.
-  resolvedSubject String?
-  resolvedBodyHtml String?
+  resolvedSubject     String?
+  resolvedBodyHtml    String?
   // Task 30, item 4 — the From address this specific recipient's send resolved
   // to at queue-build time (mailbox.fromAddresses[i % len] rotation). null = the
   // mailbox has no from addresses configured (drain falls back to SMTP username).
   resolvedFromAddress String?
   // Per-recipient merge variables from the uploaded CSV (extra columns).
   // { "firstName": "Ada", "company": "ACME", ... }
-  variables  Json?
-  status     String           @default("queued")
-  sentAt     DateTime?
-  error      String?
-  createdAt  DateTime         @default(now())
+  variables           Json?
+  status              String           @default("queued")
+  sentAt              DateTime?
+  error               String?
+  createdAt           DateTime         @default(now())
 
   @@index([campaignId, status])
   @@index([mailboxId, status])
@@ -347,39 +371,39 @@ model EmailQueueItem {
 }
 
 model SeedMailbox {
-  id                String   @id @default(cuid())
+  id                String                @id @default(cuid())
   // Task 29, item 5 — ownership. null = the platform-shared seed (today's
   // default, bootstrapped by lib/seed-mailbox.ts from env); set = a user's own
   // registered test account (created via POST /api/test-mailboxes). A user with
   // no own row keeps using the platform default, exactly as before — additive.
   userId            String?
-  user              User?    @relation(fields: [userId], references: [id])
+  user              User?                 @relation(fields: [userId], references: [id])
   // Platform-owned deliverability seed account (typically only one row for v1).
   label             String
   host              String
   port              Int
-  username          String   @unique
+  username          String                @unique
   encryptedPassword String
   passwordIv        String
   passwordTag       String
-  secure            Boolean  @default(true)
-  active            Boolean  @default(true)
-  createdAt         DateTime @default(now())
+  secure            Boolean               @default(true)
+  active            Boolean               @default(true)
+  createdAt         DateTime              @default(now())
   checks            DeliverabilityCheck[]
 
   @@index([userId])
 }
 
 model DeliverabilityCheck {
-  id            String        @id @default(cuid())
-  campaignId    String
-  campaign      EmailCampaign @relation(fields: [campaignId], references: [id])
+  id                String        @id @default(cuid())
+  campaignId        String
+  campaign          EmailCampaign @relation(fields: [campaignId], references: [id])
   // Nullable: a check against a registered SeedMailbox (platform default or a
   // user's own IMAP account) sets this; a check that instead targeted a plain
   // ad-hoc recipient (no IMAP credentials to poll — see overrideRecipient) has
   // no SeedMailbox row at all.
-  seedMailboxId String?
-  seedMailbox   SeedMailbox?  @relation(fields: [seedMailboxId], references: [id])
+  seedMailboxId     String?
+  seedMailbox       SeedMailbox?  @relation(fields: [seedMailboxId], references: [id])
   // The human-assisted fallback: when a campaign has no pollable seed mailbox
   // (the platform default failed, or the user opted to test against their own
   // address instead), the test message goes straight to this address and
@@ -389,18 +413,18 @@ model DeliverabilityCheck {
   // is set per check.
   overrideRecipient String?
   // "pending" | "delivered" | "failed"
-  status        String        @default("pending")
+  status            String        @default("pending")
   // Task 29, item 6 — where the test message actually landed, from a spam-aware
   // IMAP poll. null on legacy checks / before the check runs; "inbox" | "spam" |
   // "unknown" afterward. "unknown" is what the batch gate needs to force a human
   // eyeball instead of auto-continuing. Always "unknown" for an overrideRecipient
   // check (no IMAP access), which is exactly what keeps the batch gate pausing
   // on every batch rather than auto-continuing.
-  landedIn      String?
-  messageId     String?
-  error         String?
-  createdAt     DateTime      @default(now())
-  checkedAt     DateTime?
+  landedIn          String?
+  messageId         String?
+  error             String?
+  createdAt         DateTime      @default(now())
+  checkedAt         DateTime?
 
   @@index([campaignId, createdAt])
 }
@@ -451,14 +475,14 @@ model Payment {
 // Pro format (lib/exe-license.ts) — the key's own `expires_at` payload field
 // carries the authoritative expiry, which the dashboard/email surface.
 model ExeLicense {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id])
-  paymentId  String   @unique
-  payment    Payment  @relation(fields: [paymentId], references: [id])
-  product    String // matches Payment.product
-  licenseKey String   @unique
-  issuedAt   DateTime @default(now())
+  id                          String    @id @default(cuid())
+  userId                      String
+  user                        User      @relation(fields: [userId], references: [id])
+  paymentId                   String    @unique
+  payment                     Payment   @relation(fields: [paymentId], references: [id])
+  product                     String // matches Payment.product
+  licenseKey                  String    @unique
+  issuedAt                    DateTime  @default(now())
   // Task 45 — a short-lived, single-use claim token backing the "view my
   // license" link emailed to the buyer. Only the SHA-256 hash of the random half
   // is stored (never the raw token), `ExpiresAt` is set at issuance, and
@@ -466,8 +490,8 @@ model ExeLicense {
   // null for licenses issued before this feature existed (no emailed claim link
   // for them — a pre-existing buyer still reaches /dashboard/licenses by logging
   // in as a real customer).
-  licenseClaimTokenHash   String?   @unique
-  licenseClaimTokenExpiresAt DateTime?
+  licenseClaimTokenHash       String?   @unique
+  licenseClaimTokenExpiresAt  DateTime?
   licenseClaimTokenConsumedAt DateTime?
 
   // Task 47 — one-time machine binding via a "claim" step. Issuance produces an
@@ -511,11 +535,11 @@ model ExeLicense {
 // snapshot of the binding being replaced, so the record is meaningful even if
 // the ExeLicense row is later edited again.
 model ExeLicenseTransfer {
-  id               String    @id @default(cuid())
+  id               String     @id @default(cuid())
   exeLicenseId     String
   exeLicense       ExeLicense @relation(fields: [exeLicenseId], references: [id])
   userId           String
-  user             User      @relation(fields: [userId], references: [id])
+  user             User       @relation(fields: [userId], references: [id])
   // The machine the license was bound to BEFORE this transfer. NULL only if the
   // row was somehow unbound (won't happen — a transfer requires an existing
   // binding — but kept nullable so the log can never fail to describe a move).
@@ -526,7 +550,7 @@ model ExeLicenseTransfer {
   // Optional support note — "replaced laptop after recall" etc. Free-form, kept
   // short; the admin UI caps it.
   note             String?
-  transferredAt    DateTime  @default(now())
+  transferredAt    DateTime   @default(now())
 
   @@index([exeLicenseId, transferredAt])
   @@index([userId])
@@ -656,53 +680,54 @@ model NotificationLog {
 }
 
 model SearchJob {
-  id          String         @id @default(cuid())
-  userId      String
-  user        User           @relation(fields: [userId], references: [id])
-  query       String
+  id                String         @id @default(cuid())
+  userId            String
+  user              User           @relation(fields: [userId], references: [id])
+  query             String
   // Which template this search was created from: "lead" | "hr" | "plain" (extensible).
-  template    String         @default("lead")
-  params      Json
-  status      String         @default("queued") // "queued" | "running" | "done" | "failed" | "paused" | "stopped"
-  lane        String
-  workerJobId String?
-  error       String?
+  template          String         @default("lead")
+  params            Json
+  status            String         @default("queued") // "queued" | "running" | "done" | "failed" | "paused" | "stopped"
+  lane              String
+  workerJobId       String?
+  error             String?
   // Task 13 resumable jobs: non-null only while paused, holding enough to resume
   // from the next unprocessed query instead of restarting (processedQueries,
   // nextQueryIndex, seenUrls, foundLeads). Cleared when a paused job is resumed.
-  resumeState Json?
+  resumeState       Json?
   // Set only when a job transitions to "paused" — the cooldown clock the
   // dispatcher's auto-resume check (outage pauses only, see resumeState's
   // pauseReason) uses to decide "enough time has passed, try again."
-  pausedAt    DateTime?
+  pausedAt          DateTime?
   // How many times the dispatcher's Phase C has auto-resumed this job for an
   // "outage" pause. Capped (see app/api/internal/dispatch/route.ts) so a
   // durable, non-transient block (confirmed real for Google on this VPS —
   // see worker/automation.py's CAPTCHA notes) can't thrash forever, repeatedly
   // consuming its lane's only concurrency slot — after the cap it stays
   // "paused" for a human to look at instead of auto-retrying indefinitely.
-  outageResumeCount Int @default(0)
+  outageResumeCount Int            @default(0)
   // Task 14 live activity feed: the worker's current crawler step ("Searching: …",
   // "Visiting page N of Google results", "Reading a PDF at …"), written by the
   // dispatcher's per-tick poll while the job runs. Nullable and additive — left as
   // whatever the last "running" tick wrote after the job stops (done/paused/failed
   // branches do NOT clear it), so "where did it get to" survives the job.
-  currentStep String?
+  currentStep       String?
   // Task 15 stall detection: when currentStep's VALUE last actually changed
   // (not just when the dispatcher last polled — a poll that returns the same
   // step text again is exactly the "no real progress" case this needs to
   // catch, so re-stamping on every tick regardless of content would hide the
   // one thing this field exists to detect).
-  currentStepAt DateTime?
+  currentStepAt     DateTime?
   // Tier 1 trial — wall-clock start of the job's most recent "running" stint.
   // Set when the dispatcher flips the job to running (Phase A admission); used to
   // meter ACTUAL elapsed runtime (dispatch start → terminal state) per tool per
   // UTC day, not each internal queued chunk. Cleared once the run is recorded in
   // ToolUsageLog so a later resume starts a fresh window. Null until first dispatch.
-  trialStartedAt DateTime?
-  createdAt   DateTime       @default(now())
-  queueEntry  JobQueueEntry?
-  leads       Lead[]
+  trialStartedAt    DateTime?
+  createdAt         DateTime       @default(now())
+  queueEntry        JobQueueEntry?
+  leads             Lead[]
+
   @@index([userId, createdAt])
 }
 
@@ -714,30 +739,32 @@ model JobQueueEntry {
   lane         String
   status       String    @default("queued")
   createdAt    DateTime  @default(now())
+
   @@index([lane, status, priorityTier, createdAt])
 }
 
 model Lead {
-  id           String    @id @default(cuid())
-  userId       String
-  user         User      @relation(fields: [userId], references: [id])
-  searchJobId  String
-  searchJob    SearchJob @relation(fields: [searchJobId], references: [id])
-  email        String?
-  phone        String?
-  contactName  String?
-  businessName String?
-  website      String?
-  sourceUrl    String?
-  snippet      String?
-  createdAt    DateTime  @default(now())
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
+  searchJobId      String
+  searchJob        SearchJob @relation(fields: [searchJobId], references: [id])
+  email            String?
+  phone            String?
+  contactName      String?
+  businessName     String?
+  website          String?
+  sourceUrl        String?
+  snippet          String?
+  createdAt        DateTime  @default(now())
   // Task 26, Piece 3 — email deliverability validation. "unchecked" (the default)
   // means never validated; "valid" means both a syntactically-correct address and
   // an MX-record-bearing domain (see lib/email-validator.ts); "invalid" carries a
   // validationError explaining why. Additive and nullable-safe for existing rows.
-  validationStatus String   @default("unchecked") // "unchecked" | "valid" | "invalid"
+  validationStatus String    @default("unchecked") // "unchecked" | "valid" | "invalid"
   validationError  String?
   validatedAt      DateTime?
+
   // Was @@unique([searchJobId, sourceUrl]) -- a REAL, confirmed root-cause bug
   // (Task 25): that constraint means at most ONE lead can ever be saved per
   // page/PDF per job, no matter how many distinct emails extraction actually
@@ -759,25 +786,26 @@ model Lead {
   @@unique([searchJobId, sourceUrl, email])
   @@index([userId, searchJobId])
 }
+
 // Task 27, Part B — manual automation builder. A saved, re-runnable, gated
 // configuration a user can trigger manually or schedule daily.
 model CampaignAutomation {
-  id                 String   @id @default(cuid())
-  userId             String
-  user               User     @relation(fields: [userId], references: [id])
-  name               String
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+  name   String
 
   // Lead source — extraction (this automation's own saved find/location/params,
   // the exact same param keys POST /api/jobs already reads) OR a personal
   // uploaded list (personalListId = an upload SearchJob's id, template:"upload").
-  leadSource         String   @default("extract") // "extract" | "personal_list"
-  findTerms          String[] @default([])
-  locationTerms      String[] @default([])
-  params             Json?    // engine, maxResults, minResults, pagesPerQuery, resultMode, emailDomains
+  leadSource      String   @default("extract") // "extract" | "personal_list"
+  findTerms       String[] @default([])
+  locationTerms   String[] @default([])
+  params          Json? // engine, maxResults, minResults, pagesPerQuery, resultMode, emailDomains
   // Task 29, item 2 — personal_list source can now select MULTIPLE uploaded
   // lists (replaces the old single personalListId). A run pulls validated leads
   // from every selected SearchJob id, deduping by email across all of them.
-  personalListIds    String[] @default([])
+  personalListIds String[] @default([])
 
   // Campaign + mailbox — HARD GATE per Task 09: both required to even CREATE
   // this row. campaignTemplateId references one of the user's OWN EmailCampaign
@@ -786,14 +814,14 @@ model CampaignAutomation {
   mailboxIds         String[] @default([])
 
   // Trigger
-  triggerMode        String   @default("manual") // "manual" | "daily"
-  scheduleHour       Int?     // 0-23, UTC — only meaningful when daily
-  scheduleEnabled    Boolean  @default(true) // pause/resume a daily automation
+  triggerMode     String  @default("manual") // "manual" | "daily"
+  scheduleHour    Int? // 0-23, UTC — only meaningful when daily
+  scheduleEnabled Boolean @default(true) // pause/resume a daily automation
 
-  createdAt          DateTime @default(now())
-  lastRunAt          DateTime?
-  runCount           Int      @default(0)
-  runs               CampaignAutomationRun[]
+  createdAt DateTime                @default(now())
+  lastRunAt DateTime?
+  runCount  Int                     @default(0)
+  runs      CampaignAutomationRun[]
 
   @@index([userId])
   @@index([triggerMode, scheduleEnabled])
@@ -803,23 +831,23 @@ model CampaignAutomation {
 // the normal SearchJob pipeline; an internal sweep advances a run from
 // extraction to the send phase once its SearchJob reaches a terminal state.
 model CampaignAutomationRun {
-  id                    String   @id @default(cuid())
-  automationId          String
-  automation            CampaignAutomation @relation(fields: [automationId], references: [id])
+  id           String             @id @default(cuid())
+  automationId String
+  automation   CampaignAutomation @relation(fields: [automationId], references: [id])
 
-  startedAt             DateTime @default(now())
+  startedAt             DateTime  @default(now())
   extractionCompletedAt DateTime?
   completedAt           DateTime?
   // "running" | "needs_confirmation" | "done" | "failed" | "stopped"
-  status                String   @default("running")
+  status                String    @default("running")
 
-  leadSource            String   // snapshot of the automation's leadSource at run time
-  searchJobId           String?  // the SearchJob this run used
-  leadsExtracted        Int?     // number of VALIDATED leads eligible for sending
-  campaignId            String?  // the EmailCampaign this run created/queued
-  emailsSent            Int?     // recipients queued into the campaign at the send phase
-  emailsSentByMailbox   Json?    // { [mailboxId]: count } — rotation visibility
-  errorMessage          String?
+  leadSource          String // snapshot of the automation's leadSource at run time
+  searchJobId         String? // the SearchJob this run used
+  leadsExtracted      Int? // number of VALIDATED leads eligible for sending
+  campaignId          String? // the EmailCampaign this run created/queued
+  emailsSent          Int? // recipients queued into the campaign at the send phase
+  emailsSentByMailbox Json? // { [mailboxId]: count } — rotation visibility
+  errorMessage        String?
 
   @@index([automationId, startedAt])
 }
@@ -830,20 +858,20 @@ model CampaignAutomationRun {
 // world-readable), so it carries no secret. Out of scope: per-click timestamps,
 // per-recipient attribution, domain rotation, automatic (non-optional) wrapping.
 model LinkRedirect {
-  id         String          @id @default(cuid())
+  id         String         @id @default(cuid())
   // Opaque, url-safe lookup key for GET /r/<token>. __no secret__ — the counter
   // is a plain aggregate, and an unknown/expired token must 404 cleanly.
-  token      String          @unique
+  token      String         @unique
   campaignId String?
-  campaign   EmailCampaign?  @relation(fields: [campaignId], references: [id])
+  campaign   EmailCampaign? @relation(fields: [campaignId], references: [id])
   // The real destination this cloaked link redirects to.
   target     String
   // Optional friendly label (e.g. the link's anchor text) for the create-modal
   // preview; informational only.
   label      String?
   // Plain per-link click counter (aggregate only, no timestamps/attribution).
-  clickCount Int             @default(0)
-  createdAt  DateTime        @default(now())
+  clickCount Int            @default(0)
+  createdAt  DateTime       @default(now())
 
   @@index([campaignId])
 }
@@ -869,45 +897,45 @@ model AgentThread {
 }
 
 model AgentMessage {
-  id        String      @id @default(cuid())
-  threadId  String
-  thread    AgentThread @relation(fields: [threadId], references: [id])
+  id           String      @id @default(cuid())
+  threadId     String
+  thread       AgentThread @relation(fields: [threadId], references: [id])
   // "user" | "assistant" — every row is a literal turn in the chat panel.
-  role      String
-  content   String
+  role         String
+  content      String
   // Snapshot of the pending job/campaign the assistant proposed (the tool_call
   // channelryAiChat returned), so the plan card can be re-rendered without
   // re-deriving it from free text on every reload.
-  toolCall  Json?
+  toolCall     Json?
   // Task 37 — snapshot of an inline structured pick (lead-source dropdown,
   // upload dropzone, or mailbox picker) the assistant offered, so a reload
   // still renders the widget instead of losing it. Mutually exclusive with
   // toolCall (a turn either proposes or asks a structured question).
   inlineWidget Json?
-  createdAt DateTime   @default(now())
+  createdAt    DateTime    @default(now())
 
   @@index([threadId, createdAt])
 }
 
 model AgentPendingAction {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id])
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
   // "job" | "campaign"
-  kind          String
+  kind               String
   // "pending" | "approved" | "rejected" | "expired" | "executed". A proposal is
   // only ever turned into a REAL job/campaign exactly once, on explicit human
   // approval, via the "approved" -> "executed" transition.
-  status        String   @default("pending")
-  payload       Json
+  status             String   @default("pending")
+  payload            Json
   // The assistant's prose that described this plan (shown as the plan card's
   // supporting text).
-  proposal      String?
+  proposal           String?
   // One-hour TTL: an unapproved plan silently expires rather than lingering.
-  expiresAt     DateTime
-  executedJobId String?
+  expiresAt          DateTime
+  executedJobId      String?
   executedCampaignId String?
-  createdAt     DateTime @default(now())
+  createdAt          DateTime @default(now())
 
   @@index([userId, status])
 }
@@ -925,17 +953,17 @@ model AgentPendingAction {
 // The admin test-connection button is deliberately NOT logged here (it's an
 // admin diagnostic, not a real user's usage).
 model AiUsageLog {
-  id                  String   @id @default(cuid())
-  userId              String
-  user                User     @relation(fields: [userId], references: [id])
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
   // The REAL cost_hundredths_cent Channelry returned for this call. Always the
   // reported value verbatim (rounded to an int for storage); 0-cost rows are
   // skipped so the log only ever holds meaningful, real spend.
-  costHundredthsCent  Int
+  costHundredthsCent Int
   // e.g. "agent_turn". A future caller's event name, kept free-form (no enum)
   // so new callers don't require a migration to start logging.
-  eventType           String
-  createdAt           DateTime @default(now())
+  eventType          String
+  createdAt          DateTime @default(now())
 
   @@index([userId, createdAt])
 }
@@ -992,100 +1020,107 @@ model ToolUsageLog {
 // ============================================================================
 
 model Device {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id])
-  name          String
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id])
+  name            String
   // "workstation" | "hosted" — hosted = a SpaceWorker-run PC (Browser Clone
   // destination, arriving in Task 97); everything else is the user's own.
-  deviceKind    String   @default("workstation")
+  deviceKind      String    @default("workstation")
   // Device identity = the user's Vantra agent (plan: VantraLink arrives in
   // Task 93, so this is nullable until provisioning wires it). Unique so a
   // heartbeat can look the device up by agent id alone.
-  vantraAgentId String?  @unique
+  vantraAgentId   String?   @unique
   // "online" | "offline" | "asleep" | "unknown" — derived from heartbeat age.
-  status        String   @default("unknown")
-  osName        String?
-  osVersion     String?
+  status          String    @default("unknown")
+  osName          String?
+  osVersion       String?
   // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
   hardwareSummary Json?
-  lastSeenAt    DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  lastSeenAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  heartbeats  DeviceHeartbeat[]
-  capabilities DeviceCapability[]
-  jobs        DeviceJob[]
-  actions     DeviceAction[]
-  queuedCommands DeviceQueuedCommand[]
-  pinRequests DevicePinRequest[]
-  powerPolicy DevicePowerPolicy?
-  outgoingRelationships DeviceRelationship[] @relation("sourceDevice")
-  incomingRelationships DeviceRelationship[] @relation("targetDevice")
-  audits      DeviceAudit[]
+  heartbeats            DeviceHeartbeat[]
+  capabilities          DeviceCapability[]
+  jobs                  DeviceJob[]
+  actions               DeviceAction[]
+  queuedCommands        DeviceQueuedCommand[]
+  pinRequests           DevicePinRequest[]
+  powerPolicy           DevicePowerPolicy?
+  outgoingRelationships DeviceRelationship[]   @relation("sourceDevice")
+  incomingRelationships DeviceRelationship[]   @relation("targetDevice")
+  audits                DeviceAudit[]
+  // Task 97 — Browser Clone. A device can be the capture SOURCE (the user's
+  // work PC) and/or the clone DESTINATION (a hosted clone PC, deviceKind
+  // "hosted"), and it can host the egress relay and the browser sessions.
+  cloneSourceJobs       CloneJob[]             @relation("cloneSource")
+  cloneDestinationJobs  CloneJob[]             @relation("cloneDestination")
+  relays                RelayHealth[]
+  hostedSessions        HostedBrowserSession[]
 
   @@index([userId])
   @@index([userId, status])
 }
 
 model DeviceHeartbeat {
-  id        String   @id @default(cuid())
-  deviceId  String
-  device    Device   @relation(fields: [deviceId], references: [id])
+  id           String   @id @default(cuid())
+  deviceId     String
+  device       Device   @relation(fields: [deviceId], references: [id])
   agentVersion String?
-  ipAddress String?
+  ipAddress    String?
   // Strictly whitelisted telemetry ONLY (heartbeats, sampling counters, reach
   // flags). Never generalized into a "collect arbitrary data" sink — plan
   // CROSS-TRACK RULE 2 (telemetry is a lesser secrets class but still scoped).
-  telemetry Json?
-  createdAt DateTime @default(now())
+  telemetry    Json?
+  createdAt    DateTime @default(now())
 
   @@index([deviceId, createdAt])
 }
 
 model DeviceCapability {
-  id        String   @id @default(cuid())
-  deviceId  String
-  device    Device   @relation(fields: [deviceId], references: [id])
+  id         String   @id @default(cuid())
+  deviceId   String
+  device     Device   @relation(fields: [deviceId], references: [id])
   // e.g. "wake" | "script-run" | "remote-session" | "browser-clone-source".
   // Metadata only — the ABILITY to do something, not a queued thing to do.
   capability String
-  enabled   Boolean  @default(true)
-  meta      Json?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  enabled    Boolean  @default(true)
+  meta       Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   @@unique([deviceId, capability])
   @@index([deviceId])
 }
 
 model DeviceJob {
-  id        String   @id @default(cuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id])
-  deviceId  String
-  device    Device   @relation(fields: [deviceId], references: [id])
-  jobType   String
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  deviceId   String
+  device     Device    @relation(fields: [deviceId], references: [id])
+  jobType    String
   // "queued" | "running" | "succeeded" | "failed" | "cancelled".
-  status    String   @default("queued")
-  payload   Json?
-  result    Json?
-  error     String?
-  startedAt DateTime?
+  status     String    @default("queued")
+  payload    Json?
+  result     Json?
+  error      String?
+  startedAt  DateTime?
   finishedAt DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
   @@index([userId])
   @@index([deviceId, status])
 }
 
 model DeviceAction {
-  id              String   @id @default(cuid())
+  id              String    @id @default(cuid())
   userId          String
-  user            User     @relation(fields: [userId], references: [id])
+  user            User      @relation(fields: [userId], references: [id])
   deviceId        String
-  device          Device   @relation(fields: [deviceId], references: [id])
+  device          Device    @relation(fields: [deviceId], references: [id])
   // PLAIN SCALAR on purpose — the device-side lifecycle must survive a
   // pendingAction being deleted; the AgentPendingAction row itself is the
   // approval gate, this row is the device-side realization of it.
@@ -1093,15 +1128,15 @@ model DeviceAction {
   actionType      String
   // "requested" | "approved" | "executing" | "executed" | "failed" |
   // "rejected" | "expired" | "cancelled".
-  status          String   @default("requested")
+  status          String    @default("requested")
   payload         Json?
   result          Json?
   error           String?
-  requestedAt     DateTime @default(now())
+  requestedAt     DateTime  @default(now())
   approvedAt      DateTime?
   executedAt      DateTime?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
   @@index([userId])
   @@index([deviceId, status])
@@ -1152,20 +1187,20 @@ model DevicePowerPolicy {
 }
 
 model ActivityRollup {
-  id            String   @id @default(cuid())
-  userId        String
-  user          User     @relation(fields: [userId], references: [id])
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
   // UTC midnight of the covered day; unique per user so a re-fired sweep
   // can't double-digest (idempotency guard).
-  rollupDate    DateTime
-  digestText    String
+  rollupDate           DateTime
+  digestText           String
   // Plain scalar — the rollup must survive thread deletion.
-  agentThreadId String?
+  agentThreadId        String?
   // REAL Channelry cost of producing this digest (AiUsageLog eventType
   // "assistant_digest" holds the matching spend row).
-  aiCostHundredthsCent Int @default(0)
-  deliveredChannels String[] @default([])
-  createdAt     DateTime @default(now())
+  aiCostHundredthsCent Int      @default(0)
+  deliveredChannels    String[] @default([])
+  createdAt            DateTime @default(now())
 
   @@unique([userId, rollupDate])
   @@index([userId, rollupDate])
@@ -1201,20 +1236,20 @@ model UserEntitlement {
 // scalars so audits survive deletion of the audited object (same rule as
 // DeviceAction). Low-level RMM/Mesh logs stay infrastructure-only.
 model AgentActionAudit {
-  id               String   @id @default(cuid())
-  userId           String?
-  user             User?    @relation(fields: [userId], references: [id])
-  pendingActionId  String?
-  action           String
+  id                  String   @id @default(cuid())
+  userId              String?
+  user                User?    @relation(fields: [userId], references: [id])
+  pendingActionId     String?
+  action              String
   // "created" | "approved" | "rejected" | "executed" | "failed" | "expired".
-  status           String
-  initiatingChannel String  @default("web") // "web" | "telegram" | "api" | "system"
-  approvalChannel  String? // "web" | "telegram" | "admin"
-  sourceDeviceId   String?
+  status              String
+  initiatingChannel   String   @default("web") // "web" | "telegram" | "api" | "system"
+  approvalChannel     String? // "web" | "telegram" | "admin"
+  sourceDeviceId      String?
   destinationDeviceId String?
-  cloneId          String?
-  detail           Json?
-  createdAt        DateTime @default(now())
+  cloneId             String?
+  detail              Json?
+  createdAt           DateTime @default(now())
 
   @@index([userId, createdAt])
   @@index([pendingActionId])
@@ -1232,36 +1267,36 @@ model AgentActionAudit {
 // user's browser at click time). Status: "pending_install" | "active" |
 // "revoked" | "error". Deleting the link never deletes audit rows.
 model VantraLink {
-  id          String   @id @default(cuid())
-  userId      String   @unique
-  user        User     @relation(fields: [userId], references: [id])
-  orgId       String
-  orgName     String
-  agentTokenEnc String?
-  status      String   @default("pending_install")
-  installTokenHash String?
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  user                  User      @relation(fields: [userId], references: [id])
+  orgId                 String
+  orgName               String
+  agentTokenEnc         String?
+  status                String    @default("pending_install")
+  installTokenHash      String?
   installTokenExpiresAt DateTime?
-  installUrl  String?
-  lastSyncedAt DateTime?
-  lastError   String?
+  installUrl            String?
+  lastSyncedAt          DateTime?
+  lastError             String?
   // The Vantra org's agent-domain tier at last sync ("public" | "private").
   // The Add-a-device panel's Public/Private toggle reads this: the toggle is
   // enabled only while the user's org has the private tier (premium, admin
   // granted); free/trial users have a public-only org and the toggle is
   // disabled. Storing the tier per link keeps the decision local — no Vantra
   // round-trip just to render the panel.
-  orgTier     String   @default("public")
+  orgTier               String    @default("public")
   // The private-tier companion org (`sw-<userId>-p` in Vantra), provisioned
   // on demand once the user's premium/admin gate passes. Devices added via
   // the public link silently auto-move into it (Vantra Task 64); the
   // Add-a-device Private tab mints its PowerShell install command directly.
-  privateOrgId String?
+  privateOrgId          String?
   // Last-minted private PowerShell install command (masked in the UI until
   // the user reveals it). Re-minted on demand; never shown without session.
-  privatePsCommand String?
-  privatePsExpiresAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  privatePsCommand      String?
+  privatePsExpiresAt    DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([orgId])
   @@index([status])
@@ -1281,29 +1316,29 @@ model VantraLink {
 // timeoutSeconds matches Vantra's ceiling (90) so a queued command can never
 // outrun what a live run allows.
 model DeviceQueuedCommand {
-  id             String    @id @default(cuid())
-  deviceId       String
-  device         Device    @relation(fields: [deviceId], references: [id])
-  userId         String
-  user           User      @relation(fields: [userId], references: [id])
+  id               String    @id @default(cuid())
+  deviceId         String
+  device           Device    @relation(fields: [deviceId], references: [id])
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
   // "cmd" | "powershell" (Vantra's shell enum).
-  shell          String    @default("powershell")
-  cmd            String
-  timeoutSeconds Int       @default(30)
-  runAsUser      Boolean   @default(false)
+  shell            String    @default("powershell")
+  cmd              String
+  timeoutSeconds   Int       @default(30)
+  runAsUser        Boolean   @default(false)
   // "queued" | "sent" | "failed" | "cancelled".
-  status         String    @default("queued")
-  vantraQueueId  String?
-  error          String?
+  status           String    @default("queued")
+  vantraQueueId    String?
+  error            String?
   // Schedule flavor: "next_checkin" fires on the device's next online poll;
   // "after_wake" additionally waits `wakeDelayMinutes` from the moment the
   // device COMES ON (online transition) before firing — the user-visible
   // "run 10/20 min after the device comes on" option.
-  scheduleKind   String    @default("next_checkin")
-  wakeDelayMinutes Int     @default(0)
-  createdAt      DateTime  @default(now())
-  sentAt         DateTime?
-  updatedAt      DateTime  @updatedAt
+  scheduleKind     String    @default("next_checkin")
+  wakeDelayMinutes Int       @default(0)
+  createdAt        DateTime  @default(now())
+  sentAt           DateTime?
+  updatedAt        DateTime  @updatedAt
 
   @@index([deviceId, status])
   @@index([userId, createdAt])
@@ -1333,4 +1368,166 @@ model DevicePinRequest {
 
   @@index([deviceId, status])
   @@index([userId, createdAt])
+}
+
+// ============================================================================
+// Task 97 — Browser Clone
+// ----------------------------------------------------------------------------
+// Moves a user's browser environment (Chrome/Edge/Firefox profile: cookies,
+// sessions, extensions) from their work PC (Device A, `deviceKind
+// "workstation"`) to a hosted SpaceWorker PC (Device B, `deviceKind "hosted"`),
+// then lets the user drive that browser from the SpaceWorker web app — egressing
+// as the work PC's network identity via the CloneRelay, never the hosted PC's.
+//
+// Michael's directive (plan §PRIORITY P2) is the design law here: the clone is
+// a first-class CAPABILITY of the shared device layer, NOT a parallel subsystem.
+// Consequently this section deliberately REUSES rather than duplicates:
+//   - device identity      -> Device / DeviceHeartbeat (Task 92)
+//   - the approval gate    -> AgentPendingAction via pendingActionId (ONE gate;
+//                             agent-initiated clones only — a manual owner clone
+//                             executes directly, like every other manual tool)
+//   - audit                -> AgentActionAudit (action "browser-clone", carrying
+//                             sourceDeviceId / destinationDeviceId / cloneId)
+//   - device communication -> VantraLink / internal sw routes (no new transport)
+//   - lifecycle + revocation -> `status` here, wired into the SAME total panic
+//                             switch (lib/devices.ts panicStopAllDevices)
+//   - credential boundary  -> clone material is a HIGHER security class than
+//                             telemetry (CROSS-TRACK RULE 6): the AI/agent layer
+//                             receives capabilities + results, NEVER raw cookies,
+//                             passwords or session tokens. Raw capture material
+//                             lives only in the agent->agent transfer.
+// ============================================================================
+
+// The egress relay a clone browser must exit through. One row per source device
+// (the work PC runs michael/browser-clone/cmd/relay). Doubles as the registry
+// AND the current health record — health fields are updated in place, mirroring
+// Device.status/lastSeenAt rather than an append-only log, because the only
+// question the launch path asks is "is this relay usable RIGHT NOW?".
+//
+// The relay token is a security-class secret: only its SHA-256 is stored, and
+// the raw value is handed to the agent at launch via the job env — never
+// persisted, never logged (MT-1 contract: no plaintext secrets anywhere).
+model RelayHealth {
+  id                  String    @id @default(cuid())
+  userId              String
+  user                User      @relation(fields: [userId], references: [id])
+  // Device A — the work PC that hosts the relay (originates the user's IP).
+  deviceId            String
+  device              Device    @relation(fields: [deviceId], references: [id])
+  // Reachable address the launched browser is pointed at, e.g. "127.0.0.1:8118"
+  // (agent-forwarded) or "host:port" when the work PC exposes it directly.
+  addr                String
+  tokenHash           String
+  // "unknown" | "up" | "down"
+  status              String    @default("unknown")
+  lastSeenAt          DateTime?
+  lastCheckAt         DateTime?
+  // Consecutive failed probes. Drives the fail-closed gate (deliverable 4) and
+  // the agent-side watchdog that kills a clone whose relay dropped.
+  consecutiveFailures Int       @default(0)
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  cloneJobs CloneJob[]
+
+  @@unique([deviceId])
+  @@index([userId, status])
+}
+
+// One clone attempt end-to-end. The record is kept (audit value) — only the
+// STAGING MATERIAL (the encrypted capture on the hosted PC) is deleted on
+// revoke/expiry, and inactive records are purged after `clonePurgeAfterDays`
+// (owner 2026-10-01: users may also delete their own records).
+model CloneJob {
+  id                  String       @id @default(cuid())
+  userId              String
+  user                User         @relation(fields: [userId], references: [id])
+  // Device A — capture source (the user's work PC).
+  sourceDeviceId      String
+  sourceDevice        Device       @relation("cloneSource", fields: [sourceDeviceId], references: [id])
+  // Device B — clone destination (a hosted clone PC from the pooled host).
+  // Nullable: capture starts before a pool slot is granted, so a job can exist
+  // (and be retried) while the resource governor is holding it in the queue.
+  destinationDeviceId String?
+  destinationDevice   Device?      @relation("cloneDestination", fields: [destinationDeviceId], references: [id])
+  relayId             String?
+  relay               RelayHealth? @relation(fields: [relayId], references: [id])
+  // Lifecycle: "pending" | "capturing" | "transferring" | "injecting" |
+  // "active" | "expired" | "revoked" | "failed".
+  status              String       @default("pending")
+  // Kept separate from `status` because a clone can be fully captured and
+  // transferred yet never launched, and a launched clone can be stopped without
+  // ending its record. "not_launched" | "launching" | "running" | "stopped".
+  launchState         String       @default("not_launched")
+  // The ONE gate. Set when the clone came from an approved agent-initiated
+  // proposal; NULL for a manual owner-initiated clone (no approval — owner rule:
+  // approvals are for agents only).
+  pendingActionId     String?
+  // Egress policy ACTUALLY used: "relay" (same IP as the work PC — default,
+  // fails closed) | "direct" (hosted PC's own IP — PREMIUM ONLY, explicit
+  // `--proxy-optional` path). Never a silent fallback; also written to the audit.
+  egressMode          String       @default("relay")
+  browser             String
+  profileName         String?
+  // Encrypted capture location on the hosted PC. Cleared (and the material
+  // deleted) on revoke/expiry/purge — records outlive material by design.
+  stagingRef          String?
+  // Evidence only — sizes and counts, never content.
+  archiveBytes        Int?
+  fileCount           Int?
+  // MT-1 capture exit code: 0 success | 1 partial | 2 fail.
+  captureExitCode     Int?
+  error               String?
+  // Q1 (DESIGN_BROWSER_CLONE_UI_AND_FLOW §7): both come from AdminSetting
+  // (cloneIdleTtlMinutes / cloneHardTtlHours) and are stamped per job so a later
+  // admin change never retroactively expires a live session.
+  idleExpiresAt       DateTime?
+  expiresAt           DateTime?
+  lastUsedAt          DateTime?
+  revokedAt           DateTime?
+  // 30-day inactive purge (owner 2026-10-01). Swept by the clone-sweep timer.
+  purgeAfter          DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  session HostedBrowserSession?
+
+  @@index([userId, createdAt])
+  @@index([sourceDeviceId, status])
+  @@index([destinationDeviceId, status])
+  @@index([status, purgeAfter])
+}
+
+// The live browser process on the hosted PC that a clone launched. This is the
+// RAM consumer the admin caps (`cloneSessionsMaxConcurrent`) and the thing the
+// panic switch must kill. Exists only while the session runs.
+model HostedBrowserSession {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  // The hosted clone PC running the browser.
+  deviceId   String
+  device     Device    @relation(fields: [deviceId], references: [id])
+  cloneJobId String?   @unique
+  cloneJob   CloneJob? @relation(fields: [cloneJobId], references: [id])
+  // "starting" | "running" | "stopped" | "failed"
+  status     String    @default("starting")
+  // Loopback CDP/debug endpoint on the hosted PC that the viewer drives.
+  cdpPort    Int?
+  viewUrl    String?
+  // The address the session actually egressed as, captured at launch: the proof
+  // that "same IP" really meant the work PC's IP (relay) or the hosted PC's
+  // (direct). Recorded, never inferred.
+  egressIp   String?
+  egressMode String    @default("relay")
+  startedAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  stoppedAt  DateTime?
+  expiresAt  DateTime?
+  error      String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId, status])
+  @@index([deviceId, status])
 }
