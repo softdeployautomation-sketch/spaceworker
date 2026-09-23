@@ -47,12 +47,18 @@
 | C2 | `TASK_103_CONSOLE_FULLSCREEN_TOOLBOX_SPLIT_PING_REBOOT.md` | ⤢ true full-screen console, toolbox split (4 groups), **Ping**, **Reboot** | — | RECORDED |
 | C3 | `TASK_104_OVERLAY_SHELL_POPUPS_AND_SILENT_LAUNCHER.md` | Overlay shell-popup (Start menu / right-click) debug + silent app launcher toolbelt | — | RECORDED |
 | G1 | `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` | Server-side resource governor that queues high-RAM features | — | NOT STARTED |
-| B1 | `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md` | Verify the paused CloneJob migration + admin cap/TTL settings | — | **WIP paused** (`b827170`, migration NOT applied) |
+| B1 | `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md` | Verify the paused CloneJob migration + admin cap/TTL settings | — | **DONE · DEPLOYED · VERIFIED 2026-09-23** |
 | B2 | `TASK_108_CLONE_AGENT_TRANSPORT.md` | Vantra-side clone endpoints on the shared Device layer (capture / receive+inject / launch / revoke / relay) | B1 | NOT STARTED |
 | B3 | `TASK_109_CLONE_ORCHESTRATOR.md` | SpaceWorker `lib/clone.ts` state machine + TTL + panic + staging lifecycle | B1, B2 | NOT STARTED |
 | B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | NOT STARTED |
 | B5 | `TASK_111_CLONE_CONSOLE_UI.md` | Browser clone tab + Summary card + history + full-screen session window | B4, C2 | NOT STARTED |
 | B6 | `TASK_112_CLONE_EXPIRY_AND_PURGE.md` | TTL sweep, staging deletion, 30-day inactive purge, relay health cron | B3 | NOT STARTED |
+
+### Out-of-band (found during pipeline work — NOT clone-pipeline bits)
+
+| # | Task file | Scope | Status |
+|---|---|---|---|
+| OOB-1 | `TASK_113_SCHEMA_DRIFT_DEVICE_LAYER_FKS.md` | Pre-existing Task-92 drift: 13 device-layer FKs are `ON DELETE CASCADE` in the live DB where the datamodel declares `RESTRICT` (+1 reversed RESTRICT→SET NULL, +1 index name). The DB currently **destroys** device/audit rows on delete — the exact thing RULE 5 forbids | NOT STARTED |
 
 ### Dependency graph
 
@@ -162,6 +168,27 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   console Summary row below the header chip). Chip wins; the freed list cell is the
   reserved slot for Ping (C2/MISSING-1). `User activity` reports idle only, `—` when
   offline.
+- 2026-09-23 — **B1 DEPLOYED + VERIFIED.** Branch `agent/task-107-clone-schema`
+  (`399a804`) merged to `main` as `7f27457`. DB backed up first
+  (`/root/spaceworker-db.bak-t107.sql`), `prisma migrate deploy` → *all migrations
+  applied*, `generate` → build (`trmm`, 0 errors) → restart. Live checks: migrate
+  status **up to date**; 3 tables + 14 indexes (incl. both new sweep indexes) present;
+  9 `AdminSetting` clone columns with defaults exactly matching
+  `CLONE_SETTING_DEFAULTS`; `GET /api/admin/clone-limits` **403 unauth**, **full payload
+  with a real admin session**; `PATCH {"maxConcurrent":3}` persisted then restored;
+  `0` / unknown key / non-int all **400**; `/admin` 200 with the new block in the built
+  chunk. Acceptance #2 (the shadow-DB test the agent couldn't run) satisfied against the
+  **live** DB instead: drift filtered to clone objects = **none**.
+- 2026-09-23 — **OOB-1 filed (`TASK_113`) from B1's live drift check.** The 87-line drift
+  is **entirely pre-existing Task-92** and contains **zero** clone references — B1 is
+  clean. Real mechanism (corrected after reading `pg_constraint`): the FKs exist with the
+  **same names** but the **wrong delete actions** — **13 × DB `CASCADE` where the
+  datamodel declares `RESTRICT`**, **1 reversed** (`DeliverabilityCheck_seedMailboxId_fkey`
+  DB RESTRICT / schema SET NULL), plus one index-name drift
+  (`…relationType_k` → `…relationTy_key`). So the DB silently cascades device/audit
+  deletes — the exact failure RULE 5 exists to prevent. Verified behaviourally inert
+  today (no app code deletes a `Device`/`User`). Fix = Prisma's own diff output as an
+  additive migration; owner applies.
   Also during this deploy: fixed the stale "build from `/opt/spaceworker/app`" line
   in `HOW_WE_MOVE_FAST.md` §1, recorded the **Vantra builds as `vantra`, not `trmm`**
   `.next`-ownership trap (§6), and wrote up the MeshCentral `noauth` root-cause trail

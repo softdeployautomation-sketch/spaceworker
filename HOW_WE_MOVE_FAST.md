@@ -280,6 +280,63 @@ Added 2026-09-22 (Task 92):
   logic bug. This review's gates found a blocking defect that a "looks fine" read would
   have missed.
 
+## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
+
+`prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.
+Hand-written migration SQL (this repo's convention) can create a table, index or FK that
+is *almost* what `schema.prisma` declares — and Prisma will happily keep applying
+migrations while the two silently diverge.
+
+**The check (run on the VPS, after `migrate deploy`):**
+
+```bash
+cd /opt/spaceworker
+sudo -u trmm env HOME=/home/trmm npx prisma migrate diff \
+  --from-schema-datasource prisma/schema.prisma \
+  --to-schema-datamodel  prisma/schema.prisma \
+  --script
+```
+
+`--from-schema-datasource` **introspects the live database**; `--to-schema-datamodel` is
+the schema file. **In sync ⇒ the output is exactly `-- This is an empty migration.`**
+Anything else is real drift — read it, don't dismiss it.
+
+**When the drift involves an object you just added, filter before panicking:**
+
+```bash
+... --script > /tmp/drift.sql
+grep -niE 'clonejob|relayhealth|clone' /tmp/drift.sql   # empty = YOUR change is clean
+```
+
+This is how B1 was cleared: 87 lines of drift existed, but **zero** referenced the clone
+objects, so B1 was in sync and the drift was pre-existing (Task 92).
+
+**Two traps this check caught (2026-09-23):**
+
+1. **`DROP CONSTRAINT` + `ADD CONSTRAINT` on the *same name* ≠ "missing FK".** It means
+   the constraint exists but differs in a property Prisma can't `ALTER` — in practice the
+   **`ON DELETE` action**. Task 92's hand-written SQL used `ON DELETE CASCADE` where the
+   datamodel declares `RESTRICT`, across the whole device layer. The diff looked like a
+   re-add; the reality was a *delete-action mismatch* that silently destroys audit rows.
+   **Always confirm with the catalog, not the diff prose:**
+   ```sql
+   SELECT conrelid::regclass AS tbl, conname,
+          CASE confdeltype WHEN 'a' THEN 'NO ACTION' WHEN 'r' THEN 'RESTRICT'
+               WHEN 'c' THEN 'CASCADE' WHEN 'n' THEN 'SET NULL'
+               WHEN 'd' THEN 'SET DEFAULT' END AS on_delete
+   FROM pg_constraint
+   WHERE contype = 'f' AND connamespace = 'public'::regnamespace
+   ORDER BY 1,2;
+   ```
+2. **A drifted FK also drifts its index name.** Postgres truncates identifiers to 63
+   bytes, so a hand-written index can end up as `…relationType_k` while the datamodel
+   declares `…relationTy_key`; Prisma reports that as `-- RenameIndex`.
+
+**Don't skip the backup.** `migrate deploy` is usually additive, but a corrective
+migration (like TASK_113) touches live constraints — `pg_dump` first, always.
+
+
+
 ## 7. General discipline
 
 - Full-project `npx tsc --noEmit -p .` after every batch of edits, before deploying — catches JSX/type breakage immediately (caught a bad JSX restructure this way mid-session).
@@ -343,5 +400,3 @@ Added 2026-09-22 (Task 92):
   strips comments/strings/here-strings and checks bracket balance. Note the trap it
   taught us — PowerShell here-strings OPEN with `@'`/`@"` and CLOSE with `'@`/`"@`
   (reversed), so a naive matcher reports false positives on valid files.
-
-
