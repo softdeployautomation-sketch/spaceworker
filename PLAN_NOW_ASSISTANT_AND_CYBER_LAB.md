@@ -290,6 +290,35 @@ P2 and P3 land before the phone loop so the flagship demo works end-to-end:
 **PC is off → agent wakes it or uses the hosted clone browser → checks email →
 drafts reply → owner approves from phone → sent.**
 
+## ACTIVE QUEUE (owner-directed 2026-10-01 — work these in order)
+
+The product BUILD ORDER above is unchanged; this is the **immediate tactical
+queue** the owner set after live testing. Each item is a task doc; do not start
+the next until the current one is integrated AND deployed AND owner-verified.
+
+1. **TASK_97 — Browser Clone: pull Michael's PR #2, test it, integrate it.**
+   (`michael/browser-clone-scripts`, open, +9,329). Review → static-parse gate →
+   VM functional test → integrate, then build the CloneJob pipeline.
+2. **TASK_104 — Overlay: shell popups above the maintenance screen.** Debug with
+   the new `overlay-status.log` + log-only mode (identify local-vs-injected
+   trigger and the owning shell process), then ship the best suppression
+   (`WH_SHELL` re-raise) and — regardless — the **silent app launcher** toolbelt
+   (discover apps per device, launch Chrome/Firefox/URL/path, no approval).
+3. **TASK_103 — Console bugs:** ⤢ full-screen expand (new top-level route +
+   `?tab=` persistence), toolbox split into **Session / Power / Security /
+   Diagnostics**, **Ping** button, **Reboot** in the toolbox (manual-direct).
+4. Then resume the product order: TASK_94 (Telegram approval) → TASK_96 (WoL) →
+   TASK_99 / TASK_101 / TASK_100 / TASK_98, and TASK_102 phases 2–4 when Wilk is
+   online (see that file).
+
+**Standing rules that apply to every item above** (owner directives, 2026-10):
+- Manual own-device actions execute **directly**; only **agent-initiated**
+  actions use the approval gate.
+- Any RAM-consuming feature ships with its **admin-settable limits** (CROSS-TRACK
+  RULE 7) — never hardwired.
+- Deploys follow `HOW_WE_MOVE_FAST.md` §2 exactly (`--exclude='.env'`, backup
+  first, build as the service user, restart, live-verify).
+
 ## FINALIZED DECISIONS (owner + Michael, 2026-09-22 — every question answered)
 
 - **M6 (Michael's directive) — ANSWERED:** Browser Clone replaces the
