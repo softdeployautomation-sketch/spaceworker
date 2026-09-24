@@ -1660,8 +1660,8 @@ function CloneSetupCard(props: {
       <p className="mt-1 text-xs text-fg-muted">
         One click installs the clone engine on this PC through the agent — nothing to download or
         install by hand. Same-IP cloning needs <span className="text-fg">this PC</span> set up (it
-        carries your IP); every clone also needs a <span className="text-fg">clone host</span> to
-        run the copied browser.
+        carries your IP); the copied browser itself runs on{" "}
+        <span className="text-fg">SpaceWorker’s hosted PC</span>, never on a customer machine.
       </p>
       <div className="mt-2 grid gap-2">
         {row(
@@ -1678,14 +1678,17 @@ function CloneSetupCard(props: {
           "Clone host",
           hostedReady
             ? "This PC runs the copied browser for clones."
-            : "Makes this PC one of the machines a cloned browser can run on.",
+            : "Makes this PC one of SpaceWorker’s hosted PCs that a cloned browser can run on.",
           hostedReady,
           "Set up as clone host",
           // TASK_116 — "ready" alone was the misleading part of the owner's
-          // screenshot: this PC is a valid host, just not for clones that
-          // capture FROM this same PC. Say so where the badge is read.
+          // screenshot. TASK_117 corrects the CAUSE of the confusion: the clone
+          // host is SpaceWorker's OWN hosted browser PC (Device.deviceKind
+          // "hosted"), never a customer's second machine — so the old line here
+          // ("You need one more PC set up as clone host") told the user to
+          // provision their own hardware for a service we run.
           status?.selfIsHost && status?.hostedAvailable === false
-            ? "Ready — but a clone can't use it while cloning FROM this PC. You need one more PC set up as clone host."
+            ? "Ready — but not for a clone of this same PC: a clone's browser runs on SpaceWorker's hosted PC, never on the machine it captures from."
             : undefined,
         )}
       </div>
@@ -1799,38 +1802,40 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
               {/* TASK_116 (owner 2026-09-24: "clone host is ready, and i clicked
                   start clone, and its still say no host"): the generic line below
                   told the owner to press "Set up as clone host" on a PC they had
-                  ALREADY set up — the one PC they owned. The reason now decides
-                  the sentence. Start stays ENABLED on purpose: this flag can be a
-                  false negative (a liveness refresh can fail), and the server is
+                  ALREADY set up — the one PC they owned.
+                  TASK_117 (owner 2026-09-24: "i dont understand the sc wilk stuff
+                  ... we cant just run test [on wilk]") corrects the CAUSE: the clone
+                  host is SpaceWorker's OWN hosted browser PC, not a customer's
+                  second machine. So none of these three sentences may instruct the
+                  user to set up clone-host hardware — that is a SpaceWorker-side
+                  provisioning task. Start stays ENABLED on purpose: this flag can be
+                  a false negative (a liveness refresh can fail), and the server is
                   the real gate — it refuses with copy that matches the reason. */}
               {setup.hostBlockReason === "self_only" ? (
                 <>
-                  <span className="font-medium">This PC is the clone host — and it can’t be.</span> A clone
-                  can never run on the same machine it captures from, so one PC is not enough. Run{" "}
-                  <span className="font-medium">“Set up as clone host”</span> above{" "}
-                  <span className="font-medium">on a second PC</span> and keep that one online — then cloning
-                  from here works.
+                  <span className="font-medium">This PC is the clone host — but it can’t host itself.</span>{" "}
+                  A clone’s browser runs on <span className="font-medium">SpaceWorker’s hosted PC</span>, never
+                  on the machine it captures from. Nothing is wrong with this PC — cloning needs a hosted PC on
+                  our side, and none is set up yet.
                 </>
               ) : setup.hostBlockReason === "offline" ? (
                 <>
                   <span className="font-medium">
-                    Your clone host{setup.offlineHostNames.length === 1 ? " is" : "s are"} offline.
+                    SpaceWorker’s hosted browser PC{setup.offlineHostNames.length === 1 ? " is" : "s are"} offline.
                   </span>{" "}
                   {setup.offlineHostNames.length > 0 && (
                     <>
-                      Clone hosts: <span className="font-medium">{setup.offlineHostNames.join(", ")}</span>.{" "}
+                      (<span className="font-medium">{setup.offlineHostNames.join(", ")}</span>){" "}
                     </>
                   )}
-                  Bring one online — the copied browser runs there, so a clone keeps running while your own PC is
-                  used.
+                  The copied browser runs there, so a clone can’t start until it’s back — try again shortly.
                 </>
               ) : (
                 <>
-                  <span className="font-medium">No clone host yet.</span> A clone&apos;s browser runs on a clone
-                  host, so this blocks every clone regardless of network. Clone hosts are counted{" "}
-                  <span className="font-medium">apart from this PC</span> — a clone cannot run on the same
-                  machine it captures from. Run <span className="font-medium">“Set up as clone host”</span>{" "}
-                  above on a second PC and keep that one online.
+                  <span className="font-medium">No hosted browser PC is available yet.</span> A clone’s browser
+                  runs on <span className="font-medium">SpaceWorker’s hosted PC</span> — never on your own
+                  machine — so this blocks every clone regardless of network. Nothing for you to install: this
+                  is provisioned on our side.
                 </>
               )}
             </li>

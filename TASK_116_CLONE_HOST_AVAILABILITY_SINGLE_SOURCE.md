@@ -79,16 +79,18 @@ had no reason to connect them.
 - **The hosted pool is still not provisioned.** Per
   `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` §7 the hosted PC is meant to be
   **pooled/SpaceWorker-run**; today the pool is only ever *counted*
-  (`app/api/admin/clone-limits/route.ts`) and never created. With one online PC
-  the honest answer is `self_only`, and that is what the console now says
-  instead of pointing at a button the owner already pressed.
-- **`WilkSF9` is offline and carries no capabilities.** It needs the one-click
-  **"Set up as clone host"** (`TASK_114`) once it is online. That is owner
-  action on hardware, not a code path.
-- **A clone still needs two devices.** Removing that requirement would mean
-  either same-device hosting (rejected: capture runs in the interactive session
-  whose profile is being copied, and `install-hosted.ps1`/`install-relay.ps1`
-  own the same `%ProgramData%\TacticalRMM\CloneTool` tree) or a real pool.
+  (`app/api/admin/clone-limits/route.ts`) and never created — nothing in the
+  codebase ever *writes* `Device.deviceKind = "hosted"`. With one online PC the
+  honest answer is `self_only`, and that is what the console now says instead of
+  pointing at a button the owner already pressed.
+- **CORRECTED (TASK_117).** This file originally said `WilkSF9` "needs the
+  one-click Set up as clone host". **That was wrong and is withdrawn:**
+  `WilkSF9` is a **customer's** PC, and the clone host is supposed to be
+  **SpaceWorker's own hosted browser PC** — never a customer machine. See
+  `TASK_117_HOSTED_POOL_PROVISIONING.md`.
+- **A clone still needs two machines**: the work PC (capture + relay) and a
+  hosted PC (where the copied browser runs). What was mis-stated before is only
+  *whose* the second one is: ours, not the user's.
 
 ## Verification plan
 

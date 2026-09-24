@@ -511,18 +511,25 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     if (!destinationDeviceId) {
       // Same lead phrase in every case: it is load-bearing for REFUSALS in
       // app/api/devices/[deviceId]/clones/route.ts (→ 409
-      // `no_hosted_clone_device`). The TAIL is what has to be right, because
-      // the generic "click Set up as clone host" line sent the owner round a
-      // loop they had already completed (2026-09-24: one PC, set up as clone
-      // host, Start still refused).
+      // `no_hosted_clone_device`). The TAIL is what has to be right.
+      //
+      // TASK_117 (owner 2026-09-24: "i dont understand the sc wilk stuff … sc is
+      // for testing and wilk is a customer, we cant just run test that could
+      // trigger a popup"): the clone host is SpaceWorker's OWN hosted browser PC
+      // (`Device.deviceKind = "hosted"`), NOT a second machine belonging to the
+      // user. The previous tails told the user to click "Set up as clone host" on
+      // their own hardware — which is why the owner set up `Sc` as a clone host and
+      // still got refused, and which would have pointed them at a real customer's
+      // PC. None of these sentences may hand a SpaceWorker-side provisioning task
+      // to the user.
       const tail =
         hosts.reason === "self_only"
-          ? "The clone host on your account is this same PC — and a clone cannot run on the machine it captures from. Set up a second PC as clone host (\"Set up as clone host\" in the Device setup card, on the other machine) and keep that one online, then start again."
+          ? "The only clone host on this account is this same PC, and a clone can never run on the machine it captures from. The copied browser runs on SpaceWorker's hosted PC — nothing to install on your side; a hosted PC has not been provisioned yet."
           : hosts.reason === "offline"
-            ? `Your clone host${hosts.offlineHostNames.length === 1 ? ` (${hosts.offlineHostNames[0]})` : "s"} is offline — bring ${
-                hosts.offlineHostNames.length === 1 ? "it" : "one of them"
-              } online, then start the clone again.`
-            : 'In the Device setup card above, click "Set up as clone host" on a PC you keep online, then start the clone again.';
+            ? `SpaceWorker's hosted browser PC${
+                hosts.offlineHostNames.length === 1 ? ` (${hosts.offlineHostNames[0]})` : "s"
+              } is offline — the copied browser runs there, so try again shortly.`
+            : "The copied browser runs on SpaceWorker's hosted PC, never on your own machine — nothing to install on your side; a hosted PC has not been provisioned yet.";
       return refuse(
         "no_hosted_clone_device",
         `No hosted clone PC is available — every clone runs its browser on one. ${tail}`

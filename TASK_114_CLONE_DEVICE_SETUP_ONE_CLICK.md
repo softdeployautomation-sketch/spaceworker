@@ -182,27 +182,36 @@ up" must not be restated as "the clone works".
    `no_hosted_clone_device`. Now it counts only OTHER online hosts, and the copy
    says to set the host up on a **second** PC.
 
-### THE REMAINING BLOCKER (hardware, not code)
+### THE REMAINING BLOCKER — and a correction (TASK_117, owner 2026-09-24)
 
-A clone needs **two DIFFERENT online devices**: a source (capture + relay) and a
-clone host (where the browser actually runs). Today the fleet is `Sc` (online,
-source-ready) and `WilkSF9` (offline ~2 h, no capabilities).
+A clone needs **two machines**: the work PC (capture + relay) and a hosted PC
+(where the copied browser runs). Today the fleet is `Sc` (online, source-ready —
+the owner's **test** VM) and `WilkSF9` (a **customer's** PC).
 
-There is **no pool to fall back on**: `Device.deviceKind = "hosted"` is only ever
-**counted** (`app/api/admin/clone-limits/route.ts`) — nothing in the codebase
-writes it. The one-click button is the *only* way to obtain a clone host, which
-is the intended design (a VPS cannot be the clone host: the engine launches a
-**visible** browser and needs a real desktop session).
+`Device.deviceKind = "hosted"` is only ever **counted**
+(`app/api/admin/clone-limits/route.ts`) — nothing in the codebase writes it, so
+the pool is permanently 0.
 
-So with one online PC no clone can complete regardless of code. To get the first
-ever successful clone, either:
+**Two statements that were here are withdrawn as wrong:**
 
-- **A** — bring `WilkSF9` online and set it up as clone host, then clone
-  **Sc → Wilk** (Sc is already source-ready); or
-- **B** — bring `WilkSF9` online, set it up as source ("Set up this PC"), and
-  clone **Wilk → Sc** (matches the real-world story: carry the browser off the
-  work PC onto a box that stays running).
+1. *"The one-click button is the only way to obtain a clone host, which is the
+   intended design."* — Wrong. `TASK_114`'s "Set up as clone host" button was
+   built for **SpaceWorker's own** hosted PCs. It is not a customer task, and
+   the product design (`DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` §7, the plan's
+   "dedicated hosted devices") never intended a customer machine to host clones
+   of other sessions.
+2. *"A VPS cannot be the clone host: the engine launches a visible browser and
+   needs a real desktop session."* — Wrong, and the engine says so itself:
+   `runPreflight` has an explicit branch documented for "**POSIX hosted
+   servers**", `pkg/browser/detect.go` resolves browsers from `PATH` first
+   ("POSIX dev hosts") before falling back to Windows install paths, and the
+   platform-specific files exist for non-Windows builds (`dpapi_other.go`,
+   `disk_free_unix.go`, `injector_posix_test.go`). `DESIGN_…` §5 states the
+   engine "**already launches headless for validation**" — and the technician
+   sees the session through the app's viewer, which is exactly how the existing
+   private-browser (`browser-server/` + Neko container) already works.
 
-`out of scope` above stays true: **pooling/provisioning hosted clone PCs is
-still unbuilt**, and it is now the single item that would let a one-PC owner
-clone at all.
+So the fix is to **provision the pooled hosted PC we always meant to have** —
+scoped in `TASK_117_HOSTED_POOL_PROVISIONING.md`. The two `Sc → Wilk` /
+`Wilk → Sc` options that were listed here are **withdrawn**: `WilkSF9` is a
+customer's machine and must not be used as test or clone infrastructure.
