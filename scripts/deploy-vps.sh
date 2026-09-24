@@ -69,7 +69,15 @@ run_remote() { ssh -i "$SSH_KEY" -o BatchMode=yes "$VPS_HOST" "$@"; }
 
 # --- Server-only runtime that must EXIST after any deploy ---------------------
 # Kept as one list so the exclude set and the assertion can never drift apart.
-REQUIRED_PATHS=(".env" ".next" "node_modules" "static/maintenance.html")
+# Overridable for non-SpaceWorker targets: Vantra has no `static/maintenance.html`
+# (nginx serves that one from the SpaceWorker dir), so deploying it with the
+# default list would abort on a path that was never expected there.
+#   REQUIRED_PATHS=".env .next node_modules" APP_DIR=/opt/vantra … deploy-vps.sh
+if [ -n "${REQUIRED_PATHS_OVERRIDE:-}" ]; then
+  read -r -a REQUIRED_PATHS <<< "$REQUIRED_PATHS_OVERRIDE"
+else
+  REQUIRED_PATHS=(".env" ".next" "node_modules" "static/maintenance.html")
+fi
 
 # Paths that must never be deleted by a sync (dirs are matched recursively).
 # NOTE: deliberately NOT protected — `mint-session.mjs` and similar one-off

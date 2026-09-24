@@ -81,3 +81,38 @@ control. The cloud runner has no real pointer (`GetCursorInfo` `hCursor=0x0`,
    installed on the server."* — not a generic 502.
 
 Record the measured result for (2) in this file either way.
+
+## "Which style actually ran?" — now answerable (2026-09-24)
+
+Owner: *"the maintenance overlay still shows the start menu in the device screen,
+but this one is faster … just confirm if it's the new exe that's in the flow, so
+we are sure it's not the same flow."*
+
+**It could not be answered, and that was a defect in this task.** The style is
+resolved in `startMaintenanceOverlay` (custom image → `"exe"` → default script)
+and the resolved choice was returned to nobody; SpaceWorker then wrote a
+`device_maintenance-start` audit row with **`detail: null`**. Two real overlay
+starts on device `Sc` (14:59:56Z and 15:03:25Z) therefore cannot be attributed to
+either flow after the fact — the exact question being asked.
+
+Fixed (`vantra/e09d3f7` + `spaceworker/afbe661`):
+
+| Piece | Change |
+| --- | --- |
+| `MaintenanceStyleUsed = "update" \| "exe" \| "custom-image"` | `startMaintenanceOverlay` now **returns** which flow it launched. `custom-image` is its own value — the uploaded image runs through OUR script, so calling it `"update"` would rebuild the same ambiguity |
+| Vantra `sw` route | echoes it as `style` in the JSON response |
+| SpaceWorker `lib/device-tools.ts` | records `detail: { style, requested }` on the audit row; falls back to the request when Vantra is an older deploy that does not echo, so a mixed-version deploy never writes a guess as fact |
+
+### How to confirm the style yourself, without asking anyone
+
+Device console → **Activity** (or Admin → audit) → the `device_maintenance-start`
+row now carries `style`. `"exe"` = the owner-supplied binary; `"update"` = our
+PowerShell fake-Windows-Update screen; `"custom-image"` = your uploaded picture.
+
+### Fast vs slow is expected, and is NOT the tell
+
+The exe being visibly faster is consistent with the evidence and does not by
+itself prove the new path ran: our PowerShell style pays a one-off `Add-Type`
+compile of five P/Invoke blocks at launch (see the TASK_104 finding). Use the
+audit row above as the authority, not the speed.
+
