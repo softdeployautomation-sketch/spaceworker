@@ -1523,6 +1523,9 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
         </label>
         <span className="block text-xs text-fg-muted">
           Network
+          {!premiumLoaded ? (
+            <span className="mt-1 block text-xs text-fg-muted">Checking your plan…</span>
+          ) : (
           <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
             <button
               onClick={() => setEgress("relay")}
@@ -1547,6 +1550,7 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
               SpaceWorker&apos;s IP{!directSelectable ? " · Premium" : ""}
             </button>
           </span>
+          )}
         </span>
       </div>
       {!directSelectable && (
