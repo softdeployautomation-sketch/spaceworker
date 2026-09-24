@@ -50,7 +50,7 @@
 | B1 | `TASK_107_CLONE_SCHEMA_AND_ADMIN_CAPS.md` | Verify the paused CloneJob migration + admin cap/TTL settings | — | **DONE · DEPLOYED · VERIFIED 2026-09-23** |
 | B2 | `TASK_108_CLONE_AGENT_TRANSPORT.md` | Vantra-side clone endpoints on the shared Device layer (capture / receive+inject / launch / revoke / relay) | B1 | **DONE · DEPLOYED · VERIFIED 2026-09-23** (7 routes live; 401/404/400/503 boundaries proven; guard 500→404 hotfix `23f9919`; owner-only: real device capture/launch) |
 | B3 | `TASK_109_CLONE_ORCHESTRATOR.md` | SpaceWorker `lib/clone.ts` state machine + TTL + panic + staging lifecycle | B1, B2 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (57/57 live harness; relay fails closed before capture; panic via the real route; owner-only: real device capture/launch) |
-| B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | NOT STARTED |
+| B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (20/20 live harness; 5 routes live; owner-only: real device capture/launch, direct-403 copy, 202 copy) |
 | B5 | `TASK_111_CLONE_CONSOLE_UI.md` | Browser clone tab + Summary card + history + full-screen session window | B4, C2 | NOT STARTED |
 | B6 | `TASK_112_CLONE_EXPIRY_AND_PURGE.md` | TTL sweep, staging deletion, 30-day inactive purge, relay health cron | B3 | NOT STARTED |
 
@@ -231,4 +231,20 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   `deleteClone` terminal-only + owner-scoped, and no secret-looking material on any
   row. Remaining owner-only: real capture/launch against a physical Windows device
   (TASK_110 supplies the routes that will drive it).
+- 2026-09-24 — **B4 DEPLOYED + VERIFIED.** `agent/task-110-clone-api`
+  fast-forwarded into `main` (`75c789d`, pushed; code-only bit → no migration).
+  `rsync --files-from … --exclude='.env'` of the 5 route files (`md5` on the box
+  matches local byte-for-byte), built as `trmm` from `/opt/spaceworker`
+  (`✓ Compiled successfully`, all 5 route slots in the build output), service
+  restarted, active, landing/login 200, zero new journal errors. Acceptance ran
+  as a **disposable live harness** (temp users + devices + relay + clone-host
+  cap + assistant grant; every row deleted, residue re-checked to zero —
+  CloneJob / User / Device / RelayHealth 0/0/0/0): **20/20 PASS** — bad
+  egress/browser/role/status → 400 JSON; no entitlement → 403 with zero
+  CloneJob; unowned device → 404; relay + pool → 201; cross-user
+  GET/revoke/advance/session → 404 ×4; owner GET 200; history lists row;
+  pre-launch session 404; DELETE live → 409 `clone_not_terminal`; revoke 200 +
+  idempotent; DELETE terminal 200; `deleted` filtered from history. Remaining
+  owner-only: `direct`-without-premium 403 copy, 202 queue copy, real device
+  capture/launch.
 

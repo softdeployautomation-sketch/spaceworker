@@ -1,6 +1,6 @@
 # Task 110 (bit B4) — Clone API routes + gating
 
-**Status: NOT STARTED.**
+**Status: DONE · DEPLOYED · VERIFIED 2026-09-24** (20/20 live harness; 5 routes live).
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **B4**). Depends on **B3** (`TASK_109`) + **G1** (`TASK_105`).
 **Plan:** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY P2, §CROSS-TRACK RULES 1/7.
 
@@ -68,6 +68,24 @@ Route rules:
 - Governor at capacity → **202** with the queue reason (not a 500, not a silent success).
 - Every route returns **JSON** even on failure (no HTML body ever reaches the client).
 - No TRMM/Mesh URL string appears in the SpaceWorker diff for this pipeline.
+
+## Deploy record (owner, 2026-09-24)
+
+- Branch `agent/task-110-clone-api` (`75c789d`, 5 files, 568 insertions, no other
+  paths touched) fast-forwarded into `main`, pushed.
+- Code-only bit: no migration. Rsync `--files-from` + `--exclude='.env'` of the 5
+  route files; `md5` matches local; build as `trmm` from `/opt/spaceworker`
+  (`Compiled successfully`, all 5 route slots present); service restarted, active,
+  landing/login 200, zero new journal errors.
+- Live harness (disposable, `.mts` + stub-server-only, deleted after run):
+  **20/20 PASS** — bad egress/browser/role/status → 400 JSON; no entitlement →
+  403 with zero CloneJob created; unowned device → 404; relay + hosted pool →
+  201; cross-user GET/revoke/advance/session → 404 ×4; owner GET 200; history
+  lists row; pre-launch session 404; DELETE live → 409 `clone_not_terminal`;
+  revoke 200 + idempotent; DELETE terminal 200; `deleted` filtered from history.
+  Residue re-checked to zero (CloneJob/User/Device/RelayHealth 0/0/0/0).
+- Remaining owner-only: `direct`-without-premium 403 copy, 202 queue copy, real
+  device capture/launch (`advance` drives device RPC — not exercised live here).
 
 ## Report back
 
