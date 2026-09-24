@@ -1,6 +1,6 @@
 # Task 112 (bit B6) — Clone expiry, staging teardown + 30-day purge
 
-**Status: NOT STARTED.**
+**Status: DONE · DEPLOYED · VERIFIED 2026-09-24.**
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **B6**). Depends on **B3** (`TASK_109`).
 **Plan:** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §CROSS-TRACK RULE 7; owner decisions (records kept · staging deleted at terminal · 30-day inactive purge).
 
