@@ -62,7 +62,7 @@ const REFUSALS: readonly { pattern: RegExp; code: string; status: number }[] = [
   { pattern: /No egress relay is registered/, code: "relay_not_registered", status: 409 },
   { pattern: /No hosted clone PC is available/, code: "no_hosted_clone_device", status: 409 },
   {
-    pattern: /different devices|must be a hosted clone PC|Egress must be|Unsupported browser|Profile name may only/,
+    pattern: /different devices|same PC it captures from|must be a hosted clone PC|Egress must be|Unsupported browser|Profile name may only/,
     code: "clone_refused",
     status: 400,
   },

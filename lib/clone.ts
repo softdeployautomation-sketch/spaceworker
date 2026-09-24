@@ -15,7 +15,9 @@ import {
   runCloneReceive,
   runCloneRevoke,
 } from "./clone-transport";
+import { refreshDeviceLiveness, hostAvailability } from "./clone-hosts";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
+
 import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
 
 // TASK_109 — THE CloneJob orchestrator. One module, exported functions only.
@@ -355,25 +357,12 @@ async function requestCloneSlot(
   return { granted: true };
 }
 
-/** Auto-pick the pooled hosted PC: clone-host capability, online, != source. */
-async function pickHostedCloneDevice(
-  userId: string,
-  excludeDeviceId: string
-): Promise<string | null> {
-  const caps = await db.deviceCapability.findMany({
-    where: {
-      capability: "clone-host",
-      enabled: true,
-      device: { userId, vantraAgentId: { not: null } },
-    },
-    include: { device: { select: { id: true, status: true, lastSeenAt: true } } },
-    take: 25,
-  });
-  const online = caps.filter(
-    (c) => c.device.id !== excludeDeviceId && deviceStatus(c.device) === "online"
-  );
-  return online[0]?.device.id ?? null;
-}
+/**
+ * Host availability now lives in `lib/clone-hosts.ts` so the console's
+ * Device-setup card and this gate share ONE definition of "a host is
+ * available" — see that file for the 2026-09-24 owner report that made the
+ * split expensive.
+ */
 
 export interface RequestCloneInput {
   userId: string;
@@ -450,6 +439,16 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
   }
 
   // 4. Source device: owned + linked to the agent (capture runs there).
+  //
+  // TASK_116 — refresh liveness from Vantra FIRST. `Device.status`/`lastSeenAt`
+  // are only written by `syncDevices()`, which has no timer and runs when a
+  // human opens the device list; the host pick below applies a 10-minute
+  // freshness window to that snapshot. Measured live (device `Sc`): heartbeat
+  // 20.8 min stale while a relay probe round-tripped to the agent 2 min
+  // earlier — so the gate could refuse `no_hosted_clone_device` for a machine
+  // that was demonstrably up. Best-effort and throttled; never throws.
+  await refreshDeviceLiveness(userId);
+
   const source = await db.device.findUnique({
     where: { id: sourceDeviceId },
     select: { id: true, userId: true, name: true, status: true, lastSeenAt: true, vantraAgentId: true },
@@ -492,7 +491,10 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
       return refuse("destination_device_not_owned", "That destination device does not belong to your account.");
     }
     if (destinationDeviceId === sourceDeviceId) {
-      return refuse("same_device", "Source and destination must be different devices.");
+      return refuse(
+        "same_device",
+        "A clone cannot run on the same PC it captures from — the clone host has to be a different machine. Pick another clone host."
+      );
     }
     if (!dest.vantraAgentId) {
       return refuse("destination_device_not_linked", "The destination device is not linked to the agent yet.");
@@ -504,13 +506,26 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
       return refuse("destination_not_clone_host", "The destination device must be a hosted clone PC (clone-host capability enabled).");
     }
   } else {
-    destinationDeviceId = await pickHostedCloneDevice(userId, sourceDeviceId);
+    const hosts = await hostAvailability({ userId, excludeDeviceId: sourceDeviceId });
+    destinationDeviceId = hosts.pickedDeviceId;
     if (!destinationDeviceId) {
+      // Same lead phrase in every case: it is load-bearing for REFUSALS in
+      // app/api/devices/[deviceId]/clones/route.ts (→ 409
+      // `no_hosted_clone_device`). The TAIL is what has to be right, because
+      // the generic "click Set up as clone host" line sent the owner round a
+      // loop they had already completed (2026-09-24: one PC, set up as clone
+      // host, Start still refused).
+      const tail =
+        hosts.reason === "self_only"
+          ? "The clone host on your account is this same PC — and a clone cannot run on the machine it captures from. Set up a second PC as clone host (\"Set up as clone host\" in the Device setup card, on the other machine) and keep that one online, then start again."
+          : hosts.reason === "offline"
+            ? `Your clone host${hosts.offlineHostNames.length === 1 ? ` (${hosts.offlineHostNames[0]})` : "s"} is offline — bring ${
+                hosts.offlineHostNames.length === 1 ? "it" : "one of them"
+              } online, then start the clone again.`
+            : 'In the Device setup card above, click "Set up as clone host" on a PC you keep online, then start the clone again.';
       return refuse(
         "no_hosted_clone_device",
-        // Same report as above: name the button. Leading phrase is load-bearing
-        // for REFUSALS matching.
-        "No hosted clone PC is available — every clone runs its browser on one. In the Device setup card above, click \"Set up as clone host\" on a PC you keep online, then start the clone again."
+        `No hosted clone PC is available — every clone runs its browser on one. ${tail}`
       );
     }
   }

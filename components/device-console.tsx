@@ -73,6 +73,13 @@ type CloneSetupStatus = {
   // but it is the first-order blocker, so the picker names it before Start
   // rather than letting the user hit a 409 that only mentions egress.
   hostedAvailable: boolean;
+  // TASK_116: WHY there is no host. `self_only` is the loop the owner hit on
+  // 2026-09-24 — the one PC set up as clone host is the PC being cloned FROM,
+  // so a clone can never use it. Without this the copy told them to press a
+  // button they had already pressed.
+  hostBlockReason: "ok" | "no_host" | "self_only" | "offline";
+  selfIsHost: boolean;
+  offlineHostNames: string[];
 };
 
 type CloneSetupStep = { step: string; ok: boolean; detail: string | null };
@@ -1617,6 +1624,7 @@ function CloneSetupCard(props: {
     hint: string,
     ready: boolean,
     cta: string,
+    note?: string,
   ) => (
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2">
       <span className="min-w-0">
@@ -1632,6 +1640,7 @@ function CloneSetupCard(props: {
           </span>
         </span>
         <span className="mt-0.5 block text-xs text-fg-muted">{hint}</span>
+        {note && <span className="mt-0.5 block text-xs text-amber-500">{note}</span>}
       </span>
       <button
         onClick={() => onSetup(key)}
@@ -1672,6 +1681,12 @@ function CloneSetupCard(props: {
             : "Makes this PC one of the machines a cloned browser can run on.",
           hostedReady,
           "Set up as clone host",
+          // TASK_116 — "ready" alone was the misleading part of the owner's
+          // screenshot: this PC is a valid host, just not for clones that
+          // capture FROM this same PC. Say so where the badge is read.
+          status?.selfIsHost && status?.hostedAvailable === false
+            ? "Ready — but a clone can't use it while cloning FROM this PC. You need one more PC set up as clone host."
+            : undefined,
         )}
       </div>
       {err && <p className="mt-2 text-xs text-red-500">{err}</p>}
@@ -1781,11 +1796,43 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
         <ul className="mt-2 space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs text-fg">
           {!setup.hostedAvailable && (
             <li>
-              <span className="font-medium">No clone host yet.</span> A clone&apos;s browser runs on a clone
-              host, so this blocks every clone regardless of network. Clone hosts are counted{" "}
-              <span className="font-medium">apart from this PC</span> — a clone cannot run on the same
-              machine it captures from. Run <span className="font-medium">“Set up as clone host”</span>{" "}
-              above on a second PC and keep that one online.
+              {/* TASK_116 (owner 2026-09-24: "clone host is ready, and i clicked
+                  start clone, and its still say no host"): the generic line below
+                  told the owner to press "Set up as clone host" on a PC they had
+                  ALREADY set up — the one PC they owned. The reason now decides
+                  the sentence. Start stays ENABLED on purpose: this flag can be a
+                  false negative (a liveness refresh can fail), and the server is
+                  the real gate — it refuses with copy that matches the reason. */}
+              {setup.hostBlockReason === "self_only" ? (
+                <>
+                  <span className="font-medium">This PC is the clone host — and it can’t be.</span> A clone
+                  can never run on the same machine it captures from, so one PC is not enough. Run{" "}
+                  <span className="font-medium">“Set up as clone host”</span> above{" "}
+                  <span className="font-medium">on a second PC</span> and keep that one online — then cloning
+                  from here works.
+                </>
+              ) : setup.hostBlockReason === "offline" ? (
+                <>
+                  <span className="font-medium">
+                    Your clone host{setup.offlineHostNames.length === 1 ? " is" : "s are"} offline.
+                  </span>{" "}
+                  {setup.offlineHostNames.length > 0 && (
+                    <>
+                      Clone hosts: <span className="font-medium">{setup.offlineHostNames.join(", ")}</span>.{" "}
+                    </>
+                  )}
+                  Bring one online — the copied browser runs there, so a clone keeps running while your own PC is
+                  used.
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">No clone host yet.</span> A clone&apos;s browser runs on a clone
+                  host, so this blocks every clone regardless of network. Clone hosts are counted{" "}
+                  <span className="font-medium">apart from this PC</span> — a clone cannot run on the same
+                  machine it captures from. Run <span className="font-medium">“Set up as clone host”</span>{" "}
+                  above on a second PC and keep that one online.
+                </>
+              )}
             </li>
           )}
           {!setup.online && (

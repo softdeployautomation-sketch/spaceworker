@@ -3,6 +3,8 @@ import "server-only";
 import { db } from "./db";
 import { runCommandNow } from "./device-tools";
 import { refreshRelayHealth } from "./clone";
+import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
+
 import { ensureCloneCapability, runRelayInstall } from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
 
@@ -100,6 +102,18 @@ export interface CloneSetupStatus {
    * PC first, and only then does the egress choice matter.
    */
   hostedAvailable: boolean;
+  /**
+   * TASK_116 — WHY there is no host, when `hostedAvailable` is false.
+   * `self_only` is the case the owner hit on 2026-09-24: the one PC they set up
+   * as a clone host IS the PC they are cloning from, so the card said "ready"
+   * and Start still refused. The console needs the reason to say something
+   * useful instead of repeating a button they already pressed.
+   */
+  hostBlockReason: "ok" | "no_host" | "self_only" | "offline";
+  /** This device itself carries `clone-host`. */
+  selfIsHost: boolean;
+  /** Clone hosts of this account that exist but are offline, by name. */
+  offlineHostNames: string[];
 }
 
 function psq(value: string): string {
@@ -431,35 +445,34 @@ async function capabilityList(deviceId: string): Promise<string[]> {
  * the warning true exactly when a clone can actually run.
  */
 async function hostedAvailableForUser(userId: string, excludeDeviceId: string): Promise<boolean> {
-  const row = await db.deviceCapability.findFirst({
-    where: {
-      enabled: true,
-      capability: "clone-host",
-      deviceId: { not: excludeDeviceId },
-      device: { userId, status: "online" },
-    },
-    select: { id: true },
-  });
-  return row !== null;
+  const hosts = await hostAvailability({ userId, excludeDeviceId });
+  return hosts.available;
 }
 
 /**
  * Status read for the console's setup card: what this device already has (no
- * device RPC at all — cheap enough to ride the console's existing poll tick).
+ * device RPC of its own — cheap enough to ride the console's existing poll
+ * tick; the liveness refresh it triggers is throttled in `clone-hosts.ts`).
  */
 export async function cloneSetupStatus(opts: {
   userId: string;
   deviceId: string;
 }): Promise<CloneSetupStatus> {
+  // TASK_116: refresh BEFORE reading, so this card and the Start gate judge the
+  // same snapshot. Without it the card used a frozen `status` column while the
+  // gate applied a 10-minute heartbeat window — live, that showed "Clone host ·
+  // ready" next to a `no_hosted_clone_device` refusal.
+  await refreshDeviceLiveness(opts.userId);
+
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId },
-    select: { status: true, vantraAgentId: true },
+    select: { status: true, lastSeenAt: true, vantraAgentId: true },
   });
   if (!device) throw new Error("device_not_owned");
-  const [relay, capabilities, hostedAvailable] = await Promise.all([
+  const [relay, capabilities, hosts] = await Promise.all([
     relayView(opts.deviceId),
     capabilityList(opts.deviceId),
-    hostedAvailableForUser(opts.userId, opts.deviceId),
+    hostAvailability({ userId: opts.userId, excludeDeviceId: opts.deviceId }),
   ]);
   const online = device.status === "online" && !!device.vantraAgentId;
   // Ready = the role's capability is registered. `source` additionally needs a
@@ -470,7 +483,10 @@ export async function cloneSetupStatus(opts: {
     online,
     relay,
     capabilities,
-    hostedAvailable,
+    hostedAvailable: hosts.available,
+    hostBlockReason: hosts.reason,
+    selfIsHost: hosts.selfIsHost,
+    offlineHostNames: hosts.offlineHostNames,
   };
 }
 
