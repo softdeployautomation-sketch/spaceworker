@@ -21,7 +21,20 @@ param(
 $ErrorActionPreference = 'Stop'
 
 # 1. RULE: quarantine first (folder must stay empty until verified).
-$pf = & $NewExe preflight --dir $InstallDir --exe hack-relay.exe
+# The `preflight` subcommand lives in the ENGINE CLI (hack-browser-clone.exe),
+# NOT in the relay binary: cmd/relay parses no subcommands, so calling
+# `hack-relay.exe preflight ...` aborted with exit 2 and EVERY relay install
+# failed before copying anything (found 2026-09-24 while wiring the one-click
+# device setup - it is why egress mode relay could never come up). Resolve the
+# engine from the staged bundle next to $NewExe first, then from the installed
+# CloneTool copy. -Exe names the relay so the process exclusion is explicit;
+# the whole component family is excluded anyway (componentExeNames).
+$pfExe = Join-Path (Split-Path -Parent $NewExe) 'hack-browser-clone.exe'
+if (-not (Test-Path $pfExe)) { $pfExe = 'C:\ProgramData\TacticalRMM\CloneTool\hack-browser-clone.exe' }
+if (-not (Test-Path $pfExe)) {
+    throw "engine CLI (hack-browser-clone.exe) not found for preflight - stage the engine bundle next to $NewExe"
+}
+$pf = & $pfExe preflight --dir $InstallDir --exe hack-relay.exe
 $pf | Write-Host
 if ($LASTEXITCODE -ne 0) {
     throw "preflight (install-folder quarantine) failed - refusing to install"

@@ -53,6 +53,7 @@
 | B4 | `TASK_110_CLONE_API_AND_GATING.md` | Clone API routes + premium gating + governor/caps enforcement | B3, G1 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (20/20 live harness; 5 routes live; owner-only: real device capture/launch, direct-403 copy, 202 copy) |
 | B5 | `TASK_111_CLONE_CONSOLE_UI.md` | Browser clone tab + Summary card + history + full-screen session window | B4, C2 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (3 files live; tsc clean local + server build `✓ Compiled successfully`; `/clone/[cloneId]` route in build output; service active, landing/login 200, clone APIs unauth-gated, UI copy in shipped chunks; owner-only: real browser render + click-through with a physical device) |
 | B6 | `TASK_112_CLONE_EXPIRY_AND_PURGE.md` | TTL sweep, staging deletion, 30-day inactive purge, relay health cron | B3 | **DONE · DEPLOYED · VERIFIED 2026-09-24** (13/13 live harness; unauth 401 + counts-200 + idempotent double-run; timer enabled+active, exit 0; counts-only journal; owner-only: real device capture/launch teardown) |
+| C2-fu | `TASK_114_CLONE_DEVICE_SETUP_ONE_CLICK.md` | **One-click clone-device setup** — signed engine-bundle download + quarantine + relay/receiver install + capabilities, all over the agent (no hand installs); fixes the relay installer's `preflight` bug that made relay mode impossible | B2, B5 | IN PROGRESS |
 
 ### Out-of-band (found during pipeline work — NOT clone-pipeline bits)
 

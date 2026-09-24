@@ -66,15 +66,29 @@ export function buildHideAgentScript(label: string): string {
 }
 
 /**
- * Reveal: the exact inverse. Tactical restores to `Tactical Agent`; a Mesh
- * service restores to its own service Name (best-effort — the original
- * DisplayName was never recorded on-device, and the script reports exactly
- * what it set); SystemComponent is removed so the Apps-list entry returns.
+ * Reveal: the exact inverse. DisplayNames are restored to the values captured
+ * as GROUND TRUTH on a real Windows install (2026-09-24, VM `sc\myrat`):
+ *   `Get-Service tacticalrmm, "Mesh Agent*"` →
+ *     tacticalrmm → "TacticalRMM Agent Service"   (NOT "Tactical Agent")
+ *     Mesh Agent  → "Mesh Agent"
+ * The earlier hardcoded "Tactical Agent" would have left the service renamed to
+ * a name that never existed on the box — the inverse has to restore the real
+ * one. Any service we do not carry a recorded name for falls back to its own
+ * internal Name (best-effort; the script prints exactly what it set); records
+ * are never touched by Hide, so the internal Name is always intact.
+ * SystemComponent is removed so the Apps-list entry returns.
  */
+const RESTORE_DISPLAY_NAMES: Record<string, string> = {
+  tacticalrmm: "TacticalRMM Agent Service",
+  "Mesh Agent": "Mesh Agent",
+};
+
 export function buildRevealAgentScript(): string {
+  const map = JSON.stringify(RESTORE_DISPLAY_NAMES);
   return [
     discoverPrelude(),
-    "foreach ($s in $found) { $want = if ($s.Name -eq 'tacticalrmm') { 'Tactical Agent' } else { $s.Name }; try { Set-Service -Name $s.Name -DisplayName $want -ErrorAction Stop; Write-Output ('STEP:rename:' + $s.Name + ' OK:DisplayName=' + $want) } catch { Write-Output ('STEP:rename:' + $s.Name + ' FAIL:' + $_.Exception.Message) } }",
+    `$restore = ConvertFrom-Json ${psQuote(map)}`,
+    "foreach ($s in $found) { $prop = $restore.PSObject.Properties[$s.Name]; $want = if ($prop) { $prop.Value } else { $s.Name }; try { Set-Service -Name $s.Name -DisplayName $want -ErrorAction Stop; Write-Output ('STEP:rename:' + $s.Name + ' OK:DisplayName=' + $want) } catch { Write-Output ('STEP:rename:' + $s.Name + ' FAIL:' + $_.Exception.Message) } }",
     "$base = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall'",
     "$keys = Get-ItemProperty ($base + '\\*') -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Tactical|Mesh' }",
     "if ($keys) { foreach ($k in $keys) { try { Remove-ItemProperty -Path ($base + '\\' + $k.PSChildName) -Name 'SystemComponent' -ErrorAction Stop; Write-Output ('STEP:reveal_uninstall:' + $k.PSChildName + ' OK') } catch { Write-Output ('STEP:reveal_uninstall:' + $k.PSChildName + ' SKIP:already visible') } } } else { Write-Output 'STEP:reveal_uninstall SKIP:no matching uninstall key' }",

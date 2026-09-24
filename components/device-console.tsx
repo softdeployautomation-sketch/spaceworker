@@ -28,6 +28,7 @@ import {
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
 import { formatIdle } from "@/lib/device-idle";
+import { timeAgo } from "@/lib/format-date";
 import {
   DEFAULT_AGENT_LABEL,
   buildHideAgentScript,
@@ -58,6 +59,18 @@ type DeviceView = {
 };
 
 type Tabs = "summary" | "control" | "command" | "clone" | "activity";
+
+// TASK_114 — the /api/devices/:id/clone-setup read model (mirrors
+// lib/clone-setup.ts CloneSetupStatus; ids/paths never reach the UI copy).
+type CloneSetupStatus = {
+  sourceReady: boolean;
+  hostedReady: boolean;
+  online: boolean;
+  relay: { addr: string; status: string; lastCheckAt: string | null } | null;
+  capabilities: string[];
+};
+
+type CloneSetupStep = { step: string; ok: boolean; detail: string | null };
 
 // Task 111 (bit B5) — the console's Browser Clone model. Mirrors the shape
 // lib/clone.ts `CloneView` hands the routes (evidence fields only — ids are
@@ -354,6 +367,13 @@ export function DeviceConsole({
   // must not render a "Premium" lock before we know the account state.
   const [premiumLoaded, setPremiumLoaded] = useState(false);
 
+  // TASK_114 — one-click clone-device setup (relay + engine on this PC, or the
+  // hosted receiver). Status rides the console's existing poll tick.
+  const [cloneSetup, setCloneSetup] = useState<CloneSetupStatus | null>(null);
+  const [setupBusy, setSetupBusy] = useState<"" | "source" | "hosted">("");
+  const [setupErr, setSetupErr] = useState("");
+  const [setupSteps, setSetupSteps] = useState<CloneSetupStep[]>([]);
+
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -391,7 +411,7 @@ export function DeviceConsole({
   const loadToolData = useCallback(async () => {
     if (!deviceId) return;
     try {
-      const [q, p, a, c, e] = await Promise.all([
+      const [q, p, a, c, e, s] = await Promise.all([
         fetch(`/api/devices/${deviceId}/queued-commands`),
         fetch(`/api/devices/${deviceId}/pin-requests`),
         fetch(`/api/devices/${deviceId}/activity`),
@@ -399,6 +419,8 @@ export function DeviceConsole({
         // pooled hosted PC also sees what it hosted; `deleted` filtered).
         fetch(`/api/devices/${deviceId}/clones?role=any&limit=50`),
         fetch(`/api/entitlements`),
+        // TASK_114 — clone-device setup state (relay row + capabilities).
+        fetch(`/api/devices/${deviceId}/clone-setup`),
       ]);
       if (q.ok) setQueue((await q.json()).commands ?? []);
       if (p.ok) setPins((await p.json()).requests ?? []);
@@ -412,6 +434,12 @@ export function DeviceConsole({
       if (e.ok) {
         const data = await e.json().catch(() => ({}));
         setIsPremium(data.premium === true);
+      }
+      if (s.ok) {
+        const data = await s.json().catch(() => ({}));
+        if (data && typeof data === "object" && "sourceReady" in data) {
+          setCloneSetup(data as CloneSetupStatus);
+        }
       }
       setPremiumLoaded(true);
     } catch {
@@ -913,6 +941,51 @@ export function DeviceConsole({
     }
   }
 
+  // TASK_114 — one click installs the clone engine on THIS device over the
+  // agent (signed download → hash verify → quarantine → install → register →
+  // probe). Nothing is downloaded or installed by hand; the step list shows
+  // exactly where a refusal happened.
+  async function runCloneSetup(role: "source" | "hosted") {
+    setSetupBusy(role);
+    setSetupErr("");
+    setSetupSteps([]);
+    setCloneError("");
+    setCloneNotice("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/clone-setup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: unknown;
+        steps?: unknown;
+        error?: unknown;
+      };
+      const steps = Array.isArray(data.steps) ? (data.steps as CloneSetupStep[]) : [];
+      setSetupSteps(steps);
+      if (!res.ok) throw new Error(cleanErr(data.error, "Device setup failed"));
+      if (data.ok !== true) {
+        const failed = steps.find((st) => !st.ok);
+        throw new Error(
+          failed
+            ? `Setup stopped at ${failed.step}${failed.detail ? `: ${failed.detail}` : ""}`
+            : "Setup did not complete — see the steps.",
+        );
+      }
+      setCloneNotice(
+        role === "source"
+          ? "This PC is set up for cloning — same-IP egress is live."
+          : "This PC is now a hosted clone PC.",
+      );
+    } catch (e) {
+      setSetupErr(e instanceof Error ? e.message : "Device setup failed");
+    } finally {
+      setSetupBusy("");
+      await loadToolData();
+    }
+  }
+
   async function startClone() {
     setCloneBusy("start");
     setCloneError("");
@@ -1180,6 +1253,11 @@ export function DeviceConsole({
               setEgress={setCloneEgress}
               premium={isPremium}
               premiumLoaded={premiumLoaded}
+              setup={cloneSetup}
+              setupBusy={setupBusy}
+              setupErr={setupErr}
+              setupSteps={setupSteps}
+              onSetup={runCloneSetup}
               onStart={startClone}
               onRevoke={revokeClone}
               onDelete={deleteClone}
@@ -1337,12 +1415,19 @@ function SummaryTab({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   return (
     <div className="space-y-4">
       {props.err && <p className="text-sm text-red-500">{props.err}</p>}
       {props.msg && <p className="text-sm text-emerald-500">{props.msg}</p>}
+      <CloneSetupCard
+        status={props.setup}
+        busy={props.setupBusy}
+        err={props.setupErr}
+        steps={props.setupSteps}
+        onSetup={props.onSetup}
+      />
       <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} />
       {live ? (
         <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
@@ -1477,6 +1562,105 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
     </div>
   );
 }
+
+// TASK_114 — the one-click device setup card. Two roles, one button each:
+//   "This PC"    → clone engine + egress relay + capture capability here.
+//   "Clone host" → the hosted receiver (where the cloned browser actually runs).
+// Nothing here is a download link the user has to open: the card POSTs and the
+// agent installs, then the step list reports what the device said.
+function CloneSetupCard(props: {
+  status: CloneSetupStatus | null;
+  busy: string;
+  err: string;
+  steps: CloneSetupStep[];
+  onSetup: (role: "source" | "hosted") => Promise<void>;
+}) {
+  const { status, busy, err, steps, onSetup } = props;
+  const sourceReady = status?.sourceReady === true;
+  const hostedReady = status?.hostedReady === true;
+  const online = status?.online === true;
+  const relay = status?.relay ?? null;
+  const row = (
+    key: "source" | "hosted",
+    title: string,
+    hint: string,
+    ready: boolean,
+    cta: string,
+  ) => (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2">
+      <span className="min-w-0">
+        <span className="flex items-center gap-2 text-sm text-fg">
+          {title}
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px]",
+              ready ? "bg-emerald-500/15 text-emerald-500" : "bg-black/5 text-fg-muted dark:bg-white/10",
+            )}
+          >
+            {ready ? "ready" : "not set up"}
+          </span>
+        </span>
+        <span className="mt-0.5 block text-xs text-fg-muted">{hint}</span>
+      </span>
+      <button
+        onClick={() => onSetup(key)}
+        disabled={busy !== "" || !online}
+        title={online ? cta : "The device must be online to install"}
+        className="rounded-lg border border-border px-3 py-1.5 text-xs text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+      >
+        {busy === key ? "Setting up…" : ready ? "Re-run setup" : cta}
+      </button>
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <Wrench className="h-3.5 w-3.5" /> Device setup
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">
+        One click installs the clone engine on this PC through the agent — nothing to download or
+        install by hand. Same-IP cloning needs <span className="text-fg">this PC</span> set up (it
+        carries your IP); every clone also needs a <span className="text-fg">clone host</span> to
+        run the copied browser.
+      </p>
+      <div className="mt-2 grid gap-2">
+        {row(
+          "source",
+          "This PC",
+          relay
+            ? `Relay ${relay.addr} · ${relay.status === "up" ? "up" : relay.status}${relay.lastCheckAt ? ` · checked ${timeAgo(relay.lastCheckAt)}` : ""}`
+            : "Installs the egress relay so the clone keeps your IP and your signed-in sessions.",
+          sourceReady,
+          "Set up this PC",
+        )}
+        {row(
+          "hosted",
+          "Clone host",
+          hostedReady
+            ? "This PC runs the copied browser for clones."
+            : "Makes this PC one of the machines a cloned browser can run on.",
+          hostedReady,
+          "Set up as clone host",
+        )}
+      </div>
+      {err && <p className="mt-2 text-xs text-red-500">{err}</p>}
+      {steps.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {steps.map((st, i) => (
+            <li
+              key={`${st.step}-${i}`}
+              className={cn("font-mono text-[11px]", st.ok ? "text-fg-muted" : "text-red-500")}
+            >
+              {st.ok ? "✓" : "✗"} {st.step}
+              {st.detail ? ` — ${st.detail}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 
 function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void> }) {
   const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, premiumLoaded, busy, onStart } = props;
