@@ -68,6 +68,11 @@ type CloneSetupStatus = {
   online: boolean;
   relay: { addr: string; status: string; lastCheckAt: string | null } | null;
   capabilities: string[];
+  // Fleet-level: any ONLINE device of this account carries `clone-host`. Not a
+  // property of THIS device — the clone's browser always runs on a hosted PC —
+  // but it is the first-order blocker, so the picker names it before Start
+  // rather than letting the user hit a 409 that only mentions egress.
+  hostedAvailable: boolean;
 };
 
 type CloneSetupStep = { step: string; ok: boolean; detail: string | null };
@@ -1428,7 +1433,7 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
         steps={props.setupSteps}
         onSetup={props.onSetup}
       />
-      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} />
+      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
       {live ? (
         <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
       ) : (
@@ -1662,8 +1667,8 @@ function CloneSetupCard(props: {
 }
 
 
-function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void> }) {
-  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, premiumLoaded, busy, onStart } = props;
+function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
   // /api/entitlements answers — before that the direct button renders
@@ -1739,6 +1744,36 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
       </div>
       {!directSelectable && (
         <p className="mt-1.5 text-xs text-fg-muted">SpaceWorker&apos;s IP is a Premium feature — Same IP as your PC works on every plan.</p>
+      )}
+      {/* Owner 2026-09-24 ("egress still got a bug"): the egress choice is NOT
+          the first blocker. The clone's browser always runs on a clone host, and
+          "Same IP as your PC" additionally needs the relay on THIS PC. Both were
+          reported only AFTER clicking Start, as a 409 whose copy talked about
+          egress. Name the real blocker here, and point at the exact button in the
+          Device setup card above — nothing is installed by hand. */}
+      {setup !== null && (!setup.hostedAvailable || !setup.online || (egress === "relay" && !setup.sourceReady)) && (
+        <ul className="mt-2 space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2.5 py-2 text-xs text-fg">
+          {!setup.hostedAvailable && (
+            <li>
+              <span className="font-medium">No clone host yet.</span> A clone&apos;s browser runs on a clone
+              host, so this blocks every clone regardless of network. Run{" "}
+              <span className="font-medium">“Set up as clone host”</span> above on a PC you keep online.
+            </li>
+          )}
+          {!setup.online && (
+            <li>
+              <span className="font-medium">This PC is offline.</span> Bring it online — its profile is
+              captured live each time.
+            </li>
+          )}
+          {egress === "relay" && !setup.sourceReady && (
+            <li>
+              <span className="font-medium">No relay set up on this PC for “Same IP as your PC”.</span> Run{" "}
+              <span className="font-medium">“Set up this PC”</span> above (one click), or switch to
+              SpaceWorker&apos;s IP.
+            </li>
+          )}
+        </ul>
       )}
       <button
         onClick={onStart}

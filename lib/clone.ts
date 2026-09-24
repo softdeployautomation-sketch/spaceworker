@@ -469,7 +469,12 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     if (!relay || relay.userId !== userId) {
       return refuse(
         "relay_not_registered",
-        "No egress relay is registered on that device — install the relay first (or choose direct egress if your plan allows it)."
+        // Owner 2026-09-24: the old tail ("or choose direct egress if your plan
+        // allows it") sent a Premium owner to a DIFFERENT refusal, because the
+        // clone's browser needs a clone host either way. Point at the button
+        // that fixes this instead. The leading phrase is load-bearing: it is
+        // what REFUSALS matches in app/api/devices/[deviceId]/clones/route.ts.
+        "No egress relay is registered on that device — in the Device setup card above, click \"Set up this PC\" (one click, nothing to install by hand), then start the clone again."
       );
     }
     relayId = relay.id;
@@ -503,7 +508,9 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     if (!destinationDeviceId) {
       return refuse(
         "no_hosted_clone_device",
-        "No hosted clone PC is available — register a hosted device with the clone-host capability and make sure it is online."
+        // Same report as above: name the button. Leading phrase is load-bearing
+        // for REFUSALS matching.
+        "No hosted clone PC is available — every clone runs its browser on one. In the Device setup card above, click \"Set up as clone host\" on a PC you keep online, then start the clone again."
       );
     }
   }

@@ -88,6 +88,18 @@ export interface CloneSetupStatus {
   online: boolean;
   relay: { addr: string; status: string; lastCheckAt: string | null } | null;
   capabilities: string[];
+  /**
+   * Fleet-level (owner 2026-09-24 egress report): does ANY of this user's
+   * ONLINE devices carry `clone-host`?
+   *
+   * `hostedReady` above only describes THIS device, but the clone's browser
+   * runs on a hosted PC regardless of egress mode — so a user reading the
+   * console saw "SpaceWorker's IP" selectable, clicked Start, and got
+   * `no_hosted_clone_device` with nothing on screen explaining why. With this
+   * flag the picker can name the real blocker up front: a clone needs a hosted
+   * PC first, and only then does the egress choice matter.
+   */
+  hostedAvailable: boolean;
 }
 
 function psq(value: string): string {
@@ -249,6 +261,23 @@ async function capabilityList(deviceId: string): Promise<string[]> {
 }
 
 /**
+ * Fleet-level "is there anywhere for a clone's browser to run?" — any ONLINE
+ * device of this user carrying `clone-host`. Cheap single query (capability is
+ * indexed on deviceId), and it rides the console's existing poll tick.
+ */
+async function hostedAvailableForUser(userId: string): Promise<boolean> {
+  const row = await db.deviceCapability.findFirst({
+    where: {
+      enabled: true,
+      capability: "clone-host",
+      device: { userId, status: "online" },
+    },
+    select: { id: true },
+  });
+  return row !== null;
+}
+
+/**
  * Status read for the console's setup card: what this device already has (no
  * device RPC at all — cheap enough to ride the console's existing poll tick).
  */
@@ -261,9 +290,10 @@ export async function cloneSetupStatus(opts: {
     select: { status: true, vantraAgentId: true },
   });
   if (!device) throw new Error("device_not_owned");
-  const [relay, capabilities] = await Promise.all([
+  const [relay, capabilities, hostedAvailable] = await Promise.all([
     relayView(opts.deviceId),
     capabilityList(opts.deviceId),
+    hostedAvailableForUser(opts.userId),
   ]);
   const online = device.status === "online" && !!device.vantraAgentId;
   // Ready = the role's capability is registered. `source` additionally needs a
@@ -274,6 +304,7 @@ export async function cloneSetupStatus(opts: {
     online,
     relay,
     capabilities,
+    hostedAvailable,
   };
 }
 
