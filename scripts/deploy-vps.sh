@@ -72,11 +72,15 @@ run_remote() { ssh -i "$SSH_KEY" -o BatchMode=yes "$VPS_HOST" "$@"; }
 REQUIRED_PATHS=(".env" ".next" "node_modules" "static/maintenance.html")
 
 # Paths that must never be deleted by a sync (dirs are matched recursively).
+# NOTE: deliberately NOT protected — `mint-session.mjs` and similar one-off
+# token-minting scripts must never live in the app dir at all (a valid
+# SESSION_SECRET token on disk is a security liability, and it is not part of
+# the deployment). They were removed 2026-09-24.
 PROTECTED=(
   ".env" ".env.local"
   ".next" "node_modules" "static" "engine-dist"
   "worker/.env" "worker/venv" "worker/__pycache__"
-  "mint-session.mjs" "*.log"
+  "*.log"
 )
 
 verify_runtime() {
