@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
+  Activity,
   ArrowLeft,
   ChevronDown,
   ChevronRight,
@@ -14,6 +15,8 @@ import {
   ListPlus,
   Maximize2,
   Monitor,
+  Power,
+  RotateCcw,
   ShieldCheck,
   Terminal,
   Trash2,
@@ -23,7 +26,14 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { useConfirm } from "@/components/confirm-provider";
 import { formatIdle } from "@/lib/device-idle";
+import {
+  DEFAULT_AGENT_LABEL,
+  buildHideAgentScript,
+  buildRevealAgentScript,
+  isValidAgentLabel,
+} from "@/lib/agent-visibility";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -286,13 +296,28 @@ function WindowDots() {
 export function DeviceConsole({
   deviceId,
   fullScreen = false,
+  initialTab = "summary",
 }: {
   deviceId: string;
   fullScreen?: boolean;
+  initialTab?: Tabs;
 }) {
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [tab, setTab] = useState<Tabs>("summary");
+  // TASK_103 BUG-A — the tab is URL state (`?tab=`): a new window lands on
+  // the same view and refresh preserves it. `history.replaceState` keeps it
+  // shallow with no scroll jump (no next/navigation dependency).
+  const [tab, setTabState] = useState<Tabs>(initialTab);
+  const setTab = useCallback((next: Tabs) => {
+    setTabState(next);
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set("tab", next === "control" ? "remote" : next);
+      window.history.replaceState(null, "", url.toString());
+    } catch {
+      // non-fatal — tab still switches, just not persisted
+    }
+  }, []);
 
   const [proposals, setProposals] = useState<ProposalState[]>([]);
   const [mesh, setMesh] = useState<MeshUrls | null>(null);
@@ -699,6 +724,137 @@ export function DeviceConsole({
     );
   }
 
+  // ---- TASK_103: Ping / Power / Hide-Reveal (manual, immediate) ------------
+  // Manual own-device actions execute immediately — no approval (approvals
+  // are for agent-initiated actions only). Ping never queues; power posts to
+  // the direct power route; hide/reveal reuse run-command with the label.
+  const confirm = useConfirm();
+  const [ping, setPing] = useState<{ ok: boolean; text: string } | null>(null);
+  async function pingAgent() {
+    setBusy("ping");
+    setError("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/ping`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const age = device?.lastSeenAt ? ` · last check-in ${relTime(device.lastSeenAt)}` : "";
+        setPing({ ok: false, text: `Agent not reachable${age}` });
+        return;
+      }
+      const ms = typeof data.latencyMs === "number" ? Math.round(data.latencyMs) : null;
+      setPing({ ok: true, text: ms !== null ? `Ping · ${ms} ms` : "Ping · ok" });
+      await loadDevice();
+    } catch (e) {
+      setPing({ ok: false, text: e instanceof Error ? e.message : "Agent not reachable" });
+    } finally {
+      setBusy("");
+    }
+  }
+  // TASK_103 MISSING-2 — direct power (manual, immediate). Shutdown and
+  // Reboot both confirm FIRST (a misclick must never reboot a machine);
+  // Wake is instant. Result is the transient chip (`power-reboot sent` /
+  // `Agent not reachable`) + the command strip explaining itself.
+  async function runPower(action: "reboot" | "shutdown" | "wake") {
+    if (action === "reboot") {
+      const ok = await confirm({
+        title: "Reboot this machine?",
+        description:
+          "The machine restarts now. Unsaved work on the device may be lost. Only continue if that is acceptable.",
+        confirmLabel: "Reboot now",
+        confirmVariant: "primary",
+      });
+      if (!ok) return;
+    }
+    if (action === "shutdown") {
+      const ok = await confirm({
+        title: "Shut down this machine?",
+        description:
+          "The machine powers off now. Only continue if it can be woken (Wake-on-LAN) or someone is there to power it on.",
+        confirmLabel: "Shut down",
+        confirmVariant: "danger",
+      });
+      if (!ok) return;
+    }
+    const key = `power-${action}`;
+    setBusy(key);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/power`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(cleanErr(data.error, `${action} failed`));
+      setNotice(
+        action === "reboot"
+          ? "Reboot sent — the machine restarts now."
+          : action === "shutdown"
+            ? "Shutdown sent — the machine powers off now."
+            : "Wake sent — the machine wakes if Wake-on-LAN is set up.",
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : `${action} failed`);
+    } finally {
+      setBusy("");
+    }
+  }
+  const [agentLabel, setAgentLabel] = useState(DEFAULT_AGENT_LABEL);
+  async function runAgentVisibility(mode: "hide" | "reveal") {
+    const label = agentLabel.trim() || DEFAULT_AGENT_LABEL;
+    if (mode === "hide" && !isValidAgentLabel(label)) {
+      setRunOut({
+        text: "Label must be 1–80 characters: letters, digits, spaces, hyphens only.",
+        ok: false,
+      });
+      return;
+    }
+    const ok = await confirm({
+      title: mode === "hide" ? `Hide the agent as "${label}"?` : "Reveal the agent again?",
+      description:
+        mode === "hide"
+          ? `Services show "${label}" and the Apps-list entry disappears. Cosmetic only — a local admin can still stop, reveal, or uninstall it.`
+          : "Restores the Tactical Agent service name and the Apps-list entry.",
+      confirmLabel: mode === "hide" ? "Hide agent" : "Reveal agent",
+      confirmVariant: mode === "hide" ? "primary" : "danger",
+    });
+    if (!ok) return;
+    setBusy(`agent-${mode}`);
+    setError("");
+    setRunOut(null);
+    try {
+      const script = mode === "hide" ? buildHideAgentScript(label) : buildRevealAgentScript();
+      const res = await fetch(`/api/devices/${deviceId}/run-command`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cmd: script,
+          shell: "powershell",
+          timeout: 90,
+          runAsUser: false,
+          agentLabel: mode === "hide" ? label : undefined,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { output?: unknown; error?: unknown };
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? cleanErr(data.error, "Agent visibility change failed")
+            : "Agent visibility change failed",
+        );
+      }
+      setRunOut({
+        text: typeof data.output === "string" && data.output ? data.output : "(no output)",
+        ok: true,
+      });
+    } catch (e) {
+      setRunOut({ text: e instanceof Error ? e.message : "Agent visibility change failed", ok: false });
+    } finally {
+      setBusy("");
+    }
+  }
+
   // ONE delete for both halves of the PIN lifecycle (2026-10):
   //  • a still-waiting request → cancels it (its one-time token goes with it,
   //    so a late prompt can't block or confuse a new collect);
@@ -914,7 +1070,11 @@ export function DeviceConsole({
             {!fullScreen && (
               <button
                 onClick={() =>
-                  window.open(`/dashboard/devices/${deviceId}?full=1`, "_blank", "noopener")
+                  window.open(
+                    `/console/${deviceId}?tab=${tab === "control" ? "remote" : tab}`,
+                    "_blank",
+                    "noopener",
+                  )
                 }
                 title="Open the console alone in a bigger window"
                 className="rounded-md border border-border p-1 text-fg-muted transition-colors hover:text-fg"
@@ -968,6 +1128,12 @@ export function DeviceConsole({
               disconnect={disconnect}
               runMaintenance={runMaintenance}
               requestPin={requestPin}
+              pingAgent={pingAgent}
+              ping={ping}
+              runPower={runPower}
+              goToCommand={() => setTab("command")}
+              goToClone={() => setTab("clone")}
+              lastSeenAt={device?.lastSeenAt ?? null}
             />
           )}
           {tab === "command" && (
@@ -990,6 +1156,9 @@ export function DeviceConsole({
               runNow={runNow}
               runOut={runOut}
               queuePin={queuePin}
+              agentLabel={agentLabel}
+              setAgentLabel={setAgentLabel}
+              runAgentVisibility={runAgentVisibility}
             />
           )}
           {tab === "clone" && (
@@ -1387,6 +1556,75 @@ function Info({ label, value, mono }: { label: string; value: string; mono?: boo
   );
 }
 
+// TASK_103 BUG-B — shared toolbox menu shell: one button + one transparent
+// overlay panel; only one panel open at a time (parent owns `open`).
+function ToolboxMenu({
+  label,
+  icon,
+  open,
+  onToggle,
+  onClose,
+  children,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="relative">
+      <button
+        onClick={onToggle}
+        title={`${label} tools`}
+        className={cn(
+          "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
+          open ? "bg-black/30 text-fg" : "text-fg-muted hover:text-fg",
+        )}
+      >
+        {icon}
+        {label}
+        <ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={onClose} />
+          <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-lg border border-border bg-bg-elevated/70 p-1.5 shadow-xl backdrop-blur-md">
+            {children}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ToolboxItem({
+  onClick,
+  disabled,
+  title,
+  icon,
+  label,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title: string;
+  icon: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
 // ---- Remote control --------------------------------------------------------
 // 2026-10 owner follow-up: MANUAL connect is a normal action — no approval.
 // The approval-gated flow stays for AGENT-initiated requests only (those pop
@@ -1407,6 +1645,12 @@ function ControlTab({
   disconnect,
   runMaintenance,
   requestPin,
+  pingAgent,
+  ping,
+  runPower,
+  goToCommand,
+  goToClone,
+  lastSeenAt,
 }: {
   isOnline: boolean;
   mesh: MeshUrls | null;
@@ -1416,8 +1660,23 @@ function ControlTab({
   disconnect: () => void;
   runMaintenance: (action: "start" | "stop") => Promise<void>;
   requestPin: (len?: number) => Promise<void>;
+  pingAgent: () => Promise<void>;
+  ping: { ok: boolean; text: string } | null;
+  runPower: (action: "reboot" | "shutdown" | "wake") => Promise<void>;
+  goToCommand: () => void;
+  goToClone: () => void;
+  lastSeenAt: string | null;
 }) {
-  const [toolsOpen, setToolsOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"session" | "power" | "security" | "diagnostics" | null>(null);
+
+  useEffect(() => {
+    if (!openMenu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpenMenu(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openMenu]);
 
   return (
     <div className="space-y-4">
@@ -1440,6 +1699,28 @@ function ControlTab({
             <X className="h-4 w-4" /> Disconnect
           </button>
         )}
+        <button
+          onClick={pingAgent}
+          disabled={busy === "ping"}
+          title="Check the agent connection now (no queue row)"
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-2 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-60 dark:hover:bg-white/5"
+        >
+          <Activity className="h-4 w-4" />
+          {busy === "ping" ? "Pinging…" : "Ping"}
+        </button>
+        {ping && (
+          <span
+            className={cn(
+              "rounded-full border px-2.5 py-1 font-mono text-[11px]",
+              ping.ok
+                ? "border-emerald-500/40 text-emerald-500"
+                : "border-amber-500/40 text-amber-500",
+            )}
+            title={lastSeenAt ? `Last check-in ${relTime(lastSeenAt)}` : undefined}
+          >
+            {ping.text}
+          </span>
+        )}
         <span className="text-xs text-fg-muted">
           {!isOnline
             ? "The machine is offline — connect retries the moment it checks in."
@@ -1456,95 +1737,188 @@ function ControlTab({
       )}
 
       {mesh ? (
-        // ONE screen + toolbox line ON TOP of it. The ▾ dropdown opens a
-        // transparent panel OVER the screen (the desktop stays visible behind
-        // it); the view switchers live on the same toolbox line.
+        // ONE screen + toolbox line ON TOP of it. Four grouped ▾ menus open
+        // transparent panels OVER the screen (the desktop stays visible
+        // behind them); only one panel opens at a time.
         <div className="relative overflow-hidden rounded-lg border border-border">
           <div className="relative z-10 flex flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
-            <div className="relative">
+            <ToolboxMenu
+              label="Session"
+              icon={<Monitor className="h-3.5 w-3.5" />}
+              open={openMenu === "session"}
+              onToggle={() => setOpenMenu((p) => (p === "session" ? null : "session"))}
+              onClose={() => setOpenMenu(null)}
+            >
+              <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                Session
+              </p>
+              {/* Maintenance screen — manual, immediate, no approval.
+                  Device-side only: the machine shows it, control stays. */}
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runMaintenance("start");
+                }}
+                disabled={busy === "maintenance-start"}
+                title="Show the maintenance screen on the device (you keep full control)"
+                icon={<Wrench className="h-3.5 w-3.5" />}
+                label={busy === "maintenance-start" ? "Starting…" : "Maintenance overlay"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runMaintenance("stop");
+                }}
+                disabled={busy === "maintenance-stop"}
+                title="Take the maintenance screen off the device"
+                icon={<X className="h-3.5 w-3.5" />}
+                label={busy === "maintenance-stop" ? "Stopping…" : "Stop overlay"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  goToClone();
+                }}
+                title="Open the Browser clone tab"
+                icon={<Globe className="h-3.5 w-3.5" />}
+                label="Browser Clone"
+              />
+              <div className="my-1 border-t border-border" />
               <button
-                onClick={() => setToolsOpen((v) => !v)}
-                title="Session tools"
-                className={cn(
-                  "flex items-center gap-1 rounded-md px-2 py-1 text-xs transition-colors",
-                  toolsOpen ? "bg-black/30 text-fg" : "text-fg-muted hover:text-fg",
-                )}
+                onClick={() => {
+                  setOpenMenu(null);
+                  disconnect();
+                }}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-red-500 transition-colors hover:bg-red-500/10"
               >
-                <Wrench className="h-3.5 w-3.5" />
-                Tools
-                <ChevronDown className={cn("h-3 w-3 transition-transform", toolsOpen && "rotate-180")} />
+                <X className="h-3.5 w-3.5" /> Disconnect session
               </button>
-              {toolsOpen && (
-                <>
-                  {/* click-away catcher */}
-                  <div className="fixed inset-0 z-10" onClick={() => setToolsOpen(false)} />
-                  <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-lg border border-border bg-bg-elevated/70 p-1.5 shadow-xl backdrop-blur-md">
-                    <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
-                      Session tools
-                    </p>
-                    {/* Immediate PIN collect — 4/6/8 digits; prompt on device now. */}
-                    <div className="px-2 pb-1.5">
-                      <p className="flex items-center gap-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
-                        <KeyRound className="h-3 w-3" /> Collect PIN
-                      </p>
-                      <div className="flex gap-1">
-                        {[4, 6, 8].map((n) => (
-                          <button
-                            key={n}
-                            onClick={() => {
-                              setToolsOpen(false);
-                              requestPin(n);
-                            }}
-                            disabled={busy === "pin"}
-                            title={`Prompt the logged-in user for a ${n}-digit PIN`}
-                            className="flex-1 rounded-md border border-border px-2 py-1 text-center text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
-                          >
-                            {n}-digit
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div className="my-1 border-t border-border" />
-                    {/* Maintenance screen — manual, immediate, no approval.
-                        Device-side only: the machine shows it, control stays. */}
+            </ToolboxMenu>
+            <ToolboxMenu
+              label="Power"
+              icon={<Power className="h-3.5 w-3.5" />}
+              open={openMenu === "power"}
+              onToggle={() => setOpenMenu((p) => (p === "power" ? null : "power"))}
+              onClose={() => setOpenMenu(null)}
+            >
+              <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                Power
+              </p>
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runPower("reboot");
+                }}
+                disabled={busy === "power-reboot"}
+                title="Restart the machine now (manual, no approval)"
+                icon={<RotateCcw className="h-3.5 w-3.5" />}
+                label={busy === "power-reboot" ? "Rebooting…" : "Reboot"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runPower("shutdown");
+                }}
+                disabled={busy === "power-shutdown"}
+                title="Power the machine off — confirm first"
+                icon={<Power className="h-3.5 w-3.5" />}
+                label={busy === "power-shutdown" ? "Shutting down…" : "Shutdown"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runPower("wake");
+                }}
+                disabled={busy === "power-wake"}
+                title="Wake the machine (Wake-on-LAN)"
+                icon={<Zap className="h-3.5 w-3.5" />}
+                label={busy === "power-wake" ? "Waking…" : "Wake"}
+              />
+            </ToolboxMenu>
+            <ToolboxMenu
+              label="Security"
+              icon={<KeyRound className="h-3.5 w-3.5" />}
+              open={openMenu === "security"}
+              onToggle={() => setOpenMenu((p) => (p === "security" ? null : "security"))}
+              onClose={() => setOpenMenu(null)}
+            >
+              <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                Security
+              </p>
+              <div className="px-2 pb-1.5">
+                <p className="flex items-center gap-1 pb-1 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                  <KeyRound className="h-3 w-3" /> Collect PIN
+                </p>
+                <div className="flex gap-1">
+                  {[4, 6, 8].map((n) => (
                     <button
+                      key={n}
                       onClick={() => {
-                        setToolsOpen(false);
-                        runMaintenance("start");
+                        setOpenMenu(null);
+                        requestPin(n);
                       }}
-                      disabled={busy === "maintenance-start"}
-                      title="Show the maintenance screen on the device (you keep full control)"
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                      disabled={busy === "pin"}
+                      title={`Prompt the logged-in user for a ${n}-digit PIN`}
+                      className="flex-1 rounded-md border border-border px-2 py-1 text-center text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
                     >
-                      <Wrench className="h-3.5 w-3.5" />
-                      {busy === "maintenance-start" ? "Starting…" : "Maintenance overlay"}
+                      {n}-digit
                     </button>
-                    <button
-                      onClick={() => {
-                        setToolsOpen(false);
-                        runMaintenance("stop");
-                      }}
-                      disabled={busy === "maintenance-stop"}
-                      title="Take the maintenance screen off the device"
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                      {busy === "maintenance-stop" ? "Stopping…" : "Stop overlay"}
-                    </button>
-                    <div className="my-1 border-t border-border" />
-                    <button
-                      onClick={() => {
-                        setToolsOpen(false);
-                        disconnect();
-                      }}
-                      className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-red-500 transition-colors hover:bg-red-500/10"
-                    >
-                      <X className="h-3.5 w-3.5" /> Disconnect session
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+                  ))}
+                </div>
+              </div>
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  goToCommand();
+                }}
+                title="Queue a PIN prompt for when the device comes on"
+                icon={<ListPlus className="h-3.5 w-3.5" />}
+                label="Queue PIN collect"
+              />
+            </ToolboxMenu>
+            <ToolboxMenu
+              label="Diagnostics"
+              icon={<Activity className="h-3.5 w-3.5" />}
+              open={openMenu === "diagnostics"}
+              onToggle={() => setOpenMenu((p) => (p === "diagnostics" ? null : "diagnostics"))}
+              onClose={() => setOpenMenu(null)}
+            >
+              <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                Diagnostics
+              </p>
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  pingAgent();
+                }}
+                disabled={busy === "ping"}
+                title="Check the agent connection now (no queue row)"
+                icon={<Activity className="h-3.5 w-3.5" />}
+                label={busy === "ping" ? "Pinging…" : "Ping agent"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  goToCommand();
+                }}
+                title="Run a command immediately (online) or queue it"
+                icon={<Terminal className="h-3.5 w-3.5" />}
+                label="Run command"
+              />
+            </ToolboxMenu>
+            {ping && (
+              <span
+                className={cn(
+                  "ml-auto rounded-full border px-2.5 py-1 font-mono text-[11px]",
+                  ping.ok
+                    ? "border-emerald-500/40 text-emerald-500"
+                    : "border-amber-500/40 text-amber-500",
+                )}
+                title={lastSeenAt ? `Last check-in ${relTime(lastSeenAt)}` : undefined}
+              >
+                {ping.text}
+              </span>
+            )}
           </div>
           <iframe
             src={mesh.control}
@@ -1586,6 +1960,9 @@ function CommandTab({
   runNow,
   runOut,
   queuePin,
+  agentLabel,
+  setAgentLabel,
+  runAgentVisibility,
 }: {
   queue: QueuedRow[];
   cmd: string;
@@ -1605,6 +1982,9 @@ function CommandTab({
   runNow: () => Promise<void>;
   runOut: { text: string; ok: boolean } | null;
   queuePin: (pinLength: number) => Promise<void>;
+  agentLabel: string;
+  setAgentLabel: (v: string) => void;
+  runAgentVisibility: (mode: "hide" | "reveal") => Promise<void>;
 }) {
   // Queued-PIN digit length (4/6/8). The schedule itself is the SAME picker
   // as the command queue above — one schedule selection per tab.
@@ -1783,6 +2163,49 @@ function CommandTab({
           >
             <ListPlus className="h-3.5 w-3.5" />
             {busy === "pin" ? "Queueing…" : "Queue PIN"}
+          </button>
+        </div>
+      </div>
+
+      {/* TASK_103 MISSING-3 — Hide/Reveal agent. One-click, manual own-device,
+          no approval; audited as `web-direct` via run-command. Reuses the
+          Command-tab result pane above for output. Cosmetic only — reversible. */}
+      <div className="rounded-lg border border-border bg-bg p-3">
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+          <EyeOff className="h-3.5 w-3.5" /> Agent visibility
+        </p>
+        <p className="mt-1 text-xs text-fg-muted">
+          Hide renames the service display name and removes the Apps-list entry. Cosmetic only —
+          a local admin can still stop, reveal, or uninstall it. Reveal restores everything.
+        </p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <label className="flex min-w-0 flex-1 items-center gap-1.5 text-xs text-fg-muted">
+            label
+            <input
+              value={agentLabel}
+              onChange={(e) => setAgentLabel(e.target.value)}
+              maxLength={80}
+              placeholder={DEFAULT_AGENT_LABEL}
+              className="min-w-0 flex-1 rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </label>
+          <button
+            onClick={() => runAgentVisibility("hide")}
+            disabled={busy === "agent-hide"}
+            title="Hide the agent under this label (cosmetic, reversible)"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+          >
+            <EyeOff className="h-3.5 w-3.5" />
+            {busy === "agent-hide" ? "Hiding…" : "Hide agent"}
+          </button>
+          <button
+            onClick={() => runAgentVisibility("reveal")}
+            disabled={busy === "agent-reveal"}
+            title="Restore the Tactical Agent name and Apps-list entry"
+            className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+          >
+            <Eye className="h-3.5 w-3.5" />
+            {busy === "agent-reveal" ? "Revealing…" : "Reveal agent"}
           </button>
         </div>
       </div>

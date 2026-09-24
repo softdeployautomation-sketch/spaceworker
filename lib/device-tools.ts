@@ -284,12 +284,17 @@ export async function stopMaintenanceOverlayAction(opts: {
   });
 }
 
-// ---------------------------------------------------------------------------
 // Queued commands — the "timed command for an offline device" tool. Vantra
 // owns the ONE queue + online-transition sweep (fires the moment the device
 // checks in); SpaceWorker mirrors rows for ownership/cancel and polls status.
 // NO second sweep here — that would double-fire commands.
 // ---------------------------------------------------------------------------
+
+// TASK_103 MISSING-1 — Ping (agent connectivity check). One-click, manual
+// own-device, no approval. A fast round-trip probe through runCommandNow's
+// transport (marker echo); wall-clock latency is measured HERE (Date.now
+// diff), never trusted from device text. NEVER creates a queue row: an
+// offline device fails immediately (runCommandNow throws).
 
 export interface QueuedCommandView {
   id: string;
@@ -506,6 +511,91 @@ export async function cancelQueuedCommand(opts: {
 export interface RunNowResult {
   output: string | null;
   ranAt: Date;
+}
+
+export interface PingResult {
+  latencyMs: number;
+  marker: string;
+  lastSeenAt: string | null;
+}
+
+// TASK_103 MISSING-1 — Ping (agent connectivity check). One-click, manual
+// own-device, no approval. A fast round-trip probe through the run-now
+// transport (marker echo); wall-clock latency is measured HERE (Date.now
+// diff), never trusted from device text. NEVER creates a queue row: an
+// offline device fails immediately (the action call throws).
+export async function pingDevice(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<PingResult> {
+  const started = Date.now();
+  const marker = `sw-ping-${started.toString(36)}`;
+  // PowerShell-safe probe: single-quoted echo + ISO timestamp. The output is
+  // verified only for the marker — any successful round-trip proves
+  // reachability; nothing else is parsed.
+  const { output } = await runCommandNow({
+    userId: opts.userId,
+    deviceId: opts.deviceId,
+    cmd: `Write-Output '${marker}'; [DateTime]::UtcNow.ToString('o')`,
+    shell: "powershell",
+    timeoutSeconds: 15,
+    runAsUser: false,
+  });
+  const latencyMs = Date.now() - started;
+  if (typeof output !== "string" || !output.includes(marker)) {
+    throw new Error("ping_mismatch");
+  }
+  // The run-now call above already wrote its own `device_run_now` audit row.
+  // Read the heartbeat age for the result chip ("last check-in 42s ago").
+  const row = await db.device.findFirst({
+    where: { id: opts.deviceId, userId: opts.userId },
+    select: { lastSeenAt: true },
+  });
+  return {
+    latencyMs,
+    marker,
+    lastSeenAt: row?.lastSeenAt ? row.lastSeenAt.toISOString() : null,
+  };
+}
+
+// TASK_103 MISSING-2 — direct power for MANUAL users (reboot/shutdown/wake).
+// Vantra's sw `action` route already supports all three; this is the
+// immediate, audited-as-`web-direct` path (same posture as maintenance
+// start/stop and Run now). The proposal rail stays for AGENT-initiated power.
+export type PowerAction = "reboot" | "shutdown" | "wake";
+
+export async function runPowerAction(opts: {
+  userId: string;
+  deviceId: string;
+  action: PowerAction;
+}): Promise<void> {
+  const device = await requireOwnedDevice(opts);
+  try {
+    await vantraFetch(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action: opts.action }),
+      },
+    );
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: `device_power_${opts.action}`,
+      status: "executed",
+      approvalChannel: "web-direct",
+      sourceDeviceId: device.id,
+    });
+  } catch (err) {
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: `device_power_${opts.action}`,
+      status: "failed",
+      approvalChannel: "web-direct",
+      sourceDeviceId: device.id,
+      detail: { error: err instanceof Error ? err.message.slice(0, 500) : "power_failed" },
+    });
+    throw normalizeVantraError(err);
+  }
 }
 
 export async function runCommandNow(opts: {

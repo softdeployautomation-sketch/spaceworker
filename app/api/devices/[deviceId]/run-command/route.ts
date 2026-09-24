@@ -19,7 +19,7 @@ export async function POST(
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   const { deviceId } = await params;
 
-  let body: { cmd?: unknown; shell?: unknown; timeout?: unknown; runAsUser?: unknown };
+  let body: { cmd?: unknown; shell?: unknown; timeout?: unknown; runAsUser?: unknown; agentLabel?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -28,6 +28,19 @@ export async function POST(
   const cmd = typeof body.cmd === "string" ? body.cmd.trim() : "";
   if (!cmd || cmd.length > 8000) {
     return NextResponse.json({ error: "cmd is required (max 8000 chars)." }, { status: 400 });
+  }
+  // TASK_103 MISSING-3 — server-side label gate for Hide agent: the ONLY
+  // dynamic input of the hide script is the display label. When the console
+  // sends `agentLabel`, it must match 1–80 chars of letters/digits/spaces/
+  // hyphens (same rule as lib/agent-visibility.ts `isValidAgentLabel`).
+  if (body.agentLabel !== undefined) {
+    const label = typeof body.agentLabel === "string" ? body.agentLabel.trim() : "";
+    if (!/^[A-Za-z0-9 \-]{1,80}$/.test(label)) {
+      return NextResponse.json(
+        { error: "agentLabel must be 1–80 chars: letters, digits, spaces, hyphens." },
+        { status: 400 },
+      );
+    }
   }
   const shell = body.shell === "cmd" ? "cmd" : "powershell";
   const timeout =
