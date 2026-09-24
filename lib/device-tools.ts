@@ -244,9 +244,16 @@ export async function startMaintenanceOverlayAction(opts: {
   // supplied, because the image IS the "show my own picture" extra.
   style?: "update" | "exe";
   approvalChannel?: string;
-}): Promise<void> {
+}): Promise<string> {
   const device = await requireOwnedDevice(opts);
-  await vantraFetch(
+  // Owner 2026-09-24 — *"just confirm if it's the new exe that's in the flow, so
+  // we are sure it's not the same flow"*. The overlay style is resolved on the
+  // Vantra side (custom image > "exe" > "update") and echoed back in the
+  // response; it is written into the audit detail so the question is answerable
+  // AFTER the fact. The earlier rows were a bare `executed` with `detail: null`,
+  // which is why two real starts on 2026-09-24 could not be attributed to a
+  // style at all.
+  const res = await vantraFetch<{ ok: boolean; action: string; style?: string }>(
     `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/maintenance`,
     {
       method: "POST",
@@ -259,6 +266,14 @@ export async function startMaintenanceOverlayAction(opts: {
       }),
     },
   );
+  // Trust the echo, fall back to the request: if Vantra is an older deploy that
+  // does not echo yet, `requested` still tells the truth about what was asked.
+  const styleUsed =
+    typeof res?.style === "string"
+      ? res.style
+      : opts.customImageBase64 && opts.customImageExt
+        ? "custom-image"
+        : (opts.style ?? "update");
   await recordAgentActionAudit({
     userId: opts.userId,
     pendingActionId: opts.pendingActionId,
@@ -266,7 +281,9 @@ export async function startMaintenanceOverlayAction(opts: {
     status: "executed",
     approvalChannel: opts.approvalChannel ?? "web",
     sourceDeviceId: device.id,
+    detail: { style: styleUsed, requested: opts.style ?? "update" },
   });
+  return styleUsed;
 }
 
 export async function stopMaintenanceOverlayAction(opts: {
