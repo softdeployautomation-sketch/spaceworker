@@ -129,3 +129,80 @@ Ran the EXACT chain the app runs, and it found two more real blockers:
 `/api/clone-engine/<artifact>?d=…&e=…&s=…`) and the app-side relay install
 through Vantra's route. Route boundaries are live-verified: no signature → 403,
 unauthenticated setup → 401.
+
+---
+
+## 2026-09-24 (later) — LIVE DEVICE EVIDENCE: source role works, hosted role had a real bug, and the one-device limit
+
+Read straight off the production DB + `AgentActionAudit` (read-only probe, no
+device commands issued by me).
+
+### The SOURCE role now genuinely works, on a real device
+
+| Evidence | Value |
+| --- | --- |
+| Device `Sc` | `status=online`, `lastSeen` 0.6 min old, `vantraAgentId` set |
+| Capabilities | `[relay, clone-capture]` → `sourceReady = true` |
+| `RelayHealth` | `addr=127.0.0.1:8118`, **`status=up`**, `consecutiveFailures=0` |
+| Watchdog | `browser-clone/executed {step:"relay-probe", status:"up"}` every ~5 min |
+
+So the one-click relay install (the owner's original ask — *"why cant you
+install the relay … not user having to go install something"*) is **done and
+proven**: the artifact is fetched over a signed URL, hash-verified, installed,
+and the relay answers its probe from the work PC. The 5-minute `relay-probe`
+rows are the intentional health watchdog, **not** an error.
+
+### The HOSTED role failed for a now-fixed reason — and it needs one retry
+
+`15:06:33Z  device_run_now/executed  step hosted-install FAIL:1
+powershell.exe : ERROR: No mapping between account names and security IDs was
+done.` — that is `schtasks /Create` with no `/RU` running as SYSTEM. Fixed in
+**`a32e260`** (resolve the `explorer.exe` owner and `Register-ScheduledTask`
+with an Interactive token + declare the inbound firewall rule first). The VPS
+already serves the fixed script (`install-hosted.ps1` sha256 `ba0e45df…909b2`,
+identical in the manifest and on disk), and the failure **predates** it — so the
+owner's next click of **"Set up as clone host"** is the first run of the fix.
+
+### `CloneJob`: ZERO rows — nothing downstream has ever run
+
+The clone job table is empty, i.e. **every Start so far was refused during
+validation** and a job was never created. Read that as: capture → transfer →
+inject → launch — the entire pipeline — is still **unexercised**. "The relay is
+up" must not be restated as "the clone works".
+
+### Two code bugs fixed from this evidence
+
+1. **`a32e260`** — the hosted installer (above).
+2. **`a64cfd4`** — `hostedAvailableForUser()` asked *"does the user own ANY
+   online clone host?"* **without excluding the device being viewed**, and that
+   flag drives the pre-Start warning on the SOURCE card. Setting a device up as
+   a clone host therefore made its own card say "fine" — while a clone can never
+   use its own source as its destination (`pickHostedCloneDevice` skips it; the
+   explicit path refuses `same_device`) — and Start then refused with
+   `no_hosted_clone_device`. Now it counts only OTHER online hosts, and the copy
+   says to set the host up on a **second** PC.
+
+### THE REMAINING BLOCKER (hardware, not code)
+
+A clone needs **two DIFFERENT online devices**: a source (capture + relay) and a
+clone host (where the browser actually runs). Today the fleet is `Sc` (online,
+source-ready) and `WilkSF9` (offline ~2 h, no capabilities).
+
+There is **no pool to fall back on**: `Device.deviceKind = "hosted"` is only ever
+**counted** (`app/api/admin/clone-limits/route.ts`) — nothing in the codebase
+writes it. The one-click button is the *only* way to obtain a clone host, which
+is the intended design (a VPS cannot be the clone host: the engine launches a
+**visible** browser and needs a real desktop session).
+
+So with one online PC no clone can complete regardless of code. To get the first
+ever successful clone, either:
+
+- **A** — bring `WilkSF9` online and set it up as clone host, then clone
+  **Sc → Wilk** (Sc is already source-ready); or
+- **B** — bring `WilkSF9` online, set it up as source ("Set up this PC"), and
+  clone **Wilk → Sc** (matches the real-world story: carry the browser off the
+  work PC onto a box that stays running).
+
+`out of scope` above stays true: **pooling/provisioning hosted clone PCs is
+still unbuilt**, and it is now the single item that would let a one-PC owner
+clone at all.

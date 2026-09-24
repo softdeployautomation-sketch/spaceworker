@@ -202,6 +202,17 @@ function firstFailure(steps: CloneSetupStep[]): CloneSetupStep | null {
  * 4. Retries moved to the CALLER. A retry inside the script lengthens the very
  *    call that is at risk of being killed; the caller can instead re-issue a
  *    chunk whose output was empty, which is both visible and bounded.
+ * 5. THE HASH READ RETRIES, because a just-written .exe is not always readable.
+ *    Live device `Sc` (2026-09-24) returned
+ *    `Get-FileHash : … cannot be read: … being used by another process` for both
+ *    engine binaries, and `.Hash` then threw `You cannot call a method on a
+ *    null-valued expression`, so a run that had actually downloaded fine was
+ *    reported as a failed fetch. Two causes, both real: Defender real-time
+ *    scanning holds a short handle on a new .exe, and TWO overlapping setup runs
+ *    share this one staging dir (the audits show two `fetch:install-hosted.ps1
+ *    OK` rows 81 ms apart). The server-side guard in `setupInFlight` removes the
+ *    second cause; this bounded retry absorbs the first. An unreadable file is
+ *    still a FAILURE after the try — never silently treated as verified.
  */
 function buildFetchScript(items: { name: string; url: string; sha256: string }[]): string {
   return [
@@ -210,6 +221,14 @@ function buildFetchScript(items: { name: string; url: string; sha256: string }[]
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
     `$stage = ${psq(STAGE_DIR)}`,
     "New-Item -ItemType Directory -Force -Path $stage | Out-Null",
+    // Rule 5 (below): a freshly written .exe can be momentarily unreadable, so
+    // the hash is taken through a bounded retry instead of once.
+    "function Get-VantraSha256($path) {",
+    "  for ($i = 0; $i -lt 10; $i++) {",
+    "    try { return (Get-FileHash -Algorithm SHA256 -Path $path -ErrorAction Stop).Hash.ToLower() } catch { Start-Sleep -Milliseconds 400 }",
+    "  }",
+    "  return $null",
+    "}",
     "$files = @(",
     ...items.map((i, idx) => {
       const entry = `  @{ n = ${psq(i.name)}; h = ${psq(i.sha256)}; u = ${psq(i.url)} }`;
@@ -234,8 +253,9 @@ function buildFetchScript(items: { name: string; url: string; sha256: string }[]
     "  $secs = [math]::Round(((Get-Date) - $t).TotalSeconds, 1)",
     "  if ($why -eq '' -and -not (Test-Path $out)) { $why = 'no_file_written' }",
     "  if ($why -ne '') { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:' + $why + '_after_' + $secs + 's'); $bad = $bad + 1; continue }",
-    "  $len = (Get-Item $out).Length",
-    "  $got = (Get-FileHash -Algorithm SHA256 -Path $out).Hash.ToLower()",
+    "  $got = Get-VantraSha256 $out",
+    "  $len = if (Test-Path $out) { (Get-Item $out).Length } else { 0 }",
+    "  if (-not $got) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:file_unreadable_after_' + $secs + 's'); $bad = $bad + 1; continue }",
     "  if ($got -ne $f.h) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:sha256_mismatch_' + $len + 'b'); $bad = $bad + 1; continue }",
     "  Unblock-File -Path $out -ErrorAction SilentlyContinue",
     "  Write-Output ('STEP:fetch:' + $f.n + ' OK:' + $len + 'b_' + $secs + 's')",
@@ -418,11 +438,43 @@ export async function cloneSetupStatus(opts: {
 
 
 /**
+ * ONE setup per device at a time.
+ *
+ * WHY (owner report 2026-09-24, device `Sc`): two setups overlapping on the same
+ * device share ONE staging dir (`…\CloneTool.stage`), so they corrupt each
+ * other. The audits from a real collision show two `fetch:install-hosted.ps1 OK`
+ * rows **81 ms apart** and `Get-FileHash … being used by another process` for
+ * both engine binaries — one run hashing a file the other was still writing —
+ * and the owner sees a bare "Device setup failed" for work that never had a
+ * chance. A second caller is now refused with a code the console can explain,
+ * instead of being allowed to trample the first.
+ *
+ * An in-process Map, not a DB row, on purpose: the app is a single systemd
+ * service (one Node process) and the guard's whole job is to serialise two
+ * clicks a few seconds apart. It is a de-duplicator, not a distributed lock.
+ */
+const setupInFlight = new Map<string, CloneSetupRole>();
+
+/**
  * THE one-click setup. Steps are sequential and fail closed: fetch → quarantine
  * → role install → capabilities → health. Nothing is reported ready unless the
  * device's own output confirmed it.
  */
 export async function setupCloneDevice(opts: {
+  userId: string;
+  deviceId: string;
+  role: CloneSetupRole;
+}): Promise<CloneSetupResult> {
+  if (setupInFlight.has(opts.deviceId)) throw new Error("setup_already_running");
+  setupInFlight.set(opts.deviceId, opts.role);
+  try {
+    return await runCloneSetup(opts);
+  } finally {
+    setupInFlight.delete(opts.deviceId);
+  }
+}
+
+async function runCloneSetup(opts: {
   userId: string;
   deviceId: string;
   role: CloneSetupRole;

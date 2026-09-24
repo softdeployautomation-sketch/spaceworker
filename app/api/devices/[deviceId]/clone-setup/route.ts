@@ -24,6 +24,9 @@ function errorStatus(code: string): number {
   if (code === "device_not_owned") return 404;
   if (code === "device_not_linked") return 404;
   if (code === "device_offline") return 502;
+  // A second setup while one is running is a CONFLICT, not a bad gateway: the
+  // first run is intact and the caller should simply wait (see setupInFlight).
+  if (code === "setup_already_running") return 409;
   if (code === "clone_engine_dist_missing" || code === "clone_engine_dist_invalid") return 503;
   if (code === "clone_engine_dist_incomplete") return 503;
   if (code.startsWith("vantra_deploy_outdated") || code === "vantra_not_configured") return 503;

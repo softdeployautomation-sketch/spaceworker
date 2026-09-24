@@ -282,8 +282,27 @@ function timeAt(iso: string | null): string {
 
 // Vantra's error strings arrive prefixed (`vantra_503: This device is currently
 // offline.`). The console only ever shows the human half of the message.
+// Codes this API returns are machine-readable on purpose (they are matched in
+// routes and audits), but they were reaching the owner verbatim — a bare
+// "Device setup failed" for a setup that was refused for a fixable reason, or
+// "setup_already_running" with nothing to do about it. Render the ones the
+// Device setup card can actually produce as a sentence; anything unknown still
+// falls through unchanged rather than being swallowed.
+const ERR_COPY: Record<string, string> = {
+  device_offline: "This PC is offline — bring it online, then run setup again.",
+  device_not_owned: "That device is not on your account.",
+  device_not_linked: "That PC is not linked to the agent yet.",
+  setup_already_running:
+    "A setup is already running for this PC — wait for it to finish (it takes about a minute), then try again.",
+  clone_engine_dist_missing: "The clone engine bundle is not on the server — deploy is incomplete.",
+  clone_engine_dist_invalid: "The clone engine bundle on the server is unreadable.",
+  clone_engine_dist_incomplete: "The clone engine bundle is missing files — deploy is incomplete.",
+  vantra_not_configured: "The agent link is not configured on the server.",
+};
+
 function cleanErr(value: unknown, fallback: string): string {
   if (typeof value !== "string" || !value) return fallback;
+  if (ERR_COPY[value]) return ERR_COPY[value];
   const text = value
     .replace("vantra_503: ", "")
     .replace("vantra_404: ", "")
