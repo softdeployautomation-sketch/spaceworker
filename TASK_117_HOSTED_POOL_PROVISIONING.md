@@ -206,7 +206,7 @@ browser engine, no new machine.
 | **D5** | **UI truth-telling.** "Set up as clone host" stops being a customer-facing task; the clone tab reports **hosted-pool status** instead. | This is the fix for the misconception that caused this task. The copy in `TASK_116` already stops instructing users to provision hardware; D5 finishes the job by moving the button to an ops surface. |
 | **D6** | **Lifecycle.** TTL/teardown/purge for hosted sessions + `TASK_105` governor integration so RAM caps and queueing apply to the pool like every other high-RAM consumer. | `hostedPoolSize` is a RAM dial; the governor owns RAM admission. |
 
-## D1 FINDINGS — measured on the VPS 2026-09-24 (device-free: no VM, no customer device)
+## D1 FINDINGS — measured on the VPS 2026-09-24/25 (device-free: no VM, no customer device)
 
 Environment: **chromium 151.0.7922.71** (Debian 13) from
 `ghcr.io/m1k1o/neko/chromium:latest`, launched through the **Neko entrypoint on
@@ -281,21 +281,63 @@ Out-of-band SQLite writes do **not** survive Chromium:
   host.
 - DevTools advertises its **internal** ws URL, so a client must rewrite
   `ws://127.0.0.1:9222/...` to the forwarded port.
-- **OPEN (not proven):** the WebSocket handshake did not complete in the harness
-  (45 s hard timeout, no error event). Next diagnostic to run — a raw upgrade probe
-  that will name the refusal:
-  `curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" http://127.0.0.1:9223/devtools/page/<id>`
-  (launch already carries `--remote-allow-origins=*`).
+- **RESOLVED 2026-09-25 — the working recipe is in F6.** The earlier "handshake does
+  not complete" was a **client-side artefact**, not a Chromium problem: `curl` and a
+  raw `http.request` upgrade both get `HTTP/1.1 101` immediately, through the
+  forwarder *and* directly inside the container. Node's built-in `WebSocket` hung
+  because the post-upgrade socket stays **corked** — writes buffer and never reach
+  the wire (fixed with `socket.uncork()`). That fix exposed the real gotcha in F6.
+
+### F6 — THE WORKING RECIPE (D1 mechanism proven end-to-end)
+
+Measured 2026-09-25 on the VPS, **no device involved**.
+
+1. Launch the clone container with a **non-default `--user-data-dir`**, plus
+   `--remote-debugging-port=9222 --remote-allow-origins=*`. Run a loopback
+   forwarder beside it (`swfwd 0.0.0.0:9223 127.0.0.1:9222`) and publish that port.
+2. Connect to the **browser** endpoint — `/devtools/browser/<id>`.
+3. **`Storage.setCookies`** — a **browser-level** method that needs **no attach**.
+4. `Target.createTarget {url}` (or `Page.navigate`) to open the page.
+
+**Do NOT use:**
+
+- a direct `/devtools/page/<id>` socket: it completes the handshake and answers
+  **ping/pong**, but **silently ignores every DevTools command** — no reply, no
+  error, no close. This is the trap that looked like a broken handshake.
+- `Target.attachToTarget`: returns `{"code":-32000,"message":"Not allowed"}` here,
+  so the usual "attach then session-scope your commands" pattern is unavailable.
+
+**Proof (the go/no-go):**
+
+```
+Storage.setCookies = {}
+Storage.getCookies(swcdp) = ["172.17.0.1/=CDP-STORE-1790290938"]
+Target.createTarget = {"targetId":"01A45FF7CD254A531FBB190A020C16DA"}
+--- server log ---
+path=/cdptest COOKIE_HEADER='swcdp=CDP-STORE-1790290938'
+```
+
+The renderer presented the CDP-injected cookie on its first request.
+
+**Persistence:** after a full container restart,
+`Storage.getCookies` listed `swcdp@172.17.0.1` at startup and the page sent it
+**without re-injection** — Chromium had written it to disk itself. So injection can
+be once-per-profile; re-injecting every launch is the safe default.
+
+**Transport note:** the entire path was driven **from a laptop over an `ssh -L`
+tunnel** — no agent, no browser, and nothing installed on the clone host. Injection
+is a server-side operation.
 
 ### Consequence for the build (supersedes the earlier "minimal path")
 
-Given **F4**, the clone must receive its cookies **at runtime, through Chromium**
-(CDP), not by writing the profile. That means:
+Given **F4** — and now **proven end-to-end in F6** — the clone receives its cookies
+**at runtime, through Chromium** (CDP), not by writing the profile. That means:
 
 - a clone session must launch with a **non-default `--user-data-dir`** plus remote
   debugging (F5), and therefore a forwarder;
-- the cookie payload is delivered **per launch**, so cookie persistence stops being
-  a requirement (F3 shows Chromium will persist them itself once it sets them);
+- the cookie payload is delivered **per launch**, and Chromium persists what it is
+  given (proven: the cookie survived a full container restart, F6), so both
+  "inject once" and "re-inject every launch" work;
 - and it unlocks what the disk path could never do — **localStorage /
   sessionStorage**, where many sites actually keep auth state.
 
@@ -319,14 +361,15 @@ correctly, but they are **no longer on the critical path** for launching a clone
 
 ## Verification
 
-- **D1 — device-free half DONE (see "D1 FINDINGS" below); full proof still open.**
-  Proven without any device: the container's Chromium **can** be persisted to and
-  read back from with a bind-mounted profile (F3), the DevTools endpoint **is**
-  reachable with a non-default `--user-data-dir` + forwarder (F5), and — decisively
-  — **out-of-band writes to the cookie store are discarded by Chromium** (F4), so
-  the clone must be fed cookies at runtime instead.
-  Still to prove: (a) the CDP WebSocket handshake (F5, open), and (b) a **real
-  capture from `Sc`** showing a signed-in site inside the container.
+- **D1 mechanism PROVEN (see "D1 FINDINGS" → F6); the `Sc` capture remains.** Proven
+  without any device, on the real Neko container: the transport works (F5), the
+  engine's KDF salt and cookie-prefix handling are wrong (F1/F2), disk injection is
+  impossible because Chromium deletes foreign rows (F4), and — the go/no-go — a
+  cookie injected via `Storage.setCookies` **was received by the site on the wire**,
+  and **survived a full container restart** (F6).
+  Still to prove: a **real capture from `Sc`** showing a signed-in site inside the
+  clone. That requires the device, so it waits for the owner — nothing else in D1 is
+  outstanding.
 - D2 proved by: a clone launches a Neko session from the injected profile, and a
   **single-PC** account can clone with no second device involved.
 - D3 proved by: relay-mode egress reports the **customer's** IP, and the launch
