@@ -118,12 +118,49 @@ function parseSteps(output: string | null): CloneSetupStep[] {
   return steps;
 }
 
+/**
+ * A step that produced NO parseable `STEP:` line is a FAILURE, never a pass.
+ *
+ * `parseSteps` silently returns `[]` for empty or garbled output and
+ * `firstFailure([])` is `null`, so any script that failed to run at all — a
+ * PowerShell parse error, a command killed at the timeout, an agent that
+ * returned nothing — used to fall straight through to the NEXT step and get
+ * blamed on it (the 2026-09-24 owner report: a fetch that never ran showed up
+ * as `quarantine FAIL:engine_missing_in_stage`). Recording the device's raw
+ * words as the step detail makes the real cause self-evident in the console.
+ */
+function ensureReported(steps: CloneSetupStep[], output: string | null, step: string): void {
+  if (steps.length > 0) return;
+  const raw = (output ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+  steps.push({
+    step,
+    ok: false,
+    detail: raw ? `no_step_output: ${raw}` : "no_output_from_device",
+  });
+}
+
 function firstFailure(steps: CloneSetupStep[]): CloneSetupStep | null {
   return steps.find((s) => !s.ok) ?? null;
 }
 
 
-/** Step 1 script: download every artifact to the staging dir, hash-verified. */
+/**
+ * Step 1 script: download every artifact to the staging dir, hash-verified.
+ *
+ * TWO hard-won rules live here (owner report 2026-09-24, device `Sc`):
+ *
+ * 1. NO TRAILING COMMA in the manifest array. PowerShell has no tolerance for
+ *    `@(a, b,)` — it is a PARSE error, and a parse error emits NO stdout at all.
+ *    The original code appended `,` to every entry (including the last), so the
+ *    whole script never ran: nothing was downloaded, and the failure surfaced
+ *    one step later as the misleading
+ *    `quarantine FAIL:engine_missing_in_stage`. The device's own words were
+ *    `At line:12 char:276 ... Missing expression after ','`.
+ * 2. Retry the download. Fetching ~15 MB from a work PC is the one step that
+ *    crosses the open internet, and it was observed resetting mid-transfer
+ *    (`An existing connection was forcibly closed by the remote host`) while the
+ *    same URL served fine from elsewhere. Three attempts, then report.
+ */
 function buildFetchScript(items: { name: string; url: string; sha256: string }[]): string {
   return [
     "$ErrorActionPreference = 'Continue'",
@@ -131,18 +168,28 @@ function buildFetchScript(items: { name: string; url: string; sha256: string }[]
     `$stage = ${psq(STAGE_DIR)}`,
     "New-Item -ItemType Directory -Force -Path $stage | Out-Null",
     "$files = @(",
-    ...items.map((i) => `  @{ n = ${psq(i.name)}; h = ${psq(i.sha256)}; u = ${psq(i.url)} },`),
+    ...items.map((i, idx) => {
+      const entry = `  @{ n = ${psq(i.name)}; h = ${psq(i.sha256)}; u = ${psq(i.url)} }`;
+      return idx === items.length - 1 ? entry : `${entry},`;
+    }),
     ")",
     "$bad = 0",
     "foreach ($f in $files) {",
     "  $out = Join-Path $stage $f.n",
-    "  try {",
-    "    Invoke-WebRequest -UseBasicParsing -Uri $f.u -OutFile $out -ErrorAction Stop",
-    "    $got = (Get-FileHash -Algorithm SHA256 -Path $out).Hash.ToLower()",
-    "    if ($got -ne $f.h) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:sha256_mismatch'); $bad = $bad + 1; continue }",
-    "    Unblock-File -Path $out -ErrorAction SilentlyContinue",
-    "    Write-Output ('STEP:fetch:' + $f.n + ' OK')",
-    "  } catch { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:' + $_.Exception.Message); $bad = $bad + 1 }",
+    "  $ok = $false",
+    "  for ($try = 1; $try -le 3 -and -not $ok; $try++) {",
+    "    try {",
+    "      Invoke-WebRequest -UseBasicParsing -Uri $f.u -OutFile $out -TimeoutSec 45 -ErrorAction Stop",
+    "      $ok = $true",
+    "    } catch {",
+    "      if ($try -lt 3) { Start-Sleep -Seconds 2 } else { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:' + $_.Exception.Message); $bad = $bad + 1 }",
+    "    }",
+    "  }",
+    "  if (-not $ok) { continue }",
+    "  $got = (Get-FileHash -Algorithm SHA256 -Path $out).Hash.ToLower()",
+    "  if ($got -ne $f.h) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:sha256_mismatch'); $bad = $bad + 1; continue }",
+    "  Unblock-File -Path $out -ErrorAction SilentlyContinue",
+    "  Write-Output ('STEP:fetch:' + $f.n + ' OK')",
     "}",
     "if ($bad -gt 0) { Write-Output ('STEP:fetch FAIL:aborted_' + $bad + '_file_s'); exit 1 }",
     "Write-Output ('STEP:fetch DONE:' + $files.Count + '_verified')",
@@ -351,6 +398,7 @@ export async function setupCloneDevice(opts: {
     runAsUser: false,
   });
   steps.push(...parseSteps(fetched.output));
+  ensureReported(steps, fetched.output, "fetch");
   if (firstFailure(steps)) return bail();
 
   // 2. quarantine (ENGINE CLI preflight) + install into CloneTool.
@@ -363,6 +411,7 @@ export async function setupCloneDevice(opts: {
     runAsUser: false,
   });
   steps.push(...parseSteps(staged.output));
+  ensureReported(steps, staged.output, "quarantine");
   if (firstFailure(steps)) return bail();
 
   // 3. role install + capability registration. Both roles install FROM the
@@ -394,6 +443,7 @@ export async function setupCloneDevice(opts: {
         runAsUser: false,
       });
       steps.push(...parseSteps(hosted.output));
+      ensureReported(steps, hosted.output, "hosted-install");
       if (firstFailure(steps)) return await bail();
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-host" });
     }

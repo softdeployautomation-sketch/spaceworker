@@ -116,31 +116,42 @@ export function DeviceList() {
     }
   }, []);
 
-  // Task 106 (bit C1) — live refresh: re-poll `/api/devices` (+ the link
-  // panel) every 20 s, paused while the document is hidden so a background
-  // tab does not hammer the API. Manual Refresh button stays. Cleared on
-  // unmount.
+  // WHY THE ORDER MATTERS (owner report 2026-09-24: "the device dashboard still
+  // doesn't load users online until I click the refresh button").
+  //
+  // A row's status is DERIVED from `lastSeenAt` age (`deviceStatus()` in
+  // lib/devices.ts — a heartbeat older than 10 min reads as offline), and
+  // `lastSeenAt` is only ever refreshed by the Vantra→DB device sync that
+  // `loadLink()` triggers (`syncDevices()` in lib/vantra-link.ts). Firing the
+  // two in parallel — which this used to do — let the read win the race, so a
+  // machine that is genuinely online rendered as OFFLINE on first paint and
+  // only corrected itself when the user hit Refresh (by which time the earlier
+  // sync had landed). Reproduced against device `Sc`: T0 `/api/devices` =
+  // offline, then the link route, then T1 = online. Sync first, then read.
+  const refreshAll = useCallback(async () => {
+    await loadLink();
+    await load();
+  }, [load, loadLink]);
+
+  // Task 106 (bit C1) — live refresh: re-poll every 20 s, paused while the
+  // document is hidden so a background tab does not hammer the API. Manual
+  // Refresh button stays. Cleared on unmount.
   useEffect(() => {
-    load();
-    loadLink();
+    void refreshAll();
     const tick = () => {
       if (document.visibilityState === "hidden") return;
-      load();
-      loadLink();
+      void refreshAll();
     };
     const timer = setInterval(tick, 20_000);
     const onVisible = () => {
-      if (document.visibilityState === "visible") {
-        load();
-        loadLink();
-      }
+      if (document.visibilityState === "visible") void refreshAll();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [load, loadLink]);
+  }, [refreshAll]);
 
   async function enable() {
     setBusy("enable");
@@ -474,10 +485,7 @@ export function DeviceList() {
               />
             </label>
             <button
-              onClick={() => {
-                load();
-                loadLink();
-              }}
+              onClick={() => void refreshAll()}
               title="Refresh"
               className="rounded-md border border-border p-2 text-fg-muted transition-colors hover:text-fg"
             >
