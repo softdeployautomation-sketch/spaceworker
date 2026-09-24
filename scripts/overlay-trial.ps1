@@ -1,27 +1,38 @@
 # Overlay trial probe — runs on a throwaway cloud Windows runner.
 #
 # Owner request 2026-09-24: test the "maintenance screen" EXE on a CLOUD Windows
-# box instead of the local VM (the VM slows the Mac down). This script measures
-# the two documented RED FLAGS of the supplied EXE instead of assuming them:
+# box instead of the local VM (the VM slows the Mac down).
 #
-#   1. GetCursorInfo           -> is the local cursor still CURSOR_SHOWING while
-#                                 the overlay runs? The EXE imports
-#                                 SetSystemCursor/CreateCursor/CopyIcon/
-#                                 LoadCursor + HideAllCursors/RestoreAllCursors
-#                                 with an _originalCursors cache, which is the
-#                                 EXACT technique rejected 3/3 in TASK_23 for
-#                                 breaking technician control.
-#   2. GetWindowDisplayAffinity -> did it mark itself excluded-from-capture
-#                                 (0x11) or monitor-only (0x01)? That decides
-#                                 whether a capture-based viewer goes black.
+# Run 1 (36010676988) proved the EXE launches and survives (7 threads, 35 MB,
+# alive at 20 s) and that it STEALS FOREGROUND Z-ORDER (the console title bar
+# went active -> inactive). But nothing appeared in the screenshot. Two very
+# different explanations:
+#   (a) the overlay never painted in the cloud session (harness limitation), or
+#   (b) it painted but called SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE),
+#       the documented red flag that would BLACK OUT a capture-based viewer
+#       (TASK_19 requires our overlay to stay visible).
+# Run 1 could not tell them apart, so this script adds the two missing pieces:
 #
-# It also dumps the top-level windows it created and takes a desktop screenshot
-# so the owner can SEE the overlay without running anything on their own machine.
+#   CONTROL — a magenta full-screen topmost form. If its pixels show up in the
+#             screenshot, capture DOES see overlays, so the absence of the EXE's
+#             own overlay is real rather than a harness artifact.
+#   WINDOW PROBE — EnumWindows filtered to the trial PID, reporting class,
+#             rect, IsWindowVisible and GetWindowDisplayAffinity for EVERY
+#             top-level window it owns. Detects the overlay even when it is
+#             invisible to capture, and reads its affinity directly.
+#
+# Static analysis (dnfile, 2026-09-24) of the same binary: imports user32
+# SetSystemCursor/CreateCursor/CopyIcon/LoadCursor/DestroyCursor with an
+# _originalCursors cache + HideAllCursors/RestoreAllCursors (the exact
+# global-cursor technique TASK_23 rejected 3/3), SetWindowDisplayAffinity, and a
+# narrow EnumWindows sweep hiding ONLY #32768 / tooltips_class32 / SysShadow.
+# No network, file, registry or process APIs (user32 + kernel32 only).
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$ExePath,
   [string]$OutDir = $env:RUNNER_TEMP,
-  [int]$RunSeconds = 20
+  [int]$RunSeconds = 20,
+  [switch]$SkipControl
 )
 
 $ErrorActionPreference = 'Continue'
@@ -29,35 +40,60 @@ New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $log = Join-Path $OutDir 'overlay-trial.log'
 function Say([string]$m) { $m | Tee-Object -FilePath $log -Append }
 
-Add-Type -Namespace Trial -Name Api -MemberDefinition @'
-[DllImport("user32.dll")] public static extern int GetWindowDisplayAffinity(IntPtr hWnd, out uint a);
-[DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CI p);
-[StructLayout(LayoutKind.Sequential)] public struct PT { public int x; public int y; }
-[StructLayout(LayoutKind.Sequential)] public struct CI { public int cbSize; public int flags; public IntPtr hCursor; public PT pt; }
-'@
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
 
-function Probe([string]$phase) {
-  Say "`n=== PROBE $phase ==="
-  $ci = New-Object Trial.Api+CI
-  $ci.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($ci)
-  $ok = [Trial.Api]::GetCursorInfo([ref]$ci)
-  Say ("CURSOR ok={0} flags={1} hCursor={2} pos={3},{4}" -f $ok, $ci.flags, $ci.hCursor, $ci.pt.x, $ci.pt.y)
-  Say "  (flags bit0 = CURSOR_SHOWING; 0 means the local cursor is hidden)"
-  $wins = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 }
-  Say ("WINDOWED PROCESSES: {0}" -f $wins.Count)
-  foreach ($p in $wins) {
-    $a = 0
-    $rc = [Trial.Api]::GetWindowDisplayAffinity($p.MainWindowHandle, [ref]$a)
-    Say ("  {0} pid={1} aff={2} title={3}" -f $p.ProcessName, $p.Id, $a, $p.MainWindowTitle)
+public class WinProbe {
+  public delegate bool EnumProc(IntPtr hWnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassName(IntPtr h, StringBuilder s, int max);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int max);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern int GetWindowDisplayAffinity(IntPtr h, out uint a);
+  [DllImport("user32.dll")] public static extern bool GetCursorInfo(ref CURSORINFO p);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
+  [StructLayout(LayoutKind.Sequential)] public struct POINT { public int x, y; }
+  [StructLayout(LayoutKind.Sequential)] public struct CURSORINFO { public int cbSize; public int flags; public IntPtr hCursor; public POINT pt; }
+
+  // affinity: 0 = none, 0x01 = WDA_MONITOR, 0x11 = WDA_EXCLUDEFROMCAPTURE
+  public static List<string> Windows(uint pid) {
+    var outp = new List<string>();
+    EnumWindows((h, l) => {
+      uint p;
+      GetWindowThreadProcessId(h, out p);
+      if (pid != 0 && p != pid) return true;
+      var cls = new StringBuilder(256); GetClassName(h, cls, 256);
+      var txt = new StringBuilder(512); GetWindowText(h, txt, 512);
+      RECT r; GetWindowRect(h, out r);
+      uint aff = 0; try { GetWindowDisplayAffinity(h, out aff); } catch {}
+      outp.Add(String.Format(
+        "pid={0} hwnd=0x{1:X} visible={2} class='{3}' affinity=0x{4:X} rect=({5},{6}) {7}x{8} title=\"{9}\"",
+        p, h.ToInt64(), IsWindowVisible(h), cls.ToString().Trim(), aff,
+        r.L, r.T, r.R - r.L, r.B - r.T, txt.ToString()));
+      return true;
+    }, IntPtr.Zero);
+    return outp;
   }
-  $target = $wins | Where-Object { $_.ProcessName -match 'SCFakeUpdate|trial' }
-  if ($target) { Say ("TRIAL PROCESS VISIBLE: {0}" -f ($target | ForEach-Object { $_.ProcessName + ':' + $_.MainWindowTitle } -join ', ')) }
-  else { Say 'TRIAL PROCESS NOT VISIBLE (no window handle in this session)' }
+
+  public static string Cursor() {
+    CURSORINFO ci = new CURSORINFO();
+    ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+    bool ok = GetCursorInfo(ref ci);
+    // flags: bit0 = CURSOR_SHOWING, 0x02 = CURSOR_SUPPRESSED
+    return String.Format("ok={0} flags={1} showing={2} hCursor=0x{3:X} pos={4},{5}",
+      ok, ci.flags, (ci.flags & 1) == 1, ci.hCursor.ToInt64(), ci.pt.x, ci.pt.y);
+  }
 }
+'@
 
 function Shot([string]$name) {
   try {
-    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
     $vs = [System.Windows.Forms.SystemInformation]::VirtualScreen
     $bmp = New-Object System.Drawing.Bitmap($vs.Width, $vs.Height)
     $g = [System.Drawing.Graphics]::FromImage($bmp)
@@ -66,8 +102,29 @@ function Shot([string]$name) {
     $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
     $g.Dispose(); $bmp.Dispose()
     Say ("screenshot saved: {0}" -f $path)
+    return $path
   } catch {
     Say ("screenshot failed: {0}" -f $_.Exception.Message)
+    return $null
+  }
+}
+
+# Count near-magenta pixels: proof that the capture actually contains an overlay.
+function CountMagenta([string]$path) {
+  try {
+    $bmp = [System.Drawing.Bitmap]::FromFile($path)
+    $n = 0
+    for ($y = 0; $y -lt $bmp.Height; $y += 4) {
+      for ($x = 0; $x -lt $bmp.Width; $x += 4) {
+        $c = $bmp.GetPixel($x, $y)
+        if ($c.R -gt 235 -and $c.G -lt 30 -and $c.B -gt 235) { $n++ }
+      }
+    }
+    $bmp.Dispose()
+    return $n
+  } catch {
+    Say ("magenta count failed: {0}" -f $_.Exception.Message)
+    return -1
   }
 }
 
@@ -76,27 +133,65 @@ Say ("computer={0} user={1} ps={2}" -f $env:COMPUTERNAME, $env:USERNAME, $PSVers
 Say ("exe={0} size={1}" -f $ExePath, (Get-Item $ExePath).Length)
 Say ("session id={0} interactive={1}" -f (Get-Process -Id $PID).SessionId, [Environment]::UserInteractive)
 
-Probe 'BASELINE'
-Shot 'baseline.png'
+Say "`n=== BASELINE ==="
+Say ("CURSOR {0}" -f [WinProbe]::Cursor())
+Shot 'baseline.png' | Out-Null
+
+if (-not $SkipControl) {
+  Say "`n=== CONTROL: can the capture see a full-screen topmost overlay? ==="
+  $ctrlPath = Join-Path $env:RUNNER_TEMP 'control-overlay.ps1'
+  @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$f = New-Object System.Windows.Forms.Form
+$f.FormBorderStyle = 'None'
+$f.WindowState = 'Maximized'
+$f.TopMost = $true
+$f.BackColor = [System.Drawing.Color]::Magenta
+$f.ShowInTaskbar = $false
+$t = New-Object System.Windows.Forms.Timer
+$t.Interval = 25000
+$t.Add_Tick({ $f.Close() })
+$t.Start()
+[System.Windows.Forms.Application]::Run($f)
+'@ | Set-Content -Path $ctrlPath -Encoding utf8
+  $cp = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ctrlPath -PassThru
+  Start-Sleep -Seconds 8
+  Say "control overlay windows:"
+  ([WinProbe]::Windows([uint32]$cp.Id)) | ForEach-Object { Say ("  {0}" -f $_) }
+  $ctrlShot = Shot 'control.png'
+  $mag = if ($ctrlShot) { CountMagenta $ctrlShot } else { -1 }
+  Say ("CONTROL magenta pixels (sampled every 4px): {0}" -f $mag)
+  if ($mag -gt 1000) {
+    Say "CONTROL RESULT: PASS - the capture DOES see full-screen topmost overlays"
+  } else {
+    Say "CONTROL RESULT: FAIL - this session cannot capture overlays; EXE absence is inconclusive"
+  }
+  if (-not $cp.HasExited) { Stop-Process -Id $cp.Id -Force }
+  Start-Sleep -Seconds 3
+}
 
 Say "`n=== LAUNCHING THE TRIAL EXE ==="
 $p = Start-Process -FilePath $ExePath -PassThru
 Say ("started pid={0}" -f $p.Id)
 Start-Sleep -Seconds $RunSeconds
 
-Probe 'AFTER LAUNCH'
-
 $alive = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
 Say ("still running after {0}s: {1}" -f $RunSeconds, [bool]$alive)
-if ($alive) {
-  Say ("threads={0} workingSetMB={1}" -f $alive.Threads.Count, [math]::Round($alive.WorkingSet64 / 1MB, 1))
-}
+if ($alive) { Say ("threads={0} workingSetMB={1}" -f $alive.Threads.Count, [math]::Round($alive.WorkingSet64 / 1MB, 1)) }
 
-Shot 'overlay.png'
+Say "`n=== CURSOR WHILE THE TRIAL RUNS (TASK_23 red flag) ==="
+Say ("CURSOR {0}" -f [WinProbe]::Cursor())
+
+Say "`n=== WINDOWS OWNED BY THE TRIAL EXE (finds overlays invisible to capture) ==="
+$tw = [WinProbe]::Windows([uint32]$p.Id)
+Say ("count={0}" -f $tw.Count)
+$tw | ForEach-Object { Say ("  {0}" -f $_) }
+
+Shot 'overlay.png' | Out-Null
 
 Say "`n=== CLEANUP ==="
 if ($alive) { Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 3; Say 'trial process stopped' }
-Probe 'AFTER KILL'
-Shot 'after-kill.png'
-
+Say ("CURSOR after kill: {0}" -f [WinProbe]::Cursor())
+Shot 'after-kill.png' | Out-Null
 Say "`n=== DONE ==="
+
