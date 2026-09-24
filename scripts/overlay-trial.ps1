@@ -38,7 +38,10 @@ param(
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $log = Join-Path $OutDir 'overlay-trial.log'
-function Say([string]$m) { $m | Tee-Object -FilePath $log -Append }
+# Write-Host + Add-Content (NOT Tee-Object): Tee-Object emits to the pipeline and
+# would pollute every function's return value, which silently corrupted the
+# control-overlay path in run 2 and produced a false "CONTROL PASS".
+function Say([string]$m) { Write-Host $m; Add-Content -Path $log -Value $m }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -TypeDefinition @'
@@ -186,6 +189,26 @@ Say "`n=== WINDOWS OWNED BY THE TRIAL EXE (finds overlays invisible to capture) 
 $tw = [WinProbe]::Windows([uint32]$p.Id)
 Say ("count={0}" -f $tw.Count)
 $tw | ForEach-Object { Say ("  {0}" -f $_) }
+
+# Verdict on the one property that decides whether this binary may ship at all.
+$overlayWin = $tw | Where-Object { $_ -match 'WindowsForms10\.Window\.8' -and $_ -match 'visible=True' }
+$excluded = $overlayWin | Where-Object { $_ -match 'affinity=0x11' }
+$monitored = $overlayWin | Where-Object { $_ -match 'affinity=0x1 ' }
+if ($excluded) {
+  Say ""
+  Say "VERDICT: the overlay window IS visible but affinity=0x11 (WDA_EXCLUDEFROMCAPTURE) ->"
+  Say "         a capture-based technician viewer would render BLACK. Do NOT ship this binary."
+  Say "         Graft only the narrow #32768/tooltips/SysShadow sweep into our own overlay."
+} elseif ($monitored) {
+  Say ""
+  Say "VERDICT: overlay is affinity=0x1 (WDA_MONITOR) -> viewer shows black too. Do NOT ship."
+} elseif ($overlayWin) {
+  Say ""
+  Say "VERDICT: overlay is visible and capture-visible (affinity=0, like the control) -> shippable property."
+} else {
+  Say ""
+  Say "VERDICT: no WindowsForms overlay window found -> it did not render in this session (inconclusive)."
+}
 
 Shot 'overlay.png' | Out-Null
 
