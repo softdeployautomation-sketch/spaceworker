@@ -137,6 +137,91 @@ directly; only agent-initiated actions need approval.**
 **Acceptance:** manual Reboot from the toolbox reboots the VM with no approval
 prompt and writes an audit row; an agent-initiated reboot still requires approval.
 
+## MISSING-3 — Hide agent tool (Command tab; owner request 2026-09-24)
+
+**Owner request:** "add a tool as well, maybe in command tab, to hide the
+installed agent so users don't mistakenly stop the service or uninstall it.
+The agent can test the installed agent in the VM to see the names when
+search and how to rename it to something like microsoft services or any
+name users want. The point is to be able to run a command to hide the
+agent, but needs to be dynamic for each device."
+
+**Intent (read carefully):** reduce *accidental* discovery/stop/uninstall by
+a curious local user — NOT a security boundary against a determined local
+admin. Anyone with local admin can undo every step below in seconds. The
+tool must say so in its own output, and must always offer the exact reverse.
+
+**Research findings (do NOT re-litigate; implement from this):**
+- Upstream TacticalRMM position (maintainer `wh1te909`, discussion #1389):
+  "don't give your users admin access … any workaround … will just be
+  overridden by anyone who has admin." There is NO supported
+  password-protect-uninstall / uninstall-token mechanism.
+- Community approach that survives agent updates (user `adamjrberry`, same
+  thread, endorsed by the maintainer): set the `SystemComponent` DWORD to
+  `1` on the agent's uninstall registry key. The entry disappears from
+  "Apps / Programs and Features" (Settings search no longer surfaces it)
+  while the MSI uninstall path still works for someone who knows where to
+  look. Reported to persist across agent updates. No service rename
+  involved, so agent check-in / TRMM upgrades are unaffected.
+- DisplayName rebrand is cosmetic-only and safe: `Set-Service -Name
+  '<internal>' -DisplayName '<label>'` changes ONLY what `services.msc` /
+  Task Manager show. The internal service `Name` NEVER changes — there is
+  no supported internal rename short of reinstall. Do NOT attempt one.
+- MeshAgent service name is NOT stable/assumed: the community
+  `Win_TRMM_Mesh_Install.ps1` resolves it at runtime via `Get-CimService`
+  rather than hardcoding. So the script MUST discover the Mesh service
+  dynamically on-device (wildcard `Mesh Agent*` on Name/DisplayName, probe
+  known TRMM-laid names as fallback), and report exactly what it found.
+
+**VM ground truth the agent MUST capture first (Windows VM, real install):**
+1. `Get-Service tacticalrmm, "Mesh Agent*" | Format-Table Name,
+   DisplayName, Status` — exact internal Names + current DisplayNames.
+2. `Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' |
+   Where-Object { $_.DisplayName -match 'Tactical|Mesh' } |
+   Select-Object DisplayName, DisplayVersion, UninstallString, PSChildName`
+   — exact uninstall key(s) the tool will stamp.
+3. Settings → Apps search terms that surface the agent today
+   (e.g. `tactical`, `mesh`) — before/after notes, so "hidden" is proven.
+   Paste all three into the commit/PR message.
+
+**Fix (one tool, dynamic per device, reversible):**
+- Command-tab one-click **"Hide agent"** (+ companion **"Reveal agent"**)
+  next to Ping. Manual own-device, no approval; audited as `web-direct`
+  with the chosen label + per-step results.
+- Transport: reuse `POST /api/devices/[deviceId]/run-command`
+  (`runCommandNow`, powershell, ≤90s) — NO new route, NO new Vantra action
+  kind. The ONLY per-device dynamic input is the **display label**,
+  default `Microsoft System Services`, free-text override (validate
+  server-side: 1–80 chars, letters/digits/spaces/`-` only).
+- Script behaviour (best-effort per step, echo `STEP:<name>
+  OK|SKIP:<reason>`; end with honesty line `NOTE: cosmetic only — a local
+  admin can still stop/reveal/uninstall; use Reveal to undo.`):
+  1. `Get-Service tacticalrmm` (hard fail → `agent_service_missing`,
+     change nothing); Mesh via wildcard match (SKIP if absent).
+  2. `Set-Service -Name '<found>' -DisplayName '<label>'` each found
+     service. NEVER touch internal Name, StartupType, or Status.
+  3. `SystemComponent=1` (DWORD) on each discovered uninstall subkey only
+     (matched by the recorded pattern — never blanket-stamp the hive).
+  4. Re-read DisplayName(s) + SystemComponent value(s) and print them.
+- **Reveal agent** is the exact inverse (restore DisplayName `Tactical
+  Agent` / recorded Mesh original + remove `SystemComponent`) and is
+  REQUIRED in the same release — ship both or ship neither.
+- Confirm dialog names the label and the cosmetic-only limit; output shows
+  in the Command-tab result pane, persisted only via the audit row.
+
+**Out of scope (do NOT build):** uninstall passwords/tokens, ACL-ing the
+service, blocking `sc.exe`/Task Manager, renaming the internal service
+name, touching StartupType/Status, hiding files on disk, anything that
+would survive an intentional admin uninstall.
+
+**Acceptance (VM, per device):** before, Settings search
+`tactical`/`mesh` surfaces the agent and `services.msc` shows `Tactical
+Agent` (+ Mesh); after Hide, search finds nothing, services show the
+label, `Get-Service tacticalrmm` still exists/running, device stays online,
+uninstall key has `SystemComponent=1`; custom label applies + audits;
+Reveal restores + re-hide works (idempotent); offline → immediate failure,
+no queue row (same rule as Ping).
+
 ---
 
 ## Non-goals
@@ -145,7 +230,7 @@ prompt and writes an audit row; an agent-initiated reboot still requires approva
 - Telegram approval wiring (**TASK_94**).
 
 ## Acceptance (task-level)
-- Both bugs fixed as specified; Ping + Reboot live and manual-direct.
+- Both bugs fixed as specified; Ping + Reboot + Hide/Reveal live and manual-direct.
 - `npx tsc --noEmit` clean; `npm run build` clean; no regression in the console.
 - Deployed per `HOW_WE_MOVE_FAST.md` §2 with `--exclude='.env'`; live-verified:
   curl both new routes, then have the owner click ⤢ and each toolbox menu.
