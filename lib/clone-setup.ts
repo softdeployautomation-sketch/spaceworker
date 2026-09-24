@@ -358,14 +358,26 @@ async function capabilityList(deviceId: string): Promise<string[]> {
 
 /**
  * Fleet-level "is there anywhere for a clone's browser to run?" — any ONLINE
- * device of this user carrying `clone-host`. Cheap single query (capability is
- * indexed on deviceId), and it rides the console's existing poll tick.
+ * device of this user carrying `clone-host`, EXCLUDING the device being viewed.
+ * Cheap single query (capability is indexed on deviceId), and it rides the
+ * console's existing poll tick.
+ *
+ * WHY `excludeDeviceId` IS LOAD-BEARING (owner report 2026-09-24, the same
+ * "the answer names the wrong thing" class as the egress copy): this query
+ * feeds the console's pre-Start warning on the SOURCE device's card. Without
+ * the exclusion, setting THAT device up as a clone host makes the warning
+ * disappear — but a clone can never use its own source as its destination
+ * (`pickHostedCloneDevice` skips the source; the explicit path refuses
+ * `same_device`), so the owner was told "fine" and then got a
+ * `no_hosted_clone_device` refusal on Start. Counting only OTHER devices makes
+ * the warning true exactly when a clone can actually run.
  */
-async function hostedAvailableForUser(userId: string): Promise<boolean> {
+async function hostedAvailableForUser(userId: string, excludeDeviceId: string): Promise<boolean> {
   const row = await db.deviceCapability.findFirst({
     where: {
       enabled: true,
       capability: "clone-host",
+      deviceId: { not: excludeDeviceId },
       device: { userId, status: "online" },
     },
     select: { id: true },
@@ -389,7 +401,7 @@ export async function cloneSetupStatus(opts: {
   const [relay, capabilities, hostedAvailable] = await Promise.all([
     relayView(opts.deviceId),
     capabilityList(opts.deviceId),
-    hostedAvailableForUser(opts.userId),
+    hostedAvailableForUser(opts.userId, opts.deviceId),
   ]);
   const online = device.status === "online" && !!device.vantraAgentId;
   // Ready = the role's capability is registered. `source` additionally needs a

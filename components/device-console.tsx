@@ -1763,8 +1763,10 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
           {!setup.hostedAvailable && (
             <li>
               <span className="font-medium">No clone host yet.</span> A clone&apos;s browser runs on a clone
-              host, so this blocks every clone regardless of network. Run{" "}
-              <span className="font-medium">“Set up as clone host”</span> above on a PC you keep online.
+              host, so this blocks every clone regardless of network. Clone hosts are counted{" "}
+              <span className="font-medium">apart from this PC</span> — a clone cannot run on the same
+              machine it captures from. Run <span className="font-medium">“Set up as clone host”</span>{" "}
+              above on a second PC and keep that one online.
             </li>
           )}
           {!setup.online && (
