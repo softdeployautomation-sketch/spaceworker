@@ -21,3 +21,12 @@ exe/runtime/
 # TASK_114 — device-engine bundle for one-click clone setup, built by
 # scripts/engine-dist.mjs and rsynced to the VPS (never committed: binaries).
 engine-dist/
+# Runtime state created by the private-browser path. MUST NOT be tracked, and
+# MUST NOT live inside the app dir at all: Turbopack indexes the project root
+# and a `next build` dies on the first file it cannot read (Chromium/container
+# files are 0600 while the build runs as the service user) — confirmed live
+# 2026-09-24. BROWSER_PROFILE_BASE_DIR already points at /var/spaceworker/profiles
+# and browser-server derives its sessions dir beside it; these entries are
+# defence in depth for older checkouts and for local dev.
+browser-profiles/
+browser-sessions-tmp/

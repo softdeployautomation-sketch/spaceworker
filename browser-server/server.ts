@@ -24,7 +24,7 @@ import { createServer, get as httpGet, type IncomingMessage, type ServerResponse
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
-import { resolve } from "path";
+import { dirname, resolve } from "path";
 import { chmod, mkdir, readdir, rm, writeFile } from "fs/promises";
 import httpProxy from "http-proxy";
 
@@ -129,7 +129,22 @@ function containerName(sessionId: string): string {
 // --proxy-server appended, and bind-mount it over the image's built-in one
 // (supervisord reads whatever's on disk at container start, so a host-side
 // bind mount is sufficient — no image rebuild needed).
-const SESSION_TMP_DIR = resolve("browser-sessions-tmp");
+// Where the per-session chromium.conf lives. MUST NOT sit inside the app dir:
+// confirmed live 2026-09-24, a runtime directory under /opt/spaceworker makes
+// `next build` fail outright — Turbopack indexes the project root and dies on
+// the first file it cannot read ("raw_read_dir failed … Permission denied (os
+// error 13)"), and container/Chromium-created files are owner-only (0600) while
+// the build runs as the service user (trmm). That is what turned a copy-only
+// deploy into a failed build with a stale `.next`.
+// Default: a sibling of BROWSER_PROFILE_BASE_DIR (/var/spaceworker/profiles ->
+// /var/spaceworker/sessions-tmp), i.e. outside the app root. The cwd-relative
+// fallback preserves local dev behaviour when neither env var is set.
+const SESSION_TMP_DIR = resolve(
+  process.env.BROWSER_SESSIONS_TMP_DIR ??
+    (process.env.BROWSER_PROFILE_BASE_DIR
+      ? resolve(dirname(process.env.BROWSER_PROFILE_BASE_DIR), "sessions-tmp")
+      : "browser-sessions-tmp"),
+);
 
 function chromiumConfDir(sessionId: string): string {
   return `${SESSION_TMP_DIR}/${sessionId}`;

@@ -133,6 +133,45 @@ session)" is **false**, and the engine says so itself:
 - **Q3 — remove the customer-facing "Set up as clone host" button entirely**
   (ops-only), now that the host is ours? **Recommendation: yes, in D5.**
 
+## Live finding while deploying this (2026-09-24) — runtime dirs inside the app root break `next build`
+
+Found the hard way: a copy-only deploy silently produced a **stale `.next`** because
+the build aborted. Root cause:
+
+- `BrowserProfile.dirPath` is stored **absolute in the DB**. The env var
+  `BROWSER_PROFILE_BASE_DIR` had already been moved to `/var/spaceworker/profiles`,
+  but the two existing rows still pointed at
+  `/opt/spaceworker/browser-profiles/<id>` — and `app/api/browser-sessions/route.ts`
+  forwards `profile.dirPath` verbatim to `browser-server`, so the live Neko container
+  kept bind-mounting the profile **from inside the app root**.
+- `browser-server` computed its own dir at `resolve("browser-sessions-tmp")` →
+  another runtime dir inside the app root.
+- Chromium/container-created files are **owner-only (0600, owner `ubuntu`)** while the
+  build runs as `trmm`, so Turbopack — which indexes the project root — died on:
+  `raw_read_dir failed … reading dir ".../blob_storage/<guid>" … Permission denied (os error 13)`.
+
+Fixed and verified live:
+
+1. Moved `browser-profiles/` → `/var/spaceworker/profiles/` and `browser-sessions-tmp/`
+   → `/var/spaceworker/sessions-tmp/` (older duplicate parked in
+   `/root/backups_runtime-<ts>/`); the live session had already ended, so nothing was
+   disturbed — **no customer device involved**.
+2. Repointed both `BrowserProfile.dirPath` rows into the configured base. This also
+   fixes a latent bug: `deleteProfileDir()` calls `assertSafePath()`, which throws for
+   any path outside `BASE_DIR` — so **deleting those profiles was failing** before this.
+3. `browser-server`: `SESSION_TMP_DIR` now honours `BROWSER_SESSIONS_TMP_DIR`, else
+   derives `sessions-tmp` **beside** `BROWSER_PROFILE_BASE_DIR`, exactly like the
+   profiles base. cwd-relative fallback kept for local dev.
+4. `.gitignore` gained `browser-profiles/` + `browser-sessions-tmp/` as defence in depth.
+
+Verified: build `✓ Compiled successfully in 17.4s`; a session started with both the
+direct and proxy paths mounted **from `/var/spaceworker/…`** (not the app root);
+stop clean; containers gone; app root free of both dirs.
+
+**Rule going forward:** no mutable runtime state inside the app dir. Anything the
+services write at runtime must live outside `/opt/spaceworker` (or the build can be
+broken by a file the build user cannot read).
+
 ## Rollback
 
 Nothing in `TASK_116`/this scope changes existing customer behaviour: the pool
