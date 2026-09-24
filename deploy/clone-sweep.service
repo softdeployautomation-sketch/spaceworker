@@ -1,0 +1,11 @@
+# Install: sudo cp clone-sweep.service /etc/systemd/system/ (after replacing
+# %INTERNAL_BEARER_TOKEN% with the real value from /opt/spaceworker/.env).
+# PORT 3500 — matches spaceworker.service (same convention as digest-sweep.service).
+[Unit]
+Description=SpaceWorker browser clone sweep — TTL expiry, staging teardown, 30-day purge (Task 112)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -s -X POST \
+  -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
+  http://localhost:3500/api/internal/clone-sweep

@@ -1,0 +1,16 @@
+# Install: sudo cp clone-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now clone-sweep.timer
+[Unit]
+Description=Run the SpaceWorker browser clone sweep every 5 minutes
+
+# 5-minute cadence (Task 112: TTL expiry + relay health are time-sensitive —
+# idle TTL is 60 min and relay state must flip promptly, so a daily sweep
+# would leave dead sessions and stale relay rows. Every phase is idempotent,
+# so overlapping/extra ticks converge to a no-op; the route also single-flights
+# concurrent runs to { skipped: true }).
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=clone-sweep.service
+
+[Install]
+WantedBy=timers.target
