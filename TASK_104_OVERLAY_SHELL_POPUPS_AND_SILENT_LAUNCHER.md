@@ -203,3 +203,65 @@ design** (capture-exclusion matches Task 19; no network/file/registry APIs).
 The global-cursor path stays unproven. Adopt it **behind an explicit chooser**,
 never as a silent replacement of the working PowerShell overlay.
 
+---
+
+## 2026-09-24 — MEASURED ON A REAL DEVICE: the popups are NOT our script's fault (still blocked)
+
+The `"exe"` style shipped in **TASK_115** (`TASK_115_OVERLAY_STYLE_CHOOSER.md`)
+and the owner used it on a real device the same day. Device-side evidence, read
+back over the agent, that the NEW path ran and our own script did not:
+
+| Evidence | Value |
+| --- | --- |
+| `C:\ProgramData\Vantra\maintenance-overlay.exe` | 13,824 bytes, written `16:03:23` device-local |
+| Maintenance-start audit row | `15:03:25Z` = 17:03:25 CEST → the exe was written **2.4 s earlier** |
+| exe SHA-256 **on the device** | `d837f4d7…5f8d4b` — **our pinned hash** |
+| `maintenance-overlay.ps1` | **absent** → our PowerShell overlay never ran |
+| `overlay-status.log` | **absent** → our script (which always resets+writes it) never ran |
+
+**Owner's measurement: it loads FASTER** (a native .NET window needs no
+`Add-Type` compile of five P/Invoke blocks at launch — a genuine win, which is
+why the style stays). **But the Start menu STILL renders above it.**
+
+**Why this matters more than the speed:** the popup is not a defect of our
+script. An independent third-party implementation — whose
+**`KillPopupArtifacts`** sweep (`EnumWindows` + `GetClassName` +
+`ShowWindow(SW_HIDE)` on a timer, i.e. candidate **B** in its strongest form:
+hiding the *rival* windows rather than re-raising ourselves) — **also loses** to
+`StartMenuExperienceHost` / `ShellExperienceHost`.
+
+So both topmost-race strategies are now **de-prioritised by measurement, not
+opinion**:
+
+- **A (WH_SHELL hook + re-raise)** — event-driven, but still depends on our
+  window winning Z-order against shell UI that a stronger hide-the-rival
+  implementation could not beat. Keep only as a cheap experiment.
+- **B (tighten the watchdog)** — a latency race that a *better* implementation
+  than ours already lost. Do not expect it to close.
+- **C (strict lock)** — does not stop the rendering, only the input.
+- **D (registry suppression of shell menus)** — global, rewrites the user's
+  Explorer settings, needs an Explorer restart. Still last resort + owner
+  sign-off.
+- **E (accept + work around)** — **now the critical path.** See below.
+
+**Therefore the overlay is BLOCKED for unattended/consumer-facing use**, and the
+fix is to stop depending on the popup never appearing:
+
+1. **The silent app launcher (below) is promoted from "fallback toolbelt" to the
+   primary deliverable of this task.** It removes the *reason* to summon shell UI
+   at all — open Chrome / Firefox / Edge / a file / a URL on a screen you cannot
+   touch, with no approval. It is independently valuable (open a customer portal
+   or mail client on a remote machine) and it does not depend on Z-order at all.
+2. **The overlay keeps its honest job** — the *local* person must not interfere
+   (the input lock already does that, verified). If a technician opens Start
+   themselves, that is cosmetic, not a control failure.
+3. **Correction to the acceptance criteria below:** "no shell popups" is NOT
+   achievable by this task's current A/B candidates and must not be claimed as
+   its success condition (updated in the Acceptance section).
+
+**Technician-control status under the exe style:** the owner used it without
+reporting loss of mouse/keyboard control, but the formal check (TASK_115
+acceptance item 2) is still outstanding, and the exe hides cursors via
+`SetSystemCursor` — the technique TASK_23 rejected 3/3. Do not treat "it looked
+fine once" as proof.
+
