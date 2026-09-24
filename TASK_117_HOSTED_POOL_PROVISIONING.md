@@ -1,13 +1,17 @@
-# Task 117 (bit B7) — Hosted PC pool: provision the machine our clones actually run on
+# Task 117 (bit B7) — CLOSE THE BROWSER CLONE by reusing the Neko private browser
 
-**Repo:** `spaceworker` (+ `vantra` if the agent/identity path needs it).
-**Written:** 2026-09-24. **Status: SCOPED — awaiting the three decisions at the end.**
+**Repo:** `spaceworker` (+ `vantra` only if the agent/identity path needs it).
+**Written:** 2026-09-24. **Status: DECIDED — reuse the existing Neko browser as the
+clone destination (owner, 2026-09-24). The ONLY remaining go/no-go is D1: profile
+portability into the container. No hosted-PC pool is built.**
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **B7**; unblocks B4's
 `no_hosted_clone_device` for every account, including one-PC users).
 
 > ## AGENT CONTRACT
-> This file is the DEPLOYABLE RULEBOOK for the hosted pool. It exists because the
-> previous guidance was wrong in a way that risked a customer's machine.
+> This file is the DEPLOYABLE RULEBOOK for **closing the browser clone**. It exists
+> because the previous guidance was wrong in a way that risked a customer's machine.
+> **Read the SUPERSEDING DECISION and Profile model sections first:** the clone
+> destination is our existing Neko container, not a new hosted PC.
 
 ## Owner's directive (2026-09-24) — the misreading this task corrects
 
@@ -85,14 +89,120 @@ session)" is **false**, and the engine says so itself:
   streams it into the app.
 
 
-## Deliverables, in order (D1 is a spike and gates everything)
+## SUPERSEDING DECISION — 2026-09-24 (owner): reuse the Neko private browser. Do NOT build a hosted-PC pool.
 
-| # | Deliverable | Why it is here / what "done" means |
+Owner: *"we already have a neko private browser, isnt that something that can be
+spinned up and we route it through the device instead of adding more load to the
+system … i just feel one browser is enough for all."*
+
+**Verified in code — this is the architecture the engine was already built for:**
+
+- `michael/browser-clone/engine/cmd/relay/main.go` (header): the relay is *"an
+  HTTP(S) CONNECT proxy that **the hosted clone's browser uses as
+  `--proxy-server`** so every request egresses from the work PC's public IP."*
+- `browser-server/server.ts:225` already bind-mounts an arbitrary host directory as
+  Chromium's profile: `` `${session.profileDir}:/home/neko/.config/chromium` ``.
+- `browser-server/server.ts:168-185` already appends `--proxy-server=${proxyServerValue}`
+  to the launch flags — the exact hook the relay needs. Today it is fed an exit-node
+  endpoint (`lib/exit-nodes.ts`, `socks5://…`); a clone would feed it `relayHealth.addr`.
+- Therefore **destination browser + egress via the customer's IP + streamed into the
+  app already exist** as the private-browser path.
+- `pkg/injection/injector.go` already targets a POSIX host — `MountOwner`: *"POSIX
+  hosted servers run the agent as root; the desktop user must own the profile or the
+  browser cannot read it."*
+- `pkg/crypto/password_handler.go` already implements the Linux side of Chrome's
+  crypto (`ChromeSalt = []byte("peanuts")`, `DeriveChromeKey`, `v10` values) — i.e.
+  the Windows→Linux translation D1 was framed around.
+
+**Consequence:** D2, D3(b) and D4 existed only to *put a browser somewhere and show
+the user*, which Neko already does. They collapse into D1. The destination becomes
+"a Neko session launched from the clone's injected profile", not a new machine. No
+new load: it is the same container type already running.
+
+**Second-order win — single-PC users can finally clone.** The `self_only` refusal
+exists *only* because the destination had to be a second PC of the customer's
+(`lib/clone.ts`). With our container as the destination, the source device hosts
+nothing, so **cloning one PC — exactly what the owner tried from the start — becomes
+legitimate.** `self_only` must be retired along with D2.
+
+**The one unproven link (D1, restated precisely):** the container has no OS keyring,
+so Chromium must be launched with `--password-store=basic` to derive the same
+`peanuts` key the engine writes its `v10` values with. That is a one-line addition to
+the existing `flags` array. **Settle this first — it is the whole go/no-go.**
+
+
+## Profile model — how the clone browser actually runs (owner decision 2026-09-24)
+
+Owner: *"everyone is using a single chrome, we just split each browser profile just
+the way chrome works … so we dont risk leakage … maybe it automatically creates a
+browser profile with that device name and user can launch it with all the cookies
+and others coming from the clone."*
+
+**This is already the codebase's model — the clone reuses it unchanged.**
+
+| Chrome concept | What we already have | Clone use |
+| --- | --- | --- |
+| A profile (its own cookies/logins) | `BrowserProfile` — `userId`, `name`, `dirPath` (absolute, never exposed), `status` `idle`\|`in_use`, `@@unique([userId, name])` | One profile **per cloned device**, `name` = the device name |
+| Opening a profile | `BrowserSession` — `profileId`, `proxyMode`, `exitNodeId`, `containerId`, `nekoPassword`, `exitIpSnapshot` | Launching a clone = a session on that profile |
+| One Chromium per profile | `browser-server/server.ts:225` `` `${session.profileDir}:/home/neko/.config/chromium` `` — only that profile is mounted | Isolation is structural: a container can only ever see its own profile dir |
+| Egress per session | `--proxy-server=${proxyServerValue}` (server.ts:168-185) | Fed `relayHealth.addr` instead of an exit node → **the customer's IP** |
+
+**So the flow is:** `capture` on the device → inject into a `BrowserProfile` named
+after the device → `BrowserSession` on it with `proxyServerValue = relay addr` →
+user opens it in the app via the existing `viewUrl` iframe. No new browser, no new
+browser engine, no new machine.
+
+### The two blockers found in code (both must be fixed, both are small)
+
+1. **`--bwsi` is already on (server.ts:176 — "browse without sign-in").** A clone's
+   entire point is carrying the source's signed-in state, so this flag must be
+   verified against a real injected profile and dropped for clone sessions if it
+   neutralises the restored cookies. **This is part of the D1 go/no-go.**
+2. **`cleanupProfileDir` runs `chmod -R 777` (server.ts:327-341).** Fine for
+   throwaway private-browser profiles; **not** fine for clone profiles, which hold
+   real credentials — world-readable on a multi-tenant VPS. Clone profiles must be
+   `chown`ed to the container's `neko` uid:gid at `0700` instead. (The engine already
+   has the concept: `InjectOptions.MountOwner` — *"the desktop user must own the
+   profile or the browser cannot read it"*.)
+
+### Everything else that must be considered (so this does not get re-opened later)
+
+- **Injection must not run as root-owned files** the container user cannot read;
+  ownership is set at inject time, not papered over with 777.
+- **Re-cloning the same device** collides with `@@unique([userId, name])`. Decision:
+  **refresh in place** (the profile is "the latest capture of `Sc`"), not `Sc (2)`.
+- **One profile = one live session** (`status = "in_use"`, plus Chromium's own
+  Singleton lock) — the existing lock is what stops two containers opening the same
+  profile and corrupting it. Keep it; do not bypass for clones.
+- **Profile location** must stay under `BROWSER_PROFILE_BASE_DIR`
+  (`/var/spaceworker/profiles`) — **never** inside the app root. A runtime dir under
+  `/opt/spaceworker` is what already crashed `next build` (Turbopack, os error 13).
+- **RAM admission** — a clone session is one more container. It must count against
+  the *same* caps as the private browser (`TASK_105` governor), or cloning silently
+  doubles memory spend. `hostedPoolSize` becomes irrelevant and is superseded by the
+  existing `maxConcurrent` / `perUserCap`.
+- **`--disable-file-system`** (already on) blocks the File System Access API, so
+  site upload/download flows that use it will not work in a clone. Accept or change
+  deliberately.
+- **TTL + purge (D6)** — clone profiles hold real cookies, so revocation and expiry
+  must wipe them: reuse `purgeAfterDays` and the `BrowserSession.hiddenAt`
+  soft-delete pattern.
+- **Audit** — reuse `BrowserSession.exitIpSnapshot` (written at start from a live
+  check) as the record proving a clone really egressed via the customer's device.
+
+### The minimal path to a testable clone
+
+1. **D1 (go/no-go):** Neko container + `--password-store=basic` (drop `--bwsi` if it
+   interferes) + a real `Sc` capture injected → signed in to a site it never logged
+   into. Settles the cookie question once.
+2. Register the clone as a `BrowserProfile` named after the device.
+3. Launch it with `proxyServerValue = relayHealth.addr`.
+4. Retire `self_only` (moot once the destination is ours).
+
 | --- | --- | --- |
 | **D1** | **Profile-portability spike (no UI).** Prove a Windows-captured profile can drive a browser **on the hosted PC**. | THE technical risk. Windows Chrome cookie values are AES-GCM encrypted with a DPAPI-protected key from `Local State`; `capture` already decrypts that locally and re-encrypts for transport (`pkg/crypto/password_handler.go`). Injection must then emit a profile the **host's** browser accepts — either by writing a host-valid `os_crypt` key in `Local State`, or by launching the host browser with `--password-store=basic` and writing matching values. **Done =** a containerised browser on the host, started from a real `Sc` capture, is signed in to a test site it never logged into. If this fails, D2+ are re-planned before more is built. |
-| **D2** | **Hosted-PC identity + registration.** A `Device` row with `deviceKind="hosted"` and the `clone-host` capability, owned by a **system tenant** — never a customer account. | Registers idempotently (re-running setup must not duplicate), and enforcement exists for `hostedPoolSize`: the pool is capped by the dial (CROSS-TRACK RULE 7), and the count-0 bug can never return. |
-| **D3** | **Transport both ways.** (a) The parcel reaches the host (`POST /rmm/inject-clone`, chunked + HMAC-signed, key provisioned out-of-band); (b) the hosted browser reaches the **customer's relay** so egress keeps their IP. | The relay is `127.0.0.1:8118` **on the customer's PC**, so this needs an agreed path (agent-forwarded port vs the relay dialling out). Fail closed, as `relayRequired` already demands. |
-| **D4** | **Session streaming into the app.** The hosted browser is usable from the SpaceWorker UI (reuse the Neko / `browser-server` pattern). | Matches the private-browser UX that already works, and is what "open it on our app" means. |
+| **D2** | **Clone-backed Neko session (replaces the hosted-PC pool).** Per-clone Neko container whose `profileDir` is the injected clone profile and whose `--proxy-server` is `relayHealth.addr`. No `Device` row, no system tenant, no `install-hosted.ps1` on a Windows box. | `hostedAvailable` becomes meaningful with **zero** new hardware, and a single-PC account can clone. Retire the now-moot `self_only` refusal. |
+| **D3** | **Egress through the customer's device.** Point the container's `--proxy-server` at the customer's relay (agent-forwarded port, since the relay is loopback-bound and replayed over the Mesh tunnel). | The only part of the old D3 left. **Done =** a clone in relay mode reports the **customer's** IP, and aborts when the relay is down (`relayRequired`). |
 | **D5** | **UI truth-telling.** "Set up as clone host" stops being a customer-facing task; the clone tab reports **hosted-pool status** instead. | This is the fix for the misconception that caused this task. The copy in `TASK_116` already stops instructing users to provision hardware; D5 finishes the job by moving the button to an ops surface. |
 | **D6** | **Lifecycle.** TTL/teardown/purge for hosted sessions + `TASK_105` governor integration so RAM caps and queueing apply to the pool like every other high-RAM consumer. | `hostedPoolSize` is a RAM dial; the governor owns RAM admission. |
 
@@ -103,35 +213,66 @@ session)" is **false**, and the engine says so itself:
    no setup click, no experimental command — a clone can raise a visible popup on
    a customer's screen, so it must be perfect first.
 2. **Test on `Sc` (the test VM) and on the hosted pool. Nothing else.**
-3. **Same-device hosting stays refused.** Do not "fix" `self_only` by allowing a
-   device to host its own clone.
+3. **A customer device still never hosts.** The `self_only` *hosting* rule stays —
+   a device may not host its own clone — but that refusal becomes **unreachable**
+   once the destination is our container, so **cloning a single PC is allowed and
+   expected.** Do not reinstate a second-PC requirement.
 4. **No new customer-facing button may instruct a user to provision hardware we
    are supposed to own.** If copy needs to name a fix, it must name a
    SpaceWorker-side action.
 
 ## Verification
 
-- D1 proved with a **real capture** from `Sc` and a signed-in check on the host.
-- D2 proved by: pool count goes `0 → 1`; re-running registration leaves it `1`;
-  `hostedPoolSize` gates a second host.
-- D3 proved by: a launch reaches the relay (relay-mode egress shows the
-  **customer's** IP) and **aborts** when the relay is down (`relayRequired`).
-- D4/D5/D6 proved live, then re-tested against a fresh `Sc` console.
+- D1 proved with a **real capture** from `Sc` and a signed-in check **inside the
+  container** (this is the go/no-go — everything else is mechanical once it passes).
+- D2 proved by: a clone launches a Neko session from the injected profile, and a
+  **single-PC** account can clone with no second device involved.
+- D3 proved by: relay-mode egress reports the **customer's** IP, and the launch
+  **aborts** when the relay is down (`relayRequired`).
+- D5/D6 proved live, then re-tested against a fresh `Sc` console.
 - Every step: never touch `WilkSF9`.
 
-## Decisions needed from the owner before D2 starts
+## Decisions — recorded 2026-09-24
 
-- **Q1 — where does the hosted PC run?** *(a)* a **Linux container on our VPS**,
-  reusing the private-browser/Neko pattern — cheapest, no per-host licence, but
-  depends on D1; or *(b)* a **dedicated Windows VM we control** — matches the
-  current `install-hosted.ps1` path exactly, but adds a paid unmanaged box to run
-  and patch. **Recommendation: (a), with D1 as the go/no-go.**
-- **Q2 — is a headless hosted browser acceptable for the first end-to-end clone?**
-  The user sees it only through our app (same as the private browser today).
-  **Recommendation: yes** — that is the design, and it avoids needing a real
-  desktop session.
-- **Q3 — remove the customer-facing "Set up as clone host" button entirely**
-  (ops-only), now that the host is ours? **Recommendation: yes, in D5.**
+- **Q1 — DECIDED: (a) a Linux container on our VPS.** Owner: *"hosted pc as a linux
+  container, it will be light weight. and it goes with the queue system we have to
+  manage resource."* This matches the codebase: the private browser already runs
+  Chromium in a Neko container streamed to the user, `hostedPoolSize` is already an
+  admin dial (default 1), and `TASK_105_RESOURCE_GOVERNOR_QUEUE.md` +
+  `DESIGN_…` CROSS-TRACK RULE 7 own admission control — so pooled sessions are queued
+  and RAM-capped exactly like every other high-RAM consumer instead of bypassing the
+  governor. **D1 remains the go/no-go gate** before D2 is built.
+- **Q2 — EXPLAINED (not a design change).** Owner: *"if we do headless how do we use
+  the cloned browser, users need to be able to use it physically."* **Headless
+  describes our side only** — no monitor/keyboard on the hosted PC. The user still
+  gets a full, physical, clickable browser: `components/clone-session-view.tsx`
+  already renders the session as `<iframe src={openUrl}>` filling the window
+  (clipboard allowed), where `openUrl` = `BrowserSession.viewUrl` stamped at launch
+  (`app/api/clones/[cloneId]/session/route.ts`). Same pattern as the private browser
+  the owner already uses. Nothing about the user experience is "headless".
+- **Q3 — EXPLAINED.** Owner: *"what happens when we drop the customer facing set up.
+  whats the issue with that"*. Answer:
+  - **Nothing breaks for customers.** The host is ours, so "Set up as clone host"
+    stops being a customer task and becomes server-side (D2). Removing the button
+    removes the trap that produced this whole misreading — the owner set `Sc` up as
+    clone host and was still refused, because one PC can never host its own clone.
+  - **The source button stays.** "Set up this PC" (engine + relay on the customer's
+    own machine) is REQUIRED by the design — it is what routes egress through the
+    customer's IP. Only the *host* button moves to an ops surface.
+  - **What we lose:** the ability for a customer to nominate their own second PC as
+    a host ("bring your own host"). If that is ever wanted as a perk for spare
+    machines, it comes back deliberately — it is not a default capability.
+  - **RESOLVED — no longer an open question.** It assumed the host would be a
+    customer PC. With the destination being **our container**, a device never hosts
+    anything, so existing `clone-host` flags become irrelevant rather than something
+    to honour. `self_only` is retired with them (see the superseding decision above).
+- **Q4 — DECIDED (owner, later the same day): do NOT build a second browser.**
+  *"we already have a neko private browser, isnt that something that can be spinned
+  up and we route it through the device instead of adding more load to the system …
+  i just feel one browser is enough for all."* Verified correct against the code —
+  the relay documented its consumer as "the hosted clone's browser … `--proxy-server`",
+  and the Neko container already mounts an arbitrary profile dir and already sets that
+  flag. See the two sections above for the profile model and the two code blockers.
 
 ## Live finding while deploying this (2026-09-24) — runtime dirs inside the app root break `next build`
 
