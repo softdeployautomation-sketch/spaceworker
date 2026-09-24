@@ -9,6 +9,7 @@ import {
   Clock,
   Eye,
   EyeOff,
+  Globe,
   KeyRound,
   ListPlus,
   Maximize2,
@@ -46,7 +47,139 @@ type DeviceView = {
   idleSeconds: number | null;
 };
 
-type Tabs = "summary" | "control" | "command" | "activity";
+type Tabs = "summary" | "control" | "command" | "clone" | "activity";
+
+// Task 111 (bit B5) — the console's Browser Clone model. Mirrors the shape
+// lib/clone.ts `CloneView` hands the routes (evidence fields only — ids are
+// route keys, never rendered copy). Human copy comes from CLONE_STEP_LABELS
+// below, never from these raw status strings.
+type CloneRow = {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+  launchedAt: string | null;
+  revokedAt: string | null;
+  status: string;
+  terminal: boolean;
+  launchState: string;
+  browser: string;
+  profileName: string | null;
+  egressMode: string;
+  source: { id: string; name: string; deviceStatus: string; online: boolean } | null;
+  destination: { id: string; name: string; deviceStatus: string; online: boolean } | null;
+  relay: {
+    addr: string;
+    status: string;
+    lastCheckAt: string | null;
+    lastSeenAt: string | null;
+    consecutiveFailures: number;
+  } | null;
+  session: {
+    id: string;
+    status: string;
+    egressMode: string | null;
+    startedAt: string;
+    lastUsedAt: string | null;
+    stoppedAt: string | null;
+    expiresAt: string | null;
+  } | null;
+  expiresAt: string | null;
+  idleExpiresAt: string | null;
+  ttlRemainingMs: number | null;
+  idleRemainingMs: number | null;
+  lastUsedAt: string | null;
+  error: string | null;
+};
+
+// Human words for every lifecycle step — the owner quality bar is explicit:
+// `Waiting for your PC` / human progress, never `awaiting_source` or an id.
+const CLONE_STEP_LABELS: Record<string, string> = {
+  requested: "Requested",
+  awaiting_source: "Waiting for your PC",
+  capturing: "Reading your browser",
+  captured: "Browser data captured",
+  transferring: "Copying your browser",
+  received: "Copy received",
+  injecting: "Preparing your session",
+  ready: "Almost ready",
+  launching: "Starting your browser",
+  active: "Ready",
+  expired_idle: "Session expired",
+  expired_hard: "Session expired",
+  revoked: "Revoked",
+  failed: "Could not start",
+  deleted: "Deleted",
+};
+
+const CLONE_BROWSER_LABELS: Record<string, string> = {
+  chrome: "Chrome",
+  edge: "Edge",
+  firefox: "Firefox",
+};
+
+function cloneStepLabel(status: string): string {
+  return CLONE_STEP_LABELS[status] ?? "Working on it";
+}
+
+function cloneBrowserLabel(browser: string): string {
+  return CLONE_BROWSER_LABELS[browser] ?? "Browser";
+}
+
+function cloneEgressLabel(egressMode: string): string {
+  return egressMode === "direct"
+    ? "SpaceWorker's IP — sites may ask you to sign in again"
+    : "Same IP as your PC";
+}
+
+function cloneEgressShort(egressMode: string): string {
+  return egressMode === "direct" ? "SpaceWorker's IP" : "Same IP as your PC";
+}
+
+const CLONE_ACTIVE_STATES = new Set(["requested", "awaiting_source", "capturing"]);
+
+function isCloneLiveStatus(status: string): boolean {
+  return (
+    status === "active" ||
+    status === "ready" ||
+    status === "launching" ||
+    status === "injecting" ||
+    status === "received" ||
+    status === "transferring" ||
+    status === "captured" ||
+    CLONE_ACTIVE_STATES.has(status)
+  );
+}
+
+function isCloneTerminalStatus(status: string): boolean {
+  return (
+    status === "expired_idle" ||
+    status === "expired_hard" ||
+    status === "revoked" ||
+    status === "failed" ||
+    status === "deleted"
+  );
+}
+
+function formatCountdown(ms: number | null): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return "—";
+  if (ms <= 0) return "expired";
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s left`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min left`;
+  const h = Math.floor(m / 60);
+  if (h < 24) {
+    const rest = m % 60;
+    return rest > 0 ? `${h} hr ${rest} min left` : `${h} hr left`;
+  }
+  const d = Math.floor(h / 24);
+  return `${d} d left`;
+}
+
+function formatMonthDay(iso: string | null): string {
+  if (!iso) return "—";
+  return new Date(iso).toLocaleDateString([], { month: "short", day: "numeric" });
+}
 
 type ProposalState = {
   pendingActionId: string;
@@ -96,6 +229,7 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
   ["summary", "Summary", Monitor],
   ["control", "Remote control", ShieldCheck],
   ["command", "Command", Terminal],
+  ["clone", "Browser clone", Globe],
   ["activity", "Activity", Clock],
 ];
 
@@ -180,6 +314,18 @@ export function DeviceConsole({
 
   const [activity, setActivity] = useState<ActivityRow[]>([]);
 
+  // Task 111 (bit B5) — Browser Clone state. Rides the console's existing
+  // 15 s interval (no second timer); paused while the document is hidden.
+  const [clones, setClones] = useState<CloneRow[]>([]);
+  const [clonesLoaded, setClonesLoaded] = useState(false);
+  const [cloneError, setCloneError] = useState("");
+  const [cloneBusy, setCloneBusy] = useState("");
+  const [cloneNotice, setCloneNotice] = useState("");
+  const [cloneBrowser, setCloneBrowser] = useState<"chrome" | "edge" | "firefox">("chrome");
+  const [cloneProfile, setCloneProfile] = useState("");
+  const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
+  const [isPremium, setIsPremium] = useState(false);
+
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -217,27 +363,63 @@ export function DeviceConsole({
   const loadToolData = useCallback(async () => {
     if (!deviceId) return;
     try {
-      const [q, p, a] = await Promise.all([
+      const [q, p, a, c, e] = await Promise.all([
         fetch(`/api/devices/${deviceId}/queued-commands`),
         fetch(`/api/devices/${deviceId}/pin-requests`),
         fetch(`/api/devices/${deviceId}/activity`),
+        // Task 111 — clone history rides the same tick (role=any so a
+        // pooled hosted PC also sees what it hosted; `deleted` filtered).
+        fetch(`/api/devices/${deviceId}/clones?role=any&limit=50`),
+        fetch(`/api/entitlements`),
       ]);
       if (q.ok) setQueue((await q.json()).commands ?? []);
       if (p.ok) setPins((await p.json()).requests ?? []);
       if (a.ok) setActivity((await a.json()).actions ?? []);
+      if (c.ok) {
+        const data = await c.json().catch(() => ({}));
+        const rows = Array.isArray(data.clones) ? data.clones : [];
+        setClones(rows.filter((r: CloneRow) => r && r.status !== "deleted"));
+        setClonesLoaded(true);
+      }
+      if (e.ok) {
+        const data = await e.json().catch(() => ({}));
+        setIsPremium(data.premium === true);
+      }
     } catch {
       // non-fatal — tabs render with what we have
     }
   }, [deviceId]);
+
+  // Task 111 — single-clone poll used while a clone is mid-flight so each
+  // lifecycle step appears without a manual refresh.
+  const pollClone = useCallback(async (cloneId: string) => {
+    try {
+      const res = await fetch(`/api/clones/${cloneId}`);
+      if (!res.ok) return null;
+      const data = await res.json().catch(() => ({}));
+      const row = (data.clone ?? null) as CloneRow | null;
+      if (row) {
+        setClones((prev) => {
+          const rest = prev.filter((r) => r.id !== row.id);
+          return [row, ...rest].sort((x, y) => y.createdAt.localeCompare(x.createdAt));
+        });
+      }
+      return row;
+    } catch {
+      return null;
+    }
+  }, []);
 
   useEffect(() => {
     loadDevice();
     loadToolData();
   }, [loadDevice, loadToolData]);
 
-  // Light polling keeps status/queue/PIN state honest without hammering.
+  // Light polling keeps status/queue/PIN/clone state honest without
+  // hammering. Paused while the document is hidden.
   useEffect(() => {
     pollRef.current = setInterval(() => {
+      if (typeof document !== "undefined" && document.hidden) return;
       loadDevice();
       loadToolData();
     }, 15000);
@@ -546,6 +728,135 @@ export function DeviceConsole({
     }
   }
 
+  // ---- Browser Clone (Task 111 / bit B5) -----------------------------------
+  // Consumes TASK_110's routes only — no lifecycle logic lives here. Start
+  // returns 201 (created) or 202 (governor queued); every error renders
+  // through cleanErr so no raw enum, id or upstream body reaches the UI.
+  async function driveCloneLifecycle(cloneId: string) {
+    // The sweep (TASK_112) does not exist yet, so the tab drives the first
+    // run itself: advance → poll → advance until terminal or queued. Safe to
+    // call repeatedly — advance is idempotent, terminal is a no-op.
+    for (let i = 0; i < 12; i++) {
+      let advanced = false;
+      try {
+        const res = await fetch(`/api/clones/${cloneId}/advance`, { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 202) return; // governor queued — the sweep owns it now
+        if (!res.ok) return; // terminal/transient — the regular poll shows it
+        advanced = data.advanced === true;
+      } catch {
+        return;
+      }
+      const row = await pollClone(cloneId);
+      if (!row || isCloneTerminalStatus(row.status)) return;
+      if (!advanced) return;
+    }
+  }
+
+  async function startClone() {
+    setCloneBusy("start");
+    setCloneError("");
+    setCloneNotice("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/clones`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          egress: cloneEgress,
+          browser: cloneBrowser,
+          ...(cloneProfile.trim() ? { profile: cloneProfile.trim() } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const reason =
+          typeof data.reason === "string" && data.reason
+            ? data.reason
+            : typeof data.error === "string"
+              ? data.error
+              : "Could not start the clone";
+        throw new Error(reason);
+      }
+      const cloneId = typeof data.cloneId === "string" ? data.cloneId : null;
+      if (data.queued === true) {
+        const why =
+          typeof data.message === "string" && data.message
+            ? data.message
+            : "The clone is queued — it starts when capacity frees up.";
+        setCloneNotice(why);
+      } else {
+        setCloneNotice("Clone requested — it starts as soon as your PC and its relay are ready.");
+      }
+      await loadToolData();
+      if (cloneId) void driveCloneLifecycle(cloneId);
+    } catch (e) {
+      setCloneError(cleanErr(e instanceof Error ? e.message : "Could not start the clone", "Could not start the clone"));
+    } finally {
+      setCloneBusy("");
+    }
+  }
+
+  async function revokeClone(cloneId: string) {
+    setCloneBusy(`revoke-${cloneId}`);
+    setCloneError("");
+    try {
+      const res = await fetch(`/api/clones/${cloneId}/revoke`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          typeof data.reason === "string" && data.reason
+            ? data.reason
+            : "Could not revoke the clone",
+        );
+      }
+      setCloneNotice("Clone revoked — the hosted browser is closed.");
+      await pollClone(cloneId);
+      await loadToolData();
+    } catch (e) {
+      setCloneError(cleanErr(e instanceof Error ? e.message : "Could not revoke the clone", "Could not revoke the clone"));
+    } finally {
+      setCloneBusy("");
+    }
+  }
+
+  async function deleteClone(cloneId: string) {
+    setCloneBusy(`delete-${cloneId}`);
+    setCloneError("");
+    try {
+      const res = await fetch(`/api/clones/${cloneId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(
+          typeof data.reason === "string" && data.reason
+            ? data.reason
+            : "Could not delete the clone",
+        );
+      }
+      setClones((prev) => prev.filter((r) => r.id !== cloneId));
+      await loadToolData();
+    } catch (e) {
+      setCloneError(cleanErr(e instanceof Error ? e.message : "Could not delete the clone", "Could not delete the clone"));
+    } finally {
+      setCloneBusy("");
+    }
+  }
+
+  async function openCloneSession(cloneId: string) {
+    setCloneBusy(`open-${cloneId}`);
+    setCloneError("");
+    try {
+      const res = await fetch(`/api/clones/${cloneId}/session`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error("The session is not ready yet — try again in a moment.");
+      const url = typeof data.openUrl === "string" && data.openUrl ? data.openUrl : `/clone/${cloneId}`;
+      window.open(url, "_blank", "noopener");
+    } catch (e) {
+      setCloneError(cleanErr(e instanceof Error ? e.message : "The session is not ready yet", "The session is not ready yet"));
+    } finally {
+      setCloneBusy("");
+    }
+  }
+
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
   const dot =
     device?.status === "online"
@@ -553,6 +864,13 @@ export function DeviceConsole({
       : device?.status === "asleep"
         ? "bg-amber-400"
         : "bg-zinc-400";
+
+  // Task 111 — Summary card inputs: the live session (if any) owns the Open
+  // button; the newest row owns the "last clone" line. `active` wins over
+  // mid-flight rows so a progressing clone never reads as the session.
+  const liveClone =
+    clones.find((r) => r.status === "active") ?? clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
+  const lastClone = clones.length > 0 ? clones[0] : null;
 
   return (
     <div className="space-y-4">
@@ -628,7 +946,18 @@ export function DeviceConsole({
 
         {/* tab body */}
         <div className="space-y-4 p-4">
-          {tab === "summary" && <SummaryTab device={device} loaded={loaded} />}
+          {tab === "summary" && (
+            <SummaryTab
+              device={device}
+              loaded={loaded}
+              liveClone={liveClone ?? null}
+              lastClone={lastClone ?? null}
+              clonesLoaded={clonesLoaded}
+              cloneBusy={cloneBusy}
+              openCloneSession={openCloneSession}
+              goToCloneTab={() => setTab("clone")}
+            />
+          )}
           {tab === "control" && (
             <ControlTab
               isOnline={!!isOnline}
@@ -661,6 +990,26 @@ export function DeviceConsole({
               runNow={runNow}
               runOut={runOut}
               queuePin={queuePin}
+            />
+          )}
+          {tab === "clone" && (
+            <CloneTab
+              clones={clones}
+              loaded={clonesLoaded}
+              err={cloneError}
+              msg={cloneNotice}
+              busy={cloneBusy}
+              browser={cloneBrowser}
+              setBrowser={setCloneBrowser}
+              profile={cloneProfile}
+              setProfile={setCloneProfile}
+              egress={cloneEgress}
+              setEgress={setCloneEgress}
+              premium={isPremium}
+              onStart={startClone}
+              onRevoke={revokeClone}
+              onDelete={deleteClone}
+              onOpen={openCloneSession}
             />
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
@@ -721,9 +1070,34 @@ export function DeviceConsole({
 }
 
 // ---- Summary ---------------------------------------------------------------
-function SummaryTab({ device, loaded }: { device: DeviceView | null; loaded: boolean }) {
+function SummaryTab({
+  device,
+  loaded,
+  liveClone,
+  lastClone,
+  clonesLoaded,
+  cloneBusy,
+  openCloneSession,
+  goToCloneTab,
+}: {
+  device: DeviceView | null;
+  loaded: boolean;
+  liveClone: CloneRow | null;
+  lastClone: CloneRow | null;
+  clonesLoaded: boolean;
+  cloneBusy: string;
+  openCloneSession: (cloneId: string) => Promise<void>;
+  goToCloneTab: () => void;
+}) {
   if (!loaded) return <p className="text-sm text-fg-muted">Loading…</p>;
   if (!device) return <p className="text-sm text-fg-muted">Machine not found.</p>;
+  const cloneLine = !clonesLoaded
+    ? "checking clone status…"
+    : liveClone
+      ? `${cloneStepLabel(liveClone.status)} · ${cloneBrowserLabel(liveClone.browser)}`
+      : lastClone
+        ? `inactive · last clone ${formatMonthDay(lastClone.createdAt)}, ${cloneStepLabel(lastClone.status).toLowerCase()}`
+        : "inactive · no clones yet";
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       <Info label="Machine" value={device.name} mono />
@@ -758,6 +1132,248 @@ function SummaryTab({ device, loaded }: { device: DeviceView | null; loaded: boo
         Your own tools run immediately — the approval prompt only appears for actions the
         agent asks for on your behalf.
       </p>
+      {/* Task 111 — compact clone card (always visible on Summary). The Open
+          button is live-session-only; Manage switches to the Browser clone tab. */}
+      <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+          <Globe className="h-3.5 w-3.5" /> Cloned browser
+        </p>
+        <p className="mt-1 text-sm text-fg">{cloneLine}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => liveClone && openCloneSession(liveClone.id)}
+            disabled={!liveClone || cloneBusy === (liveClone ? `open-${liveClone.id}` : "open")}
+            title={liveClone ? "Open the cloned browser in a new tab" : "No live session — start a clone below"}
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:pointer-events-none disabled:opacity-50"
+          >
+            {liveClone && cloneBusy === `open-${liveClone.id}` ? "Opening…" : "Open cloned browser"}
+          </button>
+          <button
+            onClick={goToCloneTab}
+            className="rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+          >
+            Manage clones →
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+  const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
+  return (
+    <div className="space-y-4">
+      {props.err && <p className="text-sm text-red-500">{props.err}</p>}
+      {props.msg && <p className="text-sm text-emerald-500">{props.msg}</p>}
+      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} busy={props.busy} onStart={props.onStart} />
+      {live ? (
+        <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
+      ) : (
+        props.loaded && (
+          <p className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg-muted">No live clone right now — start one above and follow each step here.</p>
+        )
+      )}
+      <div className="rounded-lg border border-border bg-bg p-3">
+        <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">History</p>
+        {!props.loaded ? (
+          <p className="mt-1 text-sm text-fg-muted">Loading clone history…</p>
+        ) : props.clones.length === 0 ? (
+          <div className="mt-1">
+            <p className="text-sm text-fg">No clones yet.</p>
+            <p className="mt-0.5 text-xs text-fg-muted">Start your first clone above — every clone is dated and kept here, newest first.</p>
+          </div>
+        ) : (
+          <ul className="mt-2 space-y-2">
+            {props.clones.map((row) => (
+              <CloneHistoryRow key={row.id} row={row} busy={props.busy} onOpen={props.onOpen} onRevoke={props.onRevoke} onDelete={props.onDelete} />
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: string) => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void> }) {
+  const { row, busy, onOpen, onRevoke, onDelete } = props;
+  const live = isCloneLiveStatus(row.status);
+  const terminal = isCloneTerminalStatus(row.status) || row.terminal;
+  const errText = row.error ? ` · ${row.error}` : row.status === "failed" ? " · could not start — try again" : "";
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2">
+      <span className="min-w-0">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-sm text-fg">
+          <span className="font-medium">{formatMonthDay(row.createdAt)}</span>
+          <span className="text-fg-muted">·</span>
+          <span>{cloneBrowserLabel(row.browser)}{row.profileName ? ` · ${row.profileName}` : ""}</span>
+          <span className="text-fg-muted">·</span>
+          <span className={cn(live ? "text-emerald-500" : row.status === "failed" ? "text-red-500" : "text-fg-muted")}>
+            {cloneStepLabel(row.status)}
+          </span>
+        </span>
+        <span className="mt-0.5 block text-xs text-fg-muted">
+          {cloneEgressShort(row.egressMode)} · TTL {formatCountdown(row.ttlRemainingMs)}{errText}
+        </span>
+      </span>
+      <span className="flex shrink-0 gap-2">
+        {live && (
+          <>
+            <button
+              onClick={() => onOpen(row.id)}
+              disabled={row.status !== "active" || busy === `open-${row.id}`}
+              className="rounded border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:pointer-events-none disabled:opacity-50"
+            >
+              Open
+            </button>
+            <button
+              onClick={() => onRevoke(row.id)}
+              disabled={busy === `revoke-${row.id}`}
+              className="rounded border border-red-500/50 px-2 py-1 text-xs text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+            >
+              Revoke
+            </button>
+          </>
+        )}
+        {terminal && (
+          <button
+            onClick={() => onDelete(row.id)}
+            disabled={busy === `delete-${row.id}`}
+            title="Delete this record"
+            className="rounded border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </span>
+    </li>
+  );
+}
+
+function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; onOpen: (id: string) => Promise<void>; onRevoke: (id: string) => Promise<void> }) {
+  const { row, busy, premium, onOpen, onRevoke } = props;
+  const relayDown = row.egressMode === "relay" && row.relay !== null && row.relay.status !== "up";
+  const idleShorter = row.idleRemainingMs !== null && row.idleRemainingMs < (row.ttlRemainingMs ?? Number.MAX_SAFE_INTEGER);
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" /> Live now
+      </p>
+      <p className="mt-1 text-sm font-medium text-fg">
+        {cloneStepLabel(row.status)} · {cloneBrowserLabel(row.browser)}
+        {row.profileName ? ` · ${row.profileName}` : ""}
+      </p>
+      <p className="mt-0.5 text-xs text-fg-muted">
+        started {relTime(row.launchedAt ?? row.createdAt)} · TTL {formatCountdown(row.ttlRemainingMs)}
+        {idleShorter ? ` · idle ${formatCountdown(row.idleRemainingMs)}` : ""}
+      </p>
+      <p className="mt-0.5 text-xs text-fg-muted">{cloneEgressLabel(row.egressMode)}</p>
+      {row.egressMode === "relay" && row.relay && (
+        <p className="mt-0.5 text-xs text-fg-muted">
+          Relay {row.relay.status === "up" ? "healthy" : "down — the clone stops rather than leak your IP"}
+          {row.relay.lastCheckAt ? ` · checked ${relTime(row.relay.lastCheckAt)}` : ""}
+        </p>
+      )}
+      {relayDown && (
+        <p className="mt-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 px-2 py-1.5 text-xs text-fg">
+          The relay on your PC is down, so this clone cannot proceed safely.
+          {premium ? " You can also start again with SpaceWorker's IP." : ""}
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          onClick={() => onOpen(row.id)}
+          disabled={row.status !== "active" || busy === `open-${row.id}`}
+          title={row.status === "active" ? "Open the cloned browser in a new tab" : "The session opens once the browser is ready"}
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:pointer-events-none disabled:opacity-50"
+        >
+          {busy === `open-${row.id}` ? "Opening…" : "Open session"}
+        </button>
+        <button
+          onClick={() => onRevoke(row.id)}
+          disabled={busy === `revoke-${row.id}`}
+          className="rounded-lg border border-red-500/50 px-3 py-1.5 text-xs font-medium text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+        >
+          {busy === `revoke-${row.id}` ? "Revoking…" : "Revoke"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; busy: string; onStart: () => Promise<void> }) {
+  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, busy, onStart } = props;
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <Globe className="h-3.5 w-3.5" /> Start a clone
+      </p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        <span className="block text-xs text-fg-muted">
+          Browser
+          <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
+            {(["chrome", "edge", "firefox"] as const).map((b) => (
+              <button
+                key={b}
+                onClick={() => setBrowser(b)}
+                className={cn(
+                  "flex-1 px-2 py-1.5 text-xs transition-colors",
+                  browser === b ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+                )}
+              >
+                {cloneBrowserLabel(b)}
+              </button>
+            ))}
+          </span>
+        </span>
+        <label className="block text-xs text-fg-muted">
+          Profile (optional)
+          <input
+            value={profile}
+            onChange={(e) => setProfile(e.target.value)}
+            placeholder="Default"
+            maxLength={64}
+            className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+          />
+        </label>
+        <span className="block text-xs text-fg-muted">
+          Network
+          <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
+            <button
+              onClick={() => setEgress("relay")}
+              title="Same IP as your PC — sites keep you signed in"
+              className={cn(
+                "flex-1 px-2 py-1.5 text-xs transition-colors",
+                egress === "relay" ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+              )}
+            >
+              Same IP as your PC
+            </button>
+            <button
+              onClick={() => premium && setEgress("direct")}
+              disabled={!premium}
+              title={premium ? "SpaceWorker's IP — sites may ask you to sign in again" : "Premium only — upgrade to unlock SpaceWorker's IP"}
+              className={cn(
+                "flex-1 px-2 py-1.5 text-xs transition-colors",
+                egress === "direct" ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+                !premium && "cursor-not-allowed opacity-60",
+              )}
+            >
+              SpaceWorker&apos;s IP{!premium ? " · Premium" : ""}
+            </button>
+          </span>
+        </span>
+      </div>
+      {!premium && (
+        <p className="mt-1.5 text-xs text-fg-muted">SpaceWorker&apos;s IP is a Premium feature — Same IP as your PC works on every plan.</p>
+      )}
+      <button
+        onClick={onStart}
+        disabled={busy === "start"}
+        className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+      >
+        {busy === "start" ? "Starting…" : "Start clone"}
+      </button>
     </div>
   );
 }
