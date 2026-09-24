@@ -350,6 +350,9 @@ export function DeviceConsole({
   const [cloneProfile, setCloneProfile] = useState("");
   const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
   const [isPremium, setIsPremium] = useState(false);
+  // True once /api/entitlements has answered (ok or not) — the egress picker
+  // must not render a "Premium" lock before we know the account state.
+  const [premiumLoaded, setPremiumLoaded] = useState(false);
 
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
@@ -410,6 +413,7 @@ export function DeviceConsole({
         const data = await e.json().catch(() => ({}));
         setIsPremium(data.premium === true);
       }
+      setPremiumLoaded(true);
     } catch {
       // non-fatal — tabs render with what we have
     }
@@ -1175,6 +1179,7 @@ export function DeviceConsole({
               egress={cloneEgress}
               setEgress={setCloneEgress}
               premium={isPremium}
+              premiumLoaded={premiumLoaded}
               onStart={startClone}
               onRevoke={revokeClone}
               onDelete={deleteClone}
@@ -1183,10 +1188,12 @@ export function DeviceConsole({
           )}
           {tab === "activity" && <ActivityTab activity={activity} />}
 
-          {/* PIN panel — the collect tool itself (always available) plus
-              whatever came back: a live "waiting" line, and every collected
-              PIN masked behind an explicit reveal. Nothing that never produced
-              a PIN is ever shown. */}
+          {/* PIN panel — Remote-control scoped ONLY. It must never render under
+              the Command tab (owner 2026-09-24: "pin request show under
+              command tab, i think thats a leak"). The Command tab keeps its
+              own "Queue PIN collect" card for offline scheduling; the live
+              request/collect panel lives here, on Remote control. */}
+          {tab === "control" && (
           <PinPanel
             pins={pins}
             pinLen={pinLen}
@@ -1195,6 +1202,7 @@ export function DeviceConsole({
             requestPin={requestPin}
             removePin={removePin}
           />
+          )}
         </div>
       </div>
 
@@ -1329,13 +1337,13 @@ function SummaryTab({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   return (
     <div className="space-y-4">
       {props.err && <p className="text-sm text-red-500">{props.err}</p>}
       {props.msg && <p className="text-sm text-emerald-500">{props.msg}</p>}
-      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} busy={props.busy} onStart={props.onStart} />
+      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} />
       {live ? (
         <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
       ) : (
@@ -1470,8 +1478,16 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
   );
 }
 
-function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; busy: string; onStart: () => Promise<void> }) {
-  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, busy, onStart } = props;
+function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void> }) {
+  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, premiumLoaded, busy, onStart } = props;
+  // Owner 2026-09-24: "no option to start with egress even when i am on
+  // premium". Root cause: `premium` starts false and only flips when
+  // /api/entitlements answers — before that the direct button renders
+  // disabled+locked, which reads as "no option". Fix: while the account
+  // state is still loading, keep BOTH options enabled (the server stays the
+  // real gate and 403s direct-without-premium if forced). Once loaded, a
+  // non-premium account sees the honest Premium lock.
+  const directSelectable = premium || !premiumLoaded;
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -1519,21 +1535,21 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
               Same IP as your PC
             </button>
             <button
-              onClick={() => premium && setEgress("direct")}
-              disabled={!premium}
-              title={premium ? "SpaceWorker's IP — sites may ask you to sign in again" : "Premium only — upgrade to unlock SpaceWorker's IP"}
+              onClick={() => directSelectable && setEgress("direct")}
+              disabled={!directSelectable}
+              title={directSelectable ? "SpaceWorker's IP — sites may ask you to sign in again" : "Premium only — upgrade to unlock SpaceWorker's IP"}
               className={cn(
                 "flex-1 px-2 py-1.5 text-xs transition-colors",
                 egress === "direct" ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
-                !premium && "cursor-not-allowed opacity-60",
+                !directSelectable && "cursor-not-allowed opacity-60",
               )}
             >
-              SpaceWorker&apos;s IP{!premium ? " · Premium" : ""}
+              SpaceWorker&apos;s IP{!directSelectable ? " · Premium" : ""}
             </button>
           </span>
         </span>
       </div>
-      {!premium && (
+      {!directSelectable && (
         <p className="mt-1.5 text-xs text-fg-muted">SpaceWorker&apos;s IP is a Premium feature — Same IP as your PC works on every plan.</p>
       )}
       <button
