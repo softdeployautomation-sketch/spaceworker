@@ -206,6 +206,102 @@ browser engine, no new machine.
 | **D5** | **UI truth-telling.** "Set up as clone host" stops being a customer-facing task; the clone tab reports **hosted-pool status** instead. | This is the fix for the misconception that caused this task. The copy in `TASK_116` already stops instructing users to provision hardware; D5 finishes the job by moving the button to an ops surface. |
 | **D6** | **Lifecycle.** TTL/teardown/purge for hosted sessions + `TASK_105` governor integration so RAM caps and queueing apply to the pool like every other high-RAM consumer. | `hostedPoolSize` is a RAM dial; the governor owns RAM admission. |
 
+## D1 FINDINGS — measured on the VPS 2026-09-24 (device-free: no VM, no customer device)
+
+Environment: **chromium 151.0.7922.71** (Debian 13) from
+`ghcr.io/m1k1o/neko/chromium:latest`, launched through the **Neko entrypoint on
+real Xorg**, profile bind-mounted exactly as production does (`browser-server`).
+
+### F1 — CONFIRMED BUG: the engine's Chrome key salt is wrong
+
+`michael/browser-clone/engine/pkg/crypto/password_handler.go`:
+
+- `ChromeSalt = []byte("peanuts")`, and `DeriveChromeKey(p)` calls
+  `PBKDF2SHA1([]byte("peanuts"), p, 1, 16)` — i.e. it passes **`peanuts` as the
+  PBKDF2 salt**.
+- Chromium's Linux derivation is
+  `PBKDF2-SHA1(password="peanuts", salt="saltysalt", iterations=1, keylen=16)`.
+- **Proof:** with salt `"saltysalt"` the engine's own PBKDF2 cleanly decrypts a
+  cookie **Chromium 151 wrote** — valid PKCS7, structured plaintext,
+  `VALUE="CHROMIUM-WROTE-THIS"`. With salt `"peanuts"` the same blob decrypts to
+  garbage.
+- The engine's PBKDF2 implementation is **not** at fault: it matches Python's
+  `hashlib.pbkdf2_hmac` byte-for-byte
+  (`bd041144f77dd5078c78071bbed1d45e`) and passes the RFC 6070 vectors its own test
+  asserts. **Only the salt is wrong.**
+- Impact: any POSIX/hosted path that reads a Linux profile's cookie DB. The Windows
+  path takes its key from DPAPI and is unaffected.
+
+### F2 — CONFIRMED BUG: the 16-byte cookie prefix is not handled
+
+A Linux cookie plaintext is `<16-byte prefix><value><PKCS7>`, not
+`<value><PKCS7>`:
+
+- Decrypted ciphertext = `db872090732c96aa5df1d83cb1f3e85a` +
+  `"CHROMIUM-WROTE-THIS"` + 13×`0x0d`.
+- The prefix is **host-scoped, not per-cookie**: two cookies for the same host had
+  the *identical* prefix despite different names and values; it is also not
+  `SHA256(host)`/`MD5(host)`.
+- `DecryptChromeValue(..., stripV10=true)` returns the whole plaintext, so the
+  prefix would be returned as part of every cookie value.
+
+### F3 — persistence works, but only with a real display
+
+- With `--password-store=basic` on **real Xorg**, Chromium persisted its cookie and
+  **sent it again after a full container restart** (PASS).
+- Under `--headless=new` the same test wrote **0 rows** on every attempt — headless
+  is not representative for cookie work.
+- `Local State` contains **no `os_crypt`** in this container (no keyring), which is
+  consistent with the hardcoded-password path.
+
+### F4 — DECISIVE: Chromium discards cookie rows it did not itself write
+
+Out-of-band SQLite writes do **not** survive Chromium:
+
+- Rows injected with attributes cloned byte-for-byte from Chromium's own row
+  (only `name` + `encrypted_value` changed) → **deleted** by Chromium.
+- Control: `swcopy` = **Chromium's own blob, verbatim**, same attributes, only the
+  name changed → **also deleted**, while the originals `swa`/`swb` were kept and
+  sent on the wire.
+- Therefore **disk-level cookie injection is not a viable mechanism.** Chromium
+  holds cookies in memory and rewrites the store, dropping rows it does not accept
+  at load. This is the finding that decides the architecture.
+
+### F5 — the runtime path is reachable
+
+- `--remote-debugging-port` is **ignored when `--user-data-dir` is the default
+  profile dir** (this is why the first attempt silently had no endpoint). With a
+  non-default dir: `DevTools listening on ws://127.0.0.1:9222/…`, and
+  `/json/version` returns `Chrome/151.0.7922.71`.
+- DevTools binds **container-loopback only** — `--remote-debugging-address` is
+  ignored — so a published Docker port cannot reach it. The image ships no
+  `socat`/`nc`, so we ship our own static forwarder
+  (`swfwd 0.0.0.0:9223 127.0.0.1:9222`, ~3.4 MB Go, built on the same cross-compile
+  path as the engine). With it, the DevTools **HTTP** endpoint is reachable from the
+  host.
+- DevTools advertises its **internal** ws URL, so a client must rewrite
+  `ws://127.0.0.1:9222/...` to the forwarded port.
+- **OPEN (not proven):** the WebSocket handshake did not complete in the harness
+  (45 s hard timeout, no error event). Next diagnostic to run — a raw upgrade probe
+  that will name the refusal:
+  `curl -i -N -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" http://127.0.0.1:9223/devtools/page/<id>`
+  (launch already carries `--remote-allow-origins=*`).
+
+### Consequence for the build (supersedes the earlier "minimal path")
+
+Given **F4**, the clone must receive its cookies **at runtime, through Chromium**
+(CDP), not by writing the profile. That means:
+
+- a clone session must launch with a **non-default `--user-data-dir`** plus remote
+  debugging (F5), and therefore a forwarder;
+- the cookie payload is delivered **per launch**, so cookie persistence stops being
+  a requirement (F3 shows Chromium will persist them itself once it sets them);
+- and it unlocks what the disk path could never do — **localStorage /
+  sessionStorage**, where many sites actually keep auth state.
+
+**F1/F2 remain real bugs to fix** so the capture side can read a Linux profile
+correctly, but they are **no longer on the critical path** for launching a clone.
+
 ## Non-negotiable guardrails
 
 1. **A customer device is never clone infrastructure.** Not a clone host, not a
@@ -223,8 +319,14 @@ browser engine, no new machine.
 
 ## Verification
 
-- D1 proved with a **real capture** from `Sc` and a signed-in check **inside the
-  container** (this is the go/no-go — everything else is mechanical once it passes).
+- **D1 — device-free half DONE (see "D1 FINDINGS" below); full proof still open.**
+  Proven without any device: the container's Chromium **can** be persisted to and
+  read back from with a bind-mounted profile (F3), the DevTools endpoint **is**
+  reachable with a non-default `--user-data-dir` + forwarder (F5), and — decisively
+  — **out-of-band writes to the cookie store are discarded by Chromium** (F4), so
+  the clone must be fed cookies at runtime instead.
+  Still to prove: (a) the CDP WebSocket handshake (F5, open), and (b) a **real
+  capture from `Sc`** showing a signed-in site inside the container.
 - D2 proved by: a clone launches a Neko session from the injected profile, and a
   **single-PC** account can clone with no second device involved.
 - D3 proved by: relay-mode egress reports the **customer's** IP, and the launch
