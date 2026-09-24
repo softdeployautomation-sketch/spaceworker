@@ -106,6 +106,33 @@ function psq(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+/** Hard cap for ONE artifact download. Must stay under the transport's 90s. */
+const DL_TIMEOUT_SECONDS = 70;
+
+/** Artifacts at or above this size get a transport call of their own. */
+const FETCH_CHUNK_BYTES = 1_000_000;
+
+/**
+ * Split a role's artifacts into transport-sized chunks.
+ *
+ * WHY THIS EXISTS (owner report 2026-09-24, device `Sc`): the fetch was ONE call
+ * carrying every artifact — 8.2 MB + 6.5 MB + the scripts — and the transport
+ * kills a command at its timeout, returning ZERO stdout with nothing to parse.
+ * The console could only say `fetch — no_output_from_device`, which reads like
+ * "the script never ran" and sent the investigation after the wrong bug.
+ *
+ * Small scripts ride together (they are kilobytes; a per-file call would cost an
+ * extra agent round-trip, measured at ~30s each on Sc), and every megabyte-scale
+ * binary gets its own call so a slow download can fail VISIBLY — with the file
+ * name, the elapsed seconds and curl's exit code — instead of silently killing
+ * the whole step.
+ */
+function fetchChunks(names: string[], sizeOf: Map<string, number>): string[][] {
+  const small = names.filter((n) => (sizeOf.get(n) ?? 0) < FETCH_CHUNK_BYTES);
+  const big = names.filter((n) => (sizeOf.get(n) ?? 0) >= FETCH_CHUNK_BYTES);
+  return [...(small.length > 0 ? [small] : []), ...big.map((n) => [n])];
+}
+
 /** Parse the `STEP:<name> OK|FAIL|SKIP[:detail]` lines the scripts emit. */
 function parseSteps(output: string | null): CloneSetupStep[] {
   if (typeof output !== "string") return [];
@@ -135,7 +162,9 @@ function ensureReported(steps: CloneSetupStep[], output: string | null, step: st
   steps.push({
     step,
     ok: false,
-    detail: raw ? `no_step_output: ${raw}` : "no_output_from_device",
+    detail: raw
+      ? `no_step_output: ${raw}`
+      : "no_output_from_device: killed before it could report",
   });
 }
 
@@ -147,7 +176,7 @@ function firstFailure(steps: CloneSetupStep[]): CloneSetupStep | null {
 /**
  * Step 1 script: download every artifact to the staging dir, hash-verified.
  *
- * TWO hard-won rules live here (owner report 2026-09-24, device `Sc`):
+ * FOUR hard-won rules live here (owner reports 2026-09-24, device `Sc`):
  *
  * 1. NO TRAILING COMMA in the manifest array. PowerShell has no tolerance for
  *    `@(a, b,)` — it is a PARSE error, and a parse error emits NO stdout at all.
@@ -156,14 +185,28 @@ function firstFailure(steps: CloneSetupStep[]): CloneSetupStep | null {
  *    one step later as the misleading
  *    `quarantine FAIL:engine_missing_in_stage`. The device's own words were
  *    `At line:12 char:276 ... Missing expression after ','`.
- * 2. Retry the download. Fetching ~15 MB from a work PC is the one step that
- *    crosses the open internet, and it was observed resetting mid-transfer
- *    (`An existing connection was forcibly closed by the remote host`) while the
- *    same URL served fine from elsewhere. Three attempts, then report.
+ * 2. THE DOWNLOADER MATTERS, BY 4x. `Invoke-WebRequest` is the slowest way to
+ *    pull a binary from Windows PowerShell 5.1. Measured on device `Sc` against
+ *    this very endpoint (2026-09-24): 8.2 MB took **62.4s** with IWR, **22.6s**
+ *    with `curl.exe --max-time` and **16.5s** with .NET WebClient (~130 KB/s vs
+ *    ~500 KB/s). Same file, same URL, same link — the method was the variable.
+ *    curl.exe first (it has a real `--max-time`), WebClient as the fallback.
+ * 3. THE SCRIPT'S OWN TIMEOUT MUST BE SHORTER THAN THE TRANSPORT'S 90s CAP, and
+ *    one call must never be asked to move more than it can. The old shape put
+ *    ~15 MB (8.2 MB + 6.5 MB + scripts) in ONE call, so the call was killed at
+ *    the cap. A killed command returns ZERO stdout — indistinguishable from
+ *    "the script never ran" — which is what the owner saw as
+ *    `fetch — no_output_from_device` while the files were in fact half-written.
+ *    Downloads are now chunked by the CALLER (see fetchChunks) and each download
+ *    is capped at DL_TIMEOUT_SECONDS, so a slow file fails VISIBLY.
+ * 4. Retries moved to the CALLER. A retry inside the script lengthens the very
+ *    call that is at risk of being killed; the caller can instead re-issue a
+ *    chunk whose output was empty, which is both visible and bounded.
  */
 function buildFetchScript(items: { name: string; url: string; sha256: string }[]): string {
   return [
     "$ErrorActionPreference = 'Continue'",
+    "$ProgressPreference = 'SilentlyContinue'",
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
     `$stage = ${psq(STAGE_DIR)}`,
     "New-Item -ItemType Directory -Force -Path $stage | Out-Null",
@@ -173,23 +216,29 @@ function buildFetchScript(items: { name: string; url: string; sha256: string }[]
       return idx === items.length - 1 ? entry : `${entry},`;
     }),
     ")",
+    "$haveCurl = [bool](Get-Command curl.exe -ErrorAction SilentlyContinue)",
     "$bad = 0",
     "foreach ($f in $files) {",
     "  $out = Join-Path $stage $f.n",
-    "  $ok = $false",
-    "  for ($try = 1; $try -le 3 -and -not $ok; $try++) {",
+    "  Remove-Item $out -Force -ErrorAction SilentlyContinue",
+    "  $t = Get-Date",
+    "  $why = ''",
+    "  if ($haveCurl) {",
+    `    & curl.exe -sS -L --max-time ${DL_TIMEOUT_SECONDS} -o $out $f.u`,
+    "    if ($LASTEXITCODE -ne 0) { $why = 'curl_exit_' + $LASTEXITCODE }",
+    "  } else {",
     "    try {",
-    "      Invoke-WebRequest -UseBasicParsing -Uri $f.u -OutFile $out -TimeoutSec 45 -ErrorAction Stop",
-    "      $ok = $true",
-    "    } catch {",
-    "      if ($try -lt 3) { Start-Sleep -Seconds 2 } else { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:' + $_.Exception.Message); $bad = $bad + 1 }",
-    "    }",
+    "      (New-Object System.Net.WebClient).DownloadFile($f.u, $out)",
+    "    } catch { $why = 'webclient: ' + $_.Exception.Message }",
     "  }",
-    "  if (-not $ok) { continue }",
+    "  $secs = [math]::Round(((Get-Date) - $t).TotalSeconds, 1)",
+    "  if ($why -eq '' -and -not (Test-Path $out)) { $why = 'no_file_written' }",
+    "  if ($why -ne '') { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:' + $why + '_after_' + $secs + 's'); $bad = $bad + 1; continue }",
+    "  $len = (Get-Item $out).Length",
     "  $got = (Get-FileHash -Algorithm SHA256 -Path $out).Hash.ToLower()",
-    "  if ($got -ne $f.h) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:sha256_mismatch'); $bad = $bad + 1; continue }",
+    "  if ($got -ne $f.h) { Write-Output ('STEP:fetch:' + $f.n + ' FAIL:sha256_mismatch_' + $len + 'b'); $bad = $bad + 1; continue }",
     "  Unblock-File -Path $out -ErrorAction SilentlyContinue",
-    "  Write-Output ('STEP:fetch:' + $f.n + ' OK')",
+    "  Write-Output ('STEP:fetch:' + $f.n + ' OK:' + $len + 'b_' + $secs + 's')",
     "}",
     "if ($bad -gt 0) { Write-Output ('STEP:fetch FAIL:aborted_' + $bad + '_file_s'); exit 1 }",
     "Write-Output ('STEP:fetch DONE:' + $files.Count + '_verified')",
@@ -382,24 +431,40 @@ export async function setupCloneDevice(opts: {
   if (missing.length > 0) throw new Error(`clone_engine_dist_incomplete: ${missing.join(",")}`);
 
   // 1. fetch — signed single-device URLs; the agent downloads SYSTEM-side.
-  const urls = await Promise.all(
-    wanted.map(async (name) => ({
+  const urlByName = new Map(
+    await Promise.all(
+      wanted.map(
+        async (name) =>
+          [name, await signedEngineUrl({ file: name, deviceId: device.id, ttlSeconds: 900 })] as const,
+      ),
+    ),
+  );
+  const sizeOf = new Map(wanted.map((n) => [n, byName.get(n)!.bytes] as const));
+  for (const chunk of fetchChunks(wanted, sizeOf)) {
+    const items = chunk.map((name) => ({
       name,
       sha256: byName.get(name)!.sha256,
-      url: await signedEngineUrl({ file: name, deviceId: device.id, ttlSeconds: 900 }),
-    })),
-  );
-  const fetched = await runCommandNow({
-    userId: opts.userId,
-    deviceId: device.id,
-    cmd: buildFetchScript(urls),
-    shell: "powershell",
-    timeoutSeconds: 90,
-    runAsUser: false,
-  });
-  steps.push(...parseSteps(fetched.output));
-  ensureReported(steps, fetched.output, "fetch");
-  if (firstFailure(steps)) return bail();
+      url: urlByName.get(name)!,
+    }));
+    const label = chunk.length === 1 ? `fetch:${chunk[0]}` : "fetch";
+    const call = () =>
+      runCommandNow({
+        userId: opts.userId,
+        deviceId: device.id,
+        cmd: buildFetchScript(items),
+        shell: "powershell",
+        timeoutSeconds: 90,
+        runAsUser: false,
+      });
+    let fetched = await call();
+    // A chunk that actually runs always emits STEP: lines, so ZERO output means
+    // the command was killed (or the agent returned nothing). One retry — it is
+    // idempotent, downloads overwrite — then report it honestly.
+    if (parseSteps(fetched.output).length === 0) fetched = await call();
+    steps.push(...parseSteps(fetched.output));
+    ensureReported(steps, fetched.output, label);
+    if (firstFailure(steps)) return bail();
+  }
 
   // 2. quarantine (ENGINE CLI preflight) + install into CloneTool.
   const staged = await runCommandNow({
