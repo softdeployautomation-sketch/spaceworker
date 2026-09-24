@@ -97,3 +97,35 @@ uninstall key's `SystemComponent`, not by an Apps-list row that isn't there.)
 - Capture/launch verification with a real browser profile (still owner-only).
 - Any new Vantra route: the relay install reuses TASK_108's, the hosted install
   runs the sanctioned script over the existing run-command transport.
+
+
+## VM rehearsal (2026-09-24, `ssh myrat@192.168.0.103`, stock Windows + Restricted ExecutionPolicy)
+
+Ran the EXACT chain the app runs, and it found two more real blockers:
+
+1. `hack-browser-clone.exe --version` → `hack-browser-clone 0.1.0` (exit 0) —
+   the cross-compiled Windows binaries execute.
+2. `preflight --dir …\CloneTool` → `{ "method": "defender-exclusion",
+   "verified": true, "ok": true }` — the quarantine rule holds while the folder
+   is still empty.
+3. `& install-relay.ps1 …` → **REFUSED**: "running scripts is disabled on this
+   system" (ExecutionPolicy=Restricted). Inline script text is exempt, which is
+   why every inline console tool worked and this file-based path never did.
+   Fixed in both places that invoke a `.ps1`: our hosted step and Vantra's
+   `buildRelayInstall` / `buildMt1Capture` builders now use
+   `powershell -NoProfile -ExecutionPolicy Bypass -File`.
+4. With the bypass: `RELAY_EXIT=0`, `TCP 127.0.0.1:8118 LISTENING`,
+   `schtasks` → `SpaceworkerRelay … Running`.
+5. **Egress proof (the whole point of relay mode):**
+   `DIRECT_IP=212.8.243.127` and `RELAY_IP=212.8.243.127`, CONNECT `200` — the
+   relayed request leaves from the device's own IP, i.e. carried sessions stay
+   valid. (Matches the DESIGN's live VM→hosted claim.)
+6. `install-hosted.ps1 -NewExe <install dir>\hack-browser-clone.exe` → FAILS
+   ("Cannot overwrite the item … with itself"). Fixed by installing FROM the
+   staging dir and cleaning staging up LAST, on success and failure.
+
+**Still owner-only (needs a signed-in click):** the signed-URL fetch step
+(`Invoke-WebRequest` + `Get-FileHash` + `Unblock-File` against
+`/api/clone-engine/<artifact>?d=…&e=…&s=…`) and the app-side relay install
+through Vantra's route. Route boundaries are live-verified: no signature → 403,
+unauthenticated setup → 401.

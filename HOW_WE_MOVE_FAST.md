@@ -422,3 +422,18 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   strips comments/strings/here-strings and checks bracket balance. Note the trap it
   taught us — PowerShell here-strings OPEN with `@'`/`@"` and CLOSE with `'@`/`"@`
   (reversed), so a naive matcher reports false positives on valid files.
+- **A `.ps1` FILE is refused on a stock Windows box unless you pass `-ExecutionPolicy Bypass`.**
+  `& C:\...\install-relay.ps1 -NewExe ...` dies with "running scripts is disabled
+  on this system" (ExecutionPolicy=Restricted is the default) while the *same*
+  logic passed as INLINE script text runs fine — that asymmetry is why every
+  console tool that sends inline PowerShell (Run now, Hide/Reveal agent) worked
+  while the file-based clone installers could never run. Measured on the Windows
+  VM 2026-09-24 (TASK_114). Always invoke a script file as
+  `& powershell -NoProfile -ExecutionPolicy Bypass -File <path> <args...>`
+  (the parent's `$LASTEXITCODE` then carries the script's exit code).
+- **A transient staging dir must outlive the installers that read from it.**
+  `install-hosted.ps1` copies `-NewExe` into the install dir, so handing it its
+  OWN destination fails hard ("Cannot overwrite the item ... with itself"), and
+  deleting staging before the role install fails "path does not exist". Stage →
+  quarantine → install FROM staging → clean up LAST, on success and failure.
+  (Both states were hit live while wiring TASK_114.)

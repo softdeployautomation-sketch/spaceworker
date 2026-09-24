@@ -169,19 +169,42 @@ function buildStageScript(names: string[]): string {
     "  Copy-Item $src $dst -Force",
     "  Write-Output ('STEP:stage:' + $n + ' OK')",
     "}",
-    "Remove-Item -Recurse -Force $stage -ErrorAction SilentlyContinue",
     "Write-Output 'STEP:stage DONE'",
   );
   return lines.join("\n");
 }
 
-/** Step 3 (hosted) script: receiver install + the silent scheduled task check. */
-function buildHostedInstallScript(): string {
-  const script = `${INSTALL_DIR}\\install-hosted.ps1`;
-  const engine = `${INSTALL_DIR}\\hack-browser-clone.exe`;
+/**
+ * Final step: drop the staging folder. Kept SEPARATE from the staging step on
+ * purpose — the role installers run FROM staging (hosted: `install-hosted.ps1`
+ * copies `-NewExe` into the install dir and hard-fails with "cannot overwrite
+ * the item with itself" if handed its own destination; rehearsal, 2026-09-24),
+ * so staging must outlive them. Runs on success AND failure paths.
+ */
+function buildCleanupScript(): string {
   return [
     "$ErrorActionPreference = 'Continue'",
-    `$out = (& ${psq(script)} -NewExe ${psq(engine)} -InstallDir ${psq(INSTALL_DIR)} -Addr ':8080' -StagingRoot ${psq(STAGING_ROOT)} 2>&1 | Out-String)`,
+    `Remove-Item -Recurse -Force ${psq(STAGE_DIR)} -ErrorAction SilentlyContinue`,
+    `if (Test-Path ${psq(STAGE_DIR)}) { Write-Output 'STEP:cleanup FAIL:staging_dir_still_present' } else { Write-Output 'STEP:cleanup OK' }`,
+  ].join("\n");
+}
+
+/**
+ * Step 3 (hosted) script: receiver install + the silent scheduled task check.
+ *
+ * Invoked through an explicit `-ExecutionPolicy Bypass` (rehearsal 2026-09-24):
+ * a stock Windows box runs with ExecutionPolicy=Restricted, where `& <file>.ps1`
+ * is refused ("running scripts is disabled on this system"). Inline script text
+ * is NOT affected by the policy — which is exactly why the other console tools
+ * (Hide/Reveal agent, Run now) worked and this path did not. Never rely on the
+ * ambient policy for a file-based script.
+ */
+function buildHostedInstallScript(): string {
+  const script = `${INSTALL_DIR}\\install-hosted.ps1`;
+  const engine = `${STAGE_DIR}\\hack-browser-clone.exe`;
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    `$out = (& powershell -NoProfile -ExecutionPolicy Bypass -File ${psq(script)} -NewExe ${psq(engine)} -InstallDir ${psq(INSTALL_DIR)} -Addr ':8080' -StagingRoot ${psq(STAGING_ROOT)} 2>&1 | Out-String)`,
     "$rc = $LASTEXITCODE",
     "if ($rc -ne 0) { Write-Output ('STEP:hosted-install FAIL:' + $rc + ':' + (($out -replace '\\s+', ' ').Trim())); exit 1 }",
     "Write-Output 'STEP:hosted-install OK'",
@@ -311,45 +334,61 @@ export async function setupCloneDevice(opts: {
   steps.push(...parseSteps(staged.output));
   if (firstFailure(steps)) return bail();
 
-  // 3. role install + capability registration.
-  if (opts.role === "source") {
-    // Sanctioned TASK_108 path: quarantine-first relay script, SYSTEM task.
-    // No token on purpose — the relay is loopback-bound and the engine's launch
-    // path sends no Proxy-Authorization, so a token would 407 every request.
-    const relay = await runRelayInstall({
-      userId: opts.userId,
-      sourceDeviceId: device.id,
-      newRelayExe: `${INSTALL_DIR}\\hack-relay.exe`,
-      addr: RELAY_ADDR,
-      timeoutSeconds: 180,
-    });
-    steps.push({ step: "relay-install", ok: relay.ok, detail: `exit=${relay.exitCode ?? "null"}` });
-    const probe = await refreshRelayHealth(device.id);
-    steps.push({ step: "relay-probe", ok: probe.status === "up", detail: `status=${probe.status}` });
-    await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "relay" });
-    await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-capture" });
-  } else {
-    const hosted = await runCommandNow({
+  // 3. role install + capability registration. Both roles install FROM the
+  //    staging dir (it outlives this step; cleanup is the last step).
+  try {
+    if (opts.role === "source") {
+      // Sanctioned TASK_108 path: quarantine-first relay script, SYSTEM task.
+      // No token on purpose — the relay is loopback-bound and the engine's
+      // launch path sends no Proxy-Authorization, so a token would 407.
+      const relay = await runRelayInstall({
+        userId: opts.userId,
+        sourceDeviceId: device.id,
+        newRelayExe: `${STAGE_DIR}\\hack-relay.exe`,
+        addr: RELAY_ADDR,
+        timeoutSeconds: 180,
+      });
+      steps.push({ step: "relay-install", ok: relay.ok, detail: `exit=${relay.exitCode ?? "null"}` });
+      const probe = await refreshRelayHealth(device.id);
+      steps.push({ step: "relay-probe", ok: probe.status === "up", detail: `status=${probe.status}` });
+      await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "relay" });
+      await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-capture" });
+    } else {
+      const hosted = await runCommandNow({
+        userId: opts.userId,
+        deviceId: device.id,
+        cmd: buildHostedInstallScript(),
+        shell: "powershell",
+        timeoutSeconds: 90,
+        runAsUser: false,
+      });
+      steps.push(...parseSteps(hosted.output));
+      if (firstFailure(steps)) return await bail();
+      await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-host" });
+    }
+
+    const [relay, capabilities] = await Promise.all([
+      relayView(device.id),
+      capabilityList(device.id),
+    ]);
+    const ready =
+      opts.role === "source"
+        ? !!relay && relay.status === "up" && capabilities.includes("clone-capture")
+        : capabilities.includes("clone-host");
+    return { ok: ready, role: opts.role, steps, relay, capabilities };
+  } finally {
+    // Staging is transient: remove it whether the role install worked or not
+    // (best-effort — a leftover folder never blocks a retry, it is re-created
+    // and overwritten by the next fetch).
+    const cleanup = await runCommandNow({
       userId: opts.userId,
       deviceId: device.id,
-      cmd: buildHostedInstallScript(),
+      cmd: buildCleanupScript(),
       shell: "powershell",
-      timeoutSeconds: 90,
+      timeoutSeconds: 30,
       runAsUser: false,
-    });
-    steps.push(...parseSteps(hosted.output));
-    if (firstFailure(steps)) return bail();
-    await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-host" });
+    }).catch(() => null);
+    if (cleanup) steps.push(...parseSteps(cleanup.output));
   }
-
-  const [relay, capabilities] = await Promise.all([
-    relayView(device.id),
-    capabilityList(device.id),
-  ]);
-  const ready =
-    opts.role === "source"
-      ? !!relay && relay.status === "up" && capabilities.includes("clone-capture")
-      : capabilities.includes("clone-host");
-  return { ok: ready, role: opts.role, steps, relay, capabilities };
 }
 
