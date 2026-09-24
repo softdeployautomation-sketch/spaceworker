@@ -4,13 +4,21 @@
 # manually-corrected VPS copy with this stale repo template — mail sends, job
 # dispatch, and payment verification were all silently broken. If you ever change
 # the app's real listening port, update this file (and its siblings) to match.
-# Replace %INTERNAL_BEARER_TOKEN% with the actual value from .env before installing.
-# Install: sudo cp dispatcher.service /etc/systemd/system/
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion). It used to be a %INTERNAL_BEARER_TOKEN% placeholder
+# substituted by hand at install time, which silently 401'd the moment either
+# side changed: found live 2026-09-24 with dispatcher / mail-queue-drain /
+# payment-verify / automations-sweep all returning {"error":"Unauthorized"} —
+# extraction jobs stuck "queued", campaign sends and payment verification dead —
+# while the two newer units used the current .env value and kept working.
+# Never bake the token into a unit file again.
+# Install: sudo cp dispatcher.service /etc/systemd/system/ && sudo systemctl daemon-reload
 [Unit]
 Description=SpaceWorker job dispatcher
 
 [Service]
 Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
 ExecStart=/usr/bin/curl -s -X POST \
-  -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
   http://localhost:3500/api/internal/dispatch

@@ -4,13 +4,16 @@
 # manually-corrected VPS copy with this stale repo template — mail sends, job
 # dispatch, and payment verification were all silently broken. If you ever change
 # the app's real listening port, update this file (and its siblings) to match.
-# Replace %INTERNAL_BEARER_TOKEN% with the actual value from .env before installing.
-# Install: sudo cp automations-sweep.service /etc/systemd/system/
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion) — see dispatcher.service's note: hand-substituted
+# tokens silently 401'd four units on 2026-09-24.
+# Install: sudo cp automations-sweep.service /etc/systemd/system/ && sudo systemctl daemon-reload
 [Unit]
 Description=SpaceWorker automations sweep
 
 [Service]
 Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
 ExecStart=/usr/bin/curl -s -X POST \
-  -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
   http://localhost:3500/api/internal/automations-sweep

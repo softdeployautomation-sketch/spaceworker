@@ -437,3 +437,25 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   deleting staging before the role install fails "path does not exist". Stage →
   quarantine → install FROM staging → clean up LAST, on success and failure.
   (Both states were hit live while wiring TASK_114.)
+- **NEVER combine `--delete` with `--files-from` on a VPS sync — it is the single
+  most destructive thing in this repo's deploy path.** With `--files-from`, every
+  directory named in the list becomes authoritative, so ONE root-level entry
+  (`package.json`, `next.config.ts`, …) makes `--delete` remove *every other root
+  path* on the receiver. On 2026-09-24 that wiped, in a single deploy:
+  `.env` (extractor stuck "queued", private browser unconfigured, US/Canada
+  locations vanished — all silent, feature-by-feature), `.next/` (`next start`
+  crash-looped 37× with "Could not find a production build" → **public site
+  down**), and `static/` (nginx's `error_page 502 503 504 /maintenance.html`
+  target gone, so users got raw nginx 502s instead of the maintenance page).
+  `--exclude='.env'` alone does NOT save you, because it protects one path while
+  `--delete` eats the rest. Use `scripts/deploy-vps.sh` instead: `--delete` is
+  opt-in via `--prune`, server-only runtime paths are hard-excluded, `.env` in a
+  list is refused outright, a `.env` snapshot is taken first, files are chowned
+  to `trmm`, and a post-deploy assertion proves `.env`, `.next`,
+  `node_modules` and `static/maintenance.html` all survived.
+- **`--delete` also un-does hand-applied server state that has no repo source.**
+  `static/maintenance.html` (installed from `deploy/maintenance.html`),
+  `engine-dist/` (built by `scripts/engine-dist.mjs`), and `worker/venv/` all
+  exist ONLY on the VPS. If nginx starts returning bare 502s during an outage,
+  check that `static/maintenance.html` exists before hunting anything else.
+

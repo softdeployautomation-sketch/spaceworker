@@ -98,20 +98,20 @@ export async function readEngineManifest(): Promise<EngineManifest> {
   return manifest;
 }
 
-/** The artifacts the one-click setup installs (order = download order). */
+/**
+ * Every artifact this deployment can serve (the manifest IS the distribution
+ * index). It deliberately returns ALL manifest files, not a hardcoded subset:
+ * the one-click setup picks its per-role subset and validates it against this
+ * list. An earlier whitelist here (binaries + two installers) made the source
+ * role fail on every device with
+ * `clone_engine_dist_incomplete: Invoke-BrowserClone.ps1,CdpCookies.ps1,…` —
+ * the MT-1 capture skin and its PowerShell lib modules are part of the bundle,
+ * so the manifest, not a copy of it in code, decides what exists (owner report
+ * 2026-09-24).
+ */
 export async function engineBundle(): Promise<EngineArtifact[]> {
   const { files } = await readEngineManifest();
-  const wanted = [
-    "hack-browser-clone.exe",
-    "hack-browser-clone-svc.exe",
-    "hack-relay.exe",
-    "install-relay.ps1",
-    "install-hosted.ps1",
-  ];
-  const byName = new Map(files.map((f) => [f.name, f]));
-  return wanted
-    .map((name) => byName.get(name))
-    .filter((f): f is EngineArtifact => !!f);
+  return [...files].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 /** Owner-scoped path for one artifact, or null when the name is unknown. */

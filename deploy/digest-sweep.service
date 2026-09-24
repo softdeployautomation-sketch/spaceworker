@@ -1,11 +1,14 @@
-# Install: sudo cp digest-sweep.service /etc/systemd/system/ (after replacing
-# %INTERNAL_BEARER_TOKEN% with the real value from /opt/spaceworker/.env).
+# Install: sudo cp digest-sweep.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion) — never substitute %INTERNAL_BEARER_TOKEN% by hand:
+# that is exactly how four sibling units silently 401'd on 2026-09-24.
 # PORT 3500 — matches spaceworker.service (same convention as automations-sweep.service).
 [Unit]
 Description=SpaceWorker assistant digest sweep (Task 92)
 
 [Service]
 Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
 ExecStart=/usr/bin/curl -s -X POST \
-  -H "Authorization: Bearer %INTERNAL_BEARER_TOKEN%" \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
   http://localhost:3500/api/internal/digest-sweep
