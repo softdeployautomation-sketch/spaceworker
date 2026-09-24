@@ -238,6 +238,11 @@ export async function startMaintenanceOverlayAction(opts: {
   pendingActionId?: string;
   customImageBase64?: string;
   customImageExt?: string;
+  // Owner decision 2026-09-24 — built-in overlay style: "update" (default, our
+  // own PowerShell fake-Windows-Update screen) or "exe" (the owner-supplied
+  // fake-update binary with the nicer spinner). Ignored when a custom image is
+  // supplied, because the image IS the "show my own picture" extra.
+  style?: "update" | "exe";
   approvalChannel?: string;
 }): Promise<void> {
   const device = await requireOwnedDevice(opts);
@@ -247,6 +252,7 @@ export async function startMaintenanceOverlayAction(opts: {
       method: "POST",
       body: JSON.stringify({
         action: "start",
+        ...(opts.style ? { style: opts.style } : {}),
         ...(opts.customImageBase64 && opts.customImageExt
           ? { customImageBase64: opts.customImageBase64, customImageExt: opts.customImageExt }
           : {}),

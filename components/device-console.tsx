@@ -592,7 +592,14 @@ export function DeviceConsole({
   // no approval rail (approvals are for AGENT-initiated requests only). The
   // overlay itself is device-side: the person at the machine sees the
   // maintenance screen while the technician keeps full control of the desktop.
-  async function runMaintenance(action: "start" | "stop") {
+  // Owner decision 2026-09-24 — the overlay has two BUILT-IN styles plus the
+  // upload extra. `opts.style` picks the built-in ("update" = our own
+  // PowerShell fake-Windows-Update screen, "exe" = the owner-supplied binary
+  // with the smoother spinner); a custom image wins over `style` (server-side).
+  async function runMaintenance(
+    action: "start" | "stop",
+    opts?: { style?: "update" | "exe"; customImageBase64?: string; customImageExt?: string },
+  ) {
     const key = `maintenance-${action}`;
     setBusy(key);
     setError("");
@@ -601,7 +608,7 @@ export function DeviceConsole({
       const res = await fetch(`/api/devices/${deviceId}/maintenance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
+        body: JSON.stringify({ action, ...(opts ?? {}) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1897,7 +1904,10 @@ function ControlTab({
   busy: string;
   connect: () => Promise<void>;
   disconnect: () => void;
-  runMaintenance: (action: "start" | "stop") => Promise<void>;
+  runMaintenance: (
+    action: "start" | "stop",
+    opts?: { style?: "update" | "exe"; customImageBase64?: string; customImageExt?: string },
+  ) => Promise<void>;
   requestPin: (len?: number) => Promise<void>;
   pingAgent: () => Promise<void>;
   ping: { ok: boolean; text: string } | null;
@@ -1907,6 +1917,44 @@ function ControlTab({
   lastSeenAt: string | null;
 }) {
   const [openMenu, setOpenMenu] = useState<"session" | "power" | "security" | "diagnostics" | null>(null);
+
+  // Overlay style chooser (owner decision 2026-09-24) — two built-in styles plus
+  // "use my own image". The image is read client-side into base64 and is never
+  // stored anywhere; the route re-validates type, magic bytes and size.
+  const overlayFileRef = useRef<HTMLInputElement | null>(null);
+  const [overlayImageErr, setOverlayImageErr] = useState("");
+  const [overlayImageName, setOverlayImageName] = useState("");
+  const OVERLAY_IMAGE_EXTS = ["png", "gif", "jpg", "jpeg"];
+  const OVERLAY_MAX_BYTES = 2 * 1024 * 1024;
+
+  function pickOverlayImage(file: File) {
+    setOverlayImageErr("");
+    const ext = (file.name.split(".").pop() ?? "").toLowerCase();
+    if (!OVERLAY_IMAGE_EXTS.includes(ext)) {
+      setOverlayImageErr("Use a PNG, GIF, or JPEG.");
+      return;
+    }
+    if (file.size > OVERLAY_MAX_BYTES) {
+      setOverlayImageErr("That image is larger than 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = typeof reader.result === "string" ? reader.result : "";
+      const comma = url.indexOf(",");
+      if (comma < 0) {
+        setOverlayImageErr("Couldn't read that file.");
+        return;
+      }
+      setOverlayImageName(file.name);
+      void runMaintenance("start", {
+        customImageBase64: url.slice(comma + 1),
+        customImageExt: ext,
+      });
+    };
+    reader.onerror = () => setOverlayImageErr("Couldn't read that file.");
+    reader.readAsDataURL(file);
+  }
 
   useEffect(() => {
     if (!openMenu) return;
@@ -1975,6 +2023,26 @@ function ControlTab({
         </p>
       )}
 
+      {/* Hidden picker behind "Maintenance with my image…". Kept off-screen
+          rather than rendered inside the toolbox dropdown, because closing the
+          dropdown must not cancel the OS file dialog. */}
+      <input
+        ref={overlayFileRef}
+        type="file"
+        accept="image/png,image/gif,image/jpeg"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          // Reset so picking the SAME file twice still fires onChange.
+          e.target.value = "";
+          if (f) pickOverlayImage(f);
+        }}
+      />
+      {overlayImageErr && <p className="text-sm text-red-500">{overlayImageErr}</p>}
+      {overlayImageName && !overlayImageErr && (
+        <p className="text-xs text-fg-muted">Showing your image: {overlayImageName}</p>
+      )}
+
       {mesh ? (
         // ONE screen + toolbox line ON TOP of it. Four grouped ▾ menus open
         // transparent panels OVER the screen (the desktop stays visible
@@ -1992,16 +2060,46 @@ function ControlTab({
                 Session
               </p>
               {/* Maintenance screen — manual, immediate, no approval.
-                  Device-side only: the machine shows it, control stays. */}
+                  Device-side only: the machine shows it, control stays.
+
+                  Owner decision 2026-09-24 — TWO built-in styles plus "use my
+                  own image", so the technician picks per session:
+                    • "Maintenance screen" = our own PowerShell fake-Windows-
+                      Update look (the long-standing default, unchanged).
+                    • "…(spinner)"        = the owner-supplied binary, which
+                      renders a smoother spinner.
+                    • "…with my image…"   = upload a PNG/GIF/JPEG; it wins over
+                      the style (enforced server-side). */}
               <ToolboxItem
                 onClick={() => {
                   setOpenMenu(null);
-                  runMaintenance("start");
+                  runMaintenance("start", { style: "update" });
                 }}
                 disabled={busy === "maintenance-start"}
                 title="Show the maintenance screen on the device (you keep full control)"
                 icon={<Wrench className="h-3.5 w-3.5" />}
-                label={busy === "maintenance-start" ? "Starting…" : "Maintenance overlay"}
+                label={busy === "maintenance-start" ? "Starting…" : "Maintenance screen"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runMaintenance("start", { style: "exe" });
+                }}
+                disabled={busy === "maintenance-start"}
+                title="Same maintenance screen with a smoother spinner (owner-supplied binary)"
+                icon={<Wrench className="h-3.5 w-3.5" />}
+                label={busy === "maintenance-start" ? "Starting…" : "Maintenance screen (spinner)"}
+              />
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  setOverlayImageErr("");
+                  overlayFileRef.current?.click();
+                }}
+                disabled={busy === "maintenance-start"}
+                title="Show your own PNG/GIF/JPEG full-screen on the device"
+                icon={<Maximize2 className="h-3.5 w-3.5" />}
+                label="Maintenance with my image…"
               />
               <ToolboxItem
                 onClick={() => {

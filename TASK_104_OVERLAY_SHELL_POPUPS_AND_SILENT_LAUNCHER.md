@@ -163,25 +163,43 @@ confirm whether that actually beats shell topmost windows without flicker or
 collateral damage (hiding a window the technician opened, or fighting
 `StartMenuExperienceHost` re-shows).
 
-**Two RED FLAGS — do not adopt blindly:**
+**RED FLAGS — measured, not assumed (see the cloud trial below):**
 1. **`SetSystemCursor` + `HideAllCursors`/`RestoreAllCursors`** (`LoadCursor/
 CreateCursor/CopyIcon/DestroyCursor`, `_originalCursors`). This is the exact
-call TASK_23 rejected **3/3 live tests** (broke technician control; current
-fix is per-event `SetCursor(blank)`). If we trial this EXE, cursor behaviour
-(technician-side pointer + local hidden) must be re-proven, not assumed.
-2. **`SetWindowDisplayAffinity`** (`dwAffinity`) — hides the window from
-screen capture. Our overlay deliberately does NOT hide-from-capture (TASK_19
-stays as-is per Non-goals): the technician must keep seeing the device. If
-this EXE sets a non-default affinity, the MeshCentral viewer may go black.
+call TASK_23 rejected **3/3 live tests** (broke technician control; the
+shipped fix is per-event `SetCursor(blank)`). The cloud runner could **not**
+exercise it — `GetCursorInfo` reported `hCursor=0x0` / `flags=2` at baseline,
+during the run AND after the kill (a headless runner has no real pointer) —
+so this stays **unproven, not cleared**; re-check on real hardware before ship.
+2. ~~`SetWindowDisplayAffinity` hides it from capture, which our overlay
+refuses to do.~~ **CORRECTION 2026-09-24 — I had this backwards.** Our own
+overlay sets `0x11` on purpose: `lib/maintenance-overlay.ts` (both
+`GUI_SCRIPT` and `customGuiScript`) calls
+`SetWindowDisplayAffinity($form.Handle, 0x11)` commented *"hide the overlay
+from remote KVM capture"*, and `TASK_23...CLICK_THROUGH.md` says it plainly:
+*"the technician sees the real desktop (correctly, thanks to capture
+exclusion)"* — that IS Task 19's purpose. So the EXE's `affinity=0x11`
+**matches our design exactly** and is NOT a blocker.
 
-**VM test blocked 2026-09-24:** `ssh myrat@192.168.0.104` times out (VM IP
-changed or offline — per playbook, ask owner rather than guess). When the VM
-is back: copy the EXE over, run it in an interactive session
-(`runAsUser:true`, never service/SSH context), reproduce Start + right-click
-with `$env:VANTRA_OVERLAY_LOG_ONLY=1` semantics, check
-`overlay-status.log`-equivalent behaviour, technician input, cursor on both
-sides, and viewer visibility; capture the owning process of any surviving
-popup. **Do NOT replace our script on a string-match alone** — adopt only the
-measured-winning piece (most likely the popup-killer sweep grafted onto our
-input-lock + per-event cursor fix, keeping capture visible).
+**Cloud trial DONE 2026-09-24** — deliberately NOT on the VM (owner: the VM
+slows the Mac down). Throwaway GitHub `windows-latest` runner:
+`scripts/overlay-trial.ps1` + `.github/workflows/overlay-trial.yml`
+(runs `36010676988`, `36011287836`, `36011545466`). The binary is fetched over
+HTTPS from a short-lived unguessable path and its pinned SHA-256
+(`d837f4d7…5f8d4b`) is verified BEFORE execution, so the cloud run tested the
+byte-for-byte binary analysed locally.
+
+| Property | Measured |
+| --- | --- |
+| Launches + survives | Yes — 7 threads, 35 MB, alive at 20 s, no crash |
+| Overlay window | Exists: `visible=True`, class `WindowsForms10.Window.8…`, 1024×768 full-screen |
+| `GetWindowDisplayAffinity` | **`0x11`** — identical to our own overlay (Task 19 design) |
+| Harness capture control | Magenta control overlay captured **786,432 / 786,432 px** → the capture path genuinely works, so the EXE's own absence from the screenshot is its exclusion working, NOT a broken harness |
+| Local cursor | **Not exercisable** in cloud (`hCursor=0x0`, `flags=2` unchanged) |
+| Network / file / registry / process APIs | **None** — `user32.dll` + `kernel32.dll` only → no exfiltration or persistence surface |
+
+**Verdict:** on the evidence gathered the binary is **compatible with our
+design** (capture-exclusion matches Task 19; no network/file/registry APIs).
+The global-cursor path stays unproven. Adopt it **behind an explicit chooser**,
+never as a silent replacement of the working PowerShell overlay.
 
