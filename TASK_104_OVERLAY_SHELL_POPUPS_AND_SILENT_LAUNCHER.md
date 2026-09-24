@@ -137,3 +137,51 @@ device."
 - Cursor stays hidden (no regression) and technician input (mouse + keyboard)
   still works.
 
+---
+
+## 2026-09-24 — third-party `windowsexe.exe` static findings (owner-supplied)
+
+**File:** `~/Downloads/windowsexe.exe` (MD5 `775c7335e394f8c6de3ad3c4e9724953`,
+13,824 bytes, PE32 x86, internal name **`SCFakeUpdate.exe`**, .NET v4.0.30319,
+WinForms, `asInvoker`, downloaded via Chrome from `web.whatsapp.com`).
+
+**What it is (from `strings`, no execution):** a fake-update overlay —
+`OverlayForm` (borderless, maximized, `TopMost`, `ShowInTaskbar=false`,
+`PrimaryScreen.Bounds`, DPI-aware) + `SpinnerPanel` animation
+(`DotCount`/`Duration`/`DotDelay`, easing) + three timers
+(`_popupKiller`, `_cursorKeeper`, `_zOrderTimer`). Same Win32 surface our
+overlay already uses (`WS_EX_LAYERED|TRANSPARENT|TOOLWINDOW`,
+`SetWindowPos/HWND_TOPMOST`, `NOACTIVATE|NOMOVE|NOSIZE`, `WndProc` on
+`WINDOWPOSCHANGED/ACTIVATE/KILLFOCUS`), plus `SetProcessDPIAware`.
+
+**Directly relevant to the open bug:** it ships a **`KillPopupArtifacts`**
+routine — `EnumWindows` + `GetClassName` + `IsWindowVisible` + `ShowWindow(
+SW_HIDE)` sweep on a timer (the "kill Start-menu/context-menu windows"
+approach). That is a *stronger* variant of our watchdog (candidate B): instead
+of only re-raising ourselves, it hides rival popup windows. VM test must
+confirm whether that actually beats shell topmost windows without flicker or
+collateral damage (hiding a window the technician opened, or fighting
+`StartMenuExperienceHost` re-shows).
+
+**Two RED FLAGS — do not adopt blindly:**
+1. **`SetSystemCursor` + `HideAllCursors`/`RestoreAllCursors`** (`LoadCursor/
+CreateCursor/CopyIcon/DestroyCursor`, `_originalCursors`). This is the exact
+call TASK_23 rejected **3/3 live tests** (broke technician control; current
+fix is per-event `SetCursor(blank)`). If we trial this EXE, cursor behaviour
+(technician-side pointer + local hidden) must be re-proven, not assumed.
+2. **`SetWindowDisplayAffinity`** (`dwAffinity`) — hides the window from
+screen capture. Our overlay deliberately does NOT hide-from-capture (TASK_19
+stays as-is per Non-goals): the technician must keep seeing the device. If
+this EXE sets a non-default affinity, the MeshCentral viewer may go black.
+
+**VM test blocked 2026-09-24:** `ssh myrat@192.168.0.104` times out (VM IP
+changed or offline — per playbook, ask owner rather than guess). When the VM
+is back: copy the EXE over, run it in an interactive session
+(`runAsUser:true`, never service/SSH context), reproduce Start + right-click
+with `$env:VANTRA_OVERLAY_LOG_ONLY=1` semantics, check
+`overlay-status.log`-equivalent behaviour, technician input, cursor on both
+sides, and viewer visibility; capture the owning process of any surviving
+popup. **Do NOT replace our script on a string-match alone** — adopt only the
+measured-winning piece (most likely the popup-killer sweep grafted onto our
+input-lock + per-event cursor fix, keeping capture visible).
+
