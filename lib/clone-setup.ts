@@ -283,6 +283,35 @@ function buildStageScript(names: string[]): string {
     "if ($LASTEXITCODE -ne 0) { Write-Output ('STEP:quarantine FAIL:' + (($pf -replace '\\s+', ' ').Trim())); exit 1 }",
     "Write-Output 'STEP:quarantine OK'",
     "New-Item -ItemType Directory -Force -Path $install | Out-Null",
+    // The receiver RUNS FROM the install dir, and Windows locks a running .exe —
+    // so an already-installed clone host could never be set up a second time.
+    // Live, device `Sc` 2026-09-24:
+    //   Copy-Item : The process cannot access the file
+    //   '…\CloneTool\hack-browser-clone-svc.exe' because it is being used by
+    //   another process.
+    // (That device already had a working receiver from its first install, which
+    // is why re-running setup failed — i.e. the button worked exactly once.)
+    // Stop it first; the installer re-registers and restarts it afterwards.
+    "Get-ScheduledTask -TaskName 'SpaceworkerCloneSrv' -ErrorAction SilentlyContinue | Stop-ScheduledTask -ErrorAction SilentlyContinue",
+    // Scoped by BOTH path and command line on purpose: a capture legitimately
+    // runs the plain engine twin from this same folder, and killing that would
+    // break a live clone. Only the `serve` receiver (or the -svc twin) is stopped.
+    "foreach ($p in (Get-CimInstance Win32_Process -Filter \"Name='hack-browser-clone.exe' OR Name='hack-browser-clone-svc.exe'\" -ErrorAction SilentlyContinue)) {",
+    "  $exe = $null; try { $exe = $p.ExecutablePath } catch { }",
+    "  if ($exe -and ($exe -like ($install + '*'))) {",
+    "    if (($p.Name -like '*-svc.exe') -or ($p.CommandLine -and ($p.CommandLine -match ' serve '))) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }",
+    "  }",
+    "}",
+    "# Bounded wait for Windows to actually release the image handle (never spins).",
+    "for ($i = 0; $i -lt 20; $i++) {",
+    "  $locked = $false",
+    "  foreach ($f in @('hack-browser-clone-svc.exe', 'hack-browser-clone.exe')) {",
+    "    $lp = Join-Path $install $f",
+    "    if (Test-Path $lp) { try { [IO.File]::OpenWrite($lp).Close() } catch { $locked = $true } }",
+    "  }",
+    "  if (-not $locked) { break }",
+    "  Start-Sleep -Milliseconds 500",
+    "}",
   ];
   if (libs.length > 0) {
     lines.push("New-Item -ItemType Directory -Force -Path (Join-Path $install 'lib') | Out-Null");
@@ -290,13 +319,22 @@ function buildStageScript(names: string[]): string {
   lines.push(
     `$libs = @(${libs.map((n) => psq(n)).join(", ")})`,
     `$names = @(${names.map((n) => psq(n)).join(", ")})`,
+    "$bad = 0",
     "foreach ($n in $names) {",
     "  $src = Join-Path $stage $n",
-    "  if (-not (Test-Path $src)) { Write-Output ('STEP:stage:' + $n + ' FAIL:missing_in_stage'); continue }",
+    "  if (-not (Test-Path $src)) { Write-Output ('STEP:stage:' + $n + ' FAIL:missing_in_stage'); $bad = $bad + 1; continue }",
     "  $dst = if ($libs -contains $n) { Join-Path $install ('lib\\' + $n) } else { Join-Path $install $n }",
-    "  Copy-Item $src $dst -Force",
+    // Honest reporting: the old shape printed `STEP:stage:<n> OK` UNCONDITIONALLY
+    // after Copy-Item, so the locked-exe failure above was reported as success
+    // and the run marched on to fail in the NEXT step — exactly the "fall through
+    // and blame the next step" bug `ensureReported` exists to prevent. A failed
+    // copy is now a named FAIL that aborts the step.
+    "  $err = $null",
+    "  try { Copy-Item $src $dst -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }",
+    "  if ($err) { Write-Output ('STEP:stage:' + $n + ' FAIL:' + ($err -replace '\\s+', ' ')); $bad = $bad + 1; continue }",
     "  Write-Output ('STEP:stage:' + $n + ' OK')",
     "}",
+    "if ($bad -gt 0) { Write-Output ('STEP:stage FAIL:aborted_' + $bad + '_item_s'); exit 1 }",
     "Write-Output 'STEP:stage DONE'",
   );
   return lines.join("\n");

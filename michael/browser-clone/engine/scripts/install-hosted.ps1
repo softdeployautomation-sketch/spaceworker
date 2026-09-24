@@ -29,6 +29,44 @@ if ($LASTEXITCODE -ne 0) {
 #    console-subsystem exe started by schtasks in the user session pops a
 #    console window on the desktop, the svc build cannot (silence rule).
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# 2b. STOP AN ALREADY-RUNNING RECEIVER BEFORE WRITING OVER IT.
+#
+# Windows locks a running .exe, so re-running setup on a PC that is ALREADY a
+# clone host failed live (device `Sc`, 2026-09-24):
+#   Copy-Item : The process cannot access the file
+#   '…\CloneTool\hack-browser-clone-svc.exe' because it is being used by another
+#   process.        (install-hosted.ps1:35 and the caller's stage copy, both.)
+# In other words the one-click button worked exactly ONCE, and every retry after
+# that reported a failure for a machine that was in fact already installed.
+# Stop it here and start it again at the end of this script, so the install is
+# genuinely re-runnable — which is also what makes a repair/upgrade work.
+#
+# Scoped by BOTH path and command line on purpose: a capture legitimately runs
+# the plain engine twin from this same folder, and killing that would break a
+# live clone. Only the `serve` receiver (or the -svc twin) is stopped.
+Get-ScheduledTask -TaskName 'SpaceworkerCloneSrv' -ErrorAction SilentlyContinue |
+    Stop-ScheduledTask -ErrorAction SilentlyContinue
+foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='hack-browser-clone.exe' OR Name='hack-browser-clone-svc.exe'" -ErrorAction SilentlyContinue)) {
+    $exePath = $null
+    try { $exePath = $p.ExecutablePath } catch { }
+    if ($exePath -and ($exePath -like ($InstallDir + '*'))) {
+        if (($p.Name -like '*-svc.exe') -or ($p.CommandLine -and ($p.CommandLine -match ' serve '))) {
+            Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+# Bounded wait for Windows to release the image handle.
+for ($i = 0; $i -lt 20; $i++) {
+    $locked = $false
+    foreach ($f in @('hack-browser-clone-svc.exe', 'hack-browser-clone.exe')) {
+        $lp = Join-Path $InstallDir $f
+        if (Test-Path $lp) { try { [IO.File]::OpenWrite($lp).Close() } catch { $locked = $true } }
+    }
+    if (-not $locked) { break }
+    Start-Sleep -Milliseconds 500
+}
+if ($locked) { throw "the receiver still holds $InstallDir\*.exe after stopping it and waiting 10s; close it on the device and run setup again" }
 Copy-Item $NewExe (Join-Path $InstallDir 'hack-browser-clone.exe') -Force
 $svc = Join-Path (Split-Path -Parent $NewExe) 'hack-browser-clone-svc.exe'
 if (Test-Path $svc) {

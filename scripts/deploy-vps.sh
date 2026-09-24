@@ -141,6 +141,20 @@ SERVICE_USER="${SERVICE_USER:-root}"
 echo "-- chown -R $SERVICE_USER:$SERVICE_USER $APP_DIR"
 run_remote "chown -R '$SERVICE_USER:$SERVICE_USER' '$APP_DIR'"
 
+# --- 5b. engine-dist integrity (only when the list touches it) ----------------
+# A PARTIAL engine-dist deploy is silently fatal and the failure lands on a
+# customer's PC, not here: manifest.json carries every artifact's SHA-256 and the
+# DEVICE verifies it, so shipping a manifest without its matching binaries makes
+# every one-click setup die at `fetch:<name> FAIL:sha256_mismatch_…`.
+# Hit live 2026-09-24: rsyncing only `install-hosted.ps1` + `manifest.json` after
+# scripts/engine-dist.mjs had rebuilt the binaries — the rebuild changes the exe
+# bytes, so the new manifest described files the server did not have.
+# Fail closed HERE instead. `engine-dist/` is a set: deploy it whole or not at all.
+if grep -q '^engine-dist/' "$FILES_FROM"; then
+  echo "-- engine-dist integrity"
+  run_remote "cd '$APP_DIR/engine-dist' && node -e \"const fs=require('fs'),c=require('crypto');const m=JSON.parse(fs.readFileSync('manifest.json','utf8'));const bad=m.files.filter(f=>{try{return c.createHash('sha256').update(fs.readFileSync(f.name)).digest('hex')!==f.sha256}catch(e){return true}});if(bad.length){console.error('   MISMATCH '+bad.map(b=>b.name).join(', ')+'  <- deploy engine-dist as a whole set');process.exit(1)}console.log('   ok      '+m.files.length+' artifacts match the manifest')\""
+fi
+
 # --- 6. Build + restart + verify --------------------------------------------
 if [ "$DO_BUILD" -eq 1 ]; then
   echo "-- build (as $SERVICE_USER)"
