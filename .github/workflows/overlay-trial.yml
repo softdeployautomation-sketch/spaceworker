@@ -8,9 +8,12 @@ name: Overlay Trial (cloud Windows)
 # loaded and the unknown binary never touches a real machine. The repo is public,
 # so windows-latest minutes are free.
 #
-# The EXE is fetched from a DRAFT release asset: never committed to git, never
-# public. A pinned SHA-256 is verified BEFORE the file is allowed to execute, so
-# the cloud run tests byte-for-byte the binary that was analysed locally.
+# The EXE is fetched over HTTPS from a short-lived, unguessable exact-match path
+# on our own vhost (see nginx-trial-add.sh / nginx-trial-del.sh) rather than from
+# a draft release asset: the workflow's GITHUB_TOKEN cannot read DRAFT releases,
+# and the binary must never be committed to git or published. The path is deleted
+# immediately after the run. A pinned SHA-256 is verified BEFORE execution so the
+# cloud run tests byte-for-byte the binary analysed locally.
 #
 # Static analysis of that binary (dnfile, 2026-09-24) — the reason for the two
 # measured red flags in scripts/overlay-trial.ps1:
@@ -26,16 +29,11 @@ name: Overlay Trial (cloud Windows)
 on:
   workflow_dispatch:
     inputs:
-      release_tag:
-        description: Tag of the DRAFT release holding the trial EXE
+      exe_url:
+        description: HTTPS URL serving the trial EXE
         required: true
-        default: overlay-trial-tmp
-      asset_name:
-        description: Asset filename inside that release
-        required: true
-        default: windowsexe.exe
       expected_sha256:
-        description: SHA-256 the asset must match before it is executed
+        description: SHA-256 the downloaded file must match before it is executed
         required: true
         default: d837f4d72c4075b6d19781f1a35599259c1f64a5d7ab52190f752195c45f8d4b
       run_seconds:
@@ -53,22 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch the trial EXE from the draft release
+      - name: Fetch the trial EXE over HTTPS
         shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.release_tag }}
-          ASSET: ${{ inputs.asset_name }}
+          URL: ${{ inputs.exe_url }}
         run: |
-          $h = @{ Authorization = "Bearer $env:GH_TOKEN"; "X-GitHub-Api-Version" = "2022-11-28" }
-          $rels = Invoke-RestMethod -Headers $h -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases?per_page=100"
-          $rel = $rels | Where-Object { $_.tag_name -eq $env:TAG } | Select-Object -First 1
-          if (-not $rel) { throw "draft release '$env:TAG' not found (drafts need a token; check the tag)" }
-          $asset = $rel.assets | Where-Object { $_.name -eq $env:ASSET } | Select-Object -First 1
-          if (-not $asset) { throw "asset '$env:ASSET' not found in '$env:TAG'" }
-          Write-Host "asset id=$($asset.id) size=$($asset.size) state=$($asset.state)"
-          Invoke-WebRequest -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/octet-stream" } -Uri $asset.url -OutFile "$env:RUNNER_TEMP\trial.exe"
+          Invoke-WebRequest -Uri $env:URL -OutFile "$env:RUNNER_TEMP\trial.exe"
           $sha = (Get-FileHash -Algorithm SHA256 "$env:RUNNER_TEMP\trial.exe").Hash.ToLower()
+          Write-Host "downloaded $((Get-Item "$env:RUNNER_TEMP\trial.exe").Length) bytes"
           Write-Host "sha256=$sha"
           if ($sha -ne "${{ inputs.expected_sha256 }}") { throw "SHA-256 mismatch: got $sha" }
           Write-Host "hash verified against the locally analysed binary"
