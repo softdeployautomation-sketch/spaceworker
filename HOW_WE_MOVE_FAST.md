@@ -39,11 +39,13 @@ EOF
 rsync -avz -e "ssh -i ~/.ssh/tacticalrmm_vps" --files-from=/tmp/deploy-files.txt --exclude='.env' ./ root@164.68.105.96:/opt/spaceworker/
 
 ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
-  "cd /opt/spaceworker/app && sudo -u trmm npm run build 2>&1 | tail -20 \
+  "cd /opt/spaceworker && sudo -u trmm npm run build 2>&1 | tail -20 \
    && systemctl restart spaceworker.service && sleep 3 \
    && systemctl is-active spaceworker.service \
    && curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3500/"
 ```
+
+(**Fixed 2026-09-25** — this snippet itself still said `cd /opt/spaceworker/app`, the exact stale path §1 above already says wasted a deploy attempt once; §1 was corrected but this example never was. Build from `/opt/spaceworker`, the repo root — that's where `package.json` lives.)
 
 **`--exclude='.env'` is MANDATORY on every rsync to the VPS - both repos.** (Added 2026-09-22 after a deploy clobbered the server-only `/opt/spaceworker/.env` and `/opt/vantra/.env`, wiping `ADMIN_TOKEN`/`DATABASE_URL` and taking both admin panels down; the old SpaceWorker passcode was unrecoverable and had to be reset.) Server `.env` files are hand-maintained there and don't exist in the local checkout - a bare directory sync or a `--files-from` that accidentally includes `.env` destroys them. Need env changes on the VPS? Use a targeted `ssh` sed/append, never rsync. Snapshot first: `cp /opt/<app>/.env /root/<app>.env.bak-<task>-$(date +%Y%m%d%H%M%S)`.
 
