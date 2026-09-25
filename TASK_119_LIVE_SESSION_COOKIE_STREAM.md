@@ -93,11 +93,9 @@ regardless of how the value is encrypted at rest — that is the whole reason th
 F10/F11/F12. Files, payload shape and test plan are in **Part B** below.
 
 MV3 note the implementer must handle: **`chrome.cookies` requires host permission for the
-cookie's host**, so `"cookies"` in `permissions` alone returns nothing. Either
-`host_permissions: ["<all_urls>"]` (simple, broad, and visibly alarming to a user) or
-`optional_host_permissions` + an explicit `chrome.permissions.request()` from the popup for the
-domains the user chooses (recommended, least privilege). Whichever is chosen, the code must say
-which in a comment, and why.
+cookie's host**, so `"cookies"` in `permissions` alone returns nothing. **DECIDED (Q1, owner,
+2026-09-25): `host_permissions: ["<all_urls>"]`** — all sites, no picker, no
+`optional_host_permissions` flow. The permission is broad and the code says so in a comment.
 
 ### B9-3 — transport: the payload the server accepts (Part A)
 Define the ingest contract **once**, here, and keep both sides to it:
@@ -184,11 +182,13 @@ waits on the other.
 **Goal:** prove that a real Chrome profile's live session cookies can be read from **inside** the
 browser and handed to the native host, on `Sc`, against a **disposable login**.
 
-1. **`manifest.json`** — add cookie access. Choose **one** and state the reason in a comment:
-   `host_permissions: ["<all_urls>"]`, or `optional_host_permissions` + a `permissions.request()`
-   from the popup (least privilege, recommended). Also replace the stale
-   `spaceworker.yourcompany.com` placeholder in `externally_connectable` if it is still there —
-   it is not a real host.
+1. **`manifest.json`** — add cookie access: **`"cookies"` in `permissions` + `host_permissions:
+   ["<all_urls>"]`** (owner decision Q1, 2026-09-25 — all sites, **no domain picker**). `chrome.cookies`
+   requires host permission for the cookie's host, so `"cookies"` alone returns nothing — which looks
+   exactly like a broken feature. State in a comment why the permission is broad and that it is
+   deliberate. Also replace the stale `spaceworker.yourcompany.com` placeholder in
+   `externally_connectable` if it is still there — it is not a real host (and the same dead URL is
+   hard-coded in a `fetch` in `popup.js`).
 2. **`background.js`** — add a `capture_cookies` command:
    - `chrome.cookies.getAll({})` (optionally filtered by a domain allow-list passed in the message);
    - map each cookie to the B9-3 shape (`name, value, domain, path, secure, httpOnly, sameSite,
@@ -230,12 +230,41 @@ real Gmail, add a store listing, or change the clone pipeline. Extension code + 
 - **`fresh` stays the default**; `live` is opt-in per job.
 - **No silent fallback**: a `live` job that cannot get its session **refuses** and says why.
 
-## Open questions for the owner (answer before Part A's UI copy is final)
+## Owner decisions (2026-09-25 — settled, do not re-litigate)
 
-- **Q1 — which sites are offered for capture?** All sites (`<all_urls>`, simplest, broadest
-  permission), or only sites the user explicitly picks (least privilege, one extra click)?
-- **Q2 — does the console detect a missing extension?** (Recommendation: yes — if the extension
-  is not present, offer `fresh` rather than letting the user pick `live` and fail.)
+- **Q1 — capture scope: ALL sites.** Owner: *"just capture all site, easier to setup, and no need
+  selection, user can open what session they want or the agent can."* So the extension takes
+  `<all_urls>` in `host_permissions` (the simple, broad option) and **no domain picker is built**.
+  The user (or the agent) decides what to open *after* the clone is running — the capture is not
+  the place to be selective. Record the permission honestly in the manifest and in the copy; do
+  not dress it up.
+- **Q2 — a missing extension offers `fresh`, and the install stays silent.** The console must
+  **detect** whether the device can do a `live` capture and then:
+  - **capable** → offer *"Carry my current session"* (`live`);
+  - **not capable** → offer **`fresh`** as the real, working choice, plus the existing **one-click
+    silent setup** to enable session carry — never a dead `live` button that fails after Start.
+
+  "Silently, as the plan" means exactly what the pipeline already does: the extension + native
+  messaging host are installed by the **one-click device setup** (`TASK_114`, `install-registry.ps1`
+  already registers the native host for Chrome/Edge/Brave under HKLM with no user interaction).
+  The one honest caveat that must be surfaced — not hidden: deploying the extension itself uses
+  Chrome's `ExtensionInstallForcelist` policy, which makes Chrome show **"Managed by your
+  organization"**. That is a real, visible side effect on the user's browser and the UI must say
+  so before the user enables it.
+
+## The two paths (this file is the umbrella; each path is standalone)
+
+This bit is split so two agents can work at the same time without touching the same files. Each
+path file contains **everything** needed for that agent — goal, the frozen wire contract, its own
+file list, its acceptance bar and its rules. Neither agent needs to read the other's file.
+
+| Path | File | Who | What |
+|---|---|---|---|
+| **A** | **`TASK_119A_LIVE_SESSION_SERVER.md`** | the primary agent (state machine + trust boundary) | `sessionMode` end to end, the ingest route, the CDP module + per-session port + forwarder, launch wiring, fail-closed, the console mode UI, extension detection |
+| **B** | **`TASK_119B_LIVE_SESSION_EXTENSION.md`** | **Cline** (self-contained, independently testable) | the extension (`chrome.cookies.getAll()`), the native-host command, the chunked payload, the proof harness |
+
+They meet at exactly one artifact: **the JSON contract in B9-3**, reproduced verbatim in both path
+files. Changing it means changing **both** files in the same commit — that is the only coupling.
 
 ## Verification for the bit as a whole
 
