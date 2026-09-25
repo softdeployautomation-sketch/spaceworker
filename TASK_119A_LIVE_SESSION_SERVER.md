@@ -561,3 +561,71 @@ precisely how this got missed.
 client's new `link.installUrl || ""` copies a bare `/link/vantra/<token>` path for those. Self-healing
 within the 72 h token TTL (any re-mint is absolute); worth knowing, not worth a fix.
 
+### V11 — LIVE PRODUCTION BUG found while verifying V10 (FIXED 2026-09-25): `APP_BASE_URL` pointed at a retired domain
+
+**V10's fix is structurally correct** (`buildLiveCaptureTokenScript` now emits exactly
+`{"base_url","device_id","live_capture_token"}`, `psq()` escapes single quotes, `clone_job_id` omitted,
+and the route genuinely *needs* `device_id` — it rejects a mismatch at step 5). **But its `base_url`
+input was wrong**, and chasing that surfaced a broad live bug.
+
+**Evidence:** production `.env` held `APP_BASE_URL=https://spaceworker.instaweb.top`. That host **has no
+DNS record** — `getent hosts spaceworker.instaweb.top` is silent *on the VPS itself*, while
+`spaceworker.top` → `164.68.105.96`, and `dl.` / `agent.instaweb.top` both resolve. Its nginx vhost is
+**retired**: `sites-enabled/` contains `spaceworker.top.conf` (`server_name spaceworker.top`, enabled
+Sep 21 23:21) and only `.bak-*` copies of `spaceworker.instaweb.top.conf` remain. So the Sep 21 domain
+move left the environment variable behind.
+
+**Impact — 11 call sites derive outbound URLs from it; the five that matter:**
+
+| Call site | What breaks |
+|---|---|
+| `lib/clone-engine-dist.ts:145` | the **signed engine-bundle download base** used by the **one-click device setup** — the likeliest cause of the "device setup: no output" report |
+| `lib/device-tools.ts:162` | the **PIN callback URL** pushed to devices |
+| `lib/campaign-create.ts:106` | **campaign cloaked links** (`<base>/r/<token>`) inside customer emails |
+| `lib/license-service.ts:134`, `app/api/admin/exe-licenses/route.ts:413` | **EXE licence claim links** in emails |
+| `lib/clone-setup.ts:733` | V10's `base_url` — every capture POST would have died at DNS |
+
+**Not** used in any origin/allowlist/security validation (verified by grep), so this is a pure
+URL-composition fix with no auth coupling.
+
+**Fixed:** `.env` → `APP_BASE_URL=https://spaceworker.top` (backup
+`/root/.env.bak-appbaseurl-20260925181714`), `spaceworker.service` restarted. Verified: unit `active`,
+`https://spaceworker.top/` **200**, `127.0.0.1:3500` **200**, `https://spaceworker.top/api/clone-engine/manifest.json`
+**403** (signature gate intact — i.e. the corrected base reaches the app), journal clean
+(only the benign `[clone-sweep] … errors 0` heartbeat).
+
+**Why this was invisible:** nothing errors when a URL is composed from a dead host — the failure only
+appears on the *device* or in the *recipient's* inbox, never in our logs. It is the same failure shape
+as V10: both sides green, the seam broken.
+
+### V10 — independently reproduced by the reviewer (not taken on trust)
+
+Extracted the **real** frozen loader from `56b2c4a` (`git archive … | tar -x` into `/tmp/v10check`)
+and ran my own in-package test against `loadCaptureConfig()` (correct approach — it is unexported,
+line 405). Three cases:
+
+| Fixture (POSIX `0600`, so the permission check can't mask the result) | Result |
+|---|---|
+| the **new** shape `{"base_url","device_id","live_capture_token"}` | `code="" tokenLen=52 deviceID="cmg7x9k…" baseURL="https://spaceworker.top"` — **loads clean** |
+| the **old** shape `{"token":…}` (negative control) | **`device_token_missing`** |
+| `base_url` omitted | loads clean, `BaseURL=""`; `device_id` omitted → `device_id_missing` |
+
+The negative control is the important one: it proves the test is sensitive to the **key names**, i.e.
+V10 was real and the fix genuinely resolves it. Scratch dir deleted afterwards; nothing under
+`michael/browser-clone` was touched.
+
+*Note:* a real minted token is 32 random bytes → base64 = **44** chars (`lib/clone-transport.ts:873`);
+the 52 in both fixtures is just the fixture string. The loader only checks non-empty, so this has no
+effect.
+
+### V12 (minor, comment-only): the stated reason for writing `base_url` is wrong
+
+`buildLiveCaptureTokenScript`'s doc comment says Path B's fallback for an omitted `base_url` is *"a
+built-in default that does NOT match this deploy's actual public domain"*. It **does** match:
+`defaultBaseURL = "https://spaceworker.top"` (`cmd/native-host/main.go:86`, used at line 375).
+
+**The behaviour is still correct** — writing it explicitly is better than relying on a device binary's
+built-in — but the justification is false and would mislead a future reader into thinking the fallback
+is dangerous. Either drop the claim or restate it as "write it explicitly so the origin is server-
+configured, not baked into the device binary." No functional change needed.
+
