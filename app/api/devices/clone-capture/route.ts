@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/clone-transport";
 import { storeCapture } from "@/lib/clone-live-capture";
+import { transitionClone } from "@/lib/clone";
 
 const BODY_SIZE_CAP = 1024 * 1024; // 1 MiB per spec A5
 
@@ -31,7 +32,7 @@ interface CapturePayload {
 
 export async function POST(request: NextRequest) {
   try {
-    // 1. Body-size cap first (public route).
+    // 1. Body-size cap first (public route). V5: Count actual bytes, don't trust header.
     const contentLength = request.headers.get("content-length");
     if (contentLength && parseInt(contentLength) > BODY_SIZE_CAP) {
       return NextResponse.json(
@@ -40,10 +41,17 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 2. Parse body (neutral on parse error).
+    // 2. Parse body and verify actual size (V5 hardening: count bytes).
     let payload: CapturePayload;
     try {
-      payload = await request.json();
+      const text = await request.text();
+      if (Buffer.byteLength(text, "utf-8") > BODY_SIZE_CAP) {
+        return NextResponse.json(
+          { error: "Payload too large" },
+          { status: 413 }
+        );
+      }
+      payload = JSON.parse(text);
     } catch {
       return NextResponse.json(
         { error: "Invalid request" },
@@ -155,12 +163,18 @@ export async function POST(request: NextRequest) {
       truncated: payload.truncated,
     });
 
-    // 11. Update the cloneJob to mark capture received (NOT stored at rest).
+    // 11. Update the cloneJob to mark capture received via transitionClone.
+    // This routes through assertCloneTransition and writes the audit row.
     // The actual cookie payload must NOT be persisted — only counts.
-    await db.cloneJob.update({
+    const fullJob = await db.cloneJob.findUniqueOrThrow({
       where: { id: cloneJob.id },
-      data: {
-        status: "captured",
+    });
+    await transitionClone(fullJob, "captured", {
+      detail: {
+        step: "live-capture-ingest",
+        cookieCount,
+        domainCount,
+        truncated: payload.truncated,
       },
     });
 
@@ -173,7 +187,8 @@ export async function POST(request: NextRequest) {
       { status: 202 }
     );
   } catch (err) {
-    console.error("[clone-capture]", err);
+    // V6: Fixed log line (never echo errors that could contain cookie values).
+    console.error("[clone-capture] Unexpected error");
     return NextResponse.json(
       { error: "Internal server error" },
       { status: 500 }

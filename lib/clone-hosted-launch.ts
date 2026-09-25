@@ -159,13 +159,25 @@ export async function runHostedLaunch(opts: {
     }
   }
 
-  // TASK_119 A6: Inject live session if captured cookies are available.
-  // Fail-closed: zero cookies or injection failure refuses the launch.
+  // TASK_119 A6: Inject live session if requested.
+  // Fail-closed (V4): live mode MUST have CDP endpoint and injection must succeed.
   const job = await db.cloneJob.findUnique({
     where: { id: opts.cloneJobId },
     select: { sessionMode: true },
   });
-  if (job?.sessionMode === "live" && cdpPort) {
+  if (job?.sessionMode === "live") {
+    // Live mode requires CDP endpoint to exist.
+    if (!cdpPort) {
+      await browserRuntime.stop(sessionId).catch(() => {});
+      await deleteProfileDir(profileDirPath(sessionId)).catch(() => {});
+      return {
+        ok: false,
+        egressMode: opts.egress,
+        exitCode: null,
+        error: "session_injection_failed: CDP endpoint not available",
+      };
+    }
+
     const injectionResult = await injectLiveCapture({
       cloneJobId: opts.cloneJobId,
       cdpPort,

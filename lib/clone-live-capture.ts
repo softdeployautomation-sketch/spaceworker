@@ -81,6 +81,7 @@ export async function injectLiveCapture(opts: {
     });
 
     if (!result.ok || result.count === 0) {
+      // V7: Fixed error message (don't echo CDP error which could contain cookie values).
       return { ok: false, error: "injection_failed" };
     }
 
@@ -103,9 +104,7 @@ export async function injectLiveCapture(opts: {
     return { ok: true, injectedCount: result.count };
   } catch (err) {
     clearCapture(opts.cloneJobId);
-    return {
-      ok: false,
-      error: `injection_error: ${err instanceof Error ? err.message : "unknown"}`,
-    };
+    // V7: Fixed error message (never echo CDP errors that could contain cookie values).
+    return { ok: false, error: "injection_failed" };
   }
 }

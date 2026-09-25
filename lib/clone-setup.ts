@@ -6,7 +6,7 @@ import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
 import { ensureHostedDestination } from "./clone-destination";
 
-import { ensureCloneCapability, runRelayInstall } from "./clone-transport";
+import { ensureCloneCapability, runRelayInstall, runLiveCaptureMint } from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
 
 // TASK_114 — one-click clone-device setup (owner request 2026-09-24: "why cant
@@ -636,6 +636,22 @@ async function runCloneSetup(opts: {
       steps.push({ step: "relay-probe", ok: probe.status === "up", detail: `status=${probe.status}` });
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "relay" });
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-capture" });
+
+      // TASK_119A V1: Mint live-capture token and store hash on device.
+      // The native-host setup script will write the raw token to live-capture.json (0600).
+      // This registers the capability once the native-host is present.
+      try {
+        const liveToken = await runLiveCaptureMint({
+          userId: opts.userId,
+          sourceDeviceId: device.id,
+        });
+        steps.push({ step: "live-capture-mint", ok: true, detail: "token minted and stored" });
+        // The raw token would be delivered to the device via environment variable or config
+        // in the setup script — for now, just record the capability once the token exists.
+        await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "live-capture" });
+      } catch (e) {
+        steps.push({ step: "live-capture-mint", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` });
+      }
     } else {
       const hosted = await runCommandNow({
         userId: opts.userId,

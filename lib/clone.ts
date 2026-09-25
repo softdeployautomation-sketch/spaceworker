@@ -226,7 +226,7 @@ async function auditClone(
  * else moved it concurrently ⇒ throw, never overwrite), stamps terminal
  * columns (purgeAfter / revokedAt / launchState / error / stagingRef), audits.
  */
-async function transitionClone(
+export async function transitionClone(
   job: CloneJob,
   to: CloneState,
   opts: {
@@ -852,10 +852,12 @@ async function stepRequested(
   // this task. (Found live: without this branch, a hosted clone ran the full
   // agent-capture pipeline anyway and failed at capture_no_clone_id — there
   // was never a bundle for it to produce.)
+  // TASK_119A V9: live jobs with hosted destination must wait for capture
+  // to arrive before launching, so they go to awaiting_source, not ready.
   const destination = job.destinationDeviceId
     ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
     : null;
-  if (destination?.deviceKind === "hosted") {
+  if (destination?.deviceKind === "hosted" && job.sessionMode !== "live") {
     const advanced = await transitionClone(job, "ready", {
       detail: {
         slot: "granted",

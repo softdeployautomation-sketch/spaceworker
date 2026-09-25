@@ -101,7 +101,7 @@ export type CloneStep = "capture" | "receive" | "launch" | "status" | "revoke" |
 const BROWSERS: ReadonlySet<string> = new Set(["chrome", "edge", "firefox"]);
 
 /** DeviceCapability values this transport registers (schema-documented set). */
-export const CLONE_CAPABILITIES = ["clone-capture", "clone-host", "relay"] as const;
+export const CLONE_CAPABILITIES = ["clone-capture", "clone-host", "relay", "live-capture"] as const;
 export type CloneCapability = (typeof CLONE_CAPABILITIES)[number];
 
 /**
@@ -855,5 +855,31 @@ export async function probeCloneRelay(opts: CloneCallBase & {
     });
     throw shaped;
   }
+}
+
+/**
+ * TASK_119A V1: Mint and store the per-device live-capture token.
+ * Called during one-click setup for source devices.
+ * Returns the raw token so the setup can deliver it to the device for
+ * writing to live-capture.json (0600). The SHA-256 hash is stored on the
+ * Device row as liveCaptureTokenHash; the raw token is never persisted.
+ */
+export async function runLiveCaptureMint(opts: {
+  userId: string;
+  sourceDeviceId: string;
+}): Promise<string> {
+  const device = await requireOwnedDevice({ userId: opts.userId, deviceId: opts.sourceDeviceId });
+
+  // Mint 32 random bytes, base64 (same primitive as the relay token).
+  const rawToken = crypto.randomBytes(32).toString("base64");
+  const tokenHash = sha256Hex(rawToken);
+
+  // Store the hash on the device (the raw token is never persisted).
+  await db.device.update({
+    where: { id: device.id },
+    data: { liveCaptureTokenHash: tokenHash },
+  });
+
+  return rawToken;
 }
 
