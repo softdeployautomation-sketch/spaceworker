@@ -817,4 +817,339 @@ export async function deletePinRequest(opts: {
   return res.count;
 }
 
+// ---------------------------------------------------------------------------
+// TASK_104 — the silent app launcher (PATH A: backend only, no UI here).
+// "we create tools that runs command to open any file or app needed on the
+// screen silently like chrome and mozilla and it should work dynamic for
+// every device" — the overlay's Start-menu/context-menu popup race is
+// unwinnable against shell topmost windows (measured, see TASK_104's
+// 2026-09-24 section); this removes the REASON to summon shell UI at all.
+//
+// Two moves, both manual own-device (no approval, audited `web-direct`,
+// same posture as Ping/Run now/Hide-Reveal elsewhere in this file):
+//   1. discoverApps — enumerate what's REALLY installed on THIS device and
+//      cache it, so the catalog is per-device truth, not a hardcoded list.
+//   2. launchApp — run one of them (or an absolute path, or an https URL)
+//      on the interactive desktop. Fail-closed on anything that isn't
+//      exactly one of those three shapes — this must never become a way to
+//      run an arbitrary shell command.
+// ---------------------------------------------------------------------------
+
+export interface LauncherApp {
+  /** Lowercase, stable lookup key — "chrome", "firefox", "notepad", ... */
+  key: string;
+  /** Real display name as found on the device (registry DisplayName, or the key itself for the curated fallbacks). */
+  name: string;
+  /** Absolute path on the device, as discovered — never user-supplied at discovery time. */
+  path: string;
+}
+
+const DISCOVER_TIMEOUT_SECONDS = 45;
+const LAUNCH_TIMEOUT_SECONDS = 20;
+
+// Same marker-line technique as lib/clone-setup.ts's `STEP:` convention —
+// distinct enough that it can never collide with ordinary PowerShell/registry
+// output, so parsing never needs to guess which line is the payload.
+const APPS_MARKER_START = "SW_LAUNCHER_APPS_START";
+const APPS_MARKER_END = "SW_LAUNCHER_APPS_END";
+
+/**
+ * PowerShell that enumerates real, currently-installed apps on THIS device —
+ * never a hardcoded list. Three sources, de-duplicated by key (App Paths
+ * wins over Uninstall wins over the curated fallback probe, since App Paths
+ * is the most authoritative "here is the actual exe" registry surface):
+ *   1. HKLM App Paths — the canonical "what does `chrome.exe` resolve to"
+ *      registry surface; keyed by the exe's own basename.
+ *   2. HKLM Uninstall — DisplayName + (InstallLocation or a .exe guessed
+ *      from DisplayIcon), for apps that register themselves there but not
+ *      under App Paths.
+ *   3. A small curated fallback probe (Chrome/Edge/Firefox's well-known
+ *      install paths, 64 and 32-bit Program Files) — catches the exact
+ *      three apps the owner named (2026-10-01: "silently like chrome and
+ *      mozilla") on a device where neither registry surface picked them up.
+ * Every path is verified with `Test-Path` before being included — never a
+ * theoretical path a later launch would 404 on.
+ */
+function buildDiscoverAppsScript(): string {
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    "$apps = @{}",
+    "function Add-App($k, $n, $p) {",
+    "  if ($p -and (Test-Path -LiteralPath $p -PathType Leaf) -and -not $apps.ContainsKey($k)) {",
+    "    $apps[$k] = @{ key = $k; name = $n; path = $p }",
+    "  }",
+    "}",
+    // 1. App Paths — HKLM only (HKCU App Paths are per-user and would leak
+    // another user's install into a shared device catalog).
+    "Get-ChildItem 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths' -ErrorAction SilentlyContinue | ForEach-Object {",
+    "  try {",
+    "    $p = (Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction Stop).'(default)'",
+    "    $k = [IO.Path]::GetFileNameWithoutExtension($_.PSChildName).ToLower()",
+    "    if ($k) { Add-App $k $_.PSChildName $p }",
+    "  } catch {}",
+    "}",
+    // 2. Uninstall registry (both hives — 32-bit apps on a 64-bit OS live
+    // under WOW6432Node), DisplayName keyed by a lowercased, space-stripped
+    // slug so "Google Chrome" -> "googlechrome" (distinct from App Paths'
+    // "chrome" — the caller sees both if both exist, never silently merged).
+    "foreach ($root in @(",
+    "  'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*',",
+    "  'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*'",
+    ")) {",
+    "  Get-ItemProperty -Path $root -ErrorAction SilentlyContinue | ForEach-Object {",
+    "    try {",
+    "      $dn = $_.DisplayName",
+    "      if (-not $dn) { return }",
+    "      $exe = $null",
+    "      if ($_.InstallLocation -and (Test-Path -LiteralPath $_.InstallLocation)) {",
+    "        $exe = Get-ChildItem -LiteralPath $_.InstallLocation -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName",
+    "      }",
+    "      if (-not $exe -and $_.DisplayIcon) {",
+    "        $cand = ($_.DisplayIcon -split ',')[0].Trim('\"')",
+    "        if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) { $exe = $cand }",
+    "      }",
+    "      if ($exe) {",
+    "        $k = ($dn.ToLower() -replace '[^a-z0-9]', '')",
+    "        if ($k) { Add-App $k $dn $exe }",
+    "      }",
+    "    } catch {}",
+    "  }",
+    "}",
+    // 3. Curated fallback probe — only fills a key that's STILL missing
+    // after the two registry passes above.
+    "$known = @{",
+    "  chrome  = @('C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe', 'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe')",
+    "  firefox = @('C:\\Program Files\\Mozilla Firefox\\firefox.exe', 'C:\\Program Files (x86)\\Mozilla Firefox\\firefox.exe')",
+    "  edge    = @('C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe')",
+    "  notepad = @('C:\\Windows\\System32\\notepad.exe')",
+    "  explorer = @('C:\\Windows\\explorer.exe')",
+    "}",
+    "foreach ($k in $known.Keys) { foreach ($p in $known[$k]) { Add-App $k $k $p } }",
+    `Write-Output '${APPS_MARKER_START}'`,
+    "Write-Output (@($apps.Values) | ConvertTo-Json -Compress)",
+    `Write-Output '${APPS_MARKER_END}'`,
+  ].join("\n");
+}
+
+function parseDiscoveredApps(output: string | null): LauncherApp[] {
+  if (typeof output !== "string") return [];
+  const start = output.indexOf(APPS_MARKER_START);
+  const end = output.indexOf(APPS_MARKER_END);
+  if (start === -1 || end === -1 || end < start) return [];
+  const jsonText = output.slice(start + APPS_MARKER_START.length, end).trim();
+  if (!jsonText) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+  // ConvertTo-Json emits a single object (not an array) when there is
+  // exactly one result — normalize both shapes.
+  const arr = Array.isArray(parsed) ? parsed : [parsed];
+  const out: LauncherApp[] = [];
+  for (const item of arr) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const key = typeof rec.key === "string" ? rec.key.trim().toLowerCase() : "";
+    const name = typeof rec.name === "string" ? rec.name.trim() : "";
+    const path = typeof rec.path === "string" ? rec.path.trim() : "";
+    if (!key || !path) continue;
+    out.push({ key, name: name || key, path });
+  }
+  return out;
+}
+
+/**
+ * Re-runs discovery on the device and caches the result as this device's
+ * `launcher_apps` DeviceCapability (§1 of TASK_104's fallback toolbelt).
+ * Manual own-device, no approval — same posture as every other tool in this
+ * file. Offline device fails immediately (runCommandNow throws; no queue).
+ */
+export async function discoverApps(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<LauncherApp[]> {
+  const device = await requireOwnedDevice(opts);
+  const { output } = await runCommandNow({
+    userId: opts.userId,
+    deviceId: opts.deviceId,
+    cmd: buildDiscoverAppsScript(),
+    shell: "powershell",
+    timeoutSeconds: DISCOVER_TIMEOUT_SECONDS,
+    runAsUser: false,
+  });
+  const apps = parseDiscoveredApps(output);
+  await db.deviceCapability.upsert({
+    where: { deviceId_capability: { deviceId: device.id, capability: "launcher_apps" } },
+    create: {
+      deviceId: device.id,
+      capability: "launcher_apps",
+      enabled: true,
+      meta: { apps, discoveredAt: new Date().toISOString() } as object,
+    },
+    update: {
+      enabled: true,
+      meta: { apps, discoveredAt: new Date().toISOString() } as object,
+    },
+  });
+  await recordAgentActionAudit({
+    userId: opts.userId,
+    action: "device_launcher_discover",
+    status: "executed",
+    approvalChannel: "web-direct",
+    sourceDeviceId: device.id,
+    detail: { count: apps.length, keys: apps.map((a) => a.key).slice(0, 50) },
+  });
+  return apps;
+}
+
+/** Reads the last-discovered catalog without re-running discovery (no device round trip). */
+export async function getLauncherApps(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<{ apps: LauncherApp[]; discoveredAt: string | null }> {
+  const device = await requireOwnedDevice(opts);
+  const cap = await db.deviceCapability.findUnique({
+    where: { deviceId_capability: { deviceId: device.id, capability: "launcher_apps" } },
+    select: { meta: true },
+  });
+  const meta = (cap?.meta ?? null) as { apps?: unknown; discoveredAt?: string } | null;
+  const apps = Array.isArray(meta?.apps) ? (meta!.apps as LauncherApp[]) : [];
+  return { apps, discoveredAt: meta?.discoveredAt ?? null };
+}
+
+export type LaunchTargetKind = "app" | "path" | "url";
+
+export interface LaunchResult {
+  ok: boolean;
+  kind: LaunchTargetKind;
+  error?: string;
+}
+
+// https only (never http — this only ever opens the device's OWN default
+// browser, and a plaintext URL from a web form is not worth the downgrade).
+// No userinfo (`user:pass@host`), no shell metacharacters in the path/query
+// — Start-Process receives this as a single quoted PowerShell argument, so
+// this regex is the actual security boundary, not a UX nicety.
+const LAUNCH_URL_RE =
+  /^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?(\/[a-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*)?$/i;
+
+// Absolute Windows path, drive-letter rooted, no shell metacharacters and no
+// ".." traversal — the same shape as lib/clone.ts's isWindowsPath, kept as
+// its own copy here rather than an import: that module is clone-pipeline
+// internal state, this is a generic device tool with no other relationship
+// to it, and a shared helper would couple two things that should stay free
+// to diverge.
+const LAUNCH_PATH_RE = /^[A-Za-z]:\\[^"'`$;&|<>(){}[\]\r\n]{1,240}$/;
+
+function classifyLaunchTarget(raw: string): { kind: "url" | "path"; value: string } | null {
+  if (LAUNCH_URL_RE.test(raw)) return { kind: "url", value: raw };
+  if (LAUNCH_PATH_RE.test(raw) && !raw.includes("..")) return { kind: "path", value: raw };
+  return null;
+}
+
+/**
+ * Launches exactly one of: a discovered app key (looked up against THIS
+ * device's own cached catalog — never an arbitrary caller-supplied path
+ * disguised as a key), an absolute Windows path, or an https:// URL. Manual
+ * own-device, no approval, audited `web-direct`. Anything else — a bare
+ * word that isn't a known key, shell metacharacters, extra arguments, a
+ * relative path, "..", http:// — is refused before any command is built;
+ * this must never become a way to run an arbitrary shell command via a
+ * launcher meant only to open apps.
+ */
+export async function launchApp(opts: {
+  userId: string;
+  deviceId: string;
+  target: string;
+}): Promise<LaunchResult> {
+  const raw = opts.target.trim();
+  if (!raw || raw.length > 500) throw new Error("bad_target");
+
+  const device = await requireOwnedDevice(opts);
+
+  const classified = classifyLaunchTarget(raw);
+  let kind: LaunchTargetKind;
+  let resolvedPath: string;
+  if (classified) {
+    kind = classified.kind;
+    resolvedPath = classified.value;
+  } else {
+    // Not a URL or an absolute path — the only remaining legal shape is a
+    // key from THIS device's own discovered catalog. Anything else (an
+    // unknown word, a relative path, a command with arguments) is refused
+    // here, never forwarded to the device.
+    const cap = await db.deviceCapability.findUnique({
+      where: { deviceId_capability: { deviceId: device.id, capability: "launcher_apps" } },
+      select: { meta: true },
+    });
+    const meta = (cap?.meta ?? null) as { apps?: LauncherApp[] } | null;
+    const apps = Array.isArray(meta?.apps) ? meta!.apps : [];
+    const match = apps.find((a) => a.key === raw.toLowerCase());
+    if (!match) throw new Error("unknown_launch_target");
+    kind = "app";
+    resolvedPath = match.path;
+  }
+
+  // Single-quoted PowerShell literal; the only single quote it could ever
+  // contain is escaped, and both regexes above already reject backtick/`$`/
+  // `;`/`&`/`|`/`<`/`>` etc., so this can never break out of the literal.
+  const psLiteral = `'${resolvedPath.replace(/'/g, "''")}'`;
+  const cmd = [
+    "$ErrorActionPreference = 'Continue'",
+    kind === "url"
+      ? `Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`
+      : [
+          `if (Test-Path -LiteralPath ${psLiteral} -PathType Leaf) {`,
+          `  Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`,
+          "} else {",
+          "  Write-Output 'LAUNCH_FAIL:not_found'",
+          "}",
+        ].join("\n"),
+  ].join("\n");
+
+  let output: string | null;
+  try {
+    const res = await runCommandNow({
+      userId: opts.userId,
+      deviceId: opts.deviceId,
+      // Launched on the INTERACTIVE desktop (runAsUser: true) — the whole
+      // point is a window the logged-in person (or the technician watching
+      // the Remote control viewer) can see, unlike every other tool in this
+      // file which runs SYSTEM-side.
+      cmd,
+      shell: "powershell",
+      timeoutSeconds: LAUNCH_TIMEOUT_SECONDS,
+      runAsUser: true,
+    });
+    output = res.output;
+  } catch (err) {
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: "device_launch",
+      status: "failed",
+      approvalChannel: "web-direct",
+      sourceDeviceId: device.id,
+      detail: { kind, error: err instanceof Error ? err.message.slice(0, 300) : "launch_failed" },
+    });
+    throw err;
+  }
+
+  const ok = typeof output === "string" && output.includes("LAUNCH_OK");
+  await recordAgentActionAudit({
+    userId: opts.userId,
+    action: "device_launch",
+    status: ok ? "executed" : "failed",
+    approvalChannel: "web-direct",
+    sourceDeviceId: device.id,
+    // Evidence only — kind + which discovered key, never the raw path/URL
+    // (not a secret, but not evidence anyone needs either; matches this
+    // file's "counts/kinds, not values" audit convention elsewhere).
+    detail: { kind, key: kind === "app" ? raw.toLowerCase() : undefined },
+  });
+  if (!ok) return { ok: false, kind, error: "not_found" };
+  return { ok: true, kind };
+}
+
 
