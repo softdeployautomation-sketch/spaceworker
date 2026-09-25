@@ -44,6 +44,11 @@ SSH_KEY="${SSH_KEY:-$HOME/.ssh/tacticalrmm_vps}"
 APP_DIR="${APP_DIR:-/opt/spaceworker}"
 SERVICE="${SERVICE:-spaceworker.service}"
 PORT="${PORT:-3500}"
+# Deploy maintenance switch (owner 2026-09-25: "i like the maintenance screen.
+# make sure it always shows when build is going … automate that"). A flag file
+# makes nginx serve the update page for every request while .next is rebuilt.
+# See section 6 for the on/off discipline.
+MAINT_FLAG="${MAINT_FLAG:-/var/www/sw-maintenance.on}"
 LOCAL_ROOT="${LOCAL_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 
@@ -52,6 +57,11 @@ PRUNE=0
 DO_BUILD=1
 DO_RESTART=1
 VERIFY_ONLY=0
+DO_MAINT_OFF=0
+# Set when the service could NOT be restored after a failed build: the EXIT trap
+# then deliberately LEAVES maintenance on, so users see the update page instead
+# of a raw 502.
+KEEP_MAINT=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -59,6 +69,7 @@ for arg in "$@"; do
     --no-build)    DO_BUILD=0 ;;
     --no-restart)  DO_RESTART=0 ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --maintenance-off) DO_MAINT_OFF=1 ;;
     -h|--help)     sed -n '2,45p' "${BASH_SOURCE[0]}"; exit 0 ;;
     -*)            echo "unknown flag: $arg" >&2; exit 2 ;;
     *)             FILES_FROM="$arg" ;;
@@ -66,6 +77,17 @@ for arg in "$@"; do
 done
 
 run_remote() { ssh -i "$SSH_KEY" -o BatchMode=yes "$VPS_HOST" "$@"; }
+
+# Safety net for the maintenance flag. Without this, a script that dies mid-build
+# (ssh drop, Ctrl-C, set -e abort) would leave the site pinned on the update page
+# forever. The one deliberate exception is KEEP_MAINT=1 — set when the app could
+# not be brought back, where leaving the friendly page up is the correct outcome.
+maint_off_on_exit() {
+  if [ "$KEEP_MAINT" -eq 0 ] && [ "$DO_BUILD" -eq 1 ]; then
+    run_remote "rm -f '$MAINT_FLAG'" >/dev/null 2>&1 || true
+  fi
+}
+trap maint_off_on_exit EXIT
 
 # --- Server-only runtime that must EXIST after any deploy ---------------------
 # Kept as one list so the exclude set and the assertion can never drift apart.
@@ -106,13 +128,19 @@ verify_runtime() {
   return 0
 }
 
+if [ "$DO_MAINT_OFF" -eq 1 ]; then
+  echo "-- maintenance OFF (manual override)"
+  run_remote "rm -f '$MAINT_FLAG'"
+  echo "-- done"; exit 0
+fi
+
 if [ "$VERIFY_ONLY" -eq 1 ]; then
   verify_runtime
   run_remote "systemctl is-active '$SERVICE' && curl -s -o /dev/null -w 'http:%{http_code}\n' -m 15 http://localhost:$PORT/"
   exit $?
 fi
 
-[ -n "$FILES_FROM" ] || { echo "usage: $0 <files-from-list> [--prune] [--no-build] [--no-restart]" >&2; exit 2; }
+[ -n "$FILES_FROM" ] || { echo "usage: $0 <files-from-list> [--prune] [--no-build] [--no-restart] [--maintenance-off]" >&2; exit 2; }
 [ -f "$FILES_FROM" ] || { echo "file list not found: $FILES_FROM" >&2; exit 2; }
 
 # --- 1. Refuse a list that could clobber secrets ------------------------------
@@ -164,18 +192,70 @@ if grep -q '^engine-dist/' "$FILES_FROM"; then
 fi
 
 # --- 6. Build + restart + verify --------------------------------------------
+# Owner 2026-09-25: "i like the maintenance screen. make sure it always shows
+# when build is going … maybe we can automate that."
+#
+# A flag file makes nginx answer 503 -> maintenance.html for EVERY request while
+# .next is rebuilt (no reload needed: nginx re-evaluates `if (-f …)` per
+# request). It is cleared only after the app answers 200.
+#
+# Why this is not merely cosmetic: on 2026-09-25 a STALE generated Prisma client
+# failed `next build`'s typecheck (`liveCaptureTokenHash` missing from
+# DeviceWhereUniqueInput) AFTER `next build` had already emptied .next — the old
+# script restarted anyway, and the site crash-looped on "Could not find a
+# production build". Three fixes below: generate Prisma FIRST, abort the build
+# without restarting, and roll .next back so the previous build keeps serving.
 if [ "$DO_BUILD" -eq 1 ]; then
+  # Prisma BEFORE next build: a stale client is a typecheck failure, and the
+  # failure lands on a wiped .next rather than on the type error's own line.
+  echo "-- prisma generate (as $SERVICE_USER)"
+  if ! run_remote "cd '$APP_DIR' && sudo -u '$SERVICE_USER' npx --no-install prisma generate 2>&1 | tail -n 3"; then
+    echo "FAIL: prisma generate failed — .next left untouched, app still serving" >&2
+    exit 1
+  fi
+
+  echo "-- maintenance ON  ($MAINT_FLAG)"
+  run_remote "touch '$MAINT_FLAG'"
+
+  echo "-- keeping the current build for rollback (.next.prev)"
+  run_remote "cd '$APP_DIR' && rm -rf .next.prev && cp -a .next .next.prev" || true
+
   echo "-- build (as $SERVICE_USER)"
-  run_remote "cd '$APP_DIR' && sudo -u '$SERVICE_USER' npm run build 2>&1 | tail -n 15"
+  BUILD_OUT="$(run_remote "cd '$APP_DIR' && sudo -u '$SERVICE_USER' npm run build 2>&1 | tail -n 25" || true)"
+  echo "$BUILD_OUT"
+
+  if ! run_remote "test -s '$APP_DIR/.next/BUILD_ID'"; then
+    echo "-- BUILD FAILED (no BUILD_ID) — rolling back to the previous build" >&2
+    run_remote "cd '$APP_DIR' && rm -rf .next && mv .next.prev .next" || true
+    if [ "$DO_RESTART" -eq 1 ]; then
+      run_remote "systemctl restart '$SERVICE' && sleep 6" || true
+      ROLL="$(run_remote "curl -s -o /dev/null -w '%{http_code}' -m 20 http://localhost:$PORT/" || true)"
+      echo "   rolled-back build -> localhost:$PORT/ -> $ROLL"
+      if [ "$ROLL" = "200" ]; then
+        run_remote "rm -f '$MAINT_FLAG'"
+        echo "   previous build is serving again; maintenance OFF"
+      else
+        KEEP_MAINT=1
+        echo "   STILL NOT SERVING — leaving maintenance ON so users see the update page" >&2
+      fi
+    fi
+    exit 1
+  fi
 fi
 
 if [ "$DO_RESTART" -eq 1 ]; then
   echo "-- restart + verify"
   run_remote "systemctl restart '$SERVICE' && sleep 6 && systemctl is-active '$SERVICE'"
-  CODE="$(run_remote "curl -s -o /dev/null -w '%{http_code}' -m 20 http://localhost:$PORT/")"
+  CODE="$(run_remote "curl -s -o /dev/null -w '%{http_code}' -m 20 http://localhost:$PORT/" || true)"
   echo "   localhost:$PORT/ -> $CODE"
-  [ "$CODE" = "200" ] || { echo "FAIL: app is not serving (journalctl -u $SERVICE)" >&2; exit 1; }
+  if [ "$CODE" != "200" ]; then
+    KEEP_MAINT=1
+    echo "FAIL: app is not serving (journalctl -u $SERVICE). Maintenance stays ON." >&2
+    exit 1
+  fi
   verify_runtime
+  echo "-- maintenance OFF"
+  run_remote "rm -f '$MAINT_FLAG'"
 fi
 
 echo "-- done"
