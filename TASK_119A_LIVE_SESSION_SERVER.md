@@ -146,14 +146,25 @@ not control. Concretely:
 
 - **No `requireInternalBearer` on this route.** `INTERNAL_BEARER_TOKEN` / `VANTRA_INTERNAL_TOKEN`
   must **never** exist on a device. Do not add this route to the internal-bearer set.
-- **Mint per device, reusing the existing primitive**: `generateToken()` in
-  `lib/clone-transport.ts` (32 random bytes, base64) — the same one the relay token uses. Do **not**
-  invent a second token scheme.
+- **Mint per device.** ⚠️ *Corrected 2026-09-25 after review:* the first draft of this bit named a
+  `generateToken()` in `lib/clone-transport.ts` — **no such function exists** (see V1 below; that was
+  the owner's error, not the agent's). What exists is `mintCloneJobKey()` (line 115,
+  `crypto.randomBytes(32).toString("base64")`) — but that is the AES-256-GCM **job key**, documented
+  as *never persisted*, so it must not be reused for a value we deliberately store as a hash. Mint
+  with the same primitive shape, directly (`crypto.randomBytes(32).toString("base64")`, node
+  built-in) or via a small `mintDeviceToken()` beside it. Hash with the existing **`sha256Hex()`**
+  (line 119) — the same function `runRelayInstall` already uses for the relay token's hash. Do
+  **not** invent a second token or hashing *scheme*.
 - **Store the SHA-256 only**: new unique column `Device.liveCaptureTokenHash`, written with
   `sha256Hex()`. The raw token is never persisted, never logged, never in audit detail — the same
   documented contract `RelayHealth.tokenHash` already carries ("only its SHA-256 is stored").
-- **Deliver it at setup over the existing one-click channel** (the same path that delivers the
-  relay token to the device). Never ask the user to copy or paste a secret.
+- **Deliver it at setup over the existing one-click channel** — the exact seam the relay token
+  already uses: `runRelayInstall` (`lib/clone-transport.ts:699`) accepts a caller-supplied token,
+  stores **only** `sha256Hex(token)` on the `RelayHealth` row (line 767) and forwards the **raw**
+  token to the installer as a **parameter** — it lands in the on-device config only, never in our DB,
+  logs, or audit detail. Mirror that exactly: write `Device.liveCaptureTokenHash`, hand the raw token
+  to the source-role install so it writes `live-capture.json` (`0600`), and **never** ask the user to
+  copy or paste a secret.
 - **Rotate / revoke**: writing a new hash rotates; clearing the hash immediately revokes that
   device's ability to post, and device teardown/cleanup must clear it.
 - Documented as a *deliberate* trade-off: this is a long-lived per-device token, which is
@@ -176,10 +187,17 @@ reason** — **never** a silent fallback to `fresh`. A user who asked to carry t
 silently got an empty browser will conclude the product is broken and will not know why. Keep B8's
 existing fail-closed relay behaviour exactly as it is.
 
-**A7 — detection (Q2), single source of truth.** Add a `live`-capture capability that the
-device-side one-click setup records when the extension + native host are present (the native-host
-registration path already exists: `install-registry.ps1` writes it for Chrome/Edge/Brave under
-HKLM, silently, with no user interaction). Expose it on the setup read model
+**A7 — detection (Q2), single source of truth.** ⚠️ *Sharpened 2026-09-25 after review (see V2):*
+the canonical set is `CLONE_CAPABILITIES = ["clone-capture", "clone-host", "relay"]`
+(`lib/clone-transport.ts:104`), and **`clone-capture` is already recorded** for the source role
+(`lib/clone-setup.ts:638`; the source readiness test at line 661 is literally
+`capabilities.includes("clone-capture")`). **Do not invent a fourth string.** Either reuse
+`clone-capture`, or add the new value to `CLONE_CAPABILITIES` **and** record it in that same setup
+block — a capability that is read but never written is a feature that never appears, and a string
+outside the typed set is invisible to `tsc` (`DeviceCapability.capability` is a `String` column, not
+`CloneCapability`). The capability must be recorded when the extension + native host are present (the
+native-host registration path already exists: `install-registry.ps1` writes it for Chrome/Edge/Brave
+under HKLM, silently, with no user interaction). Expose it on the setup read model
 (`lib/clone-setup.ts`) — the **same one place** pattern TASK_116 established, so the card and the
 gate can never disagree — and surface it in the console:
 
@@ -259,4 +277,104 @@ caller behaves exactly as it does today.
    against a local container, the forwarder's loopback binding.
 4. Anything you could **not** verify locally, stated plainly.
 5. Confirmation that the frozen contract was **not** modified (if it was, stop and flag it).
+
+---
+
+## Path A — verification findings (owner review, 2026-09-25)
+
+The four Path A commits (`e841a78`, `46f7cb6`, `47a88fd`, `10d2b73`) were reviewed against this file,
+and `npx tsc --noEmit` was reproduced independently (clean). **The route and the schema are right —
+but verification is not completion.** The following must be fixed before this is called done; V1–V4
+mean the live path cannot run end to end today.
+
+**V1 (blocking) — nothing mints or delivers the device token, so the live path cannot run.**
+`liveCaptureTokenHash` is *read* by the route and declared in the schema, but **no application code
+ever writes it**, and nothing writes `live-capture.json` on the device. A real device therefore
+posts unauthenticated → `401` → launch refuses. A5a's mint **and** deliver half is unbuilt. The seam
+to mirror is `runRelayInstall` (`lib/clone-transport.ts:699`): it takes a caller-supplied token,
+stores **only** `sha256Hex(token)` on the `RelayHealth` row (line 767), and forwards the raw token to
+the installer as a **parameter** (never in our DB, logs, or audit detail). Do it in the same setup
+block (`lib/clone-setup.ts:620-638`) that already calls `runRelayInstall` and records capabilities.
+
+**V2 (blocking) — detection reads a capability that nothing records.**
+`canCaptureLiveSession()` (`lib/clone-setup.ts:437`) queries `capability: "live-capture"`. That
+string is **not** in the canonical set (`lib/clone-transport.ts:104`) and **nothing ever writes it**,
+so the query returns `false` forever and the Q2 offer never appears. Note `clone-capture` **is**
+already recorded for the source role (`lib/clone-setup.ts:638`) and is already the source readiness
+test (line 661). Either reuse `clone-capture`, or add the new value to `CLONE_CAPABILITIES` **and**
+record it in that block. `tsc` cannot catch this: `DeviceCapability.capability` is a `String` column,
+not `CloneCapability`.
+
+**V3 (blocking) — the state machine and the audit row are bypassed.**
+`app/api/devices/clone-capture/route.ts:160` does a **raw** `db.cloneJob.update({ status: "captured" })`.
+`captured` is not a legal edge from either accepted state: `PIPELINE_NEXT` (`lib/clone.ts:111`) allows
+`requested → [awaiting_source, ready]`, `awaiting_source → [capturing]`, `capturing → [captured]` — so
+the legal path is `awaiting_source → capturing → captured`. Every other lifecycle write in the
+codebase goes through `transitionClone` (`lib/clone.ts:229`), which calls `assertCloneTransition`
+**and writes the audit row**; a raw update skips both, so an illegal status is written with no audit
+trail. Route it through the state machine (deciding the `live`-hosted edge inside the machine, the way
+B8-2 decided `requested → ready` for a hosted destination) rather than writing status directly.
+
+**V4 (blocking) — injection fails OPEN, which is the exact thing A6 forbids.**
+`lib/clone-hosted-launch.ts:168` is `if (job?.sessionMode === "live" && cdpPort)`. `cdpPort` comes from
+`startedData?.cdpPort` (line 136) and is optional; if it is missing — or the job lookup returns `null` —
+injection is **skipped silently** and the function returns `ok: true` with a `viewUrl`. The user asked
+to carry their session and silently gets an empty browser: precisely what lines 174-177 forbid
+("**never** a silent fallback to `fresh`"). Both branches must **refuse with a named reason**
+(e.g. `session_injection_unavailable: no_cdp_port`, `clone_job_not_found`) and tear the session down,
+exactly as the existing injection-failure branch already does.
+
+**V9 (blocking — the deepest one) — the live state model was never designed into the machine;
+`stepRequested` still skips capture for *every* hosted destination.**
+`lib/clone.ts:858` sends **any** hosted destination straight to `ready`
+(`transitionClone(job, "ready", …)` with `skipped: "capture_transfer_inject (hosted destination,
+route 3 — nothing to copy)"`) — **unconditionally**, with no `sessionMode` check. But A6's live
+scenario *is* "a `live` job with a hosted destination", so:
+- the job sits in **`ready`**, and the capture route does **not** accept `ready`
+  (`acceptedStates = ["requested", "awaiting_source"]`) → every legitimate capture is rejected `401`;
+- and nothing ever **waits** for the capture: `ready → stepLaunch` fires immediately → calls
+  `launchHostedClone` → `injectLiveCapture` → `capture_not_found` → refusal.
+
+So even with V1 fixed (a token minted and delivered), the live path can neither ingest nor launch.
+Route 3's comment — "the hosted browser logs in for itself, nothing to copy" — **is** the `fresh`
+assumption that live mode exists to replace. This needs a **state-machine decision in
+`lib/clone.ts`**, not a patch inside the route: e.g. hosted + `live` → `awaiting_source` (wait for
+the cookie capture) → `captured` → `ready`, with the launch gate refusing to launch a `live` job in
+`ready` before its capture has landed. Decide it once, in the machine (as B8-2 decided the hosted
+`requested → ready` edge), and record it here.
+
+**V5 (security) — the A5 body cap is bypassable.**
+`route.ts:35` caps only on the `content-length` **header**. A chunked request omits it, so the cap is
+skipped and the body is then fully buffered by `await request.json()` — on a **public** route. Count
+bytes instead: read the body as text/stream and reject over `BODY_SIZE_CAP` **before** parsing.
+
+**V6 (review) — an arbitrary error object is logged, and error text is echoed back.**
+`route.ts:176` `console.error("[clone-capture]", err)` runs in a scope where `rawToken` (line 63) and
+the raw cookie payload are live — and A5's rule is structural, not "unlikely to leak". Separately,
+`injectLiveCapture` returns `injection_error: ${err.message}` (`lib/clone-live-capture.ts:108`), which
+`lib/clone-hosted-launch.ts:181` interpolates into the launch error. A CDP error can echo the command
+params it was given — i.e. cookie **values** — so the route needs a fixed log line (code + error
+`name` only) and the injection failure a **fixed named reason** with no interpolated message.
+
+**V7 (cosmetic, but it is the contract) — a wrong clause is cited.**
+`lib/clone-live-capture.ts:53` attributes the fail-closed rule to "A5b". **A5b is the sender-side rule**
+(line 164); fail-closed injection is **A6** (line 171). Fix the citation so the next agent is not sent
+to the wrong paragraph.
+
+**V8 (deployment constraint) — the payload store is per-process.** `payloadStore` is an in-process
+`Map` (`lib/clone-live-capture.ts:23`), so the capture POST and the hosted launch must land in the
+**same** Node process or injection gets `capture_not_found` and the launch refuses. That fails closed
+(good), but on a multi-instance/serverless deployment it is a functional break. B8's docker container
+is single-process, so this is acceptable today — record the constraint, or move the TTL store to a
+table. Minor: `clearCapture` does not clear the `setTimeout` handle.
+
+**Verified correct — do not re-litigate.** The migration's **partial** unique index
+(`... WHERE "liveCaptureTokenHash" IS NOT NULL`) and Prisma's expected index name; **no**
+`requireInternalBearer` / internal-bearer reference anywhere on the route; a single neutral `401` for
+*every* failure mode (genuinely no oracle, including device/job mismatch); the request body is
+camelCase and matches the frozen contract **and** Path B's `CapturePayload` exactly; `captured` is a
+real state; `HostedBrowserSession.cloneJobId` is `@unique` so the `where` clause is valid;
+`sha256Hex` is exported; the payload is cleared on both the success and failure paths; Path B's
+branch (`56b2c4a`) is untouched and the accidental sweep of its files onto this branch has been
+reverted.
 
