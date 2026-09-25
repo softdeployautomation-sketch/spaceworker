@@ -1045,6 +1045,11 @@ model Device {
   // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
   hardwareSummary Json?
   lastSeenAt      DateTime?
+  // TASK_119: live session capture credential (SHA-256 hash only, never raw token).
+  // Unique, nullable (only devices capable of live capture have this set).
+  // Revoke by setting to null; cleared on job teardown.
+  liveCaptureTokenHash String? @unique
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -1485,6 +1490,10 @@ model CloneJob {
   // fails closed) | "direct" (hosted PC's own IP — PREMIUM ONLY, explicit
   // `--proxy-optional` path). Never a silent fallback; also written to the audit.
   egressMode          String       @default("relay")
+  // TASK_119: session delivery mode. "fresh" (route 3, existing, logs in for
+  // itself) | "live" (new, carries user's real session via CDP). Default "fresh"
+  // means existing behaviour is unchanged.
+  sessionMode         String       @default("fresh")
   browser             String
   // TASK_97/PLAN call this `browserProfileRef` — kept as `profileName` because
   // DESIGN_BROWSER_CLONE_UI_AND_FLOW §3 maps the UI's "Browser / profile" column
@@ -1549,6 +1558,13 @@ model HostedBrowserSession {
   // (direct). Recorded, never inferred.
   egressIp   String?
   egressMode String    @default("relay")
+  // TASK_119: live session capture metadata (NEVER stores values, counts only).
+  // Present only for sessionMode="live" clones; null for "fresh".
+  sessionMode      String?   // "fresh" | "live"; redundant with CloneJob but stamped here for audit
+  cookieCount      Int?      // count of cookies captured, never values
+  domainCount      Int?      // count of unique cookie domains
+  sessionTruncated Boolean   @default(false) // whether the jar was incomplete
+  capturedAt       DateTime? // when the capture was ingest'd
   startedAt  DateTime  @default(now())
   lastUsedAt DateTime?
   stoppedAt  DateTime?
