@@ -1307,6 +1307,25 @@ model VantraLink {
   // the user reveals it). Re-minted on demand; never shown without session.
   privatePsCommand      String?
   privatePsExpiresAt    DateTime?
+  // Task 121 (OOB-13) — the PUBLIC install artifact. A public mint used to ask
+  // Vantra for a download URL and then re-ask on EVERY link open; with the
+  // launcher ZIP (Vantra's own Add-a-device artifact, renameable) that would
+  // mean a secret-bearing generator call per click, so the minted result is
+  // remembered here instead (§4a, Q1 decided).
+  // `installerUrl` is the raw generator/agent download URL and is SERVER-ONLY:
+  // the redirect in resolveInstallToken is the only place it is read, and it is
+  // never serialised into a view model, API response, log line or audit row
+  // (`toView` is the only shape that leaves lib/vantra-link). The row already
+  // stores something strictly more sensitive — `privatePsCommand`, a complete
+  // install command carrying a token — so this is not a new exposure class.
+  installerUrl          String?
+  // The sanitised { zipName, updateLinkName, innerFolder } the user chose, so a
+  // re-mint (a row minted before this change, or one whose stored URL was
+  // cleared) reuses their names instead of resetting them to the defaults.
+  installerNamesJson    String?
+  // "zip" | "exe" — "zip" ⇒ the public link serves the launcher ZIP; NULL ⇒ a
+  // pre-Task-121 row, which keeps behaving exactly like before.
+  installerKind         String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
