@@ -378,3 +378,83 @@ real state; `HostedBrowserSession.cloneJobId` is `@unique` so the `where` clause
 branch (`56b2c4a`) is untouched and the accidental sweep of its files onto this branch has been
 reverted.
 
+---
+
+## Second verification pass (`2ab4482`, owner review 2026-09-25)
+
+Re-checked every finding against the code. **V4, V5 and V6 are genuinely fixed.** V1 is half done,
+V2 is now inverted, V7 was not done, and **V3 + V9 are still broken — they are one design gap, not
+two bugs.** The live path still cannot run end to end. `tsc` clean again (reproduced).
+
+**V4 ✅ FIXED.** `lib/clone-hosted-launch.ts:167-193`: a `live` job with no `cdpPort` now refuses
+(`session_injection_failed: CDP endpoint not available`) and tears the session down, as does a failed
+injection. Silent degradation to `fresh` is gone.
+*Residual:* the guard is `job?.sessionMode === "live"` — if the job lookup returns `null` the whole
+block is skipped and the function returns `ok: true` with a `viewUrl`. V4 listed that case
+(`clone_job_not_found`) as one to refuse; it still fails open. Narrow, but it is the fail-open class.
+
+**V5 ✅ FIXED.** `route.ts:44-53` reads the body as text and counts
+`Buffer.byteLength(text, "utf-8")` before `JSON.parse`. A chunked request can no longer bypass the cap.
+
+**V6 ✅ FIXED — both halves.** `route.ts:191` is a fixed log line with no error interpolation;
+`lib/clone-live-capture.ts` now returns only fixed reasons (`capture_not_found`, `empty_capture`,
+`injection_failed`) — the `injection_error: ${err.message}` echo is gone.
+
+**V1 ⚠️ HALF FIXED — minted, never delivered.** `runLiveCaptureMint`
+(`lib/clone-transport.ts:867`) mints 32 bytes and stores only `sha256Hex` on the device ✅. But the
+raw token it **returns** is dropped: `lib/clone-setup.ts:644` binds it to `const liveToken`, which is
+**never used anywhere** (single occurrence in the file). Nothing writes `live-capture.json` on the
+device — the code comment admits it (*"would be delivered … for now, just record the capability"*).
+So the device still has no credential → its POST is `401`. A5a's **deliver** half is unbuilt, and an
+unused binding proves it.
+
+**V2 ⚠️ INVERTED — detection now lies positively.** `"live-capture"` **is** in `CLONE_CAPABILITIES`
+and **is** registered (`clone-setup.ts:651`) — but it is recorded **unconditionally whenever the mint
+succeeds**, not "when the extension + native host are present" as A7 requires. So
+`canCaptureLiveSession()` returns **true for every source device that ever ran setup**, including with
+no extension installed. The Q2 offer will appear on devices that cannot capture, the user will pick
+`live`, and the capture will never arrive. That is worse than the original bug (which at least refused).
+
+**V3 ❌ STILL BROKEN — the route can never succeed.** It accepts
+`acceptedStates = ["requested","awaiting_source"]` (line 122) and then calls
+`transitionClone(fullJob, "captured")` (line 172). But `captured` is reachable **only** from
+`capturing` (`PIPELINE_NEXT` line 110-120: `requested → [awaiting_source, ready]`,
+`awaiting_source → [capturing]`, `capturing → [captured]`). `assertCloneTransition` (line 159-163)
+**throws** on an illegal edge → caught by the route's own try/catch → **500 "Internal server error"**.
+And the one state from which `captured` *is* legal (`capturing`) is **rejected by `acceptedStates`**
+with a `401`. **There is no state in which this route succeeds.** Worse, `storeCapture()` (line 157)
+runs *before* the transition (line 172), so a throw leaves a payload in memory for a job that never
+advanced. Exporting `transitionClone` did not make the edge legal — it just moved the failure from a
+silent bad write to a 500. **Do not export the raw transition; add a named machine operation.**
+
+**V9 ❌ STILL BROKEN (half fix) — and it routes the live job into the pipeline it exists to replace.**
+The new guard (`&& job.sessionMode !== "live"`, line 860) correctly stops a hosted `live` job from
+jumping to `ready`. But it sends it to **`awaiting_source`**, and `advanceClone` dispatches
+`awaiting_source → stepCapture(job)` **unconditionally** (line 672-673). `stepCapture` has **no**
+hosted or live guard: it writes `capturing` and calls `runCloneCapture` (line 894) — the *agent/engine
+capture on the source*, i.e. precisely the invasive disk-capture path that TASK_117/TASK_119 were
+built to replace. That path fails `capture_no_clone_id` (the very failure the route-3 comment at
+line 852 documents) and transitions the job to **`failed`**. So the sweep fails the live clone before
+(or while) the extension's POST arrives — and once the job is `failed`, the POST's `acceptedStates`
+check gives `401`.
+
+**V9 + V3 are one gap: the live path's states were never designed.** The route's accepted states and
+the machine's legal edges were chosen independently, and neither matches what `live` actually does —
+no agent capture, and the payload arrives out of band from the browser. Fix it **once**:
+
+- hosted + `live` enters a state whose exit is *not* a transport step — either the `awaiting_source`
+  case in `advanceClone` must **skip dispatch** for hosted `live` (`advanced: false`,
+  `reason: "awaiting_live_capture"`), or add an explicit state (e.g. `awaiting_capture`);
+- add the legal edge into `captured` from *that* state, **live-only**;
+- and expose it as a **named operation in `lib/clone.ts`** (e.g. `recordLiveCapture(jobId, counts)`),
+  which asserts live + hosted + waiting, then transitions. **Revert the `transitionClone` export** —
+  a route holding the raw state mutator is how the illegal edge got written in the first place.
+
+**V7 ❌ NOT DONE.** `lib/clone-live-capture.ts:53` still cites **`A5b`** for the fail-closed rule.
+A5b is the sender-side rule (line 164); fail-closed injection is **A6** (line 171).
+
+**Also noted:** `runLiveCaptureMint` mints and overwrites the hash on **every** setup run (rotating
+silently); if the device is offline at that moment it is left holding a stale token and every POST is
+`401` until the next setup. Either refuse the setup step or document the rotation. And V8 (in-process
+`payloadStore`) is unchanged — still acceptable single-process, still unrecorded.
+
