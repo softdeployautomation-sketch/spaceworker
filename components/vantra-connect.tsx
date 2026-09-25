@@ -72,11 +72,20 @@ export function VantraConnect() {
     }
   }
 
+  // Task 121 (OOB-13) — the public artifact is Vantra's launcher ZIP now, so
+  // this surface asks for the SAME artifact the Devices panel does. It has no
+  // rename fields, and `names: {}` means "launcher ZIP, generator defaults"
+  // (Agent.zip / Update.lnk / launcher); sending no body at all would keep
+  // asking for the legacy raw exe and the two surfaces would disagree.
   async function mintInstallLink() {
     setBusy("install");
     setError("");
     try {
-      const res = await fetch("/api/assistant/vantra/install-link", { method: "POST" });
+      const res = await fetch("/api/assistant/vantra/install-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names: {} }),
+      });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : "Couldn't mint install link");
       setLink(data.link);

