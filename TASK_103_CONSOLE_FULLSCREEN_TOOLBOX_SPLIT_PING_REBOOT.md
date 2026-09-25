@@ -235,3 +235,33 @@ no queue row (same rule as Ping).
 - Deployed per `HOW_WE_MOVE_FAST.md` §2 with `--exclude='.env'`; live-verified:
   curl both new routes, then have the owner click ⤢ and each toolbox menu.
 
+## Triage note — "the screen works, but Ping says the agent is unreachable" (2026-09-25)
+
+Reported with a screenshot: the viewer showed a live desktop while the chip read
+"Agent not reachable · last check-in 1 min ago", and Hide/Reveal refused with
+"device offline". **Not a bug, and not a regression.** The two travel *different
+transports*, backed by **two different agents** installed on the device:
+
+| What the user sees | Transport | Backed by | Where |
+|---|---|---|---|
+| Remote-control viewer (the screen) | MeshCentral URLs | **Mesh Agent** | `lib/device-tools.ts` `fetchMeshUrls` → Vantra `/mesh-urls`; console fetches `mesh-urls` |
+| **Ping**, Run now, Hide/Reveal | Vantra `/action` → TRMM *blocking* `/agents/<id>/cmd/` | **TacticalRMM Agent Service** | `pingDevice` → `runCommandNow`; route returns 502 `agentReachable:false` |
+
+So a device whose TRMM agent is slow to check in reports
+`{"error":"This device is currently offline."}` (the shape documented at
+`lib/device-tools.ts` `normalizeVantraError`), `runCommandNow` throws, Ping answers
+502 and Hide/Reveal refuse "device offline" — while an **already-established Mesh
+viewer stream keeps running**, because it is a persistent session rather than a
+per-command round trip.
+
+Ping is a *blocking* call with `timeoutSeconds: 15`, so a starved or slow host
+fails it first and then passes on retry. That matches what the owner observed (the
+VM was slow; it worked on a second attempt).
+
+Ground truth from that device: **`Mesh Agent` = Running _and_ `TacticalRMM Agent
+Service` = Running** — two services, consistent with the split above.
+
+**Outcome:** no code change. Worth remembering before re-opening this: "viewer up
+but agent unreachable" is a normal, expected combination. The chip already shows
+the useful signal (check-in age).
+
