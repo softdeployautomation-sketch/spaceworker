@@ -11,6 +11,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
+    "test:browser": "tsx --test browser-server/relay-ingress.test.ts",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",
     "exe:dev": "tauri dev",

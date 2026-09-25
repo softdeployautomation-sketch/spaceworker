@@ -1,11 +1,27 @@
 // Command relay is the work-PC egress relay (directive §13): an HTTP(S)
 // CONNECT proxy that the hosted clone's browser uses as --proxy-server so
 // every request egresses from the work PC's public IP and carried sessions
-// stay valid. Loopback-bound in production (replayed over the Mesh tunnel);
-// --addr allows other bindings for lab/topology setups.
+// stay valid.
 //
-// Authentication: --token enables Proxy-Authorization: Bearer <token>
-// enforcement; without it the relay is open on its bind address (lab use).
+// TWO LISTEN PATHS (TASK_118 B8-3):
+//
+//  1. --addr: the classic listener, loopback-bound in production, token-gated
+//     via Proxy-Authorization. Kept for lab/topology use AND as the install
+//     script's port preflight.
+//  2. --tunnel: DIAL-OUT mode. The relay connects out to our ingress and
+//     serves proxy requests over those outbound conns (see tunnel.go). This is
+//     the production path: the hosted clone browser lives on our server and
+//     could never reach a loopback listener, and the old "replayed over the
+//     Mesh tunnel" comment described something that was never implemented —
+//     no TCP tunnel exists in either repo. Dialling out also means the work PC
+//     needs no inbound port, no firewall rule and no router change.
+//
+// Authentication: --token gates the --addr listener via
+// Proxy-Authorization: Bearer <token> and authenticates the --tunnel control
+// handshake. Tunnelled conns are NOT proxy-token-checked: they are admitted
+// only by the ingress after that handshake, and the browser side is gated by
+// the ingress' per-job routing credential — so the token is never widened,
+// it is just enforced once, at the boundary that can actually enforce it.
 package main
 
 import (
@@ -27,7 +43,9 @@ var hopHeaders = []string{
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8118", "listen address (loopback in production)")
-	token := flag.String("token", "", "require Proxy-Authorization: Bearer <token>")
+	token := flag.String("token", "", "require Proxy-Authorization: Bearer <token> (and gate --tunnel)")
+	tunnelHost := flag.String("tunnel", "", "dial-out ingress host:port (empty = listener mode only)")
+	tunnelKey := flag.String("tunnel-key", "", "device routing key the ingress pairs browser conns to")
 	flag.Parse()
 
 	// Bind BEFORE anything else: a stale relay (or receiver) squatting the
@@ -40,6 +58,31 @@ func main() {
 		log.SetOutput(io.Discard) // windowsgui build: keep the exit clean
 		os.Exit(1)
 	}
+
+	// Tunnelled conns skip the proxy bearer check: the ingress already admitted
+	// them via the control handshake and gates the browser side per job (see the
+	// package comment). The --addr listener keeps its own token.
+	if *tunnelHost != "" {
+		if *tunnelKey == "" {
+			log.Print("relay: -tunnel requires -tunnel-key (the ingress cannot route streams without it)")
+			log.SetOutput(io.Discard)
+			os.Exit(1)
+		}
+		t := newTunnel(*tunnelHost, *token, *tunnelKey)
+		go t.run()
+		tsrv := &http.Server{
+			Handler:           &relay{},
+			ReadHeaderTimeout: 15 * time.Second,
+		}
+		go func() {
+			// ErrClosed on shutdown is expected, not a fault.
+			if err := tsrv.Serve(t.ln); err != nil && err != net.ErrClosed {
+				log.Printf("relay: tunnel server stopped: %v", err)
+			}
+		}()
+		log.Printf("relay: dial-out tunnel enabled -> %s (key %q)", *tunnelHost, *tunnelKey)
+	}
+
 	srv := &http.Server{
 		Handler:           &relay{token: *token},
 		ReadHeaderTimeout: 15 * time.Second,

@@ -27,6 +27,7 @@ import { randomBytes } from "crypto";
 import { dirname, resolve } from "path";
 import { chmod, mkdir, readdir, rm, writeFile } from "fs/promises";
 import httpProxy from "http-proxy";
+import { startRelayIngress } from "./relay-ingress";
 
 const execFileAsync = promisify(execFile);
 
@@ -52,6 +53,19 @@ const TURN_HOST = process.env.BROWSER_TURN_HOST ?? "";
 const TURN_PORT = process.env.BROWSER_TURN_PORT ?? "3478";
 const TURN_USERNAME = process.env.BROWSER_TURN_USERNAME ?? "";
 const TURN_PASSWORD = process.env.BROWSER_TURN_PASSWORD ?? "";
+// Clone egress ingress (TASK_118 B8-3). The work PC's relay binds loopback on
+// its OWN machine, so our hosted clone browser could never reach it — the old
+// "replayed over the Mesh tunnel" note described something never implemented.
+// The relay therefore dials OUT to us and this listener serves the browser's
+// proxied conns over those outbound connections: no inbound port, no firewall
+// rule and no router change on a customer machine.
+//
+// Started ONLY when a token is configured: an unauthenticated tunnel listener
+// would be an open proxy for anything that could dial the port. Bound to the
+// public interface by default because the devices are remote.
+const RELAY_INGRESS_TOKEN = process.env.RELAY_INGRESS_TOKEN ?? "";
+const RELAY_INGRESS_PORT = Number(process.env.RELAY_INGRESS_PORT ?? 3402);
+const RELAY_INGRESS_BIND = process.env.RELAY_INGRESS_BIND ?? "0.0.0.0";
 
 function buildIceServersJson(): string {
   const servers: Array<Record<string, unknown>> = [{ urls: ["stun:stun.l.google.com:19302"] }];
@@ -504,6 +518,19 @@ function stripBrowserPrefix(url: string): string {
   return url.replace(BROWSER_PATH_RE, "/") || "/";
 }
 
+// Clone egress ingress (TASK_118 B8-3) — see the RELAY_INGRESS_* comment above.
+// Null when unconfigured, so this subsystem keeps working without it.
+const egressIngress = RELAY_INGRESS_TOKEN
+  ? startRelayIngress({
+      bind: RELAY_INGRESS_BIND,
+      port: RELAY_INGRESS_PORT,
+      token: RELAY_INGRESS_TOKEN,
+      log: (msg) => {
+        console.log(msg); // subsystem logging convention (tsx service, journald)
+      },
+    })
+  : null;
+
 const server = createServer(async (req, res) => {
   const url = (req.url ?? "/").split("?")[0];
 
@@ -528,6 +555,41 @@ const server = createServer(async (req, res) => {
   }
   if (req.method === "GET" && url === "/sessions") {
     json(res, 200, { sessions: [...registry.values()].map(publicSession) });
+    return;
+  }
+  // Clone egress routing (TASK_118 B8-3). Registered by the clone launcher —
+  // the only code that knows which device a session egresses through. Handled
+  // BEFORE the generic POST branch below, which requires a sessionId.
+  if (req.method === "GET" && url === "/relay/stats") {
+    json(res, 200, egressIngress ? egressIngress.stats() : { controls: 0, routes: 0, streams: 0, disabled: true });
+    return;
+  }
+  if (req.method === "POST" && (url === "/relay/route" || url === "/relay/route/remove")) {
+    if (!egressIngress) {
+      json(res, 503, { error: "relay ingress disabled (RELAY_INGRESS_TOKEN unset)" });
+      return;
+    }
+    const relayBody = await readBody(req);
+    const routingSecret = String(relayBody.routingSecret ?? "");
+    // Generated server-side per job; the shape check keeps a malformed or
+    // guessed value from ever becoming a routing key.
+    if (!/^[a-f0-9]{32,128}$/i.test(routingSecret)) {
+      json(res, 400, { error: "Invalid routingSecret" });
+      return;
+    }
+    if (url === "/relay/route/remove") {
+      egressIngress.removeRoute(routingSecret);
+      json(res, 200, { ok: true, ...egressIngress.stats() });
+      return;
+    }
+    const deviceKey = String(relayBody.deviceKey ?? "");
+    if (!deviceKey) {
+      json(res, 400, { error: "Invalid deviceKey" });
+      return;
+    }
+    const ttlMs = Number(relayBody.ttlMs ?? 0);
+    egressIngress.addRoute(routingSecret, deviceKey, ttlMs > 0 ? ttlMs : undefined);
+    json(res, 200, { ok: true, ...egressIngress.stats() });
     return;
   }
   if (req.method === "POST") {
@@ -634,6 +696,7 @@ server.listen(PORT, HOST, () => {
 async function shutdown(signal: string): Promise<void> {
   // eslint-disable-next-line no-console
   console.log(`${signal} received — tearing down ${registry.size} tracked container(s)`);
+  await egressIngress?.close().catch(() => {});
   await Promise.all(
     Array.from(registry.values())
       .filter((s) => s.containerName)
