@@ -76,6 +76,18 @@ const RELAY_INGRESS_BIND = process.env.RELAY_INGRESS_BIND ?? "0.0.0.0";
 // ever holding the raw secret itself, the same trust boundary every other
 // browser-server route already uses (Bearer BROWSER_SERVER_TOKEN).
 const RELAY_INGRESS_PUBLIC_HOST = process.env.RELAY_INGRESS_PUBLIC_HOST ?? "164.68.105.96:3402";
+// FIXED 2026-09-25 (real click-through test, ERR_PROXY_CONNECTION_FAILED) —
+// the address a clone's own container actually reaches THIS host at, for the
+// per-device listener (openDeviceListener). Distinct from every other
+// RELAY_INGRESS_* constant above, which are about how a customer's DEVICE
+// reaches us over the internet: this is host<-container docker networking,
+// not device<-internet. "127.0.0.1" (the original, wrong value here) is the
+// container's OWN loopback, not the host's — confirmed live via
+// `docker network inspect bridge`, the real gateway is 172.17.0.1 on this
+// box. Kept env-overridable rather than hardcoded so a differently-configured
+// docker network (a custom bridge, a different subnet) doesn't need a code
+// change, only a .env one.
+const DOCKER_BRIDGE_GATEWAY = process.env.DOCKER_BRIDGE_GATEWAY ?? "172.17.0.1";
 
 function buildIceServersJson(): string {
   const servers: Array<Record<string, unknown>> = [{ urls: ["stun:stun.l.google.com:19302"] }];
@@ -630,13 +642,15 @@ const server = createServer(async (req, res) => {
     const existing = deviceListenerBySession.get(sessionId);
     if (existing) {
       // Idempotent: a retried launch reuses the same port instead of leaking one.
-      json(res, 200, { ok: true, port: existing.port });
+      json(res, 200, { ok: true, port: existing.port, host: DOCKER_BRIDGE_GATEWAY });
       return;
     }
     try {
       const handle = await egressIngress.openDeviceListener(deviceKey);
       deviceListenerBySession.set(sessionId, handle);
-      json(res, 200, { ok: true, port: handle.port });
+      // `host` is what the CONTAINER should dial (the docker bridge
+      // gateway), never 127.0.0.1 — see DOCKER_BRIDGE_GATEWAY's own comment.
+      json(res, 200, { ok: true, port: handle.port, host: DOCKER_BRIDGE_GATEWAY });
     } catch (e) {
       json(res, 500, { error: e instanceof Error ? e.message : "device listener failed to start" });
     }

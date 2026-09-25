@@ -77,16 +77,28 @@ export async function runHostedLaunch(opts: {
       };
     }
     const listener = await browserRuntime.openRelayDeviceListener({ deviceKey: source.id, sessionId });
-    if (!listener.ok || typeof (listener.data as { port?: number } | undefined)?.port !== "number") {
+    if (!listener.ok) {
+      return { ok: false, egressMode: "relay", exitCode: null, error: `relay_listener_failed: ${listener.error}` };
+    }
+    const listenerData = listener.data as { port?: number; host?: string } | undefined;
+    if (typeof listenerData?.port !== "number" || !listenerData.host) {
       return {
         ok: false,
         egressMode: "relay",
         exitCode: null,
-        error: `relay_listener_failed: ${listener.ok ? "no port returned" : listener.error}`,
+        error: "relay_listener_failed: no port/host returned",
       };
     }
-    const port = (listener.data as { port: number }).port;
-    proxyServerValue = `http://127.0.0.1:${port}`;
+    const { port, host: listenerHost } = listenerData;
+    // FIXED 2026-09-25 (real click-through test, ERR_PROXY_CONNECTION_FAILED):
+    // Chromium runs INSIDE the Neko container's own network namespace — a
+    // value of "127.0.0.1" here (the original, untested version) resolves to
+    // the CONTAINER's own loopback, not the host's, so it was silently
+    // unreachable despite this module's own host-side egress check (below)
+    // passing fine. `listenerHost` is browser-server's own answer for what a
+    // container should actually dial (the docker bridge gateway) — never
+    // guessed here.
+    proxyServerValue = `http://${listenerHost}:${port}`;
     // No close-handle needed here: browser-server's own stopInternal() closes
     // this session's device listener automatically (keyed by sessionId) the
     // moment /sessions/stop is called — see stopHostedLaunch below.
@@ -127,6 +139,10 @@ export async function runHostedLaunch(opts: {
   let egressIp: string | undefined;
   if (opts.egress === "relay") {
     try {
+      // "127.0.0.1" here is correct and deliberate, unlike proxyServerValue
+      // above: THIS check runs in THIS Node process, on the HOST — where the
+      // listener (bound 0.0.0.0) is reachable via loopback too. Only the
+      // CONTAINER needs the bridge-gateway address; this process isn't one.
       const port = Number(proxyServerValue.split(":").pop());
       egressIp = await checkIpThroughProxy({ scheme: "http", host: "127.0.0.1", port });
     } catch (e) {

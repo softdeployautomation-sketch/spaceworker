@@ -76,25 +76,30 @@ export interface RelayIngressHandle {
    */
   hasControl(deviceKey: string): boolean;
   /**
-   * TASK_118 B8-2 — a dedicated, UNAUTHENTICATED, loopback-only listener for
-   * exactly one deviceKey. WHY THIS EXISTS: the shared ingress port above
-   * trusts a browser conn by its `Proxy-Authorization` header (`addRoute`'s
-   * whole design) — but Chrome's `--proxy-server` flag does not accept
-   * embedded credentials, and a hosted clone's profile is fresh per job (never
-   * reused), so there is no persisted profile for a one-time proxy-auth prompt
-   * to be answered into (the existing BYO-exit-node flow's own documented
-   * mechanism, `lib/browser-proxy.ts`, only works for a long-lived reused
-   * profile). So an unattended Chromium launch can never present the shared
-   * port's credential.
+   * TASK_118 B8-2 — a dedicated, UNAUTHENTICATED listener for exactly one
+   * deviceKey, reachable from OUR OWN docker containers only (private-source
+   * gated, never the public internet). WHY THIS EXISTS: the shared ingress
+   * port above trusts a browser conn by its `Proxy-Authorization` header
+   * (`addRoute`'s whole design) — but Chrome's `--proxy-server` flag does not
+   * accept embedded credentials, and a hosted clone's profile is fresh per
+   * job (never reused), so there is no persisted profile for a one-time
+   * proxy-auth prompt to be answered into (the existing BYO-exit-node flow's
+   * own documented mechanism, `lib/browser-proxy.ts`, only works for a
+   * long-lived reused profile). So an unattended Chromium launch can never
+   * present the shared port's credential.
    *
    * This collapses "which credential did you present" into "which port did
-   * you dial": the listener is bound to `127.0.0.1` ONLY (never call with a
-   * non-loopback bind) and scoped to one deviceKey for its whole lifetime, so
-   * simply reaching it IS the authorization — there is no HTTP parsing, no
-   * auth header, nothing to fail to supply. The container reaches it over the
-   * docker bridge's published loopback mapping, not the public internet.
-   * Every accepted conn goes straight through the SAME `openStream(deviceKey)`
-   * + splice machinery `handleBrowser` uses, just without the auth gate.
+   * you dial": the listener is bound `0.0.0.0` and scoped to one deviceKey
+   * for its whole lifetime, with `isPrivateSource()` (the SAME check the
+   * shared port's own browser path already trusts) as the actual gate — so
+   * simply reaching it from a private/bridge address IS the authorization.
+   * FIXED 2026-09-25 (real click-through test, `ERR_PROXY_CONNECTION_FAILED`):
+   * an earlier version bound `127.0.0.1` only, which is the HOST's loopback —
+   * unreachable from inside the container's own network namespace. The
+   * container reaches this via the docker bridge gateway (confirmed
+   * `172.17.0.1` on this host), never a loopback mapping. Every accepted conn
+   * goes straight through the SAME `openStream(deviceKey)` + splice machinery
+   * `handleBrowser` uses, just without the auth gate.
    *
    * One listener per active hosted-clone session; the launcher closes it when
    * the session stops (`close()` on the returned handle) so a torn-down clone
@@ -424,6 +429,26 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
     openDeviceListener(deviceKey: string): Promise<{ port: number; close: () => void }> {
       return new Promise((resolvePort, rejectPort) => {
         const listener = createServer((socket) => {
+          // FIXED 2026-09-25 (found live, real click-through test):
+          // Chromium runs INSIDE the Neko container, in its own network
+          // namespace — "127.0.0.1" there is the container's OWN loopback,
+          // not the host's. A listener bound to the host's 127.0.0.1 (the
+          // original version of this code) is provably unreachable from the
+          // container: the automated test that "proved" this worked ran
+          // curl on the HOST, not inside the container, so it never actually
+          // exercised the real path. Real symptom: ERR_PROXY_CONNECTION_FAILED
+          // in the clone browser. Fixed by binding 0.0.0.0 (reachable via the
+          // docker bridge gateway, confirmed 172.17.0.1 on this host) and
+          // reusing the EXACT trust model the shared ingress port already
+          // uses for its own browser path: isPrivateSource() gates every
+          // conn, so this is reachable from our own containers only, never
+          // the open internet, without needing the Proxy-Authorization
+          // header Chrome can't supply (see the doc comment above).
+          if (!isPrivateSource(socket.remoteAddress)) {
+            log(`relay-ingress: device-listener refused non-private source ${socket.remoteAddress ?? "?"}`);
+            socket.destroy();
+            return;
+          }
           openSockets.add(socket);
           socket.once("close", () => openSockets.delete(socket));
           socket.setNoDelay(true);
@@ -458,9 +483,11 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
           );
         });
         listener.once("error", rejectPort);
-        // 127.0.0.1 ONLY — this port has zero auth of its own; the bind is the
-        // one thing standing between "reachable" and "wide open."
-        listener.listen(0, "127.0.0.1", () => {
+        // 0.0.0.0 — the docker bridge gateway (172.17.0.1) is how the
+        // container actually reaches the host; isPrivateSource() above is
+        // what actually gates this, not the bind address (127.0.0.1 here
+        // would be unreachable from inside the container, see above).
+        listener.listen(0, "0.0.0.0", () => {
           deviceListeners.add(listener);
           const address = listener.address();
           const port = typeof address === "object" && address ? address.port : 0;
