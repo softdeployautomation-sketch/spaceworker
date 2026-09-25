@@ -430,6 +430,18 @@ async function capabilityList(deviceId: string): Promise<string[]> {
 }
 
 /**
+ * Q2 (TASK_119A A7): Detect if a device can capture live sessions.
+ * Returns true if the device has the extension + native-host installed.
+ * The setup registers this capability once both are present.
+ */
+export async function canCaptureLiveSession(deviceId: string): Promise<boolean> {
+  const cap = await db.deviceCapability.findFirst({
+    where: { deviceId, capability: "live-capture", enabled: true },
+  });
+  return !!cap;
+}
+
+/**
  * Fleet-level "is there anywhere for a clone's browser to run?" — any ONLINE
  * device of this user carrying `clone-host`, EXCLUDING the device being viewed.
  * Cheap single query (capability is indexed on deviceId), and it rides the
