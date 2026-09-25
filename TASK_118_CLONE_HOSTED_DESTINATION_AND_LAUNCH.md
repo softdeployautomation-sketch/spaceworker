@@ -13,6 +13,33 @@ logs in inside it. Nothing is copied from their machine.
 
 ---
 
+## Plain words — the terms, and what the owner's design actually says
+
+Owner, 2026-09-25: *"i explained what i wanted … i really dont get the confusion."*
+Fair. The confusion is **ours, in the naming**, not in the idea.
+
+- **The clone browser** = the browser the user actually clicks and uses. In the owner's
+  design it runs on **our** side — the **Neko private browser we already have**, spun up
+  per clone job. It is *not* a machine belonging to the customer, and it is *not* the
+  customer's own Chrome.
+- **"Hosted"** just means *running on our infrastructure*. The old schema names —
+  `Device.deviceKind = "hosted"`, "hosted clone PC", `CloneJob.destinationDeviceId` — are
+  all the **same single idea**, and they are **misleading**, because they say "device" and
+  "PC" for something that is **our browser**. That mismatch is the entire source of the
+  "hosted destination" confusion. The concept is the one the owner described; only the
+  label is wrong. Read every occurrence of "hosted destination" in this file as
+  **"our browser on our server"**.
+- **Egress routed through the device** = the clone browser's traffic leaves via the user's
+  PC (the relay), so sites see the **user's** IP. That is the product.
+- **Profile** = a **per-clone-job** Chrome profile, named after the source device — the
+  owner's own words: *"it automatically creates a browser profile with that device name…
+  we just split each browser profile just the way chrome works… so we dont risk leakage."*
+
+So the design, in one line: **one browser on our side, one profile per clone job, traffic
+through the user's device.** Task 118 implements exactly that. Nothing here re-decides it.
+
+---
+
 ## The four defects that make "click Start" impossible today (all measured in code)
 
 **1. `Device.deviceKind = "hosted"` is read in exactly one place and WRITTEN NOWHERE.**
