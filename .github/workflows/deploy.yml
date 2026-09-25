@@ -15,11 +15,17 @@ name: Build & Deploy
 # change), and `extraction-worker` (worker/*.py via its own venv — also no
 # build step, just needs the .py files present and the service restarted).
 # The worker's venv and worker/.env are NOT part of this repo (gitignored,
-# provisioned once on the VPS) — extracting worker/ only touches the .py
-# source files, leaving the venv itself alone. Its INSTALLED PACKAGES are kept
-# in sync on every deploy via `pip install -r requirements.txt` below though —
-# skipping that step is what let Task 13's new `pypdf` dependency ship without
-# ever landing on the VPS, crash-looping extraction-worker until caught live.
+# provisioned once on the VPS at /opt/spaceworker-worker-venv — matching the
+# extraction-worker.service unit's ExecStart; NOT /opt/spaceworker/worker/venv,
+# a path this script itself used to install into, which doesn't exist) —
+# extracting worker/ only touches the .py source files, leaving the venv
+# itself alone. Its INSTALLED PACKAGES are kept in sync on every deploy via
+# `pip install -r requirements.txt` below though — skipping that step is what
+# let Task 13's new `pypdf` dependency ship without ever landing on the VPS,
+# crash-looping extraction-worker until caught live. 2026-09-25: the pip
+# install (and extraction-worker's own restart) is deliberately isolated to a
+# NON-FATAL tail of the deploy step, after spaceworker/spaceworker-browser are
+# already back up — a failure here must never leave the whole site down.
 
 on:
   push:
@@ -134,15 +140,33 @@ jobs:
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
             npm rebuild || true
             sudo -u trmm npx prisma migrate deploy
-            sudo -u trmm /opt/spaceworker/worker/venv/bin/pip install -q -r /opt/spaceworker/worker/requirements.txt
+            # Restart the two services every request actually depends on
+            # BEFORE touching the Python worker at all. 2026-09-25 (live
+            # incident): this used to come AFTER the worker pip install, under
+            # the same `set -e` — a broken/missing worker venv (the
+            # extraction-worker unit actually runs
+            # /opt/spaceworker-worker-venv/bin/python, a DIFFERENT path than
+            # this step installed into) aborted the script before either
+            # `systemctl start` line ever ran, leaving the whole site down
+            # with services merely `stopped`, not failed — nothing paged,
+            # nothing crash-looped, it just silently never came back up.
+            # spaceworker/spaceworker-browser have no runtime dependency on
+            # the Python worker, so nothing here should ever gate them again.
             systemctl start spaceworker
             systemctl start spaceworker-browser
-            systemctl start extraction-worker
             sleep 3
             systemctl is-active spaceworker
             systemctl is-active spaceworker-browser
-            systemctl is-active extraction-worker
-            curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.instaweb.top/dashboard
+            curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.top/dashboard
+            # extraction-worker is intentionally isolated below: its own venv
+            # lives at /opt/spaceworker-worker-venv (matching the systemd
+            # unit'"'"'s ExecStart — NOT /opt/spaceworker/worker/venv, which
+            # does not exist), and a failure here must stay non-fatal so a
+            # broken worker dependency can never take the main app down again.
+            sudo -u trmm /opt/spaceworker-worker-venv/bin/pip install -q -r /opt/spaceworker/worker/requirements.txt || echo "::warning::extraction-worker pip install failed — worker left stopped, main app unaffected"
+            systemctl start extraction-worker || echo "::warning::extraction-worker failed to start — main app unaffected"
+            sleep 2
+            systemctl is-active extraction-worker || echo "::warning::extraction-worker is not active after deploy"
           '
 
       - name: Install systemd timer units (mail-queue-drain, dispatcher, payment-verify, automations-sweep)
