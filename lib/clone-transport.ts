@@ -116,7 +116,7 @@ export function mintCloneJobKey(): string {
   return crypto.randomBytes(32).toString("base64");
 }
 
-function sha256Hex(value: string): string {
+export function sha256Hex(value: string): string {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
