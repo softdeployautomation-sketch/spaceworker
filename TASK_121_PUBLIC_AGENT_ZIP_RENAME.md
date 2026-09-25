@@ -3,7 +3,10 @@
 **Bit:** `OOB-13` (device onboarding — **not** a clone-pipeline bit)
 **Owner request 2026-09-25:** *"lets fix this public agent zip flow which we have on vantra, lets add the flow
 to the public url on spaceworker. so users can rename it just the way we do in vantra."*
-**Status:** RECORDED — not started. **Two repos, two paths, disjoint files.**
+**Status:** **BOTH PATHS IMPLEMENTED + PUSHED 2026-09-25** — Vantra `e668542`
+(`agent/task-121a-install-link-zip`), SpaceWorker `7f5bfa5` (`agent/task-121b-public-link-zip`).
+Verified independently (§9). **Not merged, not deployed, migration not applied** — see §9 for the
+deploy order. `OOB-13` stays open until §6 item 2 passes on `Sc`. **Two repos, two paths, disjoint files.**
 
 ---
 
@@ -246,4 +249,66 @@ decided; each is reversible with one small change if it proves wrong in the acce
   follow-up unless the owner asks for it.
 - **Q3 — DECIDED: copy Vantra's existing `NAME_PRESETS` verbatim.** They are already confirmed clean on a
   stock Win11 VM; inventing new names would be untested guesswork.
+
+---
+
+## 9. Implementation status (2026-09-25) — both paths committed + pushed, verified, NOT deployed
+
+| | PATH A — Vantra | PATH B — SpaceWorker |
+|---|---|---|
+| Commit | `e668542` | `7f5bfa5` |
+| Branch (pushed to `origin`) | `agent/task-121a-install-link-zip` | `agent/task-121b-public-link-zip` |
+| Files touched | exactly the 3 declared in §5 | exactly the 6 declared in §5 (incl. the one hand-written migration) |
+| Tests | `tests/install-link-zip.test.ts` — **22/22, re-run and reproduced here** | **none committed** (both harnesses were throwaway `/tmp` scripts) |
+
+Independent verification, from the commit contents rather than the agents' reports:
+
+- **The seam matches on both sides.** Path B sends `{installer:{kind:"zip", zipName?, updateLinkName?,
+  innerFolder?}}`; Path A's `parseInstaller` reads exactly that and treats an absent/unrecognised `kind` as
+  the exe branch. Path B reads `downloadUrl` out of the response Path A returns. No mismatch.
+- **Backward compatibility is real, not asserted.** Path A's own test re-run here: **22/22 pass**. Path B's
+  `installerRequest(undefined)` returns the literal string `{}` — the same body today's code sends.
+- **The migration agrees with the schema.** `prisma migrate diff` between HEAD's datamodel and the branch's
+  prints exactly the three nullable columns, matching the hand-written SQL. `prisma validate` clean.
+- **No leak.** `toView` — the only shape that leaves `lib/vantra-link.ts` — carries no `installer*` column, so
+  the raw URL cannot reach a response, a log line or an audit row. `installer*` appears **only** in
+  `lib/vantra-link.ts`, `prisma/schema.prisma` and the migration. No Vantra secret appears anywhere.
+- **The stored-URL decision (§8 Q1) is safe.** Vantra calls the generator with `expiryHours: 72` and creates
+  the deployment with `expiresAt: now + 72 h` — the same window as the wrapper token — and the generator mints
+  its artifact *after* the token is created, so the artifact cannot expire before the link that points at it.
+- **Merge into `main` is clean.** `git merge-tree main agent/task-121b-public-link-zip` → no conflicts;
+  the unrelated `a2f2c14` on main touches `deploy.yml`, `lib/device-tools.ts`, `next.config.ts` — none of
+  Path B's files.
+
+**The public link is NOT opt-in — every new public link becomes the ZIP.** The UI always sends the three name
+fields (`{}` when they are all blank) and the route returns `{}` — not `undefined` — for an all-blank object,
+so `installerRequest` sees a defined object and asks for the launcher **ZIP**. That is the intent (D1: the
+public link should deliver what Vantra's own flow delivers), and it is exactly why §6 item 2 is the gating
+acceptance item rather than a nice-to-have.
+
+**Known gap:** Path B's acceptance evidence (quiet-mint body, invalid-name dropping, one-re-mint-when-unset,
+no-URL-in-response) rests on harnesses that were never committed, so the next person cannot reproduce it. A
+small committed test (`tsx --test`, the convention `test:engine` / `test:browser` already use) is the one
+worthwhile addition before this merges.
+
+### Deploy order — this is the safe one, and it is not the obvious one
+
+1. **Deploy Vantra (Path A) alone, first.** With no `installer` block in the request it takes the exe branch
+   byte-for-byte, so this is a **zero-behaviour-change deploy** that still puts the new route live.
+2. **Prove the ZIP through the live route** — `POST /api/internal/sw/orgs/<orgId>/install-link` with the SW
+   secret and `{"installer":{"kind":"zip"}}` — then open the returned URL on **`Sc`**. That is §6 item 2, and
+   it needs neither a SpaceWorker deploy nor a customer's link.
+3. **Apply the migration, then deploy SpaceWorker.** `scripts/deploy-vps.sh` runs `prisma generate` but **not**
+   `prisma migrate deploy` (the GitHub Actions deploy job *does*, in its extract step) — and this repo has
+   already been bitten by exactly that (`TASK_107`, "the unapplied Browser Clone migration"). Per
+   `HOW_WE_MOVE_FAST.md` §3: DB backup → `cd /opt/spaceworker && sudo -u trmm npx prisma migrate deploy` →
+   `npx prisma generate` → build → restart. The **new migration file and `prisma/schema.prisma` must both be in
+   the rsync file list.** Finish with the §6b drift check (`--from-schema-datasource`; in sync prints exactly
+   `-- This is an empty migration.`).
+4. **Owner confirmation on `Sc`:** download the renamed ZIP, check the shortcut name and folder in Explorer,
+   confirm it installs and checks in. **Never `WilkSF9`.**
+
+**Rollback:** stop sending the `installer` block in `mintInstallLink` — one line, back to the exe branch,
+byte-identical. The only subtlety: rows already in the wild keep their remembered ZIP URL, so a link that was
+already handed out has to be **re-minted or revoked** to return to the exe.
 
