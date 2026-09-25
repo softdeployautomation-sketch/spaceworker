@@ -98,6 +98,17 @@ export interface CloneSetupStatus {
   relay: { addr: string; status: string; lastCheckAt: string | null } | null;
   capabilities: string[];
   /**
+   * TASK_119A (owner 2026-09-25: "one browser with separate profiles… carry
+   * the session"): can THIS PC hand over the cookies it is already using, so a
+   * clone can open already signed in?
+   *
+   * A server-side presence check (`canCaptureLiveSession`) — it is true only
+   * when the extension + native host are actually installed on the device, not
+   * when a token merely exists. The console must not offer "Carry my session"
+   * unless this is true, so a live clone can never fail after Start.
+   */
+  liveCaptureReady: boolean;
+  /**
    * Fleet-level (owner 2026-09-24 egress report): does ANY of this user's
    * ONLINE devices carry `clone-host`?
    *
@@ -570,10 +581,11 @@ export async function cloneSetupStatus(opts: {
   // created the instant they actually tried. The card and the gate must
   // judge the same reality (see clone-destination.ts's own doc comment).
   await ensureHostedDestination(opts.userId);
-  const [relay, capabilities, hosts] = await Promise.all([
+  const [relay, capabilities, hosts, liveCaptureReady] = await Promise.all([
     relayView(opts.deviceId),
     capabilityList(opts.deviceId),
     hostAvailability({ userId: opts.userId, excludeDeviceId: opts.deviceId }),
+    canCaptureLiveSession(opts.deviceId),
   ]);
   const online = device.status === "online" && !!device.vantraAgentId;
   // Ready = the role's capability is registered. `source` additionally needs a
@@ -584,6 +596,7 @@ export async function cloneSetupStatus(opts: {
     online,
     relay,
     capabilities,
+    liveCaptureReady,
     hostedAvailable: hosts.available,
     hostBlockReason: hosts.reason,
     selfIsHost: hosts.selfIsHost,

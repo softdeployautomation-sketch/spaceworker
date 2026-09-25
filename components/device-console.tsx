@@ -68,6 +68,10 @@ type CloneSetupStatus = {
   online: boolean;
   relay: { addr: string; status: string; lastCheckAt: string | null } | null;
   capabilities: string[];
+  // TASK_119A: this PC really has the extension + native host, so it can hand
+  // over the session it is already using. "Carry my session" stays disabled
+  // until this is true — a live clone must never fail after Start.
+  liveCaptureReady: boolean;
   // Fleet-level: any ONLINE device of this account carries `clone-host`. Not a
   // property of THIS device — the clone's browser always runs on a hosted PC —
   // but it is the first-order blocker, so the picker names it before Start
@@ -393,6 +397,11 @@ export function DeviceConsole({
   const [cloneBrowser, setCloneBrowser] = useState<"chrome" | "edge" | "firefox">("chrome");
   const [cloneProfile, setCloneProfile] = useState("");
   const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
+  // TASK_119A (owner 2026-09-25): the clone flow the owner asked for — one
+  // browser on OUR side, its own profile per clone job. `fresh` starts clean;
+  // `live` asks this PC's extension to hand over the session it is already
+  // using so the clone opens signed in. `fresh` is the default and unchanged.
+  const [cloneSessionMode, setCloneSessionMode] = useState<"fresh" | "live">("fresh");
   const [isPremium, setIsPremium] = useState(false);
   // True once /api/entitlements has answered (ok or not) — the egress picker
   // must not render a "Premium" lock before we know the account state.
@@ -1035,6 +1044,10 @@ export function DeviceConsole({
         body: JSON.stringify({
           egress: cloneEgress,
           browser: cloneBrowser,
+          // Defensive: if the setup read model has not said this PC can capture
+          // (or is stale), send `fresh` rather than asking for a session we
+          // know the device cannot provide.
+          sessionMode: cloneSetup?.liveCaptureReady === true ? cloneSessionMode : "fresh",
           ...(cloneProfile.trim() ? { profile: cloneProfile.trim() } : {}),
         }),
       });
@@ -1289,6 +1302,8 @@ export function DeviceConsole({
               setProfile={setCloneProfile}
               egress={cloneEgress}
               setEgress={setCloneEgress}
+              sessionMode={cloneSessionMode}
+              setSessionMode={setCloneSessionMode}
               premium={isPremium}
               premiumLoaded={premiumLoaded}
               setup={cloneSetup}
@@ -1453,7 +1468,7 @@ function SummaryTab({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   return (
     <div className="space-y-4">
@@ -1466,7 +1481,7 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
         steps={props.setupSteps}
         onSetup={props.onSetup}
       />
-      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
+      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} sessionMode={props.sessionMode} setSessionMode={props.setSessionMode} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
       {live ? (
         <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
       ) : (
@@ -1711,8 +1726,8 @@ function CloneSetupCard(props: {
 }
 
 
-function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
-  const { browser, setBrowser, profile, setProfile, egress, setEgress, premium, premiumLoaded, busy, onStart, setup } = props;
+function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+  const { browser, setBrowser, profile, setProfile, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
   // /api/entitlements answers — before that the direct button renders
@@ -1721,6 +1736,11 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
   // real gate and 403s direct-without-premium if forced). Once loaded, a
   // non-premium account sees the honest Premium lock.
   const directSelectable = premium || !premiumLoaded;
+  // TASK_119A: "Carry my session" is offered ONLY when the server has actually
+  // seen the extension + native host on this PC (`liveCaptureReady` is a
+  // presence check, not a guess). Otherwise it is disabled with the reason —
+  // never a button that fails after Start.
+  const liveSelectable = setup?.liveCaptureReady === true;
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -1785,6 +1805,52 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
           </span>
           )}
         </span>
+      </div>
+      {/* TASK_119A (owner 2026-09-25): this is the clone flow the owner asked
+          for — a browser on OUR side, its own profile per clone job, traffic
+          leaving from your PC. "Carry my session" hands over the session this
+          browser is already using, so the clone opens signed in; "Fresh
+          browser" starts clean. Fresh is the default and unchanged. */}
+      <div className="mt-2">
+        <span className="block text-xs text-fg-muted">
+          Session
+          <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
+            <button
+              onClick={() => setSessionMode("fresh")}
+              title="A clean browser — you sign in inside the clone"
+              className={cn(
+                "flex-1 px-2 py-1.5 text-xs transition-colors",
+                sessionMode === "fresh" ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+              )}
+            >
+              Fresh browser
+            </button>
+            <button
+              onClick={() => liveSelectable && setSessionMode("live")}
+              disabled={!liveSelectable}
+              title={liveSelectable ? "Hands this PC's signed-in session to the clone" : "Needs the browser extension on this PC — use “Set up this PC” in Device setup above"}
+              className={cn(
+                "flex-1 px-2 py-1.5 text-xs transition-colors",
+                sessionMode === "live" && liveSelectable ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
+                !liveSelectable && "cursor-not-allowed opacity-60",
+              )}
+            >
+              Carry my session{!liveSelectable ? " · setup needed" : ""}
+            </button>
+          </span>
+        </span>
+        {!liveSelectable ? (
+          <p className="mt-1.5 text-xs text-fg-muted">
+            &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
+            this PC&rdquo; in Device setup above — it installs silently, and this option appears once
+            it is detected.
+          </p>
+        ) : sessionMode === "live" ? (
+          <p className="mt-1.5 text-xs text-fg-muted">
+            Your PC will send its current session to the clone — the clone waits for it, then opens
+            already signed in.
+          </p>
+        ) : null}
       </div>
       {!directSelectable && (
         <p className="mt-1.5 text-xs text-fg-muted">SpaceWorker&apos;s IP is a Premium feature — Same IP as your PC works on every plan.</p>
