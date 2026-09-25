@@ -348,3 +348,33 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 
   No code changed, nothing built, nothing deployed.
 
+
+- 2026-09-25 — **B9 AMENDMENT (owner, mid-flight): the capture route takes a PER-DEVICE credential.**
+  The first draft gated `clone-live-capture` with the fleet-wide internal bearer. That is wrong and
+  is now **forbidden** on any device-facing route: a device must **never** hold
+  `INTERNAL_BEARER_TOKEN` / `VANTRA_INTERNAL_TOKEN` (that secret is server-to-server), and one leaked
+  customer device must not be able to forge another customer's capture.
+
+  **What changed, in all three docs (this is a contract change, so it landed in the umbrella, Path A
+  and Path B together — the docs' own rule):**
+  - Route is now **`POST /api/devices/clone-capture`** — a **public, device-facing** route mirroring
+    `app/api/devices/pin-callback/route.ts`, **not** `/api/internal/*`. The **device token IS the
+    credential**; **no `requireInternalBearer` on it, ever**.
+  - Token: **per device**, minted by reusing the relay's existing primitive (`generateToken()` in
+    `lib/clone-transport.ts` — 32 random bytes, base64), stored as **SHA-256 only** via `sha256Hex()`
+    in a new unique column **`Device.liveCaptureTokenHash`** — the same documented contract
+    `RelayHealth.tokenHash` already carries ("only its SHA-256 is stored, never logged"). Delivered at
+    setup over the **existing one-click channel** (the same path the relay token uses); never typed by
+    the user. Rotate = write a new hash; revoke = clear it; teardown clears it.
+  - Verify order on the route: **body-size cap first** (it is public) → hash → unique lookup →
+    assert the `cloneJobId` belongs to **that device's user** and is in a capture-expecting state →
+    neutral `404`/no-oracle on any mismatch → **never a write** on a failure → per-device rate limit.
+  - Recorded as a *deliberate* trade-off: a long-lived per-device token is proportionate for a
+    single-tenant rollout; the tighter **per-job** token (minted at Start, handed to the device via
+    the agent channel) is logged as a follow-up, not silently skipped.
+  - Owner decision **Q3** added to the umbrella; Path A **A5/A5a/A5b** detail; Path B **B4** now says
+    the native host sends its own installed device token and never a server-side bearer.
+
+  Claude had already started on Path A when this landed, so it needs the amendment prompt (sent with
+  this change). Docs only — no code written by this commit.
+

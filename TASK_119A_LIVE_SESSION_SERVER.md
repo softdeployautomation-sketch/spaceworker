@@ -53,7 +53,10 @@ the handshake hangs silently with no event; **(b)** a direct `/devtools/page/<id
 The only coupling between the paths. Path B's native host sends this; you receive it.
 
 ```
-POST /api/internal/clone-live-capture   (bearer-gated, same class as the other /api/internal routes)
+POST /api/devices/clone-capture
+  PUBLIC device-facing route — the DEVICE TOKEN is the credential.
+  Mirrors app/api/devices/pin-callback/route.ts. NOT /api/internal/* — see A5a.
+  Header: Authorization: Bearer <per-device token>
 {
   "cloneJobId": "<id>",
   "deviceId":   "<id>",
@@ -74,10 +77,10 @@ The sender accumulates its own 1 MiB-per-message chunks and makes **one** POST �
 
 | File | Change |
 |---|---|
-| `prisma/schema.prisma` + one **hand-written** migration | `CloneJob.sessionMode`; `HostedBrowserSession` capture/session fields (see A1/A6) |
+| `prisma/schema.prisma` + one **hand-written** migration | `CloneJob.sessionMode`; `Device.liveCaptureTokenHash` (A5a); `HostedBrowserSession` capture/session fields (A1/A6) |
 | `lib/cdp.ts` | **new** — the dependency-free CDP client, extracted from `scripts/clone-cdp.mjs` |
 | `lib/clone-live-capture.ts` | **new** — ingest validation, short TTL, injection orchestration |
-| `app/api/internal/clone-live-capture/route.ts` | **new** — the contract above |
+| `app/api/devices/clone-capture/route.ts` | **new** — the device-facing public route for the contract above (the device token IS the credential; A5/A5a) |
 | `app/api/devices/[deviceId]/clones/route.ts` | accept + validate `sessionMode` |
 | `lib/clone.ts` | `sessionMode` in `requestClone`; fail-closed on an empty live capture |
 | `lib/clone-hosted-launch.ts` | expose the session's CDP endpoint; inject after the container is up |
@@ -120,14 +123,47 @@ endpoint grants full control of the browser and must never be publicly reachable
 runs on the host, so host-loopback is directly dialable by it. Stamp the port on
 `HostedBrowserSession.cdpPort` (the column already exists, unfilled since B8-2).
 
-**A5 — ingest (`lib/clone-live-capture.ts` + the route).** Enforce, in this order:
-1. bearer auth (same class as the other `/api/internal` routes);
-2. the `cloneJobId` **belongs to the user that `deviceId` belongs to**, and the job is **in a state
-   that expects a capture** → otherwise `404`/`409`, **never a write**;
-3. payload validation (shape, caps, sanity) → `400` naming the field;
-4. **no value is ever logged, echoed, audited or persisted beyond its short TTL.** The audit row
-   takes **integers**: `cookieCount`, `domainCount`, `truncated`. This is CROSS-TRACK RULE 5 and it
-   must hold structurally, not by discipline.
+**A5 — ingest (`lib/clone-live-capture.ts` + the route).** The route is **device-facing and
+public** (`app/api/devices/clone-capture/route.ts`), mirroring `app/api/devices/pin-callback/route.ts`:
+**the device token IS the credential.** Enforce, in this order:
+1. **body size cap FIRST** (reject an oversized body before parsing it) — this is a public route;
+2. `Authorization: Bearer <token>` → `sha256Hex(token)` → **unique lookup** on
+   `Device.liveCaptureTokenHash`. An unknown token returns the **same neutral response** as a
+   job/token mismatch — no oracle telling an attacker which half was wrong;
+3. the `cloneJobId` belongs to **that device's user**, and the job is **in a state that expects a
+   capture** → otherwise neutral `404`/`409`, **never a write**;
+4. payload validation (shape, caps, sanity) → `400` naming the field;
+5. per-device rate limit on the route.
+6. **No value is ever logged, echoed, audited or persisted beyond its short TTL.** The audit row
+   takes **integers**: `cookieCount`, `domainCount`, `truncated`. CROSS-TRACK RULE 5, enforced
+   structurally, not by discipline.
+
+**A5a — the per-device credential (owner amendment, 2026-09-25 — folds the fleet-secret risk).**
+The first draft of this route used the fleet-wide internal bearer. That is wrong for a
+device-facing route and is now **forbidden**: one leaked customer device could then forge another
+customer's capture, and it would mean placing the **server-to-server** secret on a machine we do
+not control. Concretely:
+
+- **No `requireInternalBearer` on this route.** `INTERNAL_BEARER_TOKEN` / `VANTRA_INTERNAL_TOKEN`
+  must **never** exist on a device. Do not add this route to the internal-bearer set.
+- **Mint per device, reusing the existing primitive**: `generateToken()` in
+  `lib/clone-transport.ts` (32 random bytes, base64) — the same one the relay token uses. Do **not**
+  invent a second token scheme.
+- **Store the SHA-256 only**: new unique column `Device.liveCaptureTokenHash`, written with
+  `sha256Hex()`. The raw token is never persisted, never logged, never in audit detail — the same
+  documented contract `RelayHealth.tokenHash` already carries ("only its SHA-256 is stored").
+- **Deliver it at setup over the existing one-click channel** (the same path that delivers the
+  relay token to the device). Never ask the user to copy or paste a secret.
+- **Rotate / revoke**: writing a new hash rotates; clearing the hash immediately revokes that
+  device's ability to post, and device teardown/cleanup must clear it.
+- Documented as a *deliberate* trade-off: this is a long-lived per-device token, which is
+  proportionate for a single-tenant rollout. The tighter future step — a **per-job** token minted
+  at Start and handed to the device through the agent channel — is recorded as a follow-up, not
+  silently skipped.
+
+**A5b — the sender side (Path B's contract obligation).** The native host reads the token from its
+installed config (`0600`, written by the one-click setup), sends it on every POST, and **never**
+puts it in the payload, in the extension, in a log, or in an error message.
 
 Hold the payload only long enough to inject it (memory or a `0600` file), and delete it on inject,
 on failure, and on job teardown. **A live capture is a credential.**
@@ -195,8 +231,11 @@ is — do not re-derive them), and `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` for the
 2. `live` end to end on a disposable login: capture → ingest (`202`, counts) → clone opens **already
    signed in** → the session's `egressIp` is the **device's** IP, not ours.
 3. `live` with **0** cookies → **refusal with a named reason**, **no clone created**.
-4. The ingest route: unauth → `401`; a job that isn't the sender's → `404`; malformed payload →
-   `400` naming the field; a valid payload → `202` with a **count only**.
+4. The capture route: no/invalid device token → `401`; **the same neutral response** for an unknown
+   token and for a valid token naming a job that isn't that device's → no oracle; malformed payload
+   → `400` naming the field; a valid post → `202` with a **count only**. **An oversized body is
+   rejected before it is parsed.** Clearing `Device.liveCaptureTokenHash` **revokes** that device
+   (its next post is `401`). The token — raw or hashed — appears **nowhere** in any log or audit row.
 5. **No cookie value** appears in any log, audit row, error message or API response — counts and
    domains only.
 6. `HostedBrowserSession.cdpPort` is stamped for a live session, and the published CDP port is

@@ -76,7 +76,10 @@ with a 4-byte little-endian length and is capped at **1 MiB per message** —
 **Native host → server** (Path A implements the receiver):
 
 ```
-POST /api/internal/clone-live-capture   (bearer-gated, same class as the other /api/internal routes)
+POST /api/devices/clone-capture
+  PUBLIC device-facing route — the DEVICE TOKEN is the credential (Path A's A5a).
+  Mirrors app/api/devices/pin-callback/route.ts. NOT /api/internal/*.
+  Header: Authorization: Bearer <per-device token from the installed config>
 {
   "cloneJobId": "<id>",
   "deviceId":   "<id>",
@@ -88,8 +91,9 @@ POST /api/internal/clone-live-capture   (bearer-gated, same class as the other /
 → 202 { "ok": true, "accepted": <n> }     // count only, NEVER a value
 ```
 
-**Hard rules on that payload:** never log, print or persist a cookie **value** anywhere except the
-payload itself; the response and any audit take **counts and domains only**.
+**Hard rules on that payload:** never log, print or persist a cookie **value** — nor the **device
+token** — anywhere except the payload/header that carries it; the response and any audit take
+**counts and domains only**.
 
 ---
 
@@ -143,8 +147,12 @@ sites") or the named error. Never render a value. Leave the existing Clone butto
 **B4 — `cmd/native-host/main.go`.** Add `capture_cookies` to the dispatch:
 
 - decode and **validate** each chunk (contiguous `chunk_index`, sane `chunk_count`, cap the total);
-- accumulate; on the final chunk, POST the contract body to the API using the **existing**
-  transport and the **existing** auth — do **not** invent a new auth mechanism;
+- accumulate; on the final chunk, POST the contract body to `/api/devices/clone-capture` using the
+  **existing** transport. **Auth = the per-device token** the one-click setup installed on this
+  machine: read it from the host's own config file (`0600`) and send it as
+  `Authorization: Bearer <token>`. **Do not** invent a token scheme, do **not** embed the token in
+  the payload or the extension, and **never** use a server-side/internal bearer — the route treats
+  this device token as the credential (Path A's A5a);
 - reply to the browser with counts only:
   `{ "status": "success", "accepted": <n>, "domains": <n>, "truncated": <bool> }`;
 - a failed POST is `{ "status": "error", "error": "<named reason>" }` — never a silent success.

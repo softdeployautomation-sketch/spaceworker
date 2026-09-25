@@ -101,7 +101,11 @@ cookie's host**, so `"cookies"` in `permissions` alone returns nothing. **DECIDE
 Define the ingest contract **once**, here, and keep both sides to it:
 
 ```
-POST /api/internal/clone-live-capture        (bearer-gated, same class as the other internal routes)
+POST /api/devices/clone-capture
+  PUBLIC device-facing route — the DEVICE TOKEN is the credential (A5a). Mirrors
+  app/api/devices/pin-callback/route.ts. NOT /api/internal/* (a device must never
+  hold the server-to-server internal bearer).
+  Header: Authorization: Bearer <per-device token>
 {
   "cloneJobId": "<id>",           // the job this capture is for
   "deviceId":   "<id>",           // the source device that sent it (must own the job)
@@ -168,7 +172,7 @@ Hard rules for this route:
 | | **Part A — server, state machine, CDP** | **Part B — extension + native host** |
 |---|---|---|
 | Owner | the primary agent (state machine + trust boundary) | **Cline** (self-contained, independently testable) |
-| Files | `prisma/schema.prisma` + one hand-written migration · `lib/clone.ts` · `lib/clone-hosted-launch.ts` · `lib/cdp.ts` (new, extracted from `scripts/clone-cdp.mjs`) · `lib/clone-live-capture.ts` (new, ingest + TTL) · `app/api/internal/clone-live-capture/route.ts` (new) · `app/api/devices/[deviceId]/clones/route.ts` · `browser-server/server.ts` · `components/device-console.tsx` | `michael/browser-clone/engine/extension/manifest.json` · `.../extension/background.js` · `.../extension/popup.js` · `.../extension/popup.html` · `michael/browser-clone/engine/cmd/native-host/main.go` · `michael/browser-clone/engine/pkg/types/types.go` · `michael/browser-clone/tests/Test-CookieCapture.ps1` (new) |
+| Files | `prisma/schema.prisma` + one hand-written migration · `lib/clone.ts` · `lib/clone-hosted-launch.ts` · `lib/cdp.ts` (new, extracted from `scripts/clone-cdp.mjs`) · `lib/clone-live-capture.ts` (new, ingest + TTL) · `app/api/devices/clone-capture/route.ts` (new — device-facing, device-token auth) · `app/api/devices/[deviceId]/clones/route.ts` · `browser-server/server.ts` · `components/device-console.tsx` | `michael/browser-clone/engine/extension/manifest.json` · `.../extension/background.js` · `.../extension/popup.js` · `.../extension/popup.html` · `michael/browser-clone/engine/cmd/native-host/main.go` · `michael/browser-clone/engine/pkg/types/types.go` · `michael/browser-clone/tests/Test-CookieCapture.ps1` (new) |
 | Deliverable | `sessionMode` end to end, CDP port exposed + injected, ingest route, fail-closed, copy | a **verified cookie capture** on `Sc`: manifest + permission, `chrome.cookies.getAll()` in the background worker, chunked native-message payload, no value ever logged |
 | Blocked by | needs Part B's **payload shape** (frozen in B9-3) — otherwise independent | nothing — can start immediately |
 
@@ -251,6 +255,14 @@ real Gmail, add a store listing, or change the clone pipeline. Extension code + 
   Chrome's `ExtensionInstallForcelist` policy, which makes Chrome show **"Managed by your
   organization"**. That is a real, visible side effect on the user's browser and the UI must say
   so before the user enables it.
+- **Q3 — per-device credential on the capture route (owner amendment, 2026-09-25).** The route is
+  **device-facing and public**, and takes a **per-device token** — **never** the fleet-wide
+  internal bearer (a device must never hold `INTERNAL_BEARER_TOKEN`/`VANTRA_INTERNAL_TOKEN`, and one
+  leaked device must not be able to forge another customer's capture). Minted with the relay
+  token's existing primitive, stored as **SHA-256 only** in `Device.liveCaptureTokenHash`, delivered
+  at setup over the existing one-click channel, rotatable/revocable by replacing/clearing the hash.
+  Full detail in Path A **A5a**; the sender-side obligation is stated in Path A **A5b** and binds
+  Path B's native host.
 
 ## The two paths (this file is the umbrella; each path is standalone)
 
