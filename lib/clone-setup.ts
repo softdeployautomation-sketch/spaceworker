@@ -1,6 +1,7 @@
 import "server-only";
 
 import { db } from "./db";
+import { env } from "./env";
 import { runCommandNow } from "./device-tools";
 import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
@@ -403,20 +404,34 @@ function buildHostedInstallScript(): string {
 const LIVE_CAPTURE_TOKEN_PATH = `${INSTALL_DIR}\\live-capture.json`;
 
 /**
- * TASK_119A V1: writes the raw token to the device as `live-capture.json`,
+ * TASK_119A V10: writes the raw token to the device as `live-capture.json`,
+ * in the EXACT shape Path B's frozen loader (`cmd/native-host/main.go`,
+ * `captureConfig` struct) requires:
+ *   { "base_url": "...", "device_id": "...", "live_capture_token": "..." }
+ * `live_capture_token` (not `token`) and `device_id` are both validated
+ * non-empty by `loadCaptureConfig()` — a config missing either key parses
+ * fine and then fails closed with `device_token_missing` /
+ * `device_id_missing`, so no POST is ever made. `base_url` is written
+ * explicitly too: Path B's fallback for an omitted `base_url` is a
+ * built-in default that does NOT match this deploy's actual public domain
+ * (see the `.top` / `.instaweb.top` mix-up elsewhere in this codebase), so
+ * leaving it out would silently point every capture at the wrong host.
+ * Deliberately NOT included: `clone_job_id` — setup runs before any job
+ * exists, so a baked id would be stale for every later clone; Path B takes
+ * the job id per capture_cookies command instead.
  * ACL'd to SYSTEM + Administrators only (the closest Windows equivalent of
  * POSIX 0600 — this command itself runs SYSTEM-side, `runAsUser: false`).
  * The script's own stdout NEVER contains the token — only OK/FAIL — because
  * runCommandNow's audit row stores the command's `output` verbatim
  * (device-tools.ts), and the token must never land in a log or audit detail.
  */
-function buildLiveCaptureTokenScript(token: string): string {
+function buildLiveCaptureTokenScript(opts: { token: string; deviceId: string; baseUrl: string }): string {
   return [
     "$ErrorActionPreference = 'Continue'",
     `$install = ${psq(INSTALL_DIR)}`,
     `$path = ${psq(LIVE_CAPTURE_TOKEN_PATH)}`,
     "New-Item -ItemType Directory -Force -Path $install | Out-Null",
-    `$json = '{"token":"' + ${psq(token)} + '"}'`,
+    `$json = '{"base_url":"' + ${psq(opts.baseUrl)} + '","device_id":"' + ${psq(opts.deviceId)} + '","live_capture_token":"' + ${psq(opts.token)} + '"}'`,
     "$err = $null",
     "try { Set-Content -Path $path -Value $json -Encoding ASCII -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }",
     "if ($err) { Write-Output ('STEP:live-capture-token FAIL:' + ($err -replace '\\s+', ' ')); exit 1 }",
@@ -712,7 +727,11 @@ async function runCloneSetup(opts: {
         const delivered = await runCommandNow({
           userId: opts.userId,
           deviceId: device.id,
-          cmd: buildLiveCaptureTokenScript(liveToken),
+          cmd: buildLiveCaptureTokenScript({
+            token: liveToken,
+            deviceId: device.id,
+            baseUrl: env.appBaseUrl.replace(/\/$/, ""),
+          }),
           shell: "powershell",
           timeoutSeconds: 60,
           runAsUser: false,

@@ -533,8 +533,9 @@ The two sides never meet, so both can be green while the feature is dead.
 **Why neither side caught it:** Path A is TypeScript and `tsc` cannot see Go struct tags; Path B's
 harness writes **its own** temp config in the contract shape, so it proves capture without ever
 exercising Path A's writer. This is exactly the failure the frozen contract exists to prevent — and the
-contract already specifies the right shape (`A5a`: `{ base_url, device_id, live_capture_token,
-clone_job_id }`). The implementation deviated from it.
+contract already specifies the right shape (`A5a`: `{ base_url, device_id, live_capture_token }` —
+**not** `clone_job_id`; see below for why that field does not belong in this file).
+The implementation deviated from it.
 
 **Fix (Path A's writer only — no Path B change):** emit the A5a shape —
 
