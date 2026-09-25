@@ -458,3 +458,105 @@ silently); if the device is offline at that moment it is left holding a stale to
 `401` until the next setup. Either refuse the setup step or document the rotation. And V8 (in-process
 `payloadStore`) is unchanged — still acceptable single-process, still unrecorded.
 
+---
+
+## Third verification pass (`f94202f`, owner review 2026-09-25)
+
+**V3, V9, V2, V4 and V7 are genuinely fixed.** `tsc` clean (reproduced). The state machine is now
+sound and the deadlock is gone. **One new blocking defect (V10) was found at the Path A ↔ Path B
+seam — the token the server writes is not the token the device reads.**
+
+**V9 ✅ FIXED.** `"awaiting_capture"` is a real state: in `CloneState` (line 76), in `CLONE_STATES`
+(line 92), and in `PIPELINE_NEXT` (`requested: ["awaiting_source", "awaiting_capture", "ready"]`,
+`awaiting_capture: ["captured"]`). `advanceCloneLocked`'s case (line 693-698) **dispatches nothing** —
+it returns `advanced: false, reason: "awaiting_live_capture"` — so it can never race `stepCapture`.
+`stepRequested` sends hosted + `live` there (line 932) instead of `awaiting_source`. The transport
+capture path is fully bypassed for live. **Confirmed it cannot fall into `runCloneCapture`.**
+
+**V3 ✅ FIXED — and this is the right shape.** `transitionClone` is private again (line 248, `async
+function`, no `export`; the route no longer imports it). The new named operation
+`recordLiveCapture(cloneJobId, counts)` (line 728) takes the clone lock, then asserts
+`sessionMode === "live"` → `status === "awaiting_capture"` → `destinationDeviceId` present →
+`deviceKind === "hosted"`, and only then transitions to `captured`. The route now accepts **only**
+`awaiting_capture` (line 123), calls `recordLiveCapture` instead of holding the raw mutator, and
+catches a refusal as a neutral `401`. `storeCapture()` moved **after** the successful transition
+(line 157→165), so a throw can no longer orphan a payload. **There is now a state in which the route
+succeeds, and the edge is legal by the table** (`awaiting_capture → captured`). Exporting the state
+mutator was correctly reverted — that was the root cause of the illegal edge.
+
+**V4 residual ✅ FIXED.** `lib/clone-hosted-launch.ts:168-181`: an explicit `if (!job)` now refuses
+with `clone_job_not_found` and tears the session down, rather than letting `job?.sessionMode === "live"`
+be false for a missing row and returning `ok + viewUrl`.
+
+**V7 ✅ FIXED.** `lib/clone-live-capture.ts:53` now cites **A6**; the `empty_capture`/
+`injection_failed`/`capture_not_found` fixed reasons are intact.
+
+**V1 ⚠️ MECHANISM FIXED, SEAM BROKEN — see V10 below.** The split is correct: `mintLiveCaptureToken()`
+is pure (returns the token), the shell step writes it to the device, and `commitLiveCaptureToken()` is
+called **only when the device's step reports OK** (line 722) — so a failed delivery leaves any working
+prior token intact instead of bricking it. The script ACLs the file to
+`SYSTEM:F` + `BUILTIN\Administrators:F` with inheritance stripped, and its stdout carries only
+`OK`/`FAIL` (never the token), which matters because `runCommandNow` persists command `output`
+verbatim into the audit row. File location is right:
+`C:\ProgramData\TacticalRMM\CloneTool\live-capture.json` **is** one of Path B's search paths.
+
+**V2 ✅ FIXED — properly gated, not gated on success.** `buildNativeHostPresenceScript()` checks the
+exact HKLM `NativeMessagingHosts` keys `install-registry.ps1` writes (Chrome/Edge/Brave), and
+`ensureCloneCapability(..., "live-capture")` now runs **only when the native host is actually
+detected** (line 755), with an honest `ok: false` detail otherwise (live stays unavailable). The
+phantom-`true` offer is gone.
+*Residual (low):* the capability is never **un-granted** — uninstalling the extension leaves the row
+`enabled: true` until the next setup run re-checks, because `canCaptureLiveSession()` reads only the DB
+row (line 503). Self-heals on the next setup; the failure mode is a refused capture, not a false grant.
+
+**V8 unchanged** (in-process `payloadStore`) — still acceptable single-process, still unrecorded.
+
+**Also verified good:** `expireClones()` (`lib/clone.ts:1367`) selects `status: { notIn:
+CLONE_TERMINAL_STATES }`, so a `live` job parked in `awaiting_capture` **does** expire on its idle/hard
+TTL rather than hanging forever holding its admission slot — the new state is covered by the sweep with
+no change needed.
+
+### V10 — BLOCKING: the token file Path A writes is not the file Path B reads
+
+The two sides never meet, so both can be green while the feature is dead.
+
+- **Path A writes** (`buildLiveCaptureTokenScript`, `lib/clone-setup.ts:419`):
+  `{"token":"<base64>"}` → `C:\ProgramData\TacticalRMM\CloneTool\live-capture.json`
+- **Path B reads** (`cmd/native-host/main.go`, frozen `56b2c4a`): struct tags
+  `Token string `json:"live_capture_token"`` and `DeviceID string `json:"device_id"``, then validates
+  `if strings.TrimSpace(cfg.Token) == "" → "device_token_missing"`.
+- **Result:** Path B finds the file (the location matches, which is why this looks fine at a glance),
+  `json.Unmarshal` succeeds, but `live_capture_token` is absent → **`device_token_missing` → no POST is
+  ever made.** The live path is dead at the seam. `device_id` is missing too (`device_id_missing`), and
+  `base_url` silently falls back to a built-in default.
+
+**Why neither side caught it:** Path A is TypeScript and `tsc` cannot see Go struct tags; Path B's
+harness writes **its own** temp config in the contract shape, so it proves capture without ever
+exercising Path A's writer. This is exactly the failure the frozen contract exists to prevent — and the
+contract already specifies the right shape (`A5a`: `{ base_url, device_id, live_capture_token,
+clone_job_id }`). The implementation deviated from it.
+
+**Fix (Path A's writer only — no Path B change):** emit the A5a shape —
+
+```json
+{"base_url":"https://spaceworker.top","device_id":"<device.id>","live_capture_token":"<raw>"}
+```
+
+`base_url` and `device_id` must be written explicitly (Path B *requires* `device_id`, and an explicit
+`base_url` matters given the `.top` / `.instaweb.top` domain mix-up). **Do not write `clone_job_id`
+into that file** — setup runs before any job exists, so a baked job id would be stale for every later
+clone; Path B takes the job id per command (`{ "command": "capture_cookies", "clone_job_id": "…" }`).
+**Correct A5a's example accordingly** — its inclusion of `clone_job_id` in a long-lived per-device file
+is what invited this.
+
+**Verification bar for V10:** load the file Path A actually writes with Path B's **real** loader (run
+the generated PowerShell on a device or an equivalent fixture, then parse the result with the frozen
+`captureConfig` shape) and assert `Token != ""` and `DeviceID != ""` — i.e. the config loads with **no**
+error string. Do not sign this off on a green harness: the harness writes its own file, which is
+precisely how this got missed.
+
+**Also noted (unrelated side-fix, no action needed):** `db4fe7e` correctly moves the install link to
+`env.appBaseUrl`, but legacy `VantraLink` rows minted before it hold a **relative** `installUrl`, so the
+client's new `link.installUrl || ""` copies a bare `/link/vantra/<token>` path for those. Self-healing
+within the 72 h token TTL (any re-mint is absolute); worth knowing, not worth a fix.
+
