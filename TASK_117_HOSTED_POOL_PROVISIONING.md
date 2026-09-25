@@ -328,6 +328,80 @@ be once-per-profile; re-injecting every launch is the safe default.
 tunnel** — no agent, no browser, and nothing installed on the clone host. Injection
 is a server-side operation.
 
+### F8 — CONFIRMED BUG (fixed): the engine's SQLite reader could not read ANY real database
+
+Found while trying to capture cookies: `pkg/sqlite` could list a table's columns
+but returned **0 rows with a corruption error** for every real Chrome database.
+
+- Cookies (2 profiles): `rows=0 err=sqlite: corrupt database: page 512 out of range (1..26)`
+- Login Data: `rows=0 err=sqlite: corrupt database: page 0 out of range (1..20)`
+
+**Root cause (one line, `pkg/sqlite/walk.go`):** on an **interior table page** the
+right-most child pointer is a **4-byte page number at header offset 8**. The code
+read `uint16(h[7:9])` — starting at the *fragmented-free-bytes* byte and only two
+bytes wide — so it produced `fragFree<<8` (e.g. `512`) or `0`, i.e. a bogus page
+number. Every table spanning more than one page was therefore unreadable, and
+Chrome's Cookies/Login Data always are.
+
+```
+- right := int(binary.BigEndian.Uint16(h[7:9]))
++ right := int(binary.BigEndian.Uint32(h[8:12]))
+```
+
+**Fix verified against real Chrome databases on this Mac:**
+
+| Database | Before | After |
+|---|---|---|
+| Chrome `Profile 10/Cookies` | `rows=0` + corrupt | **`rows=127`** (incl. `accounts.google.com` `OTZ`) |
+| Chrome `Profile 11/Cookies` | `rows=0` + corrupt | **`rows=42`** (incl. `.google.com.ng` `APISID`) |
+| Chrome `Profile 10/Login Data` | `rows=0` + corrupt | `logins` reads, 33 columns |
+
+**Why it was never caught:** `TestReadChromeLikeDB` reads an **external fixture**
+(`/tmp/test_login.db`) and `t.Skip`s when it is absent — and it was absent, so the
+only test covering the walker never ran. A new self-contained test,
+`TestInteriorPageTraversal`, builds a 3-page DB in memory whose table sits under an
+interior page with **zero cells**, so the only pointer consulted is the right-most
+one. Proven both directions: **PASS** with the fix, **FAIL** with
+`page 0 out of range (1..3)` when the buggy read is restored. Whole engine suite
+(`pkg/crypto`, `pkg/injection`, `pkg/sqlite`, `tests`) stays green.
+
+### F7 — CONFIRMED BUG (open): passwords are decrypted with the wrong cipher
+
+`crypto.(*ChromeKey).DecryptChromeValue` implements the **legacy AES-CBC** scheme
+(IV = the 16 bytes before the ciphertext). Modern Chromium `v10`/`v11` values are
+**AES-256-GCM**: `nonce[12]` at bytes `[3:15]`, then ciphertext, then a 16-byte tag.
+So the engine's password path cannot decrypt anything written by a current Chrome —
+on Windows as well as Linux. `crypto.OpenGCM` already exists and is what
+`cmd/cookiedump` uses; `DecryptChromeValue` needs the same treatment.
+Not yet proven against a live blob (the device went offline mid-test), so this
+entry is marked open rather than fixed.
+
+### F9 — new capture-side command: `cmd/cookiedump`
+
+The profile bundle has **no cookie path at all** (`types.ProfileBundle`: `Passwords`,
+`EncryptedPasswords`, `Extensions`, `LocalStorage`, `SessionStorage` — no cookies),
+and cookies are precisely what make a clone look signed in. `cmd/cookiedump` fills
+that gap on the capture side:
+
+```
+cookiedump --browser chrome --out cookies.json
+```
+
+It reads `Local State` → DPAPI-unwraps `os_crypt.encrypted_key` → walks the
+`cookies` table with the fixed reader → decrypts `v10/v11` values with
+**AES-256-GCM** (`crypto.OpenGCM`) → emits plaintext JSON in **exactly the shape
+`scripts/clone-cdp.mjs --cookies` accepts**, so the two compose:
+
+```
+cookiedump.exe --out c.json      # on the source PC
+clone-cdp.mjs inject --cookies c.json   # against the clone browser
+```
+
+Design notes: the output file is written `0600` (live session cookies), and a
+failure is recorded **inside the JSON** as `fail_reason` as well as on stderr, so a
+caller can never mistake an error for an empty profile. It uses `crypto.OpenGCM`
+rather than `DecryptChromeValue` on purpose (see F7).
+
 ### Consequence for the build (supersedes the earlier "minimal path")
 
 Given **F4** — and now **proven end-to-end in F6** — the clone receives its cookies

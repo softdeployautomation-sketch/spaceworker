@@ -128,7 +128,15 @@ func (db *DB) walk(rootPg int, fullPage []byte, headerOffset int, fn func(rowid 
 				}
 				children = append(children, int(binary.BigEndian.Uint32(c[:4])))
 			}
-			right := int(binary.BigEndian.Uint16(h[7:9]))
+			// The right-most child pointer is 4 bytes at header offset 8.
+			// It is NOT the uint16 at offset 7: offset 7 is the fragmented
+			// free-bytes count, and the pointer itself is a full 4-byte page
+			// number. Reading it as uint16(h[7:9]) yields 2-byte garbage like
+			// 512 (= fragFree<<8) and makes every multi-page table unreadable.
+			if len(h) < 12 {
+				return ErrCorrupt
+			}
+			right := int(binary.BigEndian.Uint32(h[8:12]))
 			children = append(children, right)
 			for i := len(children) - 1; i >= 0; i-- {
 				pg := children[i]
