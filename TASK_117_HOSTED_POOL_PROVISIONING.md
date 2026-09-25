@@ -344,6 +344,64 @@ Given **F4** — and now **proven end-to-end in F6** — the clone receives its 
 **F1/F2 remain real bugs to fix** so the capture side can read a Linux profile
 correctly, but they are **no longer on the critical path** for launching a clone.
 
+### Ops script — `scripts/clone-cdp.mjs` (LANDED 2026-09-25, verified)
+
+The proven recipe above was throwaway scaffolding; it is now a real repo script so
+nobody has to re-derive the two traps. **Zero dependencies** (node built-ins only —
+`ws` is deliberately NOT a dependency of this repo, and this has to run on the VPS
+with no `npm i`).
+
+```
+node scripts/clone-cdp.mjs probe  --port <cdpPort>
+node scripts/clone-cdp.mjs inject --port <cdpPort> --cookies <file.json> [--url <url>] [--list]
+```
+
+`fail`-safety: every request is individually timed out, so the "silent hang" that
+cost hours here can never recur silently. Exit codes: `0` ok · `1` usage ·
+`2` connect/handshake · `3` CDP error · `4` timeout. The error property is
+`exitCode`, **not** `code` — Node system errors already carry a *string* `code`
+(`ECONNREFUSED`), and `process.exit(e.code)` throws `validateInteger`.
+
+**Verified end-to-end 2026-09-25** against a real Neko container on the VPS, driven
+over an `ssh -L` tunnel — no device, no VM:
+
+```
+# probe
+browser=Chrome/151.0.7922.71
+product=Chrome/151.0.7922.71
+pages=2
+  page chrome-extension://…/help/index.html
+  page about:blank
+probe=OK                       (exit 0)
+
+# inject
+browser=Chrome/151.0.7922.71
+setCookies=2
+verified=2
+  swcdp@172.17.0.1/
+  swsecond@172.17.0.1/
+opened=http://172.17.0.1:18100/cdpverify
+targetId=DF1BFB34406F9D802D5876DDDFDF975E
+inject=OK                      (exit 0)
+
+# what the site actually received
+path=/cdpverify COOKIE_HEADER='swcdp=CDP-SCRIPT-1790298077; swsecond=two'
+```
+
+Both cookies were presented on the wire by the renderer's own request. Also checked:
+`--help`, missing `--port`, unknown command and unreachable port all fail with the
+documented exit codes; `eslint scripts/clone-cdp.mjs` clean.
+
+**Harness used for the above** (recreate the container the script talks to):
+launch the Neko image with a non-default `--user-data-dir`
+(`/home/neko/.config/swclone`), the CDP flags from F6, and a loopback forwarder
+beside Chromium; publish the forwarder port; point a cookie-echo HTTP server at
+`172.17.0.1` as the stand-in "site". **The forwarder is a ~46-line static Go
+program** (`swfwd 0.0.0.0:9223 127.0.0.1:9222`) — it is **not in the repo yet** and
+is a **D3 deliverable** for the launch path; do not lose this note, because the
+Neko image ships no `socat`/`nc` and `--remote-debugging-address` is ignored by
+modern Chromium.
+
 ## Non-negotiable guardrails
 
 1. **A customer device is never clone infrastructure.** Not a clone host, not a
@@ -367,6 +425,8 @@ correctly, but they are **no longer on the critical path** for launching a clone
   impossible because Chromium deletes foreign rows (F4), and — the go/no-go — a
   cookie injected via `Storage.setCookies` **was received by the site on the wire**,
   and **survived a full container restart** (F6).
+  The recipe is now a **verified repo script** — `scripts/clone-cdp.mjs`, run
+  end-to-end over an `ssh -L` tunnel (see "Ops script" above).
   Still to prove: a **real capture from `Sc`** showing a signed-in site inside the
   clone. That requires the device, so it waits for the owner — nothing else in D1 is
   outstanding.
