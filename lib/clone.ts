@@ -73,6 +73,7 @@ import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
 export type CloneState =
   | "requested"
   | "awaiting_source"
+  | "awaiting_capture"
   | "capturing"
   | "captured"
   | "transferring"
@@ -88,7 +89,7 @@ export type CloneState =
   | "deleted";
 
 export const CLONE_STATES: readonly CloneState[] = [
-  "requested", "awaiting_source", "capturing", "captured", "transferring",
+  "requested", "awaiting_source", "awaiting_capture", "capturing", "captured", "transferring",
   "received", "injecting", "ready", "launching", "active",
   "expired_idle", "expired_hard", "revoked", "failed", "deleted",
 ] as const;
@@ -98,18 +99,36 @@ export const CLONE_TERMINAL_STATES: readonly CloneState[] = [
 ] as const;
 
 /**
- * The happy-path edge(s) out of each non-terminal state. Every state but one
- * has exactly one. TASK_118 B8-2: "requested" is the one exception — a
- * hosted destination skips capture/transfer/inject entirely (route 3,
- * nothing to copy) and goes straight to "ready", so it needs a SECOND valid
- * edge alongside the workstation path's "awaiting_source". Which edge a given
- * job actually takes is decided once, in stepRequested, by the destination's
- * deviceKind — this table only says which edges are LEGAL, not which one to
- * pick.
+ * The happy-path edge(s) out of each non-terminal state. Every state but two
+ * has exactly one. TASK_118 B8-2: "requested" is one exception — a hosted
+ * destination skips capture/transfer/inject entirely (route 3, nothing to
+ * copy) and goes straight to "ready", so it needs a SECOND valid edge
+ * alongside the workstation path's "awaiting_source". Which edge a given job
+ * actually takes is decided once, in stepRequested, by the destination's
+ * deviceKind (and, for the third live-only edge below, sessionMode) — this
+ * table only says which edges are LEGAL, not which one to pick.
+ *
+ * TASK_119A V9 (second pass) — "awaiting_capture" is a THIRD requested edge,
+ * taken only by a hosted `live` job (stepRequested). It is deliberately its
+ * own state, not a reuse of "awaiting_source": the workstation path's
+ * "awaiting_source" is dispatched unconditionally to stepCapture (the ENGINE
+ * disk-capture route) by advanceCloneLocked's switch — a hosted live job has
+ * nothing for that route to capture (route 3 never ran the agent capture),
+ * so folding live into "awaiting_source" would have advanceClone call
+ * stepCapture on it and fail `capture_no_clone_id`, while a device posting
+ * to /api/devices/clone-capture wants to land in "captured", a transition
+ * legal only from "capturing" — two constraints on one state that cannot
+ * both be satisfied. "awaiting_capture" carries its own edge into
+ * "captured" (live-only in effect, because recordLiveCapture — the ONLY
+ * caller of this edge — asserts sessionMode==="live" before ever calling
+ * transitionClone) without touching the workstation pipeline at all, and
+ * advanceCloneLocked dispatches NOTHING for it (see the switch below) — the
+ * only way out is the device's own POST.
  */
 const PIPELINE_NEXT: Partial<Record<CloneState, readonly CloneState[]>> = {
-  requested: ["awaiting_source", "ready"],
+  requested: ["awaiting_source", "awaiting_capture", "ready"],
   awaiting_source: ["capturing"],
+  awaiting_capture: ["captured"],
   capturing: ["captured"],
   captured: ["transferring"],
   transferring: ["received"],
@@ -226,7 +245,7 @@ async function auditClone(
  * else moved it concurrently ⇒ throw, never overwrite), stamps terminal
  * columns (purgeAfter / revokedAt / launchState / error / stagingRef), audits.
  */
-export async function transitionClone(
+async function transitionClone(
   job: CloneJob,
   to: CloneState,
   opts: {
@@ -671,6 +690,12 @@ async function advanceCloneLocked(cloneId: string): Promise<CloneAdvanceResult> 
       return stepRequested(job, settings);
     case "awaiting_source":
       return stepCapture(job);
+    case "awaiting_capture":
+      // TASK_119A V9: a hosted `live` job waits HERE — the only legal exit is
+      // recordLiveCapture (called from the device-facing route once a real
+      // capture lands), never a transport step. Dispatching nothing is the
+      // point: this state exists so advanceClone has nothing to run.
+      return { cloneId, status: "awaiting_capture", advanced: false, reason: "awaiting_live_capture" };
     case "captured":
       return stepTransfer(job);
     case "received":
@@ -686,6 +711,51 @@ async function advanceCloneLocked(cloneId: string): Promise<CloneAdvanceResult> 
     default:
       throw new Error(`clone ${cloneId}: unhandled state ${state}`);
   }
+}
+
+/**
+ * TASK_119A V9/V3 (second pass) — the ONLY legal way out of
+ * "awaiting_capture". Called by the device-facing /api/devices/clone-capture
+ * route once a capture payload has been validated and held; never by
+ * advanceClone, which dispatches nothing for this state (see the switch
+ * above). Asserts live + hosted + waiting itself, then routes through the
+ * SAME transitionClone every other step uses — the route holding the raw
+ * state mutator directly (as it used to) is how a "captured" write reached a
+ * job transitionClone's own table would have rejected from any state but
+ * "capturing"; a named, self-asserting operation is the fix, not a wider
+ * table.
+ */
+export async function recordLiveCapture(
+  cloneJobId: string,
+  counts: { cookieCount: number; domainCount: number; truncated: boolean },
+): Promise<CloneJob> {
+  return withCloneLock(cloneJobId, async () => {
+    const job = await loadClone(cloneJobId);
+    if (job.sessionMode !== "live") {
+      throw new Error(`clone_not_live: ${cloneJobId} is sessionMode "${job.sessionMode}"`);
+    }
+    if (job.status !== "awaiting_capture") {
+      throw new Error(`clone_not_awaiting_capture: ${cloneJobId} is "${job.status}"`);
+    }
+    if (!job.destinationDeviceId) {
+      throw new Error(`clone_no_destination: ${cloneJobId}`);
+    }
+    const destination = await db.device.findUnique({
+      where: { id: job.destinationDeviceId },
+      select: { deviceKind: true },
+    });
+    if (destination?.deviceKind !== "hosted") {
+      throw new Error(`clone_not_hosted: ${cloneJobId}`);
+    }
+    return transitionClone(job, "captured", {
+      detail: {
+        step: "live-capture-ingest",
+        cookieCount: counts.cookieCount,
+        domainCount: counts.domainCount,
+        truncated: counts.truncated,
+      },
+    });
+  });
 }
 
 /** Best-effort device-side teardown; returns "ok" | "skipped" | "error: ...". */
@@ -852,12 +922,24 @@ async function stepRequested(
   // this task. (Found live: without this branch, a hosted clone ran the full
   // agent-capture pipeline anyway and failed at capture_no_clone_id — there
   // was never a bundle for it to produce.)
-  // TASK_119A V9: live jobs with hosted destination must wait for capture
-  // to arrive before launching, so they go to awaiting_source, not ready.
+  // TASK_119A V9 (second pass): a hosted `live` job needs its OWN third edge
+  // — "awaiting_capture", not "awaiting_source" (see PIPELINE_NEXT's doc
+  // comment for why the two must not be conflated).
   const destination = job.destinationDeviceId
     ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
     : null;
-  if (destination?.deviceKind === "hosted" && job.sessionMode !== "live") {
+  if (destination?.deviceKind === "hosted" && job.sessionMode === "live") {
+    const advanced = await transitionClone(job, "awaiting_capture", {
+      detail: {
+        slot: "granted",
+        egressMode: job.egressMode,
+        relayStatus: job.relay?.status ?? null,
+        skipped: "capture_transfer_inject (hosted live destination — capture arrives via device POST)",
+      },
+    });
+    return { cloneId: advanced.id, status: "awaiting_capture", advanced: true };
+  }
+  if (destination?.deviceKind === "hosted") {
     const advanced = await transitionClone(job, "ready", {
       detail: {
         slot: "granted",

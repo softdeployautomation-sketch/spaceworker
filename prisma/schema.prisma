@@ -1466,9 +1466,12 @@ model CloneJob {
   relay               RelayHealth? @relation(fields: [relayId], references: [id])
   // Lifecycle (TASK_109 canonical union — TEXT, not a DB enum, the codebase's
   // style, with this list as the documented value set):
-  //   requested | awaiting_source | capturing | captured | transferring
-  //   | received | injecting | ready | launching | active
+  //   requested | awaiting_source | awaiting_capture | capturing | captured
+  //   | transferring | received | injecting | ready | launching | active
   //   terminal: expired_idle | expired_hard | revoked | deleted | failed
+  // TASK_119A V9: awaiting_capture is a hosted `live` job's own wait state —
+  // see lib/clone.ts's PIPELINE_NEXT doc comment for why it is not a reuse
+  // of awaiting_source.
   // Forward-only; the UI maps these to human copy, never raw enums (DESIGN §3).
   status              String       @default("pending")
   // Kept separate from `status` because a clone can be fully captured and

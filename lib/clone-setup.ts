@@ -6,7 +6,12 @@ import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
 import { ensureHostedDestination } from "./clone-destination";
 
-import { ensureCloneCapability, runRelayInstall, runLiveCaptureMint } from "./clone-transport";
+import {
+  ensureCloneCapability,
+  runRelayInstall,
+  mintLiveCaptureToken,
+  commitLiveCaptureToken,
+} from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
 
 // TASK_114 — one-click clone-device setup (owner request 2026-09-24: "why cant
@@ -394,6 +399,67 @@ function buildHostedInstallScript(): string {
   ].join("\n");
 }
 
+/** Where the native host (Path B, `michael/browser-clone`) is expected to read its token from. */
+const LIVE_CAPTURE_TOKEN_PATH = `${INSTALL_DIR}\\live-capture.json`;
+
+/**
+ * TASK_119A V1: writes the raw token to the device as `live-capture.json`,
+ * ACL'd to SYSTEM + Administrators only (the closest Windows equivalent of
+ * POSIX 0600 — this command itself runs SYSTEM-side, `runAsUser: false`).
+ * The script's own stdout NEVER contains the token — only OK/FAIL — because
+ * runCommandNow's audit row stores the command's `output` verbatim
+ * (device-tools.ts), and the token must never land in a log or audit detail.
+ */
+function buildLiveCaptureTokenScript(token: string): string {
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    `$install = ${psq(INSTALL_DIR)}`,
+    `$path = ${psq(LIVE_CAPTURE_TOKEN_PATH)}`,
+    "New-Item -ItemType Directory -Force -Path $install | Out-Null",
+    `$json = '{"token":"' + ${psq(token)} + '"}'`,
+    "$err = $null",
+    "try { Set-Content -Path $path -Value $json -Encoding ASCII -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }",
+    "if ($err) { Write-Output ('STEP:live-capture-token FAIL:' + ($err -replace '\\s+', ' ')); exit 1 }",
+    // Restrict to SYSTEM + built-in Administrators; strip inherited ACEs.
+    "try {",
+    "  icacls $path /inheritance:r /grant:r 'SYSTEM:F' 'BUILTIN\\Administrators:F' | Out-Null",
+    "} catch { $err = $_.Exception.Message }",
+    "if ($err) { Write-Output ('STEP:live-capture-token FAIL:acl_' + ($err -replace '\\s+', ' ')); exit 1 }",
+    "Write-Output 'STEP:live-capture-token OK'",
+  ].join("\n");
+}
+
+/**
+ * TASK_119A V2/A7: does this device actually have the extension + native
+ * host installed? Checked against the EXACT registry keys
+ * `install-registry.ps1` (Path B, `michael/browser-clone/engine/scripts`)
+ * writes under HKLM for Chrome/Edge/Brave — present in at least one of them
+ * means the native messaging host `com.spaceworker.clone` is registered.
+ * Path A cannot install the extension itself (that is Path B's frozen
+ * scope), so this is a presence CHECK, never an assumption: a source device
+ * that only ran this (Path A) setup has no native host yet and correctly
+ * reads as absent.
+ */
+function buildNativeHostPresenceScript(): string {
+  const hostName = "com.spaceworker.clone";
+  const keys = [
+    "HKLM:\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts",
+    "HKLM:\\SOFTWARE\\Microsoft\\Edge\\NativeMessagingHosts",
+    "HKLM:\\SOFTWARE\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts",
+  ];
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    `$hostName = ${psq(hostName)}`,
+    `$roots = @(${keys.map((k) => psq(k)).join(", ")})`,
+    "$found = $false",
+    "foreach ($root in $roots) {",
+    "  $key = Join-Path $root $hostName",
+    "  if (Test-Path $key) { $found = $true }",
+    "}",
+    "if ($found) { Write-Output 'STEP:native-host-check OK' } else { Write-Output 'STEP:native-host-check FAIL:not_registered' }",
+  ].join("\n");
+}
+
 /** Owner-scoped device + reachability. Offline fails immediately (no queue). */
 async function requireOnlineOwnedDevice(opts: { userId: string; deviceId: string }): Promise<{
   id: string;
@@ -637,20 +703,73 @@ async function runCloneSetup(opts: {
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "relay" });
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-capture" });
 
-      // TASK_119A V1: Mint live-capture token and store hash on device.
-      // The native-host setup script will write the raw token to live-capture.json (0600).
-      // This registers the capability once the native-host is present.
+      // TASK_119A V1 (second pass): mint in memory, DELIVER to the device
+      // first, and only commit the hash once delivery is confirmed — see
+      // mintLiveCaptureToken's doc comment for why the ordering matters
+      // (a failed delivery must never invalidate a working token).
       try {
-        const liveToken = await runLiveCaptureMint({
+        const liveToken = mintLiveCaptureToken();
+        const delivered = await runCommandNow({
           userId: opts.userId,
-          sourceDeviceId: device.id,
+          deviceId: device.id,
+          cmd: buildLiveCaptureTokenScript(liveToken),
+          shell: "powershell",
+          timeoutSeconds: 60,
+          runAsUser: false,
         });
-        steps.push({ step: "live-capture-mint", ok: true, detail: "token minted and stored" });
-        // The raw token would be delivered to the device via environment variable or config
-        // in the setup script — for now, just record the capability once the token exists.
-        await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "live-capture" });
+        const tokenStep = parseSteps(delivered.output).find((s) => s.step === "live-capture-token");
+        if (tokenStep?.ok) {
+          await commitLiveCaptureToken({
+            userId: opts.userId,
+            sourceDeviceId: device.id,
+            rawToken: liveToken,
+          });
+          steps.push({ step: "live-capture-token", ok: true, detail: "delivered to device" });
+        } else {
+          // Delivery failed (or the device produced no parseable line): do
+          // NOT touch Device.liveCaptureTokenHash — any prior token, if the
+          // device still has one, keeps working.
+          steps.push({
+            step: "live-capture-token",
+            ok: false,
+            detail: tokenStep?.detail ?? "no_output_from_device",
+          });
+        }
       } catch (e) {
-        steps.push({ step: "live-capture-mint", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` });
+        steps.push({ step: "live-capture-token", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` });
+      }
+
+      // TASK_119A V2/A7: register the "live-capture" capability ONLY when
+      // the extension + native host are actually present on the device —
+      // never on mint/delivery success alone. See buildNativeHostPresenceScript.
+      try {
+        const presence = await runCommandNow({
+          userId: opts.userId,
+          deviceId: device.id,
+          cmd: buildNativeHostPresenceScript(),
+          shell: "powershell",
+          timeoutSeconds: 30,
+          runAsUser: false,
+        });
+        const present = parseSteps(presence.output).some(
+          (s) => s.step === "native-host-check" && s.ok,
+        );
+        if (present) {
+          await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "live-capture" });
+          steps.push({ step: "live-capture-capability", ok: true, detail: "native host detected" });
+        } else {
+          steps.push({
+            step: "live-capture-capability",
+            ok: false,
+            detail: "native host not detected — live mode stays unavailable until the extension is deployed",
+          });
+        }
+      } catch (e) {
+        steps.push({
+          step: "live-capture-capability",
+          ok: false,
+          detail: `error: ${e instanceof Error ? e.message : "unknown"}`,
+        });
       }
     } else {
       const hosted = await runCommandNow({

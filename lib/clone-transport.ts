@@ -858,28 +858,37 @@ export async function probeCloneRelay(opts: CloneCallBase & {
 }
 
 /**
- * TASK_119A V1: Mint and store the per-device live-capture token.
- * Called during one-click setup for source devices.
- * Returns the raw token so the setup can deliver it to the device for
- * writing to live-capture.json (0600). The SHA-256 hash is stored on the
- * Device row as liveCaptureTokenHash; the raw token is never persisted.
+ * TASK_119A V1 (second pass): the raw token is generated HERE, in memory,
+ * with no DB write — the caller (clone-setup.ts) delivers it to the device
+ * FIRST (writing live-capture.json) and only calls commitLiveCaptureToken
+ * once that delivery is CONFIRMED. This ordering matters: minting used to
+ * overwrite Device.liveCaptureTokenHash unconditionally before the device
+ * ever saw the new token, so a device that was offline (or whose delivery
+ * script failed) for that one setup run was left with a hash the device's
+ * own live-capture.json could never match again — every future capture 401s
+ * until the next successful setup. Write-then-commit means a failed delivery
+ * leaves the OLD token (if any) valid instead of silently bricking the
+ * device's live-capture ability.
  */
-export async function runLiveCaptureMint(opts: {
+export function mintLiveCaptureToken(): string {
+  // 32 random bytes, base64 (same primitive as the relay token).
+  return crypto.randomBytes(32).toString("base64");
+}
+
+/**
+ * Persists the hash of a token ALREADY confirmed delivered to the device.
+ * The raw token itself is never passed to db/log/audit — only its hash.
+ */
+export async function commitLiveCaptureToken(opts: {
   userId: string;
   sourceDeviceId: string;
-}): Promise<string> {
+  rawToken: string;
+}): Promise<void> {
   const device = await requireOwnedDevice({ userId: opts.userId, deviceId: opts.sourceDeviceId });
-
-  // Mint 32 random bytes, base64 (same primitive as the relay token).
-  const rawToken = crypto.randomBytes(32).toString("base64");
-  const tokenHash = sha256Hex(rawToken);
-
-  // Store the hash on the device (the raw token is never persisted).
+  const tokenHash = sha256Hex(opts.rawToken);
   await db.device.update({
     where: { id: device.id },
     data: { liveCaptureTokenHash: tokenHash },
   });
-
-  return rawToken;
 }
 

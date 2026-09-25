@@ -8,7 +8,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/clone-transport";
 import { storeCapture } from "@/lib/clone-live-capture";
-import { transitionClone } from "@/lib/clone";
+import { recordLiveCapture } from "@/lib/clone";
 
 const BODY_SIZE_CAP = 1024 * 1024; // 1 MiB per spec A5
 
@@ -117,10 +117,10 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 7. Verify job state expects a capture (A5a: "in a state that expects a capture").
-    // For live clones, capture arrives after job creation but before launch.
-    const acceptedStates = ["requested", "awaiting_source"];
-    if (!acceptedStates.includes(cloneJob.status)) {
+    // 7. Verify job state expects a capture. TASK_119A V9 (second pass):
+    // "awaiting_capture" is the ONLY state a hosted live job waits in for a
+    // capture — recordLiveCapture (below) is the sole legal exit from it.
+    if (cloneJob.status !== "awaiting_capture") {
       return NextResponse.json(
         { error: "Unauthorized" },
         { status: 401 }
@@ -147,13 +147,28 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 9. Hold payload only for injection (A5: "never logged, echoed, audited").
-    // Store in memory temporarily, delete after injection succeeds or on failure.
+    // 9. Counts only (A5: "never logged, echoed, audited").
     const cookieCount = payload.cookies.length;
     const domainCount = new Set(payload.cookies.map((c) => c.domain)).size;
 
-    // 10. Store the capture payload in memory (with 5-min TTL).
-    // TASK_119A A6: storeCapture holds this in RAM only, never persisted.
+    // 10. Transition FIRST: recordLiveCapture asserts live + hosted +
+    // awaiting_capture itself, then writes "captured" through the same
+    // transitionClone every other step in the pipeline uses, and audits it.
+    // TASK_119A V9 (second pass): this must happen BEFORE storeCapture — a
+    // throw here (concurrent transition, unexpected state) must never leave
+    // an orphaned payload sitting in memory with no job to inject it into.
+    try {
+      await recordLiveCapture(cloneJob.id, { cookieCount, domainCount, truncated: payload.truncated });
+    } catch {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    // 11. Only NOW hold the payload for injection (A5: "never logged,
+    // echoed, audited" — RAM only, TTL'd, deleted after injection or on
+    // failure by lib/clone-live-capture.ts).
     storeCapture({
       cloneJobId: payload.cloneJobId,
       deviceId: payload.deviceId,
@@ -161,21 +176,6 @@ export async function POST(request: NextRequest) {
       capturedAt: payload.capturedAt,
       cookies: payload.cookies,
       truncated: payload.truncated,
-    });
-
-    // 11. Update the cloneJob to mark capture received via transitionClone.
-    // This routes through assertCloneTransition and writes the audit row.
-    // The actual cookie payload must NOT be persisted — only counts.
-    const fullJob = await db.cloneJob.findUniqueOrThrow({
-      where: { id: cloneJob.id },
-    });
-    await transitionClone(fullJob, "captured", {
-      detail: {
-        step: "live-capture-ingest",
-        cookieCount,
-        domainCount,
-        truncated: payload.truncated,
-      },
     });
 
     // 12. Return neutral success (202 Accepted, counts only per A5).

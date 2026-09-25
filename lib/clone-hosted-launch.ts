@@ -165,7 +165,22 @@ export async function runHostedLaunch(opts: {
     where: { id: opts.cloneJobId },
     select: { sessionMode: true },
   });
-  if (job?.sessionMode === "live") {
+  // V4 residual: a missing job record must refuse, not fall through to a
+  // reported success — `job?.sessionMode === "live"` below is false for a
+  // null job exactly the same as for a genuine "fresh" one, so without this
+  // check a clone whose row vanished (or was never written) got a
+  // `viewUrl` back as if it had launched clean.
+  if (!job) {
+    await browserRuntime.stop(sessionId).catch(() => {});
+    await deleteProfileDir(profileDirPath(sessionId)).catch(() => {});
+    return {
+      ok: false,
+      egressMode: opts.egress,
+      exitCode: null,
+      error: "clone_job_not_found",
+    };
+  }
+  if (job.sessionMode === "live") {
     // Live mode requires CDP endpoint to exist.
     if (!cdpPort) {
       await browserRuntime.stop(sessionId).catch(() => {});

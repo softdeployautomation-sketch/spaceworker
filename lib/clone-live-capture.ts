@@ -50,7 +50,7 @@ export function clearCapture(cloneJobId: string): void {
 /**
  * Inject captured cookies into a hosted clone session via CDP.
  * Called from lib/clone-hosted-launch.ts after container starts.
- * A5b: "If the capture yields 0 cookies, or injection cannot be verified,
+ * A6: "If the capture yields 0 cookies, or injection cannot be verified,
  *      the launch REFUSES with a named reason — never a silent fallback to fresh."
  */
 export async function injectLiveCapture(opts: {
