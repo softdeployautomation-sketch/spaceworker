@@ -42,11 +42,23 @@ const nextConfig: NextConfig = {
               "frame-ancestors 'self' https://vantra.spaceworker.top; " +
               // Task 95 — Devices v2 remote control: MeshCentral's desktop /
               // terminal / file panes load in iframes on the device console.
-              // The exact MeshCentral public origin lives in VPS env (TRMM's
-              // meshcentral hostname / MESH_WSS_URL) — set MESH_FRAME_ORIGINS
-              // in /opt/spaceworker/.env at deploy (space-separated https://
-              // origins). Default keeps the mikeolab.com family allowed.
-              `frame-src 'self' ${process.env.MESH_FRAME_ORIGINS ?? "https://trmm.mikeolab.com https://*.mikeolab.com"};`,
+              // 2026-09-25 (live incident): this reads process.env at
+              // BUILD time, not per request — headers() is Next.js
+              // configuration, resolved once into .next/routes-manifest.json
+              // by `next build`. The VPS's own /opt/spaceworker/.env is
+              // NEVER consulted for this value at runtime, unlike an
+              // ordinary route handler's process.env read — so
+              // MESH_FRAME_ORIGINS must be passed as a BUILD-TIME env var
+              // (see .github/workflows/deploy.yml's build steps) with the
+              // real value, not left to the fallback below. That fallback
+              // is only a last-resort default for a build with no env
+              // configured at all (e.g. a bare local `next build`) — every
+              // CI build until now omitted the env var AND the fallback
+              // pointed at a dead host (trmm.mikeolab.com, doesn't resolve),
+              // so every real remote-control embed silently failed CSP with
+              // no working default either way, until traced live from a
+              // "This content is blocked" iframe.
+              `frame-src 'self' ${process.env.MESH_FRAME_ORIGINS ?? "https://mesh.instaweb.top"};`,
           },
         ],
       },

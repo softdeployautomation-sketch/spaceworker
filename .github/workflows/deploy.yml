@@ -70,6 +70,22 @@ jobs:
           APP_BASE_URL: "https://ci-placeholder.invalid"
           BROWSER_PROFILE_BASE_DIR: "/tmp/ci-placeholder-profiles"
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+          # MESH_FRAME_ORIGINS is the ONE exception to the "placeholder is
+          # fine" rule above, and it MUST be the real value. 2026-09-25 (live
+          # incident): next.config.ts's headers() feeds this into the CSP
+          # frame-src directive, and headers() is Next.js CONFIGURATION —
+          # evaluated once by `next build` into the static
+          # .next/routes-manifest.json, not re-run per request like an
+          # ordinary route handler's process.env read. Whatever this was (or
+          # wasn't) set to during THIS build is what every deployed request
+          # gets, forever, regardless of what /opt/spaceworker/.env holds on
+          # the VPS at runtime — that .env value is never consulted for this
+          # header at all. Leaving this as a placeholder baked the fallback
+          # default (a dead trmm.mikeolab.com host) into frame-src while the
+          # VPS's real, reachable meshcentral host (mesh.instaweb.top) was
+          # never actually allowed — every remote-control embed failed with
+          # Chrome's generic "This content is blocked" until caught live.
+          MESH_FRAME_ORIGINS: "https://mesh.instaweb.top"
 
   deploy:
     name: Deploy to production (manual only)
@@ -100,6 +116,10 @@ jobs:
           EMAIL_FROM: "noreply@example.com"
           APP_BASE_URL: "https://ci-placeholder.invalid"
           BROWSER_PROFILE_BASE_DIR: "/tmp/ci-placeholder-profiles"
+          # Must be the real value — see the "Build & typecheck" job's build
+          # step above for why (next.config.ts's headers() bakes this in at
+          # build time; the VPS's own .env is never read for it).
+          MESH_FRAME_ORIGINS: "https://mesh.instaweb.top"
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
       - name: Package build artifact
