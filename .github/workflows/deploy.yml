@@ -183,7 +183,17 @@ jobs:
             # unit'"'"'s ExecStart — NOT /opt/spaceworker/worker/venv, which
             # does not exist), and a failure here must stay non-fatal so a
             # broken worker dependency can never take the main app down again.
-            sudo -u trmm /opt/spaceworker-worker-venv/bin/pip install -q -r /opt/spaceworker/worker/requirements.txt || echo "::warning::extraction-worker pip install failed — worker left stopped, main app unaffected"
+            # `python -m pip`, not the venv's own bin/pip script directly:
+            # 2026-09-25 (live incident, same deploy) — this venv was
+            # relocated from /opt/spaceworker/worker/venv to its current path
+            # at some point without regenerating its console scripts, so
+            # bin/pip's own shebang still pointed at the OLD (nonexistent)
+            # location and every invocation failed with a confusing "No such
+            # file or directory" that was actually about the shebang target,
+            # not pip itself. `python -m pip` runs pip as a module through
+            # the venv's own working python symlink instead, so it can never
+            # be broken by a stale console-script shebang the same way again.
+            sudo -u trmm /opt/spaceworker-worker-venv/bin/python -m pip install -q -r /opt/spaceworker/worker/requirements.txt || echo "::warning::extraction-worker pip install failed — worker left stopped, main app unaffected"
             systemctl start extraction-worker || echo "::warning::extraction-worker failed to start — main app unaffected"
             sleep 2
             systemctl is-active extraction-worker || echo "::warning::extraction-worker is not active after deploy"
