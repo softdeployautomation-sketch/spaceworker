@@ -56,53 +56,95 @@ reads. That was the last mile of a road whose first mile was never paved. This t
 
 ---
 
-## 3. THE ONE HARD CHOICE — how to install a Chrome extension silently
+## 3. HOW TO INSTALL THE EXTENSION — CORRECTED 2026-09-25 after owner challenge
 
-| Route | Silent (no user step)? | Survives restart? | Verdict |
-|---|---|---|---|
-| Unpacked `--load-extension` | No — needs Chrome relaunched with a flag; **no effect on an already-running Chrome**; Google is removing the flag | No | **REJECTED** |
-| Chrome Web Store (unlisted/private) | Yes | Yes | **REJECTED for now** — needs a store developer account + review; "private" only works for Workspace domains |
-| **`ExtensionInstallForcelist` + self-hosted signed CRX3** | **Yes** | **Yes** | **CHOSEN** |
+**The first version of this section chose `ExtensionInstallForcelist` + a self-hosted signed CRX3. That
+was WRONG, and the owner's objection ("that actually breaks the flow") is correct.** Two independent,
+documented facts kill it:
 
-**CHOSEN: `ExtensionInstallForcelist`** (HKLM policy) pointing at an **update manifest we host over
-HTTPS** (`update.xml` → `.crx`), written by the same SYSTEM-context setup script that already writes the
-native-host registration. It is the only route that is silent, persistent across restarts, applies to
-any signed-in user, and is **reversible by deleting the policy** (rollback, §7).
+1. **`force_installed` = "Users can't remove it."** (Google's `ExtensionSettings` policy reference,
+   quoted verbatim.) The extension is not just *present* — it is **unremovable** for as long as the
+   policy exists, and **Chrome shows "Managed by your organization" (More menu, and
+   `chrome://management`) for that entire time.** It is a property of the **BROWSER**, not of the clone
+   session — it does **not** appear only while a session is shared, and it does not go away when the
+   clone ends. Google's own help page then teaches the user to open `chrome://policy`, find "policies you
+   don't recognize", and remove the responsible program — i.e. the badge is designed to be a
+   malware/warning signal. Setting it on a **customer's personal browser** is a trust bomb and, as the
+   owner said, breaks the flow.
+2. **A self-hosted CRX is not an option on Windows at all.** Per Google's external-extensions doc:
+   *"On Windows and Mac, the `update_URL` must point to the Chrome Web Store where the extension must be
+   hosted"* and *"As of Chrome 33, no external installs are allowed from a path to a local `.crx` on
+   Windows."* So the "silent, no policy, our own origin" variant **does not exist on Windows**, which is
+   the only platform we ship.
 
-**The cost, disclosed and not hidden:** a force-installed extension makes Chrome show **"Managed by your
-organization"**, and the extension is not removable by the user while the policy is set. The console
-must state this **before** the click, in one plain sentence. We do not paper over it — the user is
-changing their own browser.
+### The two real routes
 
-**Facts the implementer must not get wrong (CRX3):**
-- **The extension ID is derived from the signing key.** Generate **once**, store the `.pem` as a
-  **GitHub Actions secret** — **never commit it, never put it in `engine-dist/`, never print it.** Both
-  repos are PUBLIC. Losing it changes the ID and breaks every installed policy entry.
-- Chrome requires **CRX3**; CRX2 is dead. Pack with Chrome on `windows-latest`
-  (`chrome.exe --pack-extension=<dir> --pack-extension-key=<pem>`) — a plain CI step — or a small CRX3
-  signer. **Do not hand-roll the container format.**
-- Serve the `.crx` and `update.xml` over **HTTPS at a stable URL**, `.crx` as
-  `Content-Type: application/x-chrome-extension`, and **do not let nginx gzip or rewrite them**. Same
-  origin as `engine-dist` is fine (`env.appBaseUrl` + a path).
-- Forcelist entry form: `<extension-id>;https://<origin>/clone-ext/update.xml`.
+| Route | Silent? | "Managed by your organization"? | User can remove it? | Needs a Store listing? |
+|---|---|---|---|---|
+| **A. Policy — `ExtensionInstallForcelist` / `force_installed`** | yes | **YES — permanent, browser-wide** | **NO** | no |
+| **B. Registry external install — `HKLM\SOFTWARE\Google\Chrome\Extensions\<id>` with `update_url` → Chrome Web Store** | yes (Chrome installs it at next start) | **NO** — this is **not** a policy (different registry root: `SOFTWARE\Google\Chrome`, not `SOFTWARE\Policies\Google\Chrome`) | **yes** — and Chrome **respects** it, blocklisting the extension rather than re-installing | **YES** |
+| C. Unpacked `--load-extension` | no — requires relaunching Chrome with a flag, no effect on an already-running Chrome, and the flag is being removed | n/a | yes | no |
+
+**Rejected: C** (not silent, needs the user's browser closed, being deprecated).
+
+### CHOSEN: Route B — a Chrome Web Store listing installed via the registry `update_url`
+
+Automatic and silent, **no policy, no "Managed by your organization", no permanent state on the user's
+browser**, and the user keeps the right to remove an extension they don't want (Chrome blocklists it, and
+we respect that — the setup card must then say so and offer the alternative, not nag).
+
+**Costs, stated plainly (this is the trade, not a hidden one):**
+- **One-time Chrome Web Store developer account ($5) and a review** before anything can ship. A listing
+  with `"cookies"` + `host_permissions: ["<all_urls>"]` is the exact permission profile of session-
+  stealing malware, so the **review is a real gate and can be rejected**; the listing's justification
+  must be airtight. Plan for at least one rejection round.
+- **Store review on every future extension change** (a new version needs review), so the extension can
+  never be hot-patched in an emergency. Version updates therefore need a release habit, not a push.
+- The registry entry carries a **`version`** that must match the published version.
+- **Verify on a real device** (not assumable): whether the registry entry alone installs it in the
+  current Chrome, given the `BlockExternalExtensions` policy and the fact that the Chrome-33 restriction
+  above shows Google tightening this over time. **If it does not install, we fall back to Route A and
+  the owner decides with the badge cost on the table** — we do not silently do it.
+
+**Build facts (Route B):**
+- The extension ID comes from the **Store listing**, and the signing key lives with the Store. There is
+  **no `.pem` in our repo or CI, and no `.crx` we host** — that entire CRX3 subsection was an artefact
+  of the wrong route and is deleted.
+- Registry shape: `HKLM\SOFTWARE\Google\Chrome\Extensions\<extension-id>` with `REG_SZ update_url =
+  https://clients2.google.com/service/update2/crx` and `REG_SZ version = <published version>`. Same for
+  Edge under `HKLM\SOFTWARE\Microsoft\Edge\Extensions\<id>` (verify Edge's requirement separately).
 - `manifest.json`'s `_comment` key yields Chrome's benign *"Unrecognized manifest key"* warning.
-  **Strip it when packaging** — a warning on a policy-installed extension reads as a fault.
+  **Strip it before publishing** — a warning on a browser extension reads as a fault.
+- **Rollback = delete the two registry keys.** No policy, no browser state, nothing to un-flag. This is
+  strictly better than Route A's rollback.
+
+### Until Route B is live: do NOT gate the flow on it
+
+The Store listing cannot exist today, and the console currently blocks "Carry my session" with no
+possible way to satisfy it. So **B10-2 ships the un-blocking first** (§4): the setup card must stop
+presenting the extension as a prerequisite, and must offer the route that works **right now and needs no
+browser modification at all** —
+
+**Sign in once inside the clone, and it persists.** The clone's browser profile is per-device and
+persistent, and TASK_117 **F6** proved a CDP-set cookie **survived a full container restart**. So the
+user is signed in from the second clone onward with **zero** cookies extracted, **zero** extension and
+**zero** policy. That is the honest default; Route B (when it exists) only saves the *first* sign-in.
 
 ---
 
 ## 4. THE BITS
 
-### B10-1 — Ship the native host and the extension at all (build + distribution)
+### B10-1 — Ship the native host and the setup script at all (build + distribution)
 1. `engine-dist` must carry **`clone-native-host.exe`** and **`install-registry.ps1`**, with real
    SHA-256s in `engine-dist/manifest.json`. **That directory is gitignored (`.gitignore:23`) and rsynced
    to the VPS — it is NOT in git**, and the manifest is **generated**, so extend the list that
    `scripts/engine-dist.mjs` walks (that script *is* tracked) and re-run it. **Never hand-edit the
    manifest** — the signature check reads it.
-2. The extension must be **packaged as CRX3** in CI and published to the HTTPS origin with an
-   `update.xml` (new workflow, or a step in an existing one — mirror the `overlay-trial.yml` pattern).
-3. Serve the `.crx` + `update.xml` from our origin. **The `.crx` must not live in git** and the `.pem`
-   must never be in git, in `engine-dist/`, or in the manifest.
-4. **Order matters:** `install-registry.ps1` requires **both** `clone-native-host.exe` **and**
+2. **The extension itself is NOT built, signed or hosted by us** (§3, Route B). There is no `.crx` in our
+   CI, no `update.xml`, no `.pem` anywhere. The only thing we ship is the **native host binary** and the
+   registry entry pointing at the **Chrome Web Store**. If you are tempted to add CRX3 packaging: don't —
+   it was the wrong route and it is also impossible on Windows.
+3. **Order matters:** `install-registry.ps1` requires **both** `clone-native-host.exe` **and**
    `hack-browser-clone.exe` in `-BinDir` and throws otherwise. Stage both before it runs.
 
 ### B10-2 — Register them from the one-click setup (this is the "silent" part)
@@ -114,13 +156,26 @@ changing their own browser.
 3. **Emit `STEP:` lines.** `install-registry.ps1` uses `Write-Host` only, and the setup's `parseSteps()`
    (line 168) reads `STEP:<name> OK|FAIL|SKIP[:detail]`. Add those lines to the script — otherwise the
    new work is invisible in the activity UI (B10-4) and only `ensureReported()` fires.
-4. Write the **`ExtensionInstallForcelist`** policy (HKLM, Chrome + Edge) in that same elevated script,
-   then **read the key back** and report `STEP:ext-policy OK` only if the value is present. Report,
-   don't assume.
-5. Keep `buildNativeHostPresenceScript()` as the **read-side truth** (it already checks the real HKLM
-   keys). After this change it can finally return true. Do **not** replace it with a DB flag.
-6. **Idempotent and re-runnable:** the owner explicitly wants "re-run the full setup" to be safe. Every
+4. **Route B registration, not a policy** (§3): write
+   `HKLM\SOFTWARE\Google\Chrome\Extensions\<id>` (+ Edge) with `update_url` and `version`, then **read
+   both values back** and report `STEP:ext-registry OK` only if they are present. **Do NOT write
+   `ExtensionInstallForcelist` or any `SOFTWARE\Policies\Google\Chrome` key** — that is the route the
+   owner rejected.
+5. **The extension id and version must be configuration, not a literal** (they come from the Store
+   listing). Missing config → that step reports **`SKIP:store_listing_pending`**, which is a *pass*, not
+   a failure: the flow must not be blocked by a listing that does not exist yet (§3, last part).
+6. Keep `buildNativeHostPresenceScript()` as the **read-side truth** (it already checks the real HKLM
+   keys). **But it must now distinguish "native host present" from "extension present"**, and
+   `liveCaptureReady` must mean **both** — otherwise the console offers `live` on the strength of a host
+   that has no extension to talk to. Report, don't assume.
+7. **Idempotent and re-runnable:** the owner explicitly wants "re-run the full setup" to be safe. Every
    new step must tolerate already-installed state and report `OK`, not fail.
+8. **Un-block the flow while the listing is pending** (§3): the setup card must stop presenting the
+   extension as a hard prerequisite, and must state the working alternative in one line — *"You can also
+   sign in once inside your clone and it stays signed in."* `sessionMode: "live"` stays **disabled** with
+   that reason, so a user is never offered an option that cannot work; but the **rest of the flow must
+   not be gated on it**, and `fresh` must be reachable and obviously fine.
+
 
 
 ### B10-3 — Persist setup runs, so the activity survives a reload
@@ -181,51 +236,63 @@ change to it changes both.
 
 ### PATH A (Claude) — server, state, UI
 - `prisma/schema.prisma` + **one hand-written migration** — `DeviceSetupRun` (+ `Device` relation)
-- `lib/clone-setup.ts` — `ROLE_ARTIFACTS.source`, the new registry/extension step, `DEVICE_SETUP_SECTIONS`
+- `lib/clone-setup.ts` — `ROLE_ARTIFACTS.source`, the new registry step, `DEVICE_SETUP_SECTIONS`
 - `lib/clone-setup-runs.ts` **(new)** — persist/read runs, prune to last N
 - `app/api/devices/[deviceId]/clone-setup/route.ts` — return the sectioned status
 - `components/device-console.tsx` — the sectioned card (B10-4) + one-button flow (B10-5)
 - `scripts/engine-dist.mjs` — include `clone-native-host.exe` + `install-registry.ps1`
-- `.github/workflows/` — a CRX3 pack + publish job (new file)
+- `lib/env.ts` — the Store **extension id + version** as optional config (§B10-2.5)
 
 ### PATH B (Cline) — the Windows install script only
 - `michael/browser-clone/engine/scripts/install-registry.ps1` — emit `STEP:` lines; write and verify the
-  `ExtensionInstallForcelist` policy; keep it idempotent
+  **`HKLM\SOFTWARE\Google\Chrome\Extensions\<id>`** entry (Route B — **not** a policy); keep it idempotent
 - `michael/browser-clone/tests/Test-RegistryInstall.ps1` **(new)** — the harness
 
 ### The `STEP:` vocabulary (frozen — A parses it, B emits it)
 `STEP:native-host OK|FAIL[:detail]` · `STEP:browser-registration OK|FAIL[:detail]` ·
-`STEP:ext-policy OK|FAIL[:detail]` · `STEP:ext-verify OK|FAIL[:detail]` · `STEP:registry DONE|FAIL[:detail]`
+`STEP:ext-registry OK|FAIL|SKIP:store_listing_pending[:detail]` · `STEP:ext-verify OK|FAIL[:detail]` ·
+`STEP:registry DONE|FAIL[:detail]`
 
 ---
 
 ## 6. ACCEPTANCE (evidence, not assertions)
 
-1. **Silent install, provable:** on a real source device, one click on the setup button, with **no
-   manual step**, ends with the extension **present and enabled in `chrome://extensions`** and the
-   native-host **present in both HKLM key sets** (Chrome + Edge). Paste the check output.
-2. **`liveCaptureReady` flips to `true`** for that device, and **the "Carry my session" option becomes
-   selectable** in the console.
-3. **The activity survives a reload and a deploy** — show the sectioned card after a rebuild, listing
+1. **The flow is NOT gated on a Store listing that does not exist.** With the extension id unset, the
+   sectioned card shows the **Browser extension** section as *not yet available* with the reason, the
+   rest of the setup is `OK`, and a **`fresh` clone completes normally** — the dead end is gone. Show
+   the card. **This is the item that ships first and un-blocks the owner today.**
+2. **No browser state is written that the owner rejected.** `chrome://policy` shows **no** policy from
+   us and `chrome://management` does **not** report the browser as managed, after setup. Paste both.
+   (This is the check the owner's objection demands — a policy anywhere fails this item.)
+3. **Sign-in persists without any extension** (§3 last part): start a `fresh` clone, sign in once inside
+   it, end the clone, start another — it is **still signed in**. This is the working path and must be
+   demonstrated on a real device.
+4. **When the Store listing exists:** one click, no manual step, ends with the extension **present and
+   enabled in `chrome://extensions`**, **removable by the user**, and `liveCaptureReady: true`. Paste
+   the check output. *(Blocked until a listing exists — do not fake this one.)*
+5. **Re-run is safe** — twice back to back; the second run reports `OK` for every step and changes
+   nothing. Show both runs in the history.
+6. **The activity survives a reload and a deploy** — show the sectioned card after a rebuild, listing
    the same steps. This is the owner's original complaint; it must be explicitly demonstrated.
-4. **Re-run is safe** — run setup twice back to back; the second run reports `OK` for every step and
-   changes nothing. Show both runs in the history.
-5. **One button, no dead end** — with a session to carry, click once and land on a **running clone that
+7. **One button, no dead end** — once `live` is available, click once and land on a **running clone that
    is signed in**. Not "ready", not a second button.
-6. **Honesty** — no section shows `done` unless the device's own output said so; a failed section is
+8. **Honesty** — no section shows `done` unless the device's own output said so; a failed section is
    visible with its reason, and no token or raw script output appears anywhere in the UI, the DB or the
    logs.
-7. **No regression:** `fresh` clones are unaffected; `cloneSetupStatus` still answers without a device
+9. **No regression:** `fresh` clones are unaffected; `cloneSetupStatus` still answers without a device
    RPC; the relay and hosted paths still install on a device that never had them.
-8. **The key is not leaked:** `git log -p` and the manifest contain **no `.pem`**; show the grep.
+10. **Nothing secret leaked, and nothing that should not exist:** `git log -p`, the manifest and CI
+    contain **no `.pem` and no `.crx`**; show the grep. If you find yourself adding either, you are
+    building the **rejected** route.
 
 ---
 
 ## 7. ROLLBACK (must be trivial — the owner asked for it)
 
-- **Extension off:** delete the `ExtensionInstallForcelist` value (and the policy key) — the extension
-  is removed by Chrome on next start. Provide this as a **single documented command**, not a manual
-  registry hunt, and record it in the runbook.
+- **Extension off:** delete the two registry keys (`HKLM\SOFTWARE\Google\Chrome\Extensions\<id>` and the
+  Edge equivalent). Chrome removes the extension on next start. **No policy to unset, no browser state
+  to un-flag** — Route B's rollback is strictly simpler than the rejected policy route. Provide it as a
+  **single documented command**, not a manual registry hunt, and record it in the runbook.
 - **Setup off:** `sessionMode` stays optional and `fresh` stays the default, so a broken live path
   cannot break ordinary cloning.
 - **Nothing is destructive on re-run** — no data migration, no profile deletion.
@@ -237,7 +304,9 @@ change to it changes both.
 - Files changed, the migration SQL, `npx tsc --noEmit` result.
 - For Path B: `gofmt -l` / `go vet` / `go build ./...` and the PowerShell harness output (PowerShell 7
   is fine; note any Windows-only SKIPs — and say plainly if it was not run on Windows).
-- The **extension ID** and the exact forcelist string used (the ID is public, the key is not).
+- **Confirmation that no `SOFTWARE\Policies\Google\Chrome` key was written** and no `.pem`/`.crx` exists
+  anywhere (grep output).
+- The **extension ID** and registry shape used, once a Store listing exists (the ID is public).
 - Acceptance evidence for §6.1–§6.5, or an explicit statement of which you could **not** verify and why.
 - Anything you had to decide that is not in this file.
 
