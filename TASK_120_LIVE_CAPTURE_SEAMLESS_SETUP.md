@@ -101,10 +101,13 @@ we respect that — the setup card must then say so and offer the alternative, n
 - **Store review on every future extension change** (a new version needs review), so the extension can
   never be hot-patched in an emergency. Version updates therefore need a release habit, not a push.
 - The registry entry carries a **`version`** that must match the published version.
-- **Verify on a real device** (not assumable): whether the registry entry alone installs it in the
-  current Chrome, given the `BlockExternalExtensions` policy and the fact that the Chrome-33 restriction
-  above shows Google tightening this over time. **If it does not install, we fall back to Route A and
-  the owner decides with the badge cost on the table** — we do not silently do it.
+- ~~Verify whether the registry entry installs at all.~~ **RESOLVED 2026-09-25, in our favour:**
+  `BlockExternalExtensions` — *"Setting this policy to **Enabled** blocks external extensions from being
+  installed. Setting this policy to **Disabled or leaving it unset allows external extensions to be
+  installed."* (ADMX policy reference.) **Unset is the default, so external installs are allowed.** The
+  one remaining case is a **customer machine under IT policy that has explicitly enabled it** — then the
+  extension cannot install, `liveCaptureReady` stays false, and the console must say so and offer
+  `fresh`. Checked by the existing presence check; no new machinery.
 
 **Build facts (Route B):**
 - The extension ID comes from the **Store listing**, and the signing key lives with the Store. There is
@@ -117,6 +120,48 @@ we respect that — the setup card must then say so and offer the alternative, n
   **Strip it before publishing** — a warning on a browser extension reads as a fault.
 - **Rollback = delete the two registry keys.** No policy, no browser state, nothing to un-flag. This is
   strictly better than Route A's rollback.
+
+### B10-R — THE TIMING FACT THAT SHAPES THE UX (do not design around an instant install)
+
+Chrome reads the `…\Extensions\<id>` registry keys **at browser startup**. So if the user's Chrome is
+already open when setup writes them, **the extension appears at the NEXT Chrome start** — not
+immediately, and not mid-session. **There is no supported way to make it instant** (the only lever would
+be killing their Chrome, which we will not do), and the **native-messaging host registration needs the
+same restart** for the extension to reach it.
+
+Consequences the UI must honour:
+- Never claim "carry my session" is ready **the moment** setup finishes. The card's **Browser extension**
+  section must read something like *"installed — takes effect when Chrome restarts"* until the presence
+  check actually passes, and `liveCaptureReady` must keep reporting **false** until then (§B10-2.6).
+- The **Chrome-restart step belongs in the activity card** as a visible step, with the honest wording.
+  Options in order of politeness: keep the clone `fresh` and offer `live` next time; or ask the user to
+  reopen Chrome and re-run. Do **not** silently close their browser.
+- This is exactly what the **per-section activity view (B10-4)** exists to make legible — so make this
+  section the proof that it works.
+
+### The Store listing flow, end to end (for whoever sets it up)
+
+**Ours, once — this is the gate, and it is external:**
+1. Register a Chrome Web Store **developer account** ($5, one-time; needs a publisher name, which is
+   **publicly shown on the listing**).
+2. Upload the extension as a **`.zip`** — the existing `engine/extension/` contents, with the `_comment`
+   key removed and a real `version`. Google assigns the **extension ID** at this point; it is permanent
+   and is what both our config and the device registry key use.
+3. Fill the tabs that decide the outcome: **Privacy** (single purpose + data handling — where
+   `cookies` + `<all_urls>` gets justified, and it must match the code), **Distribution** (countries +
+   who can see/install it — keep it narrow), **Store Listing**, and **Test instructions** (tell the
+   reviewer how to verify with a disposable login; **never** a real account).
+4. Submit → review → published (deferred publishing is available if we want to pick the moment).
+5. Put the **extension ID + published version** into our config so the setup script and the presence
+   check can use them (§B10-2.5 — with them unset, the step is `SKIP:store_listing_pending`, a pass).
+
+**Ours, every release:** bump version → upload → review. There is a *"skip review for eligible
+changes"* path for some changes, but do not rely on it.
+
+**The device, and only this:** one registry write, silent, no user action. Chrome does the rest at next
+start.
+
+
 
 ### Until Route B is live: do NOT gate the flow on it
 
@@ -203,12 +248,13 @@ in run order — status derived from `DeviceSetupRun` **and** the live read mode
 | **Engine** | engine + CLI + PS libs staged, hash-verified | last run `stage` steps |
 | **Egress relay** | relay installed, tunnel up, last check | `relay.status` / `relay.lastCheckAt` |
 | **Capture host** | native host binary + HKLM registration per browser (Chrome/Edge/Brave) | `buildNativeHostPresenceScript()` result in the last run |
-| **Browser extension** | policy written, extension ID present, **"Managed by your organization" disclosed here** | last run `ext-policy` step |
+| **Browser extension** | extension installed via the Store registry entry, and whether it is **live yet** (see B10-R — a Chrome restart may be pending) | last run `ext-registry` step **+ the presence check** |
 | **Session token** | `live-capture.json` delivered, token committed | last run token step |
 
 Requirements:
-- Each section: a **one-line current state** (`done` / `missing` / `failed` / `not needed for this role`)
-  and a **disclosure** (`<details>` or an expand button) listing **each step with ✓/✗ and its detail**.
+- Each section: a **one-line current state** (`done` / `missing` / `failed` / `not needed for this role` /
+  **`pending restart`**) and a **disclosure** (`<details>` or an expand button) listing **each step with
+  ✓/✗ and its detail**.
 - A **"what's left" summary at the top** — the owner's actual ask: *"if the extension is the only one
   left, user can just rerun the full setup"*. One sentence naming the remaining sections.
 - **Counts only** for anything credential-shaped; never render a token, never a raw script line.
@@ -220,9 +266,13 @@ Requirements:
 2. On success, **do not stop at "ready"**. If the user's intent was "Carry my session", **start the
    clone** with `sessionMode: "live"` in the same flow, and land them on the running clone — the cloned
    browser opens with the session already carried.
-3. If a section failed, the button becomes **"Re-run setup"** and the summary names what failed. Never
+3. **But handle the restart honestly (B10-R).** If the extension was just registered and the presence
+   check has not passed yet, the extension is **not live until Chrome restarts** — so falling through to
+   a `live` clone here would fail. In that state the button must offer **`fresh` now**, state in one line
+   that carrying a session is available after Chrome restarts, and **not** pretend otherwise.
+4. If a section failed, the button becomes **"Re-run setup"** and the summary names what failed. Never
    a silent no-op, never a button that reports success for work that did not happen.
-4. `sessionMode` already flows end to end (picker → route → `requestClone`) — **do not re-add it**.
+5. `sessionMode` already flows end to end (picker → route → `requestClone`) — **do not re-add it**.
    Verify it is still intact before wiring the auto-start.
 
 
@@ -270,6 +320,10 @@ change to it changes both.
 4. **When the Store listing exists:** one click, no manual step, ends with the extension **present and
    enabled in `chrome://extensions`**, **removable by the user**, and `liveCaptureReady: true`. Paste
    the check output. *(Blocked until a listing exists — do not fake this one.)*
+5. **The restart is handled honestly (B10-R).** With Chrome open when the registry entry is written,
+   the card reports the extension as **pending a Chrome restart** — *not* as ready — `liveCaptureReady`
+   stays **false**, and the button offers `fresh`. After Chrome is restarted, it flips to ready. Show
+   both states. **A run that claims ready before the restart fails this item.**
 5. **Re-run is safe** — twice back to back; the second run reports `OK` for every step and changes
    nothing. Show both runs in the history.
 6. **The activity survives a reload and a deploy** — show the sectioned card after a rebuild, listing
