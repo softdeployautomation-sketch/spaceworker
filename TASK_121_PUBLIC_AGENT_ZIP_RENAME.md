@@ -113,14 +113,14 @@ bare `trmm-agent.exe`. There is no rename and no launcher zip. That is exactly w
   as `app/api/devices/deployments/route.ts:12-14,495-520` does, so the ZIP still downloads from the public
   host rather than a private one.
 
-### 4a. Where the names/URL are remembered (owner decision required — recommendation given)
+### 4a. Where the names/URL are remembered (DECIDED — see §8 Q1)
 
 Today `resolveInstallToken` (`lib/vantra-link.ts:275-289`) **re-mints on every link open**: it calls Vantra's
 install-link again and redirects to the fresh URL. With a ZIP in the path that would mean **a generator call
 per open** (a secret-bearing POST with a 60 s timeout, `lib/zip-generator.ts:127-162`) and a *different*
 artifact each time — slow, wasteful and non-deterministic.
 
-**Recommended:** store the result on the `VantraLink` row at mint time and make `resolve` a redirect to the
+**DECIDED:** store the result on the `VantraLink` row at mint time and make `resolve` a redirect to the
 stored URL, re-minting only when expired. New nullable columns (one hand-written migration):
 
 | Column | Purpose |
@@ -232,12 +232,18 @@ the shortcut name and folder look right in Explorer, and confirm it still instal
 
 ---
 
-## 8. Open decisions
+## 8. Decisions taken (settled — agents, do not re-ask)
 
-- **Q1 (§4a)** — store the minted URL + names on the row (recommended) or re-mint on every open and pay the
-  generator each time? **Recommendation: store.**
-- **Q2** — should the private tier also get a ZIP + rename later? **Out of scope here** (D1); record as a
-  follow-up only if the owner asks.
-- **Q3** — one listing of confirmed preset names, or copy Vantra's existing set verbatim? **Recommendation:
-  copy verbatim** (already tested).
+The owner's standing instruction is that these are engineering calls, not questions back to him. All three are
+decided; each is reversible with one small change if it proves wrong in the acceptance run.
+
+- **Q1 (§4a) — DECIDED: store the minted URL + the names on the `VantraLink` row; `resolve` redirects to the
+  stored URL and re-mints only when expired.** Re-minting per open would put an external generator call (a
+  secret-bearing POST, 60 s timeout, `lib/zip-generator.ts:127-162`) behind *every* link open and hand the
+  user a different artifact each time. Reversible: drop the stored-URL read and call the mint again — the
+  columns stay nullable and harmless.
+- **Q2 — DECIDED: the private tier is out of scope.** It keeps `privatePsCommand` untouched (D1). Not a
+  follow-up unless the owner asks for it.
+- **Q3 — DECIDED: copy Vantra's existing `NAME_PRESETS` verbatim.** They are already confirmed clean on a
+  stock Win11 VM; inventing new names would be untested guesswork.
 
