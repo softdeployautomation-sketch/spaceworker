@@ -265,3 +265,92 @@ acceptance item 2) is still outstanding, and the exe hides cursors via
 `SetSystemCursor` — the technique TASK_23 rejected 3/3. Do not treat "it looked
 fine once" as proof.
 
+---
+
+## 2026-09-25 — AMENDMENT: silent launcher promoted to ACTIVE, sharpened UX (owner, browser-clone-paused session)
+
+**Owner:** "we are going to the app launcher since the browser clone is
+paused ... at least we need a way to pop up apps without clicking the start
+menu or clicking the logos of the app in desktop, and we want a seamless
+flow, like user can search first and then select the app they want like
+chrome, firefox, so we need to find a way to make it dynamic, and it should
+be in the remote session tools."
+
+**Verified: still entirely unbuilt.** `grep -rln "launcher_apps\|Discover
+apps\|DiscoverApps" app/api lib` → no results; no
+`/api/devices/[deviceId]/launch` route exists. Everything below the
+"fallback toolbelt" heading above (§1–4) was fully scoped 2026-09-24 and
+never started. This amendment does not change that design — it sharpens the
+UX requirement and sets placement/priority explicitly, since the owner is
+now picking this up as the active replacement for the paused Browser Clone
+work.
+
+**Sharpened requirements (on top of the original design, §1–4 above):**
+
+1. **Search-first, not a static list.** The original design ("discovered
+   apps with their real display names, a free-text path/URL field") already
+   implies this, but make it explicit: the Launch UI's primary interaction is
+   a **search box** — type "chrome" / "fire" / a URL, see matching results
+   (discovered apps first, then "open as URL" / "open as path" as the query
+   shape allows), select one, launch. Not a dropdown a user has to scroll —
+   a filter-as-you-type list, same interaction pattern as a command palette.
+2. **Placement: the Session toolbox menu**, per TASK_103 BUG-B's table
+   (`Session | Connect / Disconnect, RDP Connect, Maintenance overlay, Stop
+   overlay, (later) Browser Clone`) — "Launch" is a new item in that same
+   menu, not a fifth toolbox group. Reachable from the Remote control tab's
+   toolbar line without leaving the session view (matters doubly now that
+   TASK_103's amendment above makes that toolbar line the ONLY thing
+   full-screen mode shows).
+3. **Dynamic per-device, not a hardcoded app list.** Unchanged from the
+   original §1 design (registry enumeration → `DeviceCapability` metadata
+   `launcher_apps`) — restating because "dynamic for every device" was the
+   owner's own phrase both in the original bug report and again here.
+
+**No change to the original design's mechanics** (§1 discovery, §2 the
+`/launch` route + accepted-target rules, §4 independent value) — this
+amendment is priority + UX framing, not a redesign.
+
+**Acceptance (amendment, additive to the original §Acceptance):**
+- Launch lives inside the **Session** toolbox menu, reachable from Remote
+  control's toolbar line, including in full-screen mode (TASK_103
+  amendment's "only the toolbar line" requirement must include this).
+- The UI is search-first: typing filters a live list; no separate "browse
+  all apps" step is required to reach a common app like Chrome.
+
+### Split (2026-09-25) — disjoint files, matching the pipeline's established convention
+
+This task's remaining work and TASK_103's amendment (above) are split into
+two independently-committable halves — same discipline as TASK_121's PATH
+A/PATH B, applied within one repo this time since both halves are
+SpaceWorker.
+
+**PATH A — the launcher backend (Claude).**
+- `lib/device-tools.ts` — `discoverApps(deviceId)` (the registry-enumeration
+  probe from §1, run via `runCommandNow`, result cached as `DeviceCapability`
+  metadata key `launcher_apps`) and `launchApp(deviceId, target)` (§2's
+  accepted-target validation + `Start-Process` run-now, `runAsUser: true`,
+  audited `web-direct`, no approval).
+- `app/api/devices/[deviceId]/discover-apps/route.ts` **(new)** — triggers/
+  re-triggers discovery, returns the cached catalog.
+- `app/api/devices/[deviceId]/launch/route.ts` **(new)** — the `{ target }`
+  POST from §2.
+- Does **not** touch `components/device-console.tsx` — the API surface only.
+
+**PATH B — TASK_103's amendment + the launcher UI (Cline).**
+- `components/device-console.tsx`:
+  - TASK_103's amendment in full: the fullscreen iframe height fix, the
+    fullscreen-only "toolbar line + iframe, nothing else" render (no tab
+    strip, no PinPanel), and the tab-switch session-persistence fix (stop
+    unmounting `ControlTab`'s iframe on tab change).
+  - The Launch search-first UI inside the Session toolbox menu, consuming
+    PATH A's two new routes once they exist (build against their documented
+    shapes; do not block on PATH A landing first if the shapes above are
+    enough to start).
+- Does **not** touch `lib/device-tools.ts` or add new API routes.
+
+Both halves land as separate commits/PRs on their own branches
+(`agent/task-104-launcher-backend`, `agent/task-103-104-console-ui` or
+similar); neither depends on the other's *code* existing to typecheck its
+own files, only on the documented route/function shapes above matching once
+both land.
+

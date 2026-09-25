@@ -224,6 +224,86 @@ no queue row (same rule as Ping).
 
 ---
 
+## 2026-09-25 — AMENDMENT: BUG-A is only half fixed; sharper requirement + a new, real bug found
+
+**Owner report (live use, browser-clone-paused session):** "when I click the
+expand, all I want is for the mesh screen to grow bigger to fit the screen
+and just the one line for our tools with it. Apart from that, nothing else
+should show — even the PIN request modal shouldn't be in the remote, since
+it's already in the tools." Also: switching Remote control → Summary → back
+to Remote control shows "Unable to perform authentication" / "Server
+disconnected, click to reconnect" on a session that was working seconds
+earlier.
+
+**Verified against the current deployed code (not guessed):**
+
+1. **The chrome-free route IS live** — `app/console/[deviceId]/page.tsx`
+   exists, is deployed (`curl https://spaceworker.top/console/<id>` → `200`,
+   confirmed present in `/opt/spaceworker/.next/server/app/console/`), and
+   correctly hides the dashboard `<Shell>` (back link, top menubar, bottom
+   dock) via `fullScreen`. **BUG-A's route half is done.** Two things it does
+   NOT do, which is what the owner is actually hitting now:
+
+2. **NEW-1 — the mesh iframe has a hardcoded height and never grows.**
+   `components/device-console.tsx`'s iframe is
+   `className="h-[480px] w-full bg-black"` — a fixed 480px regardless of
+   window size, so opening the chrome-free full-screen route does NOT make
+   the actual screen bigger, which is the owner's literal, repeated
+   complaint. **Fix:** in `fullScreen` mode, the iframe must fill the
+   available viewport height (flex-grow layout or `h-[calc(100vh-<toolbar
+   height>)]`), not a fixed pixel value. Non-fullscreen (embedded-in-tab)
+   view can keep a fixed height — this is a `fullScreen`-conditional change.
+
+3. **NEW-2 — full-screen still renders the ENTIRE console (tab strip +
+   other tabs + PinPanel), not just the mesh screen + one toolbar line.**
+   `app/console/[deviceId]/page.tsx` renders the SAME `<DeviceConsole
+   fullScreen>` as the embedded view — full tab strip (Summary / Remote
+   control / Command / Browser clone / Activity), and `PinPanel` still
+   renders whenever `tab === "control"` (line ~1327), regardless of
+   `fullScreen`. The owner's new, more restrictive requirement: in
+   `fullScreen` mode, render **only** the Session/Power/Security/Diagnostics
+   toolbar line + the mesh iframe — no tab strip, no other tabs reachable, no
+   `PinPanel` (PIN collect already lives in the **Security** toolbox menu per
+   BUG-B's table above — it does not need a second surface). Non-fullscreen
+   embedded view is unaffected; this is additive to BUG-A, not a revert of it.
+
+4. **NEW-3 — a REAL bug, not a cosmetic one: switching tabs away from Remote
+   control and back BURNS the MeshCentral session.** Traced in
+   `components/device-console.tsx`: the tab body is
+   `{tab === "control" && (<ControlTab .../>)}` — a plain conditional render,
+   so navigating to Summary **fully unmounts** `ControlTab` (and its iframe),
+   and returning to Remote control **remounts it fresh** with the SAME
+   `mesh.control` URL still held in the parent's `mesh` state. That URL's
+   `login=` query parameter is a MeshCentral **one-time login token** — it
+   was already consumed by the FIRST mount. The remount's iframe therefore
+   tries to authenticate with an already-spent token and MeshCentral
+   correctly refuses it ("Unable to perform authentication"). This is the
+   same mechanism as TASK_119A's V10/mesh-auth work (see
+   `PIPELINE_CONSOLE_BROWSER_CLONE.md`'s recent history), not a repeat of it
+   — a spent-token replay, not a cross-site cookie problem. **Fix:** stop
+   unmounting the live session on tab switch. Keep `ControlTab` (or at least
+   its iframe) mounted once a session is connected, and hide it with CSS
+   (`hidden` / `display: none`) rather than a conditional `&&` that tears
+   down the DOM node, the same pattern already used elsewhere in this file
+   for tab-persistent state. A tab switch must never cost the user their live
+   remote session.
+
+**Acceptance (amendment):**
+- Fullscreen route: mesh iframe visibly fills the window height (verify at
+  two different window sizes — resizing the window changes the iframe's
+  rendered height).
+- Fullscreen route: only the toolbar line + iframe render — no tab strip,
+  no PinPanel, no other tab content reachable.
+- Embedded (non-fullscreen) dashboard view: unchanged — tab strip, other
+  tabs, and PinPanel under Remote control all still present there (NEW-2 is
+  fullscreen-only).
+- Live session survives a Remote control → Summary → Remote control round
+  trip with NO reconnect prompt and NO new mesh-urls fetch (verify via the
+  Network tab: switching tabs must not fire a second `GET
+  /api/devices/[id]/mesh-urls`).
+
+---
+
 ## Non-goals
 - Browser Clone UI slot (TASK_97 owns it; the toolbox reserves *Session* for it).
 - Overlay shell-popup behaviour (**TASK_104**, scheduled before this task).
