@@ -21,8 +21,14 @@ export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  // TASK_118 B8-1: the "hosted" row is our own clone-destination browser
+  // (lib/clone-destination.ts), infrastructure the account doesn't own or
+  // manage — never a PC the user thinks they have to look after. Excluded
+  // here, not just cosmetically renamed, so it can never appear in the
+  // device list, get clicked into a console, or be targeted by a device
+  // action meant for a real machine.
   const devices = await prisma.device.findMany({
-    where: { userId: session.userId },
+    where: { userId: session.userId, deviceKind: { not: "hosted" } },
     orderBy: { createdAt: "asc" },
     select: deviceListSelector,
   });

@@ -105,24 +105,45 @@ export async function hostAvailability(opts: {
   /** The source device for a clone, or the device whose console is being read. */
   excludeDeviceId: string;
 }): Promise<HostAvailability> {
-  const rows = await db.deviceCapability.findMany({
-    where: {
-      capability: "clone-host",
-      enabled: true,
-      device: { userId: opts.userId, vantraAgentId: { not: null } },
-    },
-    select: {
-      device: { select: { id: true, name: true, status: true, lastSeenAt: true } },
-    },
-    take: 50,
-  });
+  // Two shapes of destination, and they are NOT the same kind of thing:
+  //   - a `clone-host` WORKSTATION (the user's own second PC) — must have an agent;
+  //   - the HOSTED destination (our own Neko browser, TASK_118 B8-1) — has no
+  //     agent by design, which is exactly why the old filter excluded it and the
+  //     pool could never be picked.
+  const [hostRows, hostedRows] = await Promise.all([
+    db.deviceCapability.findMany({
+      where: {
+        capability: "clone-host",
+        enabled: true,
+        device: { userId: opts.userId, deviceKind: "workstation", vantraAgentId: { not: null } },
+      },
+      select: {
+        device: { select: { id: true, name: true, status: true, lastSeenAt: true, deviceKind: true } },
+      },
+      take: 50,
+    }),
+    db.device.findMany({
+      where: { userId: opts.userId, deviceKind: "hosted" },
+      select: { id: true, name: true, status: true, lastSeenAt: true, deviceKind: true },
+      take: 10,
+    }),
+  ]);
 
-  const selfIsHost = rows.some((r) => r.device.id === opts.excludeDeviceId);
-  const others = rows.filter((r) => r.device.id !== opts.excludeDeviceId);
+  const all = [
+    ...hostedRows.map((device) => ({ device })),
+    ...hostRows,
+  ];
+
+  const selfIsHost = all.some((r) => r.device.id === opts.excludeDeviceId);
+  const others = all.filter((r) => r.device.id !== opts.excludeDeviceId);
   const online = others.filter((r) => isUsable(r.device));
   const offlineHostNames = others.filter((r) => !isUsable(r.device)).map((r) => r.device.name);
 
-  const pickedDeviceId = online[0]?.device.id ?? null;
+  // Prefer the hosted destination when present: it is the product design, it
+  // needs nothing from the user, and it is never a customer's PC. The
+  // workstation path stays intact for accounts that already set one up.
+  const picked = online.find((r) => r.device.deviceKind === "hosted") ?? online[0];
+  const pickedDeviceId = picked?.device.id ?? null;
   let reason: HostBlockReason = "ok";
   if (!pickedDeviceId) {
     // `others.length === 0` + this device is a host == the user set ONE PC up

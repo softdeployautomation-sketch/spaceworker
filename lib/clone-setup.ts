@@ -4,6 +4,7 @@ import { db } from "./db";
 import { runCommandNow } from "./device-tools";
 import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
+import { ensureHostedDestination } from "./clone-destination";
 
 import { ensureCloneCapability, runRelayInstall } from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
@@ -469,6 +470,13 @@ export async function cloneSetupStatus(opts: {
     select: { status: true, lastSeenAt: true, vantraAgentId: true },
   });
   if (!device) throw new Error("device_not_owned");
+  // TASK_118 B8-1: ensure the hosted destination row exists BEFORE reading
+  // availability, not just lazily at requestClone() time — otherwise a
+  // brand-new account (never yet clicked Start) reads this card, finds no
+  // hosted row, and sees "no host available" even though one would be
+  // created the instant they actually tried. The card and the gate must
+  // judge the same reality (see clone-destination.ts's own doc comment).
+  await ensureHostedDestination(opts.userId);
   const [relay, capabilities, hosts] = await Promise.all([
     relayView(opts.deviceId),
     capabilityList(opts.deviceId),

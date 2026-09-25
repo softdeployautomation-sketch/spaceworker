@@ -16,6 +16,7 @@ import {
   runCloneRevoke,
 } from "./clone-transport";
 import { refreshDeviceLiveness, hostAvailability } from "./clone-hosts";
+import { ensureHostedDestination } from "./clone-destination";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
 
 import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
@@ -479,13 +480,19 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     relayId = relay.id;
   }
 
-  // 6. Destination device B: explicit pick must be the owner's clone-host;
-  //    otherwise auto-pick an ONLINE pooled hosted PC (receive runs there).
+  // 6. Destination device B: explicit pick must be owned and usable; otherwise
+  //    auto-pick our HOSTED browser (or the user's own clone-host workstation).
+  //
+  // TASK_118 B8-1: the destination row is created here (and in the setup read
+  // model) so the picker always has something real to select. Before this, the
+  // row was read in one place and written nowhere, so the pool was permanently
+  // 0 and Start always answered "no hosted clone PC is available".
+  const hostedDestinationId = await ensureHostedDestination(userId);
   let destinationDeviceId: string | null = input.destinationDeviceId ?? null;
   if (destinationDeviceId) {
     const dest = await db.device.findUnique({
       where: { id: destinationDeviceId },
-      select: { id: true, userId: true, vantraAgentId: true },
+      select: { id: true, userId: true, vantraAgentId: true, deviceKind: true },
     });
     if (!dest || dest.userId !== userId) {
       return refuse("destination_device_not_owned", "That destination device does not belong to your account.");
@@ -493,48 +500,30 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     if (destinationDeviceId === sourceDeviceId) {
       return refuse(
         "same_device",
-        "A clone cannot run on the same PC it captures from — the clone host has to be a different machine. Pick another clone host."
+        "A clone cannot run on the same PC it captures from — the copied browser runs on SpaceWorker's hosted browser instead. Pick that, or another clone host."
       );
     }
-    if (!dest.vantraAgentId) {
-      return refuse("destination_device_not_linked", "The destination device is not linked to the agent yet.");
-    }
-    const cap = await db.deviceCapability.findFirst({
-      where: { deviceId: destinationDeviceId, capability: "clone-host", enabled: true },
-    });
-    if (!cap) {
-      return refuse("destination_not_clone_host", "The destination device must be a hosted clone PC (clone-host capability enabled).");
+    // A HOSTED destination is our own browser (TASK_118 B8-1): it has no agent
+    // and carries no `clone-host` capability by design, so the two checks below
+    // must not apply to it — they are what made an explicit hosted pick
+    // impossible. A WORKSTATION destination still has to prove both.
+    if (dest.deviceKind !== "hosted") {
+      if (!dest.vantraAgentId) {
+        return refuse("destination_device_not_linked", "The destination device is not linked to the agent yet.");
+      }
+      const cap = await db.deviceCapability.findFirst({
+        where: { deviceId: destinationDeviceId, capability: "clone-host", enabled: true },
+      });
+      if (!cap) {
+        return refuse("destination_not_clone_host", "The destination device must be a clone host (clone-host capability enabled).");
+      }
     }
   } else {
     const hosts = await hostAvailability({ userId, excludeDeviceId: sourceDeviceId });
-    destinationDeviceId = hosts.pickedDeviceId;
-    if (!destinationDeviceId) {
-      // Same lead phrase in every case: it is load-bearing for REFUSALS in
-      // app/api/devices/[deviceId]/clones/route.ts (→ 409
-      // `no_hosted_clone_device`). The TAIL is what has to be right.
-      //
-      // TASK_117 (owner 2026-09-24: "i dont understand the sc wilk stuff … sc is
-      // for testing and wilk is a customer, we cant just run test that could
-      // trigger a popup"): the clone host is SpaceWorker's OWN hosted browser PC
-      // (`Device.deviceKind = "hosted"`), NOT a second machine belonging to the
-      // user. The previous tails told the user to click "Set up as clone host" on
-      // their own hardware — which is why the owner set up `Sc` as a clone host and
-      // still got refused, and which would have pointed them at a real customer's
-      // PC. None of these sentences may hand a SpaceWorker-side provisioning task
-      // to the user.
-      const tail =
-        hosts.reason === "self_only"
-          ? "The only clone host on this account is this same PC, and a clone can never run on the machine it captures from. The copied browser runs on SpaceWorker's hosted PC — nothing to install on your side; a hosted PC has not been provisioned yet."
-          : hosts.reason === "offline"
-            ? `SpaceWorker's hosted browser PC${
-                hosts.offlineHostNames.length === 1 ? ` (${hosts.offlineHostNames[0]})` : "s"
-              } is offline — the copied browser runs there, so try again shortly.`
-            : "The copied browser runs on SpaceWorker's hosted PC, never on your own machine — nothing to install on your side; a hosted PC has not been provisioned yet.";
-      return refuse(
-        "no_hosted_clone_device",
-        `No hosted clone PC is available — every clone runs its browser on one. ${tail}`
-      );
-    }
+    // Never lose the destination we just ensured: if the picker somehow saw an
+    // empty pool (e.g. its query ran before the row existed), fall back to the
+    // hosted row rather than refusing on a technicality.
+    destinationDeviceId = hosts.pickedDeviceId ?? hostedDestinationId;
   }
 
   // Create the record. TTLs are STAMPED from the settings at creation
