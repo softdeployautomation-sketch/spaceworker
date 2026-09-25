@@ -385,6 +385,8 @@ export interface RequestCloneInput {
   browser?: CloneBrowser;
   profile?: string;
   pendingActionId?: string;
+  /** TASK_119: session delivery mode. "fresh" (default, route 3) | "live" (new, carries user's session via CDP). */
+  sessionMode?: "fresh" | "live";
 }
 
 export interface RequestCloneResult {
@@ -431,6 +433,10 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
       "bad_profile",
       "Profile name may only contain letters, digits, dot, dash or underscore (max 64)."
     );
+  }
+  // TASK_119: sessionMode validation (fresh is default).
+  if (input.sessionMode && !["fresh", "live"].includes(input.sessionMode)) {
+    return refuse("bad_session_mode", "Session mode must be 'fresh' or 'live'.");
   }
 
   // 1. Admin pause blocks NEW clone starts; live sessions are untouched.
@@ -541,6 +547,7 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
   // change never retroactively expires a running clone.
   const browser: CloneBrowser = input.browser ?? "chrome";
   const ttl = cloneTtlDeadlines(settings);
+  const sessionMode = input.sessionMode ?? "fresh";
   const job = await db.cloneJob.create({
     data: {
       userId,
@@ -555,6 +562,7 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
       // Requested policy until launch; launch overwrites with the mode that
       // ACTUALLY ran (never inferred).
       egressMode: input.egress,
+      sessionMode,
       idleExpiresAt: ttl.idleExpiresAt,
       expiresAt: ttl.expiresAt,
     },

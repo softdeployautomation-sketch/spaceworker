@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 // TASK_110 (bit B4) — Browser Clone API, device side (the console's clone tab).
 //   GET  ?role=source|destination|any&status=<state>&limit=50
 //        → clone history for THIS device, newest first (the UI's history list).
-//   POST { egress, browser?, profile?, destinationDeviceId? }
+//   POST { egress, browser?, profile?, destinationDeviceId?, sessionMode? }
 //        → start a clone. 201 created · 202 when the governor queued it.
 //
 // Route rules (TASK_110) this file implements:
@@ -180,6 +180,7 @@ export async function POST(
     browser?: unknown;
     profile?: unknown;
     destinationDeviceId?: unknown;
+    sessionMode?: unknown;
   };
   try {
     body = await req.json();
@@ -206,6 +207,13 @@ export async function POST(
   ) {
     return NextResponse.json({ error: "destinationDeviceId must be a device id." }, { status: 400 });
   }
+  // TASK_119: sessionMode validation (optional, defaults to "fresh" in requestClone).
+  if (
+    body.sessionMode !== undefined &&
+    !(typeof body.sessionMode === "string" && ["fresh", "live"].includes(body.sessionMode))
+  ) {
+    return NextResponse.json({ error: "sessionMode must be 'fresh' or 'live'." }, { status: 400 });
+  }
   // An empty/blank profile means "use the engine default", not a blank name.
   // The format rule itself lives in the orchestrator (PROFILE_NAME_RE).
   const profile =
@@ -223,6 +231,9 @@ export async function POST(
         ? { browser: body.browser as "chrome" | "edge" | "firefox" }
         : {}),
       ...(profile ? { profile } : {}),
+      ...(typeof body.sessionMode === "string"
+        ? { sessionMode: body.sessionMode as "fresh" | "live" }
+        : {}),
     });
 
     if (result.queued) {

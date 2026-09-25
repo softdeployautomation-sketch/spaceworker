@@ -5,6 +5,7 @@ import { browserRuntime } from "./browser-runtime";
 import { createProfileDir, deleteProfileDir, profileDirPath } from "./browser-profiles";
 import { connectUrlFor } from "./browser-session-serialize";
 import { checkIpThroughProxy } from "./browser-proxy";
+import { injectLiveCapture } from "./clone-live-capture";
 
 // TASK_118 B8-2 — hosted launch: a clone whose destination is OUR OWN browser
 // (Device.deviceKind = "hosted", provisioned by clone-destination.ts), driven
@@ -130,8 +131,9 @@ export async function runHostedLaunch(opts: {
       error: `browser_start_failed: ${started.error}`,
     };
   }
-  const startedData = started.data as { nekoPassword?: string | null } | undefined;
+  const startedData = started.data as { nekoPassword?: string | null; cdpPort?: number } | undefined;
   const nekoPassword = startedData?.nekoPassword ?? null;
+  const cdpPort = startedData?.cdpPort;
 
   // Live proof, not an assumption: what IS the exit IP through the path we
   // just built? A relay clone whose egress check fails here is torn down
@@ -153,6 +155,29 @@ export async function runHostedLaunch(opts: {
         egressMode: "relay",
         exitCode: null,
         error: `relay_egress_unverified: ${e instanceof Error ? e.message : "unknown"}`,
+      };
+    }
+  }
+
+  // TASK_119 A6: Inject live session if captured cookies are available.
+  // Fail-closed: zero cookies or injection failure refuses the launch.
+  const job = await db.cloneJob.findUnique({
+    where: { id: opts.cloneJobId },
+    select: { sessionMode: true },
+  });
+  if (job?.sessionMode === "live" && cdpPort) {
+    const injectionResult = await injectLiveCapture({
+      cloneJobId: opts.cloneJobId,
+      cdpPort,
+    });
+    if (!injectionResult.ok) {
+      await browserRuntime.stop(sessionId).catch(() => {});
+      await deleteProfileDir(profileDirPath(sessionId)).catch(() => {});
+      return {
+        ok: false,
+        egressMode: opts.egress,
+        exitCode: null,
+        error: `session_injection_failed: ${injectionResult.error}`,
       };
     }
   }

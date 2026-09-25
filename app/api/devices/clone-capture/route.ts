@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { sha256Hex } from "@/lib/clone-transport";
+import { storeCapture } from "@/lib/clone-live-capture";
 
 const BODY_SIZE_CAP = 1024 * 1024; // 1 MiB per spec A5
 
@@ -140,11 +141,21 @@ export async function POST(request: NextRequest) {
 
     // 9. Hold payload only for injection (A5: "never logged, echoed, audited").
     // Store in memory temporarily, delete after injection succeeds or on failure.
-    // For now, just count and audit counts only.
     const cookieCount = payload.cookies.length;
     const domainCount = new Set(payload.cookies.map((c) => c.domain)).size;
 
-    // 10. Update the cloneJob to mark capture received (NOT stored at rest).
+    // 10. Store the capture payload in memory (with 5-min TTL).
+    // TASK_119A A6: storeCapture holds this in RAM only, never persisted.
+    storeCapture({
+      cloneJobId: payload.cloneJobId,
+      deviceId: payload.deviceId,
+      browser: payload.browser,
+      capturedAt: payload.capturedAt,
+      cookies: payload.cookies,
+      truncated: payload.truncated,
+    });
+
+    // 11. Update the cloneJob to mark capture received (NOT stored at rest).
     // The actual cookie payload must NOT be persisted — only counts.
     await db.cloneJob.update({
       where: { id: cloneJob.id },
@@ -153,7 +164,7 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    // 11. Return neutral success (202 Accepted, counts only per A5).
+    // 12. Return neutral success (202 Accepted, counts only per A5).
     return NextResponse.json(
       {
         ok: true,
