@@ -85,7 +85,14 @@ jobs:
           # VPS's real, reachable meshcentral host (mesh.instaweb.top) was
           # never actually allowed — every remote-control embed failed with
           # Chrome's generic "This content is blocked" until caught live.
-          MESH_FRAME_ORIGINS: "https://mesh.instaweb.top"
+          # 2026-09-25 (same incident, second layer): mesh.instaweb.top and
+          # spaceworker.top are different registrable domains, so once the
+          # iframe could load, MeshCentral's cookie session auth was still
+          # blocked as third-party. lib/device-tools.ts now rewrites every
+          # mesh URL to mesh.spaceworker.top (a second nginx vhost in front
+          # of the same MeshCentral backend) before it reaches the browser,
+          # so THIS must match that host, not mesh.instaweb.top.
+          MESH_FRAME_ORIGINS: "https://mesh.spaceworker.top"
 
   deploy:
     name: Deploy to production (manual only)
@@ -119,7 +126,7 @@ jobs:
           # Must be the real value — see the "Build & typecheck" job's build
           # step above for why (next.config.ts's headers() bakes this in at
           # build time; the VPS's own .env is never read for it).
-          MESH_FRAME_ORIGINS: "https://mesh.instaweb.top"
+          MESH_FRAME_ORIGINS: "https://mesh.spaceworker.top"
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
       - name: Package build artifact

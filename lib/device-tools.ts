@@ -76,6 +76,56 @@ export interface MeshUrlsView {
 
 const MESH_REFETCH_TTL_MS = 10 * 60 * 1000;
 
+// 2026-09-25 (live incident) — Vantra/TRMM's meshcentral integration always
+// returns absolute URLs on mesh.instaweb.top (TRMM's own MeshCentral config,
+// `certUrl: "https://mesh.instaweb.top:443/"`). Embedding that origin inside
+// this app's own spaceworker.top page is a genuine cross-site iframe (two
+// different registrable domains), which modern browsers block third-party
+// cookies for — MeshCentral's session auth is cookie-based, so the iframe
+// loaded (proving the CSP frame-src allowlist was fine) but every subsequent
+// authenticated call failed with "Unable to perform authentication."
+// Fix: mesh.spaceworker.top is a second nginx vhost added in front of the
+// SAME MeshCentral backend (127.0.0.1:4430 on the VPS) — same process, same
+// login tokens (backend-validated, not tied to which vhost the request came
+// through — confirmed live: a token minted via the normal mesh.instaweb.top
+// URL authenticates identically when replayed against mesh.spaceworker.top),
+// same TLS termination pattern, its own Let's Encrypt cert. MeshCentral also
+// derives its own CSP connect-src from the request's Host header rather than
+// a hardcoded config value (confirmed live), so no MeshCentral-side config
+// change was needed at all. Rewriting the ORIGIN only, here — server-side,
+// once, for every consumer of these URLs — makes the iframe same-site with
+// the page embedding it, which is what actually fixes third-party cookie
+// blocking (no client-side workaround, Storage Access API, or reverse proxy
+// of MeshCentral's own traffic required).
+const MESH_ORIGIN_REWRITE: readonly [string, string] = [
+  "mesh.instaweb.top",
+  "mesh.spaceworker.top",
+];
+
+function rewriteMeshOrigin(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === MESH_ORIGIN_REWRITE[0]) {
+      parsed.hostname = MESH_ORIGIN_REWRITE[1];
+    }
+    return parsed.toString();
+  } catch {
+    // Not a parseable absolute URL — return unchanged rather than throw;
+    // this rewrite must never be why a mesh URL fails to reach the console.
+    return url;
+  }
+}
+
+function rewriteMeshUrls(urls: MeshUrlsView): MeshUrlsView {
+  return {
+    ...urls,
+    control: rewriteMeshOrigin(urls.control),
+    terminal: rewriteMeshOrigin(urls.terminal),
+    file: rewriteMeshOrigin(urls.file),
+    ...(urls.controlViewOnly ? { controlViewOnly: rewriteMeshOrigin(urls.controlViewOnly) } : {}),
+  };
+}
+
 export async function fetchMeshUrls(opts: {
   userId: string;
   deviceId: string;
@@ -100,7 +150,7 @@ export async function fetchMeshUrls(opts: {
     const { urls } = await vantraFetch<{ ok: boolean; urls: MeshUrlsView }>(
       `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/mesh-urls`,
     );
-    return urls;
+    return rewriteMeshUrls(urls);
   } catch (err) {
     // 2026-10 bug: a stale Vantra deploy 404s with its HTML error page, which
     // used to land VERBATIM in the console's red error line ("<!DOCTYPE

@@ -58,7 +58,18 @@ const nextConfig: NextConfig = {
               // so every real remote-control embed silently failed CSP with
               // no working default either way, until traced live from a
               // "This content is blocked" iframe.
-              `frame-src 'self' ${process.env.MESH_FRAME_ORIGINS ?? "https://mesh.instaweb.top"};`,
+              // 2026-09-25 (same incident, second layer): fixing the CSP
+              // allowlist to the REAL meshcentral host (mesh.instaweb.top)
+              // only revealed the NEXT failure — mesh.instaweb.top and this
+              // app's own spaceworker.top are different registrable domains,
+              // so the iframe loaded but MeshCentral's cookie-based session
+              // auth was blocked as third-party. Fix: lib/device-tools.ts's
+              // fetchMeshUrls() now rewrites every mesh URL's origin to
+              // mesh.spaceworker.top (a second nginx vhost added in front of
+              // the SAME MeshCentral backend, confirmed live to authenticate
+              // identically) before it ever reaches the browser — so this
+              // allowlist must match THAT host, not mesh.instaweb.top.
+              `frame-src 'self' ${process.env.MESH_FRAME_ORIGINS ?? "https://mesh.spaceworker.top"};`,
           },
         ],
       },
