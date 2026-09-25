@@ -397,10 +397,98 @@ cookiedump.exe --out c.json      # on the source PC
 clone-cdp.mjs inject --cookies c.json   # against the clone browser
 ```
 
+⚠️ **On Windows Chrome 127+ this yields 0 cookies — see F10.** The command still
+reports `schemes=map[...]`, which is *how* we proved it (85× `v20`). The Linux path
+(F1/F2) is the one that composes today.
+
 Design notes: the output file is written `0600` (live session cookies), and a
 failure is recorded **inside the JSON** as `fail_reason` as well as on stderr, so a
 caller can never mistake an error for an empty profile. It uses `crypto.OpenGCM`
 rather than `DecryptChromeValue` on purpose (see F7).
+
+### F10 — DECISIVE: Windows Chrome 127+ cookies are App-Bound-encrypted and cannot be read out-of-process
+
+Measured on the owner's Windows VM (`Sc`, **Chrome 153.0.8010.54**) with
+`cmd/cookiedump` run through the agent's **route-as-user** transport — which is
+mandatory, because the DPAPI context belongs to the interactive session (a
+key-authenticated SSH logon gets *"Key not valid for use in specified state"*):
+
+```
+rows=85 decrypted=0 plaintext=0 failed=85
+schemes=map[v20:85]
+```
+
+**Every one of the 85 values carries the `v20` App-Bound Encryption prefix.** The
+key that unwraps them lives in `Local State` as `os_crypt.app_bound_encrypted_key`
+and is only released by Google's elevation COM service to a **path-validated
+Chrome**. So reading `Cookies.sqlite` + `Local State` and decrypting in our own
+process **cannot work on any modern Chrome** — this is by design (Chrome 127+), not
+a defect in our code. It is also Windows-only: the policy that governs ABE is
+compiled under `BUILDFLAG(IS_WIN)`, so the Linux hosted browser is unaffected.
+
+Consequence: the DPAPI path in F9 still works **for `v10` values only**; on Windows
+every `v20` value is out of reach out-of-process.
+
+### F11 — DECISIVE: a relocated Chrome profile loses its cookies
+
+The obvious workaround — copy the profile, launch our own Chrome on the copy, read
+the cookies over CDP — **fails, and the copy destroys itself**. Measured on `Sc`:
+
+```
+ORIGINAL: cookie_rows=85 distinct_hosts=17
+STAGED  : cookie_rows=0  distinct_hosts=0
+```
+
+Identical file size (`163840`) but **all 86 `v20` markers gone**: Chrome opened the
+relocated profile, could not decrypt the values, and deleted every row. Google's own
+wording explains it — *"A non-standard data directory uses a different encryption key
+meaning Chrome's data is now protected from attackers"* (Chrome for Developers, 2025-03-17).
+The ABE key is bound to the **data-directory path**, so a copy gets a different key.
+**Copying a profile does not carry a login forward.**
+
+The owner's original profile was verified untouched afterwards: `163840` bytes,
+86 `v20` markers, `Local State` mtime unchanged.
+
+### F12 — DECISIVE: Chrome 136+ refuses remote debugging on the default profile
+
+The third route — attach CDP to the user's **own** Chrome, in place, where ABE is
+decryptable — is blocked by design. From Chrome 136 (`--remote-debugging-port` /
+`--remote-debugging-pipe` are ignored for the default data directory; they must be
+paired with a non-standard `--user-data-dir`), and that non-standard directory is
+exactly what F11 proved wipes the data.
+
+**So on Windows Chrome 127+ every capture route is closed:**
+
+| Route | Status |
+|---|---|
+| Read the DB and decrypt out-of-process | **dead** — `v20` (F10) |
+| Copy the profile, then CDP | **dead** — key is path-bound, cookies wiped (F11) |
+| CDP in place on the real profile | **dead** — Chrome 136 block (F12) |
+
+### The routes that DO work — and the trade-offs
+
+1. **`ApplicationBoundEncryptionEnabled = 0`** (enterprise policy, HKLM) — the
+   documented escape hatch. Per the Chromium commit that added it: *"this policy only
+   controls whether or not future data is encrypted with App-Bound, and existing data
+   that might have been encrypted remains available."* New/changed cookies fall back
+   to `v10` (DPAPI, which we can read) — but **cookies already written as `v20` stay
+   `v20`**, so an existing login would have to be re-established before it can be
+   captured. Machine-wide, needs admin, and it lowers Chrome's cookie protection.
+2. **A force-installed Chrome extension** holding the `cookies` permission — runs
+   *inside* the browser, so Chrome hands it plaintext; no ABE, no debugging port, no
+   relocation, and it also reaches `localStorage` via a content script. Cost: a signed
+   CRX, an `ExtensionInstallForcelist` policy, and "Managed by your organization".
+3. **No cookie transfer at all** — let the clone **log in for itself**. The hosted
+   browser keeps its own persistent profile (already the model) and egresses through
+   the user's device, which is the actual product value. No part of ABE applies.
+   This is the only route that closes the clone with what is already built.
+
+**RECOMMENDATION — awaiting the owner's call (not yet decided): route 3.** The clone
+exists to be *a browser that appears to come from the user's connection*; the IP
+routing delivers that and needs no cookie extraction on any platform. Windows cookie
+import is recorded as a **separate, optional** build (route 1 or 2) and is explicitly
+**off** the critical path. The Linux capture fix (F1/F2) stays worth doing — a Linux
+source *is* capturable — but is likewise optional.
 
 ### Consequence for the build (supersedes the earlier "minimal path")
 
@@ -428,7 +516,14 @@ with no `npm i`).
 ```
 node scripts/clone-cdp.mjs probe  --port <cdpPort>
 node scripts/clone-cdp.mjs inject --port <cdpPort> --cookies <file.json> [--url <url>] [--list]
+node scripts/clone-cdp.mjs export --port <cdpPort> (--out <file.json> [--domain <d>] [--list] | --domains)
 ```
+
+`export` (added 2026-09-25) reads cookies **out of a live Chrome** — the clone
+*source*. It exists because disk capture is dead on Chrome 127+ (F10/F11/F12); asking
+the browser itself is the only supported route. `--domains` prints a **domain
+inventory with counts and never values**, so you can see what a profile holds without
+dumping it; `--domain <d>` filters, and the output file is written `0600`.
 
 `fail`-safety: every request is individually timed out, so the "silent hang" that
 cost hours here can never recur silently. Exit codes: `0` ok · `1` usage ·
@@ -493,7 +588,7 @@ modern Chromium.
 
 ## Verification
 
-- **D1 mechanism PROVEN (see "D1 FINDINGS" → F6); the `Sc` capture remains.** Proven
+- **D1 mechanism PROVEN (see "D1 FINDINGS" → F6).** Proven
   without any device, on the real Neko container: the transport works (F5), the
   engine's KDF salt and cookie-prefix handling are wrong (F1/F2), disk injection is
   impossible because Chromium deletes foreign rows (F4), and — the go/no-go — a
@@ -501,9 +596,23 @@ modern Chromium.
   and **survived a full container restart** (F6).
   The recipe is now a **verified repo script** — `scripts/clone-cdp.mjs`, run
   end-to-end over an `ssh -L` tunnel (see "Ops script" above).
-  Still to prove: a **real capture from `Sc`** showing a signed-in site inside the
-  clone. That requires the device, so it waits for the owner — nothing else in D1 is
-  outstanding.
+  **RESOLVED 2026-09-25 — the `Sc` capture was run, and it DISPROVED the disk route.**
+  `cmd/cookiedump` ran through the agent's **route-as-user** transport against the real
+  Windows Chrome 153 profile and returned **`rows=85 decrypted=0 failed=85
+  schemes=map[v20:85]`** — every value is App-Bound-encrypted (F10). The follow-up
+  workaround (copy the profile, launch our own Chrome on the copy, read it over CDP)
+  also failed: **85 rows → 0 rows**, identical file size, all `v20` markers gone, because
+  the ABE key is bound to the data-directory path (F11). Chrome 136+ additionally
+  refuses remote debugging on the *default* profile (F12). **All three Windows capture
+  routes are closed by design — this is a platform fact, not a bug of ours.**
+  The VM was left clean: the staged copy (which briefly held a copy of `Local State`)
+  was deleted, the CDP port released, helpers removed, and the **original profile
+  verified untouched** (163840 bytes, 86 `v20` markers, `Local State` mtime unchanged).
+- **Path to CLOSE the clone — RECOMMENDED, awaiting the owner: route 3 (F10).** The
+  clone logs in for itself in its own persistent profile and egresses through the user's
+  device; that is the product value, and it requires no capture on any platform. Windows
+  cookie import (enterprise policy or a force-installed extension) is a **separate,
+  optional** build and is explicitly **off** the critical path.
 - D2 proved by: a clone launches a Neko session from the injected profile, and a
   **single-PC** account can clone with no second device involved.
 - D3 proved by: relay-mode egress reports the **customer's** IP, and the launch

@@ -47,15 +47,16 @@ type cookie struct {
 }
 
 type report struct {
-	Browser    string   `json:"browser"`
-	Profile    string   `json:"profile"`
-	CookiesDB  string   `json:"cookies_db"`
-	Total      int      `json:"total_rows"`
-	Decrypted  int      `json:"decrypted"`
-	Plain      int      `json:"plaintext"`
-	Failed     int      `json:"failed"`
-	Cookies    []cookie `json:"cookies"`
-	FailReason string   `json:"fail_reason,omitempty"`
+	Browser    string         `json:"browser"`
+	Profile    string         `json:"profile"`
+	CookiesDB  string         `json:"cookies_db"`
+	Total      int            `json:"total_rows"`
+	Decrypted  int            `json:"decrypted"`
+	Plain      int            `json:"plaintext"`
+	Failed     int            `json:"failed"`
+	Schemes    map[string]int `json:"schemes,omitempty"`
+	Cookies    []cookie       `json:"cookies"`
+	FailReason string         `json:"fail_reason,omitempty"`
 }
 
 func main() {
@@ -128,6 +129,13 @@ func main() {
 		case plain != "":
 			rep.Plain++
 		case len(enc) > 0:
+			// Record the encryption scheme. This matters: Chrome 127+ uses
+			// App-Bound Encryption ("v20"), whose key is NOT the DPAPI-wrapped
+			// os_crypt key, so those values cannot be decrypted out-of-process.
+			if rep.Schemes == nil {
+				rep.Schemes = map[string]int{}
+			}
+			rep.Schemes[schemeOf(enc)]++
 			dec, derr := decryptValue(key, enc)
 			if derr != nil {
 				rep.Failed++
@@ -156,6 +164,26 @@ func main() {
 	write(rep, *out)
 	fmt.Printf("cookies=%d decrypted=%d plaintext=%d failed=%d profile=%s\n",
 		len(rep.Cookies), rep.Decrypted, rep.Plain, rep.Failed, rep.Profile)
+	if len(rep.Schemes) > 0 {
+		fmt.Printf("schemes=%v\n", rep.Schemes)
+	}
+}
+
+// schemeOf names the encryption scheme of an encrypted_value, using only its
+// 3-byte version prefix (never the ciphertext).
+func schemeOf(enc []byte) string {
+	if len(enc) >= 3 {
+		switch string(enc[:3]) {
+		case "v10", "v11", "v20":
+			return string(enc[:3])
+		case "DPA":
+			return "DPAPI"
+		}
+	}
+	if len(enc) == 0 {
+		return "empty"
+	}
+	return "unknown"
 }
 
 // decryptValue handles the modern Chromium schemes.

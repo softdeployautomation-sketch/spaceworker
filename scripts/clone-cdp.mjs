@@ -306,6 +306,12 @@ function usage(msg) {
       'usage:',
       '  node scripts/clone-cdp.mjs probe  --port <cdpPort>',
       '  node scripts/clone-cdp.mjs inject --port <cdpPort> --cookies <file.json> [--url <url>] [--list]',
+      '  node scripts/clone-cdp.mjs export --port <cdpPort> (--out <file.json> [--domain <d>] [--list] | --domains)',
+      '',
+      'export reads cookies OUT of a live Chrome (the clone SOURCE). It is the only',
+      'supported capture path on Chrome 127+, which encrypts values with App-Bound',
+      'Encryption ("v20") — see TASK_117 D1 FINDINGS F7. Use --domains first to see',
+      'which domains exist (names/counts only, never values).',
       '',
       'The --port must reach the clone browser\'s DevTools endpoint (a loopback',
       'forwarder inside the container, e.g. 9223 -> 9222). From off-host use an',
@@ -316,12 +322,15 @@ function usage(msg) {
 }
 
 function parseArgs(argv) {
-  const out = { cmd: argv[0], cookies: null, url: null, list: false, timeout: 10000, port: null };
+  const out = { cmd: argv[0], cookies: null, url: null, list: false, timeout: 10000, port: null, out: null, domain: null, domains: false };
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--cookies') out.cookies = argv[++i];
     else if (a === '--url') out.url = argv[++i];
+    else if (a === '--out') out.out = argv[++i];
+    else if (a === '--domain') out.domain = argv[++i];
+    else if (a === '--domains') out.domains = true;
     else if (a === '--list') out.list = true;
     else if (a === '--timeout') out.timeout = Number(argv[++i]);
     else if (a === '--help' || a === '-h') usage();
@@ -398,13 +407,72 @@ async function inject(args) {
   return EXIT.OK;
 }
 
+/**
+ * export — read cookies OUT of a live Chrome via CDP.
+ *
+ * This exists because disk-level capture is dead on modern Chrome. Chrome 127+
+ * writes cookie values with App-Bound Encryption ("v20"), whose key never leaves
+ * the browser process, so reading Cookies.sqlite + Local State and decrypting
+ * out-of-process CANNOT work (TASK_117 → D1 FINDINGS F7). Asking the browser
+ * itself over CDP is the only supported route, and it also reaches
+ * localStorage/sessionStorage later.
+ *
+ * Privacy: with --domains we print only domain names + counts. Without it we
+ * write the full jar, so it is opt-in and loud.
+ */
+async function exportCookies(args) {
+  const { ws, cdp } = await browserEndpoint(args.port, args.timeout);
+  const got = await cdp.call('Storage.getCookies', {});
+  const all = got.cookies || [];
+  console.log(`cookies_total=${all.length}`);
+
+  // Discovery mode — never prints values.
+  if (args.domains) {
+    const counts = new Map();
+    for (const c of all) counts.set(c.domain, (counts.get(c.domain) || 0) + 1);
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    for (const [d, n] of sorted) console.log(`  ${n}\t${d}`);
+    ws.close();
+    return EXIT.OK;
+  }
+
+  let picked = all;
+  if (args.domain) {
+    const want = args.domain.replace(/^\./, '').toLowerCase();
+    picked = all.filter((c) => {
+      const d = (c.domain || '').replace(/^\./, '').toLowerCase();
+      return d === want || d.endsWith(`.${want}`);
+    });
+    console.log(`cookies_matched=${picked.length} (domain=${args.domain})`);
+  }
+  if (picked.length === 0) throw fail('no cookies matched', EXIT.CDP);
+
+  const out = picked.map((c) => ({
+    name: c.name,
+    value: c.value,
+    domain: c.domain,
+    path: c.path || '/',
+    ...(typeof c.expires === 'number' && c.expires > 0 ? { expires: c.expires } : {}),
+    ...(typeof c.secure === 'boolean' ? { secure: c.secure } : {}),
+    ...(typeof c.httpOnly === 'boolean' ? { httpOnly: c.httpOnly } : {}),
+    ...(c.sameSite ? { sameSite: c.sameSite } : {}),
+  }));
+  fs.writeFileSync(args.out, `${JSON.stringify(out, null, 2)}\n`, { mode: 0o600 });
+  console.log(`wrote=${args.out} mode=0600`);
+  if (args.list) for (const c of out) console.log(`  ${c.name}@${c.domain}${c.path}`);
+  console.log('export=OK');
+  ws.close();
+  return EXIT.OK;
+}
+
 // ------------------------------------------------------------------------ main
 const args = parseArgs(process.argv.slice(2));
 if (!args.cmd) usage();
 if (!Number.isInteger(args.port) || args.port <= 0) usage('--port is required');
 
-const CMD = { probe, inject };
+const CMD = { probe, inject, export: exportCookies };
 if (!CMD[args.cmd]) usage(`unknown command: ${args.cmd}`);
+if (args.cmd === 'export' && !args.domains && !args.out) usage('export requires --out <file.json>');
 
 try {
   process.exit(await CMD[args.cmd](args));
