@@ -364,3 +364,37 @@ change to it changes both.
 - Acceptance evidence for §6.1–§6.5, or an explicit statement of which you could **not** verify and why.
 - Anything you had to decide that is not in this file.
 
+
+---
+
+## 9. PENDING — OWNER GATE (externally blocked: the Chrome Web Store listing)
+
+**Tracker row: `B10-pend`.** Parked here on 2026-09-25 at the owner's request
+(*"just write this as a pending task"*). **No code can start this** — it is a real-world account-and-review
+gate, which is why it is a row rather than a paragraph buried in §3.
+
+**Exactly what is pending, and who does it:**
+
+| # | Step | Who | Notes |
+|---|---|---|---|
+| P1 | Register a Chrome Web Store **developer account** ($5, one-time) | **Owner** | Needs a public **publisher name** — it is shown on the listing |
+| P2 | Upload `engine/extension/` packaged as a **`.zip`** (drop the `_comment` key, set a real version) | Either | Google assigns the **extension ID** here, and it is permanent |
+| P3 | Fill the four tabs: **Privacy** (single purpose + data handling), **Distribution**, **Store Listing**, **Test instructions** | Either | Privacy must match what the code actually does: `cookies` + `<all_urls>`. Test instructions must use a **disposable login** |
+| P4 | Submit → **review** → published | Google | Plan for one rejection round; a listing asking `cookies` + `<all_urls>` is the permission profile of session-stealing malware and is scrutinised |
+| P5 | Put the **extension ID + published version** into config | Either | Until then `B10-2` reports `SKIP:store_listing_pending` |
+
+**Until it lands (this is deliberate — the flow must not dead-end):**
+- The extension step reports **`SKIP:store_listing_pending`**, which counts as a **PASS**, so setup still
+  completes and nothing is blocked.
+- The console offers **`fresh`**, and the extension section reads *"not needed yet"*.
+- A clone's profile is **persistent per device**, so signing in **once inside the clone** stays signed in
+  (TASK_117 F6). The extension only ever saves the **first** sign-in per device.
+
+**DO NOT substitute the policy route.** Re-litigating this is explicitly forbidden (§3): an
+`ExtensionInstallForcelist` badge is a property of the **browser** (not the session), is **permanent**, says
+**"Managed by your organization"**, is a signal Google actively tells users to remove, and makes the
+extension **un-installable by the user** while set. A self-hosted CRX is **impossible on Windows** (Chrome 33+
+requires `update_URL` to be the Web Store), so "silent + no policy + our own server" does not exist. The
+registry `update_url` used by Route B needs **no policy and no badge**, is **user-removable**, and rolls back
+by deleting two keys — its only cost is that it takes effect at the **next Chrome start**.
+
