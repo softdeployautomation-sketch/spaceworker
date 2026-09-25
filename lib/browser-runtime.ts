@@ -67,6 +67,26 @@ export const browserRuntime = {
   }): Promise<RuntimeResult> {
     return call("/sessions/start", input);
   },
+  /**
+   * TASK_118 B8-2 — what a device's relay-install flow should dial, without
+   * ever exposing the raw ingress secret to this app's own .env (see
+   * RELAY_INGRESS_PUBLIC_HOST's comment in browser-server/server.ts).
+   */
+  relayTunnelConfig(): Promise<RuntimeResult> {
+    return call("/relay/tunnel-config");
+  },
+  /**
+   * TASK_118 B8-2 — opens the dedicated, unauthenticated local proxy port a
+   * hosted clone's Chromium points --proxy-server at (relay-ingress.ts's
+   * openDeviceListener). Idempotent per sessionId.
+   */
+  openRelayDeviceListener(input: { deviceKey: string; sessionId: string }): Promise<RuntimeResult> {
+    return call("/relay/device-listener", input);
+  },
+  /** TASK_118 B8-2 — the fail-closed pre-check (see hasControl's own comment). */
+  relayControlStatus(deviceKey: string): Promise<RuntimeResult> {
+    return call(`/relay/control-status?deviceKey=${encodeURIComponent(deviceKey)}`);
+  },
   stop(sessionId: string): Promise<RuntimeResult> {
     return call("/sessions/stop", { sessionId });
   },

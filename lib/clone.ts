@@ -16,6 +16,7 @@ import {
   runCloneRevoke,
 } from "./clone-transport";
 import { refreshDeviceLiveness, hostAvailability } from "./clone-hosts";
+import { runHostedLaunch, stopHostedLaunch } from "./clone-hosted-launch";
 import { ensureHostedDestination } from "./clone-destination";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
 
@@ -96,17 +97,26 @@ export const CLONE_TERMINAL_STATES: readonly CloneState[] = [
   "expired_idle", "expired_hard", "revoked", "failed", "deleted",
 ] as const;
 
-/** The single happy-path edge out of each non-terminal state. */
-const PIPELINE_NEXT: Partial<Record<CloneState, CloneState>> = {
-  requested: "awaiting_source",
-  awaiting_source: "capturing",
-  capturing: "captured",
-  captured: "transferring",
-  transferring: "received",
-  received: "injecting",
-  injecting: "ready",
-  ready: "launching",
-  launching: "active",
+/**
+ * The happy-path edge(s) out of each non-terminal state. Every state but one
+ * has exactly one. TASK_118 B8-2: "requested" is the one exception — a
+ * hosted destination skips capture/transfer/inject entirely (route 3,
+ * nothing to copy) and goes straight to "ready", so it needs a SECOND valid
+ * edge alongside the workstation path's "awaiting_source". Which edge a given
+ * job actually takes is decided once, in stepRequested, by the destination's
+ * deviceKind — this table only says which edges are LEGAL, not which one to
+ * pick.
+ */
+const PIPELINE_NEXT: Partial<Record<CloneState, readonly CloneState[]>> = {
+  requested: ["awaiting_source", "ready"],
+  awaiting_source: ["capturing"],
+  capturing: ["captured"],
+  captured: ["transferring"],
+  transferring: ["received"],
+  received: ["injecting"],
+  injecting: ["ready"],
+  ready: ["launching"],
+  launching: ["active"],
 };
 
 
@@ -142,7 +152,7 @@ const ALWAYS_TERMINAL: readonly CloneState[] = [
 export function allowedCloneTransitions(from: string): readonly CloneState[] {
   if (!isCloneState(from) || isCloneTerminal(from)) return [];
   const next = PIPELINE_NEXT[from];
-  return next ? [next, ...ALWAYS_TERMINAL] : [...ALWAYS_TERMINAL];
+  return next ? [...next, ...ALWAYS_TERMINAL] : [...ALWAYS_TERMINAL];
 }
 
 /** Throws on any transition the table forbids (forward-only enforcement). */
@@ -635,7 +645,11 @@ async function advanceCloneLocked(cloneId: string): Promise<CloneAdvanceResult> 
     // the engine may have started a browser we never observed — tear down
     // best-effort before failing the record (same switch, no side channel).
     let teardown = "skipped";
-    if (state === "launching" && job.destinationDeviceId && job.cloneId) {
+    // TASK_118 B8-2: dropped the `&& job.cloneId` requirement — a hosted
+    // clone never has one (route 3 skips capture), and teardownTransport
+    // itself already handles hosted vs. cloneId correctly internally; gating
+    // on it here would silently skip a crashed hosted launch's teardown.
+    if (state === "launching" && job.destinationDeviceId) {
       teardown = await teardownTransport(job, job.destinationDeviceId);
     }
     const reason = `interrupted_${state} (advance re-entered an in-flight step; step not re-executed)`;
@@ -668,6 +682,21 @@ async function advanceCloneLocked(cloneId: string): Promise<CloneAdvanceResult> 
 
 /** Best-effort device-side teardown; returns "ok" | "skipped" | "error: ...". */
 async function teardownTransport(job: CloneJob, destinationDeviceId: string): Promise<string> {
+  // TASK_118 B8-2 — checked BEFORE the cloneId guard below: a hosted clone
+  // NEVER has an engine cloneId (route 3 skips capture entirely), so the old
+  // "no cloneId -> skipped" early return would have silently no-op'd every
+  // hosted teardown — the session/relay-listener would never actually stop.
+  // A hosted destination has no agent either way, so runCloneRevoke (an
+  // agent RPC) would just fail on one; stopHostedLaunch is the real
+  // teardown, and it's a documented no-op if the session never started
+  // (browser-server's stopInternal + deleteProfileDir).
+  const destination = await db.device.findUnique({
+    where: { id: destinationDeviceId },
+    select: { deviceKind: true },
+  });
+  if (destination?.deviceKind === "hosted") {
+    return stopHostedLaunch(job.id);
+  }
   if (!job.cloneId) return "skipped";
   try {
     const res = await runCloneRevoke({
@@ -805,6 +834,29 @@ async function stepRequested(
       });
       return { ...base, status: "failed", advanced: true, reason };
     }
+  }
+
+  // TASK_118 B8-2 — a HOSTED destination has nothing to capture, transfer or
+  // inject: route 3 (TASK_117's settled design) is "the hosted browser logs
+  // in for itself," not a copied profile. Skip capture/transfer/inject
+  // entirely and land straight on "ready" so the next advance is stepLaunch.
+  // A workstation destination is completely unaffected — same path as before
+  // this task. (Found live: without this branch, a hosted clone ran the full
+  // agent-capture pipeline anyway and failed at capture_no_clone_id — there
+  // was never a bundle for it to produce.)
+  const destination = job.destinationDeviceId
+    ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
+    : null;
+  if (destination?.deviceKind === "hosted") {
+    const advanced = await transitionClone(job, "ready", {
+      detail: {
+        slot: "granted",
+        egressMode: job.egressMode,
+        relayStatus: job.relay?.status ?? null,
+        skipped: "capture_transfer_inject (hosted destination, route 3 — nothing to copy)",
+      },
+    });
+    return { cloneId: advanced.id, status: "ready", advanced: true };
   }
 
   const advanced = await transitionClone(job, "awaiting_source", {
@@ -1003,7 +1055,25 @@ async function stepLaunch(
   settings: Awaited<ReturnType<typeof getCloneSettings>>
 ): Promise<CloneAdvanceResult> {
   const base = { cloneId: job.id };
-  if (!job.destinationDeviceId || !job.cloneId) {
+  if (!job.destinationDeviceId) {
+    const reason = "no_destination_device";
+    await transitionClone(job, "failed", { reason, auditStatus: "failed" });
+    return { ...base, status: "failed", advanced: true, reason };
+  }
+  // TASK_118 B8-2 — a HOSTED destination (our own browser) has no agent, so
+  // it must never go through the agent-RPC path (runCloneLaunch) at all —
+  // that call would just 404/fail on a device with no vantraAgentId. Branch
+  // on the destination's actual kind, not on egress mode: both relay and
+  // direct clones can land on a hosted destination. Checked BEFORE the
+  // cloneId guard below: `job.cloneId` is the ENGINE's own id, assigned
+  // during capture — a hosted job never captures (route 3, skipped in
+  // stepRequested), so it never has one and never needs one.
+  const destination = await db.device.findUnique({
+    where: { id: job.destinationDeviceId },
+    select: { deviceKind: true },
+  });
+  const isHostedDestination = destination?.deviceKind === "hosted";
+  if (!isHostedDestination && !job.cloneId) {
     const reason = "no_destination_device";
     await transitionClone(job, "failed", { reason, auditStatus: "failed" });
     return { ...base, status: "failed", advanced: true, reason };
@@ -1025,18 +1095,27 @@ async function stepLaunch(
   });
 
   const relayAddr = job.egressMode === "relay" ? job.relay?.addr ?? undefined : undefined;
-  let res;
+  let res: { ok: boolean; exitCode: number | null; egressMode: string; viewUrl?: string; egressIp?: string };
   try {
-    res = await runCloneLaunch({
-      userId: job.userId,
-      cloneJobId: job.id,
-      pendingActionId: job.pendingActionId ?? undefined,
-      sourceDeviceId: job.sourceDeviceId,
-      destinationDeviceId: job.destinationDeviceId,
-      cloneId: job.cloneId,
-      egress: job.egressMode as CloneEgress,
-      relayAddr,
-    });
+    res = isHostedDestination
+      ? await runHostedLaunch({
+          userId: job.userId,
+          cloneJobId: job.id,
+          sourceDeviceId: job.sourceDeviceId,
+          egress: job.egressMode as CloneEgress,
+        })
+      : await runCloneLaunch({
+          userId: job.userId,
+          cloneJobId: job.id,
+          pendingActionId: job.pendingActionId ?? undefined,
+          sourceDeviceId: job.sourceDeviceId,
+          destinationDeviceId: job.destinationDeviceId,
+          // Non-null: the guard above already required job.cloneId for every
+          // non-hosted path (this branch), and this job is not hosted here.
+          cloneId: job.cloneId!,
+          egress: job.egressMode as CloneEgress,
+          relayAddr,
+        });
   } catch (err) {
     const reason = `transport_error: ${errMessage(err)}`;
     await transitionClone(cur, "failed", {
@@ -1079,6 +1158,11 @@ async function stepLaunch(
 
   // HostedBrowserSession row (truth: what launched). upsert on the unique
   // cloneJobId so re-runs update rather than fork a session record.
+  // TASK_118 B8-2 fix: viewUrl was never stamped (Cline's own B8-2 finding —
+  // "the clone window loads forever") — a hosted launch's viewUrl/egressIp
+  // are the actual evidence of what got built, so write them here, not just
+  // status/egressMode. A workstation-destination launch leaves both null,
+  // same as before this task.
   await db.hostedBrowserSession.upsert({
     where: { cloneJobId: job.id },
     create: {
@@ -1087,6 +1171,8 @@ async function stepLaunch(
       cloneJobId: job.id,
       status: "running",
       egressMode: usedEgress,
+      viewUrl: res.viewUrl ?? null,
+      egressIp: res.egressIp ?? null,
       startedAt: now,
       lastUsedAt: now,
       expiresAt: job.expiresAt,
@@ -1094,6 +1180,8 @@ async function stepLaunch(
     update: {
       status: "running",
       egressMode: usedEgress,
+      viewUrl: res.viewUrl ?? null,
+      egressIp: res.egressIp ?? null,
       lastUsedAt: now,
       stoppedAt: null,
       error: null,

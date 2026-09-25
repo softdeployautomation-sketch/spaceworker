@@ -66,6 +66,41 @@ export interface RelayIngressHandle {
    */
   addRoute(routingSecret: string, deviceKey: string, ttlMs?: number): void;
   removeRoute(routingSecret: string): void;
+  /**
+   * TASK_118 B8-2 — is this specific device's dial-out control connection up
+   * RIGHT NOW? For the hosted-launch fail-closed gate: refusing BEFORE a
+   * container is started (naming the relay) is the whole point of "fail
+   * closed and label honestly" — waiting for Chromium's first request to
+   * time out would start a container for a clone that was never going to
+   * work, and blame something vague instead of the actual relay.
+   */
+  hasControl(deviceKey: string): boolean;
+  /**
+   * TASK_118 B8-2 — a dedicated, UNAUTHENTICATED, loopback-only listener for
+   * exactly one deviceKey. WHY THIS EXISTS: the shared ingress port above
+   * trusts a browser conn by its `Proxy-Authorization` header (`addRoute`'s
+   * whole design) — but Chrome's `--proxy-server` flag does not accept
+   * embedded credentials, and a hosted clone's profile is fresh per job (never
+   * reused), so there is no persisted profile for a one-time proxy-auth prompt
+   * to be answered into (the existing BYO-exit-node flow's own documented
+   * mechanism, `lib/browser-proxy.ts`, only works for a long-lived reused
+   * profile). So an unattended Chromium launch can never present the shared
+   * port's credential.
+   *
+   * This collapses "which credential did you present" into "which port did
+   * you dial": the listener is bound to `127.0.0.1` ONLY (never call with a
+   * non-loopback bind) and scoped to one deviceKey for its whole lifetime, so
+   * simply reaching it IS the authorization — there is no HTTP parsing, no
+   * auth header, nothing to fail to supply. The container reaches it over the
+   * docker bridge's published loopback mapping, not the public internet.
+   * Every accepted conn goes straight through the SAME `openStream(deviceKey)`
+   * + splice machinery `handleBrowser` uses, just without the auth gate.
+   *
+   * One listener per active hosted-clone session; the launcher closes it when
+   * the session stops (`close()` on the returned handle) so a torn-down clone
+   * never leaves an open door for that device.
+   */
+  openDeviceListener(deviceKey: string): Promise<{ port: number; close: () => void }>;
   stats(): { controls: number; routes: number; streams: number };
   close(): Promise<void>;
 }
@@ -369,6 +404,11 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
     log(`relay-ingress: listening on ${opts.bind}:${opts.port} (private-only browser path: ${privateOnly})`);
   });
 
+  // Device-listener servers (openDeviceListener, below) are tracked separately
+  // from `openSockets` (which is proxied STREAMS on the shared port) so
+  // close() can shut down every per-session listener deterministically too.
+  const deviceListeners = new Set<Server>();
+
   return {
     server,
     addRoute(routingSecret: string, deviceKey: string, ttlMs = routeTtlMs) {
@@ -376,6 +416,63 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
     },
     removeRoute(routingSecret: string) {
       routes.delete(routingSecret);
+    },
+    hasControl(deviceKey: string): boolean {
+      const control = controls.get(deviceKey);
+      return !!control && control.socket.writable;
+    },
+    openDeviceListener(deviceKey: string): Promise<{ port: number; close: () => void }> {
+      return new Promise((resolvePort, rejectPort) => {
+        const listener = createServer((socket) => {
+          openSockets.add(socket);
+          socket.once("close", () => openSockets.delete(socket));
+          socket.setNoDelay(true);
+          socket.once("error", () => socket.destroy());
+          streamCount += 1;
+          openStream(deviceKey).then(
+            (device) => {
+              socket.pipe(device);
+              device.pipe(socket);
+              let torn = false;
+              const teardown = () => {
+                if (torn) return;
+                torn = true;
+                streamCount -= 1;
+                socket.destroy();
+                device.destroy();
+              };
+              socket.once("close", teardown);
+              device.once("close", teardown);
+              socket.once("error", teardown);
+              device.once("error", teardown);
+            },
+            (err) => {
+              streamCount -= 1;
+              log(
+                `relay-ingress: device-listener stream failed (key ${deviceKey.slice(0, 8)}…): ${
+                  err instanceof Error ? err.message : "unknown"
+                }`,
+              );
+              socket.destroy();
+            },
+          );
+        });
+        listener.once("error", rejectPort);
+        // 127.0.0.1 ONLY — this port has zero auth of its own; the bind is the
+        // one thing standing between "reachable" and "wide open."
+        listener.listen(0, "127.0.0.1", () => {
+          deviceListeners.add(listener);
+          const address = listener.address();
+          const port = typeof address === "object" && address ? address.port : 0;
+          resolvePort({
+            port,
+            close: () => {
+              deviceListeners.delete(listener);
+              listener.close();
+            },
+          });
+        });
+      });
     },
     stats() {
       expireRoutes();
@@ -396,6 +493,8 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
       // listener (and the process) alive through a restart.
       for (const socket of openSockets) socket.destroy();
       openSockets.clear();
+      for (const listener of deviceListeners) listener.close();
+      deviceListeners.clear();
       return new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

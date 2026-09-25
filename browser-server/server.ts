@@ -66,6 +66,16 @@ const TURN_PASSWORD = process.env.BROWSER_TURN_PASSWORD ?? "";
 const RELAY_INGRESS_TOKEN = process.env.RELAY_INGRESS_TOKEN ?? "";
 const RELAY_INGRESS_PORT = Number(process.env.RELAY_INGRESS_PORT ?? 3402);
 const RELAY_INGRESS_BIND = process.env.RELAY_INGRESS_BIND ?? "0.0.0.0";
+// TASK_118 B8-2 — the address a customer device's relay actually DIALS from
+// the public internet (distinct from RELAY_INGRESS_BIND, which is where WE
+// listen — "0.0.0.0" is not itself a reachable address). This service is the
+// only place that knows RELAY_INGRESS_TOKEN at all (the main Next.js app's
+// own .env does not have it — kept that way on purpose so the shared ingress
+// secret lives in exactly one place); GET /relay/tunnel-config, below, is how
+// the main app's relay-install flow learns what a device should dial without
+// ever holding the raw secret itself, the same trust boundary every other
+// browser-server route already uses (Bearer BROWSER_SERVER_TOKEN).
+const RELAY_INGRESS_PUBLIC_HOST = process.env.RELAY_INGRESS_PUBLIC_HOST ?? "164.68.105.96:3402";
 
 function buildIceServersJson(): string {
   const servers: Array<Record<string, unknown>> = [{ urls: ["stun:stun.l.google.com:19302"] }];
@@ -110,6 +120,12 @@ interface Session {
 }
 
 const registry = new Map<string, Session>();
+// TASK_118 B8-2 — device-listener close handles, keyed by sessionId, so
+// /sessions/stop and /sessions/kill can tear down that session's dedicated
+// relay-ingress listener alongside the container. Never left dangling: an
+// orphaned listener would keep offering that device's egress after the clone
+// it belonged to is gone.
+const deviceListenerBySession = new Map<string, { port: number; close: () => void }>();
 let portCursor = 0;
 
 function allocatePort(): number {
@@ -419,6 +435,15 @@ async function startInternal(session: Session): Promise<string> {
 }
 
 async function stopInternal(sessionId: string, force: boolean): Promise<void> {
+  // TASK_118 B8-2 — close this session's dedicated device listener (if any)
+  // unconditionally, before either branch below: an orphaned listener must
+  // never survive its clone, whether the stop is graceful or the entry was
+  // already lost (e.g. a prior service restart).
+  const listener = deviceListenerBySession.get(sessionId);
+  if (listener) {
+    listener.close();
+    deviceListenerBySession.delete(sessionId);
+  }
   const entry = registry.get(sessionId);
   if (!entry) {
     // unknown locally — clean anything we may have half-launched
@@ -562,6 +587,59 @@ const server = createServer(async (req, res) => {
   // BEFORE the generic POST branch below, which requires a sessionId.
   if (req.method === "GET" && url === "/relay/stats") {
     json(res, 200, egressIngress ? egressIngress.stats() : { controls: 0, routes: 0, streams: 0, disabled: true });
+    return;
+  }
+  // TASK_118 B8-2 — what a device's relay-install flow needs to dial. The main
+  // app never holds RELAY_INGRESS_TOKEN itself (see the const's own comment) —
+  // this is the one sanctioned way it learns it, over the SAME Bearer trust
+  // boundary every other route here already uses.
+  if (req.method === "GET" && url.startsWith("/relay/control-status")) {
+    const deviceKey = new URL(req.url ?? "/", "http://internal").searchParams.get("deviceKey") ?? "";
+    if (!deviceKey) {
+      json(res, 400, { error: "deviceKey query param is required" });
+      return;
+    }
+    json(res, 200, { up: egressIngress ? egressIngress.hasControl(deviceKey) : false });
+    return;
+  }
+  if (req.method === "GET" && url === "/relay/tunnel-config") {
+    if (!egressIngress) {
+      json(res, 503, { error: "relay ingress disabled (RELAY_INGRESS_TOKEN unset)" });
+      return;
+    }
+    json(res, 200, { tunnelHost: RELAY_INGRESS_PUBLIC_HOST, token: RELAY_INGRESS_TOKEN });
+    return;
+  }
+  // A dedicated, unauthenticated, loopback-only proxy port for exactly one
+  // device — see relay-ingress.ts's openDeviceListener doc comment for why
+  // this exists (Chrome cannot present the shared port's credential for a
+  // fresh, one-shot clone profile). sessionId scopes the listener's lifetime
+  // to one launch so /sessions/stop can find and close it.
+  if (req.method === "POST" && url === "/relay/device-listener") {
+    if (!egressIngress) {
+      json(res, 503, { error: "relay ingress disabled (RELAY_INGRESS_TOKEN unset)" });
+      return;
+    }
+    const dlBody = await readBody(req);
+    const deviceKey = String(dlBody.deviceKey ?? "");
+    const sessionId = String(dlBody.sessionId ?? "");
+    if (!deviceKey || !/^[a-z0-9]+$/i.test(sessionId)) {
+      json(res, 400, { error: "deviceKey and a valid sessionId are required" });
+      return;
+    }
+    const existing = deviceListenerBySession.get(sessionId);
+    if (existing) {
+      // Idempotent: a retried launch reuses the same port instead of leaking one.
+      json(res, 200, { ok: true, port: existing.port });
+      return;
+    }
+    try {
+      const handle = await egressIngress.openDeviceListener(deviceKey);
+      deviceListenerBySession.set(sessionId, handle);
+      json(res, 200, { ok: true, port: handle.port });
+    } catch (e) {
+      json(res, 500, { error: e instanceof Error ? e.message : "device listener failed to start" });
+    }
     return;
   }
   if (req.method === "POST" && (url === "/relay/route" || url === "/relay/route/remove")) {

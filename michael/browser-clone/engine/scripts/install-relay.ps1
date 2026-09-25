@@ -11,12 +11,20 @@
 # SILENCE: the scheduled task runs under SYSTEM in session 0, so neither the
 # relay nor anything it spawns can put a window on the user's desktop.
 #
-# usage: install-relay.ps1 <new-relay-exe> [install-dir] [addr] [token]
+# TASK_118 B8-2: -TunnelHost/-TunnelKey enable cmd/relay's dial-out mode
+# (built in B8-3, never wired into this - the only production install path -
+# until now). Both are optional and only meaningful together; the classic
+# -Addr listener stays registered either way (it's still the relay's own
+# port-preflight bind, per cmd/relay/main.go, and the lab/topology fallback).
+#
+# usage: install-relay.ps1 <new-relay-exe> [install-dir] [addr] [token] [tunnel-host] [tunnel-key]
 param(
     [Parameter(Mandatory = $true)][string]$NewExe,
     [string]$InstallDir = "C:\ProgramData\TacticalRMM\Relay",
     [string]$Addr = "0.0.0.0:8080",
-    [string]$Token = ""
+    [string]$Token = "",
+    [string]$TunnelHost = "",
+    [string]$TunnelKey = ""
 )
 $ErrorActionPreference = 'Stop'
 
@@ -61,8 +69,19 @@ $exe = Join-Path $InstallDir 'hack-relay.exe'
 # manual run cannot raise a console.
 $args_ = "-addr $Addr"
 if ($Token) { $args_ += " -token $Token" }
+if ($TunnelHost -and $TunnelKey) {
+    # -token above is REQUIRED for tunnel mode too (cmd/relay/main.go: the
+    # tunnel control handshake is gated by the SAME flag as the -addr
+    # listener's Proxy-Authorization) - the caller must pass the shared
+    # ingress secret as -Token whenever it also passes -TunnelHost/-TunnelKey.
+    $args_ += " -tunnel $TunnelHost -tunnel-key $TunnelKey"
+}
 schtasks /Create /TN SpaceworkerRelay /TR "`"$exe`" $args_" /SC ONSTART /RU SYSTEM /F | Out-Null
 schtasks /Run /TN SpaceworkerRelay | Out-Null
 Start-Sleep -Seconds 2
 netstat -ano | Select-String ":$port.*LISTENING" | Write-Host
-Write-Host "relay installed: $exe on $Addr (task SpaceworkerRelay)"
+if ($TunnelHost -and $TunnelKey) {
+    Write-Host "relay installed: $exe on $Addr, dial-out tunnel -> $TunnelHost (task SpaceworkerRelay)"
+} else {
+    Write-Host "relay installed: $exe on $Addr (task SpaceworkerRelay)"
+}

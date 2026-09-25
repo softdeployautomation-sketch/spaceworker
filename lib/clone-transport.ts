@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 
 import { db } from "./db";
 import { recordAgentActionAudit } from "./devices";
+import { browserRuntime } from "./browser-runtime";
 
 // TASK_108 (bit B2) — SpaceWorker side of the Browser Clone agent transport.
 //
@@ -678,6 +679,22 @@ export interface RelayInstallResult {
  * to Vantra's route as the installer's `-Token` PARAMETER — it lands in the
  * on-device scheduled-task registration only, never in our DB or logs, and
  * never in any audit detail.
+ *
+ * TASK_118 B8-2 — dial-out tunnel mode is now attempted by DEFAULT for every
+ * install, not an opt-in: `-tunnel`/`-tunnel-key` were built (B8-3) but never
+ * wired into this, the only production install path, which is why "clone
+ * host is set up" never actually meant a hosted clone could reach the
+ * device. The device's OWN id is used as the tunnel key (a stable, already-
+ * unique, already-known value — no schema migration needed for it). The
+ * shared ingress secret (RELAY_INGRESS_TOKEN) is fetched from browser-server
+ * (the only place that holds it, see RELAY_INGRESS_PUBLIC_HOST's comment
+ * there) and OVERRIDES any caller-supplied `token` — tunnel mode only works
+ * when `-token` is that exact shared secret, so a caller-chosen value could
+ * never have worked anyway. If browser-server can't be reached, the install
+ * still proceeds loopback-only (today's existing behavior, not a new
+ * failure mode) with a clear note in the audit detail — the later relay-
+ * health probe (TASK_109) is what actually catches an unreachable device at
+ * launch time, so degrading here doesn't hide anything from the user.
  */
 export async function runRelayInstall(opts: CloneCallBase & {
   sourceDeviceId: string;
@@ -688,13 +705,35 @@ export async function runRelayInstall(opts: CloneCallBase & {
   timeoutSeconds?: number;
 }): Promise<RelayInstallResult> {
   const device = await requireOwnedDevice({ userId: opts.userId, deviceId: opts.sourceDeviceId });
+
+  let tunnelHost: string | undefined;
+  let tunnelToken = opts.token;
+  let tunnelConfigNote = "not attempted";
+  try {
+    const cfg = await browserRuntime.relayTunnelConfig();
+    if (cfg.ok && cfg.data && typeof cfg.data === "object") {
+      const { tunnelHost: th, token: tk } = cfg.data as { tunnelHost?: string; token?: string };
+      if (th && tk) {
+        tunnelHost = th;
+        tunnelToken = tk;
+        tunnelConfigNote = "ok";
+      } else {
+        tunnelConfigNote = "malformed_response";
+      }
+    } else {
+      tunnelConfigNote = `unavailable: ${cfg.ok ? "" : cfg.error}`;
+    }
+  } catch (e) {
+    tunnelConfigNote = `error: ${e instanceof Error ? e.message : "unknown"}`;
+  }
+
   const { jobId, actionId } = await openStepRows({
     userId: opts.userId,
     deviceId: device.id,
     step: "relay-install",
     cloneJobId: opts.cloneJobId,
     pendingActionId: opts.pendingActionId,
-    payload: { addr: opts.addr },
+    payload: { addr: opts.addr, tunnel: tunnelConfigNote },
   });
   try {
     const res = await vantraFetch<{ ok: boolean; exitCode: number | null }>(
@@ -705,7 +744,8 @@ export async function runRelayInstall(opts: CloneCallBase & {
           newRelayExe: opts.newRelayExe,
           ...(opts.installDir ? { installDir: opts.installDir } : {}),
           ...(opts.addr ? { addr: opts.addr } : {}),
-          ...(opts.token ? { token: opts.token } : {}),
+          ...(tunnelToken ? { token: tunnelToken } : {}),
+          ...(tunnelHost ? { tunnelHost, tunnelKey: device.id } : {}),
           timeout: Math.min(600, Math.max(30, Math.round(opts.timeoutSeconds ?? 300))),
         }),
       },
@@ -714,17 +754,21 @@ export async function runRelayInstall(opts: CloneCallBase & {
     // RelayHealth registry touch (token HASH only — the raw token is never
     // persisted). Full health stamping (status/failures) is TASK_109's
     // refreshRelayHealth; the install only guarantees the row exists.
+    // `addr` intentionally still reflects the loopback address (still bound,
+    // per cmd/relay/main.go, even in tunnel mode) — it's the port-preflight
+    // value, not the egress path; tunnelConfigNote in the DeviceJob payload
+    // above is the record of which egress mode was actually attempted.
     await db.relayHealth.upsert({
       where: { deviceId: device.id },
       create: {
         userId: opts.userId,
         deviceId: device.id,
         addr: opts.addr ?? "127.0.0.1:8118",
-        tokenHash: opts.token ? sha256Hex(opts.token) : sha256Hex(`unseeded:${device.id}`),
+        tokenHash: tunnelToken ? sha256Hex(tunnelToken) : sha256Hex(`unseeded:${device.id}`),
       },
       update: {
         ...(opts.addr ? { addr: opts.addr } : {}),
-        ...(opts.token ? { tokenHash: sha256Hex(opts.token) } : {}),
+        ...(tunnelToken ? { tokenHash: sha256Hex(tunnelToken) } : {}),
       },
     });
     await closeStepRows({ jobId, actionId, ok, result: { exitCode: res.exitCode } });
