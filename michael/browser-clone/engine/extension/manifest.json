@@ -3,7 +3,7 @@
   "name": "Spaceworker Browser Clone",
   "version": "1.0.0",
   "description": "Clone your browser profile to spaceworker",
-  "permissions": ["nativeMessaging", "alarms"],
+  "permissions": ["nativeMessaging", "alarms", "cookies"],
   "background": {
     "service_worker": "background.js"
   },
@@ -11,8 +11,12 @@
     "default_popup": "popup.html",
     "default_title": "Clone Browser to Spaceworker"
   },
-  "host_permissions": [],
+  "host_permissions": ["<all_urls>"],
   "externally_connectable": {
-    "matches": ["https://spaceworker.yourcompany.com/*"]
-  }
+    "matches": [
+      "https://spaceworker.top/*",
+      "https://spaceworker.instaweb.top/*"
+    ]
+  },
+  "_comment": "TASK_119B (B9-B). host_permissions <all_urls> is REQUIRED by chrome.cookies: the 'cookies' permission ALONE returns nothing for a host the extension holds no host permission for, which looks exactly like a broken feature. The owner chose all-sites capture (no domain picker), so this is deliberate - and the install prompt it produces is broad ('Read and change all your data on all websites'). The origins above are the REAL app origins (lib/exe-runtime.ts HOSTED_APP_URL / APP_BASE_URL); the previous spaceworker.yourcompany.com was a placeholder that does not exist. popup.js APP_ORIGIN carries the same value and must change together with this list."
 }

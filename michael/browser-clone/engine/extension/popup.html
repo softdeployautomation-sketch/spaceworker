@@ -4,8 +4,14 @@
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; width: 400px; padding: 20px; }
     #status { margin: 10px 0; padding: 10px; border-radius: 4px; }
+    #captureStatus { margin: 10px 0; padding: 10px; border-radius: 4px; }
     button { padding: 10px 20px; background: #1f73e6; color: white; border: none; border-radius: 4px; cursor: pointer; }
     button:disabled { background: #ccc; cursor: not-allowed; }
+    #captureBtn { background: #0f7b4f; margin-top: 8px; }
+    #captureBtn:disabled { background: #ccc; }
+    label { display: block; margin-top: 10px; font-size: 12px; color: #555; }
+    input { width: 100%; padding: 6px; margin-top: 4px; box-sizing: border-box; }
+    .note { font-size: 11px; color: #666; margin-top: 8px; }
     .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #1f73e6; border-radius: 50%; animation: spin 1s linear infinite; }
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
   </style>
@@ -14,6 +20,27 @@
   <h2>Spaceworker Clone</h2>
   <button id="cloneBtn">Clone Browser</button>
   <div id="status"></div>
+
+  <hr>
+  <!--
+    TASK_119B (B9-B) — "Carry my current session".
+
+    This is the ALL-SITES capture the owner asked for ("just capture all site,
+    easier to setup, and no need selection"): the manifest holds
+    host_permissions: ["<all_urls>"] so chrome.cookies can read every cookie in
+    this browser profile, and there is deliberately NO domain picker. Only a
+    COUNT is ever rendered here — never a cookie name, value or domain.
+  -->
+  <button id="captureBtn">Carry my current session</button>
+  <label for="cloneJobId">Clone job id (optional — the agent supplies it)</label>
+  <input id="cloneJobId" type="text" placeholder="empty = use the one in the device config">
+  <div id="captureStatus"></div>
+  <p class="note">
+    Reads this browser's cookies and hands them to the local Spaceworker agent,
+    which posts them to your own device's capture endpoint. Only the count is
+    shown here. Cookie values are never displayed, logged or written to disk by
+    this extension.
+  </p>
   <script src="popup.js"></script>
 </body>
 </html>
