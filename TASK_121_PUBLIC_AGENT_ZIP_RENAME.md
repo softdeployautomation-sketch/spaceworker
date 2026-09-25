@@ -3,10 +3,10 @@
 **Bit:** `OOB-13` (device onboarding — **not** a clone-pipeline bit)
 **Owner request 2026-09-25:** *"lets fix this public agent zip flow which we have on vantra, lets add the flow
 to the public url on spaceworker. so users can rename it just the way we do in vantra."*
-**Status:** **BOTH PATHS IMPLEMENTED + PUSHED 2026-09-25** — Vantra `e668542`
-(`agent/task-121a-install-link-zip`), SpaceWorker `7f5bfa5` (`agent/task-121b-public-link-zip`).
-Verified independently (§9). **Not merged, not deployed, migration not applied** — see §9 for the
-deploy order. `OOB-13` stays open until §6 item 2 passes on `Sc`. **Two repos, two paths, disjoint files.**
+**Status:** **PATH B MERGED to `main` 2026-09-25** (`7f5bfa5` → `7f7b0cb` test → merge `912cc11`); Vantra
+Path A is **committed + pushed** (`e668542`, `agent/task-121a-install-link-zip`) and **not yet merged** — its
+merge is step 1 of the deploy order in §9. Neither repo is **deployed** and the migration is **not applied**.
+`OOB-13` stays open until §6 item 2 passes on `Sc`. **Two repos, two paths, disjoint files.**
 
 ---
 
@@ -252,14 +252,15 @@ decided; each is reversible with one small change if it proves wrong in the acce
 
 ---
 
-## 9. Implementation status (2026-09-25) — both paths committed + pushed, verified, NOT deployed
+## 9. Implementation status (2026-09-25) — Path B merged to `main`; Path A pushed; neither deployed
 
 | | PATH A — Vantra | PATH B — SpaceWorker |
 |---|---|---|
-| Commit | `e668542` | `7f5bfa5` |
+| Commit | `e668542` | `7f5bfa5` + `7f7b0cb` (the test) |
 | Branch (pushed to `origin`) | `agent/task-121a-install-link-zip` | `agent/task-121b-public-link-zip` |
-| Files touched | exactly the 3 declared in §5 | exactly the 6 declared in §5 (incl. the one hand-written migration) |
-| Tests | `tests/install-link-zip.test.ts` — **22/22, re-run and reproduced here** | **none committed** (both harnesses were throwaway `/tmp` scripts) |
+| Merged? | **not yet** — step 1 of the deploy order below | **yes**, merge `912cc11` on `main` |
+| Files touched | exactly the 3 declared in §5 | exactly the 6 declared in §5 (incl. the one hand-written migration) + `tests/` + one `package.json` script line |
+| Tests | `tests/install-link-zip.test.ts` — **22/22, re-run and reproduced here** | `tests/vantra-link-installer.test.ts` — **24/24**, `npm run test:vantra` |
 
 Independent verification, from the commit contents rather than the agents' reports:
 
@@ -267,18 +268,18 @@ Independent verification, from the commit contents rather than the agents' repor
   innerFolder?}}`; Path A's `parseInstaller` reads exactly that and treats an absent/unrecognised `kind` as
   the exe branch. Path B reads `downloadUrl` out of the response Path A returns. No mismatch.
 - **Backward compatibility is real, not asserted.** Path A's own test re-run here: **22/22 pass**. Path B's
-  `installerRequest(undefined)` returns the literal string `{}` — the same body today's code sends.
-- **The migration agrees with the schema.** `prisma migrate diff` between HEAD's datamodel and the branch's
-  prints exactly the three nullable columns, matching the hand-written SQL. `prisma validate` clean.
+  `installerRequest(undefined)` returns the literal string `{}` — the same body today's code sends — and the
+  committed test asserts that byte for byte, plus that `undefined` and `{}` are *different* requests.
+- **The migration agrees with the schema.** `prisma migrate diff` between the previous datamodel and the
+  branch's prints exactly the three nullable columns, matching the hand-written SQL. `prisma validate` clean.
 - **No leak.** `toView` — the only shape that leaves `lib/vantra-link.ts` — carries no `installer*` column, so
   the raw URL cannot reach a response, a log line or an audit row. `installer*` appears **only** in
   `lib/vantra-link.ts`, `prisma/schema.prisma` and the migration. No Vantra secret appears anywhere.
 - **The stored-URL decision (§8 Q1) is safe.** Vantra calls the generator with `expiryHours: 72` and creates
   the deployment with `expiresAt: now + 72 h` — the same window as the wrapper token — and the generator mints
   its artifact *after* the token is created, so the artifact cannot expire before the link that points at it.
-- **Merge into `main` is clean.** `git merge-tree main agent/task-121b-public-link-zip` → no conflicts;
-  the unrelated `a2f2c14` on main touches `deploy.yml`, `lib/device-tools.ts`, `next.config.ts` — none of
-  Path B's files.
+- **Merge into `main` was clean** (`git merge-tree` reported no conflicts) and is done: `912cc11`. After
+  merging, `npx tsc --noEmit` and `npm run test:vantra` were both re-run **on `main`** — exit 0, 24/24.
 
 **The public link is NOT opt-in — every new public link becomes the ZIP.** The UI always sends the three name
 fields (`{}` when they are all blank) and the route returns `{}` — not `undefined` — for an all-blank object,
@@ -286,10 +287,18 @@ so `installerRequest` sees a defined object and asks for the launcher **ZIP**. T
 public link should deliver what Vantra's own flow delivers), and it is exactly why §6 item 2 is the gating
 acceptance item rather than a nice-to-have.
 
-**Known gap:** Path B's acceptance evidence (quiet-mint body, invalid-name dropping, one-re-mint-when-unset,
-no-URL-in-response) rests on harnesses that were never committed, so the next person cannot reproduce it. A
-small committed test (`tsx --test`, the convention `test:engine` / `test:browser` already use) is the one
-worthwhile addition before this merges.
+**The evidence gap is closed.** `tests/vantra-link-installer.test.ts` (24 checks) loads the **real**
+`lib/vantra-link.ts` and the **real** `install-link` route through a require hook (the house pattern for the
+`server-only` import, `HOW_WE_MOVE_FAST.md` §4) and swaps their dependencies for recording fakes — the DB
+(honouring Prisma's `select`, so a forgotten column cannot hide), the entitlement gate, the audit sink, the
+device-tool surface, `next/server`, the session read and the Vantra mint. It pins §6 items 1, 3, 4 and 5 at
+both layers, including the negative cases that matter: 16 path-like/unusable names rejected without throwing
+(a JSON *number* included — Vantra's own sanitizer would `.trim()` it and throw), a bad name dropped rather
+than 400ing, a live stored URL resolving with **zero** outbound calls, a pre-Task-121 row re-minting
+**exactly once**, corrupt stored names falling back to the exe body, a failed bookkeeping write still
+returning the artifact, and the lookup proven to be the sha256 hash rather than the raw token. Run it with
+`npm run test:vantra`. The pre-existing suites were re-run too: `test:engine` 79/79, `test:browser` 8 pass /
+5 skipped (`RELAY_BIN` absent).
 
 ### Deploy order — this is the safe one, and it is not the obvious one
 
