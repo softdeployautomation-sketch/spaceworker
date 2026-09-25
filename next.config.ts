@@ -50,6 +50,23 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      // 2026-09-25 — every /api/* route is session-scoped, dynamic data; none
+      // of it should ever be cached by the browser. Without an explicit
+      // no-store, a transient 500/502 hit during a deploy restart can get
+      // cached by the browser's own heuristics and then silently replayed on
+      // every later "refresh" — no request even reaches the server, so
+      // server-side logs show nothing wrong while the user keeps seeing the
+      // one bad response forever. Reproduced live: a deploy-window crash on
+      // GET /api/devices left one browser showing "Unexpected token '<'"
+      // (a stale HTML error page parsed as JSON) on every reload for
+      // 45+ minutes after the server had fully recovered; it only cleared in
+      // a fresh/incognito context. This is a blanket route-level guarantee,
+      // not a per-route opt-in — a route that forgets to set it is exactly
+      // the failure mode this closes.
+      {
+        source: "/api/:path*",
+        headers: [{ key: "Cache-Control", value: "no-store, must-revalidate" }],
+      },
     ];
   },
 };
