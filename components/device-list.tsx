@@ -346,7 +346,7 @@ export function DeviceList() {
                       </button>
                     ) : (
                       <div className="flex flex-wrap items-center gap-2">
-                        {/* Only the wrapper PATH — never the agent host/domain */}
+                        {/* Full install URL with configured public domain */}
                         <code className="max-w-full truncate rounded bg-bg px-2 py-1.5 text-xs text-fg-muted">
                           {link.installUrl}
                         </code>
@@ -354,7 +354,7 @@ export function DeviceList() {
                           onClick={() =>
                             copyText(
                               "public",
-                              `${typeof window !== "undefined" ? window.location.origin : ""}${link.installUrl}`,
+                              link.installUrl || "",
                             )
                           }
                           className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"

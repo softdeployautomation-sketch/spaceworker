@@ -3,6 +3,7 @@ import "server-only";
 import crypto from "node:crypto";
 
 import { db } from "./db";
+import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
 import { recordAgentActionAudit } from "./devices";
@@ -251,12 +252,13 @@ export async function mintInstallLink(
     { method: "POST", body: "{}" },
   );
   const token = crypto.randomBytes(24).toString("hex");
+  const publicUrl = env.appBaseUrl.replace(/\/$/, "");
   const updated = await db.vantraLink.update({
     where: { id: link.id },
     data: {
       installTokenHash: sha256(token),
       installTokenExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
-      installUrl: `/link/vantra/${token}`,
+      installUrl: `${publicUrl}/link/vantra/${token}`,
       lastError: null,
     },
   });
