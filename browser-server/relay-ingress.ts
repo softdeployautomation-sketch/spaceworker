@@ -221,16 +221,22 @@ export function startRelayIngress(opts: RelayIngressOptions): RelayIngressHandle
     controls.set(deviceKey, { socket, connectedAt: Date.now(), ping });
     socket.write("OK\n");
     log(`relay-ingress: control up for key ${deviceKey.slice(0, 8)}… (${controls.size} live)`);
+    // A dropping conn emits BOTH 'error' and 'close' (observed live 2026-09-25:
+    // "control down" logged twice per disconnect), so end exactly once.
+    let ended = false;
+    const onEnd = () => {
+      if (ended) return;
+      ended = true;
+      dropControl(deviceKey, socket);
+      log(`relay-ingress: control down for key ${deviceKey.slice(0, 8)}…`);
+    };
     attachControlReader(
       socket,
       (line) => {
         if (line === "" || line === "PONG") return;
         log(`relay-ingress: unexpected control frame from device: ${line.slice(0, 60)}`);
       },
-      () => {
-        dropControl(deviceKey, socket);
-        log(`relay-ingress: control down for key ${deviceKey.slice(0, 8)}…`);
-      },
+      onEnd,
     );
   }
 

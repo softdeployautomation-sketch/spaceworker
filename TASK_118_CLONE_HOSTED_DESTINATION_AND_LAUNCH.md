@@ -117,6 +117,40 @@ there is no bundle and no second PC.
 - **Verifiable:** a clone reports the **device's public IP** as its exit IP, and the launch
   **aborts** when the relay is down.
 
+#### B8-3 IMPLEMENTED + VERIFIED LIVE (2026-09-25, commits `37e92b5` + the double-log fix)
+
+Built and proven end-to-end **over the real internet**, from the VM (`Sc`) to the VPS:
+
+| Piece | Where |
+| --- | --- |
+| Dial-out tunnel client (control + per-stream DATA conns) | `michael/browser-clone/engine/cmd/relay/tunnel.go` |
+| `-tunnel` / `-tunnel-key` flags (listener path unchanged) | `.../cmd/relay/main.go` |
+| Server ingress: one listener, device vs browser told apart by first bytes | `browser-server/relay-ingress.ts` |
+| Env-gated start + `POST /relay/route{,/remove}` + `GET /relay/stats` | `browser-server/server.ts` |
+| 13 tests (8 fake-device, 5 against the REAL Go relay) | `browser-server/relay-ingress.test.ts`, `npm run test:browser` |
+
+**Measured on production, not a lab:**
+
+- Device dialled out from `Sc` → our ingress logged `control up for key 234c9469…` and held
+  (`/relay/stats` → `{"controls":1}`) while the SSH session that started it had already exited.
+- Browser-path request through the ingress returned **the DEVICE's public IP
+  `105.112.190.20`** — plain HTTP *and* HTTPS via CONNECT (two different hosts). Our own IP is
+  `164.68.105.96`, so egress provably left from the device, not from us.
+- No inbound port, firewall rule or router change was needed on the device: it only dialled out.
+
+**Two things learned live and folded back in:**
+
+1. **The ssh-spawned relay dies with its ssh session** (job-object teardown) — the control conn
+   dropped at the exact second the spawning `ssh` returned. This is already documented in
+   `install-relay.ps1`; the live run re-confirmed it, and the scheduled-task launch
+   (`schtasks /RU SYSTEM`) held the conn open. No tunnel defect.
+2. A dropping control conn emits **both** `error` and `close`, so "control down" logged twice
+   per disconnect — now guarded to log once.
+
+Known and accepted: the ingress is a public listener gated by one shared secret
+(`RELAY_INGRESS_TOKEN`, needed because devices are remote), and its browser path accepts only
+**private** sources so a device can never turn it into an open forward proxy.
+
 ### B8-4 — retire the copy that no longer applies
 With a hosted destination, **single-PC cloning becomes legitimate** — the user no longer
 needs a second machine. The `self_only` refusal and the "you need one more PC" family of
