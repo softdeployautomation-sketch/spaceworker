@@ -59,6 +59,8 @@
 | B8 | `TASK_118_CLONE_HOSTED_DESTINATION_AND_LAUNCH.md` | **Make the clone DESTINATION real, then launch it** — the "destination" is **OUR Neko browser on our server** (owner's design: one browser on our side, one profile per clone job, egress routed through the device) — NOT a second PC and NOT the customer's machine; the old `deviceKind="hosted"` / "hosted clone PC" naming is misleading. Provision it(`deviceKind="hosted"`), teach the picker a hosted destination needs no agent, add a hosted launch path via `browser-server`, and build the relay data path | B7 | **B8-3 DONE + VERIFIED LIVE 2026-09-25** (`37e92b5`): dial-out tunnel client (`cmd/relay/tunnel.go` — control conn + one conn per stream) and the server ingress (`browser-server/relay-ingress.ts`, `browser-server/server.ts`, 13 tests via `npm run test:browser`). Proven over the real internet: `Sc` dialled OUT and a browser-path fetch returned **the device's own public IP `105.112.190.20`** — not ours (`164.68.105.96`) — over both plain HTTP and HTTPS/CONNECT, with no inbound port, firewall rule or router change on the device. **RECORDED 2026-09-25.** Four measured defects block "click Start": (1) `deviceKind="hosted"` is read in ONE place (`admin/clone-limits:54`) and written NOWHERE, so the pool is permanently 0; (2) `hostAvailability` filters `vantraAgentId: { not: null }`, so a hosted browser can never be picked (no agent); (3) `runCloneLaunch` is an agent RPC on the destination — no hosted path exists; (4) **the long pole** — the relay is loopback-bound (`RELAY_ADDR=127.0.0.1:8118`) and documented as "replayed over the Mesh tunnel", but **no TCP tunnel exists in either repo** (only the one-way parcel POST `/rmm/inject-clone`), so same-IP egress is currently UNREACHABLE, not merely unconfigured. Bits: B8-1 destination, B8-2 hosted launch, B8-3 dial-out relay tunnel, B8-4 retire `self_only`. Needs Q1 (hosted identity), Q2 (is our-IP interim acceptable — recommended NO), Q3 (tunnel shape). **B8-1 DONE + DEPLOYED + VERIFIED LIVE 2026-09-25** (`638f40d`, Claude — Cline started this bit and hit its usage limit mid-task; finished by diffing what was actually on disk against the design `lib/clone-destination.ts` itself documents, not by guessing from the transcript). New `lib/clone-destination.ts`'s `ensureHostedDestination(userId)` finds-or-creates the account's `deviceKind:"hosted"` row (idempotent by design, no unique-constraint migration — a documented trade-off, not an oversight); `hostAvailability()` now queries it and prefers it; `requestClone()`'s destination resolution calls it up front so the old `no_hosted_clone_device` refusal branch is now dead code and was removed. Two gaps Cline's session ended before closing: `cloneSetupStatus()` (the actual read model behind the console's setup card) never called `ensureHostedDestination()`, so a brand-new account's first card read would show "no host available"; and `GET /api/devices` had no filter at all, so the hosted infrastructure row would have leaked into the user's own device list. Both fixed. Verified live end-to-end with a disposable test user (cleaned up after): fresh account's first setup-card read → `hostedAvailable:true`; exactly one hosted row created; `hostAvailability` picks it; a second call is idempotent (no duplicate); real `GET /api/devices` HTTP call confirmed the hosted row is invisible while a real device still shows. `tsc`/`eslint` clean (one pre-existing, unrelated unused-var warning). Deployed per `HOW_WE_MOVE_FAST.md` §2 (build from `/opt/spaceworker`, not `/opt/spaceworker/app` — that line in §2's own snippet is the stale path §1 warns about). **B8-2 DONE + DEPLOYED + VERIFIED LIVE END-TO-END 2026-09-25** (spaceworker `91b15e6`, vantra `0c6db1b`, Claude). The real, complete clone flow now works — proven on production, not staged: `Sc`'s relay re-run through the ONE-CLICK setup route (not a manual SSH flag) came up in genuine dial-out mode; `POST /api/devices/Sc/clones` (relay egress) advanced `ready` → `active` through the real state machine; `HostedBrowserSession.egressIp` = `105.112.190.20` (Sc's own public IP, not `164.68.105.96`); the stamped `viewUrl` served a real Neko session (`200`, `<title>n.eko</title>`) through the actual public domain; revoked through the real API afterward — `CloneJob`→`revoked`, session→`stopped`, docker container removed, relay-ingress stream count back to `0`, Sc's own control connection correctly left up for the next clone.
 | B9-A | `TASK_119A_LIVE_SESSION_SERVER.md` | **PATH A — the server half of LIVE session mode.** `sessionMode` (`"fresh"` \| `"live"`; `fresh` stays the DEFAULT and byte-for-byte unchanged) + one hand-written migration; `POST /api/internal/clone-live-capture` ingest, owner-scoped with a short TTL and **counts only — never a value**; `lib/cdp.ts` extracted from `scripts/clone-cdp.mjs` carrying the two proven traps (corked upgrade socket; the `/devtools/page` endpoint that answers ping/pong then silently ignores every command); a **host-loopback-only** per-session CDP endpoint through a new `cmd/swfwd` forwarder, stamped on the already-existing `HostedBrowserSession.cdpPort`; inject after launch; **refuse on 0 cookies — never silently degrade to `fresh`**; and the Q2 detection read model (capable → offer `live`; not capable → offer **`fresh`** + the existing one-click silent setup, disclosing that `ExtensionInstallForcelist` makes Chrome show "Managed by your organization"). | B8, B7 | **RECORDED — for pick-up (primary agent)** |
 | B9-B | `TASK_119B_LIVE_SESSION_EXTENSION.md` | **PATH B — the extension half (Cline).** `chrome.cookies.getAll()` in the MV3 service worker — the ONLY route that survives Windows App-Bound Encryption (F10/F11/F12) because it reads in-process; `cookies` permission **+** `host_permissions: ["<all_urls>"]` per the owner's all-sites decision (**no domain picker is built**); chunked <=1 MiB native messages; a `capture_cookies` command in `cmd/native-host` that accumulates chunks and makes one POST; counts-only everywhere (**no value in any log, UI or error**); and `Test-CookieCapture.ps1` proving capture on a **disposable login only**, runnable WITHOUT Path A deployed. | B7 (contract frozen in B9-A) | **RECORDED — for pick-up (Cline)** |
+| B10 | `TASK_120_LIVE_CAPTURE_SEAMLESS_SETUP.md` | **"Carry my session" must install itself** — the console offers `live` only when `liveCaptureReady` is true, but the extension + native host were **never delivered**: `ROLE_ARTIFACTS.source` (`lib/clone-setup.ts:68-77`) omits `clone-native-host.exe`/`install-registry.ps1`, `engine-dist/manifest.json` ships neither (9 entries, none of them), and `install-registry.ps1` — the only thing that registers the native-messaging host — is **invoked nowhere**, so the flag can only ever be false and there is **no in-product path** to satisfy it (exactly what the owner hit). Ship + register them **silently** via `ExtensionInstallForcelist` + a self-hosted CRX3, persist each setup run (`DeviceSetupRun`) so the activity survives a reload/deploy, show **per-section expandable** activity, and make it **one button → a running signed-in clone** | B9-B | **RECORDED 2026-09-25** — not started |
+
 
 
 Two genuine architectural gaps found only by making this real, not by reading the spec:
@@ -377,4 +379,44 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 
   Claude had already started on Path A when this landed, so it needs the amendment prompt (sent with
   this change). Docs only — no code written by this commit.
+
+- 2026-09-25 — **B10 RECORDED** (`TASK_120_LIVE_CAPTURE_SEAMLESS_SETUP.md`). Owner: *"to select carry my
+  session, it wants the extension… is there a way to show the activity and maybe a drop down to show all
+  the necessary steps passed, for each section… just install the extension easily… lets make this
+  seamless, click a button and we good."*
+
+  **Root cause found by reading the delivery path, not the UI.** The option is gated on
+  `liveCaptureReady`, which is `buildNativeHostPresenceScript()`'s real HKLM check — and that check can
+  **only ever be false**, because the things it looks for are never installed:
+
+  - `lib/clone-setup.ts:68-77` — `ROLE_ARTIFACTS.source` lists the CLI, the relay, `install-relay.ps1`,
+    `Invoke-BrowserClone.ps1` and three PS libs. **No `clone-native-host.exe`, no extension, no
+    `install-registry.ps1`.**
+  - `engine-dist/manifest.json` — 9 entries, **none** of them those three. So naming them in
+    `ROLE_ARTIFACTS` alone would 404 the hash-verified fetch step. Both sides must change.
+  - `install-registry.ps1` — the only script that writes
+    `HKLM\SOFTWARE\{Google\Chrome|Microsoft\Edge|BraveSoftware\Brave-Browser}\NativeMessagingHosts\com.spaceworker.clone`
+    — is **invoked nowhere** in `lib/` or `app/`.
+  - `michael/browser-clone/engine/scripts/build.ps1` **does** build `clone-native-host.exe`
+    (`./cmd/native-host`) — and nothing ships it.
+
+  So this was never "a missing click": the entire delivery half of B9-B was unbuilt, and V10
+  (`9885497`) fixed only the **last mile** (`live-capture.json`, the token file the frozen host reads).
+
+  **Chosen route for a silent install:** `ExtensionInstallForcelist` (HKLM policy) + a **self-hosted
+  signed CRX3** with our own `update.xml`. Rejected: unpacked `--load-extension` (not silent, needs a
+  restart, flag being removed, no effect on a running Chrome) and Chrome Web Store (account + review,
+  "private" needs Workspace). **Disclosed, not hidden:** this makes Chrome show *"Managed by your
+  organization"* and the extension is not user-removable while the policy is set — the console must say
+  so before the click. The `.pem` is a **GitHub Actions secret, never committed** (both repos are
+  PUBLIC); the extension ID derives from it, so it must be generated **once**.
+
+  **Owner decision D-1 (this task): activity must survive a reload/deploy.** Today the step list exists
+  only in the `POST /clone-setup` response, which is literally why the owner could not tell whether the
+  install had landed when a rebuild interrupted it. Hence `DeviceSetupRun` (persisted steps per run) is
+  the source of truth, not the display. Bits: B10-1 ship, B10-2 register (silent), B10-3 persist,
+  B10-4 sectioned UI, B10-5 one button → running clone (Q5: no dead end). Split A (Claude, server/UI) /
+  B (Cline, `install-registry.ps1` + its harness) with **zero file overlap**; the only shared artifact is
+  the frozen `STEP:` vocabulary. Task doc written only — no code, nothing deployed.
+
 
