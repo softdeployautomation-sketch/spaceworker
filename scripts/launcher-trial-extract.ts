@@ -26,7 +26,12 @@ const loader = Module as unknown as Loader;
 const original = loader._load;
 loader._load = function patched(request, parent, isMain) {
   if (request === "server-only") return {};
-  const from = parent?.filename ?? "";
+  // Normalize backslashes -> forward slashes before the endsWith check: on
+  // Windows `parent.filename` is `D:\...\lib\device-tools.ts`, which never
+  // matches a forward-slash suffix — caught live on a real windows-latest
+  // runner, where the un-normalized check let the REAL lib/env.ts load and
+  // throw on a missing APP_BASE_URL instead of getting stubbed.
+  const from = (parent?.filename ?? "").replace(/\\/g, "/");
   if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
     if (request === "./db") return { db: {} };
     if (request === "./env") return { env: { appBaseUrl: "https://spaceworker.test" } };
