@@ -189,7 +189,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 | OWN-4 | **OOB-6 / TASK_115** overlay styles — default, **spinner (exe)**, upload-your-own — **and the technician's mouse *and* keyboard must still work under “spinner”** | Session → Maintenance screen | server-side verified; the input path is exactly what TASK_23 rejected 3/3 and remains **unproven** |
 | OWN-5 | **OOB-13 / B11** open a freshly minted ZIP on Windows: `Install SpaceWorker.lnk` launches, `payload/Launcher.exe` runs; the naming card’s **“Regenerate with these names”** mints a real ZIP | Vantra connect card | server-side passed (archive listing confirmed); no Windows run |
 | OWN-6 | **TASK_114 / B8** the one-click **“Set up this PC”** button | Device setup card | its server half ran live in B8-2; the click itself is unverified |
-| OWN-7 | **Wake**: Power → **Wake** against a powered-off machine | console | deployed; it forwards `{action:"wake"}` to Vantra/TRMM. **Real Wake-on-LAN (magic packet) is NOT built — see BUILD-4** |
+| OWN-7 | **Wake**: Power → **Wake** against a powered-off machine | console | deployed; it forwards `{action:"wake"}` to Vantra/TRMM. **Real Wake-on-LAN is NOT built — the button reports success and cannot wake a machine. Root-caused 2026-09-26 in `TASK_123` (B12); do not re-diagnose it as a config problem** |
 
 ### BUILD — not finished, no external gate
 
@@ -198,7 +198,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 | BUILD-1 | **B9-B / TASK_119B** | **push `agent/task-119b-live-capture` (`56b2c4a`) → merge → deploy**, then commit its test in place of the throwaway harness | ⚠️ **HIGHEST RISK.** The work exists on **one machine only** (no remote branch), `origin/main` has no `cookies` permission and no `chrome.cookies.getAll`, so **“Carry my session” cannot capture anything** — and `TASK_120` has nothing to install |
 | BUILD-2 | **B10 / TASK_120** | ship `clone-native-host.exe` + `install-registry.ps1` in `engine-dist` **and** `ROLE_ARTIFACTS.source`; register the native host; write the **registry `update_url`** (never a policy); persist `DeviceSetupRun`; per-section activity UI; one button → running clone | leaves the dead end the owner hit: a button gated on a capability nothing delivers |
 | BUILD-3 | **OOB-1 / TASK_113** | Prisma’s own FK diff as an **additive migration** (owner applies it) | the live DB **cascades** device/audit deletes where the datamodel declares `RESTRICT` — inert today, but the exact thing RULE 5 forbids |
-| BUILD-4 | **TASK_96** Wake-on-LAN + keep-awake | not started (depends on TASK_93/94) | there is **no WOL transmitter** in our code; the console’s Wake only forwards to TRMM |
+| BUILD-4 | **B12 / TASK_123** Wake-on-LAN + keep-awake | **RECORDED · READY FOR BUILD, assigned to Claude** — `TASK_123_WAKE_ON_LAN.md`. Supersedes TASK_96 deliverables 2-5 | **the Wake button reports success and cannot wake a machine.** Verified: it forwards to TRMM `/wol/` → MeshCentral `wakedevices`, which asks the *sleeping machine for its own MAC* and relays **same-mesh, not same-subnet** — and the server-side raw packet is a documented no-op on a WAN-only VPS. Fix = record the MAC at setup + relay via a **same-subnet** peer + fail closed; **keep-awake ships first** (no peer needed, reuses the unused `DevicePowerPolicy`) |
 | BUILD-5 | **G1 / TASK_105** resource governor / queue | not started | nothing caps concurrency or enforces fairness as the clone fleet grows |
 | BUILD-6 | **TASK_117 F1/F2** | engine Chrome KDF salt (`saltysalt`, not `peanuts`) + the unhandled 16-byte cookie prefix | off the critical path (Linux-profile reads only), but a genuine bug |
 | BUILD-7 | **B8-4** retire `self_only` | **not done** — `self_only` still exists at `lib/clone-hosts.ts:76,153`, `components/device-console.tsx:86,1924`, `lib/clone-setup.ts:125` | with the destination now ours it may be dead code — **but that has not been proven**, and a stale refusal could still fire on a one-PC account |
@@ -720,4 +720,30 @@ Verified live during this pass: site `200`, all five services `active`.
   unreachable is **unproven**, so it is filed as BUILD-7 rather than assumed clean.
   Register shape: **OWN-1…7** (code done, owner clicks on `Sc`), **BUILD-1…7** (not finished, no external
   gate), **GATE-1…4** (owner decision / outside the code). Docs only — no code changed, nothing
+  deployed, `WilkSF9` untouched. Live check during the pass: site `200`, all five services `active`.
+
+- 2026-09-26 — **`TASK_123` / B12 RECORDED: Wake-on-LAN root-caused, and it is worse than "not built".**
+  The owner reported the Wake button as the last broken function. Traced the full chain on the live box:
+  console → `runPowerAction("wake")` → Vantra `case "wake"` → `lib/trmm.ts wakeAgent()` → TRMM
+  `POST /agents/{id}/wol/` (`agents/views.py:1355`) → `core/utils.py:201 wake_on_lan()` → MeshCentral
+  `wakedevices` (`meshuser.js:2951-3031`). **The button reports success and cannot wake a machine**, for
+  three independent reasons: **(R1)** MeshCentral reads the MACs from the **target's own** `if<node>`
+  record — it asks the sleeping machine for its own MAC; **(R2)** it relays to agents in the same
+  **mesh**, not the same **subnet**, and a magic-packet broadcast does not cross LANs; **(R3)** the whole
+  path is fire-and-forget — Vantra's `wakeAgent` is `trmmPostOk` and our route returns `{ ok: true }`, so
+  even MeshCentral's `result: 'Used 0 device(s) to send wake packets'` is discarded. Also confirmed
+  MeshCentral's own source comment on its server-side packet path: *"Will not work in WAN-only"* — true
+  for our cloud VPS. **Fleet measured** from `meshcentral.db.json`: 5 `if` records, **all in one mesh
+  `mesh//lhHk`**, on **four different subnets** (`Sc` 192.168.0.103, `WilkSF9` 10.100.153.185,
+  `I` 192.168.122.222, the VPS 184.174.20.92) — so **`Sc` currently has no same-subnet peer to relay
+  through**: correct design, not yet sufficient for the test box, and the UI must say so rather than
+  imply success. **Decisions recorded (D1-D6):** record the MAC ourselves at setup (we are on the machine
+  during one-click setup — never depend on R1's path); relay via a **same-subnet** peer chosen by us;
+  **fail closed with a named reason** (`no_power_mac` / `no_same_subnet_peer`) and never `ok: true`;
+  **keep-awake ships first** (no peer needed, and it wires the already-present but unused
+  `DevicePowerPolicy` at `prisma/schema.prisma:1190`); external relay deferred to `GATE-WOL-1`.
+  **Assigned to Claude as PATH A** (`TASK_123` §7); PATH B is the Vantra transport. Supersedes TASK_96
+  deliverables 2-5, which had assumed a peer-relay without checking the subnet requirement. Docs only —
+  no code changed, nothing deployed, `WilkSF9` untouched.
+
   deployed, `WilkSF9` untouched. Live check during the pass: site `200`, all five services `active`.
