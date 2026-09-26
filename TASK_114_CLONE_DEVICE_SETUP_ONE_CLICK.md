@@ -1,7 +1,10 @@
 # Task 113 (bit C2-fu) — One-click clone-device setup (engine + relay, no hands on the machine)
 
-**Status: IN PROGRESS — built + committed, deployment/verification running (owner
-request 2026-09-24).**
+**Status: DONE · MERGED · DEPLOYED · VERIFIED 2026-09-26 — the one-click setup has since run live
+(owner request 2026-09-24; closed 2026-09-26).** The server half is proven end-to-end: B8-2 re-ran
+`Sc`'s relay **through this route** (not a manual ssh flag) and it came up in genuine dial-out mode,
+and the clone then launched against our own Neko destination. **Owner-only: the button click itself
+on `Sc`.**
 **Pipeline:** `PIPELINE_CONSOLE_BROWSER_CLONE.md` (bit **C2-fu** — console follow-up;
 unblocks **B4/B5** relay mode, which never had an installer UI).
 **Plan:** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §PRIORITY P2.
