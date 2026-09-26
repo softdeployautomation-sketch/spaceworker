@@ -80,6 +80,13 @@ model User {
   // refuses when false — no tray in SpaceWorker, per plan decision M-scope).
   digestEnabled            Boolean                @default(true)
   deviceTelemetryEnabled   Boolean                @default(true)
+  // 2026-09-26 — ported from Vantra's proven device-status-check pattern
+  // (app/api/internal/telegram-device-check/route.ts there). Independent
+  // toggles, both default true (unlike the opt-in Telegram-specific ones
+  // above) — this is a safety-relevant notification most users want by
+  // default, same reasoning as Vantra's.
+  notifyDeviceOffline      Boolean                @default(true)
+  notifyDeviceOnline       Boolean                @default(true)
   createdAt                DateTime               @default(now())
   verifications            VerificationCode[]
   rateLimits               RateLimitEvent[]
@@ -1107,6 +1114,12 @@ model Device {
   // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
   hardwareSummary      Json?
   lastSeenAt           DateTime?
+  // 2026-09-26 — the device-status sweep's own memory of what it last saw for
+  // THIS device, distinct from `status` (which is a broader derived label
+  // including "asleep"/"unknown"). Null means "never swept yet" so a brand
+  // new device's first sweep never fires a spurious online/offline
+  // notification — same reasoning as Vantra's DeviceStatusSnapshot.
+  lastNotifiedOnline   Boolean?
   // TASK_119: live session capture credential (SHA-256 hash only, never raw token).
   // Unique, nullable (only devices capable of live capture have this set).
   // Revoke by setting to null; cleared on job teardown.

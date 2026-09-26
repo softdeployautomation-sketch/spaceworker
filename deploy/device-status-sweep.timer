@@ -1,0 +1,14 @@
+# Install: sudo cp device-status-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now device-status-sweep.timer
+[Unit]
+Description=Run the SpaceWorker device online/offline notification sweep every 5 minutes
+
+# DEVICE_ONLINE_WINDOW_MS (lib/devices.ts) is 10 minutes; a 5-minute cadence
+# catches a transition within one missed heartbeat window, same cadence as
+# Vantra's proven poller this was ported from.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=device-status-sweep.service
+
+[Install]
+WantedBy=timers.target

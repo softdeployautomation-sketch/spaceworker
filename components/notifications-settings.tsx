@@ -12,6 +12,8 @@ interface NotificationPrefs {
   notifyAgent: boolean;
   telegramApprovalsEnabled: boolean;
   telegramChatEnabled: boolean;
+  notifyDeviceOffline: boolean;
+  notifyDeviceOnline: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
   agentActionsEnabled: boolean;
@@ -159,6 +161,20 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.deviceTelemetryEnabled}
         disabled={busy !== null}
         onToggle={(v) => void patch({ deviceTelemetryEnabled: v }, "Telemetry preference saved")}
+      />
+      <Toggle
+        label="Device went offline"
+        description="Notify me when one of my devices stops responding (checked every few minutes)."
+        checked={prefs.notifyDeviceOffline}
+        disabled={busy !== null || !prefs.deviceTelemetryEnabled}
+        onToggle={(v) => void patch({ notifyDeviceOffline: v }, "Device offline preference saved")}
+      />
+      <Toggle
+        label="Device came back online"
+        description="Notify me when a device that was offline is reachable again."
+        checked={prefs.notifyDeviceOnline}
+        disabled={busy !== null || !prefs.deviceTelemetryEnabled}
+        onToggle={(v) => void patch({ notifyDeviceOnline: v }, "Device online preference saved")}
       />
       <Toggle
         label="Agent actions"
