@@ -121,6 +121,10 @@ export async function PATCH(request: Request) {
     !linked && updated.telegramLinkToken && env.telegramBotUsername
       ? `https://t.me/${env.telegramBotUsername}?start=${updated.telegramLinkToken}`
       : null;
+  // 2026-09-26 (live incident) — see schema/webhook comments: Telegram drops
+  // the ?start= payload when a chat with this bot already exists, so the UI
+  // also offers the raw token to paste directly as a fallback.
+  const linkToken = !linked ? updated.telegramLinkToken : null;
 
   return NextResponse.json({
     ok: true,
@@ -134,6 +138,7 @@ export async function PATCH(request: Request) {
       agentActionsEnabled: updated.agentActionsEnabled,
       linked,
       connectUrl,
+      linkToken,
     },
   });
 }

@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { Badge, Button } from "@/components/ui";
 import { cn } from "@/lib/cn";
+import { copyToClipboard } from "@/lib/clipboard";
 
 interface NotificationPrefs {
   notifyEmail: boolean;
@@ -15,6 +16,7 @@ interface NotificationPrefs {
   agentActionsEnabled: boolean;
   linked: boolean;
   connectUrl: string | null;
+  linkToken: string | null;
 }
 
 interface Props {
@@ -207,6 +209,29 @@ export function NotificationsSettings({ prefs: initial }: Props) {
                 Regenerate link
               </Button>
             </div>
+
+            {prefs.linkToken && (
+              <div className="mt-1 rounded-lg border border-dashed border-border p-2.5">
+                <p className="text-xs text-fg-muted">
+                  Button not linking? This happens if you&apos;ve already chatted with
+                  this bot before (e.g. via Vantra) — Telegram doesn&apos;t carry the
+                  link code through in that case. Send this exact message to the bot
+                  instead:
+                </p>
+                <div className="mt-1.5 flex items-center gap-2">
+                  <code className="flex-1 truncate rounded-lg bg-black/5 px-2 py-1.5 font-mono text-[11px] text-fg-muted dark:bg-white/5">
+                    {prefs.linkToken}
+                  </code>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void copyToClipboard(prefs.linkToken ?? "")}
+                  >
+                    Copy
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <p className="mt-2 text-xs text-fg-muted">

@@ -44,6 +44,10 @@ export default async function SettingsPage() {
   // still-valid one so the shown link doesn't churn on every page load) and build
   // the deep link. Unlinked + no username => null (the UI shows a note).
   let connectUrl: string | null = null;
+  // 2026-09-26 (live incident) — Telegram doesn't carry the ?start= payload
+  // through when the user already has a chat with this (shared) bot from
+  // another product; the raw token lets them paste it directly instead.
+  let linkToken: string | null = null;
   if (env.telegramBotUsername && !user.telegramChatId) {
     let token = user.telegramLinkToken;
     if (!token || !parseTelegramLinkToken(token)) {
@@ -55,6 +59,7 @@ export default async function SettingsPage() {
       });
     }
     connectUrl = `https://t.me/${env.telegramBotUsername}?start=${token}`;
+    linkToken = token;
   }
 
   return (
@@ -132,6 +137,7 @@ export default async function SettingsPage() {
               agentActionsEnabled: user.agentActionsEnabled,
               linked: user.telegramChatId !== null,
               connectUrl,
+              linkToken,
             }}
           />
         </div>

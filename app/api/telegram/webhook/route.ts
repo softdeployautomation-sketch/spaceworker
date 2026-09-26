@@ -54,26 +54,31 @@ export async function POST(req: Request) {
   const chatId = message?.chat?.id;
   const text = message?.text?.trim() ?? "";
 
-  // TEMPORARY (2026-09-26 live incident) — a real /start still isn't linking
-  // even after the @username-suffix fix. Logging the raw shape (no secrets:
-  // chat id + message text only) to see what's actually arriving. Remove
-  // once the real cause is found.
-  console.log("[telegram-webhook-debug]", JSON.stringify({ chatId, text, rawUpdate: update }));
-
   // A bot can receive lots of unrelated traffic; only act on a /start with a
-  // link token — everything else is just acknowledged.
+  // link token, or a bare pasted token — everything else is just acknowledged.
   //
-  // 2026-09-26 (live incident): Telegram clients don't always send a bare
-  // "/start <token>" — some paths (confirmed live: a deep link opened from a
-  // browser preview page, not the app) send "/start@BrandappBot <token>"
-  // instead, with the bot's own username appended to the command. The old
-  // regex only matched the bare form, so a real, valid /start silently never
-  // matched — the route still 200'd (everything unmatched just gets
-  // acknowledged), so nothing ever surfaced as an error; the token just sat
-  // unconsumed forever. `(?:@\w+)?` makes the mention suffix optional.
-  const match = /^\/start(?:@\w+)?\s+(.+)$/.exec(text);
-  const token = match ? match[1].trim() : "";
-  if (!chatId || !token) {
+  // 2026-09-26 (live incident, root-caused with temporary payload logging):
+  // when a chat with this shared bot already exists (e.g. the user linked it
+  // to Vantra before), Telegram does NOT carry the deep link's ?start=TOKEN
+  // payload through — re-tapping "Start" on an existing chat sends a bare
+  // "/start" with no argument at all. There is no client-side way to force
+  // the payload through in that case, so the fallback below accepts the raw
+  // token as a plain pasted message too (shown next to the button in Settings
+  // for exactly this situation), and a bare /start with no match gets a reply
+  // pointing at that fallback instead of silently doing nothing.
+  const startMatch = /^\/start(?:@\w+)?\s+(.+)$/.exec(text);
+  const token = startMatch ? startMatch[1].trim() : looksLikeLinkToken(text) ? text : "";
+
+  if (!chatId) {
+    return NextResponse.json({ ok: true });
+  }
+  if (!token) {
+    if (text === "/start" || text.startsWith("/start@")) {
+      await reply(
+        String(chatId),
+        "I didn't get a link code with that — this can happen if you'd already chatted with me before. Copy the code shown in SpaceWorker → Settings → Notifications and send it to me here as a plain message.",
+      );
+    }
     return NextResponse.json({ ok: true });
   }
 
@@ -107,6 +112,14 @@ export async function POST(req: Request) {
   );
 
   return NextResponse.json({ ok: true });
+}
+
+// Matches generateTelegramLinkToken()'s exact shape (base64url random +
+// "." + an expiry epoch in ms) — narrow enough that ordinary chat text never
+// accidentally matches, but permissive enough to accept a pasted token with
+// no "/start" prefix.
+function looksLikeLinkToken(text: string): boolean {
+  return /^[A-Za-z0-9_-]+\.\d{10,}$/.test(text);
 }
 
 async function reply(chatId: string, text: string): Promise<void> {
