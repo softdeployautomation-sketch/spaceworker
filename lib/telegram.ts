@@ -40,6 +40,40 @@ export async function notifyAdmin(text: string): Promise<void> {
  * NotificationLog row (best-effort) so the audit trail shows the attempt.
  */
 export async function sendTelegramMessage(chatId: string, text: string): Promise<void> {
+  return sendTelegramMessageInternal(chatId, text);
+}
+
+// Task 94 — an inline keyboard is just extra JSON on the same sendMessage
+// call (Telegram Bot API `reply_markup.inline_keyboard`, a grid of rows of
+// `{text, url}` buttons — using `url` buttons, not `callback_data`, so the
+// signed approval token can be as long as it needs to be: callback_data is
+// capped at 64 bytes by Telegram itself, far too short for a signed,
+// HMAC'd, expiry-embedded token plus a cuid; a URL has no such limit).
+export interface TelegramInlineButton {
+  text: string;
+  url: string;
+}
+
+export async function sendTelegramMessageWithButtons(
+  chatId: string,
+  text: string,
+  buttonRows: TelegramInlineButton[][],
+): Promise<void> {
+  return sendTelegramMessageInternal(chatId, text, {
+    inline_keyboard: buttonRows.map((row) => row.map((b) => ({ text: b.text, url: b.url }))),
+  });
+}
+
+/**
+ * Thin wrapper around `POST https://api.telegram.org/bot<token>/sendMessage`.
+ * Throws when Telegram is unconfigured or the API returns ok:false. Writes a
+ * NotificationLog row (best-effort) so the audit trail shows the attempt.
+ */
+async function sendTelegramMessageInternal(
+  chatId: string,
+  text: string,
+  replyMarkup?: { inline_keyboard: { text: string; url: string }[][] },
+): Promise<void> {
   const eventType = "telegram_send";
   let outcome: "sent" | "failed" = "sent";
   let errorMessage: string | null = null;
@@ -52,7 +86,11 @@ export async function sendTelegramMessage(chatId: string, text: string): Promise
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, text }),
+      body: JSON.stringify({
+        chat_id: chatId,
+        text,
+        ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+      }),
     });
     const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string };
     if (!res.ok || body.ok !== true) {

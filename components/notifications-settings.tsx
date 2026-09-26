@@ -9,6 +9,7 @@ interface NotificationPrefs {
   notifyEmail: boolean;
   notifyTelegram: boolean;
   notifyAgent: boolean;
+  telegramApprovalsEnabled: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
   linked: boolean;
@@ -126,6 +127,13 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.notifyAgent}
         disabled={busy !== null}
         onToggle={(v) => void patch({ notifyAgent: v }, "Agent chat preference saved")}
+      />
+      <Toggle
+        label="Approvals via Telegram"
+        description="Approve or reject agent proposals right from Telegram — no login needed, one tap."
+        checked={prefs.telegramApprovalsEnabled}
+        disabled={busy !== null || !prefs.linked}
+        onToggle={(v) => void patch({ telegramApprovalsEnabled: v }, "Telegram approvals preference saved")}
       />
       <Toggle
         label="Daily assistant digest"

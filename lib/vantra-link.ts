@@ -7,6 +7,7 @@ import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
 import { recordAgentActionAudit } from "./devices";
+import { notifyPendingActionViaTelegram } from "./agent-approval-notify";
 import {
   executePinRequest,
   startMaintenanceOverlayAction,
@@ -645,6 +646,13 @@ export async function createDeviceActionProposal(opts: {
     sourceDeviceId: device.id,
     detail: { deviceActionId: action.id, ...(opts.payload ?? {}) },
   });
+  // Task 94 — fire-and-forget: a Telegram push failure must never break
+  // proposal creation, which is already complete and approvable from the
+  // web dashboard regardless.
+  void notifyPendingActionViaTelegram({
+    userId: opts.userId,
+    action: { id: pending.id, kind: "device", proposal: pending.proposal ?? null },
+  }).catch(() => {});
   return { actionId: action.id, pendingActionId: pending.id };
 }
 

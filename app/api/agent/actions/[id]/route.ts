@@ -55,12 +55,23 @@ export async function PATCH(
     return NextResponse.json({ ok: true, ...result });
   } catch (err) {
     if (err instanceof AgentActionError) {
-      // If execution failed after claiming (e.g. no mailboxes configured), free
-      // the proposal back up so the user can fix the blocker and retry.
-      await prisma.agentPendingAction.updateMany({
-        where: { id, userId: session.userId, status: "approved" },
-        data: { status: "pending" },
-      });
+      // TASK_94 fix (found by lib/agent-approval-executor.ts's own test
+      // suite, same pattern copied here) — "not_pending" means OUR OWN
+      // atomic claim above found the row already not-pending and changed
+      // NOTHING; there is no stray "approved" claim of ours to free back
+      // up. Reverting unconditionally is a real race: if a DIFFERENT
+      // request concurrently WON the claim (row genuinely "approved" by
+      // them, mid-execution) while this request's own attempt lost and
+      // threw "not_pending", the blind revert would un-claim the WINNING
+      // request's row back to "pending" — letting a third attempt execute
+      // the same proposal again. Only revert for an error that happened
+      // AFTER a successful claim (i.e. anything that isn't "not_pending").
+      if (err.code !== "not_pending") {
+        await prisma.agentPendingAction.updateMany({
+          where: { id, userId: session.userId, status: "approved" },
+          data: { status: "pending" },
+        });
+      }
       return NextResponse.json({ error: err.message, code: err.code }, { status: err.status });
     }
     throw err;

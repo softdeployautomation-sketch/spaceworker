@@ -41,6 +41,13 @@ model User {
   notifyEmail              Boolean                @default(true)
   notifyTelegram           Boolean                @default(false)
   notifyAgent              Boolean                @default(true)
+  // Task 94 — a SEPARATE toggle from notifyTelegram: that one is "send me
+  // event notifications there", this one is "let me approve/reject agent
+  // proposals from Telegram". Default off until linked (same reasoning as
+  // notifyTelegram) — a user who's never touched Settings sees no behavior
+  // change; the deep-link push only ever fires when both this AND a linked
+  // telegramChatId are true.
+  telegramApprovalsEnabled Boolean                @default(false)
   telegramChatId           String?
   telegramLinkToken        String?
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing

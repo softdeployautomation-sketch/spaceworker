@@ -11,6 +11,7 @@ import {
   type DiagnosticsProbeOutcome,
 } from "@/lib/deliverability";
 import type { AgentActionKind } from "@/lib/agent-executor";
+import { notifyPendingActionViaTelegram } from "@/lib/agent-approval-notify";
 
 // Task 31, item 3 — the Automations "Ask the agent" feature.
 //
@@ -804,6 +805,14 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
     payload: processed.payload,
     proposal: reply || null,
   });
+
+  // Task 94 — fire-and-forget: a Telegram push failure must never break the
+  // agent's own reply, the proposal already exists and is approvable from
+  // the web dashboard regardless.
+  void notifyPendingActionViaTelegram({
+    userId: opts.userId,
+    action: { id: pendingAction.id, kind: pendingAction.kind, proposal: pendingAction.proposal },
+  }).catch(() => {});
 
   return {
     reply,

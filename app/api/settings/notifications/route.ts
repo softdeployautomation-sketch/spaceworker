@@ -22,6 +22,8 @@ const schema = z
     notifyEmail: z.boolean().optional(),
     notifyTelegram: z.boolean().optional(),
     notifyAgent: z.boolean().optional(),
+    // Task 94 — a SEPARATE toggle from notifyTelegram (see schema comment).
+    telegramApprovalsEnabled: z.boolean().optional(),
     digestEnabled: z.boolean().optional(),
     deviceTelemetryEnabled: z.boolean().optional(),
     unlink: z.boolean().optional(),
@@ -32,6 +34,7 @@ const schema = z
       v.notifyEmail !== undefined ||
       v.notifyTelegram !== undefined ||
       v.notifyAgent !== undefined ||
+      v.telegramApprovalsEnabled !== undefined ||
       v.digestEnabled !== undefined ||
       v.deviceTelemetryEnabled !== undefined ||
       v.unlink === true ||
@@ -59,6 +62,9 @@ export async function PATCH(request: Request) {
   if (parsed.notifyEmail !== undefined) data.notifyEmail = parsed.notifyEmail;
   if (parsed.notifyTelegram !== undefined) data.notifyTelegram = parsed.notifyTelegram;
   if (parsed.notifyAgent !== undefined) data.notifyAgent = parsed.notifyAgent;
+  if (parsed.telegramApprovalsEnabled !== undefined) {
+    data.telegramApprovalsEnabled = parsed.telegramApprovalsEnabled;
+  }
   // Task 92 — assistant foundation master toggles.
   if (parsed.digestEnabled !== undefined) data.digestEnabled = parsed.digestEnabled;
   if (parsed.deviceTelemetryEnabled !== undefined) {
@@ -71,6 +77,10 @@ export async function PATCH(request: Request) {
     // so this is the single source of truth for "not linked".
     data.telegramChatId = null;
     data.telegramLinkToken = null;
+    // Task 94 — meaningless without a linked chat (notifyPendingActionViaTelegram
+    // already checks telegramChatId too, but reset it so Settings doesn't show
+    // "on" for a toggle that can't fire anything).
+    data.telegramApprovalsEnabled = false;
   }
 
   if (parsed.regenerate === true) {
@@ -86,6 +96,7 @@ export async function PATCH(request: Request) {
       notifyEmail: true,
       notifyTelegram: true,
       notifyAgent: true,
+      telegramApprovalsEnabled: true,
       digestEnabled: true,
       deviceTelemetryEnabled: true,
       telegramChatId: true,
@@ -108,6 +119,7 @@ export async function PATCH(request: Request) {
       notifyEmail: updated.notifyEmail,
       notifyTelegram: updated.notifyTelegram,
       notifyAgent: updated.notifyAgent,
+      telegramApprovalsEnabled: updated.telegramApprovalsEnabled,
       digestEnabled: updated.digestEnabled,
       deviceTelemetryEnabled: updated.deviceTelemetryEnabled,
       linked,
