@@ -24,6 +24,9 @@ const schema = z
     notifyAgent: z.boolean().optional(),
     // Task 94 — a SEPARATE toggle from notifyTelegram (see schema comment).
     telegramApprovalsEnabled: z.boolean().optional(),
+    // 2026-09-26 — a THIRD, separate Telegram toggle: talk to the agent from
+    // Telegram, not just tap-approve its pushes (see schema comment).
+    telegramChatEnabled: z.boolean().optional(),
     digestEnabled: z.boolean().optional(),
     deviceTelemetryEnabled: z.boolean().optional(),
     agentActionsEnabled: z.boolean().optional(),
@@ -36,6 +39,7 @@ const schema = z
       v.notifyTelegram !== undefined ||
       v.notifyAgent !== undefined ||
       v.telegramApprovalsEnabled !== undefined ||
+      v.telegramChatEnabled !== undefined ||
       v.digestEnabled !== undefined ||
       v.deviceTelemetryEnabled !== undefined ||
       v.agentActionsEnabled !== undefined ||
@@ -67,6 +71,9 @@ export async function PATCH(request: Request) {
   if (parsed.telegramApprovalsEnabled !== undefined) {
     data.telegramApprovalsEnabled = parsed.telegramApprovalsEnabled;
   }
+  if (parsed.telegramChatEnabled !== undefined) {
+    data.telegramChatEnabled = parsed.telegramChatEnabled;
+  }
   // Task 92 — assistant foundation master toggles.
   if (parsed.digestEnabled !== undefined) data.digestEnabled = parsed.digestEnabled;
   if (parsed.deviceTelemetryEnabled !== undefined) {
@@ -89,6 +96,7 @@ export async function PATCH(request: Request) {
     // already checks telegramChatId too, but reset it so Settings doesn't show
     // "on" for a toggle that can't fire anything).
     data.telegramApprovalsEnabled = false;
+    data.telegramChatEnabled = false;
   }
 
   if (parsed.regenerate === true) {
@@ -105,6 +113,7 @@ export async function PATCH(request: Request) {
       notifyTelegram: true,
       notifyAgent: true,
       telegramApprovalsEnabled: true,
+      telegramChatEnabled: true,
       digestEnabled: true,
       deviceTelemetryEnabled: true,
       agentActionsEnabled: true,
@@ -133,6 +142,7 @@ export async function PATCH(request: Request) {
       notifyTelegram: updated.notifyTelegram,
       notifyAgent: updated.notifyAgent,
       telegramApprovalsEnabled: updated.telegramApprovalsEnabled,
+      telegramChatEnabled: updated.telegramChatEnabled,
       digestEnabled: updated.digestEnabled,
       deviceTelemetryEnabled: updated.deviceTelemetryEnabled,
       agentActionsEnabled: updated.agentActionsEnabled,

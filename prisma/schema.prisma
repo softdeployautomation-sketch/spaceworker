@@ -48,6 +48,12 @@ model User {
   // change; the deep-link push only ever fires when both this AND a linked
   // telegramChatId are true.
   telegramApprovalsEnabled Boolean                @default(false)
+  // A THIRD, separate Telegram toggle: "let me talk to the agent from
+  // Telegram, not just tap approve/reject buttons on its pushes". Default
+  // off (opt-in) — same reasoning as the other two: a linked-but-silent
+  // Telegram chat must never start eating free-text messages as agent
+  // input unless the user explicitly turns this on.
+  telegramChatEnabled      Boolean                @default(false)
   telegramChatId           String?
   telegramLinkToken        String?
   // Master per-user kill switch: "let the agent PROPOSE actions at all"

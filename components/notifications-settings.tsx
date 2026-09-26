@@ -11,6 +11,7 @@ interface NotificationPrefs {
   notifyTelegram: boolean;
   notifyAgent: boolean;
   telegramApprovalsEnabled: boolean;
+  telegramChatEnabled: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
   agentActionsEnabled: boolean;
@@ -137,6 +138,13 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.telegramApprovalsEnabled}
         disabled={busy !== null || !prefs.linked}
         onToggle={(v) => void patch({ telegramApprovalsEnabled: v }, "Telegram approvals preference saved")}
+      />
+      <Toggle
+        label="Chat with the agent on Telegram"
+        description="Message the bot directly and get real answers back — the same agent as the dashboard chat, same daily AI limit applies. Off by default: a linked chat won't read your messages as agent input unless you turn this on."
+        checked={prefs.telegramChatEnabled}
+        disabled={busy !== null || !prefs.linked}
+        onToggle={(v) => void patch({ telegramChatEnabled: v }, "Telegram chat preference saved")}
       />
       <Toggle
         label="Daily assistant digest"

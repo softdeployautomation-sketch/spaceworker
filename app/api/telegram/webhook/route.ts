@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { runAgentTurn } from "@/lib/agent";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import {
@@ -72,17 +73,39 @@ export async function POST(req: Request) {
   if (!chatId) {
     return NextResponse.json({ ok: true });
   }
+  const chatIdStr = String(chatId);
+
   if (!token) {
     if (text === "/start" || text.startsWith("/start@")) {
       await reply(
-        String(chatId),
+        chatIdStr,
         "I didn't get a link code with that — this can happen if you'd already chatted with me before. Copy the code shown in SpaceWorker → Settings → Notifications and send it to me here as a plain message.",
       );
+      return NextResponse.json({ ok: true });
+    }
+
+    // 2026-09-26 — a THIRD Telegram capability, opt-in and separate from
+    // both notifyTelegram (push notifications) and telegramApprovalsEnabled
+    // (tap-to-approve buttons): free text from an already-linked chat runs
+    // through the exact same agent pipeline the web dashboard chat uses, so
+    // proposals it creates still go through the ordinary approval gate --
+    // this is a second SURFACE for the same agent, not a new action path.
+    if (text.length > 0) {
+      const chatUser = await db.user.findFirst({
+        where: { telegramChatId: chatIdStr },
+        select: { id: true, telegramChatEnabled: true },
+      });
+      if (chatUser?.telegramChatEnabled) {
+        try {
+          const result = await runAgentTurn({ userId: chatUser.id, message: text });
+          await reply(chatIdStr, result.reply);
+        } catch {
+          await reply(chatIdStr, "Something went wrong on my end — try again in a moment.");
+        }
+      }
     }
     return NextResponse.json({ ok: true });
   }
-
-  const chatIdStr = String(chatId);
 
   // Reject expired / malformed tokens (shape includes an embedded expiry).
   const parsed = parseTelegramLinkToken(token);
