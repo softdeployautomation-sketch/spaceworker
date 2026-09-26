@@ -39,6 +39,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Runs before anything expensive, on every push AND on the manual deploy
+      # dispatch, so a broken `run:` block can never reach a production deploy
+      # again. See the script's own header for the 2026-09-25 incident this
+      # guards (unbalanced quote in the deploy step -> exit 2 mid-deploy, with
+      # extraction-worker left stopped and the following step skipped).
+      - name: Validate workflow shell syntax
+        run: node scripts/check-workflow-syntax.mjs
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -62,6 +70,15 @@ jobs:
           # are NOT inlined by Next.js (unlike NEXT_PUBLIC_* vars), so the
           # deployed server reads the VPS's own real .env again at actual
           # runtime — no real secret is ever baked into this CI build.
+          #
+          # VERIFIED 2026-09-25, not assumed: `grep -rl ci-placeholder.invalid
+          # /opt/spaceworker/.next` on the deployed host returns nothing, i.e.
+          # this placeholder really does not reach production. (It matters:
+          # env.appBaseUrl feeds the one-click device-setup bundle base, the
+          # PIN callback URL, campaign links and licence links — a baked
+          # placeholder would break all four.) Keep APP_BASE_URL out of
+          # NEXT_PUBLIC_* and out of next.config's inlined values, or this
+          # stops being true.
           NODE_ENV: production
           DATABASE_URL: "postgresql://ci:ci@localhost:5432/ci_placeholder"
           SESSION_SECRET: "ci-placeholder-secret"
@@ -145,7 +162,24 @@ jobs:
 
       - name: Extract, migrate, restart all three services
         run: |
-          ssh -i ~/.ssh/vps_key root@164.68.105.96 '
+          # READ BEFORE EDITING — the remote script is delivered on stdin through a
+          # QUOTED heredoc (<<'REMOTE_EOF'). That quoting is load-bearing: it stops
+          # the runner's shell from parsing the body at all, so apostrophes in the
+          # prose below are ordinary text.
+          #
+          # 2026-09-25 (live incident, deploy run died with exit 2): this step used
+          # to pass the body as a single-quoted ssh ARGUMENT. Inside such a string a
+          # `#` comment is NOT a comment — it is literal text — so the apostrophes in
+          # the comments further down ("venv's", "bin/pip's") were parsed as quote
+          # delimiters. The third one closed the string early, which sent the pip
+          # install and the worker start ONTO THE GITHUB RUNNER ("sudo: unknown user
+          # trmm", "Interactive authentication required"), and the trailing quote
+          # then opened an unterminated string — "unexpected EOF while looking for
+          # matching `'`", exit 2 — leaving extraction-worker stopped. Reproduced
+          # offline with `bash -n` on the parser-extracted script.
+          #
+          # Do NOT "simplify" this back to `ssh host '...'`; that is the bug.
+          ssh -i ~/.ssh/vps_key root@164.68.105.96 'bash -s' <<'REMOTE_EOF'
             set -e
             # Stop the live services BEFORE touching any files on disk. The old
             # version of this step extracted the new build directly on top of
@@ -187,7 +221,7 @@ jobs:
             curl -s -o /dev/null -w "HTTP %{http_code}\n" https://spaceworker.top/dashboard
             # extraction-worker is intentionally isolated below: its own venv
             # lives at /opt/spaceworker-worker-venv (matching the systemd
-            # unit'"'"'s ExecStart — NOT /opt/spaceworker/worker/venv, which
+            # unit's ExecStart — NOT /opt/spaceworker/worker/venv, which
             # does not exist), and a failure here must stay non-fatal so a
             # broken worker dependency can never take the main app down again.
             # `python -m pip`, not the venv's own bin/pip script directly:
@@ -204,7 +238,7 @@ jobs:
             systemctl start extraction-worker || echo "::warning::extraction-worker failed to start — main app unaffected"
             sleep 2
             systemctl is-active extraction-worker || echo "::warning::extraction-worker is not active after deploy"
-          '
+          REMOTE_EOF
 
       - name: Install systemd timer units (mail-queue-drain, dispatcher, payment-verify, automations-sweep)
         run: |
@@ -223,7 +257,11 @@ jobs:
           # Substitutes the real INTERNAL_BEARER_TOKEN from the VPS .env, then
           # (re)starts every timer so a new tracker is picked up on deploy.
           # Idempotent — safe to re-run.
-          ssh -i ~/.ssh/vps_key root@164.68.105.96 '
+          # Same quoted-heredoc rule as the deploy step above — see the comment
+          # there. The body is passed to the remote bash on stdin, so nothing in
+          # it (including ${INTERNAL}, which must expand ON THE VPS) is touched by
+          # the runner's shell.
+          ssh -i ~/.ssh/vps_key root@164.68.105.96 'bash -s' <<'REMOTE_EOF'
             set -e
             INTERNAL=$(grep ^INTERNAL_BEARER_TOKEN= /opt/spaceworker/.env | head -n1 | cut -d= -f2-)
             if [ -z "$INTERNAL" ]; then echo "WARNING: INTERNAL_BEARER_TOKEN not found in .env" >&2; fi
@@ -238,7 +276,7 @@ jobs:
               systemctl restart "$t.timer" 2>/dev/null || systemctl start "$t.timer" || true
             done
             systemctl is-active automations-sweep.timer || true
-          '
+          REMOTE_EOF
 
       - name: Clean up SSH key
         if: always()
