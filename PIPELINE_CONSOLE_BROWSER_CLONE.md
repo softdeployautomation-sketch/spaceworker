@@ -61,6 +61,8 @@
 | B9-B | `TASK_119B_LIVE_SESSION_EXTENSION.md` | **PATH B — the extension half (Cline).** `chrome.cookies.getAll()` in the MV3 service worker — the ONLY route that survives Windows App-Bound Encryption (F10/F11/F12) because it reads in-process; `cookies` permission **+** `host_permissions: ["<all_urls>"]` per the owner's all-sites decision (**no domain picker is built**); chunked <=1 MiB native messages; a `capture_cookies` command in `cmd/native-host` that accumulates chunks and makes one POST; counts-only everywhere (**no value in any log, UI or error**); and `Test-CookieCapture.ps1` proving capture on a **disposable login only**, runnable WITHOUT Path A deployed. | B7 (contract frozen in B9-A) | **RECORDED — for pick-up (Cline)** |
 | B10 | `TASK_120_LIVE_CAPTURE_SEAMLESS_SETUP.md` | **"Carry my session" must install itself** — the console offers `live` only when `liveCaptureReady` is true, but the extension + native host were **never delivered**: `ROLE_ARTIFACTS.source` (`lib/clone-setup.ts:68-77`) omits `clone-native-host.exe`/`install-registry.ps1`, `engine-dist/manifest.json` ships neither (9 entries, none of them), and `install-registry.ps1` — the only thing that registers the native-messaging host — is **invoked nowhere**, so the flag can only ever be false and there is **no in-product path** to satisfy it (exactly what the owner hit). Route **CORRECTED 2026-09-25** after the owner rejected `ExtensionInstallForcelist`: it means **"Users can't remove it"** + a **permanent** "Managed by your organization" badge (a property of the BROWSER, not the session), and a self-hosted CRX is **impossible on Windows** (Chrome 33+). Now: **Chrome Web Store listing + registry `update_url`** (silent, **no policy, no badge**, user-removable) with the flow **un-blocked first** while no listing exists. Plus: persist each setup run (`DeviceSetupRun`) so activity survives a reload/deploy, **per-section expandable** activity, and **one button → running signed-in clone** | B9-B | **RECORDED 2026-09-25** · route corrected, not started |
 | B10-pend | `TASK_120_LIVE_CAPTURE_SEAMLESS_SETUP.md` → §PENDING | **Chrome Web Store listing — the one step that cannot be done in code.** $5 developer account, upload the extension zip, the four listing tabs (privacy / distribution / store listing / test instructions), review, then the **extension ID + published version into config**. Until it lands, setup reports `SKIP:store_listing_pending` (counts as a **PASS**, so nothing is blocked) and the console offers `fresh`; the extension section reads "not needed yet". **This is route B on purpose — NOT the policy route:** an `ExtensionInstallForcelist` policy badge is a property of the BROWSER (not the session), is **permanent**, says **"Managed by your organization"**, is a signal Google tells users to remove, and the extension **cannot be uninstalled by the user**. A self-hosted CRX is **impossible on Windows** (Chrome 33+ requires `update_URL` on the Web Store). Registry `update_url` needs no policy, no badge, and is user-removable; it takes effect at the **next Chrome start** (no supported way to force it sooner) | B10-2 | **PENDING — OWNER GATE** · externally blocked (account + review); no code can start it |
+| B11 | `TASK_122_PUBLIC_LINK_CLOSEOUT.md` | **The public ZIP that never mints + the link host** — production runs a **hybrid** (new client bundle, **old server**): the TASK_121 naming UI is live in the built chunk, but `lib/vantra-link.ts` has no `installerUrl`/`installerNames` and `mintInstallLink` is still `(userId, kind)`, so the client's `{kind, names}` is **silently dropped** and the **legacy exe** link is minted instead — and the naming card has **no action of its own** (the panel shows Copy link / New link because `installUrl` is already set). Separately the link host is welded to `APP_BASE_URL`, which `spaceworker.instaweb.top` cannot replace because **that name does not resolve** (`http=000`). Fixes: expose `installerKind`/`installerNames` on the view so a silent drop is visible; a new `PUBLIC_LINK_BASE_URL` (default `appBaseUrl`) to decouple the link host from the other 10 call sites; the naming card gets its own Generate/Regenerate action and shows the artifact kind | TASK_121, TASK_104 | **RECORDED 2026-09-26 — for pick-up** (PATH A = Claude, the bigger half; PATH B = Cline, merge + deploy + verify) |
+
 
 
 
@@ -572,4 +574,38 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
   Nothing is deployed in either repo and the migration is **not** applied, so any deploy of `main` must run
   `prisma migrate deploy` first — the GitHub Actions deploy job does it automatically, `scripts/deploy-vps.sh`
   does **not**.
+
+
+- 2026-09-26 — **B11 RECORDED (`TASK_122_PUBLIC_LINK_CLOSEOUT.md`) — the public ZIP never mints, and the
+  link host has no DNS.** Two owner reports, one shape: *the client half shipped, the server half did not.*
+
+  **Measured, not inferred.** Production is a **hybrid**. The TASK_121 naming UI **is** live in the built
+  bundle (`.next/static/chunks/1er4e1wmj_czg.js`, mtime `03:39:59`, `BUILD_ID` `03:40:11`, referenced in
+  `route-bundle-stats.json`) — but `/opt/spaceworker/lib/vantra-link.ts` has **0** occurrences of
+  `installerUrl`, `mintInstallLink` is still `(userId, kind)` (lines 214-217), and the install-link route
+  has **0** references to `installer`. **The database is already right**: `npx prisma migrate status` →
+  `Database schema is up to date!` (49 migrations; the three columns are nullable so old code ignores them).
+  So the client POSTs `{ kind, names: {…} }` (`components/device-list.tsx:208`), the **old server silently
+  drops `names`** and mints the **legacy exe** link with a 200 and no error. That is the entire "no zip
+  link" symptom. The reason there is also no *button*: `installUrl` is already set, so the panel renders the
+  else-branch (`Copy link` / `New link`) and the naming card has **no action of its own**.
+
+  **The domain report is correct but cannot be satisfied directly.** The link host comes from
+  `env.appBaseUrl` (`lib/vantra-link.ts:346,352`), and `spaceworker.instaweb.top` **does not resolve**
+  (`curl` → `http=000`, no IP). Contrast, all on `164.68.105.96`: `agent.instaweb.top` → 200,
+  `spaceworker.top` → 200, `dl.instaweb.top` → 404, `instaweb.top` → 520. So the link stays on
+  `spaceworker.top` until DNS + vhost + TLS exist for the instaweb name — and because `APP_BASE_URL` feeds
+  **11** call sites (PIN callback, campaign links, licence links, setup-bundle base), the link host is
+  decoupled via a new **`PUBLIC_LINK_BASE_URL`** (default `appBaseUrl`) rather than repointing
+  `APP_BASE_URL` wholesale.
+
+  **Split.** **PATH A (Claude — the bigger half):** `lib/vantra-link.ts` + `lib/env.ts` +
+  `components/device-list.tsx` + `tests/vantra-link-installer.test.ts` — expose
+  `installerKind`/`installerNames` on the view so a silent drop is **visible**, add
+  `PUBLIC_LINK_BASE_URL`, and give the naming card its own Generate/Regenerate action that shows the
+  artifact kind. **PATH B (Cline):** the ops closeout — push `agent/task-104-launcher-backend` (still
+  **local-only**), merge it and `agent/task-103-104-console-ui` to `main`, deploy (**`scripts/deploy-vps.sh`
+  does not run migrations** — run `prisma migrate deploy` explicitly first), then verify the ZIP mint, the
+  launcher routes and the console on `Sc`. **Owner gate:** DNS for `spaceworker.instaweb.top`. Nothing
+  deployed; `WilkSF9` untouched.
 
