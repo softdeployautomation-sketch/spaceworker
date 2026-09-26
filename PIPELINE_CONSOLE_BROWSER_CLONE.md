@@ -217,7 +217,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 | GATE-1 | **B10-pend** Chrome Web Store listing | $5 developer account + a **public publisher name**, upload `engine/extension/` as a zip, the four listing tabs, review, then extension ID + version into config. Until it lands `SKIP:store_listing_pending` **passes**, so **nothing is blocked** |
 | GATE-2 | **TASK_102 Phase 4** | retire `agent.spaceworker.top` / `api.spaceworker.top`; parked on Wilk’s registry move. **DO NOT CLOSE** |
 | ~~GATE-3~~ | **OOB-1 / TASK_113 apply — DONE 2026-09-26** | ~~back up the DB, run `prisma migrate deploy` for the FK fix~~ done, see BUILD-3 |
-| GATE-4 | Old backlog the owner still owns | `TASK_93` Vantra plugin · `TASK_94` Telegram approvals · `TASK_95` devices parity · `TASK_99` module store · `TASK_100` repositioning · `TASK_101` account/staff parity · `TASK_TIER1` trial. **Pre-existing — not clone-pipeline fallout** |
+| GATE-4 | Old backlog the owner still owns | `TASK_93` Vantra plugin (live) · `TASK_94` Telegram approvals · `TASK_95` devices parity · `TASK_99` module store (**not built** — the actual product MK1-4's copy sells) · ~~`TASK_100` repositioning~~ **DONE 2026-09-26** · `TASK_101` account/staff parity · `TASK_TIER1` trial. **Pre-existing — not clone-pipeline fallout** |
 
 ### Corrected in this consolidation (rows that had gone stale)
 
