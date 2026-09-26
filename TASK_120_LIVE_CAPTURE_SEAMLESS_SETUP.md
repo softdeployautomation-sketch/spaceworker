@@ -1,5 +1,13 @@
 # Task 120 (bit B10) — "Carry my session" must install itself: silent setup + visible per-section activity
 
+**Status: DEFERRED (owner, 2026-09-26) — "i dont think the clone is necessary for now, we
+can close that and allow michael fix it himself whenever he got time."** Not urgent, not
+assigned to an agent. Michael owns this whenever he has time (matches the plan's own
+"natural Michael track" — browser-clone profile-capture/extension work, PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md
+§WORKFLOW). Live Browser Clone capture stays unavailable until this lands
+(`live-capture-capability` keeps reporting "native host not detected" — confirmed 2026-09-26
+via `Sc`'s own device setup run), but that is accepted as fine for now.
+
 Owner request, 2026-09-25 (verbatim): *"to select carry my session, it wants the extension, but when i
 tried to install the extension, your rebuild came in, don't know if it was installed… is there a way to
 show the activity and maybe a drop down to show all the necessary steps passed, for each section, to go

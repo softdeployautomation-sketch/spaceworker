@@ -1,15 +1,30 @@
 # Task 105 — Resource Governor: automatic queue for every high-RAM feature
 
-**Status: NOT STARTED — build alongside TASK_97 (the Browser Clone pipeline is the
-first consumer). Owner-directed 2026-10-01.**
+**Status: READY FOR BUILD — assigned to Cline, 2026-09-26 (owner priority pick).**
+TASK_97 (Browser Clone) is already merged and live, so this is no longer "build
+alongside" anything — `cloneSessions`/the hosted pool already exist as a real,
+running feature to register and wire against from day one. TASK_120 (native-host
+delivery, the OTHER open clone item) is separately deferred to Michael's own track —
+do not conflate the two; this task does not depend on it.
 **Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §CROSS-TRACK RULE 7 (admin limits),
 `DESIGN_BROWSER_CLONE_UI_AND_FLOW.md` §7 (pooled host + admin cap).**
 
 ## Read first (mandatory)
-- **`HOW_WE_MOVE_FAST.md`** §0–§3 — migrations, deploy, live verification.
+- **`HOW_WE_MOVE_FAST.md`** §0–§3 — migrations, deploy, live verification (and §6b's
+  post-migration drift check if this task adds a queue table — always run it).
 - **`app/api/admin/admission-control/route.ts`** + its `AdminSetting` fields — the
   existing pattern this task generalises (enabled + maxConcurrent + LIVE counts).
 - **`PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`** §CROSS-TRACK RULE 7.
+
+## Agent contract
+Commit only — no deploy, no ssh, no `.env`. Branch `agent/task-105-resource-governor`.
+Hand-write any migration SQL (never `migrate dev`), mirroring the style of existing
+migrations in `prisma/migrations/`. Never write PowerShell/JSX through a shell
+heredoc. Explicit file paths, never `git add -A`. `npx tsc --noEmit` clean before
+reporting done. End the run by reporting: files changed, `tsc`/test output, and
+anything you could not verify locally (this task's own acceptance list requires live
+verification — e.g. "queued request survives `systemctl restart`" — that only the
+owner can run against the real VPS; say so plainly rather than claiming it).
 
 ## Goal
 One **server-side governor** that watches real resource pressure and **queues** any
