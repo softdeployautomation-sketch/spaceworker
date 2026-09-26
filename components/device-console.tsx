@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
+  AppWindow,
   ArrowLeft,
   ChevronDown,
   ChevronRight,
@@ -17,6 +18,7 @@ import {
   Monitor,
   Power,
   RotateCcw,
+  Search,
   ShieldCheck,
   Terminal,
   Trash2,
@@ -366,6 +368,20 @@ export function DeviceConsole({
       // non-fatal — tab still switches, just not persisted
     }
   }, []);
+
+  // TASK_103 NEW-3 — the live remote session must survive a tab switch.
+  //
+  // Why (owner-reported, verified in the code): the MeshCentral viewer URL
+  // carries a ONE-TIME `login=` token. The old conditional render destroyed the
+  // iframe on the way to Summary and rebuilt it on the way back, replaying an
+  // already-spent token — MeshCentral correctly answered "Unable to perform
+  // authentication" for a session that had been working seconds earlier.
+  //
+  // The fix is in the render below (`ControlTab` is now always mounted and only
+  // hidden with CSS) rather than a "mounted once" flag: a flag would need
+  // setState inside an effect, and `react-hooks/set-state-in-effect` is right to
+  // reject that. Always-mounted costs nothing — ControlTab holds only local UI
+  // state and has no on-mount fetch.
 
   const [proposals, setProposals] = useState<ProposalState[]>([]);
   const [mesh, setMesh] = useState<MeshUrls | null>(null);
@@ -1171,8 +1187,17 @@ export function DeviceConsole({
 
       {/* --------------------- the ScreenConnect-style session window */}
       <div className="overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-lg">
-        {/* title bar: dots · session name · live status lamp */}
-        <div className="flex items-center justify-between gap-3 border-b border-border bg-black/20 px-4 py-3 dark:bg-black/40">
+        {/* title bar: dots · session name · live status lamp.
+            TASK_103 NEW-2 — full-screen shows ONLY the toolbox line + the
+            screen, so this chrome is hidden there (owner: "just the one line
+            for our tools with it. Apart from that, nothing else should show").
+            `hidden`, not a conditional: it holds no session state. */}
+        <div
+          className={cn(
+            "flex items-center justify-between gap-3 border-b border-border bg-black/20 px-4 py-3 dark:bg-black/40",
+            fullScreen && "hidden",
+          )}
+        >
           <div className="flex min-w-0 items-center gap-3">
             <WindowDots />
             <span className="truncate font-mono text-sm font-medium text-fg">
@@ -1213,8 +1238,14 @@ export function DeviceConsole({
           </span>
         </div>
 
-        {/* tab strip */}
-        <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-3 py-2">
+        {/* tab strip — TASK_103 NEW-2: hidden in full-screen, where there is
+            exactly ONE view (the screen), so a strip would only be a way out. */}
+        <div
+          className={cn(
+            "flex items-center gap-1 overflow-x-auto border-b border-border px-3 py-2",
+            fullScreen && "hidden",
+          )}
+        >
           {TABS.map(([key, label, Icon]) => (
             <button
               key={key}
@@ -1232,9 +1263,10 @@ export function DeviceConsole({
           ))}
         </div>
 
-        {/* tab body */}
-        <div className="space-y-4 p-4">
-          {tab === "summary" && (
+        {/* tab body — full-screen drops the padding so the screen itself can
+            claim the full viewport height (TASK_103 NEW-1). */}
+        <div className={cn("space-y-4 p-4", fullScreen && "space-y-0 p-0")}>
+          {!fullScreen && tab === "summary" && (
             <SummaryTab
               device={device}
               loaded={loaded}
@@ -1246,8 +1278,16 @@ export function DeviceConsole({
               goToCloneTab={() => setTab("clone")}
             />
           )}
-          {tab === "control" && (
+          {/* TASK_103 NEW-3 — ALWAYS mounted, never behind a
+              `tab === "control" && …`, and hidden with CSS when another tab is
+              showing. Tearing it down is what spent the MeshCentral login token
+              and broke the session on a tab round trip.
+              Visible on Control in embedded mode; in full-screen it is the only
+              view that renders at all (NEW-2), whatever `tab` says. */}
+          <div className={fullScreen || tab === "control" ? undefined : "hidden"}>
             <ControlTab
+              deviceId={deviceId}
+              fullScreen={fullScreen}
               isOnline={!!isOnline}
               mesh={mesh}
               meshErr={meshErr}
@@ -1263,8 +1303,8 @@ export function DeviceConsole({
               goToClone={() => setTab("clone")}
               lastSeenAt={device?.lastSeenAt ?? null}
             />
-          )}
-          {tab === "command" && (
+          </div>
+          {!fullScreen && tab === "command" && (
             <CommandTab
               queue={queue}
               cmd={cmd}
@@ -1289,7 +1329,7 @@ export function DeviceConsole({
               runAgentVisibility={runAgentVisibility}
             />
           )}
-          {tab === "clone" && (
+          {!fullScreen && tab === "clone" && (
             <CloneTab
               clones={clones}
               loaded={clonesLoaded}
@@ -1317,14 +1357,18 @@ export function DeviceConsole({
               onOpen={openCloneSession}
             />
           )}
-          {tab === "activity" && <ActivityTab activity={activity} />}
+          {!fullScreen && tab === "activity" && <ActivityTab activity={activity} />}
 
           {/* PIN panel — Remote-control scoped ONLY. It must never render under
               the Command tab (owner 2026-09-24: "pin request show under
               command tab, i think thats a leak"). The Command tab keeps its
               own "Queue PIN collect" card for offline scheduling; the live
-              request/collect panel lives here, on Remote control. */}
-          {tab === "control" && (
+              request/collect panel lives here, on Remote control.
+              TASK_103 NEW-2 also excludes it from full-screen: the owner asked
+              for "just the one line for our tools … even the PIN request modal
+              shouldn't be in the remote, since it's already in the tools" —
+              PIN collect lives in the Security toolbox menu there. */}
+          {!fullScreen && tab === "control" && (
           <PinPanel
             pins={pins}
             pinLen={pinLen}
@@ -2011,6 +2055,43 @@ function ToolboxItem({
 }
 
 // ---- Remote control --------------------------------------------------------
+// TASK_104 §1/§2 (PATH A's routes) — the silent app launcher's client side.
+// `key` is the only thing ever sent as a launch target: the server re-resolves
+// it against its OWN cached catalog for this device, so a value tampered with
+// here cannot become an arbitrary launch. `path` is displayed for
+// disambiguation only and is never sent.
+type LauncherApp = { key: string; name: string; path: string };
+
+// Mirrors lib/device-tools.ts's two literals (LAUNCH_URL_RE / LAUNCH_PATH_RE)
+// so "open this as a URL / as a path" is only ever OFFERED when the server
+// would accept it. The server still re-validates — this is UX, not the gate.
+function classifyOpenTarget(raw: string): { kind: "url" | "path"; value: string } | null {
+  if (/^https:\/\/[a-z0-9.-]+(:[0-9]{1,5})?(\/[a-z0-9\-._~:/?#[\]@!$&'()*+,;=%]*)?$/i.test(raw)) {
+    return { kind: "url", value: raw };
+  }
+  if (/^[A-Za-z]:\\[^"'`$;&|<>(){}[\]\r\n]{1,240}$/.test(raw) && !raw.includes("..")) {
+    return { kind: "path", value: raw };
+  }
+  return null;
+}
+
+// The launch route's documented failure codes, in the operator's words. Raw
+// codes are still shown for anything unmapped (minus any v tantra_<n>: prefix),
+// so a new server-side reason is never swallowed.
+function launchErrorText(code: string): string {
+  switch (code) {
+    case "unknown_launch_target":
+      return "That app isn't in this device's list — re-scan and try again.";
+    case "bad_target":
+      return "That isn't an app, an absolute path, or an https:// link.";
+    case "device_not_linked":
+      return "This device isn't linked to your account.";
+    case "device_offline":
+      return "The device is offline — nothing was queued.";
+    default:
+      return code.replace(/^vantra_\d+:\s*/, "") || "Couldn't open that on the device.";
+  }
+}
 // 2026-10 owner follow-up: MANUAL connect is a normal action — no approval.
 // The approval-gated flow stays for AGENT-initiated requests only (those pop
 // up when the agent wants something). The live viewer is ONE screen (Desktop
@@ -2022,6 +2103,8 @@ function ToolboxItem({
 // Maintenance start/stop is ALSO manual and executes directly (2026-10): the
 // device shows the maintenance screen, the technician keeps full control.
 function ControlTab({
+  deviceId,
+  fullScreen,
   isOnline,
   mesh,
   meshErr,
@@ -2037,6 +2120,8 @@ function ControlTab({
   goToClone,
   lastSeenAt,
 }: {
+  deviceId: string;
+  fullScreen: boolean;
   isOnline: boolean;
   mesh: MeshUrls | null;
   meshErr: string;
@@ -2095,18 +2180,140 @@ function ControlTab({
     reader.readAsDataURL(file);
   }
 
+  // ---- TASK_104 §1-§3 (PATH A's routes) — the silent app launcher ---------
+  // Owner (2026-09-25): "we need a way to pop up apps without clicking the
+  // start menu or clicking the logos of the app in desktop ... user can search
+  // first and then select the app they want, so we need to find a way to make
+  // it dynamic, and it should be in the remote session tools."
+  // Search-first, over THIS device's own enumeration — never a hardcoded list.
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [apps, setApps] = useState<LauncherApp[]>([]);
+  const [appsLoaded, setAppsLoaded] = useState(false);
+  const [appsErr, setAppsErr] = useState("");
+  const [discoveredAt, setDiscoveredAt] = useState<string | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [query, setQuery] = useState("");
+  const [cursor, setCursor] = useState(0);
+  const [launchBusy, setLaunchBusy] = useState("");
+  const [launchMsg, setLaunchMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const launcherInputRef = useRef<HTMLInputElement | null>(null);
+
+  // `refresh` = POST, i.e. re-enumerate on the device now (online required, an
+  // offline device fails immediately and queues nothing). Otherwise GET, which
+  // returns the cached catalog with no device round trip at all.
+  async function loadApps(refresh: boolean) {
+    setDiscovering(refresh);
+    setAppsErr("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/discover-apps`, {
+        method: refresh ? "POST" : "GET",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "discover_apps_failed");
+      }
+      setApps(Array.isArray(data.apps) ? (data.apps as LauncherApp[]) : []);
+      setDiscoveredAt(typeof data.discoveredAt === "string" ? data.discoveredAt : null);
+    } catch (e) {
+      const code = e instanceof Error ? e.message : "";
+      setAppsErr(
+        code === "device_not_linked"
+          ? "This device isn't linked to your account."
+          : /offline/i.test(code)
+            ? "The device is offline — nothing was queued."
+            : "Couldn't read this device's app list.",
+      );
+    } finally {
+      setAppsLoaded(true);
+      setDiscovering(false);
+    }
+  }
+
+  // The only legal launch targets are a `key` from the catalog above, or an
+  // absolute path / https URL the operator typed. The server re-validates every
+  // one of them before it builds a command — nothing here is trusted.
+  async function openTarget(target: string, label: string) {
+    if (!target) return;
+    setLaunchBusy(label);
+    setLaunchMsg(null);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/launch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(typeof data.error === "string" ? data.error : "launch_failed");
+      }
+      setLauncherOpen(false);
+      setLaunchMsg({ ok: true, text: `Opening ${label} on the device…` });
+    } catch (e) {
+      setLaunchMsg({
+        ok: false,
+        text: launchErrorText(e instanceof Error ? e.message : "launch_failed"),
+      });
+    } finally {
+      setLaunchBusy("");
+    }
+  }
+
+  const launcherQuery = query.trim().toLowerCase();
+  const matches = launcherQuery
+    ? apps.filter(
+        (a) => a.key.includes(launcherQuery) || a.name.toLowerCase().includes(launcherQuery),
+      )
+    : apps;
+  // Only offered when what was typed is already one of the two shapes the
+  // server accepts, so nobody is invited to send something that gets refused.
+  const openAs = classifyOpenTarget(query.trim());
+
+  function onPaletteKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setLauncherOpen(false);
+      return;
+    }
+    const total = matches.length + (openAs ? 1 : 0);
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCursor((c) => (total ? (c + 1) % total : 0));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCursor((c) => (total ? (c - 1 + total) % total : 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (openAs && cursor === matches.length) {
+        void openTarget(openAs.value, openAs.kind === "url" ? "that link" : "that path");
+        return;
+      }
+      const app = matches[cursor] ?? matches[0];
+      if (app) void openTarget(app.key, app.name);
+    }
+  }
+
+  // One Esc handler for both overlays (the toolbox panel and the launcher
+  // palette) — either can be the only thing open, and either should close.
   useEffect(() => {
-    if (!openMenu) return;
+    if (!openMenu && !launcherOpen) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpenMenu(null);
+      if (e.key === "Escape") {
+        setOpenMenu(null);
+        setLauncherOpen(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [openMenu]);
+  }, [openMenu, launcherOpen]);
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Buttons row. Hidden once a session is LIVE in full-screen mode, where
+          the owner asked for exactly two things: the screen and the toolbox
+          line. Disconnect is not lost — it lives in the Session menu, which is
+          part of that line. Before a session exists it must stay visible: the
+          Connect button is the only way to start one here. */}
+      <div className={cn("flex flex-wrap items-center gap-2", fullScreen && mesh && "hidden")}>
         {!mesh ? (
           <button
             onClick={connect}
@@ -2186,7 +2393,17 @@ function ControlTab({
         // ONE screen + toolbox line ON TOP of it. Four grouped ▾ menus open
         // transparent panels OVER the screen (the desktop stays visible
         // behind them); only one panel opens at a time.
-        <div className="relative overflow-hidden rounded-lg border border-border">
+        <div
+          className={cn(
+            "relative overflow-hidden rounded-lg border border-border",
+            // TASK_103 NEW-1 — full-screen: the screen claims the viewport
+            // instead of a fixed 480px, and resizes with the window. 3rem is the
+            // page's own py-6 (app/console/[deviceId]/page.tsx), which this
+            // component cannot change; flex-col lets the iframe take what is
+            // left after the toolbox line.
+            fullScreen && "flex h-[calc(100vh-3rem)] flex-col",
+          )}
+        >
           <div className="relative z-10 flex flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
             <ToolboxMenu
               label="Session"
@@ -2258,6 +2475,23 @@ function ControlTab({
                 title="Open the Browser clone tab"
                 icon={<Globe className="h-3.5 w-3.5" />}
                 label="Browser Clone"
+              />
+              {/* TASK_104 §3 — the silent app launcher. Opens a search-first
+                  palette (command-palette interaction, not a list to scroll):
+                  type to filter this device's OWN installed apps, or paste an
+                  absolute path / https:// URL to open that on the device. */}
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  setQuery("");
+                  setCursor(0);
+                  setLaunchMsg(null);
+                  setLauncherOpen(true);
+                  void loadApps(false);
+                }}
+                title="Open an app, a file or a link on the device — no Start menu needed"
+                icon={<AppWindow className="h-3.5 w-3.5" />}
+                label="Launch app…"
               />
               <div className="my-1 border-t border-border" />
               <button
@@ -2382,6 +2616,22 @@ function ControlTab({
                 label="Run command"
               />
             </ToolboxMenu>
+            {/* TASK_104 — transient launcher feedback. In the toolbar (not the
+                buttons row) so it is visible in full-screen mode too, where the
+                buttons row is hidden. */}
+            {launchMsg && (
+              <span
+                className={cn(
+                  "ml-auto rounded-full border px-2.5 py-1 font-mono text-[11px]",
+                  launchMsg.ok
+                    ? "border-emerald-500/40 text-emerald-500"
+                    : "border-amber-500/40 text-amber-500",
+                )}
+                title={launchMsg.text}
+              >
+                {launchMsg.text}
+              </span>
+            )}
             {ping && (
               <span
                 className={cn(
@@ -2399,7 +2649,11 @@ function ControlTab({
           <iframe
             src={mesh.control}
             title="Remote desktop"
-            className="h-[480px] w-full bg-black"
+            // Embedded stays a fixed 480px panel (unchanged); full-screen fills
+            // what is left below the toolbox line. `min-h-0` is required for a
+            // flex child to be allowed to shrink below its content height —
+            // without it the iframe wins the layout and overflows the frame.
+            className={cn("w-full bg-black", fullScreen ? "min-h-0 flex-1" : "h-[480px]")}
             sandbox="allow-scripts allow-same-origin allow-forms"
           />
         </div>
@@ -2411,6 +2665,111 @@ function ControlTab({
             overlay, PIN collect, disconnect) on the toolbar above it.
           </p>
         )
+      )}
+
+      {/* TASK_104 §3 — the search-first launcher palette. An overlay rather than
+          something inside the toolbox dropdown: the owner asked for "user can
+          search first and then select the app they want", which is a command
+          palette — and the dropdown is only 14rem wide and would have to stay
+          open while typing. Nothing here is trusted: the two routes validate
+          every target shape before a command is ever built. */}
+      {launcherOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
+          onClick={() => setLauncherOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Launch an app on the device"
+            className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+              <Search className="h-4 w-4 shrink-0 text-fg-muted" />
+              <input
+                ref={launcherInputRef}
+                autoFocus
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setCursor(0);
+                }}
+                onKeyDown={onPaletteKey}
+                placeholder="Search this device's apps — or paste a path or https:// link"
+                className="w-full bg-transparent py-1 text-sm text-fg outline-none placeholder:text-fg-muted"
+              />
+              {launchBusy && <span className="shrink-0 text-xs text-fg-muted">Opening…</span>}
+            </div>
+
+            <div className="max-h-72 overflow-y-auto p-1.5">
+              {openAs && (
+                <button
+                  onClick={() =>
+                    void openTarget(
+                      openAs.value,
+                      openAs.kind === "url" ? "that link" : "that path",
+                    )
+                  }
+                  onMouseEnter={() => setCursor(matches.length)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
+                    cursor === matches.length ? "bg-black/10 dark:bg-white/10" : "",
+                  )}
+                >
+                  <Globe className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">
+                    Open {openAs.kind === "url" ? "link" : "path"}:{" "}
+                    <span className="font-mono">{openAs.value}</span>
+                  </span>
+                </button>
+              )}
+              {matches.map((a, i) => (
+                <button
+                  key={a.key}
+                  onClick={() => void openTarget(a.key, a.name)}
+                  onMouseEnter={() => setCursor(i)}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors",
+                    cursor === i ? "bg-black/10 dark:bg-white/10" : "",
+                  )}
+                >
+                  <AppWindow className="h-3.5 w-3.5 shrink-0" />
+                  <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-fg-muted">{a.key}</span>
+                </button>
+              ))}
+              {appsErr && <p className="px-2 py-2 text-xs text-amber-500">{appsErr}</p>}
+              {!appsErr && appsLoaded && matches.length === 0 && !openAs && (
+                <p className="px-2 py-2 text-xs text-fg-muted">
+                  {apps.length === 0
+                    ? "No apps discovered on this device yet — press Re-scan device."
+                    : "Nothing matches that search."}
+                </p>
+              )}
+              {!appsLoaded && (
+                <p className="px-2 py-2 text-xs text-fg-muted">Reading this device…</p>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-3 py-1.5">
+              <span className="text-[11px] text-fg-muted">
+                {appsLoaded
+                  ? `${apps.length} app${apps.length === 1 ? "" : "s"} found on this device`
+                  : "…"}
+                {discoveredAt ? ` · last scan ${relTime(discoveredAt)}` : ""}
+              </span>
+              <button
+                onClick={() => void loadApps(true)}
+                disabled={discovering || !isOnline}
+                title={!isOnline ? "The machine is offline" : "Enumerate this device's apps again"}
+                className="rounded-md border border-border px-2 py-1 text-[11px] text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+              >
+                {discovering ? "Scanning…" : "Re-scan device"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
