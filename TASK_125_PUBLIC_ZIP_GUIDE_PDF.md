@@ -145,18 +145,84 @@ Both repos change, so deploy **Vantra first** — `parseInstaller` and the `sw-`
 block before SpaceWorker starts sending it. Ordering matters only for the *first* PDF mint; a names-only request
 is unaffected either way, and SpaceWorker alone against an old Vantra would simply drop the PDF.
 
+The procedure that is actually correct for this box — and why §8 does **not** build on the VPS:
+
+**Do not build on the VPS.** `/opt/vantra` and `/opt/spaceworker` have **no git checkout**, and CI ships the
+**runner-built `.next`**, so the box's `app/`/`lib/` sources are deliberately stale. Measured on the box:
+`/opt/vantra`'s `sw-` route still held the **pre-TASK-121** body, with no `parseInstaller` at all. A box-side
+`npm run build` (the `rsync` + build shape `scripts/deploy-vps.sh` uses) would therefore compile **stale sources**
+into production.
+
+The deploy is the CI job, and it can run against a **branch ref** — no merge needed:
+
 ```bash
-# 1. Vantra FIRST (its own service user!): lib/sw-installer-names.ts + the sw- install-link route, then
-#    cd /opt/vantra && sudo -u vantra npm run build && systemctl restart vantra.service
-# 2. SpaceWorker: lib/vantra-link.ts, app/api/assistant/vantra/install-link/route.ts, components/device-list.tsx
-#    then (from /opt/spaceworker, as trmm): npm run build && systemctl restart spaceworker.service
+# Vantra FIRST: its `sw-` route must accept the extended `installer` block before
+# SpaceWorker starts sending it.
+gh workflow run deploy.yml --ref agent/task-125-zip-guide-pdf   # vantra, then spaceworker
 ```
 
-`rsync --exclude='.env'` is mandatory on both (§2). **No `prisma migrate` / `prisma generate` step — no schema
-change at all.**
+Ordering matters only for the *first* PDF mint; a names-only request is unaffected either way, and SpaceWorker
+against an old Vantra would simply drop the PDF. **No `prisma migrate` / `prisma generate` step — there is no
+schema change at all** (both CI jobs' `migrate deploy` were pre-flight audited as no-ops against
+`_prisma_migrations`).
+
+⚠️ Deploying from the branch ref leaves the box **ahead of `main`**: merge `agent/task-125-zip-guide-pdf` in
+**both** repos, or the next main-based deploy silently reverts this feature.
 
 **Owner-only, cannot be verified locally:** that a minted zip actually **contains** `guide.pdf` and that the
 launcher **opens** it. `OWN-5` from TASK_121 is still open for the same reason (no Windows run), and this extends
-it: the server half is provable with `curl` + an archive listing, the "it opens on the machine" half is not.
+it: the server half is provable with `curl` + an archive listing (see §8, which did exactly that), the "it opens
+on the machine" half is not.
+
+---
+
+## 8. Deployed + live-verified (2026-09-26)
+
+Deployed from the branch refs: **Vantra `9d2f086`**, then **SpaceWorker `233cf46`** (CI runs `36243851040` and
+`36244105869`, both `completed / success`).
+
+**Verification method — the artifact, not the deploy's own success message.** The box has no git checkout, so
+"did the source change?" is the wrong question; the built `.next` is what actually serves.
+
+| Check | Evidence |
+|---|---|
+| Vantra build rotated | `BUILD_ID` `9dS_oGuMev-XnEMgR-R3s` → **`mQuhZBcpIpGKEJyz7Ki1i`** (mtime 15:04:32) |
+| SpaceWorker build rotated | `BUILD_ID` → **`PIKziCxK3KMzA-Kr-ZxYc`** (mtime 15:09:32) |
+| Vantra built from TASK_125 source | deployed source maps carry `safePdfBase64` ×2, `safePdfDelay` ×2, `pdfDelaySec` ×8 (`lib/sw-installer-names.ts`) and `pdfBase64` ×2 + `withGenerationSlot` ×2 (the `sw-` route) |
+| SpaceWorker built from TASK_125 source | deployed maps carry `validateInstallerPdf` ×3, `pdfDelaySec` ×10 (`lib/vantra-link.ts`); the **client** chunk carries the `Install guide` label |
+| Services / site | `spaceworker`, `spaceworker-browser`, `extraction-worker` all `active`; `localhost:3500` → 200, `spaceworker.top` → 200, `vantra.spaceworker.top` → 200 |
+| Schema in sync | drift check prints exactly `-- This is an empty migration.` |
+| Owner's uncommitted TASK_94 migration | **not** applied — `_prisma_migrations` matching `%task94%` → 0 rows. CI ships the git tree, where it is still untracked, so it was structurally excluded |
+
+**The decisive evidence — the PDF really is inside the artifact.** A live mint through the deployed `sw-` route
+(against a public-tier org), then the returned URL downloaded and listed:
+
+```
+T125Proof.lnk                       1059
+T125Proof/Launcher.exe             52396
+T125Proof/agent.bin             12314624
+T125Proof/T125 Guide.pdf             614   magic b'%PDF-'
+```
+
+That one listing proves the whole production chain: the extended `installer` block parsed, the PDF cleared both
+gates, `callZipGenerator` accepted it, it landed **inside the launcher folder**, and TASK_121's rename path still
+works beside it. (The minted artifact and its 72h TRMM deployment are real but disposable; nothing was written to
+`VantraLink`, because the probe called Vantra's route directly instead of going through SpaceWorker's mint.)
+
+### The blocking bug this deploy exposed — found by checking, fixed, re-verified
+
+`https://spaceworker.top` — the vhost the **browser** posts the PDF to — set **no `client_max_body_size`**, and
+this box has no http-level override, so nginx's built-in **1 MB** default applied. Every realistic guide PDF would
+have died as a raw nginx `413` **before the app ever saw it**, so SpaceWorker's own 20 MB limit — the one that
+returns a friendly error — could never have fired. The sibling `vantra.spaceworker.top` sat at `25M`, also below
+the ~27 MB a 20 MB PDF becomes once base64'd into the JSON body.
+
+* **Live:** `spaceworker.top` → added `client_max_body_size 32M;`; `vantra.spaceworker.top` → `25M` → `32M`
+  (server level and the `/msi-generator/` location). Backups written, `nginx -t` clean, `systemctl reload nginx`.
+* **Re-verified after:** a **2 MB** POST returns **401** on both hops — the app's own auth — where it had returned
+  nginx's `413`.
+* **Repo:** the reference copy `deploy/nginx-spaceworker.conf` now carries the directive (that file's stated
+  discipline is to stay in sync with live — TASK_53). Vantra tracks no reference copy, so its `25M → 32M` change
+  is recorded here only.
 
 
