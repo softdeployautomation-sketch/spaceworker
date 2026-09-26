@@ -4,17 +4,15 @@ import Link from "next/link";
 import { Store } from "@/components/store";
 import { accountHref } from "@/lib/exe-runtime";
 
-// Task 42, item 8 — a standalone /pricing route rendering the same store
-// component as /store, so it's linkable/indexable on its own and matches the
-// footer's "Pricing" link.
-//
-// TASK_100 MK4 (2026-09-26): intro rephrased to platform level — /store is
-// "browse what you can buy," /pricing answers "what does this cost" for
-// someone who already knows what the platform is (a search/ad landing, a
-// direct link) and wants the number without the sales pitch first.
-export const metadata: Metadata = { title: "Pricing — SpaceWorker OS" };
+// TASK_100 MK3 — the store moves off the marketing scroll onto its own,
+// linkable/indexable route (nav: Features / Store / Pricing). Reuses
+// components/store.tsx as-is, same pattern app/pricing/page.tsx already
+// established for the identical component — this route is the primary
+// "browse what you can buy" destination; /pricing keeps its own identity
+// (platform-level framing) per MK4.
+export const metadata: Metadata = { title: "Store — SpaceWorker OS" };
 
-export default function PricingPage() {
+export default function StorePage() {
   return (
     <div className="min-h-screen bg-bg">
       <header className="sticky top-0 z-40 border-b border-border bg-bg/90 backdrop-blur">
@@ -40,12 +38,12 @@ export default function PricingPage() {
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-16 sm:px-6">
-        <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Pricing</p>
-        <h1 className="mt-3 text-3xl font-bold text-fg">Pay for what you actually use</h1>
+        <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Store</p>
+        <h1 className="mt-3 text-3xl font-bold text-fg">Pick what you pay for</h1>
         <p className="mt-2 max-w-2xl text-sm text-fg-muted">
-          SpaceWorker OS is one cloud cyber partner — device control, the AI assistant,
-          extraction and outreach, all priced per capability. Start free, upgrade the
-          pieces you need.
+          Every SpaceWorker capability, priced on its own — extraction, outreach, the
+          desktop apps, and what&rsquo;s next as new modules ship. No bundle required to
+          start.
         </p>
         <div className="mt-8">
           <Store />
@@ -60,7 +58,7 @@ export default function PricingPage() {
           </div>
           <nav className="flex flex-wrap gap-5 text-sm font-medium text-fg-muted hover:text-fg">
             <Link href="/#features" className="hover:text-fg">Features</Link>
-            <Link href="/store" className="hover:text-fg">Store</Link>
+            <Link href="/pricing" className="hover:text-fg">Pricing</Link>
             <Link href="/terms" className="hover:text-fg">Terms</Link>
             <Link href="/privacy" className="hover:text-fg">Privacy</Link>
           </nav>
