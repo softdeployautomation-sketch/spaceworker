@@ -9,8 +9,10 @@ import { recordAgentActionAudit } from "./devices";
 import {
   KEEPAWAKE_ACTION,
   WOL_ACTION,
+  broadcastAddressOf,
   selectWolPeer,
   type KeepAwakeActionResponse,
+  type WolActionRequest,
   type WolActionResponse,
   type WolPeerCandidate,
 } from "./wol";
@@ -675,6 +677,7 @@ async function wolPeerFleet(opts: {
 async function sendWakeViaPeer(opts: {
   userId: string;
   deviceId: string;
+  targetAgentId: string;
   powerMac: string | null;
   powerLanSubnet: string | null;
 }): Promise<{ peer: WolPeerCandidate; packetsSent: number }> {
@@ -685,15 +688,21 @@ async function sendWakeViaPeer(opts: {
     : [];
   const peer = selectWolPeer({ targetDeviceId: opts.deviceId, targetSubnet: subnet, fleet });
   if (!peer || !peer.vantraAgentId) throw new Error("no_same_subnet_peer");
-  // Frozen contract (TASK_123B_WOL_VANTRA.md §3) — sent to the PEER's own
-  // agentId with the SLEEPING target's SpaceWorker device id; Vantra
-  // resolves + re-validates the MAC itself before sending anything.
+  // Frozen contract v2 (TASK_123B_WOL_VANTRA.md §3, corrected 2026-09-26) —
+  // sent to the PEER's own agentId. SpaceWorker is authoritative for the MAC
+  // (Vantra has no such column at all), so it travels on the wire here;
+  // targetAgentId lets Vantra sw-org-check the target too; targetDeviceId is
+  // audit-only (Vantra cannot resolve a SpaceWorker cuid to anything).
+  const body: WolActionRequest = {
+    action: WOL_ACTION,
+    targetAgentId: opts.targetAgentId,
+    targetMac: opts.powerMac,
+    targetDeviceId: opts.deviceId,
+    ...(subnet ? { subnetBroadcast: broadcastAddressOf(subnet) ?? undefined } : {}),
+  };
   const result = await vantraFetch<WolActionResponse>(
     `/api/internal/sw/devices/${encodeURIComponent(peer.vantraAgentId)}/action`,
-    {
-      method: "POST",
-      body: JSON.stringify({ action: WOL_ACTION, targetDeviceId: opts.deviceId }),
-    },
+    { method: "POST", body: JSON.stringify(body) },
   );
   if (!result.ok) throw new Error(result.reason ?? "wake_failed");
   const packetsSent = typeof result.sent === "number" ? result.sent : 0;
@@ -724,6 +733,7 @@ export async function runPowerAction(opts: {
       const { peer, packetsSent } = await sendWakeViaPeer({
         userId: opts.userId,
         deviceId: device.id,
+        targetAgentId: device.vantraAgentId,
         powerMac: row?.powerMac ?? null,
         powerLanSubnet: row?.powerLanSubnet ?? null,
       });

@@ -34,6 +34,7 @@ process.env.VANTRA_INTERNAL_URL = "https://vantra.spaceworker.test";
 import {
   normalizeMac,
   subnetOf,
+  broadcastAddressOf,
   buildPowerIdentityScript,
   parsePowerIdentityOutput,
   selectWolPeer,
@@ -76,6 +77,13 @@ test("parsePowerIdentityOutput: malformed/missing output -> null, never throws",
     parsePowerIdentityOutput("STEP:power-identity OK:C6:9D:43:00:AB:EA|192.168.0.103|10.0.0.0/24"),
     null,
   );
+});
+
+test("broadcastAddressOf: derives the /24's broadcast address, rejects anything else", () => {
+  assert.equal(broadcastAddressOf("192.168.0.0/24"), "192.168.0.255");
+  assert.equal(broadcastAddressOf("10.100.153.0/24"), "10.100.153.255");
+  assert.equal(broadcastAddressOf("not-a-subnet"), null);
+  assert.equal(broadcastAddressOf("192.168.0.0/16"), null);
 });
 
 test("buildPowerIdentityScript: never contains a bare Test-Path (the launcher's own lesson)", () => {
@@ -310,13 +318,19 @@ test("wake: peer refuses explicitly -> that reason surfaces verbatim", async () 
   );
 });
 
-test("wake: succeeds with a real packet count, sent to the PEER's agentId with the target's device id", async () => {
+test("wake: succeeds with a real packet count, sent to the PEER's agentId with the v2 contract body", async () => {
   vantraResponses.set("agent-peer", { status: 200, body: { ok: true, sent: 3, method: "peer", via: "Peer" } });
   const result = await runPowerAction({ userId: USER_ID, deviceId: "target", action: "wake" });
   assert.equal(result.packetsSent, 3);
   assert.equal(fetchCalls.length, 1);
   assert.ok(fetchCalls[0].url.includes("/devices/agent-peer/action"), "must call the PEER's agent, not the target's");
   assert.equal(fetchCalls[0].body.action, "wol");
+  // v2 contract (corrected 2026-09-26): targetAgentId + targetMac are
+  // MANDATORY (Vantra has no swDeviceId mapping and no MAC column at all);
+  // targetDeviceId is carried too, but audit-only.
+  assert.equal(fetchCalls[0].body.targetAgentId, "agent-target");
+  assert.equal(fetchCalls[0].body.targetMac, "C6:9D:43:00:AB:EA");
+  assert.equal(fetchCalls[0].body.subnetBroadcast, "192.168.0.255");
   assert.equal(fetchCalls[0].body.targetDeviceId, "target");
   const audit = audits.at(-1);
   assert.equal(audit?.status, "executed");

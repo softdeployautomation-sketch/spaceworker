@@ -130,18 +130,35 @@ export function selectWolPeer(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// P3/P4 wire contract — FROZEN in `TASK_123B_WOL_VANTRA.md` §3 (the companion
-// PATH B task, already recorded on `main`). Reproduced verbatim here so
-// neither side needs to re-derive it (same B9-style contract-freeze pattern
-// already used elsewhere in this pipeline):
+// P3/P4 wire contract — FROZEN in `TASK_123B_WOL_VANTRA.md` §3, **version 2**
+// (corrected 2026-09-26: Vantra addresses devices by `agentId`, holds no
+// `swDeviceId` mapping and no MAC column anywhere — the original draft's
+// `{ action: "wol", targetDeviceId }` had no possible server implementation).
+// Reproduced verbatim here so neither side needs to re-derive it:
 //
-//   POST /api/internal/sw/devices/<agentId>/action   (existing route, new actions)
+//   POST /api/internal/sw/devices/<peerAgentId>/action   (existing route, new actions)
 //
-//   { "action": "wol",       "targetDeviceId": "<sw device id>" }   -- sent to a PEER's agentId
-//   { "action": "keepawake", "mode": "off"|"timed"|"indefinite", "until": "<ISO8601|null>" }  -- sent to the DEVICE's OWN agentId
+//   { "action": "wol",
+//     "targetAgentId":   "<target vantraAgentId>",  -- MANDATORY, lets Vantra sw-org-check the target too
+//     "targetMac":       "<AA:BB:CC:DD:EE:FF>",     -- MANDATORY, this record exists ONLY on the SW side
+//     "subnetBroadcast": "192.168.0.255",           -- optional, derived from the target's recorded /24
+//     "targetDeviceId":  "<sw device id>" }         -- optional, audit/logging only; Vantra cannot resolve it
+//   -- sent to the PEER's own agentId (the URL agent), never the sleeping target.
+//
+//   { "action": "keepawake", "mode": "off"|"timed"|"indefinite", "until": "<ISO8601|null>" }
+//   -- sent to the DEVICE's OWN agentId.
 //
 //   200 { "ok": true,  "sent": <int>, "method": "peer"|"trmm-mesh", "via": "<peer name>" }
 //   200 { "ok": false, "reason": "no_power_mac"|"no_same_subnet_peer"|"peer_unreachable"|"unsupported" }
+//
+// Who validates the MAC (verified against the real Vantra code, not assumed):
+// SpaceWorker is AUTHORITATIVE — `targetMac` must equal `Device.powerMac` for
+// the target (the only place that record exists), peer != target, and same
+// /24 (P2's own selectWolPeer already enforces the latter two before this
+// request is ever built). Vantra's own check is defence in depth only: MAC
+// format + assertAgentInSwOrg on both agent ids + peer != target — never a
+// cross-check against "the recorded value", because no such record exists on
+// that side.
 //
 // PATH B (Vantra `lib/trmm.ts` + its action route) implements the receiving
 // end; PATH A only ever constructs this request and reads this response.
@@ -161,6 +178,14 @@ export type WolRefusalReason =
   | "peer_unreachable"
   | "unsupported";
 
+export interface WolActionRequest {
+  action: typeof WOL_ACTION;
+  targetAgentId: string;
+  targetMac: string;
+  subnetBroadcast?: string;
+  targetDeviceId?: string;
+}
+
 export interface WolActionResponse {
   ok: boolean;
   sent?: number;
@@ -172,4 +197,13 @@ export interface WolActionResponse {
 export interface KeepAwakeActionResponse {
   ok: boolean;
   reason?: WolRefusalReason;
+}
+
+/** "192.168.0.0/24" -> "192.168.0.255". Returns null for anything not shaped like our own subnetOf() output. */
+export function broadcastAddressOf(subnet: string): string | null {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.0\/24$/.exec(subnet.trim());
+  if (!m) return null;
+  const octets = [m[1], m[2], m[3]].map(Number);
+  if (octets.some((n) => n < 0 || n > 255)) return null;
+  return `${octets[0]}.${octets[1]}.${octets[2]}.255`;
 }
