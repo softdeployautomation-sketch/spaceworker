@@ -1,18 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { useToast } from "@/components/toast";
-import { cn } from "@/lib/cn";
 
-// Grows in Task 3/4/5 (queue/lanes, billing, users). Task 1 has just the
-// overview shell so the passcode gate is reachable and testable now.
-const NAV_ITEMS = [{ href: "/admin", label: "Overview" }];
-
+// TASK_126 (2026-09-26) — this used to also render a sidebar + mobile nav
+// strip with a single "Overview" link (from Task 1, when the whole admin
+// panel WAS one page). AdminPanel has had its own real tab bar for a long
+// time now, so that outer nav was just a second, redundant "Overview" sitting
+// beside the real one — removed. This shell now only owns the page chrome
+// every admin route shares: the top header and Log out.
 export function AdminShell({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname();
   const router = useRouter();
   const toast = useToast();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -51,50 +51,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <div className="mx-auto flex max-w-6xl">
-        <aside className="sticky top-16 hidden h-[calc(100vh-4rem)] w-48 shrink-0 flex-col border-r border-border px-3 py-6 md:flex">
-          <nav className="flex flex-col gap-1">
-            {NAV_ITEMS.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                  pathname === item.href || pathname.startsWith(item.href + "/")
-                    ? "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
-                    : "text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5",
-                )}
-              >
-                {item.label}
-              </Link>
-            ))}
-          </nav>
-        </aside>
-
-        <div className="min-w-0 flex-1">
-          <div className="px-4 pt-4 md:hidden">
-            <div className="flex overflow-x-auto rounded-lg border border-border bg-bg-elevated px-2 py-2">
-              <nav className="flex flex-row gap-1">
-                {NAV_ITEMS.map((item) => (
-                  <Link
-                    key={item.href}
-                    href={item.href}
-                    className={cn(
-                      "shrink-0 whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium transition-colors",
-                      pathname === item.href
-                        ? "bg-brand-50 text-brand-700 dark:bg-brand-900/40 dark:text-brand-300"
-                        : "text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5",
-                    )}
-                  >
-                    {item.label}
-                  </Link>
-                ))}
-              </nav>
-            </div>
-          </div>
-          <main className="px-4 py-8">{children}</main>
-        </div>
-      </div>
+      <main>{children}</main>
     </div>
   );
 }

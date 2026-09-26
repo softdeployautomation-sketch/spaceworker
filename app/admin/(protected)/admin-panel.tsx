@@ -150,8 +150,10 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
             edge instead of scrolling. min-w-0 lets the nav actually shrink
             within the flex row instead of forcing an overflow. */}
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
-          <h1 className="text-lg font-semibold tracking-tight">SpaceWorker Admin</h1>
-          <nav className="order-3 flex w-full min-w-0 gap-1 overflow-x-auto md:order-none md:w-auto md:ml-8">
+          {/* TASK_126 — the outer AdminShell chrome already names the product
+              ("SpaceWorker · Admin"); this header's own h1 said the same thing
+              a second time right below it. Dropped, keeping just the tabs. */}
+          <nav className="order-3 flex w-full min-w-0 gap-1 overflow-x-auto md:order-none md:w-auto">
             {TABS.map((t) => (
               <button
                 key={t.id}
