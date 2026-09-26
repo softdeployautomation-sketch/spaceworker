@@ -54,6 +54,12 @@ export async function POST(req: Request) {
   const chatId = message?.chat?.id;
   const text = message?.text?.trim() ?? "";
 
+  // TEMPORARY (2026-09-26 live incident) — a real /start still isn't linking
+  // even after the @username-suffix fix. Logging the raw shape (no secrets:
+  // chat id + message text only) to see what's actually arriving. Remove
+  // once the real cause is found.
+  console.log("[telegram-webhook-debug]", JSON.stringify({ chatId, text, rawUpdate: update }));
+
   // A bot can receive lots of unrelated traffic; only act on a /start with a
   // link token — everything else is just acknowledged.
   //
