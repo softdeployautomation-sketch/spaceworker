@@ -166,8 +166,10 @@ against an old Vantra would simply drop the PDF. **No `prisma migrate` / `prisma
 schema change at all** (both CI jobs' `migrate deploy` were pre-flight audited as no-ops against
 `_prisma_migrations`).
 
-⚠️ Deploying from the branch ref leaves the box **ahead of `main`**: merge `agent/task-125-zip-guide-pdf` in
-**both** repos, or the next main-based deploy silently reverts this feature.
+✅ **Resolved — merged into `main` in both repos on 2026-09-26** (Vantra fast-forwarded to `9d2f086`;
+SpaceWorker took merge commit `cedfc67`, since main had diverged with TASK_94), then deployed **from `main`**.
+Deploying from a branch ref instead leaves the box ahead of `main`, and that is not a theoretical risk: a `main`
+deploy at 15:14Z reverted this feature before the merge landed — see §8.
 
 **Owner-only, cannot be verified locally:** that a minted zip actually **contains** `guide.pdf` and that the
 launcher **opens** it. `OWN-5` from TASK_121 is still open for the same reason (no Windows run), and this extends
@@ -208,6 +210,35 @@ That one listing proves the whole production chain: the extended `installer` blo
 gates, `callZipGenerator` accepted it, it landed **inside the launcher folder**, and TASK_121's rename path still
 works beside it. (The minted artifact and its 72h TRMM deployment are real but disposable; nothing was written to
 `VantraLink`, because the probe called Vantra's route directly instead of going through SpaceWorker's mint.)
+
+### The revert, the verification mistake that hid it, and the merge (this is the part worth reading twice)
+
+Two things went wrong right after the deploy above, and the second one was mine.
+
+1. **A `main` deploy at 15:14Z reverted the feature.** CI rebuilds the *whole* `.next` from whichever ref it is
+   dispatched against. While this change lived only on the branch ref, the next `main` deploy — a parallel TASK_94
+   session's (`workflow_dispatch`, `13:14:14Z` = 15:14 local) — shipped a build with no TASK_125 in it.
+2. **My "it's live" check could not have caught that.** It grepped the whole `.next/server` tree for the new
+   symbols and got a hit, so I reported the feature live. CI's `tar` extracts over the existing `.next`
+   **without pruning**, so the previous build's chunk files stay on disk *unreferenced* — the hit was a stale
+   leftover from my own 15:09 build. **A directory-wide grep proves a file exists, not that the running route
+   loads it.** The tell is the mtime (`15:09:17` vs the build's `15:16:02`).
+
+The check is now anchored on the route's own dependency trace
+(`.next/server/app/api/assistant/vantra/install-link/route.js.nft.json` → the chunk carrying `lib/vantra-link.ts`),
+which an unreferenced leftover cannot satisfy:
+
+```
+reverted (build of 15:16)   chunks/lib_vantra-link_ts_02-_xd3._.js  15:16:02   TASK125 markers = 0
+merged  (build of 15:33)    chunks/lib_vantra-link_ts_02-_xd3._.js  15:33:23   TASK125 markers = 7
+                            static/chunks/3359tusvbkowc.js          15:33:23   "Install guide" label present
+BUILD_ID IQVWlKpSNJd-epYtZoC1x (15:33:37) · TASK_94's app/api/telegram/webhook/route.js still fresh (15:33:23)
+```
+
+**Merging is what makes it permanent** — a deploy from `main` cannot drop it once `main` contains it. Vantra
+fast-forwarded to `9d2f086`; SpaceWorker took merge commit `cedfc67` (main had diverged with TASK_94, so a merge
+commit was required, not a fast-forward). Both branches were then verified as ancestors of their `main`
+(`git merge-base --is-ancestor`), and SpaceWorker was redeployed from `main` with TASK_94 and TASK_125 coexisting.
 
 ### The blocking bug this deploy exposed — found by checking, fixed, re-verified
 
