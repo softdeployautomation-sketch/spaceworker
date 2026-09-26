@@ -1327,6 +1327,8 @@ export function DeviceConsole({
               cloneBusy={cloneBusy}
               openCloneSession={openCloneSession}
               goToCloneTab={() => setTab("clone")}
+              powerView={powerView}
+              goToCloneSetup={() => setTab("clone")}
             />
           )}
           {/* TASK_103 NEW-3 — ALWAYS mounted, never behind a
@@ -1484,6 +1486,8 @@ function SummaryTab({
   cloneBusy,
   openCloneSession,
   goToCloneTab,
+  powerView,
+  goToCloneSetup,
 }: {
   device: DeviceView | null;
   loaded: boolean;
@@ -1493,6 +1497,8 @@ function SummaryTab({
   cloneBusy: string;
   openCloneSession: (cloneId: string) => Promise<void>;
   goToCloneTab: () => void;
+  powerView: PowerView | null;
+  goToCloneSetup: () => void;
 }) {
   if (!loaded) return <p className="text-sm text-fg-muted">Loading…</p>;
   if (!device) return <p className="text-sm text-fg-muted">Machine not found.</p>;
@@ -1537,6 +1543,54 @@ function SummaryTab({
         Your own tools run immediately — the approval prompt only appears for actions the
         agent asks for on your behalf.
       </p>
+      {/* TASK_123 (B12) — Wake-on-LAN readiness, always visible on Summary
+          (not buried in the Power dropdown menu): what state it's in right
+          now, and — critically — WHY when it isn't ready, with the actual
+          fix spelled out rather than a vague "unavailable". */}
+      <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+        <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+          <Zap className="h-3.5 w-3.5" /> Wake-on-LAN
+        </p>
+        {!powerView ? (
+          <p className="mt-1 text-sm text-fg-muted">checking…</p>
+        ) : powerView.wake.available ? (
+          <p className="mt-1 text-sm text-fg">
+            Ready — a same-network device is online to relay the wake signal.
+          </p>
+        ) : powerView.wake.reason === "no_power_mac" ? (
+          <>
+            <p className="mt-1 text-sm text-fg">
+              Not set up yet — this device&apos;s network info was never recorded.
+            </p>
+            <p className="mt-1 text-xs text-fg-muted">
+              Run device setup once (Browser Clone tab → Set up this device) — it records
+              this machine&apos;s MAC address and network automatically, as one of its steps.
+            </p>
+            <button
+              onClick={goToCloneSetup}
+              className="mt-2 rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+            >
+              Go to device setup
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="mt-1 text-sm text-fg">
+              No peer available — nothing on this same network is online to relay the wake
+              signal.
+            </p>
+            <p className="mt-1 text-xs text-fg-muted">
+              Waking a sleeping machine needs a magic packet sent from ANOTHER device on the
+              exact same local network (the sleeping machine itself can&apos;t receive
+              anything over the internet, and a broadcast never crosses networks). Fix: add
+              a second Windows PC to this same network, plugged into the same router/switch
+              or Wi-Fi, keep it powered on, and run device setup on it too (it becomes an
+              eligible relay automatically — no extra step). Until then, use{" "}
+              <strong>keep-awake</strong> (Power menu) instead, which needs no peer at all.
+            </p>
+          </>
+        )}
+      </div>
       {/* Task 111 — compact clone card (always visible on Summary). The Open
           button is live-session-only; Manage switches to the Browser clone tab. */}
       <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
