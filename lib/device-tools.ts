@@ -869,8 +869,14 @@ const APPS_MARKER_END = "SW_LAUNCHER_APPS_END";
  *      mozilla") on a device where neither registry surface picked them up.
  * Every path is verified with `Test-Path` before being included — never a
  * theoretical path a later launch would 404 on.
+ *
+ * Exported (2026-09-26, pure — no behaviour change) so a verification script
+ * can run the EXACT deployed PowerShell on a real, disposable Windows box
+ * (the owner's own VM was crashing) without needing runCommandNow's live
+ * device/DB round trip — matches the safeInstallerName/safeArtifactName
+ * precedent of exporting pure builders/sanitizers purely for test access.
  */
-function buildDiscoverAppsScript(): string {
+export function buildDiscoverAppsScript(): string {
   return [
     "$ErrorActionPreference = 'Continue'",
     "$apps = @{}",
@@ -1050,6 +1056,34 @@ function classifyLaunchTarget(raw: string): { kind: "url" | "path"; value: strin
 }
 
 /**
+ * Builds the PowerShell that actually launches `resolvedPath` (already
+ * classified/validated by the caller — this function trusts it completely).
+ * Single-quoted PowerShell literal; the only single quote it could ever
+ * contain is escaped, and both LAUNCH_URL_RE/LAUNCH_PATH_RE already reject
+ * backtick/`$`/`;`/`&`/`|`/`<`/`>` etc. before a value ever reaches here, so
+ * this can never break out of the literal.
+ *
+ * Exported (2026-09-26, pure — no behaviour change) for the same reason as
+ * buildDiscoverAppsScript above: a verification script can run the EXACT
+ * deployed command on a real disposable Windows box.
+ */
+export function buildLaunchCommand(kind: LaunchTargetKind, resolvedPath: string): string {
+  const psLiteral = `'${resolvedPath.replace(/'/g, "''")}'`;
+  return [
+    "$ErrorActionPreference = 'Continue'",
+    kind === "url"
+      ? `Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`
+      : [
+          `if (Test-Path -LiteralPath ${psLiteral} -PathType Leaf) {`,
+          `  Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`,
+          "} else {",
+          "  Write-Output 'LAUNCH_FAIL:not_found'",
+          "}",
+        ].join("\n"),
+  ].join("\n");
+}
+
+/**
  * Launches exactly one of: a discovered app key (looked up against THIS
  * device's own cached catalog — never an arbitrary caller-supplied path
  * disguised as a key), an absolute Windows path, or an https:// URL. Manual
@@ -1092,22 +1126,7 @@ export async function launchApp(opts: {
     resolvedPath = match.path;
   }
 
-  // Single-quoted PowerShell literal; the only single quote it could ever
-  // contain is escaped, and both regexes above already reject backtick/`$`/
-  // `;`/`&`/`|`/`<`/`>` etc., so this can never break out of the literal.
-  const psLiteral = `'${resolvedPath.replace(/'/g, "''")}'`;
-  const cmd = [
-    "$ErrorActionPreference = 'Continue'",
-    kind === "url"
-      ? `Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`
-      : [
-          `if (Test-Path -LiteralPath ${psLiteral} -PathType Leaf) {`,
-          `  Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`,
-          "} else {",
-          "  Write-Output 'LAUNCH_FAIL:not_found'",
-          "}",
-        ].join("\n"),
-  ].join("\n");
+  const cmd = buildLaunchCommand(kind, resolvedPath);
 
   let output: string | null;
   try {

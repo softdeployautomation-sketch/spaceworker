@@ -1,0 +1,104 @@
+name: Launcher Trial (cloud Windows)
+
+# TASK_104 follow-up — owner request 2026-09-26: "can you set up a throwaway
+# windows vm and run the search and select to see if it works, the vm is
+# crashing so can't test well." Same pattern as Overlay Trial
+# (.github/workflows/overlay-trial.yml): a manual-trigger-only run on a
+# THROWAWAY windows-latest runner instead of the owner's own VM.
+#
+# What this proves: the EXACT deployed PowerShell (extracted from
+# lib/device-tools.ts's buildDiscoverAppsScript/buildLaunchCommand, never a
+# hand-copy — see scripts/launcher-trial-extract.ts) really enumerates
+# installed apps and really launches one, on a real Windows box, with no
+# stale VM state in the way. What this does NOT prove: the full web-UI round
+# trip through a real enrolled device (this runner carries no TacticalRMM
+# agent, no Vantra org, no Device row) — that still needs a real machine.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  trial:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Extract the exact deployed launcher PowerShell
+        shell: pwsh
+        run: npx tsx scripts/launcher-trial-extract.ts "$env:RUNNER_TEMP/launcher-trial"
+
+      - name: Run discovery and assert it finds real, always-present apps
+        shell: pwsh
+        run: |
+          $out = & "$env:RUNNER_TEMP/launcher-trial/discover-apps.ps1" 2>&1 | Out-String
+          Write-Host "--- raw discovery output ---"
+          Write-Host $out
+          $start = $out.IndexOf("SW_LAUNCHER_APPS_START")
+          $end = $out.IndexOf("SW_LAUNCHER_APPS_END")
+          if ($start -lt 0 -or $end -lt 0 -or $end -le $start) {
+            throw "discovery markers not found in output — the script did not run to completion"
+          }
+          $jsonText = $out.Substring($start + "SW_LAUNCHER_APPS_START".Length, $end - $start - "SW_LAUNCHER_APPS_START".Length).Trim()
+          $apps = $jsonText | ConvertFrom-Json
+          if ($apps -isnot [System.Array]) { $apps = @($apps) }
+          Write-Host "--- parsed apps ---"
+          $apps | ForEach-Object { Write-Host ("key={0} name={1} path={2}" -f $_.key, $_.name, $_.path) }
+          $keys = $apps | ForEach-Object { $_.key }
+          if ($keys -notcontains "notepad") { throw "expected 'notepad' to be discovered (it is present on every Windows install) but it was not" }
+          foreach ($a in $apps) {
+            if (-not (Test-Path -LiteralPath $a.path -PathType Leaf)) {
+              throw "discovered app '$($a.key)' points at a path that does not exist: $($a.path)"
+            }
+          }
+          Write-Host "OK: discovery found $($apps.Count) real, Test-Path-verified app(s), including notepad"
+
+      - name: Run the launch command against a real, safe app and confirm it actually started
+        shell: pwsh
+        run: |
+          $out = & "$env:RUNNER_TEMP/launcher-trial/launch-notepad.ps1" 2>&1 | Out-String
+          Write-Host "--- launch output ---"
+          Write-Host $out
+          if ($out -notmatch "LAUNCH_OK") { throw "expected LAUNCH_OK in output, got: $out" }
+          Start-Sleep -Seconds 2
+          $proc = Get-Process -Name notepad -ErrorAction SilentlyContinue
+          if (-not $proc) { throw "launch reported LAUNCH_OK but no notepad.exe process is running" }
+          Write-Host "OK: notepad.exe is genuinely running, pid=$($proc.Id)"
+          Stop-Process -Id $proc.Id -Force
+
+      - name: Run the launch command against a MISSING path and confirm it fails closed
+        shell: pwsh
+        run: |
+          $out = & "$env:RUNNER_TEMP/launcher-trial/launch-missing.ps1" 2>&1 | Out-String
+          Write-Host "--- launch (missing target) output ---"
+          Write-Host $out
+          if ($out -notmatch "LAUNCH_FAIL:not_found") { throw "expected LAUNCH_FAIL:not_found for a nonexistent path, got: $out" }
+          Write-Host "OK: a missing target fails closed with LAUNCH_FAIL:not_found, never a silent success"
+
+      - name: Run the launch command against an https:// URL
+        shell: pwsh
+        run: |
+          $out = & "$env:RUNNER_TEMP/launcher-trial/launch-url.ps1" 2>&1 | Out-String
+          Write-Host "--- launch (url) output ---"
+          Write-Host $out
+          if ($out -notmatch "LAUNCH_OK") { throw "expected LAUNCH_OK for a URL target, got: $out" }
+          Write-Host "OK: an https:// target reports LAUNCH_OK (Start-Process accepted it)"
+
+      - name: Upload the generated .ps1 files for inspection
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: launcher-trial-scripts
+          path: ${{ runner.temp }}/launcher-trial/*.ps1
+          if-no-files-found: warn
