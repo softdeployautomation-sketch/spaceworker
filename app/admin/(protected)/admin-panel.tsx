@@ -51,15 +51,21 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations";
+type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations";
 
 const TABS: Array<{ id: Tab; label: string }> = [
+  { id: "overview", label: "Overview" },
   { id: "users", label: "Users" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
   { id: "sessions", label: "Browser Sessions" },
   { id: "queue", label: "Search Queue" },
+  // TASK_126 — split out of "Search Queue", which used to hold five unrelated
+  // system panels (Admission control, Worker control, Governor, Clone limits,
+  // Vantra links) under a label that had nothing to do with any of them —
+  // literally why the resource governor toggle was hard to find (2026-09-26).
+  { id: "infrastructure", label: "Infrastructure" },
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
@@ -128,7 +134,7 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[] }) {
-  const [tab, setTab] = useState<Tab>("users");
+  const [tab, setTab] = useState<Tab>("overview");
 
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
@@ -170,12 +176,14 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
       </header>
 
       <main className="mx-auto max-w-6xl p-6">
+        {tab === "overview" && <OverviewTab onNavigate={setTab} />}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
         {tab === "queue" && <QueueTab />}
+        {tab === "infrastructure" && <InfrastructureTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
@@ -184,6 +192,152 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "campaigns" && <CampaignsTab />}
         {tab === "automations" && <AutomationsTab />}
       </main>
+    </div>
+  );
+}
+
+// TASK_126 — the admin's default landing view: at-a-glance system health
+// plus real links into whichever tab actually controls each thing, so nothing
+// ever has to be rediscovered the way the governor toggle did (it lived under
+// a tab called "Search Queue"). Deliberately reuses the SAME endpoints the
+// deeper tabs already call (no new backend surface) so this can never drift
+// out of sync with what those tabs show.
+type OverviewGovernor = {
+  settings: { enabled: boolean; ramWarnPct: number; ramHardPct: number };
+  pressure: {
+    level: "normal" | "warn" | "hard";
+    measured: boolean;
+    ramUsedPct: number;
+    ramTotalMb: number;
+    ramAvailableMb: number;
+    swapUsedMb: number;
+    swapTotalMb: number;
+    load1: number;
+    cpuCount: number;
+  };
+  queuedTotal: number;
+};
+
+function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
+  const [governor, setGovernor] = useState<OverviewGovernor | null>(null);
+  const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
+  const [sessions, setSessions] = useState<AdminSession[]>([]);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [govRes, queueRes, sessionsRes] = await Promise.all([
+          fetch("/api/admin/governor"),
+          fetch("/api/admin/queue"),
+          fetch("/api/admin/browser-sessions"),
+        ]);
+        if (govRes.ok) setGovernor((await govRes.json()) as OverviewGovernor);
+        if (queueRes.ok) setJobs((await queueRes.json()) as AdminQueueJob[]);
+        if (sessionsRes.ok) setSessions((await sessionsRes.json()) as AdminSession[]);
+      } catch {
+        setError("Some live figures below didn't load — the tabs they link to still work.");
+      }
+    })();
+  }, []);
+
+  const runningJobs = jobs.filter((j) => j.jobStatus === "running").length;
+  const queuedJobs = jobs.filter((j) => j.jobStatus === "queued").length;
+  const liveSessions = sessions.filter((s) => s.status === "running").length;
+
+  const levelDot =
+    governor?.pressure.level === "hard"
+      ? "bg-red-500"
+      : governor?.pressure.level === "warn"
+        ? "bg-amber-500"
+        : "bg-emerald-500";
+  const levelLabel = governor
+    ? governor.settings.enabled
+      ? governor.pressure.level
+      : "off"
+    : "—";
+
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold tracking-tight">Overview</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        At-a-glance system health. Every card below is a real number from the tab it
+        links to — click through for the full control.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <button
+          onClick={() => onNavigate("infrastructure")}
+          className="rounded-xl border border-zinc-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+        >
+          <div className="flex items-center justify-between text-xs font-medium text-zinc-500 dark:text-zinc-400">
+            Resource governor
+            <span className={`h-2 w-2 rounded-full ${levelDot}`} />
+          </div>
+          <div className="mt-2 text-2xl font-semibold capitalize">{levelLabel}</div>
+          <div className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">
+            {governor?.pressure.measured
+              ? `RAM ${governor.pressure.ramUsedPct}% · load ${governor.pressure.load1.toFixed(2)}`
+              : "Loading…"}
+          </div>
+        </button>
+
+        <button
+          onClick={() => onNavigate("infrastructure")}
+          className="rounded-xl border border-zinc-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+        >
+          <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Queued requests</div>
+          <div className="mt-2 text-2xl font-semibold">{governor?.queuedTotal ?? "—"}</div>
+          <div className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">Held by the governor right now</div>
+        </button>
+
+        <button
+          onClick={() => onNavigate("queue")}
+          className="rounded-xl border border-zinc-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+        >
+          <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Search jobs</div>
+          <div className="mt-2 text-2xl font-semibold">
+            {runningJobs} <span className="text-base font-normal text-zinc-400">running</span>
+          </div>
+          <div className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">{queuedJobs} queued</div>
+        </button>
+
+        <button
+          onClick={() => onNavigate("sessions")}
+          className="rounded-xl border border-zinc-200 bg-white p-4 text-left shadow-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+        >
+          <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Browser sessions</div>
+          <div className="mt-2 text-2xl font-semibold">{liveSessions}</div>
+          <div className="mt-1 text-xs text-zinc-400 dark:text-zinc-500">live right now</div>
+        </button>
+      </div>
+
+      <h3 className="mt-8 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        Jump to
+      </h3>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        {(
+          [
+            { tab: "infrastructure" as Tab, label: "Infrastructure", hint: "Governor, admission, clone limits, worker, Vantra links" },
+            { tab: "wallets" as Tab, label: "Wallets & Prices", hint: "Admin-editable pricing for every product" },
+            { tab: "notifications" as Tab, label: "Notifications", hint: "Every attempted send, most recent first" },
+            { tab: "users" as Tab, label: "Users", hint: "Tiers, trial usage, premium grants" },
+          ]
+        ).map((l) => (
+          <button
+            key={l.tab}
+            onClick={() => onNavigate(l.tab)}
+            className="flex items-center justify-between rounded-lg border border-zinc-200 bg-white px-3 py-2.5 text-left text-sm transition-colors hover:border-zinc-300 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+          >
+            <span>
+              <span className="font-medium">{l.label}</span>
+              <span className="ml-2 text-xs text-zinc-400 dark:text-zinc-500">{l.hint}</span>
+            </span>
+            <span className="text-zinc-400">→</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1816,24 +1970,6 @@ function QueueTab() {
 
   return (
     <div>
-      <div className="grid items-start gap-6 lg:grid-cols-2">
-        <AdmissionControlPanel />
-        <WorkerControlPanel
-          onChanged={load}
-          runningCount={jobs.filter((j) => j.jobStatus === "running").length}
-          queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
-        />
-      </div>
-
-      {/* TASK_105 — the governor that decides WHEN those caps queue: pressure
-          thresholds + live host read-out, same tab as the RAM dials. */}
-      <GovernorPanel />
-
-      {/* TASK_107 (B1) — Browser Clone caps/TTLs, same tab as the other RAM dials. */}
-      <CloneLimitsPanel />
-
-      <VantraLinksPanel />
-
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-semibold tracking-tight">Search Queue</h2>
         <div className="flex items-center gap-2">
@@ -1933,6 +2069,53 @@ function QueueTab() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// TASK_126 — the system-level panels that used to live inside "Search Queue"
+// under a label that had nothing to do with them. `runningCount`/`queuedCount`
+// still come from the job list (WorkerControlPanel's own comment explains
+// why), so this tab does its own lightweight fetch of the same endpoint
+// rather than sharing QueueTab's state across an unrelated tab boundary.
+function InfrastructureTab() {
+  const [jobs, setJobs] = useState<AdminQueueJob[]>([]);
+
+  const loadJobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/queue");
+      if (res.ok) setJobs((await res.json()) as AdminQueueJob[]);
+    } catch {
+      // Best-effort — WorkerControlPanel just shows 0/0 if this fails, it
+      // isn't the source of truth for worker health.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadJobs();
+  }, [loadJobs]);
+
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold tracking-tight">Infrastructure</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Every system-level control that isn&apos;t about one product feature: admission,
+        the extraction worker, the resource governor, browser-clone limits, and linked
+        Vantra devices.
+      </p>
+
+      <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
+        <AdmissionControlPanel />
+        <WorkerControlPanel
+          onChanged={loadJobs}
+          runningCount={jobs.filter((j) => j.jobStatus === "running").length}
+          queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
+        />
+      </div>
+
+      <GovernorPanel />
+      <CloneLimitsPanel />
+      <VantraLinksPanel />
     </div>
   );
 }
