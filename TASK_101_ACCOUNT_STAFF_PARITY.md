@@ -1,6 +1,8 @@
 # Task 101 — Account + staff parity surfaces (V3, V4)
 
-**Status: ready. Depends on TASK_95.**
+**Status: READY FOR BUILD — assigned to Cline, 2026-09-26 (owner priority pick).** Dependency
+cleared: TASK_95 is done (confirmed 2026-09-26 — see its own status line; the device-tools/UI work
+it depended on shipped across TASK_103/104/108/114/119/122/123, just under different task numbers).
 **Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §VANTRA PARITY (V3/V4).**
 
 ## Read first (mandatory)

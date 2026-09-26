@@ -1,3 +1,12 @@
+**Status: ✅ DONE (confirmed 2026-09-26, stale doc — never had its status line updated).**
+Every row in §0's table, every schema addition in §2, every Vantra route in §3, every SpaceWorker
+route in §4, and every UI surface in §5 already exists and is live: `lib/device-tools.ts` exports
+`fetchMeshUrls`, `executePinRequest`, `startMaintenanceOverlayAction`/`stopMaintenanceOverlayAction`,
+`createQueuedCommand`/`listQueuedCommands`/`cancelQueuedCommand`, `runCommandNow`, `runPowerAction`
+(21 exported tools total) — built across TASK_103/104/108/114/119/122/123 without this doc ever
+being revisited. `components/device-console.tsx`'s Control/Tools/Activity tabs match §5 exactly.
+Nothing left to build here.
+
 # TASK_95 — Devices v2: every Vantra tool, redesigned, working (OWNER-SIGNED DIRECTION)
 
 > Owner directive 2026-09-21: "take the tools we have in spaceworker/VANTRA, i want ALL working —

@@ -1,5 +1,8 @@
 # Task 95 — Vantra parity: devices + tools + org/agent-granting + nav (V1, V2, V5, M7)
 
+**Status: ✅ DONE (confirmed 2026-09-26) — see the sibling `TASK_95_DEVICES_V2_TOOLS_PARITY.md`,
+which superseded this doc's device-tools scope and is fully built. Nav/dashboard cards (M7) match
+`components/dashboard-nav.tsx` as of TASK_100 MK5.**
 **Status: ready. Depends on TASK_92/93.**
 **Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §VANTRA PARITY TRACK.**
 
