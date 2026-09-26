@@ -210,10 +210,78 @@ redeploy `36212475804` is **success** and the log now ends `HTTP 200`.
 **Still open — the only two things left, both outside code:**
 1. **Owner, on `Sc` only (never `WilkSF9`)**: the `.lnk` actually launching, and the launcher
    actually starting a discovered app. Both need a real Windows desktop and a signed-in console.
-2. **§7 / D4** unchanged: `spaceworker.instaweb.top` still does not resolve, so
-   `PUBLIC_LINK_BASE_URL` stays unset and the link base is `appBaseUrl` — the intended
-   zero-behaviour-change default.
+2. ~~**§7 / D4** unchanged~~ — **CLEARED the same day; see §9.** `spaceworker.instaweb.top` now
+   resolves and serves the app, and `PUBLIC_LINK_BASE_URL` points at it — proven in the **running**
+   process env, not merely present in the file.
 
-**Not claimed:** the two Windows items above; anything about §7's DNS/vhost/TLS; and the ZIP
+**Not claimed at the time of §8:** the two Windows items above; anything about §7's DNS/vhost/TLS
+(§7 was completed afterwards — §9 carries that evidence); and the ZIP
 evidence is the `0b42e61` measurement transferred to the currently deployed build on the strength of
 the workflow-only diff, not a fresh mint.
+
+---
+
+## 9. §7 / D4 CLEARED — the instaweb.top link host is live (2026-09-26, later the same day)
+
+**What was actually wrong.** The migration had removed the **DNS records**, not the plumbing. `dig`
+returned nothing for either name while `api.` / `mesh.` / `rmm.` / `agent.` / `dl.instaweb.top` kept
+theirs. The vhosts, the certbot `dns-cloudflare` authenticator and its Cloudflare token were all still
+on the box — and `spaceworker.top.conf` even documents itself as *"mirrors `spaceworker.instaweb.top`
+verbatim"*, i.e. that name is what this vhost was copied **from**. So this was a restore, not new work.
+
+**Order used — origin before DNS,** so there was never a window where the name resolved to nothing:
+
+1. **Vhosts first**, each a verbatim mirror of its `*.spaceworker.top` counterpart (`server_name` and
+   cert paths only — the convention `dl.broks.beauty.conf` documents for itself). `nginx -t` passed
+   *before* any reload, and both names were probed with `--resolve` **before** DNS existed.
+2. **Then two A records** — `spaceworker.instaweb.top` and `vantra.instaweb.top` → `164.68.105.96`,
+   `proxied=false`, `ttl=1`, matching the sibling records — created with the token already in
+   `/etc/letsencrypt/cloudflare-instaweb.ini` (read into a shell variable; only its **length** was
+   ever echoed).
+3. **No certificate work at all.** The `*.instaweb.top` wildcard already covers any single-label
+   subdomain and is valid to **2026-11-30** — no certbot run, no DNS-01 wait, no rate limit.
+
+**Owner decision (2026-09-26): the public link moves to `spaceworker.instaweb.top` — one host only.**
+`vantra.instaweb.top` exists for the link path **and nothing else** (`/link/` → `:3500`); the Vantra
+dashboard (`:3300`) and `/msi-generator/` (`:4000`) are deliberately **not** exposed there, to keep the
+number of public hostnames for the dashboard down. Both stay reachable on `vantra.spaceworker.top`,
+which is unchanged.
+
+Why the path split is required: the public install link is `<base>/link/vantra/<token>`, and that route
+belongs to the **SpaceWorker** app (`:3500`) — not to Vantra, which is `:3300`.
+
+| Probe (settled config) | Result |
+|---|---|
+| `spaceworker.instaweb.top/` · `/dashboard` · `/link/vantra/<bogus>` | **200** · 307 · **410** |
+| `vantra.instaweb.top/` · `/dashboard` · `/msi-generator/` · `/api/internal/…` | **404** each — nothing else is served |
+| `vantra.instaweb.top/link/vantra/<bogus>` | **410** — the link path works on both names |
+| `spaceworker.instaweb.top/api/internal/…` from an external IP | **403** (loopback-only guard enforced) |
+| TLS served | Let's Encrypt `CN=*.instaweb.top`, verifies without `-k` |
+| Regression | `spaceworker.top` 200, `vantra.spaceworker.top` 200, all services active, flag off |
+
+**`PUBLIC_LINK_BASE_URL` is set** — appended to `/opt/spaceworker/.env` (the sanctioned targeted-append
+route; `.env` is never in the repo) after snapshotting it to
+`/root/spaceworker.env.bak-20260926052046`. Proven where it matters, in the **running** process rather
+than merely the file:
+
+```
+PUBLIC_LINK_BASE_URL lines: 0 -> 1        APP_BASE_URL survived: 1
+process env -> PUBLIC_LINK_BASE_URL=https://spaceworker.instaweb.top
+```
+
+Existing links are untouched (each row stores its own full URL); only newly minted links take the new
+host. Undo = delete that one line + restart, or remove the two A records and the two `sites-enabled`
+symlinks.
+
+**Consequence worth remembering:** had the Vantra deploy smoke test still pointed at
+`vantra.instaweb.top`, it would have broken again the moment that host became link-only (`/` is now
+404). Because §8's fix moved it to `vantra.spaceworker.top` — the host its own vhost serves — it stays
+green.
+
+**Also observed, pre-existing, not touched:** `/opt/spaceworker/.env` is `trmm:trmm 644`, i.e.
+world-readable, while Vantra's is `root:vantra 640`. Worth hardening once every reader of that file is
+confirmed (the service users differ per unit).
+
+**Not claimed:** no fresh mint was run against the new base — a mint rotates that org's live
+install-link token, so that stays the owner's call. The evidence above is that the variable is live in
+the process and that the link path is served and reachable on the chosen host.
