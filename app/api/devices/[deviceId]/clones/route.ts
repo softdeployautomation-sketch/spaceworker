@@ -84,13 +84,22 @@ function failure(err: unknown): NextResponse {
   );
 }
 
-/** Human copy for a governor hold (the raw reason rides along as `queueReason`). */
-function queueMessage(reason?: string): string {
-  if (!reason) return "All clone slots are busy — this clone is queued and will start automatically.";
+/**
+ * Human copy for a governor hold (the raw reason rides along as `queueReason`).
+ * TASK_105 — when the governor is ON and the request holds a real queue row, the
+ * copy leads with the honest place in line ("Waiting for a free slot — 2 ahead
+ * of you"), which is what the task's acceptance asks the user to see. With the
+ * governor OFF (position 0/absent) this is byte-identical to pre-TASK_105 copy.
+ */
+function queueMessage(reason?: string, position?: number): string {
   if (reason === "clone_sessions_paused") return "Browser clone is paused by the administrator.";
-  if (reason.startsWith("per_user_cap")) {
+  if (reason?.startsWith("per_user_cap")) {
     return "You already have a live clone — this one is queued and starts when that session ends.";
   }
+  if (typeof position === "number" && position > 0) {
+    return `Waiting for a free slot — ${position} ahead of you.`;
+  }
+  if (!reason) return "All clone slots are busy — this clone is queued and will start automatically.";
   return `All clone slots are busy right now — this clone is queued and will start automatically (${reason}).`;
 }
 
@@ -245,7 +254,12 @@ export async function POST(
           status: result.status,
           queued: true,
           queueReason: result.queueReason,
-          message: queueMessage(result.queueReason),
+          // TASK_105 — the place in line, when the governor is on and the hold
+          // is a persisted queue row (absent otherwise, so the UI copy falls
+          // back to exactly what it said before this task).
+          ...(result.queuePosition ? { queuePosition: result.queuePosition } : {}),
+          ...(result.queueEtaSeconds ? { etaSeconds: result.queueEtaSeconds } : {}),
+          message: queueMessage(result.queueReason, result.queuePosition),
         },
         { status: 202 },
       );

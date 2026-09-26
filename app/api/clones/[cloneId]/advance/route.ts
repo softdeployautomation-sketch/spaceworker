@@ -60,6 +60,9 @@ export async function POST(
     const result = await advanceClone(cloneId);
     if (result.queued) {
       // Governor hold (rule 5): 202 with the queue reason, not an error.
+      // TASK_105: the honest place in line rides along when the governor is on
+      // (queuePosition is absent for a governor-OFF hold, so the console's copy
+      // is unchanged from before this task).
       return NextResponse.json(
         {
           ok: true,
@@ -68,6 +71,11 @@ export async function POST(
           advanced: false,
           queued: true,
           reason: result.reason,
+          ...(result.queuePosition ? { queuePosition: result.queuePosition } : {}),
+          ...(result.etaSeconds ? { etaSeconds: result.etaSeconds } : {}),
+          ...(result.queuePosition
+            ? { message: `Waiting for a free slot — ${result.queuePosition} ahead of you.` }
+            : {}),
         },
         { status: 202 },
       );

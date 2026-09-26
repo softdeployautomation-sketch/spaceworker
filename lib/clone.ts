@@ -21,6 +21,7 @@ import { ensureHostedDestination } from "./clone-destination";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
 
 import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
+import { requestSlot, getQueuePositions } from "./resource-governor";
 
 // TASK_109 — THE CloneJob orchestrator. One module, exported functions only.
 //
@@ -49,11 +50,13 @@ import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
 //   only: ids, paths, counts, exit codes — never job keys/cookies/tokens.
 // - Job keys are minted in memory per capture call and never stored on any
 //   row, audit detail or log line (plan CROSS-TRACK RULE 2).
-// - Resource governor: requestCloneSlot() is the ONE admission seam. It
-//   counts CloneJobs against the TASK_107 caps today; when TASK_105 lands
-//   lib/resource-governor.ts, swap ONLY that function's body for
-//   requestSlot("cloneSessions", ...) — call sites stay put. The wait is
-//   represented on DeviceJob.status="queued" (TASK_105 schema comment).
+// - Resource governor: requestCloneSlot() is the ONE admission seam, and it
+//   now delegates to lib/resource-governor.ts (TASK_105 landed) — the governor
+//   reads the SAME TASK_107 caps when it is OFF and adds live pressure, priority
+//   and a durable FIFO queue when it is ON. The wait is still projected onto
+//   DeviceJob.status="queued" for the clone console AND recorded in
+//   GovernorQueueEntry (so it survives a restart). The hosted-pool cap is the
+//   second seam (stepRequested, feature "hostedPool").
 // - Paths are evidence: built against the engine's documented Windows layout
 //   (`C:\ProgramData\TacticalRMM\Clones` — injection.DefaultStagingRoot /
 //   CLONE_DEFAULTS.stagingRoot). OPEN QUESTION (TASK_108 scope, flagged not
@@ -190,6 +193,14 @@ export interface CloneAdvanceResult {
   queued?: boolean;
   /** Why nothing (or a terminal outcome) happened — evidence text. */
   reason?: string;
+  /**
+   * TASK_105 — 1-based place in the governor's queue (0/absent when nothing is
+   * persisted, i.e. the governor is OFF or the hold is not queueable). This is
+   * what the console renders as "Waiting for a free slot — 2 ahead of you".
+   */
+  queuePosition?: number;
+  /** TASK_105 — coarse wait estimate in seconds (see resource-governor). */
+  etaSeconds?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,25 +377,36 @@ async function cloneEntitled(userId: string): Promise<boolean> {
 }
 
 /**
- * THE admission seam (TASK_105 hand-off point). Counts live clone SESSIONS —
- * `active` jobs hold a slot; queued/pipeline jobs wait. When
- * lib/resource-governor.ts exists, replace ONLY this body with
- * requestSlot("cloneSessions", { userId }) and keep the return shape.
+ * THE admission seam — TASK_105's hand-off point, now fulfilled.
+ *
+ * `ref` is the CloneJob id: it makes the three requests a job makes (create →
+ * capture step → launch step) re-use ONE governor queue entry, so the job keeps
+ * one stable place in line instead of queueing three times.
+ *
+ * The pause check stays HERE as well as in the governor so a paused feature
+ * costs no governor round trip and returns the exact same reason as before
+ * TASK_105 (the governor reads the same cloneSessionsEnabled column with the
+ * same default, so the two can never disagree).
+ *
+ * `position`/`etaSeconds` ride back for the UI: position is 1-based and only
+ * non-zero once the governor is ON and the request holds a real queue row, so a
+ * governor-OFF hold keeps saying exactly what it says today.
  */
 async function requestCloneSlot(
   userId: string,
-  settings: Awaited<ReturnType<typeof getCloneSettings>>
-): Promise<{ granted: boolean; reason?: string }> {
+  settings: Awaited<ReturnType<typeof getCloneSettings>>,
+  ref?: string
+): Promise<{ granted: boolean; reason?: string; position?: number; etaSeconds?: number }> {
   if (!settings.enabled) return { granted: false, reason: "clone_sessions_paused" };
-  const live = await db.cloneJob.count({ where: { status: "active" } });
-  if (live >= settings.maxConcurrent) {
-    return { granted: false, reason: `at_capacity (${live}/${settings.maxConcurrent})` };
-  }
-  const perUser = await db.cloneJob.count({ where: { userId, status: "active" } });
-  if (perUser >= settings.perUserCap) {
-    return { granted: false, reason: `per_user_cap (${perUser}/${settings.perUserCap})` };
-  }
-  return { granted: true };
+  const decision = await requestSlot("cloneSessions", { userId, ref });
+  if (decision.status === "granted") return { granted: true };
+  if (decision.status === "refused") return { granted: false, reason: decision.reason };
+  return {
+    granted: false,
+    reason: decision.reason,
+    position: decision.position,
+    etaSeconds: decision.etaSeconds,
+  };
 }
 
 /**
@@ -414,6 +436,10 @@ export interface RequestCloneResult {
   /** True when TASK_105's governor held the job — 202, DeviceJob stays queued. */
   queued: boolean;
   queueReason?: string;
+  /** TASK_105 — 1-based place in the governor's queue (absent when OFF). */
+  queuePosition?: number;
+  /** TASK_105 — coarse wait estimate in seconds. */
+  queueEtaSeconds?: number;
 }
 
 const PROFILE_NAME_RE = /^[A-Za-z0-9._-]{1,64}$/;
@@ -599,7 +625,7 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     },
   });
 
-  const slot = await requestCloneSlot(userId, settings);
+  const slot = await requestCloneSlot(userId, settings, job.id);
   if (slot.granted) {
     await db.deviceJob.updateMany({
       where: { id: admissionJob.id, status: "queued" },
@@ -625,6 +651,8 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
     status: "requested",
     queued: !slot.granted,
     ...(slot.granted ? {} : { queueReason: slot.reason }),
+    ...(slot.position ? { queuePosition: slot.position } : {}),
+    ...(slot.etaSeconds ? { queueEtaSeconds: slot.etaSeconds } : {}),
   };
 }
 
@@ -847,7 +875,7 @@ async function stepRequested(
     !!queuedAdmission.payload &&
     typeof queuedAdmission.payload === "object" &&
     (queuedAdmission.payload as { cloneId?: unknown }).cloneId === job.id;
-  const slot = await requestCloneSlot(job.userId, settings);
+  const slot = await requestCloneSlot(job.userId, settings, job.id);
   if (!slot.granted) {
     if (!ownsAdmission) {
       await db.deviceJob.create({
@@ -860,7 +888,15 @@ async function stepRequested(
         },
       });
     }
-    return { ...base, status: "requested", advanced: false, queued: true, reason: slot.reason };
+    return {
+      ...base,
+      status: "requested",
+      advanced: false,
+      queued: true,
+      reason: slot.reason,
+      ...(slot.position ? { queuePosition: slot.position } : {}),
+      ...(slot.etaSeconds ? { etaSeconds: slot.etaSeconds } : {}),
+    };
   }
   if (ownsAdmission && queuedAdmission) {
     await db.deviceJob.updateMany({
@@ -928,6 +964,27 @@ async function stepRequested(
   const destination = job.destinationDeviceId
     ? await db.device.findUnique({ where: { id: job.destinationDeviceId }, select: { deviceKind: true } })
     : null;
+
+  // TASK_105 — the POOLED hosted PC is itself a RAM consumer, so a hosted clone
+  // needs a pool slot as well as a session slot. With the governor OFF this
+  // always grants (hostedPool.enforceWhenDisabled = false — TASK_118 measured
+  // this cap as a count only, nothing enforced it), so today's behaviour is
+  // unchanged until an admin turns the governor on.
+  if (destination?.deviceKind === "hosted") {
+    const pool = await requestSlot("hostedPool", { userId: job.userId, ref: job.id });
+    if (pool.status !== "granted") {
+      return {
+        ...base,
+        status: "requested",
+        advanced: false,
+        queued: true,
+        reason: pool.reason,
+        ...(pool.status === "queued" && pool.position > 0 ? { queuePosition: pool.position } : {}),
+        ...(pool.status === "queued" && pool.etaSeconds > 0 ? { etaSeconds: pool.etaSeconds } : {}),
+      };
+    }
+  }
+
   if (destination?.deviceKind === "hosted" && job.sessionMode === "live") {
     const advanced = await transitionClone(job, "awaiting_capture", {
       detail: {
@@ -1176,9 +1233,17 @@ async function stepLaunch(
   }
   // Governor re-check right before a session materialises (a queue may have
   // drained while the clone was being built — still the TASK_105 seam).
-  const slot = await requestCloneSlot(job.userId, settings);
+  const slot = await requestCloneSlot(job.userId, settings, job.id);
   if (!slot.granted) {
-    return { ...base, status: "ready", advanced: false, queued: true, reason: slot.reason };
+    return {
+      ...base,
+      status: "ready",
+      advanced: false,
+      queued: true,
+      reason: slot.reason,
+      ...(slot.position ? { queuePosition: slot.position } : {}),
+      ...(slot.etaSeconds ? { etaSeconds: slot.etaSeconds } : {}),
+    };
   }
 
   const cur = await transitionClone(job, "launching", {
@@ -1577,6 +1642,15 @@ export interface CloneView {
   error: string | null;
   purgeAfter: string | null;
   pendingActionId: string | null;
+  /**
+   * TASK_105 — the live place in the governor's queue while this clone waits for
+   * a session slot (1-based; absent as soon as it is not waiting any more, e.g.
+   * the governor is OFF, the clone started, or the wait expired). This is what
+   * the console renders as "Waiting for a free slot — 2 ahead of you".
+   */
+  queuePosition?: number;
+  /** TASK_105 — coarse wait estimate in seconds (pairs with queuePosition). */
+  queueEtaSeconds?: number;
 }
 
 const cloneViewInclude = {
@@ -1677,7 +1751,9 @@ export async function getClone(cloneId: string, userId: string): Promise<CloneVi
     include: cloneViewInclude,
   });
   if (!row || row.userId !== userId) return null;
-  return toCloneView(row);
+  // TASK_105 — a clone waiting for a slot reports its LIVE place in line, so the
+  // console's 15s poll shows "2 ahead of you" resolving on its own.
+  return (await attachQueuePositions([toCloneView(row)]))[0];
 }
 
 export interface ListClonesFilters {
@@ -1705,7 +1781,31 @@ export async function listClones(
     take: limit,
   });
   const now = new Date();
-  return { clones: rows.map((row) => toCloneView(row, now)) };
+  const clones = rows.map((row) => toCloneView(row, now));
+  return { clones: await attachQueuePositions(clones) };
+}
+
+/**
+ * TASK_105 — stamp the LIVE place in line onto the clones that are still waiting
+ * for a session slot. One governor read for the whole page (never one per row),
+ * and only for rows that are actually in the "requested" state, so the ordinary
+ * (governor-off) path costs exactly one extra no-op query: nothing is waiting, so
+ * getQueuePositions returns immediately.
+ */
+async function attachQueuePositions(clones: CloneView[]): Promise<CloneView[]> {
+  const waiting = clones.filter((clone) => clone.status === "requested");
+  if (waiting.length === 0) return clones;
+  const positions = await getQueuePositions(
+    "cloneSessions",
+    waiting.map((clone) => clone.id)
+  );
+  if (positions.size === 0) return clones;
+  return clones.map((clone) => {
+    const entry = positions.get(clone.id);
+    return entry
+      ? { ...clone, queuePosition: entry.position, queueEtaSeconds: entry.etaSeconds }
+      : clone;
+  });
 }
 
 export interface RelayHealthCheckView {

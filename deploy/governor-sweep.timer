@@ -1,0 +1,17 @@
+# Install: sudo cp governor-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now governor-sweep.timer
+[Unit]
+Description=Run the SpaceWorker resource governor sweep every minute
+
+# One-minute cadence. The queue timeout and the starvation promotion are both
+# measured in MINUTES (governorQueueTimeoutSec / governorStarvationPromoteMin),
+# so a coarser timer would make "waited > N minutes" imprecise; a daily one
+# would leave granted-but-never-started rows and stalled waiters behind. Every
+# phase is idempotent and the route single-flights concurrent runs to
+# { skipped: true }, so overlapping ticks converge to a no-op.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=governor-sweep.service
+
+[Install]
+WantedBy=timers.target

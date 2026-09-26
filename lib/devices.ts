@@ -199,6 +199,8 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
   policiesOff: number;
   clonesRevoked: number;
   cloneSessionsStopped: number;
+  /** TASK_105 — waiting governor requests withdrawn by this panic. */
+  cancelledSlots: number;
 }> {
   const now = new Date();
   const expiredProposals = await db.agentPendingAction.updateMany({
@@ -227,6 +229,13 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
   const { revokeClonesForPanic } = await import("./clone");
   const cloneLeg = await revokeClonesForPanic(userId, actor);
 
+  // TASK_105 — withdraw this user's WAITING governor requests as well: a clone
+  // the panic leg just revoked must not keep a place in line (the sweep would
+  // otherwise grant a slot to a job that no longer exists). Lazy import for the
+  // same reason as the clone leg — keep this module's import graph one-way.
+  const { cancelQueuedSlots } = await import("./resource-governor");
+  const cancelledSlots = await cancelQueuedSlots({ userId });
+
   // Per-device audit rows for the panic event itself.
   const devices = await db.device.findMany({ where: { userId }, select: { id: true } });
   if (devices.length > 0) {
@@ -242,6 +251,7 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
           cancelledActions: cancelledActions.count,
           clonesRevoked: cloneLeg.clonesRevoked,
           cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
+          cancelledSlots,
         },
       })),
     });
@@ -258,6 +268,7 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
       clonesRevoked: cloneLeg.clonesRevoked,
       cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
       cloneErrors: cloneLeg.errors,
+      cancelledSlots,
     },
   });
   return {
@@ -267,5 +278,6 @@ export async function panicStopAllDevices(userId: string, actor = "user"): Promi
     policiesOff: policiesOff.count,
     clonesRevoked: cloneLeg.clonesRevoked,
     cloneSessionsStopped: cloneLeg.cloneSessionsStopped,
+    cancelledSlots,
   };
 }

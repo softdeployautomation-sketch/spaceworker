@@ -13,6 +13,7 @@
     "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
     "test:browser": "tsx --test browser-server/relay-ingress.test.ts",
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
+    "test:governor": "tsx --test tests/resource-governor.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",

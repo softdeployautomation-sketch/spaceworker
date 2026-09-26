@@ -137,7 +137,22 @@ type CloneRow = {
   idleRemainingMs: number | null;
   lastUsedAt: string | null;
   error: string | null;
+  /** TASK_105 — live place in the governor's queue while this clone waits. */
+  queuePosition?: number;
+  /** TASK_105 — coarse wait estimate in seconds, paired with queuePosition. */
+  queueEtaSeconds?: number;
 };
+
+/**
+ * TASK_105 — the honest queue line for a clone that is waiting for a slot.
+ * Returns "" when the clone is not waiting (or the governor is off, where
+ * queuePosition is absent), so nothing changes for the ordinary path.
+ */
+function cloneQueueLine(row: Pick<CloneRow, "status" | "queuePosition">): string {
+  if (row.status !== "requested") return "";
+  if (typeof row.queuePosition !== "number" || row.queuePosition <= 0) return "";
+  return `Waiting for a free slot — ${row.queuePosition} ahead of you.`;
+}
 
 // Human words for every lifecycle step — the owner quality bar is explicit:
 // `Waiting for your PC` / human progress, never `awaiting_source` or an id.
@@ -1130,10 +1145,15 @@ export function DeviceConsole({
       }
       const cloneId = typeof data.cloneId === "string" ? data.cloneId : null;
       if (data.queued === true) {
+        // TASK_105 — when the governor is on and the request holds a place in
+        // line, say exactly where: "Waiting for a free slot — 2 ahead of you."
+        const position = typeof data.queuePosition === "number" ? data.queuePosition : 0;
         const why =
-          typeof data.message === "string" && data.message
-            ? data.message
-            : "The clone is queued — it starts when capacity frees up.";
+          position > 0
+            ? `Waiting for a free slot — ${position} ahead of you.`
+            : typeof data.message === "string" && data.message
+              ? data.message
+              : "The clone is queued — it starts when capacity frees up.";
         setCloneNotice(why);
       } else {
         setCloneNotice("Clone requested — it starts as soon as your PC and its relay are ready.");
@@ -1665,6 +1685,7 @@ function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: stri
   const { row, busy, onOpen, onRevoke, onDelete } = props;
   const live = isCloneLiveStatus(row.status);
   const terminal = isCloneTerminalStatus(row.status) || row.terminal;
+  const queueLine = cloneQueueLine(row);
   const errText = row.error ? ` · ${row.error}` : row.status === "failed" ? " · could not start — try again" : "";
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-elevated px-3 py-2">
@@ -1679,6 +1700,7 @@ function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: stri
           </span>
         </span>
         <span className="mt-0.5 block text-xs text-fg-muted">
+          {queueLine ? `${queueLine} · ` : ""}
           {cloneEgressShort(row.egressMode)} · TTL {formatCountdown(row.ttlRemainingMs)}{errText}
         </span>
       </span>
@@ -1720,6 +1742,7 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
   const { row, busy, premium, onOpen, onRevoke } = props;
   const relayDown = row.egressMode === "relay" && row.relay !== null && row.relay.status !== "up";
   const idleShorter = row.idleRemainingMs !== null && row.idleRemainingMs < (row.ttlRemainingMs ?? Number.MAX_SAFE_INTEGER);
+  const queueLine = cloneQueueLine(row);
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -1734,6 +1757,11 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
         {idleShorter ? ` · idle ${formatCountdown(row.idleRemainingMs)}` : ""}
       </p>
       <p className="mt-0.5 text-xs text-fg-muted">{cloneEgressLabel(row.egressMode)}</p>
+      {queueLine && (
+        <p className="mt-1.5 rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-xs text-fg">
+          {queueLine} It starts on its own — nothing to do.
+        </p>
+      )}
       {row.egressMode === "relay" && row.relay && (
         <p className="mt-0.5 text-xs text-fg-muted">
           Relay {row.relay.status === "up" ? "healthy" : "down — the clone stops rather than leak your IP"}

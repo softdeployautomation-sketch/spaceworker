@@ -1,7 +1,13 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
-import { getAdminSettings } from "@/lib/admin-settings";
+import {
+  FEATURE_REGISTRY,
+  getGovernorFeatureStatuses,
+  isGovernorFeature,
+  type GovernorFeature,
+  type GovernorFeatureStatus,
+} from "@/lib/resource-governor";
 
 // Task 46 — admin admission control for the two mechanisms that actually spend
 // real RAM on this shared VPS: search/extraction dispatch lanes (light/heavy)
@@ -11,44 +17,43 @@ import { getAdminSettings } from "@/lib/admin-settings";
 // can see "2 of 3 in use" while deciding whether to raise or lower a limit, not
 // just the static setting.
 
-type MechanismKey =
-  | "dispatchLight"
-  | "dispatchHeavy"
-  | "browserSessions"
-  | "vantraLinks"
-  | "deviceActions";
+// TASK_105 — the mechanism list IS the governor's feature registry (deliverable
+// 3: "adding a feature = one registry entry, not a new subsystem"). Caps and
+// enabled flags still come from AdminSetting through each entry's columns; the
+// LIVE count and the QUEUED count now come from that same registry and the
+// governor's queue table, so this card, the governor and each feature's own gate
+// can never disagree about "2 of 3 in use, 4 waiting".
+type MechanismKey = GovernorFeature;
 
-const MECHANISMS: Record<
-  MechanismKey,
-  { enabledField: string; maxField: string }
-> = {
-  dispatchLight: { enabledField: "dispatchLightEnabled", maxField: "dispatchLightMaxConcurrent" },
-  dispatchHeavy: { enabledField: "dispatchHeavyEnabled", maxField: "dispatchHeavyMaxConcurrent" },
-  browserSessions: { enabledField: "browserSessionsEnabled", maxField: "browserSessionsMaxConcurrent" },
-  // Task 93 (CROSS-TRACK RULE 7) — Vantra plugin per-feature limits.
-  vantraLinks: { enabledField: "vantraLinksEnabled", maxField: "vantraLinksMax" },
-  deviceActions: { enabledField: "deviceActionsEnabled", maxField: "deviceActionsMaxConcurrent" },
+type MechanismState = {
+  enabled: boolean;
+  maxConcurrent: number;
+  active: number;
+  /** TASK_105 — requests the governor is holding for this feature right now. */
+  queued: number;
+  /**
+   * False when the feature has no master on/off AdminSetting column (the hosted
+   * pool's size IS its cap), so the panel hides the Pause toggle rather than
+   * offering a switch that would write nothing.
+   */
+  toggleable: boolean;
 };
 
-async function liveCounts(): Promise<Record<MechanismKey, number>> {
-  const [light, heavy, sessions, links, deviceActions] = await Promise.all([
-    prisma.searchJob.count({ where: { lane: "light", status: "running" } }),
-    prisma.searchJob.count({ where: { lane: "heavy", status: "running" } }),
-    prisma.browserSession.count({ where: { status: { in: ["starting", "running"] } } }),
-    // Live counts for the Task 93 mechanisms. For links, "active" = links NOT
-    // revoked (the number the vantraLinksMax cap applies to). For device
-    // actions, it's the open (requested/approved/executing) proposals — the
-    // same pool createDeviceActionProposal counts against the cap.
-    prisma.vantraLink.count({ where: { status: { not: "revoked" } } }),
-    prisma.deviceAction.count({ where: { status: { in: ["requested", "approved", "executing"] } } }),
-  ]);
+function toMechanismState(status: GovernorFeatureStatus): MechanismState {
   return {
-    dispatchLight: light,
-    dispatchHeavy: heavy,
-    browserSessions: sessions,
-    vantraLinks: links,
-    deviceActions,
+    enabled: status.enabled,
+    maxConcurrent: status.cap,
+    active: status.live,
+    queued: status.queued,
+    toggleable: FEATURE_REGISTRY[status.key].enabledColumn !== undefined,
   };
+}
+
+async function featureStates(): Promise<Record<MechanismKey, MechanismState>> {
+  const statuses = await getGovernorFeatureStatuses();
+  return Object.fromEntries(
+    statuses.map((status) => [status.key, toMechanismState(status)])
+  ) as Record<MechanismKey, MechanismState>;
 }
 
 export async function GET() {
@@ -57,27 +62,12 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const settings = await getAdminSettings();
-  const active = await liveCounts();
-
-  const body = Object.fromEntries(
-    (Object.keys(MECHANISMS) as MechanismKey[]).map((key) => {
-      const { enabledField, maxField } = MECHANISMS[key];
-      return [
-        key,
-        {
-          enabled: settings[enabledField as keyof typeof settings] as boolean,
-          maxConcurrent: settings[maxField as keyof typeof settings] as number,
-          active: active[key],
-        },
-      ];
-    })
-  );
-
-  return NextResponse.json(body);
+  return NextResponse.json(await featureStates());
 }
 
-// PATCH — body: { mechanism: "dispatchLight"|"dispatchHeavy"|"browserSessions", enabled?, maxConcurrent? }
+// PATCH — body: { mechanism: <registry key>, enabled?, maxConcurrent? }. The
+// column each field writes is read from the feature registry, so the API and the
+// governor can never target different columns for the same feature.
 export async function PATCH(req: Request) {
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
@@ -92,21 +82,28 @@ export async function PATCH(req: Request) {
   }
 
   const mechanism = typeof body.mechanism === "string" ? body.mechanism : "";
-  if (!(mechanism in MECHANISMS)) {
+  if (!isGovernorFeature(mechanism)) {
     return NextResponse.json({ error: "Unknown mechanism" }, { status: 400 });
   }
-  const { enabledField, maxField } = MECHANISMS[mechanism as MechanismKey];
+  const key: GovernorFeature = mechanism;
+  const def = FEATURE_REGISTRY[key];
 
   const data: Record<string, boolean | number> = {};
   if (typeof body.enabled === "boolean") {
-    data[enabledField] = body.enabled;
+    if (!def.enabledColumn) {
+      return NextResponse.json(
+        { error: `${key} has no on/off switch — its size is the limit` },
+        { status: 400 },
+      );
+    }
+    data[def.enabledColumn] = body.enabled;
   }
   if (body.maxConcurrent !== undefined) {
     const n = Number(body.maxConcurrent);
     if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
       return NextResponse.json({ error: "maxConcurrent must be a positive integer" }, { status: 400 });
     }
-    data[maxField] = n;
+    data[def.maxColumn] = n;
   }
   if (Object.keys(data).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
@@ -114,18 +111,14 @@ export async function PATCH(req: Request) {
 
   // Same upsert-into-singleton pattern getAdminSettings() uses, so the very
   // first PATCH (before any GET has created the row) still works.
-  const updated = await prisma.adminSetting.upsert({
+  await prisma.adminSetting.upsert({
     where: { id: "singleton" },
     update: data,
     create: data,
   });
 
-  const active = await liveCounts();
-  const key = mechanism as MechanismKey;
-  return NextResponse.json({
-    mechanism: key,
-    enabled: updated[enabledField as keyof typeof updated] as boolean,
-    maxConcurrent: updated[maxField as keyof typeof updated] as number,
-    active: active[key],
-  });
+  // Fresh state back (the panel swaps its row wholesale, so ONE round trip
+  // refreshes the cap, the live count AND the queued count).
+  const states = await featureStates();
+  return NextResponse.json({ mechanism: key, ...states[key] });
 }
