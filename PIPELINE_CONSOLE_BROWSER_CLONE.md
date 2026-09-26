@@ -186,7 +186,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 | OWN-1 | **C2** full screen: press ⤢ → the screen fills the viewport, **only** the toolbox line + screen render, and switching tab away and back still shows the **live** screen (no “Unable to perform authentication”) | `/console/<Sc>` | merged `2ad5841`, deployed `8ce56e2`; no human has looked at it |
 | OWN-2 | **C3** launcher: Session → **Launch app…** → filter → Enter; the app starts on `Sc`; **Re-scan** works | same | same deploy; box confirmed to carry the route + the menu string |
 | OWN-3 | **OOB-4 / MISSING-3** Hide/Reveal: `Hide agent` renames both services + drops the Apps row; `Reveal` restores | Security menu | built + deployed; the VM click-through was never done |
-| OWN-4 | **OOB-6 / TASK_115** overlay styles — default, **spinner (exe)**, upload-your-own — **and the technician's mouse *and* keyboard must still work under “spinner”** | Session → Maintenance screen | server-side verified; the input path is exactly what TASK_23 rejected 3/3 and remains **unproven** |
+| ~~OWN-4~~ | **WITHDRAWN by owner 2026-09-26** — “we dont need the overlay fix anymore since the launcher works” | — | The overlay existed to stop shell popups; the **silent app launcher** removes the need to open shells at all, so that is the fix (this was already TASK_104's promotion of the launcher from “fallback toolbelt” to “the actual fix”). **Not a defect — do not re-open it as one.** The overlay still ships as-is (default script / spinner / upload) and the TASK_23 cursor risk stays recorded for the record |
 | OWN-5 | **OOB-13 / B11** open a freshly minted ZIP on Windows: `Install SpaceWorker.lnk` launches, `payload/Launcher.exe` runs; the naming card’s **“Regenerate with these names”** mints a real ZIP | Vantra connect card | server-side passed (archive listing confirmed); no Windows run |
 | OWN-6 | **TASK_114 / B8** the one-click **“Set up this PC”** button | Device setup card | its server half ran live in B8-2; the click itself is unverified |
 | OWN-7 | **Wake**: Power → **Wake** against a powered-off machine | console | deployed; it forwards `{action:"wake"}` to Vantra/TRMM. **Real Wake-on-LAN is NOT built — the button reports success and cannot wake a machine. Root-caused 2026-09-26 in `TASK_123` (B12); do not re-diagnose it as a config problem** |
@@ -195,10 +195,10 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 
 | # | Bit | What is left | Why it matters |
 |---|---|---|---|
-| BUILD-1 | **B9-B / TASK_119B** | **push `agent/task-119b-live-capture` (`56b2c4a`) → merge → deploy**, then commit its test in place of the throwaway harness | ⚠️ **HIGHEST RISK.** The work exists on **one machine only** (no remote branch), `origin/main` has no `cookies` permission and no `chrome.cookies.getAll`, so **“Carry my session” cannot capture anything** — and `TASK_120` has nothing to install |
+| ~~BUILD-1~~ | **B9-B / TASK_119B — MERGED 2026-09-26** | ~~push → merge → deploy~~ **DONE** | Branch pushed (`origin/agent/task-119b-live-capture`), merged to `main` as **`0ca31f0`** (`56b2c4a` is now an ancestor). Verified on the merge: `gofmt` clean, `go build ./...` 0, `go vet ./...` 0, `manifest.json` now carries `"cookies"` + `"<all_urls>"`, `chrome.cookies.getAll` ×3 in `background.js`. **The single-copy risk is closed.** ⚠️ **Still not device-deliverable:** `engine-dist/` on the box holds **9 files** and contains **no** native host, **no** extension, **no** `install-registry.ps1` — and the workflow tar (`.next node_modules package.json package-lock.json prisma browser-server worker deploy`) never ships it. Delivery is **BUILD-2**, and it must land **after** B10-2's registry rewrite (policy → registry `update_url`) or it would ship the **rejected** `ExtensionInstallForcelist` policy |
 | BUILD-2 | **B10 / TASK_120** | ship `clone-native-host.exe` + `install-registry.ps1` in `engine-dist` **and** `ROLE_ARTIFACTS.source`; register the native host; write the **registry `update_url`** (never a policy); persist `DeviceSetupRun`; per-section activity UI; one button → running clone | leaves the dead end the owner hit: a button gated on a capability nothing delivers |
 | BUILD-3 | **OOB-1 / TASK_113** | Prisma’s own FK diff as an **additive migration** (owner applies it) | the live DB **cascades** device/audit deletes where the datamodel declares `RESTRICT` — inert today, but the exact thing RULE 5 forbids |
-| BUILD-4 | **B12 / TASK_123** Wake-on-LAN + keep-awake | **RECORDED · READY FOR BUILD, assigned to Claude** — `TASK_123_WAKE_ON_LAN.md`. Supersedes TASK_96 deliverables 2-5 | **the Wake button reports success and cannot wake a machine.** Verified: it forwards to TRMM `/wol/` → MeshCentral `wakedevices`, which asks the *sleeping machine for its own MAC* and relays **same-mesh, not same-subnet** — and the server-side raw packet is a documented no-op on a WAN-only VPS. Fix = record the MAC at setup + relay via a **same-subnet** peer + fail closed; **keep-awake ships first** (no peer needed, reuses the unused `DevicePowerPolicy`) |
+| BUILD-4 | **B12 / TASK_123** Wake-on-LAN + keep-awake | **RECORDED · READY FOR BUILD** — PATH A **`TASK_123_WAKE_ON_LAN.md`** (SpaceWorker, **assigned to Claude**) + PATH B **`TASK_123B_WOL_VANTRA.md`** (Vantra transport + keep-awake, **unassigned — needs an agent**). Supersedes TASK_96 deliverables 2-5 | **the Wake button reports success and cannot wake a machine.** Verified: it forwards to TRMM `/wol/` → MeshCentral `wakedevices`, which asks the *sleeping machine for its own MAC* and relays **same-mesh, not same-subnet** — and the server-side raw packet is a documented no-op on a WAN-only VPS. Fix = record the MAC at setup + relay via a **same-subnet** peer + fail closed; **keep-awake ships first** (no peer needed, reuses the unused `DevicePowerPolicy`) |
 | BUILD-5 | **G1 / TASK_105** resource governor / queue | not started | nothing caps concurrency or enforces fairness as the clone fleet grows |
 | BUILD-6 | **TASK_117 F1/F2** | engine Chrome KDF salt (`saltysalt`, not `peanuts`) + the unhandled 16-byte cookie prefix | off the critical path (Linux-profile reads only), but a genuine bug |
 | BUILD-7 | **B8-4** retire `self_only` | **not done** — `self_only` still exists at `lib/clone-hosts.ts:76,153`, `components/device-console.tsx:86,1924`, `lib/clone-setup.ts:125` | with the destination now ours it may be dead code — **but that has not been proven**, and a stale refusal could still fire on a one-PC account |
@@ -207,7 +207,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 
 | # | Commit | What is on `main` but not running | Impact |
 |---|---|---|---|
-| DEPLOY-1 | `6aaeed6` (another session, 2026-09-26) | **“Fix silent 0-apps discovery: `Test-Path` throws on a trailing-backslash `InstallLocation`”** (`lib/device-tools.ts`, +23/-4) | **Directly affects the launcher the owner is testing now.** Proven: server `md5 116ecad0…` ≠ `main 0533121c…`, and the deployed file has **no** trailing-backslash guard. If the app list comes back **empty**, that is this bug — and the fix is **pushed but not deployed** |
+| ~~DEPLOY-1~~ | **CLOSED — the fix IS live. My earlier note was WRONG.** | `6aaeed6` (Claude, 2026-09-26) — “Fix silent 0-apps discovery: `Test-Path` throws on a trailing-backslash `InstallLocation`” | **CORRECTED 2026-09-26.** The owner confirmed the launcher now works (it showed **0 apps** before). I had judged the deploy by `/opt/spaceworker/lib/device-tools.ts` (md5 `116ecad0…`, unguarded) — but **workflow deploys ship `.next` only, never `lib/`**, so that source file is permanently stale by design. The **compiled** build is what runs, and it **carries the fix**: `.next/server/chunks/lib_device-tools_ts_0jxl4zi._.js` contains `InstallLocation -ErrorAction SilentlyContinue` (×2), `BUILD_ID` mtime `2026-09-26 06:00:10 +0200`. **Lesson (do not repeat): never judge deploy state from `/opt/spaceworker/lib/*` or `/opt/vantra/lib/*` — check the compiled `.next` build or a live probe** |
 
 ### GATE — owner decision or outside-the-code step
 
@@ -746,4 +746,31 @@ Verified live during this pass: site `200`, all five services `active`.
   deliverables 2-5, which had assumed a peer-relay without checking the subnet requirement. Docs only —
   no code changed, nothing deployed, `WilkSF9` untouched.
 
-  deployed, `WilkSF9` untouched. Live check during the pass: site `200`, all five services `active`.
+- 2026-09-26 — **TASK_119B merged to `main`; DEPLOY-1 closed with a correction of my own error; OWN-4
+  withdrawn; TASK_123 PATH B written.**
+  **(1) `BUILD-1` closed.** `agent/task-119b-live-capture` (`56b2c4a`) was pushed for the first time
+  (it existed on one machine only) and merged to `main` as **`0ca31f0`**. Verified on the merge:
+  `gofmt` clean, `go build ./...` exit 0, `go vet ./...` exit 0, `manifest.json` now carries `"cookies"`
+  + `"<all_urls>"`, `chrome.cookies.getAll` ×3 in `background.js`. **The single-copy risk is gone.**
+  Honest scope: this is **not** device-deliverable yet — `engine-dist/` on the box holds 9 files with **no**
+  native host, extension or `install-registry.ps1`, and the workflow tar never ships that dir, so delivery
+  is still `BUILD-2` — and it must land **after** B10-2 rewrites `install-registry.ps1` away from the
+  **rejected** `ExtensionInstallForcelist` policy, or shipping it would install the thing the owner vetoed.
+  **(2) `DEPLOY-1` CLOSED — and my earlier note was WRONG.** The `6aaeed6` launcher fix **is live**, as the
+  owner's successful test showed. I had judged the deploy from `/opt/spaceworker/lib/device-tools.ts`
+  (md5 `116ecad0…`, unguarded) — but **workflow deploys ship `.next` only, never `lib/`**, so that file is
+  stale **by design**. The compiled build is what runs and it carries the fix
+  (`.next/server/chunks/lib_device-tools_ts_0jxl4zi._.js` → `InstallLocation -ErrorAction SilentlyContinue`,
+  `BUILD_ID` mtime `2026-09-26 06:00:10 +0200`). **Standing rule: never judge deploy state from
+  `/opt/<app>/lib/*` or `/opt/<app>/app/*` — read the compiled `.next` build or probe the route.** The
+  same trap is why `TASK_122` §5 item 6 needed a second, additive source sync.
+  **(3) `OWN-4` withdrawn by the owner** — the overlay work is not needed because the **launcher** is the
+  fix for shell popups (already TASK_104's own conclusion). Recorded as withdrawn, not as a defect, so it
+  is not re-opened.
+  **(4) `TASK_123B_WOL_VANTRA.md` written** — PATH B of the Wake task now exists as a standalone,
+  pickup-ready doc (Vantra `lib/trmm.ts` + the action route + a test), so the "I can't see any part B"
+  gap is closed. `BUILD-4` now names both paths; PATH B is **unassigned and needs an agent**.
+  **(5) `B10-pend` (Web Store listing) still PENDING — the owner confirms there is no listing yet.**
+  Nothing is blocked by that: setup reports `SKIP:store_listing_pending` and `fresh` clones complete.
+  Docs only — no code changed, nothing deployed, `WilkSF9` untouched.
+
