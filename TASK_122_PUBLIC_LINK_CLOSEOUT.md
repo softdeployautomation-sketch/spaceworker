@@ -87,6 +87,9 @@ byte-identical to today (`{}`); the view still has **no** `installerUrl` key.
 
 ## 4. PATH B — Cline: the ops closeout (merge + deploy + verify)
 
+**Done 2026-09-26 — steps 1-4 are complete; step 5 is the owner's device pass. The measured
+record is §8.**
+
 No new product code. This is the half that actually makes the owner's complaint go away.
 
 1. **Push `agent/task-104-launcher-backend`** — it is **local-only** today (backend + 2 routes).
@@ -107,6 +110,11 @@ No new product code. This is the half that actually makes the owner's complaint 
 ---
 
 ## 5. Acceptance
+
+**Results in §8.** Items 6, 7 (on the code-identical build), 8 (routes + bundle strings) and 9 are
+verified. PATH A's items are covered by `tests/vantra-link-installer.test.ts`, re-run on the merged
+tree: `npx tsc --noEmit` 0, `npm run test:vantra` **33/33**, no **new** eslint findings. Item 8's
+actual app launch on `Sc` and §4 step 5 remain owner-only.
 
 **PATH A**
 1. `npm run test:vantra` passes, including the new view/base-URL checks and all 24 existing ones.
@@ -144,3 +152,68 @@ handed out keep their remembered ZIP URL — re-mint or revoke to go back.
 
 Verified today, so nobody re-checks it: `spaceworker.instaweb.top` **does not resolve**
 (`http=000`). `agent.instaweb.top` and `spaceworker.top` both answer 200 from our VPS.
+
+---
+
+## 8. Closeout record — 2026-09-26 (measured; what is *not* claimed is named at the end)
+
+**Merged and pushed**, in §4's order, every merge done in a detached worktree at `origin/main`
+(never from the shared checkout):
+
+| Ref | Result |
+|---|---|
+| `agent/task-104-launcher-backend` | was **local-only** → pushed for the first time (`2992136`), merged as `6d270ed` |
+| `agent/task-103-104-console-ui` (`9e239d8`) | merged as `2ad5841` |
+| `agent/task-122a-public-link` (`1ec9069`, PATH A) | pushed, merge dry-run clean (4 files), merged as `8ce56e2` |
+| `origin/main` | `7c4314c` → **`8ce56e2`**; push-CI `36212000459` **success**, deploy `36212013586` **success** |
+
+**§5 item 6 — the hybrid is over ✅.** `scripts/deploy-vps.sh /tmp/sync-list.txt --no-build
+--no-restart` (purely additive, no `--prune`, `.env` rejected by the script's own guard and never
+touched, maintenance flag never set). All eight changed sources are byte-identical to `main` — an
+`md5` diff of the worktree against `/opt/spaceworker` is **empty**, including `lib/vantra-link.ts`
+= `e4a425ba04ff2dbbeff0400204f1fc1f` (**7** `installerUrl` refs; it was `b6de05a3…` with **0** and
+an mtime of Sep 25 18:28). That copy caused **no** rebuild or restart: `BUILD_ID
+aISNtuMBMFCL9B5MkAGQ6` unchanged, `NRestarts 0`.
+
+Why a workflow-only deploy can never satisfy this item, for the record: it ships compiled output
+only (`.next node_modules package.json package-lock.json prisma browser-server worker deploy`) — no
+`lib/`, no `app/`, no `components/`. A VPS-side rebuild is **not** an alternative: `next.config.ts`
+bakes `MESH_FRAME_ORIGINS` in at build time and that value only comes from the CI build env.
+
+**§5 item 7 — a names-carrying mint returns a ZIP ✅, on the code-identical build.** Measured live
+on Vantra `0b42e61` by the PATH B pass: a `kind: "zip"` mint with three names returned
+`downloadUrl …/d/6441168e-…`; the fetched artifact was `content-type: application/zip`,
+`content-disposition: filename="SWLauncherProof.zip"`, listing exactly `Install SpaceWorker.lnk`,
+`payload/Launcher.exe`, `payload/agent.bin` — the `<updateLinkName>.lnk` + `innerFolder/` contract
+of TASK_121 §5-6. **Deliberately not re-minted** after the redeploy: `0b42e61..08360d0` differs
+**only** in `.github/workflows/deploy.yml`, so the deployed app code is unchanged, and a second mint
+would rotate that org's live install-link token again for no new information. The deployed build
+does carry the branch (`zipName` in 12 compiled files, `innerFolder` in 8).
+
+**§5 item 8 — launcher reachable ✅; "launches a discovered app on Sc" stays owner-only.** Both
+routes answer **401** now (404 pre-deploy) — they call `getSession()` before anything else, so 401
+is the live-and-auth-guarded signature. The Session menu's **Launch app…** entry, PATH A's
+**Regenerate with these names** and the **legacy exe**/ZIP badge are all in the served bundle.
+
+**§5 item 9 — health ✅.** `spaceworker.top` 200, `/dashboard` 307, `vantra.spaceworker.top` 200,
+`mesh.spaceworker.top` 200; `spaceworker`, `spaceworker-browser`, `extraction-worker`, `vantra`,
+`nginx` all **active**; `/api/clone-engine/manifest.json` still **403** (signature gate intact); no
+`-p err` journal entries in the deploy window (only the benign `[clone-sweep]` heartbeats).
+
+**Also fixed: a gate that was reporting healthy deploys as failures.** Vantra's smoke test curled
+`vantra.instaweb.top`, which has **no DNS record and no nginx `server_name`** (`dig +short` empty;
+`nginx -T` lists only `vantra.spaceworker.top`) — so `curl` exited **6** under `set -e` and run
+`36211081873` read `failure` for a deploy that had in fact fully succeeded. Corrected in `08360d0`
+(workflow only, mirroring the sibling SpaceWorker check on `spaceworker.top/dashboard`); its
+redeploy `36212475804` is **success** and the log now ends `HTTP 200`.
+
+**Still open — the only two things left, both outside code:**
+1. **Owner, on `Sc` only (never `WilkSF9`)**: the `.lnk` actually launching, and the launcher
+   actually starting a discovered app. Both need a real Windows desktop and a signed-in console.
+2. **§7 / D4** unchanged: `spaceworker.instaweb.top` still does not resolve, so
+   `PUBLIC_LINK_BASE_URL` stays unset and the link base is `appBaseUrl` — the intended
+   zero-behaviour-change default.
+
+**Not claimed:** the two Windows items above; anything about §7's DNS/vhost/TLS; and the ZIP
+evidence is the `0b42e61` measurement transferred to the currently deployed build on the strength of
+the workflow-only diff, not a fresh mint.
