@@ -40,9 +40,11 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Unknown product" }, { status: 400 });
   }
 
-  // The web subscription keeps requiring an existing session (that's its whole
-  // existing flow). EXE products are the store's no-login purchase path.
-  if (product.kind === "web") {
+  // The web subscription and modules (TASK_99) both require an existing
+  // session — an entitlement/tier is granted to a real account, unlike an
+  // EXE license which can be delivered to a bare email. EXE products are the
+  // store's no-login purchase path.
+  if (product.kind === "web" || product.kind === "module") {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

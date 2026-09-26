@@ -1,3 +1,5 @@
+import type { EntitlementKey } from "./entitlements";
+
 // Task 42 — the single source of truth for every product sold on the
 // store/landing/pricing pages. Both the public store UI (components/store.tsx)
 // and the server-side billing routes (which look up prices by `priceField`)
@@ -9,12 +11,22 @@
 
 export type ProductId =
   | "web_subscription"
+  | "extractor_module"
+  | "mailer_module"
+  | "assistant_devices_module"
   | "extractor_exe"
   | "mailer_exe"
   | "combined_exe"
-  | "automation_exe";
+  | "automation_exe"
+  | "agent_exe";
 
-export type ProductKind = "web" | "exe";
+// TASK_99 / plan §COMMERCIAL C3 — "module" is new: a pick-your-capability web
+// subscription that grants ONE OR MORE entitlements (lib/entitlements.ts)
+// instead of the full tier-5 bundle "web_subscription" still grants. Priced
+// and billed exactly like "web" (flat monthly, no term) — the only
+// difference downstream is what handleApprovedPayment does on success
+// (lib/license-service.ts): grant specific keys instead of bumping tier.
+export type ProductKind = "web" | "module" | "exe";
 
 export interface StoreProduct {
   id: ProductId;
@@ -25,6 +37,9 @@ export interface StoreProduct {
   // For EXE products, the plan slug embedded in the license key payload (matches
   // the purchased tier). Web subscription has no key, so plan is undefined.
   plan?: string;
+  // Module products only — which entitlement key(s) a successful payment
+  // grants (lib/entitlements.ts EntitlementKey). Never set for "web"/"exe".
+  entitlementKeys?: EntitlementKey[];
   // 2026-09-20 — owner: "add a try for free on the store... so users can get
   // the exe for free". A public download link (GitHub Release asset) for a
   // product whose build has actually been verified working. The EXE itself
@@ -44,6 +59,10 @@ export type AdminSettingPriceFields = {
   mailerExePriceUsd: number;
   combinedExePriceUsd: number;
   automationExePriceUsd: number;
+  extractorModulePriceUsd: number;
+  mailerModulePriceUsd: number;
+  assistantDevicesModulePriceUsd: number;
+  agentExePriceUsd: number;
 };
 
 export const WEB_SUBSCRIPTION: StoreProduct = {
@@ -54,6 +73,48 @@ export const WEB_SUBSCRIPTION: StoreProduct = {
   priceField: "webSubscriptionPriceUsd",
   kind: "web",
 };
+
+// TASK_99 / plan §COMMERCIAL C3 (owner, 2026-09-26) — pick-your-capability
+// modules. Each grants its own UserEntitlement key(s) on successful payment
+// (lib/license-service.ts) instead of the full bundle above. Cyber Lab is
+// deliberately NOT listed as a module yet — same "don't sell what doesn't
+// exist" rule TASK_100's marketing pillars follow: TASK_98 has no dashboard
+// route anywhere in the codebase today.
+export const EXTRACTOR_MODULE: StoreProduct = {
+  id: "extractor_module",
+  name: "Extractor",
+  tagline:
+    "Lead extraction on its own — search the web, verify, and export a clean lead list. Nothing else bundled in.",
+  priceField: "extractorModulePriceUsd",
+  kind: "module",
+  entitlementKeys: ["extractor"],
+};
+
+export const MAILER_MODULE: StoreProduct = {
+  id: "mailer_module",
+  name: "Mailer",
+  tagline:
+    "Outreach campaigns on their own — subject/sender rotation, test-send confirmation, per-recipient variables.",
+  priceField: "mailerModulePriceUsd",
+  kind: "module",
+  entitlementKeys: ["mailer"],
+};
+
+export const ASSISTANT_DEVICES_MODULE: StoreProduct = {
+  id: "assistant_devices_module",
+  name: "Assistant & Devices",
+  tagline:
+    "The AI agent plus full device control — remote tools, the app launcher, Browser Clone, Wake-on-LAN and keep-awake — with you approving every action.",
+  priceField: "assistantDevicesModulePriceUsd",
+  kind: "module",
+  entitlementKeys: ["assistant", "devices"],
+};
+
+export const MODULE_PRODUCTS: StoreProduct[] = [
+  EXTRACTOR_MODULE,
+  MAILER_MODULE,
+  ASSISTANT_DEVICES_MODULE,
+];
 
 export const EXTRACTOR_EXE: StoreProduct = {
   id: "extractor_exe",
@@ -97,14 +158,31 @@ export const AUTOMATION_EXE: StoreProduct = {
   plan: "automation",
 };
 
+// New product (owner, 2026-09-26): the AI agent + device control as a
+// lightweight desktop app — the same "Assistant & Devices" capability the
+// module above sells for the web, packaged standalone with no browser tab
+// required. No build variant exists yet (lib/exe-build-target.ts has no
+// "agent" target) — sellable now, buildable later, same state
+// mailer/combined/automation EXE already sell in today.
+export const AGENT_EXE: StoreProduct = {
+  id: "agent_exe",
+  name: "SpaceWorker Agent",
+  tagline:
+    "The AI assistant and full device control, as a background desktop app — approve what it proposes, run remote tools, keep machines awake, no browser tab required.",
+  priceField: "agentExePriceUsd",
+  kind: "exe",
+  plan: "agent",
+};
+
 export const EXE_PRODUCTS: StoreProduct[] = [
   EXTRACTOR_EXE,
   MAILER_EXE,
   COMBINED_EXE,
   AUTOMATION_EXE,
+  AGENT_EXE,
 ];
 
-export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...EXE_PRODUCTS];
+export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
 
 const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
 

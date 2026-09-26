@@ -93,6 +93,8 @@ model User {
   cloneJobs                CloneJob[]
   relays                   RelayHealth[]
   hostedBrowserSessions    HostedBrowserSession[]
+  // TASK_105 — the resource governor's durable wait list.
+  governorQueueEntries     GovernorQueueEntry[]
 }
 
 model VerificationCode {
@@ -142,6 +144,18 @@ model AdminSetting {
   mailerExePriceUsd       Float    @default(50) // one-time, 6-month term
   combinedExePriceUsd     Float    @default(70) // one-time, 6-month term
   automationExePriceUsd   Float    @default(100) // one-time, 6-month term — top tier
+  // TASK_99 / plan §COMMERCIAL C3 — module store: pick-your-capability web
+  // subscriptions, each granting its own UserEntitlement instead of the full
+  // tier-5 bundle. Placeholder launch prices — owner sets the real numbers in
+  // Admin > Wallets & Prices.
+  extractorModulePriceUsd        Float @default(9) // /month
+  mailerModulePriceUsd           Float @default(9) // /month
+  assistantDevicesModulePriceUsd Float @default(15) // /month
+  // New EXE product (owner, 2026-09-26): the AI assistant + device control as
+  // a lightweight desktop app. No build variant exists yet (same state
+  // mailer/combined/automation EXE already sell in — TASK_27 Part A: "only
+  // Extractor is wired into CI today") — sellable now, buildable later.
+  agentExePriceUsd Float @default(50) // one-time, 6-month term
 
   // Task 46 — admin admission control for the two mechanisms that actually spend
   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
@@ -190,6 +204,32 @@ model AdminSetting {
   clonePurgeAfterDays          Int     @default(30)
   cloneDirectEgressPremiumOnly Boolean @default(true)
   cloneRelayRequired           Boolean @default(true)
+
+  // TASK_105 — the resource governor's PRESSURE MODEL. Every threshold is an
+  // AdminSetting so nothing is hardwired (CROSS-TRACK RULE 7); the defaults
+  // below are deliberately chosen so that turning the governor OFF (the
+  // default) changes NOTHING, and even enabling it with default numbers only
+  // reacts when the box is genuinely under pressure.
+  //   governorEnabled              = master switch. false => every feature keeps
+  //                                  today's plain cap behaviour, and the
+  //                                  governor never persists a queue row.
+  //   governorRamWarnPct           = RAM used % at which the box is "warned":
+  //                                  premium stops bypassing a full feature.
+  //   governorRamHardPct           = RAM used % at which the box is "full":
+  //                                  EVERYONE queues (premium included).
+  //   governorSwapHardMb           = swap in use (MB) that counts as "full" even
+  //                                  if RAM% looks okay.
+  //   governorQueueTimeoutSec      = how long a queued request waits before it is
+  //                                  released by the sweep (never wedged forever).
+  //   governorStarvationPromoteMin = a free/trial request that has waited this
+  //                                  long is promoted to the premium class, so
+  //                                  premium traffic cannot starve free users.
+  governorEnabled              Boolean @default(false)
+  governorRamWarnPct           Int     @default(75)
+  governorRamHardPct           Int     @default(90)
+  governorSwapHardMb           Int     @default(1024)
+  governorQueueTimeoutSec      Int     @default(900)
+  governorStarvationPromoteMin Int     @default(10)
 
   // Task 56 — admin-toggleable maintenance windows. Two SEPARATE flags, not one:
   // web pages and the EXE-API traffic share one backend today but will split onto
@@ -1027,28 +1067,28 @@ model ToolUsageLog {
 // ============================================================================
 
 model Device {
-  id              String    @id @default(cuid())
-  userId          String
-  user            User      @relation(fields: [userId], references: [id])
-  name            String
+  id                   String    @id @default(cuid())
+  userId               String
+  user                 User      @relation(fields: [userId], references: [id])
+  name                 String
   // "workstation" | "hosted" — hosted = a SpaceWorker-run PC (Browser Clone
   // destination, arriving in Task 97); everything else is the user's own.
-  deviceKind      String    @default("workstation")
+  deviceKind           String    @default("workstation")
   // Device identity = the user's Vantra agent (plan: VantraLink arrives in
   // Task 93, so this is nullable until provisioning wires it). Unique so a
   // heartbeat can look the device up by agent id alone.
-  vantraAgentId   String?   @unique
+  vantraAgentId        String?   @unique
   // "online" | "offline" | "asleep" | "unknown" — derived from heartbeat age.
-  status          String    @default("unknown")
-  osName          String?
-  osVersion       String?
+  status               String    @default("unknown")
+  osName               String?
+  osVersion            String?
   // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
-  hardwareSummary Json?
-  lastSeenAt      DateTime?
+  hardwareSummary      Json?
+  lastSeenAt           DateTime?
   // TASK_119: live session capture credential (SHA-256 hash only, never raw token).
   // Unique, nullable (only devices capable of live capture have this set).
   // Revoke by setting to null; cleared on job teardown.
-  liveCaptureTokenHash String? @unique
+  liveCaptureTokenHash String?   @unique
 
   // TASK_123 (B12) — Wake-on-LAN P1. Recorded OURSELVES at setup time
   // (lib/clone-setup.ts, the same SYSTEM-side block that writes
@@ -1062,8 +1102,8 @@ model Device {
   powerLanSubnet    String?
   powerMacUpdatedAt DateTime?
 
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   heartbeats            DeviceHeartbeat[]
   capabilities          DeviceCapability[]
@@ -1575,39 +1615,101 @@ model CloneJob {
 // RAM consumer the admin caps (`cloneMaxConcurrent` / `clonePerUserCap`) and the
 // thing the panic switch must kill. Exists only while the session runs.
 model HostedBrowserSession {
-  id         String    @id @default(cuid())
-  userId     String
-  user       User      @relation(fields: [userId], references: [id])
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id])
   // The hosted clone PC running the browser.
-  deviceId   String
-  device     Device    @relation(fields: [deviceId], references: [id])
-  cloneJobId String?   @unique
-  cloneJob   CloneJob? @relation(fields: [cloneJobId], references: [id])
+  deviceId         String
+  device           Device    @relation(fields: [deviceId], references: [id])
+  cloneJobId       String?   @unique
+  cloneJob         CloneJob? @relation(fields: [cloneJobId], references: [id])
   // "starting" | "running" | "stopped" | "failed"
-  status     String    @default("starting")
+  status           String    @default("starting")
   // Loopback CDP/debug endpoint on the hosted PC that the viewer drives.
-  cdpPort    Int?
-  viewUrl    String?
+  cdpPort          Int?
+  viewUrl          String?
   // The address the session actually egressed as, captured at launch: the proof
   // that "same IP" really meant the work PC's IP (relay) or the hosted PC's
   // (direct). Recorded, never inferred.
-  egressIp   String?
-  egressMode String    @default("relay")
+  egressIp         String?
+  egressMode       String    @default("relay")
   // TASK_119: live session capture metadata (NEVER stores values, counts only).
   // Present only for sessionMode="live" clones; null for "fresh".
-  sessionMode      String?   // "fresh" | "live"; redundant with CloneJob but stamped here for audit
-  cookieCount      Int?      // count of cookies captured, never values
-  domainCount      Int?      // count of unique cookie domains
+  sessionMode      String? // "fresh" | "live"; redundant with CloneJob but stamped here for audit
+  cookieCount      Int? // count of cookies captured, never values
+  domainCount      Int? // count of unique cookie domains
   sessionTruncated Boolean   @default(false) // whether the jar was incomplete
   capturedAt       DateTime? // when the capture was ingest'd
-  startedAt  DateTime  @default(now())
-  lastUsedAt DateTime?
-  stoppedAt  DateTime?
-  expiresAt  DateTime?
-  error      String?
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
+  startedAt        DateTime  @default(now())
+  lastUsedAt       DateTime?
+  stoppedAt        DateTime?
+  expiresAt        DateTime?
+  error            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   @@index([userId, status])
   @@index([deviceId, status])
+}
+
+// TASK_105 — the resource governor's durable WAIT LIST.
+//
+// One row per admission request the governor could not grant immediately. The
+// point of persisting it is the acceptance rule "a queued request survives a
+// service restart": the in-memory notion of a queue lives here instead, so
+// `systemctl restart spaceworker` loses nothing. The sweep timer drains it
+// (deploy/governor-sweep.timer) and every caller re-checks its own entry.
+//
+// Deliberately SEPARATE from DeviceJob (the clone pipeline's own "queued"
+// projection, lib/clone.ts): DeviceJob is clone-specific, while this table
+// holds every high-RAM feature (clone sessions, the hosted pool, extraction
+// lanes, browser sessions, device actions). `feature` + `ref` is what makes a
+// repeated request idempotent — a clone polling its admission three times
+// (create → capture step → launch step) re-uses ONE row and keeps ONE position.
+//
+// Status union (TEXT + documented, the codebase style — no DB enum):
+//   queued | granted | released | expired | cancelled
+//     queued    = waiting; counted by the admin panel's "queued" column
+//     granted   = admitted (terminal for that ref — the admission record)
+//     released  = a grant that is no longer meaningful (sweep closes it so the
+//                 table cannot grow without bound)
+//     expired   = waited past governorQueueTimeoutSec without a slot
+//     cancelled = the caller (or the global panic switch) withdrew it
+model GovernorQueueEntry {
+  id          String    @id @default(cuid())
+  // Registry key: "dispatchLight" | "dispatchHeavy" | "browserSessions" |
+  // "vantraLinks" | "deviceActions" | "cloneSessions" | "hostedPool".
+  feature     String
+  userId      String
+  // Operational wait state, NOT an audit record, so it cascades with the user
+  // (plan RULE 5 applies to audit rows, which must outlive their subject; a
+  // stale wait-list row for a deleted account has nothing to preserve).
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The caller's stable handle (e.g. a CloneJob id). Two requests with the same
+  // (feature, ref) share ONE row, which is how FIFO position stays stable while
+  // a caller polls. NULL when the caller has no durable id.
+  ref         String?
+  // Class at enqueue time: "premium" | "standard" | "trial".
+  priority    String    @default("standard")
+  status      String    @default("queued")
+  // FIFO rank snapshot (1 = next), recomputed whenever the queue is read. The
+  // authoritative order is always recomputed from the rows; this is the number
+  // the UI shows ("2 ahead of you").
+  position    Int       @default(0)
+  // Set when a free/trial request has waited past
+  // governorStarvationPromoteMin and is promoted into the premium class.
+  promotedAt  DateTime?
+  // Why it was queued (or released) — a stable machine-ish reason string.
+  reason      String?
+  requestedAt DateTime  @default(now())
+  grantedAt   DateTime?
+  // requestedAt + governorQueueTimeoutSec, stamped at enqueue so the sweep needs
+  // no settings read to find expired rows.
+  expiresAt   DateTime?
+  expiredAt   DateTime?
+
+  @@index([feature, status, priority, requestedAt])
+  @@index([feature, ref, status])
+  @@index([userId, status])
+  @@index([status, expiresAt])
 }

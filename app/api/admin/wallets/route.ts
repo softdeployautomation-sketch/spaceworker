@@ -1,11 +1,18 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
-import { ALL_PRODUCTS, type ProductId } from "@/lib/products";
+import { ALL_PRODUCTS, type AdminSettingPriceFields } from "@/lib/products";
 
-const PRICE_FIELDS: Record<ProductId, string> = Object.fromEntries(
-  ALL_PRODUCTS.map((p) => [p.id, p.priceField]),
-) as Record<ProductId, string>;
+const PRICE_FIELDS = ALL_PRODUCTS.map((p) => p.priceField);
+
+// TASK_99 (2026-09-26) — reads/writes every product's price generically from
+// ALL_PRODUCTS instead of a hand-maintained field list, so adding a product
+// to lib/products.ts is the only change a future module/EXE ever needs here.
+function priceFieldsOf(settings: Record<string, unknown>): AdminSettingPriceFields {
+  const out = {} as Record<string, number>;
+  for (const field of PRICE_FIELDS) out[field] = settings[field] as number;
+  return out as AdminSettingPriceFields;
+}
 
 // GET /api/admin/wallets — read the AdminSetting singleton (created with defaults if missing).
 export async function GET() {
@@ -24,31 +31,18 @@ export async function GET() {
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
     usdtErc20Wallet: settings.usdtErc20Wallet,
-    webSubscriptionPriceUsd: settings.webSubscriptionPriceUsd,
-    extractorExePriceUsd: settings.extractorExePriceUsd,
-    mailerExePriceUsd: settings.mailerExePriceUsd,
-    combinedExePriceUsd: settings.combinedExePriceUsd,
-    automationExePriceUsd: settings.automationExePriceUsd,
+    ...priceFieldsOf(settings),
   });
 }
 
-// PUT /api/admin/wallets — body: wallet addresses + any/all of the five prices.
+// PUT /api/admin/wallets — body: wallet addresses + any/all product prices.
 export async function PUT(req: Request) {
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let body: {
-    btcWallet?: unknown;
-    usdtWallet?: unknown;
-    usdtErc20Wallet?: unknown;
-    webSubscriptionPriceUsd?: unknown;
-    extractorExePriceUsd?: unknown;
-    mailerExePriceUsd?: unknown;
-    combinedExePriceUsd?: unknown;
-    automationExePriceUsd?: unknown;
-  };
+  let body: Record<string, unknown>;
   try {
     body = await req.json();
   } catch {
@@ -59,11 +53,7 @@ export async function PUT(req: Request) {
     btcWallet?: string | null;
     usdtWallet?: string | null;
     usdtErc20Wallet?: string | null;
-    webSubscriptionPriceUsd?: number;
-    extractorExePriceUsd?: number;
-    mailerExePriceUsd?: number;
-    combinedExePriceUsd?: number;
-    automationExePriceUsd?: number;
+    [priceField: string]: string | number | null | undefined;
   } = {};
 
   if (body.btcWallet !== undefined) {
@@ -85,8 +75,8 @@ export async function PUT(req: Request) {
     data.usdtErc20Wallet = body.usdtErc20Wallet.trim() || null;
   }
 
-  for (const [, field] of Object.entries(PRICE_FIELDS)) {
-    const raw = (body as unknown as Record<string, unknown>)[field];
+  for (const field of PRICE_FIELDS) {
+    const raw = body[field];
     if (raw === undefined) continue;
     const price = Number(raw);
     if (!Number.isFinite(price) || price <= 0) {
@@ -95,9 +85,7 @@ export async function PUT(req: Request) {
         { status: 400 },
       );
     }
-    // The safe shape of `data` is an AdminSetting patch; write the dynamic field
-    // through a loose index before passing the concrete object to Prisma below.
-    (data as unknown as Record<string, unknown>)[field] = price;
+    data[field] = price;
   }
 
   const settings = await prisma.adminSetting.upsert({
@@ -110,10 +98,6 @@ export async function PUT(req: Request) {
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
     usdtErc20Wallet: settings.usdtErc20Wallet,
-    webSubscriptionPriceUsd: settings.webSubscriptionPriceUsd,
-    extractorExePriceUsd: settings.extractorExePriceUsd,
-    mailerExePriceUsd: settings.mailerExePriceUsd,
-    combinedExePriceUsd: settings.combinedExePriceUsd,
-    automationExePriceUsd: settings.automationExePriceUsd,
+    ...priceFieldsOf(settings),
   });
 }

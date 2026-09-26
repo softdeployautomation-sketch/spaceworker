@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
-import { EXE_PRODUCTS } from "@/lib/products";
+import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 
 type AdminUser = {
@@ -70,22 +70,27 @@ const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 // Task 42 — human labels for Payment.product in the admin review table.
-const PRODUCT_LABELS: Record<string, string> = {
-  web_subscription: "Web subscription",
-  extractor_exe: "Extractor EXE",
-  mailer_exe: "Mailer EXE",
-  combined_exe: "Combined EXE",
-  automation_exe: "Automation EXE",
-};
+// TASK_99 (2026-09-26) — both of these used to be a hand-maintained list that
+// had to be kept in sync with lib/products.ts by hand (and wasn't — it still
+// only listed 5 of what are now 9 products until this pass). Derived from
+// ALL_PRODUCTS instead, so a new product/module only ever needs adding there.
+const PRODUCT_LABELS: Record<string, string> = Object.fromEntries(
+  ALL_PRODUCTS.map((p) => [p.id, p.name]),
+);
 
-// The five products sold on the store, in admin "Wallets & Prices" tab edit order.
-const WALLET_PRICE_ROWS: Array<{ id: string; field: string; label: string; hint: string }> = [
-  { id: "web_subscription", field: "webSubscriptionPriceUsd", label: "Web subscription (USD / month)", hint: "Full web app — the /month price shown on the store." },
-  { id: "extractor_exe", field: "extractorExePriceUsd", label: "Extractor EXE (USD)", hint: "One-time, 6-month license." },
-  { id: "mailer_exe", field: "mailerExePriceUsd", label: "Mailer EXE (USD)", hint: "One-time, 6-month license." },
-  { id: "combined_exe", field: "combinedExePriceUsd", label: "Combined EXE (USD)", hint: "One-time, 6-month license." },
-  { id: "automation_exe", field: "automationExePriceUsd", label: "Automation EXE (USD)", hint: "Top tier — one-time, 6-month license." },
-];
+// Every product sold on the store, in admin "Wallets & Prices" tab edit order.
+const WALLET_PRICE_ROWS: Array<{ id: string; field: string; label: string; hint: string }> =
+  ALL_PRODUCTS.map((p) => ({
+    id: p.id,
+    field: p.priceField,
+    label: `${p.name} (USD${p.kind === "web" || p.kind === "module" ? " / month" : ""})`,
+    hint:
+      p.kind === "web"
+        ? "Full web app — the /month price shown on the store."
+        : p.kind === "module"
+          ? "Pick-your-capability web subscription — the /month price shown on the store."
+          : "One-time, 6-month license (1-month and 1-year terms scale off this price).",
+  }));
 
 // Import type only (server-only), not the runtime module — keeps this
 // client component's shape identical to the API's own type instead of a
@@ -861,9 +866,24 @@ function QueueJobStatusBadge({ status }: { status: string }) {
 // admission-control layer the owner asked for on top of the coarser systemd
 // start/stop controls (the Services tab), for saving RAM / raising throughput
 // without needing to touch a whole service.
-type AdmissionMechanism = { enabled: boolean; maxConcurrent: number; active: number };
+type AdmissionMechanism = {
+  enabled: boolean;
+  maxConcurrent: number;
+  active: number;
+  /** TASK_105 — requests the resource governor is holding for this feature. */
+  queued: number;
+  /** False when the feature has no on/off column (the hosted pool's size IS its
+   *  cap), so the panel hides a Pause toggle that would write nothing. */
+  toggleable: boolean;
+};
 type AdmissionControlState = Record<
-  "dispatchLight" | "dispatchHeavy" | "browserSessions" | "vantraLinks" | "deviceActions",
+  | "dispatchLight"
+  | "dispatchHeavy"
+  | "browserSessions"
+  | "vantraLinks"
+  | "deviceActions"
+  | "cloneSessions"
+  | "hostedPool",
   AdmissionMechanism
 >;
 
@@ -874,6 +894,11 @@ const ADMISSION_ROWS: Array<{ key: keyof AdmissionControlState; label: string; h
   // Task 93 (CROSS-TRACK RULE 7) — Vantra plugin per-feature dials.
   { key: "vantraLinks", label: "Vantra links (assistant device provisioning)", hint: "How many users can hold an active Vantra link (org + device sync). 'Active' counts non-revoked links. Pause stops NEW provisioning only." },
   { key: "deviceActions", label: "Device actions (wake / reboot / scripts)", hint: "How many open device-action proposals one user may have at once (requested/approved/executing). Each approved action is one live Vantra/TRMM call." },
+  // TASK_105 — the clone pair is a RAM consumer like the rest, so its cap, live
+  // count and QUEUED count belong on the same card (the fuller clone dials —
+  // TTLs, per-user cap, egress policy — stay in Browser clone limits below).
+  { key: "cloneSessions", label: "Cloned browser sessions", hint: "How many cloned browsers may be live at once. Each is a real Chromium process on the pooled hosted PC; over the cap they wait in the governor's queue." },
+  { key: "hostedPool", label: "Hosted clone PCs (pooled)", hint: "How many pooled hosted clone PCs may hold a live session. Its size IS its limit (no pause switch). Enforced only while the governor is on — before TASK_105 nothing enforced it." },
 ];
 
 function AdmissionControlPanel() {
@@ -911,7 +936,20 @@ function AdmissionControlPanel() {
         setError(typeof data.error === "string" ? data.error : "Failed to update");
         return;
       }
-      setState((prev) => (prev ? { ...prev, [mechanism]: { enabled: data.enabled, maxConcurrent: data.maxConcurrent, active: data.active } } : prev));
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              [mechanism]: {
+                enabled: data.enabled,
+                maxConcurrent: data.maxConcurrent,
+                active: data.active,
+                queued: data.queued,
+                toggleable: data.toggleable,
+              },
+            }
+          : prev
+      );
       setDrafts((prev) => {
         const next = { ...prev };
         delete next[mechanism];
@@ -950,6 +988,7 @@ function AdmissionControlPanel() {
                   <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
                   <p className="mt-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">
                     {m.active} of {m.maxConcurrent} active right now
+                    {m.queued > 0 ? ` · ${m.queued} queued` : ""}
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
@@ -977,14 +1016,218 @@ function AdmissionControlPanel() {
                   >
                     Set
                   </button>
+                  {m.toggleable && (
+                    <button
+                      onClick={() => patch(row.key, { enabled: !m.enabled })}
+                      disabled={saving === row.key}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                        m.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                      }`}
+                    >
+                      {m.enabled ? "Enabled" : "Paused"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// TASK_105 — the resource governor's PRESSURE MODEL. The card above shows each
+// RAM consumer's cap / live / queued counts; this block is the machine-level
+// policy the governor reacts to, plus what it currently measures. The six values
+// are AdminSetting keys, so the owner tunes them live — with the switch OFF
+// (default) every feature keeps today's behaviour exactly.
+type GovernorSettingsState = {
+  enabled: boolean;
+  ramWarnPct: number;
+  ramHardPct: number;
+  swapHardMb: number;
+  queueTimeoutSec: number;
+  starvationPromoteMin: number;
+};
+
+type GovernorPressure = {
+  level: "normal" | "warn" | "hard";
+  measured: boolean;
+  ramUsedPct: number;
+  ramTotalMb: number;
+  ramAvailableMb: number;
+  swapUsedMb: number;
+  swapTotalMb: number;
+  load1: number;
+  cpuCount: number;
+  reason: string;
+};
+
+type GovernorViewState = {
+  settings: GovernorSettingsState;
+  pressure: GovernorPressure;
+  queuedTotal: number;
+};
+
+const GOVERNOR_NUMBER_ROWS: Array<{
+  field: Exclude<keyof GovernorSettingsState, "enabled">;
+  label: string;
+  hint: string;
+  min: number;
+  max?: number;
+}> = [
+  { field: "ramWarnPct", label: "RAM warn %", hint: "At or above this RAM use the box is 'warned': premium stops bypassing a full feature.", min: 1, max: 100 },
+  { field: "ramHardPct", label: "RAM hard %", hint: "At or above this RAM use EVERYONE queues, premium included — the limit is the machine, not the plan.", min: 1, max: 100 },
+  { field: "swapHardMb", label: "Swap hard (MB)", hint: "Swap in use that counts as full even when RAM% looks fine. 0 disables the swap signal.", min: 0 },
+  { field: "queueTimeoutSec", label: "Queue timeout (seconds)", hint: "How long a queued request may wait before the sweep releases it (never wedged forever).", min: 60 },
+  { field: "starvationPromoteMin", label: "Starvation promotion (minutes)", hint: "A free/trial request that has waited this long is promoted into the premium class, so free users are never starved.", min: 1 },
+];
+
+
+function GovernorPanel() {
+  const [state, setState] = useState<GovernorViewState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/governor");
+      if (!res.ok) throw new Error("Failed to load the resource governor");
+      setState((await res.json()) as GovernorViewState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load the resource governor");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function patch(field: string, body: Record<string, boolean | number>) {
+    setSaving(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/governor", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState(data as GovernorViewState);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const levelStyles =
+    state?.pressure.level === "hard"
+      ? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"
+      : state?.pressure.level === "warn"
+        ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+        : "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400";
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Resource governor</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        One server-side governor for every high-RAM feature above. Turned off it changes nothing; turned on, a full
+        feature queues instead of failing, premium skips the queue while the box is healthy, and EVERYONE (premium
+        included) waits once the box is genuinely full. Queued requests are stored, so they survive a restart.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">Automatic queueing</p>
+                <p className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                  <span className={`rounded-full px-2 py-0.5 font-medium ${levelStyles}`}>
+                    {state.pressure.level}
+                  </span>
+                  <span>
+                    RAM {state.pressure.ramUsedPct}% used ({state.pressure.ramAvailableMb}MB free of{" "}
+                    {state.pressure.ramTotalMb}MB) · swap {state.pressure.swapUsedMb}MB · load {state.pressure.load1} on{" "}
+                    {state.pressure.cpuCount} core(s) · {state.queuedTotal} queued
+                  </span>
+                </p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.pressure.measured
+                    ? state.pressure.reason || "Box is healthy — premium bypasses the soft queue."
+                    : "This host has no readable pressure source (not Linux), so it is treated as healthy."}
+                </p>
+              </div>
+              <button
+                onClick={() => patch("enabled", { enabled: !state.settings.enabled })}
+                disabled={saving === "enabled"}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.settings.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.settings.enabled ? "Governor on" : "Governor off"}
+              </button>
+            </div>
+          </div>
+
+          {GOVERNOR_NUMBER_ROWS.map((row) => {
+            const current = state.settings[row.field];
+            const draft = drafts[row.field];
+            return (
+              <div
+                key={row.field}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">{row.label}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={row.min}
+                    max={row.max}
+                    value={draft ?? String(current)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                    className="w-24 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
                   <button
-                    onClick={() => patch(row.key, { enabled: !m.enabled })}
-                    disabled={saving === row.key}
-                    className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
-                      m.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
-                    }`}
+                    onClick={() => {
+                      const n = Number(draft ?? current);
+                      if (
+                        !Number.isFinite(n) ||
+                        !Number.isInteger(n) ||
+                        n < row.min ||
+                        (row.max !== undefined && n > row.max)
+                      ) {
+                        setError(
+                          `${row.label} must be a whole number${
+                            row.max !== undefined ? ` between ${row.min} and ${row.max}` : ` >= ${row.min}`
+                          }`
+                        );
+                        return;
+                      }
+                      patch(row.field, { [row.field]: n });
+                    }}
+                    disabled={saving === row.field || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
                   >
-                    {m.enabled ? "Enabled" : "Paused"}
+                    Set
                   </button>
                 </div>
               </div>
@@ -995,6 +1238,9 @@ function AdmissionControlPanel() {
     </div>
   );
 }
+
+
+
 
 // TASK_107 (B1) — Browser Clone limits. Same shape as admission control above
 // (enabled + a limit + a LIVE count per row) because a cloned browser is a live
@@ -1578,6 +1824,10 @@ function QueueTab() {
           queuedCount={jobs.filter((j) => j.jobStatus === "queued").length}
         />
       </div>
+
+      {/* TASK_105 — the governor that decides WHEN those caps queue: pressure
+          thresholds + live host read-out, same tab as the RAM dials. */}
+      <GovernorPanel />
 
       {/* TASK_107 (B1) — Browser Clone caps/TTLs, same tab as the other RAM dials. */}
       <CloneLimitsPanel />

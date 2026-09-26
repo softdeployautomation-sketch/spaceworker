@@ -64,7 +64,7 @@ export async function POST(req: Request) {
   }
 
   let userId: string | null = null;
-  if (product.kind === "web") {
+  if (product.kind === "web" || product.kind === "module") {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

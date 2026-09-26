@@ -63,6 +63,15 @@ export async function hasEntitlement(userId: string, key: EntitlementKey): Promi
  * Grant (or extend) an entitlement. Upsert by (userId, key): re-granting
  * clears any revocation stamp and (optionally) sets/extends the term.
  * expiresInDays undefined => never expires.
+ *
+ * TASK_99 (2026-09-26) — extends from the CURRENT expiry when it's still in
+ * the future, exactly matching lib/premium.ts's grantPremium: a recurring
+ * module subscription's next successful payment should stack onto time
+ * already paid for, not reset the clock to "now + 30" every charge (which
+ * would silently shrink the term for anyone who pays a few days early).
+ * Admin grants (source: "admin_grant") get the same extension behavior —
+ * this was the only other caller and stacking is the more correct behavior
+ * there too (an admin "add 30 more days" should add, not overwrite).
  */
 export async function grantEntitlement(opts: {
   userId: string;
@@ -70,8 +79,19 @@ export async function grantEntitlement(opts: {
   source: "module" | "admin_grant" | "trial";
   expiresInDays?: number;
 }): Promise<void> {
-  const expiresAt =
-    opts.expiresInDays !== undefined ? new Date(Date.now() + opts.expiresInDays * DAY_MS) : null;
+  let expiresAt: Date | null = null;
+  if (opts.expiresInDays !== undefined) {
+    const existing = await db.userEntitlement.findUnique({
+      where: { userId_key: { userId: opts.userId, key: opts.key } },
+      select: { expiresAt: true, revokedAt: true },
+    });
+    const now = Date.now();
+    const base =
+      existing && !existing.revokedAt && existing.expiresAt && existing.expiresAt.getTime() > now
+        ? existing.expiresAt
+        : new Date(now);
+    expiresAt = new Date(base.getTime() + opts.expiresInDays * DAY_MS);
+  }
   await db.userEntitlement.upsert({
     where: { userId_key: { userId: opts.userId, key: opts.key } },
     create: { userId: opts.userId, key: opts.key, source: opts.source, expiresAt },

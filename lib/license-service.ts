@@ -11,6 +11,7 @@ import {
 import { getProduct } from "./products";
 import { env } from "./env";
 import { grantPremium, PREMIUM_DAYS_PER_CHARGE } from "./premium";
+import { grantEntitlement, type EntitlementKey } from "./entitlements";
 
 // Task 42, item 5 — the one place that finalizes an APPROVED payment into its
 // product's consequence. All three approval paths funnel through here:
@@ -39,6 +40,11 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
     await bumpWebTier(payment.userId);
     return;
   }
+  const product = getProduct(payment.product);
+  if (product?.kind === "module") {
+    await grantModuleEntitlements(payment.userId, product.entitlementKeys ?? []);
+    return;
+  }
   try {
     await issueExeLicense(payment);
   } catch (err) {
@@ -60,6 +66,19 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
       .create({ data: { paymentId, success: false, note: `license issuance failed: ${message}` } })
       .catch(() => {});
     throw err;
+  }
+}
+
+// TASK_99 / plan §COMMERCIAL C3 (owner, 2026-09-26) — a module product's
+// consequence: grant its entitlement key(s) instead of bumping tier. Priced
+// and termed exactly like the web subscription (flat monthly, no duration
+// concept), so it uses the SAME recurring-term constant — each successful
+// payment extends the grant by another charge period (grantEntitlement now
+// stacks onto an unexpired existing term, matching grantPremium exactly).
+// Idempotent by construction: grantEntitlement is an upsert.
+async function grantModuleEntitlements(userId: string, keys: EntitlementKey[]): Promise<void> {
+  for (const key of keys) {
+    await grantEntitlement({ userId, key, source: "module", expiresInDays: PREMIUM_DAYS_PER_CHARGE });
   }
 }
 
