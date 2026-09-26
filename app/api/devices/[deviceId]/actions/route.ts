@@ -91,6 +91,7 @@ export async function POST(
     const status =
       code === "device_not_linked" ? 404
       : code === "device_actions_disabled" || code === "device_actions_limit" ? 429
+      : code === "agent_actions_disabled" ? 403
       : code === "vantra_not_configured" ? 503
       : 502;
     return NextResponse.json({ error: code }, { status });

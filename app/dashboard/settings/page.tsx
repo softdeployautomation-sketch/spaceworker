@@ -129,6 +129,7 @@ export default async function SettingsPage() {
               telegramApprovalsEnabled: user.telegramApprovalsEnabled,
               digestEnabled: user.digestEnabled,
               deviceTelemetryEnabled: user.deviceTelemetryEnabled,
+              agentActionsEnabled: user.agentActionsEnabled,
               linked: user.telegramChatId !== null,
               connectUrl,
             }}

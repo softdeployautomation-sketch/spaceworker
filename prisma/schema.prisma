@@ -50,6 +50,15 @@ model User {
   telegramApprovalsEnabled Boolean                @default(false)
   telegramChatId           String?
   telegramLinkToken        String?
+  // Master per-user kill switch: "let the agent PROPOSE actions at all"
+  // (job/campaign pending actions in lib/agent.ts, device action proposals
+  // in lib/vantra-link.ts). Default on — this is an opt-out, not a new
+  // gate most users will ever touch. Off does NOT touch chat (the agent
+  // still answers, it just never creates a pending action — see the
+  // short-circuit in runAgentTurn) and does NOT touch manual device tools
+  // (Wake/Reboot/Run now/PIN/maintenance overlay execute directly and never
+  // go through AgentPendingAction or createDeviceActionProposal at all).
+  agentActionsEnabled      Boolean                @default(true)
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
   // account created before this field existed, not that they never agreed.
   acceptedTermsAt          DateTime?

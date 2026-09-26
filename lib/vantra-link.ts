@@ -772,6 +772,17 @@ export async function createDeviceActionProposal(opts: {
   const settings = await getAdminSettings();
   if (!settings.deviceActionsEnabled) throw new Error("device_actions_disabled");
 
+  // Per-user master toggle (distinct from the admin-level cap above): the
+  // user's own "let the agent take actions" switch. Manual console tools
+  // (Wake, Reboot, Run now, PIN request, maintenance overlay) never call this
+  // function at all — they hit their own direct-execute routes — so this
+  // check can never disrupt them.
+  const requester = await db.user.findUnique({
+    where: { id: opts.userId },
+    select: { agentActionsEnabled: true },
+  });
+  if (requester?.agentActionsEnabled === false) throw new Error("agent_actions_disabled");
+
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId },
     select: { id: true, vantraAgentId: true, name: true },

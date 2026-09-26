@@ -26,6 +26,7 @@ const schema = z
     telegramApprovalsEnabled: z.boolean().optional(),
     digestEnabled: z.boolean().optional(),
     deviceTelemetryEnabled: z.boolean().optional(),
+    agentActionsEnabled: z.boolean().optional(),
     unlink: z.boolean().optional(),
     regenerate: z.boolean().optional(),
   })
@@ -37,6 +38,7 @@ const schema = z
       v.telegramApprovalsEnabled !== undefined ||
       v.digestEnabled !== undefined ||
       v.deviceTelemetryEnabled !== undefined ||
+      v.agentActionsEnabled !== undefined ||
       v.unlink === true ||
       v.regenerate === true,
     "Nothing to update",
@@ -70,6 +72,12 @@ export async function PATCH(request: Request) {
   if (parsed.deviceTelemetryEnabled !== undefined) {
     data.deviceTelemetryEnabled = parsed.deviceTelemetryEnabled;
   }
+  // Master kill switch — "let the agent propose actions at all" (see schema
+  // comment on User.agentActionsEnabled). Turning it off never touches chat
+  // or manual device tools, only whether the agent may create a proposal.
+  if (parsed.agentActionsEnabled !== undefined) {
+    data.agentActionsEnabled = parsed.agentActionsEnabled;
+  }
 
   if (parsed.unlink === true) {
     // Unlinking clears the chat id (and the now-stale link token). notifyUser
@@ -99,6 +107,7 @@ export async function PATCH(request: Request) {
       telegramApprovalsEnabled: true,
       digestEnabled: true,
       deviceTelemetryEnabled: true,
+      agentActionsEnabled: true,
       telegramChatId: true,
       telegramLinkToken: true,
     },
@@ -122,6 +131,7 @@ export async function PATCH(request: Request) {
       telegramApprovalsEnabled: updated.telegramApprovalsEnabled,
       digestEnabled: updated.digestEnabled,
       deviceTelemetryEnabled: updated.deviceTelemetryEnabled,
+      agentActionsEnabled: updated.agentActionsEnabled,
       linked,
       connectUrl,
     },

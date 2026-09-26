@@ -12,6 +12,7 @@ interface NotificationPrefs {
   telegramApprovalsEnabled: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
+  agentActionsEnabled: boolean;
   linked: boolean;
   connectUrl: string | null;
 }
@@ -148,6 +149,13 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.deviceTelemetryEnabled}
         disabled={busy !== null}
         onToggle={(v) => void patch({ deviceTelemetryEnabled: v }, "Telemetry preference saved")}
+      />
+      <Toggle
+        label="Agent actions"
+        description="Let the agent propose actions (jobs, campaigns, device commands) for you to approve. Off still lets you chat normally and use manual device tools — the agent just won't create anything to approve."
+        checked={prefs.agentActionsEnabled}
+        disabled={busy !== null}
+        onToggle={(v) => void patch({ agentActionsEnabled: v }, "Agent actions preference saved")}
       />
       <div className="rounded-lg border border-border bg-bg-elevated p-3 text-sm">
         <div className="flex items-center justify-between gap-3">

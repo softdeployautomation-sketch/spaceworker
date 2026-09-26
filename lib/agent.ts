@@ -704,7 +704,7 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
   // race each other past the cap. Returns a cap-blocked reply when exceeded.
   const user = await prisma.user.findUnique({
     where: { id: opts.userId },
-    select: { id: true, aiDailyCapHundredthsCent: true },
+    select: { id: true, aiDailyCapHundredthsCent: true, agentActionsEnabled: true },
   });
   const usedAgg = await prisma.aiUsageLog.aggregate({
     where: { userId: opts.userId, createdAt: { gte: startOfTodayUTC() } },
@@ -779,7 +779,7 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
 
   // Persist the assistant's message (with the tool snapshot for a pending plan,
   // or the inline widget snapshot for a structured pick / read).
-  await prisma.agentMessage.create({
+  const assistantMessage = await prisma.agentMessage.create({
     data: {
       threadId: thread.id,
       role: "assistant",
@@ -794,6 +794,22 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
 
   if (processed?.kind !== "pending") {
     return { reply, pendingAction: null, inlineWidget, usage: result.usage };
+  }
+
+  // Master toggle: if the user has turned agent actions off, never persist a
+  // pending action. The conversational reply already exists (persisted just
+  // above) — this only strips the tool-call snapshot and appends a short note,
+  // it never blocks or errors the turn. Manual device tools and normal chat
+  // never pass through this code path at all, so they're unaffected either way.
+  if (user?.agentActionsEnabled === false) {
+    const declineNote =
+      "\n\n(Agent actions are turned off in Settings, so I haven't created anything for approval — turn it back on if you'd like me to propose actions.)";
+    const finalReply = reply + declineNote;
+    await prisma.agentMessage.update({
+      where: { id: assistantMessage.id },
+      data: { content: finalReply, toolCall: Prisma.DbNull },
+    });
+    return { reply: finalReply, pendingAction: null, inlineWidget: null, usage: result.usage };
   }
 
   // Intercept: persist a pending action, and ONLY a pending action. No real job,
