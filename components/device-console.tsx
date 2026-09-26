@@ -60,6 +60,13 @@ type DeviceView = {
   idleSeconds: number | null;
 };
 
+// TASK_123 (B12) — GET /api/devices/:id/power's read model (lib/device-tools.ts
+// DevicePowerView). `wake.reason` is only ever shown when `available` is false.
+type PowerView = {
+  policy: { mode: "off" | "timed" | "indefinite"; until: string | null };
+  wake: { available: boolean; reason: "ok" | "no_power_mac" | "no_same_subnet_peer" };
+};
+
 type Tabs = "summary" | "control" | "command" | "clone" | "activity";
 
 // TASK_114 — the /api/devices/:id/clone-setup read model (mirrors
@@ -435,6 +442,9 @@ export function DeviceConsole({
   const [notice, setNotice] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // TASK_123 (B12) — keep-awake + wake-availability read model.
+  const [powerView, setPowerView] = useState<PowerView | null>(null);
+
   const isOnline = device?.status === "online" || device?.status === "asleep";
 
   const loadDevice = useCallback(async () => {
@@ -467,7 +477,7 @@ export function DeviceConsole({
   const loadToolData = useCallback(async () => {
     if (!deviceId) return;
     try {
-      const [q, p, a, c, e, s] = await Promise.all([
+      const [q, p, a, c, e, s, pw] = await Promise.all([
         fetch(`/api/devices/${deviceId}/queued-commands`),
         fetch(`/api/devices/${deviceId}/pin-requests`),
         fetch(`/api/devices/${deviceId}/activity`),
@@ -477,10 +487,18 @@ export function DeviceConsole({
         fetch(`/api/entitlements`),
         // TASK_114 — clone-device setup state (relay row + capabilities).
         fetch(`/api/devices/${deviceId}/clone-setup`),
+        // TASK_123 (B12) P5 — wake availability + keep-awake policy.
+        fetch(`/api/devices/${deviceId}/power`),
       ]);
       if (q.ok) setQueue((await q.json()).commands ?? []);
       if (p.ok) setPins((await p.json()).requests ?? []);
       if (a.ok) setActivity((await a.json()).actions ?? []);
+      if (pw.ok) {
+        const data = await pw.json().catch(() => ({}));
+        if (data && typeof data === "object" && "wake" in data) {
+          setPowerView(data as PowerView);
+        }
+      }
       if (c.ok) {
         const data = await c.json().catch(() => ({}));
         const rows = Array.isArray(data.clones) ? data.clones : [];
@@ -887,12 +905,45 @@ export function DeviceConsole({
           ? "Reboot sent — the machine restarts now."
           : action === "shutdown"
             ? "Shutdown sent — the machine powers off now."
-            : "Wake sent — the machine wakes if Wake-on-LAN is set up.",
+            : // TASK_123 D6 — never a generic "sent" message: the real packet
+              // count the peer reported, every time.
+              `Wake sent — ${typeof data.packetsSent === "number" ? data.packetsSent : 0} packet(s) via a same-network peer.`,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : `${action} failed`);
     } finally {
       setBusy("");
+      void loadToolData();
+    }
+  }
+
+  // TASK_123 (B12) P4 — Stay on (indefinite) / Stay on for… (timed) / Stop.
+  async function runKeepAwake(mode: "indefinite" | "timed" | "off", minutes?: number) {
+    const key = `keep-awake-${mode}`;
+    setBusy(key);
+    setError("");
+    setNotice("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/power`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "keep_awake", mode, minutes }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(cleanErr(data.error, "keep-awake failed"));
+      setNotice(
+        mode === "off"
+          ? "Keep-awake stopped — the machine can sleep normally again."
+          : mode === "indefinite"
+            ? "Keep-awake on — the machine stays on until you press Stop."
+            : `Keep-awake on for ${minutes ?? 60} minute(s).`,
+      );
+      if (data.policy) setPowerView((prev) => (prev ? { ...prev, policy: data.policy } : prev));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "keep-awake failed");
+    } finally {
+      setBusy("");
+      void loadToolData();
     }
   }
   const [agentLabel, setAgentLabel] = useState(DEFAULT_AGENT_LABEL);
@@ -1299,6 +1350,8 @@ export function DeviceConsole({
               pingAgent={pingAgent}
               ping={ping}
               runPower={runPower}
+              powerView={powerView}
+              runKeepAwake={runKeepAwake}
               goToCommand={() => setTab("command")}
               goToClone={() => setTab("clone")}
               lastSeenAt={device?.lastSeenAt ?? null}
@@ -2116,6 +2169,8 @@ function ControlTab({
   pingAgent,
   ping,
   runPower,
+  powerView,
+  runKeepAwake,
   goToCommand,
   goToClone,
   lastSeenAt,
@@ -2136,6 +2191,8 @@ function ControlTab({
   pingAgent: () => Promise<void>;
   ping: { ok: boolean; text: string } | null;
   runPower: (action: "reboot" | "shutdown" | "wake") => Promise<void>;
+  powerView: PowerView | null;
+  runKeepAwake: (mode: "indefinite" | "timed" | "off", minutes?: number) => Promise<void>;
   goToCommand: () => void;
   goToClone: () => void;
   lastSeenAt: string | null;
@@ -2539,10 +2596,69 @@ function ControlTab({
                   setOpenMenu(null);
                   runPower("wake");
                 }}
-                disabled={busy === "power-wake"}
-                title="Wake the machine (Wake-on-LAN)"
+                disabled={busy === "power-wake" || powerView?.wake.available === false}
+                title={
+                  powerView?.wake.available === false
+                    ? powerView.wake.reason === "no_power_mac"
+                      ? "No MAC recorded for this device yet — run device setup again"
+                      : "No same-network device is online to relay the wake packet"
+                    : "Wake the machine (Wake-on-LAN)"
+                }
                 icon={<Zap className="h-3.5 w-3.5" />}
                 label={busy === "power-wake" ? "Waking…" : "Wake"}
+              />
+              {powerView?.wake.available === false && (
+                <p className="px-2 pb-1 text-[10px] leading-snug text-fg-muted">
+                  {powerView.wake.reason === "no_power_mac"
+                    ? "Wake unavailable: no MAC on file. Run device setup (Browser Clone tab) to record it."
+                    : "Wake unavailable: no other device on this network is online to relay the wake packet. Keep a second PC on this network online, or use keep-awake below."}
+                </p>
+              )}
+              <div className="my-1 border-t border-border" />
+              <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-fg-muted">
+                Keep awake
+              </p>
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runKeepAwake("indefinite");
+                }}
+                disabled={busy === "keep-awake-indefinite"}
+                title="Prevent this machine from sleeping until you press Stop"
+                icon={<Zap className="h-3.5 w-3.5" />}
+                label={busy === "keep-awake-indefinite" ? "Applying…" : "Stay on (indefinite)"}
+              />
+              <div className="px-2 pb-1.5">
+                <div className="flex gap-1">
+                  {[30, 60, 240].map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setOpenMenu(null);
+                        runKeepAwake("timed", m);
+                      }}
+                      disabled={busy === "keep-awake-timed"}
+                      title={`Stay on for ${m} minutes`}
+                      className="flex-1 rounded-md border border-border px-2 py-1 text-center text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                    >
+                      {m}m
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <ToolboxItem
+                onClick={() => {
+                  setOpenMenu(null);
+                  runKeepAwake("off");
+                }}
+                disabled={
+                  busy === "keep-awake-off" ||
+                  !powerView?.policy ||
+                  powerView.policy.mode === "off"
+                }
+                title="Stop keep-awake — the machine can sleep normally again"
+                icon={<X className="h-3.5 w-3.5" />}
+                label={busy === "keep-awake-off" ? "Stopping…" : "Stop"}
               />
             </ToolboxMenu>
             <ToolboxMenu

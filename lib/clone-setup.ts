@@ -14,6 +14,7 @@ import {
   commitLiveCaptureToken,
 } from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
+import { buildPowerIdentityScript, parsePowerIdentityOutput } from "./wol";
 
 // TASK_114 — one-click clone-device setup (owner request 2026-09-24: "why cant
 // you install the relay ... i want everything to be automated, clickable input,
@@ -486,6 +487,49 @@ function buildNativeHostPresenceScript(): string {
   ].join("\n");
 }
 
+/**
+ * TASK_123 (B12) P1 — records this device's OWN MAC/IP/subnet, SYSTEM-side,
+ * in the SAME one-click setup block that already writes live-capture.json
+ * (TASK_119A). We are on the machine right now, so this never depends on
+ * MeshCentral's `if<node>` record — the thing that made the old Wake button
+ * structurally unable to work (TASK_123 §2 R1: it asked the TARGET for its
+ * own MAC, which is useless once the target is actually asleep).
+ * Best-effort: a failure here never fails setup overall (mirrors the
+ * live-capture-token step's own posture) — Wake simply stays unavailable
+ * (`no_power_mac`) until a later successful setup run records it.
+ */
+async function capturePowerIdentity(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<CloneSetupStep> {
+  try {
+    const { output } = await runCommandNow({
+      userId: opts.userId,
+      deviceId: opts.deviceId,
+      cmd: buildPowerIdentityScript(),
+      shell: "powershell",
+      timeoutSeconds: 30,
+      runAsUser: false,
+    });
+    const identity = parsePowerIdentityOutput(output);
+    if (!identity) {
+      return { step: "power-identity", ok: false, detail: output?.slice(0, 300) ?? "no_output_from_device" };
+    }
+    await db.device.update({
+      where: { id: opts.deviceId },
+      data: {
+        powerMac: identity.mac,
+        powerLanIp: identity.lanIp,
+        powerLanSubnet: identity.lanSubnet,
+        powerMacUpdatedAt: new Date(),
+      },
+    });
+    return { step: "power-identity", ok: true, detail: `subnet ${identity.lanSubnet}` };
+  } catch (e) {
+    return { step: "power-identity", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` };
+  }
+}
+
 /** Owner-scoped device + reachability. Offline fails immediately (no queue). */
 async function requireOnlineOwnedDevice(opts: { userId: string; deviceId: string }): Promise<{
   id: string;
@@ -803,6 +847,8 @@ async function runCloneSetup(opts: {
           detail: `error: ${e instanceof Error ? e.message : "unknown"}`,
         });
       }
+
+      steps.push(await capturePowerIdentity({ userId: opts.userId, deviceId: device.id }));
     } else {
       const hosted = await runCommandNow({
         userId: opts.userId,
@@ -816,6 +862,7 @@ async function runCloneSetup(opts: {
       ensureReported(steps, hosted.output, "hosted-install");
       if (firstFailure(steps)) return await bail();
       await ensureCloneCapability({ userId: opts.userId, deviceId: device.id, capability: "clone-host" });
+      steps.push(await capturePowerIdentity({ userId: opts.userId, deviceId: device.id }));
     }
 
     const [relay, capabilities] = await Promise.all([

@@ -6,6 +6,14 @@ import { db } from "./db";
 import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { recordAgentActionAudit } from "./devices";
+import {
+  KEEPAWAKE_ACTION,
+  WOL_ACTION,
+  selectWolPeer,
+  type KeepAwakeActionResponse,
+  type WolActionResponse,
+  type WolPeerCandidate,
+} from "./wol";
 
 // Task 95 — Devices v2 tool parity. Every device tool (remote control,
 // maintenance overlay, PIN request, queued commands) is a GATED proposal:
@@ -637,12 +645,114 @@ export async function pingDevice(opts: {
 // start/stop and Run now). The proposal rail stays for AGENT-initiated power.
 export type PowerAction = "reboot" | "shutdown" | "wake";
 
+/**
+ * D2/D3 — the peer fleet for `selectWolPeer`, most-recently-seen first (ties
+ * broken toward the freshest device). Excludes the target itself in the
+ * query (belt-and-suspenders on top of selectWolPeer's own `id !==` check).
+ */
+async function wolPeerFleet(opts: {
+  userId: string;
+  excludeDeviceId: string;
+  subnet: string;
+}): Promise<WolPeerCandidate[]> {
+  const rows = await db.device.findMany({
+    where: {
+      userId: opts.userId,
+      id: { not: opts.excludeDeviceId },
+      powerLanSubnet: opts.subnet,
+    },
+    select: { id: true, vantraAgentId: true, status: true, powerLanSubnet: true },
+    orderBy: { lastSeenAt: "desc" },
+  });
+  return rows;
+}
+
+/**
+ * D3 — fail closed with the real reason; D6 — a wake attempt that never
+ * reaches a peer, or a peer that sends zero packets, must never report
+ * success. Returns the packet count on success (P5 — the UI shows it).
+ */
+async function sendWakeViaPeer(opts: {
+  userId: string;
+  deviceId: string;
+  powerMac: string | null;
+  powerLanSubnet: string | null;
+}): Promise<{ peer: WolPeerCandidate; packetsSent: number }> {
+  if (!opts.powerMac) throw new Error("no_power_mac");
+  const subnet = opts.powerLanSubnet;
+  const fleet = subnet
+    ? await wolPeerFleet({ userId: opts.userId, excludeDeviceId: opts.deviceId, subnet })
+    : [];
+  const peer = selectWolPeer({ targetDeviceId: opts.deviceId, targetSubnet: subnet, fleet });
+  if (!peer || !peer.vantraAgentId) throw new Error("no_same_subnet_peer");
+  // Frozen contract (TASK_123B_WOL_VANTRA.md §3) — sent to the PEER's own
+  // agentId with the SLEEPING target's SpaceWorker device id; Vantra
+  // resolves + re-validates the MAC itself before sending anything.
+  const result = await vantraFetch<WolActionResponse>(
+    `/api/internal/sw/devices/${encodeURIComponent(peer.vantraAgentId)}/action`,
+    {
+      method: "POST",
+      body: JSON.stringify({ action: WOL_ACTION, targetDeviceId: opts.deviceId }),
+    },
+  );
+  if (!result.ok) throw new Error(result.reason ?? "wake_failed");
+  const packetsSent = typeof result.sent === "number" ? result.sent : 0;
+  // D6, belt-and-suspenders on top of Vantra's own guarantee: `ok: true`
+  // with a zero/missing count is still treated as a refusal here.
+  if (packetsSent <= 0) throw new Error("wake_no_packets_sent");
+  return { peer, packetsSent };
+}
+
+export interface RunPowerActionResult {
+  /** Only ever set for a successful "wake" — reboot/shutdown have nothing to report. */
+  packetsSent?: number;
+}
+
 export async function runPowerAction(opts: {
   userId: string;
   deviceId: string;
   action: PowerAction;
-}): Promise<void> {
+}): Promise<RunPowerActionResult> {
   const device = await requireOwnedDevice(opts);
+
+  if (opts.action === "wake") {
+    const row = await db.device.findFirst({
+      where: { id: device.id },
+      select: { powerMac: true, powerLanSubnet: true },
+    });
+    try {
+      const { peer, packetsSent } = await sendWakeViaPeer({
+        userId: opts.userId,
+        deviceId: device.id,
+        powerMac: row?.powerMac ?? null,
+        powerLanSubnet: row?.powerLanSubnet ?? null,
+      });
+      await recordAgentActionAudit({
+        userId: opts.userId,
+        action: "device_power_wake",
+        status: "executed",
+        approvalChannel: "web-direct",
+        sourceDeviceId: device.id,
+        detail: { viaPeerDeviceId: peer.id, packetsSent },
+      });
+      return { packetsSent };
+    } catch (err) {
+      const code = err instanceof Error ? err.message : "power_failed";
+      await recordAgentActionAudit({
+        userId: opts.userId,
+        action: "device_power_wake",
+        status: "failed",
+        approvalChannel: "web-direct",
+        sourceDeviceId: device.id,
+        detail: { error: code.slice(0, 500) },
+      });
+      // no_power_mac / no_same_subnet_peer / wake_no_packets_sent are already
+      // the right message for the route to surface as-is — never rewrapped
+      // through normalizeVantraError's vantra_NNN prefix parsing.
+      throw err instanceof Error ? err : new Error(code);
+    }
+  }
+
   try {
     await vantraFetch(
       `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
@@ -658,6 +768,7 @@ export async function runPowerAction(opts: {
       approvalChannel: "web-direct",
       sourceDeviceId: device.id,
     });
+    return {};
   } catch (err) {
     await recordAgentActionAudit({
       userId: opts.userId,
@@ -669,6 +780,174 @@ export async function runPowerAction(opts: {
     });
     throw normalizeVantraError(err);
   }
+}
+
+// ---------------------------------------------------------------------------
+// P5 — honest wake availability, read without sending anything (for the UI
+// to grey out / annotate the Wake button before the user ever clicks it).
+// ---------------------------------------------------------------------------
+
+export interface WakeAvailability {
+  available: boolean;
+  reason: "ok" | "no_power_mac" | "no_same_subnet_peer";
+}
+
+export async function getWakeAvailability(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<WakeAvailability> {
+  const device = await requireOwnedDevice(opts);
+  const row = await db.device.findFirst({
+    where: { id: device.id },
+    select: { powerMac: true, powerLanSubnet: true },
+  });
+  if (!row?.powerMac) return { available: false, reason: "no_power_mac" };
+  const fleet = row.powerLanSubnet
+    ? await wolPeerFleet({ userId: opts.userId, excludeDeviceId: device.id, subnet: row.powerLanSubnet })
+    : [];
+  const peer = selectWolPeer({ targetDeviceId: device.id, targetSubnet: row.powerLanSubnet, fleet });
+  if (!peer) return { available: false, reason: "no_same_subnet_peer" };
+  return { available: true, reason: "ok" };
+}
+
+// ---------------------------------------------------------------------------
+// P4 — keep-awake. Wires the already-present DevicePowerPolicy (mode
+// off|timed|indefinite, until). Applying/stopping runs the exact same "cmd"
+// transport every other manual tool in this file uses — no new Vantra route
+// needed, since Vantra's generic `cmd` action already exists end to end.
+// ---------------------------------------------------------------------------
+
+export type PowerPolicyMode = "off" | "timed" | "indefinite";
+
+export interface PowerPolicyView {
+  mode: PowerPolicyMode;
+  until: string | null;
+}
+
+const MAX_KEEP_AWAKE_MINUTES = 7 * 24 * 60; // one week — generous, still bounded.
+
+export async function setPowerPolicy(opts: {
+  userId: string;
+  deviceId: string;
+  mode: PowerPolicyMode;
+  minutes?: number;
+}): Promise<PowerPolicyView> {
+  const device = await requireOwnedDevice(opts);
+  const until =
+    opts.mode === "timed"
+      ? new Date(Date.now() + Math.min(MAX_KEEP_AWAKE_MINUTES, Math.max(1, Math.round(opts.minutes ?? 60))) * 60_000)
+      : null;
+
+  // Frozen contract (TASK_123B_WOL_VANTRA.md §3) — sent to the DEVICE's OWN
+  // agentId (unlike "wol", which targets a peer): Vantra applies/clears the
+  // actual keep-awake helper; PATH A only owns the timed→off sweep (see
+  // sweepIfExpired below).
+  let applied: KeepAwakeActionResponse;
+  try {
+    applied = await vantraFetch<KeepAwakeActionResponse>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          action: KEEPAWAKE_ACTION,
+          mode: opts.mode,
+          until: until ? until.toISOString() : null,
+        }),
+      },
+    );
+  } catch (err) {
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: "device_keep_awake",
+      status: "failed",
+      approvalChannel: "web-direct",
+      sourceDeviceId: device.id,
+      detail: { mode: opts.mode, error: err instanceof Error ? err.message.slice(0, 500) : "keep_awake_failed" },
+    });
+    throw normalizeVantraError(err);
+  }
+  if (!applied.ok) {
+    await recordAgentActionAudit({
+      userId: opts.userId,
+      action: "device_keep_awake",
+      status: "failed",
+      approvalChannel: "web-direct",
+      sourceDeviceId: device.id,
+      detail: { mode: opts.mode, reason: applied.reason ?? "unknown" },
+    });
+    throw new Error(applied.reason ?? "keep_awake_apply_failed");
+  }
+
+  const policy = await db.devicePowerPolicy.upsert({
+    where: { deviceId: device.id },
+    create: { deviceId: device.id, mode: opts.mode, until },
+    update: { mode: opts.mode, until },
+    select: { mode: true, until: true },
+  });
+  await recordAgentActionAudit({
+    userId: opts.userId,
+    action: "device_keep_awake",
+    status: "executed",
+    approvalChannel: "web-direct",
+    sourceDeviceId: device.id,
+    detail: { mode: opts.mode, until: until ? until.toISOString() : null },
+  });
+  return { mode: policy.mode as PowerPolicyMode, until: policy.until ? policy.until.toISOString() : null };
+}
+
+/**
+ * Self-healing expiry check for a "timed" policy: called whenever the power
+ * view is read (the console polls this route every 15s while open — see
+ * device-console.tsx), so a policy whose `until` has passed gets cleared on
+ * the device close to on-schedule without needing a dedicated cron sweep.
+ * Honest limitation (flagged in the task report, not silently papered over):
+ * this is NOT a systemd-timer sweep like lib/clone-sweep.ts — a timed policy
+ * only clears the next time someone reads this device's power state. A true
+ * background sweep would need a new `app/api/internal/*-sweep` route + timer
+ * unit, which is outside this task's declared file list.
+ */
+async function sweepIfExpired(opts: {
+  userId: string;
+  deviceId: string;
+  mode: string;
+  until: Date | null;
+}): Promise<PowerPolicyView> {
+  if (opts.mode !== "timed" || !opts.until || opts.until.getTime() > Date.now()) {
+    return { mode: opts.mode as PowerPolicyMode, until: opts.until ? opts.until.toISOString() : null };
+  }
+  try {
+    return await setPowerPolicy({ userId: opts.userId, deviceId: opts.deviceId, mode: "off" });
+  } catch {
+    // Device offline or unreachable — leave the DB row as-is; the next
+    // successful read (or an eventual manual Stop) will retry.
+    return { mode: "timed", until: opts.until.toISOString() };
+  }
+}
+
+export interface DevicePowerView {
+  policy: PowerPolicyView;
+  wake: WakeAvailability;
+}
+
+export async function getDevicePowerView(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<DevicePowerView> {
+  const device = await requireOwnedDevice(opts);
+  const [policyRow, wake] = await Promise.all([
+    db.devicePowerPolicy.findUnique({
+      where: { deviceId: device.id },
+      select: { mode: true, until: true },
+    }),
+    getWakeAvailability(opts),
+  ]);
+  const policy = await sweepIfExpired({
+    userId: opts.userId,
+    deviceId: device.id,
+    mode: policyRow?.mode ?? "off",
+    until: policyRow?.until ?? null,
+  });
+  return { policy, wake };
 }
 
 export async function runCommandNow(opts: {

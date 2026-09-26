@@ -1050,6 +1050,18 @@ model Device {
   // Revoke by setting to null; cleared on job teardown.
   liveCaptureTokenHash String? @unique
 
+  // TASK_123 (B12) — Wake-on-LAN P1. Recorded OURSELVES at setup time
+  // (lib/clone-setup.ts, the same SYSTEM-side block that writes
+  // live-capture.json) — never sourced from MeshCentral's `if<node>` record,
+  // which is the target's own self-reported MAC (root cause R1) and useless
+  // for waking a machine that's already asleep. `powerLanSubnet` is the
+  // computed /24 (e.g. "192.168.0.0/24") lib/wol.ts's selectWolPeer matches
+  // peers against — D2, never MeshCentral's same-mesh relay (R2).
+  powerMac          String?
+  powerLanIp        String?
+  powerLanSubnet    String?
+  powerMacUpdatedAt DateTime?
+
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -1073,6 +1085,7 @@ model Device {
 
   @@index([userId])
   @@index([userId, status])
+  @@index([userId, powerLanSubnet])
 }
 
 model DeviceHeartbeat {
