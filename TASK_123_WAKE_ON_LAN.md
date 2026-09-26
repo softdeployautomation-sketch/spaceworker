@@ -71,6 +71,7 @@ box. That is a topology fact, not a bug, and it must be surfaced in the UI rathe
 | **D4** | **Keep-awake ships first** (§5 P4). It needs no peer, works on every device, and is the higher-value reachability feature. Use the existing `DevicePowerPolicy` (`mode off\|timed\|indefinite`, `until`). | Always achievable; delivers value today |
 | **D5** | **Defer the external relay** (a small WoL receiver on the customer LAN). It needs hardware/a consent story; recorded as **GATE** in the tracker, not built here. | Outside the code |
 | **D6** | **Stop double-reporting.** Either our own path replaces `wakeAgent`, or `wakeAgent` is kept only as an explicit fallback with its result *read* (`Used N device(s)…`) and surfaced. No path may claim success without a count. | Same class as the earlier "honest refusal" work |
+| **D7** | **Windows only for v1** (owner, 2026-09-26). A **Windows** peer on the same LAN is the target case; that is sufficient. **Mac is a later build** — there is no macOS agent yet, so no Mac peer can exist and none is attempted. | Do not add macOS branches, and do not treat "no Mac support" as a gap |
 
 ## 5. Deliverables
 

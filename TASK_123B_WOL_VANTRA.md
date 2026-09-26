@@ -40,9 +40,22 @@ Runs on a **peer** agent, not the target, over the existing `sendRawCmd` transpo
 - send it **3×** with a short gap (packet loss on a sleeping NIC is common);
 - emit a **parseable count line** (e.g. `SW_WOL_SENT=<n>`) so the caller can verify, never assume.
 
-**The MAC is validated server-side** (strict `^([0-9A-F]{2}:){5}[0-9A-F]{2}$`, upper-cased) and may
-**never** be an arbitrary caller-supplied value — it must match the `Device.powerMac` PATH A recorded.
-A caller that can broadcast to an arbitrary MAC from a customer's machine is a network-abuse primitive.
+**Who validates the MAC — verified against the real code, 2026-09-26.** Vantra **holds no MAC at all**
+(no `mac` column anywhere in `prisma/schema.prisma` or `lib/trmm.ts`) and **cannot map a SpaceWorker
+device id** (no `swDeviceId` column), so it is structurally incapable of cross-checking a MAC against
+"the recorded value" — an earlier draft of this file claimed it could. **That claim was wrong and is
+withdrawn.** The honest, correct split is:
+
+| Where | What it enforces | Why it is the right place |
+|---|---|---|
+| **SpaceWorker (authoritative)** | the MAC **must equal `Device.powerMac`** for the target — the record only exists there (PATH A P1) — plus peer ≠ target and same `/24` | SW owns the record and already selects the peer |
+| **Vantra (defence in depth)** | strict MAC **format** (`^([0-9A-F]{2}:){5}[0-9A-F]{2}$`, upper-cased) **and** `assertAgentInSwOrg` on **both** the peer and the target, and peer ≠ target | A stolen token must not be able to wake a non-SW customer device |
+
+**Stated limitation (do not paper over it):** the MAC crosses the wire from our own backend and no
+independent record exists to verify it against. The mitigations are that the route is **internal and
+bearer-gated** and that **both** agent ids must pass the sw-org tenant check — so a user can never reach
+it, and a leaked token cannot target a device outside our own orgs. Record it as-is.
+
 
 ### V2 — read the count from the existing path (D6)
 Wrap the existing `wakeAgent` so its MeshCentral `result` string is parsed to an integer and returned.
@@ -60,8 +73,9 @@ The timed→off sweep is PATH A's (SpaceWorker); Vantra only applies and clears.
 
 ### V4 — the action route
 `app/api/internal/sw/devices/[agentId]/action/route.ts` gains:
-- a **peer-send** action that takes a **target device id** (not a raw MAC) and the peer inferred by the
-  caller — Vantra re-validates the MAC against its own record before sending;
+- a **peer-send** action taking `targetAgentId` + `targetMac` (**not** a bare SW device id — see §3's
+  correction): Vantra enforces MAC **format**, runs `assertAgentInSwOrg` on **both** the peer and the
+  target, and refuses `peer == target`;
 - **keep-awake** apply/clear actions;
 - and it must **return the real counts**, never `ok` without one (**D6** / acceptance 4).
 
@@ -71,12 +85,26 @@ The timed→off sweep is PATH A's (SpaceWorker); Vantra only applies and clears.
 POST /api/internal/sw/devices/<peerAgentId>/action        (existing route, new actions)
 Authorization: <existing SW internal bearer>
 
-{ "action": "wol",        "targetDeviceId": "<sw device id>" }
+{ "action": "wol",
+  "targetAgentId":   "<target vantraAgentId>",  // MANDATORY - lets Vantra run the SAME sw-org check on the target
+  "targetMac":       "<AA:BB:CC:DD:EE:FF>",     // MANDATORY - this record exists only on the SW side
+  "subnetBroadcast": "192.168.0.255",           // optional - derived from the target's recorded /24
+  "targetDeviceId":  "<sw device id>" }         // optional - audit/logging only; Vantra CANNOT resolve it
 { "action": "keepawake",  "mode": "off" | "timed" | "indefinite", "until": "<ISO8601|null>" }
 
 200 { "ok": true,  "sent": <int>, "method": "peer" | "trmm-mesh", "via": "<peer name>" }
 200 { "ok": false, "reason": "no_power_mac" | "no_same_subnet_peer" | "peer_unreachable" | "unsupported" }
 ```
+**`sent: 0` with `ok: true` is forbidden.** An impossible wake returns `ok: false` and a named reason.
+This is decision **D6** and the original complaint: a false "Wake sent" is worse than a refusal.
+
+**`targetDeviceId` alone is insufficient — this is a corrected contract (2026-09-26).** Vantra addresses
+devices by **`agentId`** (its own route signature) and has **no** `swDeviceId` mapping and **no** MAC
+column, so a request carrying only a SpaceWorker cuid can neither be resolved nor contain anything to
+broadcast. `targetAgentId` and `targetMac` are therefore **required**. PATH A currently sends
+`{ action: "wol", targetDeviceId }` only and **must be updated** — it is not deployed, so there is no
+compatibility burden. Both paths change this block together, in the same release.
+
 
 ## 4. Files — exactly these
 
