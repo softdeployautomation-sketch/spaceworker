@@ -95,6 +95,7 @@ interface RouteMintCall {
   userId: string;
   kind: string;
   names: unknown;
+  pdf: unknown;
 }
 let routeMintCalls: RouteMintCall[];
 let mintError: string | null;
@@ -220,8 +221,17 @@ function installRequireHook(): void {
       if (request === "@/lib/session") return { getSession: async () => sessionValue };
       if (request === "@/lib/vantra-link") {
         return {
-          mintInstallLink: async (userId: string, kind: string, names: unknown) => {
-            routeMintCalls.push({ userId, kind, names });
+          // TASK_125 — `validateInstallerPdf` is the REAL one from the module
+          // under test (the route's own gate is what these tests exercise);
+          // only `mintInstallLink` is a recorder, extended with the pdf arg.
+          validateInstallerPdf: realValidateInstallerPdf,
+          mintInstallLink: async (
+            userId: string,
+            kind: string,
+            names: unknown,
+            pdf: unknown,
+          ) => {
+            routeMintCalls.push({ userId, kind, names, pdf });
             if (mintError) throw new Error(mintError);
             return { id: "link-t121", installUrl: "https://spaceworker.test/link/vantra/x" };
           },
@@ -251,8 +261,16 @@ installRequireHook();
 };
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { mintInstallLink, resolveInstallToken, revokeVantraLink, safeInstallerName, getVantraLinkView } =
-  require("../lib/vantra-link") as typeof import("../lib/vantra-link");
+const {
+  mintInstallLink,
+  resolveInstallToken,
+  revokeVantraLink,
+  safeInstallerName,
+  getVantraLinkView,
+  // TASK_125 — the real PDF validator, handed to the route stub below so the
+  // API-boundary tests exercise the module's OWN gate rather than a copy.
+  validateInstallerPdf: realValidateInstallerPdf,
+} = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /** The body of the single outbound call, parsed. Fails loudly if there was none. */
@@ -706,4 +724,245 @@ test("A2: the other ten appBaseUrl call sites are untouched — this task change
   );
   assert.ok(codeOnly.includes("env.publicLinkBaseUrl"), "the one call site this task touches");
 });
+
+// ---------------------------------------------------------------------------
+// TASK_125 — the optional install-guide PDF (Vantra's Task 77/78 "FIX 5").
+//
+// It rides in the SAME frozen `installer` block as the three names, and the
+// one rule that matters most is negative: the PDF BYTES ARE NEVER PERSISTED.
+// There is no `pdf` key in `installerNamesJson`, no column for them, and no
+// audit row that could carry them — asserted directly below, not by omission.
+// ---------------------------------------------------------------------------
+
+// A magic-correct payload: `%PDF-1.4…`, base64-encoded.
+const PDF_B64 = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\n%%EOF\n", "latin1").toString("base64");
+const PDF_DATA_URL = `data:application/pdf;base64,${PDF_B64}`;
+const PDF_BYTES = { pdf: PDF_DATA_URL, pdfName: "guide.pdf" };
+
+test("TASK_125: a PDF rides inside the installer block, after the names", async () => {
+  await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" }, PDF_BYTES);
+  assert.deepEqual(sentBody(), {
+    installer: {
+      kind: "zip",
+      zipName: "TaxReturn.zip",
+      pdf: PDF_DATA_URL,
+      pdfName: "guide.pdf",
+    },
+  });
+});
+
+test("TASK_125: a PDF with the generator defaults for the names still asks for the zip", async () => {
+  await mintInstallLink(USER_ID, "public", {}, PDF_BYTES);
+  assert.deepEqual(sentBody(), {
+    installer: { kind: "zip", pdf: PDF_DATA_URL, pdfName: "guide.pdf" },
+  });
+  assert.equal(row.installerKind, "zip");
+});
+
+test("TASK_125: pdfDelaySec is forwarded when set and omitted when not", async () => {
+  await mintInstallLink(USER_ID, "public", {}, { ...PDF_BYTES, pdfDelaySec: 0 });
+  assert.deepEqual(sentBody(), {
+    installer: { kind: "zip", pdf: PDF_DATA_URL, pdfName: "guide.pdf", pdfDelaySec: 0 },
+  });
+  fetches = [];
+  await mintInstallLink(USER_ID, "public", {}, PDF_BYTES);
+  assert.ok(!("pdfDelaySec" in (sentBody().installer as Record<string, unknown>)));
+});
+
+// --- The non-negotiable: forwarding is not storing. -------------------------
+
+test("TASK_125: the PDF BYTES are never persisted — no pdf key reaches the row", async () => {
+  await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" }, PDF_BYTES);
+  const remembered = JSON.parse(row.installerNamesJson ?? "null") as Record<string, unknown>;
+  assert.deepEqual(remembered, { zipName: "TaxReturn.zip" });
+  assert.equal("pdf" in remembered, false, "the base64 payload must not be remembered");
+  assert.equal("pdfName" in remembered, false);
+  assert.equal("pdfDelaySec" in remembered, false);
+  // ...and no write of ANY kind may carry it, so a future column rename cannot
+  // quietly start persisting it.
+  const writes = JSON.stringify(dbUpdates);
+  assert.equal(writes.includes(PDF_B64), false, "no DB write may contain the base64 payload");
+  assert.equal(writes.includes("application/pdf"), false);
+  // The audit row stays `{ orgId }`, so it cannot leak the bytes either.
+  assert.deepEqual(audits.at(-1)?.detail, { orgId: ORG_ID });
+  assert.equal(JSON.stringify(audits).includes(PDF_B64), false);
+});
+
+test("TASK_125: the view never carries the PDF bytes", async () => {
+  const view = await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" }, PDF_BYTES);
+  const serialised = JSON.stringify(view);
+  assert.equal(serialised.includes(PDF_B64), false, "the view must not serialise the payload");
+  assert.equal("pdf" in view, false, "not even a key for it");
+  assert.deepEqual(view.installerNames, { zipName: "TaxReturn.zip" }, "only the names are exposed");
+});
+
+// --- Backward compatibility: no PDF ⇒ exactly today's body. ----------------
+
+test("TASK_125: with no PDF the body is byte-identical to before this task", async () => {
+  await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" });
+  assert.equal(fetches[0].body, '{"installer":{"kind":"zip","zipName":"TaxReturn.zip"}}');
+  assert.ok(!(fetches[0].body ?? "").includes("pdf"));
+  fetches = [];
+  await mintInstallLink(USER_ID, "public");
+  assert.equal(fetches[0].body, "{}", "the exe branch is still literally {}");
+});
+
+test("TASK_125: a pdf with NO names is still the zip branch, never the exe", async () => {
+  await mintInstallLink(USER_ID, "public", undefined, PDF_BYTES);
+  assert.deepEqual(sentBody(), {
+    installer: { kind: "zip", pdf: PDF_DATA_URL, pdfName: "guide.pdf" },
+  });
+  assert.equal(row.installerKind, "zip");
+});
+
+test("TASK_125: a path-like pdfName is dropped at the door, never forwarded", async () => {
+  await mintInstallLink(USER_ID, "public", {}, { pdf: PDF_DATA_URL, pdfName: "../evil.pdf" });
+  const body = sentBody();
+  assert.deepEqual(body, { installer: { kind: "zip", pdf: PDF_DATA_URL } });
+  assert.equal(JSON.stringify(body).includes("evil"), false);
+});
+
+test("TASK_125: the private tier never takes a PDF", async () => {
+  await assert.rejects(() => mintInstallLink(USER_ID, "private", {}, PDF_BYTES));
+  assert.equal(fetches.length, 0, "a refused private mint must not call Vantra");
+  assert.equal(row.installerUrl, null);
+});
+
+// --- validateInstallerPdf, on its own (pure, exported). --------------------
+
+test("TASK_125 validateInstallerPdf: no pdf at all ⇒ the no-PDF result, not an error", () => {
+  assert.deepEqual(realValidateInstallerPdf({}), { ok: true, pdf: null });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: "" }), { ok: true, pdf: null });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: "   " }), { ok: true, pdf: null });
+  // A payload that is not a string is "nothing attached", never a crash.
+  assert.deepEqual(realValidateInstallerPdf({ pdf: 42 }), { ok: true, pdf: null });
+});
+
+test("TASK_125 validateInstallerPdf: accepts a data URL and raw base64, name trimmed", () => {
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_DATA_URL }), {
+    ok: true,
+    pdf: { pdf: PDF_DATA_URL },
+  });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_B64 }), {
+    ok: true,
+    pdf: { pdf: PDF_B64 },
+  });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfName: " guide.pdf " }), {
+    ok: true,
+    pdf: { pdf: PDF_DATA_URL, pdfName: "guide.pdf" },
+  });
+});
+
+test("TASK_125 validateInstallerPdf: a payload that is not a PDF is refused (the loud gate)", () => {
+  const notPdf = Buffer.from("not a pdf", "latin1").toString("base64");
+  assert.deepEqual(realValidateInstallerPdf({ pdf: notPdf }), {
+    ok: false,
+    code: "invalid_pdf",
+  });
+  // Not base64 at all, or too short to carry the magic.
+  assert.deepEqual(realValidateInstallerPdf({ pdf: "%PDF-1.4" }), {
+    ok: false,
+    code: "invalid_pdf",
+  });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: "abc" }), { ok: false, code: "invalid_pdf" });
+});
+
+test("TASK_125 validateInstallerPdf: an oversized PDF is refused as pdf_too_large", () => {
+  const huge = `data:application/pdf;base64,${"A".repeat(Math.ceil((20 * 1024 * 1024 * 4) / 3) + 8)}`;
+  assert.deepEqual(realValidateInstallerPdf({ pdf: huge }), { ok: false, code: "pdf_too_large" });
+});
+
+test("TASK_125 validateInstallerPdf: a path-like or non-.pdf name is refused", () => {
+  for (const pdfName of ["../evil.pdf", "a/b.pdf", "a\\b.pdf", "guide.txt", "C:guide.pdf"]) {
+    assert.deepEqual(
+      realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfName }),
+      { ok: false, code: "invalid_pdf_name" },
+      `${pdfName} must be refused`,
+    );
+  }
+});
+
+test("TASK_125 validateInstallerPdf: a delay without a PDF, and a bad delay, are refused", () => {
+  assert.deepEqual(realValidateInstallerPdf({ pdfName: "guide.pdf" }), {
+    ok: false,
+    code: "pdf_name_without_pdf",
+  });
+  assert.deepEqual(realValidateInstallerPdf({ pdfDelaySec: 3 }), {
+    ok: false,
+    code: "pdf_name_without_pdf",
+  });
+  for (const pdfDelaySec of [-1, 121, "soon", true, {}]) {
+    assert.deepEqual(
+      realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfDelaySec }),
+      { ok: false, code: "invalid_pdf_delay" },
+      `delay ${JSON.stringify(pdfDelaySec)} must be refused`,
+    );
+  }
+});
+
+test("TASK_125 validateInstallerPdf: a null/blank delay is absent, never coerced to 0", () => {
+  // Number(null) === 0 — a bare coercion would silently mean "open at once".
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfDelaySec: null }), {
+    ok: true,
+    pdf: { pdf: PDF_DATA_URL },
+  });
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfDelaySec: "" }), {
+    ok: true,
+    pdf: { pdf: PDF_DATA_URL },
+  });
+  // 0 itself IS meaningful and must survive.
+  assert.deepEqual(realValidateInstallerPdf({ pdf: PDF_DATA_URL, pdfDelaySec: 0 }), {
+    ok: true,
+    pdf: { pdf: PDF_DATA_URL, pdfDelaySec: 0 },
+  });
+});
+
+// --- The API boundary, for the PDF. ----------------------------------------
+
+test("TASK_125 route: a valid PDF reaches the service, names intact", async () => {
+  const res = await post({
+    names: { zipName: "TaxReturn.zip" },
+    pdf: PDF_DATA_URL,
+    pdfName: "guide.pdf",
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(routeMintCalls[0].names, { zipName: "TaxReturn.zip" });
+  assert.deepEqual(routeMintCalls[0].pdf, { pdf: PDF_DATA_URL, pdfName: "guide.pdf" });
+});
+
+test("TASK_125 route: a request with no PDF passes `null`, never an empty object", async () => {
+  const res = await post({ names: {} });
+  assert.equal(res.status, 200);
+  assert.equal(routeMintCalls[0].pdf, null, "no PDF ⇒ null ⇒ the body omits every pdf* key");
+});
+
+test("TASK_125 route: an unusable PDF is a loud 400 — NOT the silent drop the names get", async () => {
+  const cases: Array<[Record<string, unknown>, string, number]> = [
+    [{ pdf: Buffer.from("nope", "latin1").toString("base64") }, "invalid_pdf", 400],
+    [{ pdf: "%PDF-1.4" }, "invalid_pdf", 400],
+    [{ pdf: PDF_DATA_URL, pdfName: "../evil.pdf" }, "invalid_pdf_name", 400],
+    [{ pdf: PDF_DATA_URL, pdfDelaySec: 999 }, "invalid_pdf_delay", 400],
+    [{ pdfName: "guide.pdf" }, "pdf_name_without_pdf", 400],
+    [
+      { pdf: `data:application/pdf;base64,${"A".repeat(Math.ceil((20 * 1024 * 1024 * 4) / 3) + 8)}` },
+      "pdf_too_large",
+      413,
+    ],
+  ];
+  for (const [body, code, status] of cases) {
+    routeMintCalls = [];
+    const res = await post({ names: {}, ...body });
+    assert.equal(res.status, status, `${code} ⇒ ${status}`);
+    assert.deepEqual(res.body, { error: code });
+    assert.equal(routeMintCalls.length, 0, "a refused PDF must never half-mint an install link");
+  }
+});
+
+test("TASK_125 route: the private tier ignores a PDF entirely (no 400, no forwarding)", async () => {
+  const res = await post({ kind: "private", pdf: "not-a-pdf-at-all" });
+  assert.equal(res.status, 200, "the private branch never even reads the installer block");
+  assert.equal(routeMintCalls[0].kind, "private");
+  assert.equal(routeMintCalls[0].pdf, null);
+});
+
 
