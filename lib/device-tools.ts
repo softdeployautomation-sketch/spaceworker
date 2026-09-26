@@ -875,13 +875,32 @@ const APPS_MARKER_END = "SW_LAUNCHER_APPS_END";
  * (the owner's own VM was crashing) without needing runCommandNow's live
  * device/DB round trip — matches the safeInstallerName/safeArtifactName
  * precedent of exporting pure builders/sanitizers purely for test access.
+ *
+ * 2026-09-26 (live incident on the real device `Sc`, found in its OWN
+ * AgentActionAudit row — not a guess): every `Test-Path -LiteralPath` call
+ * below now carries `-ErrorAction SilentlyContinue`. Without it, a device
+ * whose registry holds an `InstallLocation` with a trailing backslash (real
+ * example, `Sc`'s own "Mesh Agent" entry: `C:\Program Files\Mesh Agent\`)
+ * makes `Test-Path` throw "Illegal characters in path" as a NON-terminating
+ * error — `$ErrorActionPreference = 'Continue'` does not stop the script,
+ * but it DOES write the full multi-line error record into stdout, and nothing
+ * here was catching it (a `try/catch` only intercepts TERMINATING errors,
+ * and this one deliberately isn't one). Enough of those, across however many
+ * installed apps share the same convention, pushed the `SW_LAUNCHER_APPS_*`
+ * markers out of whatever the transport actually captured — so the discover
+ * route came back with a clean `count: 0` and no error banner at all: a
+ * malformed registry value silently made every real app invisible, the
+ * fail-safe design (see parseDiscoveredApps below) working exactly as
+ * designed for the wrong reason. `-ErrorAction SilentlyContinue` makes a
+ * bad path evaluate as "not found" and move on, the same way every other
+ * registry read in this script already does.
  */
 export function buildDiscoverAppsScript(): string {
   return [
     "$ErrorActionPreference = 'Continue'",
     "$apps = @{}",
     "function Add-App($k, $n, $p) {",
-    "  if ($p -and (Test-Path -LiteralPath $p -PathType Leaf) -and -not $apps.ContainsKey($k)) {",
+    "  if ($p -and (Test-Path -LiteralPath $p -PathType Leaf -ErrorAction SilentlyContinue) -and -not $apps.ContainsKey($k)) {",
     "    $apps[$k] = @{ key = $k; name = $n; path = $p }",
     "  }",
     "}",
@@ -907,12 +926,12 @@ export function buildDiscoverAppsScript(): string {
     "      $dn = $_.DisplayName",
     "      if (-not $dn) { return }",
     "      $exe = $null",
-    "      if ($_.InstallLocation -and (Test-Path -LiteralPath $_.InstallLocation)) {",
+    "      if ($_.InstallLocation -and (Test-Path -LiteralPath $_.InstallLocation -ErrorAction SilentlyContinue)) {",
     "        $exe = Get-ChildItem -LiteralPath $_.InstallLocation -Filter *.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName",
     "      }",
     "      if (-not $exe -and $_.DisplayIcon) {",
     "        $cand = ($_.DisplayIcon -split ',')[0].Trim('\"')",
-    "        if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf)) { $exe = $cand }",
+    "        if ($cand -and (Test-Path -LiteralPath $cand -PathType Leaf -ErrorAction SilentlyContinue)) { $exe = $cand }",
     "      }",
     "      if ($exe) {",
     "        $k = ($dn.ToLower() -replace '[^a-z0-9]', '')",
@@ -1074,7 +1093,7 @@ export function buildLaunchCommand(kind: LaunchTargetKind, resolvedPath: string)
     kind === "url"
       ? `Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`
       : [
-          `if (Test-Path -LiteralPath ${psLiteral} -PathType Leaf) {`,
+          `if (Test-Path -LiteralPath ${psLiteral} -PathType Leaf -ErrorAction SilentlyContinue) {`,
           `  Start-Process ${psLiteral}; Write-Output 'LAUNCH_OK'`,
           "} else {",
           "  Write-Output 'LAUNCH_FAIL:not_found'",
