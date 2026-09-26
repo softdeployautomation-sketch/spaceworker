@@ -203,6 +203,12 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 | BUILD-6 | **TASK_117 F1/F2** | engine Chrome KDF salt (`saltysalt`, not `peanuts`) + the unhandled 16-byte cookie prefix | off the critical path (Linux-profile reads only), but a genuine bug |
 | BUILD-7 | **B8-4** retire `self_only` | **not done** — `self_only` still exists at `lib/clone-hosts.ts:76,153`, `components/device-console.tsx:86,1924`, `lib/clone-setup.ts:125` | with the destination now ours it may be dead code — **but that has not been proven**, and a stale refusal could still fire on a one-PC account |
 
+### DEPLOY-PENDING — merged to `main`, **not** on the box
+
+| # | Commit | What is on `main` but not running | Impact |
+|---|---|---|---|
+| DEPLOY-1 | `6aaeed6` (another session, 2026-09-26) | **“Fix silent 0-apps discovery: `Test-Path` throws on a trailing-backslash `InstallLocation`”** (`lib/device-tools.ts`, +23/-4) | **Directly affects the launcher the owner is testing now.** Proven: server `md5 116ecad0…` ≠ `main 0533121c…`, and the deployed file has **no** trailing-backslash guard. If the app list comes back **empty**, that is this bug — and the fix is **pushed but not deployed** |
+
 ### GATE — owner decision or outside-the-code step
 
 | # | Gate | Action |
