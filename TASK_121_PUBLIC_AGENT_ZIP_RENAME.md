@@ -55,6 +55,12 @@ public link takes a completely different branch, and three separate facts prove 
    `lib/zip-generator.ts` already supports everything needed (FIX 3 names, `launcherMode`, `downloadHost`,
    the optional guide PDF) — it is simply never reached from SpaceWorker.
 
+   > **Update 2026-09-26 (TASK_125):** this task wired the three **names** through and left the **guide PDF**
+   > out of scope, exactly as written above. That second half is now done — `TASK_125_PUBLIC_ZIP_GUIDE_PDF.md`
+   > extends the same frozen `installer` block with `pdf` / `pdfName` / `pdfDelaySec` and adds the file input to
+   > the naming card. Nothing in this document changes: the names contract, the byte-identical no-names bodies
+   > and the rollback are all untouched, and the PDF is purely additive.
+
 **So the capability is fully built and has never been wired to SpaceWorker's public URL.** This is the same
 class of gap as the extension: the mechanism exists, the delivery path does not.
 

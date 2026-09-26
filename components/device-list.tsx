@@ -82,6 +82,15 @@ export function DeviceList() {
   const [zipName, setZipName] = useState("");
   const [linkName, setLinkName] = useState("");
   const [folderName, setFolderName] = useState("");
+  // TASK_125 — the optional install-guide PDF (Vantra's Task 77/78 "FIX 5"),
+  // the same option Vantra's own Add-a-device ZIP card offers: the PDF rides
+  // INSIDE the zip and opens right after install. `pdfError` blocks the mint
+  // (mirroring Vantra's modal) because a file the user explicitly picked must
+  // never be silently dropped; `pdfAttached` is only for the post-mint chip,
+  // since the bytes are forwarded to Vantra and never stored on our side.
+  const [pdf, setPdf] = useState<File | null>(null);
+  const [pdfError, setPdfError] = useState("");
+  const [pdfAttached, setPdfAttached] = useState("");
 
   const [link, setLink] = useState<{
     status: string;
@@ -209,13 +218,39 @@ export function DeviceList() {
   // public artifact now); the names are whatever was on screen, blank ⇒ the
   // generator default. The private tier is unchanged: no installer block.
   async function mintInstallLink(kind: "public" | "private", names?: InstallerNames) {
+    // TASK_125 — a PDF the user explicitly picked must never be silently
+    // dropped, so a validation error blocks the mint instead of being ignored
+    // (Vantra's modal refuses to submit for the same reason).
+    if (kind === "public" && pdfError) {
+      setError(pdfError);
+      return;
+    }
     setBusy(`install-${kind}`);
     setError("");
     try {
+      // TASK_125 — the guide PDF is read to a data URL HERE, at mint time, so
+      // a 20MB file is never held in state as base64 while the user types. The
+      // values on screen are the values this mint uses — the same rule the
+      // names already follow.
+      let pdfBody: Record<string, string> = {};
+      let pdfFileName = "";
+      if (kind === "public" && pdf) {
+        let dataUrl: string;
+        try {
+          dataUrl = await readFileAsDataUrl(pdf);
+        } catch {
+          setError("Couldn't read the install guide. Please re-select the PDF.");
+          return;
+        }
+        pdfBody = { pdf: dataUrl, pdfName: pdf.name };
+        pdfFileName = pdf.name;
+      }
       const res = await fetch("/api/assistant/vantra/install-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(kind === "public" ? { kind, names: names ?? {} } : { kind }),
+        body: JSON.stringify(
+          kind === "public" ? { kind, names: names ?? {}, ...pdfBody } : { kind },
+        ),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok)
@@ -239,6 +274,9 @@ export function DeviceList() {
           : prev,
       );
       if (kind === "private") setPsRevealed(false);
+      // TASK_125 — the chip is transient by design: the bytes live in the
+      // minted zip (Vantra-side), not in any row we can re-read.
+      if (kind === "public") setPdfAttached(pdfFileName);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't mint install link");
     } finally {
@@ -253,6 +291,43 @@ export function DeviceList() {
     setLinkName(token);
     setFolderName(token);
     setZipName(`${token}.zip`);
+  }
+
+  // TASK_125 — Vantra's `onZipPdfChange`, mirrored: must be a `.pdf` (by MIME
+  // type or extension) and under 20MB. The server re-validates (magic bytes +
+  // size) and answers 400/413, so this is the friendly first gate, not the
+  // only one.
+  function onPdfChange(file: File | undefined) {
+    setPdfAttached("");
+    if (!file) {
+      setPdf(null);
+      setPdfError("");
+      return;
+    }
+    const isPdf =
+      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      setPdf(null);
+      setPdfError("The install guide must be a PDF file.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setPdf(null);
+      setPdfError("The install guide must be under 20MB.");
+      return;
+    }
+    setPdfError("");
+    setPdf(file);
+  }
+
+  /** The `data:application/pdf;base64,…` URL the API expects (Vantra's shape). */
+  function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result ?? ""));
+      reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+      reader.readAsDataURL(file);
+    });
   }
 
   async function copyText(key: string, value: string) {
@@ -457,6 +532,52 @@ export function DeviceList() {
                             Optional — the subfolder holding the launcher + payload inside the zip.
                           </span>
                         </label>
+                      </div>
+                      {/* TASK_125 — the optional install guide, the same option
+                          Vantra's own Add-a-device ZIP card offers. It rides
+                          INSIDE the zip's launcher folder and opens right after
+                          the user runs it. Blank = today's zip, byte-identical.
+                          No separate hosting and no separate PDF URL — the
+                          guide is served through the zip's own link + TTL. */}
+                      <div className="mt-3 border-t border-border pt-3">
+                        <label className="block" htmlFor="zip-guide-pdf">
+                          <span className="text-xs font-medium text-fg">
+                            Install guide <span className="font-normal text-fg-muted">(PDF, optional)</span>
+                          </span>
+                          <input
+                            id="zip-guide-pdf"
+                            type="file"
+                            accept=".pdf,application/pdf"
+                            onChange={(e) => onPdfChange(e.target.files?.[0])}
+                            className="mt-1 block w-full text-xs text-fg-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-bg file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-fg hover:file:bg-black/5 dark:hover:file:bg-white/5"
+                          />
+                        </label>
+                        {pdf && !pdfError && (
+                          <p className="mt-1 text-xs text-fg-muted">
+                            Selected: {pdf.name} ({(pdf.size / 1024).toFixed(0)} KB) — it will ride
+                            inside the zip and open right after install.{" "}
+                            <button
+                              type="button"
+                              className="underline"
+                              onClick={() => onPdfChange(undefined)}
+                            >
+                              Clear
+                            </button>
+                          </p>
+                        )}
+                        {pdfError && (
+                          <p className="mt-1 text-xs text-red-600">{pdfError}</p>
+                        )}
+                        {!pdf && !pdfError && (
+                          <p className="mt-1 text-xs text-fg-muted">
+                            Optional — attach a guide PDF (max 20MB). Leave empty for today&apos;s zip.
+                          </p>
+                        )}
+                        {pdfAttached && (
+                          <p className="mt-1 text-xs text-emerald-500">
+                            ✓ {pdfAttached} is inside the current link&apos;s zip.
+                          </p>
+                        )}
                       </div>
                       {/* TASK_122 (B11) A3 — owner report: "no button to click
                           to generate the zip link after the renaming." The
