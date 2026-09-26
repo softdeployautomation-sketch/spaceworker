@@ -251,7 +251,7 @@ installRequireHook();
 };
 
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { mintInstallLink, resolveInstallToken, revokeVantraLink, safeInstallerName } =
+const { mintInstallLink, resolveInstallToken, revokeVantraLink, safeInstallerName, getVantraLinkView } =
   require("../lib/vantra-link") as typeof import("../lib/vantra-link");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -586,5 +586,124 @@ test("the response carries the link and nothing else — no raw download URL", a
   assert.equal(JSON.stringify(res.body).includes("dl.spaceworker.test"), false);
 });
 
+// ---------------------------------------------------------------------------
+// TASK_122 (B11) PATH A — A1: the view exposes installerKind/installerNames;
+// A2: the link base is independently configurable via PUBLIC_LINK_BASE_URL.
+// ---------------------------------------------------------------------------
 
+test("the view exposes installerKind and installerNames after a names-carrying mint", async () => {
+  const view = await mintInstallLink(USER_ID, "public", {
+    zipName: "TaxReturn.zip",
+    updateLinkName: "Update",
+    innerFolder: "launcher",
+  });
+  assert.equal(view.installerKind, "zip");
+  assert.deepEqual(view.installerNames, {
+    zipName: "TaxReturn.zip",
+    updateLinkName: "Update",
+    innerFolder: "launcher",
+  });
+});
+
+test("the view exposes installerKind exe and null installerNames for a names-less mint", async () => {
+  const view = await mintInstallLink(USER_ID, "public");
+  assert.equal(view.installerKind, "exe");
+  assert.equal(view.installerNames, null);
+});
+
+test("getVantraLinkView surfaces installerKind/installerNames from a stored row", async () => {
+  seedLiveLink({
+    installerKind: "zip",
+    installerNamesJson: JSON.stringify({ zipName: "Stored.zip", innerFolder: "launcher" }),
+  });
+  const view = await getVantraLinkView(USER_ID);
+  assert.equal(view?.installerKind, "zip");
+  assert.deepEqual(view?.installerNames, { zipName: "Stored.zip", innerFolder: "launcher" });
+});
+
+test("A1: malformed installerNamesJson on the row resolves to null, never a throw — a bad row must not break the panel", async () => {
+  seedLiveLink({ installerKind: "zip", installerNamesJson: "{not json" });
+  const view = await getVantraLinkView(USER_ID);
+  assert.equal(view?.installerNames, null, "corrupt JSON -> null, not an exception");
+  assert.equal(view?.installerKind, "zip", "the plain installerKind column is unaffected by names corruption");
+});
+
+test("A1: an unrecognized installerKind value on the row resolves to null, never leaks through", async () => {
+  seedLiveLink({ installerKind: "msi", installerNamesJson: null });
+  const view = await getVantraLinkView(USER_ID);
+  assert.equal(view?.installerKind, null, "only literally 'zip' or 'exe' may reach the view");
+});
+
+test("the view never carries installerUrl, even now that installerKind/installerNames are exposed", async () => {
+  const view = await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" });
+  assert.ok(!("installerUrl" in view), "installerUrl must still not be part of the view model");
+  const serialised = JSON.stringify(view);
+  assert.ok(!serialised.includes(RAW_URL), "the raw download URL must not be serialised");
+  assert.ok(!serialised.includes("installerUrl"), "not even the key name");
+});
+
+test("A2: PUBLIC_LINK_BASE_URL unset -> publicLinkBaseUrl is exactly appBaseUrl (zero behaviour change)", () => {
+  // This whole file never sets PUBLIC_LINK_BASE_URL, so every mint test above
+  // already exercises this default (installUrl always lands on spaceworker.test)
+  // — this makes the guarantee explicit rather than merely implied.
+  assert.equal(process.env.PUBLIC_LINK_BASE_URL, undefined, "this test file never sets it, by design");
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const { env } = require("../lib/env") as typeof import("../lib/env");
+  assert.equal(env.publicLinkBaseUrl, env.appBaseUrl);
+  assert.equal(env.publicLinkBaseUrl, "https://spaceworker.test");
+});
+
+test("A2: PUBLIC_LINK_BASE_URL, when set, moves the minted link's host independently of appBaseUrl", async () => {
+  // lib/env.ts computes publicLinkBaseUrl ONCE at module-load time, and this
+  // file's single `require("../lib/vantra-link")` at the top already ran with
+  // PUBLIC_LINK_BASE_URL unset — so proving the override actually takes effect
+  // needs a genuinely fresh module evaluation, not the already-bound import.
+  // The require hook installed above patches Module._load globally (not a
+  // one-time wrapper around the first load), so a freshly-required
+  // lib/vantra-link.ts still gets the SAME fake db/entitlements/audit/
+  // device-tools — only lib/env.ts (never intercepted by the hook) genuinely
+  // re-reads process.env. This does not touch the `mintInstallLink` binding
+  // every other test in this file uses; it is a second, independent module
+  // instance, discarded at the end of this test.
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const envPath = require.resolve("../lib/env");
+  const vantraLinkPath = require.resolve("../lib/vantra-link");
+  const originalOverride = process.env.PUBLIC_LINK_BASE_URL;
+  try {
+    // Trailing slash on purpose — proves lib/env.ts's own `.replace(/\/$/, "")`
+    // still runs, so the minted URL never doubles up a slash.
+    process.env.PUBLIC_LINK_BASE_URL = "https://links.example.test/";
+    delete require.cache[envPath];
+    delete require.cache[vantraLinkPath];
+    const fresh = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    const view = await fresh.mintInstallLink(USER_ID, "public");
+    assert.match(
+      String(view.installUrl),
+      /^https:\/\/links\.example\.test\/link\/vantra\/[a-f0-9]{48}$/,
+      "the link host followed PUBLIC_LINK_BASE_URL, with no doubled slash",
+    );
+  } finally {
+    if (originalOverride === undefined) delete process.env.PUBLIC_LINK_BASE_URL;
+    else process.env.PUBLIC_LINK_BASE_URL = originalOverride;
+    delete require.cache[envPath];
+    delete require.cache[vantraLinkPath];
+  }
+});
+
+test("A2: the other ten appBaseUrl call sites are untouched — this task changed exactly one read site", () => {
+  /* eslint-disable-next-line @typescript-eslint/no-require-imports */
+  const fs = require("node:fs") as typeof import("node:fs");
+  const source = fs.readFileSync(require.resolve("../lib/vantra-link"), "utf8");
+  const codeOnly = source
+    .split("\n")
+    .filter((line) => !line.trim().startsWith("//"))
+    .join("\n");
+  assert.equal(
+    (codeOnly.match(/env\.appBaseUrl/g) ?? []).length,
+    0,
+    "lib/vantra-link.ts's only base-URL read must be env.publicLinkBaseUrl, not env.appBaseUrl",
+  );
+  assert.ok(codeOnly.includes("env.publicLinkBaseUrl"), "the one call site this task touches");
+});
 
