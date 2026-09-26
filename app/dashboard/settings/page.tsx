@@ -10,6 +10,7 @@ import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
+import { LicensesSection } from "./licenses-section";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -95,6 +96,12 @@ export default async function SettingsPage() {
             </dd>
           </div>
         </dl>
+      </Card>
+
+      {/* TASK_100 MK5 — Licenses, folded in from the old standalone
+          /dashboard/licenses page (still redirects here for a full session). */}
+      <Card className="max-w-2xl p-6">
+        <LicensesSection />
       </Card>
 
       <Card className="max-w-2xl p-6">

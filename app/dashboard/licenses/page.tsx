@@ -1,16 +1,11 @@
 import type { Metadata } from "next";
-import Link from "next/link";
+import { redirect } from "next/navigation";
 
-import { CopyButton } from "@/components/copy-button";
-import { Badge, Card } from "@/components/ui";
-import { LicenseUpgradeForm } from "@/components/license-upgrade-form";
+import { Card } from "@/components/ui";
 import { ExeLicensePanel } from "@/app/dashboard/settings/exe-license-panel";
+import { LicensesSection } from "@/app/dashboard/settings/licenses-section";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getSession } from "@/lib/auth";
-import { getCurrentUser } from "@/lib/session-user";
-import { prisma } from "@/lib/prisma";
-import { getProduct } from "@/lib/products";
-import { EXE_LICENSE_DAYS } from "@/lib/exe-license";
 
 export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
 
@@ -19,21 +14,23 @@ export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
 // "download coming soon" status. Deliberately NOT linked before a purchase.
 //
 // Task 45 — for a license_only session (an EXE-only buyer) this is the ONLY
-// dashboard page they can reach, so it must carry the honest "want the full web
-// app too?" up-sell plus the password on-ramp to becoming a real customer. The
-// restriction itself is enforced centrally by proxy.ts (Next.js 16 renamed the
-// middleware.ts convention to proxy.ts), not by hiding a nav
-// link.
+// dashboard page they can reach (proxy.ts's LICENSE_ONLY_ALLOWED_PAGE_PREFIXES),
+// so it must carry the honest "want the full web app too?" up-sell plus the
+// password on-ramp to becoming a real customer.
+//
+// TASK_100 MK5 (owner, 2026-09-22) — Licenses moves INTO Settings for a normal
+// (full-scope) web session; the actual content now lives in
+// app/dashboard/settings/licenses-section.tsx (shared by both pages, so
+// nothing here duplicates its rendering). This page keeps working via
+// redirect so old bookmarks/links don't break — but ONLY for a full session.
+// A license_only session must NEVER be redirected to /dashboard/settings:
+// proxy.ts does not allow that session scope onto Settings at all, and doing
+// so would bounce it straight back here, an infinite redirect loop. The
+// isLocalExeRuntime (desktop EXE) branch is unaffected either way — that
+// build has no concept of a "session scope" at all.
 export default async function LicensesPage() {
-  // Desktop EXE runs fully offline — this page's DB reads below (a real user
-  // session + prisma.exeLicense.findMany) have no meaning in the local runtime,
-  // same reasoning as app/dashboard/layout.tsx and settings/page.tsx. Found
-  // live 2026-09-21: this page had NO exe-mode branch at all (unlike those two),
-  // so the dock's "Licenses" link — and Next's own automatic prefetch of it,
-  // which fires just from the link being visible, no click needed — 500'd
-  // every time in the EXE. Reuse the same ExeLicensePanel Settings already
-  // shows (it talks exclusively to /api/exe-license/*, never the DB) instead of
-  // duplicating that UI here.
+  // Desktop EXE runs fully offline — reuse the same ExeLicensePanel Settings
+  // already shows (it talks exclusively to /api/exe-license/*, never the DB).
   if (isLocalExeRuntime()) {
     return (
       <div>
@@ -46,128 +43,19 @@ export default async function LicensesPage() {
     );
   }
 
-  const user = await getCurrentUser();
-  if (!user) return null; // dashboard layout gates auth anyway
-
   const session = await getSession();
-  const isLicenseOnly = session?.scope === "license_only";
-
-  const licenses = await prisma.exeLicense.findMany({
-    where: { userId: user.id },
-    orderBy: { issuedAt: "desc" },
-  });
+  if (session?.scope !== "license_only") {
+    redirect("/dashboard/settings#licenses");
+  }
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Licenses</h1>
-      <p className="mt-2 text-sm text-fg-muted">
-        Your desktop-app license keys. Each is linked to the product you bought.
-      </p>
-
-      {isLicenseOnly && (
-        <div className="mt-6 space-y-5">
-          <Card className="p-5">
-            <h2 className="text-lg font-semibold text-fg">
-              Want the full web app too?
-            </h2>
-            <p className="mt-2 text-sm text-fg-muted">
-              Your desktop licenses are all here. The web app — private browser,
-              lead extraction, campaigns, automations and the AI agent — is a
-              separate subscription.
-            </p>
-            <Link
-              href="/pricing"
-              className="mt-3 inline-block rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-            >
-              Subscribe →
-            </Link>
-          </Card>
-
-          <Card className="p-5">
-            <h2 className="text-lg font-semibold text-fg">Set a password</h2>
-            <p className="mt-1 text-sm text-fg-muted">
-              Choose a password so you can sign in to a full account later.
-            </p>
-            <div className="mt-4 max-w-sm">
-              <LicenseUpgradeForm />
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {licenses.length === 0 ? (
-        <Card className="mt-6 p-6">
-          <p className="text-sm text-fg-muted">You don&rsquo;t have any desktop licenses yet.</p>
-          <Link href="/pricing" className="mt-2 text-sm font-semibold text-brand-600 hover:underline">
-            Browse desktop apps →
-          </Link>
+      <div className="mt-6">
+        <Card className="p-6">
+          <LicensesSection />
         </Card>
-      ) : (
-        <div className="mt-6 space-y-4">
-          {licenses.map((lic) => {
-            const product = getProduct(lic.product);
-            const name = product?.name ?? lic.product;
-            const validUntil = new Date(lic.issuedAt.getTime() + EXE_LICENSE_DAYS * 24 * 60 * 60 * 1000);
-            const isBound = lic.boundMachineId != null && lic.boundMachineId !== "";
-            const issuedLabel = lic.issuedAt.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-            const validUntilLabel = validUntil.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
-            return (
-              <Card key={lic.id} className="p-5">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-lg font-semibold">{name}</h2>
-                  {isBound ? (
-                    <Badge tone="success">Active — bound</Badge>
-                  ) : (
-                    <Badge tone="warning">Needs activation</Badge>
-                  )}
-                </div>
-
-                <dl className="mt-4 space-y-2 text-sm">
-                  {/* Gated once bound (2026-09-19): the real activation key and the
-                      device it's locked to are only ever needed inside the desktop
-                      app itself — nothing to copy or manage from the web anymore. */}
-                  {!isBound && (
-                    <div className="flex items-center justify-between gap-4">
-                      <dt className="text-fg-muted">Purchase reference</dt>
-                      <dd className="flex items-center gap-2">
-                        <code className="max-w-[420px] truncate break-all text-xs">{lic.licenseKey}</code>
-                        <CopyButton value={lic.licenseKey} />
-                      </dd>
-                    </div>
-                  )}
-                  <div className="flex items-center justify-between gap-4">
-                    <dt className="text-fg-muted">Issued</dt>
-                    <dd>{issuedLabel}</dd>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <dt className="text-fg-muted">Valid until</dt>
-                    <dd>
-                      <span className="font-medium">
-                        {validUntilLabel}
-                      </span>
-                      <span className="text-fg-muted"> ({EXE_LICENSE_DAYS} days from issue)</span>
-                    </dd>
-                  </div>
-                </dl>
-
-                {isBound ? (
-                  <p className="mt-4 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg-muted">
-                    This license is locked to a single device. Activating it in the desktop
-                    app on a new machine moves it there automatically.
-                  </p>
-                ) : (
-                  <p className="mt-4 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg-muted">
-                    Not activated anywhere yet — the key above is a purchase reference. Open
-                    the desktop app, paste this key and your email into its License screen,
-                    and it locks to that device automatically. There&rsquo;s nothing to set up
-                    here.
-                  </p>
-                )}
-              </Card>
-            );
-          })}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

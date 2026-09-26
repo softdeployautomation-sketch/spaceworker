@@ -380,6 +380,16 @@ export function WebExtractPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [deepLinkJobId]);
 
+  // TASK_100 MK5 — the standalone /dashboard/advanced-search page (2026-09-20's
+  // one-shot interactive checklist) was retired once Advanced Search became a
+  // real background job here, same engine as Lead Search. It now redirects to
+  // `?template=advanced-search` so old links/bookmarks land on the right tab
+  // instead of a 404 or a silently-wrong default.
+  const deepLinkTemplate = searchParams.get("template");
+  useEffect(() => {
+    if (deepLinkTemplate === "advanced-search") setTemplate("advanced-search");
+  }, [deepLinkTemplate]);
+
   // Task 26, Piece 1 — auto-scroll the leads table to the newest lead. Only fires
   // when the count INCREASES and the user hasn't scrolled up to read history, so
   // a manual review isn't yanked back down by an unrelated re-render.

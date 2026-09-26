@@ -5,11 +5,9 @@ import { usePathname } from "next/navigation";
 
 import {
   Globe,
-  KeyRound,
   LayoutDashboard,
   Megaphone,
   Monitor,
-  Radar,
   Search,
   Settings,
   Zap,
@@ -29,17 +27,21 @@ export interface NavItem {
 // Single source of truth for every real nav destination. Both the dock and the
 // inline mobile nav row render from here so the two can never drift from each
 // other (or from the destinations each dashboard page actually implements).
+// TASK_100 MK5 (owner, 2026-09-22) — Advanced Search and Licenses removed from
+// the nav: Advanced Search is a tab inside Extract (its old standalone page
+// now just redirects there — app/dashboard/advanced-search/page.tsx), and
+// Licenses is now a section inside Settings (app/dashboard/settings/licenses-section.tsx;
+// /dashboard/licenses redirects there for a full session). Both old URLs keep
+// working — only the nav entries are gone.
 const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard", label: "Overview", icon: LayoutDashboard },
   // Task 92 — devices placeholder (grid/detail arrive with Task 95). Web-only:
   // the extractor build's BUILD_ALLOWED_HREFS set below already excludes it.
   { href: "/dashboard/devices", label: "Devices", icon: Monitor },
   { href: "/dashboard/extract", label: "Extract", icon: Search },
-  { href: "/dashboard/advanced-search", label: "Advanced Search", icon: Radar },
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/automations", label: "Automations", icon: Zap },
   { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
-  { href: "/dashboard/licenses", label: "Licenses", icon: KeyRound },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 
@@ -48,13 +50,7 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
 // excluded. The web app passes no build target and sees the full nav. Keys are the
 // exact ExeBuildTarget values from lib/exe-build-target.ts.
 const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
-  extractor: new Set([
-    "/dashboard",
-    "/dashboard/extract",
-    "/dashboard/advanced-search",
-    "/dashboard/licenses",
-    "/dashboard/settings",
-  ]),
+  extractor: new Set(["/dashboard", "/dashboard/extract", "/dashboard/settings"]),
 };
 
 export function useNavItems(buildTargetArg?: string): NavItem[] {
