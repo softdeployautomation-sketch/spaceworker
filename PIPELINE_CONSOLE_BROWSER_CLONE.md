@@ -197,11 +197,12 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 |---|---|---|---|
 | ~~BUILD-1~~ | **B9-B / TASK_119B — MERGED 2026-09-26** | ~~push → merge → deploy~~ **DONE** | Branch pushed (`origin/agent/task-119b-live-capture`), merged to `main` as **`0ca31f0`** (`56b2c4a` is now an ancestor). Verified on the merge: `gofmt` clean, `go build ./...` 0, `go vet ./...` 0, `manifest.json` now carries `"cookies"` + `"<all_urls>"`, `chrome.cookies.getAll` ×3 in `background.js`. **The single-copy risk is closed.** ⚠️ **Still not device-deliverable:** `engine-dist/` on the box holds **9 files** and contains **no** native host, **no** extension, **no** `install-registry.ps1` — and the workflow tar (`.next node_modules package.json package-lock.json prisma browser-server worker deploy`) never ships it. Delivery is **BUILD-2**, and it must land **after** B10-2's registry rewrite (policy → registry `update_url`) or it would ship the **rejected** `ExtensionInstallForcelist` policy |
 | BUILD-2 | **B10 / TASK_120** | ship `clone-native-host.exe` + `install-registry.ps1` in `engine-dist` **and** `ROLE_ARTIFACTS.source`; register the native host; write the **registry `update_url`** (never a policy); persist `DeviceSetupRun`; per-section activity UI; one button → running clone | leaves the dead end the owner hit: a button gated on a capability nothing delivers |
-| BUILD-3 | **OOB-1 / TASK_113** | Prisma’s own FK diff as an **additive migration** (owner applies it) | the live DB **cascades** device/audit deletes where the datamodel declares `RESTRICT` — inert today, but the exact thing RULE 5 forbids |
+| ~~BUILD-3~~ | **OOB-1 / TASK_113 — FIXED + APPLIED 2026-09-26** | Migration `20261005000000_device_layer_fk_action_repair` built and applied to the live DB (backed up first, `pg_dump`) | all 14 FKs confirmed via `pg_constraint` post-apply (13 RESTRICT + 1 SET NULL, matching the datamodel exactly); live drift check now clean of this item — only an unrelated `Device_liveCaptureTokenHash_key` index drift remains, tracked separately |
 | ~~BUILD-4~~ | **B12 / TASK_123 Wake-on-LAN + keep-awake — DONE + DEPLOYED 2026-09-26** | PATH A (`agent/task-123a-wol` → SpaceWorker `main`) + PATH B (`agent/task-123b-wol-vantra` → Vantra `main`), both merged and deployed. Supersedes TASK_96 deliverables 2-5 | Power identity capture (P1), same-subnet peer selection (P2, fail-closed `no_power_mac`/`no_same_subnet_peer`), the frozen `wol`/`keepawake` contract (P3/P4) all live. **Two real bugs found only by live-testing on `Sc` after "done," both fixed and redeployed**: (1) `SetThreadExecutionState` genuinely stops idle-sleep but is invisible to `powercfg /requests` — switched to `PowerCreateRequest`/`PowerSetRequest`; (2) the apply script nested two PowerShell here-strings, which don't nest — the outer one silently closed at the inner one's terminator, so `run.ps1` on the device never actually updated despite the API reporting `ok:true` every time. Fixed via base64 encoding. Verified live: `powercfg /requests` shows a real named SYSTEM entry while held, clears on Stop. Wake (peer-relay) is deployed but unexercised — `Sc` has no same-subnet peer (see OWN-7) |
 | BUILD-5 | **G1 / TASK_105** resource governor / queue | not started | nothing caps concurrency or enforces fairness as the clone fleet grows |
 | BUILD-6 | **TASK_117 F1/F2** | engine Chrome KDF salt (`saltysalt`, not `peanuts`) + the unhandled 16-byte cookie prefix | off the critical path (Linux-profile reads only), but a genuine bug |
 | BUILD-7 | **B8-4** retire `self_only` | **not done** — `self_only` still exists at `lib/clone-hosts.ts:76,153`, `components/device-console.tsx:86,1924`, `lib/clone-setup.ts:125` | with the destination now ours it may be dead code — **but that has not been proven**, and a stale refusal could still fire on a one-PC account |
+| BUILD-8 | **`Device_liveCaptureTokenHash_key` index drift** (found 2026-09-26 while fixing BUILD-3) | the `20260925000000_task119_live_session_streaming` migration created this as a **partial** unique index (`WHERE "liveCaptureTokenHash" IS NOT NULL`); the datamodel's plain `@unique` expects a non-partial one of the same name, so Prisma's diff can't reconcile them and reports it every time | **low severity, likely a no-op fix**: Postgres unique indexes already permit unlimited `NULL`s regardless of a partial `WHERE` clause, so the partial index is almost certainly already behaviourally identical to a plain one — needs a tiny corrective migration (`DROP INDEX` + recreate without the `WHERE`, same name) to make the drift check clean, not because anything is broken today |
 
 ### DEPLOY-PENDING — merged to `main`, **not** on the box
 
@@ -215,7 +216,7 @@ B1 ─┬─ B2 ─ B3 ─┬─ B4 ─ B5
 |---|---|---|
 | GATE-1 | **B10-pend** Chrome Web Store listing | $5 developer account + a **public publisher name**, upload `engine/extension/` as a zip, the four listing tabs, review, then extension ID + version into config. Until it lands `SKIP:store_listing_pending` **passes**, so **nothing is blocked** |
 | GATE-2 | **TASK_102 Phase 4** | retire `agent.spaceworker.top` / `api.spaceworker.top`; parked on Wilk’s registry move. **DO NOT CLOSE** |
-| GATE-3 | **OOB-1 / TASK_113** apply | back up the DB, run `prisma migrate deploy` for the FK fix |
+| ~~GATE-3~~ | **OOB-1 / TASK_113 apply — DONE 2026-09-26** | ~~back up the DB, run `prisma migrate deploy` for the FK fix~~ done, see BUILD-3 |
 | GATE-4 | Old backlog the owner still owns | `TASK_93` Vantra plugin · `TASK_94` Telegram approvals · `TASK_95` devices parity · `TASK_99` module store · `TASK_100` repositioning · `TASK_101` account/staff parity · `TASK_TIER1` trial. **Pre-existing — not clone-pipeline fallout** |
 
 ### Corrected in this consolidation (rows that had gone stale)
@@ -240,6 +241,15 @@ Verified live during this pass: site `200`, all five services `active`.
 
 ## Status log
 
+- 2026-09-26 — **BUILD-3 / TASK_113 FIXED + APPLIED.** The device-layer FK
+  CASCADE→RESTRICT drift (real integrity gap, flagged as "serious" by the
+  owner) is closed: migration built from the live DB's own diff output,
+  DB backed up (`pg_dump`) before deploy, applied via the normal CI
+  migrate-deploy step, verified directly against `pg_constraint` (all 14
+  correct) and via a second drift check (clean of this item). Found one
+  new, unrelated, low-severity drift item in the process — logged as
+  BUILD-8, not fixed yet (a partial-vs-plain unique index mismatch,
+  almost certainly a no-op either way).
 - 2026-09-26 — **BUILD-4 / TASK_123 (B12) DONE + DEPLOYED.** Both PATH A
   (SpaceWorker) and PATH B (Vantra) merged to `main` and deployed. Keep-awake
   live-verified on `Sc` via `powercfg /requests` (two real bugs found and

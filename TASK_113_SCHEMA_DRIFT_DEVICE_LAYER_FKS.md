@@ -1,10 +1,21 @@
 # Task 113 — Pre-existing schema drift: device-layer FK delete-actions never matched the datamodel
 
-**Status: NOT STARTED** (found during the B1/TASK_107 deploy, 2026-09-23).
-**Found by:** owner, running the live drift check after applying B1's migration.
-**Severity:** real integrity gap — the DB currently **cascades** deletes across the
+**Status: ✅ FIXED + DEPLOYED 2026-09-26.** Migration
+`prisma/migrations/20261005000000_device_layer_fk_action_repair` applied to the live DB
+(backed up first: `/root/db-backups/spaceworker-pre-task113-20260926093031.dump`).
+Verified directly against `pg_constraint` post-apply: all 14 constraints now carry the
+correct action (13 × RESTRICT, 1 × SET NULL for `DeliverabilityCheck_seedMailboxId_fkey`).
+Re-ran the live drift check: only one UNRELATED, pre-existing drift line remains
+(`Device_liveCaptureTokenHash_key`, from the later `task119_live_session_streaming`
+migration's partial index — out of this task's scope, tracked separately). Site healthy,
+all three services active post-deploy.
+
+**Originally found:** during the B1/TASK_107 deploy, 2026-09-23, by the owner running the
+live drift check after applying B1's migration.
+**Severity:** real integrity gap — the DB was **cascading** deletes across the
 device/audit layer where `schema.prisma` declares **RESTRICT**. Not an outage; but it
-means the database destroys exactly the rows RULE 5 exists to protect.
+would have meant the database destroying exactly the rows RULE 5 exists to protect, had
+any code path ever deleted a `Device` or `User` (verified none did — see below).
 
 > ## AGENT CONTRACT — COMMIT ONLY, DO NOT DEPLOY
 > **Do NOT run `prisma migrate deploy`** and do not ssh the VPS. Produce the
