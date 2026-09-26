@@ -19,12 +19,26 @@ function number(name: string, fallback: number): number {
   return parsed;
 }
 
+const appBaseUrl = required("APP_BASE_URL");
+
+// TASK_122 (B11) D2 — the PUBLIC install-link host must be movable
+// independently of the other ten `appBaseUrl` call sites (PIN callback,
+// campaign links, licence links, the setup-bundle base, ...). Defaults to
+// `appBaseUrl`, trailing slash stripped once here (so lib/vantra-link.ts's
+// call site never needs its own `.replace(/\/$/, "")`), which means this is
+// a ZERO-BEHAVIOUR-CHANGE addition until PUBLIC_LINK_BASE_URL is explicitly
+// set — required by §7's owner gate: spaceworker.instaweb.top has no DNS yet
+// (measured 2026-09-26: http=000), so the default must keep resolving to the
+// live, working host, never a new one nobody asked to switch to.
+const publicLinkBaseUrl = (process.env.PUBLIC_LINK_BASE_URL || appBaseUrl).replace(/\/$/, "");
+
 export const env = {
   databaseUrl: required("DATABASE_URL"),
   sessionSecret: required("SESSION_SECRET"),
   resendApiKey: required("RESEND_API_KEY"),
   emailFrom: required("EMAIL_FROM"),
-  appBaseUrl: required("APP_BASE_URL"),
+  appBaseUrl,
+  publicLinkBaseUrl,
 
   // Admin panel shared passcode (SpaceWorker's ops). OPTIONAL, never required() —
   // but the admin login FAILS CLOSED when unset ("unset" = "locked", never

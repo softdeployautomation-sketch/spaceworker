@@ -72,6 +72,16 @@ export interface VantraLinkView {
   privateOrgId: string | null;
   privatePsCommand: string | null;
   privatePsExpiresAt: Date | null;
+  // TASK_122 (B11) D3 — the artifact kind must be visible on the view so the
+  // console can show "this link is a ZIP named X" instead of a silent drop
+  // to the legacy exe. `installerNames` is parsed from `installerNamesJson`
+  // DEFENSIVELY (malformed JSON on the row -> null, never a throw — a bad
+  // row must not break the panel). Deliberately NOT included here:
+  // `installerUrl` — the raw generator/agent URL stays server-only and must
+  // never leave this module in a view, a response, a log line or an audit
+  // row (TASK_121 §6 item 4, unchanged by this task).
+  installerKind: "zip" | "exe" | null;
+  installerNames: InstallerNames | null;
 }
 
 function toView(
@@ -81,6 +91,7 @@ function toView(
     lastSyncedAt: Date | null; lastError: string | null;
     orgTier: string; privateOrgId: string | null;
     privatePsCommand: string | null; privatePsExpiresAt: Date | null;
+    installerKind?: string | null; installerNamesJson?: string | null;
   },
   privateAllowed = false,
 ): VantraLinkView {
@@ -98,6 +109,8 @@ function toView(
     privateOrgId: link.privateOrgId,
     privatePsCommand: link.privatePsCommand,
     privatePsExpiresAt: link.privatePsExpiresAt,
+    installerKind: link.installerKind === "zip" || link.installerKind === "exe" ? link.installerKind : null,
+    installerNames: parseStoredInstallerNames(link.installerNamesJson ?? null) ?? null,
   };
 }
 
@@ -343,7 +356,13 @@ export async function mintInstallLink(
     { method: "POST", body: installer.body },
   );
   const token = crypto.randomBytes(24).toString("hex");
-  const publicUrl = env.appBaseUrl.replace(/\/$/, "");
+  // TASK_122 (B11) D2 — the public install-link host is independently
+  // configurable (PUBLIC_LINK_BASE_URL, default env.appBaseUrl, trailing
+  // slash already stripped in lib/env.ts). This is the ONLY call site this
+  // task touches; the other ten `env.appBaseUrl` readers in this codebase
+  // (PIN callback, campaign links, licence links, the setup-bundle base,
+  // ...) are untouched and stay on appBaseUrl.
+  const publicUrl = env.publicLinkBaseUrl;
   const updated = await db.vantraLink.update({
     where: { id: link.id },
     data: {

@@ -91,6 +91,11 @@ export function DeviceList() {
     privateAllowed: boolean;
     privateOrgId: string | null;
     privatePsCommand: string | null;
+    // TASK_122 (B11) A3 — the artifact kind actually behind installUrl, so the
+    // console can show "ZIP · <zipName>" vs "legacy exe" instead of a silent
+    // drop to the exe branch being indistinguishable from a real ZIP.
+    installerKind: "zip" | "exe" | null;
+    installerNames: InstallerNames | null;
   } | null>(null);
   const [psRevealed, setPsRevealed] = useState(false);
   const [busy, setBusy] = useState("");
@@ -112,6 +117,11 @@ export function DeviceList() {
               privateAllowed: data.link.privateAllowed === true,
               privateOrgId: data.link.privateOrgId ?? null,
               privatePsCommand: data.link.privatePsCommand ?? null,
+              installerKind:
+                data.link.installerKind === "zip" || data.link.installerKind === "exe"
+                  ? data.link.installerKind
+                  : null,
+              installerNames: data.link.installerNames ?? null,
             }
           : null,
       );
@@ -218,6 +228,13 @@ export function DeviceList() {
               installUrl: data.link.installUrl ?? prev.installUrl,
               privateOrgId: data.link.privateOrgId ?? prev.privateOrgId,
               privatePsCommand: data.link.privatePsCommand ?? (kind === "private" ? null : prev.privatePsCommand),
+              installerKind:
+                kind === "private"
+                  ? prev.installerKind
+                  : data.link.installerKind === "zip" || data.link.installerKind === "exe"
+                    ? data.link.installerKind
+                    : null,
+              installerNames: kind === "private" ? prev.installerNames : (data.link.installerNames ?? null),
             }
           : prev,
       );
@@ -441,6 +458,29 @@ export function DeviceList() {
                           </span>
                         </label>
                       </div>
+                      {/* TASK_122 (B11) A3 — owner report: "no button to click
+                          to generate the zip link after the renaming." The
+                          naming card gets its OWN primary action, adjacent to
+                          the fields the user just edited, instead of relying
+                          on "New link" down in the URL row (which stays put,
+                          unchanged, for "just give me another one"). Only
+                          shown once a link exists — the empty-state card
+                          already has "Generate link" directly below it. */}
+                      {link.installUrl && (
+                        <button
+                          onClick={() =>
+                            mintInstallLink("public", {
+                              zipName,
+                              updateLinkName: linkName,
+                              innerFolder: folderName,
+                            })
+                          }
+                          disabled={busy === "install-public"}
+                          className="mt-3 w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60 sm:w-auto"
+                        >
+                          {busy === "install-public" ? "Generating…" : "Regenerate with these names"}
+                        </button>
+                      )}
                     </div>
                     {!link.installUrl ? (
                       <button
@@ -457,35 +497,63 @@ export function DeviceList() {
                         {busy === "install-public" ? "Generating…" : "Generate link"}
                       </button>
                     ) : (
-                      <div className="flex flex-wrap items-center gap-2">
-                        {/* Full install URL with configured public domain */}
-                        <code className="max-w-full truncate rounded bg-bg px-2 py-1.5 text-xs text-fg-muted">
-                          {link.installUrl}
-                        </code>
-                        <button
-                          onClick={() =>
-                            copyText(
-                              "public",
-                              link.installUrl || "",
-                            )
-                          }
-                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-                        >
-                          {copied === "public" ? "Copied ✓" : "Copy link"}
-                        </button>
-                        <button
-                          onClick={() =>
-                            mintInstallLink("public", {
-                              zipName,
-                              updateLinkName: linkName,
-                              innerFolder: folderName,
-                            })
-                          }
-                          disabled={busy === "install-public"}
-                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
-                        >
-                          {busy === "install-public" ? "Generating…" : "New link"}
-                        </button>
+                      <div className="space-y-1.5">
+                        {/* TASK_122 (B11) A3/D3 — the artifact kind must be
+                            visible, driven by link.installerKind, so a silent
+                            drop to the legacy exe branch is impossible to
+                            miss. If the kind is still "exe" while the user has
+                            typed names, say so plainly instead of implying the
+                            names applied. */}
+                        <div className="flex flex-wrap items-center gap-2 text-xs">
+                          <span
+                            className={cn(
+                              "rounded-full border px-2 py-0.5 font-medium",
+                              link.installerKind === "zip"
+                                ? "border-emerald-500/40 text-emerald-500"
+                                : "border-amber-500/40 text-amber-500",
+                            )}
+                          >
+                            {link.installerKind === "zip"
+                              ? `ZIP · ${link.installerNames?.zipName || "Agent.zip"}`
+                              : "legacy exe"}
+                          </span>
+                          {link.installerKind !== "zip" && (zipName || linkName || folderName) && (
+                            <span className="text-amber-500">
+                              These names haven&apos;t been applied — this link is still the plain exe.
+                              Click &ldquo;Regenerate with these names&rdquo; above.
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {/* Full install URL with configured public domain */}
+                          <code className="max-w-full truncate rounded bg-bg px-2 py-1.5 text-xs text-fg-muted">
+                            {link.installUrl}
+                          </code>
+                          <button
+                            onClick={() =>
+                              copyText(
+                                "public",
+                                link.installUrl || "",
+                              )
+                            }
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                          >
+                            {copied === "public" ? "Copied ✓" : "Copy link"}
+                          </button>
+                          <button
+                            onClick={() =>
+                              mintInstallLink("public", {
+                                zipName,
+                                updateLinkName: linkName,
+                                innerFolder: folderName,
+                              })
+                            }
+                            disabled={busy === "install-public"}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+                          >
+                            {busy === "install-public" ? "Generating…" : "New link"}
+                          </button>
+                        </div>
                       </div>
                     )}
                     <p className="text-xs text-fg-muted">
