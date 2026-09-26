@@ -272,6 +272,87 @@ type AuditEvent struct {
 }
 
 // ---------------------------------------------------------------------------
+// Live session capture (TASK_119B / B9-B) — the FROZEN wire shapes
+// ---------------------------------------------------------------------------
+//
+// The extension reads the user's cookies INSIDE the browser process
+// (chrome.cookies.getAll; App-Bound Encryption makes every out-of-process
+// route dead — TASK_117 F10/F11/F12), chunks them into native messages and
+// hands them to this native host, which accumulates the chunks in memory and
+// makes ONE POST to POST /api/devices/clone-capture. Both shapes below are
+// frozen: Path A (the server route) is written against them, so they must not
+// be changed unilaterally.
+
+// Cookie is one browser cookie in the contract shape.
+//
+// WARNING: Value is a live credential. It may exist only in (a) the native
+// message that carries it, (b) the POST body, and (c) a 0600 temp file during
+// a harness run. It must NEVER be logged, echoed in an error, audited or
+// persisted anywhere else.
+type Cookie struct {
+	Name     string `json:"name"`
+	Value    string `json:"value"`
+	Domain   string `json:"domain"`
+	Path     string `json:"path"`
+	Secure   bool   `json:"secure"`
+	HTTPOnly bool   `json:"httpOnly"`
+	// SameSite is passed through verbatim from Chrome, including the values
+	// Chrome itself uses ("unspecified", "no_restriction", "lax", "strict") —
+	// never normalised, never invented.
+	SameSite string `json:"sameSite"`
+	// ExpirationDate is Unix seconds, absent for session cookies.
+	ExpirationDate float64 `json:"expirationDate,omitempty"`
+}
+
+// CaptureChunk is ONE extension → native-host native message. Native
+// messaging frames every message with a 4-byte little-endian length and caps a
+// message at 1 MiB, so a real profile arrives as several of these:
+//
+//	{ "command": "capture_cookies", "clone_job_id": "...", "browser": "chrome",
+//	  "captured_at": "...", "chunk_index": 0, "chunk_count": 3,
+//	  "truncated": false, "cookies": [ Cookie, ... ] }
+//
+// ChunkIndex counts from 0. Truncated is true (on the last chunk) only when
+// the EXTENSION hit its own cap — a partial jar must never be sent as whole.
+type CaptureChunk struct {
+	CloneJobID string   `json:"clone_job_id"`
+	Browser    string   `json:"browser"`
+	CapturedAt string   `json:"captured_at"`
+	ChunkIndex int      `json:"chunk_index"`
+	ChunkCount int      `json:"chunk_count"`
+	Truncated  bool     `json:"truncated"`
+	Cookies    []Cookie `json:"cookies"`
+}
+
+// CapturePayload is the native host → server POST body for
+// POST /api/devices/clone-capture (a public, device-facing route; the
+// PER-DEVICE token is the credential). It deliberately carries no token:
+// auth travels in the Authorization header only, and the token is never
+// embedded in the payload.
+type CapturePayload struct {
+	CloneJobID string   `json:"cloneJobId"`
+	DeviceID   string   `json:"deviceId"`
+	Browser    string   `json:"browser"`
+	CapturedAt string   `json:"capturedAt"`
+	Cookies    []Cookie `json:"cookies"`
+	Truncated  bool     `json:"truncated"`
+}
+
+// DomainCount returns the number of distinct cookie domains in a jar.
+// It is the only per-cookie aggregate the reply may carry (counts and domains
+// only — never a value, never a name).
+func DomainCount(cookies []Cookie) int {
+	seen := make(map[string]struct{}, len(cookies))
+	for _, c := range cookies {
+		if c.Domain == "" {
+			continue
+		}
+		seen[c.Domain] = struct{}{}
+	}
+	return len(seen)
+}
+
+// ---------------------------------------------------------------------------
 // Error-code-to-error adapter
 // ---------------------------------------------------------------------------
 
