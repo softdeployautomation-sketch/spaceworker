@@ -56,7 +56,16 @@ export async function POST(req: Request) {
 
   // A bot can receive lots of unrelated traffic; only act on a /start with a
   // link token — everything else is just acknowledged.
-  const match = /^\/start\s+(.+)$/.exec(text);
+  //
+  // 2026-09-26 (live incident): Telegram clients don't always send a bare
+  // "/start <token>" — some paths (confirmed live: a deep link opened from a
+  // browser preview page, not the app) send "/start@BrandappBot <token>"
+  // instead, with the bot's own username appended to the command. The old
+  // regex only matched the bare form, so a real, valid /start silently never
+  // matched — the route still 200'd (everything unmatched just gets
+  // acknowledged), so nothing ever surfaced as an error; the token just sat
+  // unconsumed forever. `(?:@\w+)?` makes the mention suffix optional.
+  const match = /^\/start(?:@\w+)?\s+(.+)$/.exec(text);
   const token = match ? match[1].trim() : "";
   if (!chatId || !token) {
     return NextResponse.json({ ok: true });
