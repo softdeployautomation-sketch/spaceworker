@@ -523,3 +523,62 @@ The first §14 sweep after the deploy reported `{"ok":true,"synced":2,"checked":
 
 **One genuine gap found, deliberately not fixed here.** "I" exited as `released` with `lastError` **empty**, so the owner sees a device that stayed Public with no statement of *why* it never moved. The reason exists — Vantra holds it on its own row — but the `sw/devices` payload exposes only `autoMove{status,timerStartedAt}`, so the sync has nothing to copy. Against §8's "never fails silently", the fix is small and scoped: expose `lastError` in that payload, copy it onto the row on release, and let the console show it on a `released`-but-still-`public` device. Left as an owner decision because `released` is a *clean* exit by design and this may be intended — but today the only way to learn the reason is to query Vantra's table, which the owner cannot do.
 
+## 19. FINAL ACCEPTANCE — the pipeline proven on real hardware (owner, 2026-09-27)
+
+**Build under test:** `BUILD_ID` `D2XGnbqe0LVnaG2cRkzLo`, mtime **2026-09-27 19:35:00 +0200** (after the deploy; the previous build's `BUILD_ID` was `19:22:37`). Branch tip `404f3bc` on `main`.
+
+### 19.1 The full lifecycle, observed — not asserted
+
+A real device was **deleted, re-installed from the public PowerShell command, and watched to completion**. Production data at the end of the run:
+
+| id | name | tier | created | removed |
+|---|---|---|---|---|
+| `cmucwx3gi000…` | `Sc` | public | 09-22 | **2026-09-27 15:13:35** ← §15 delete |
+| `cmujywni1003…` | `Sc` | **private** | 09-27 15:22:47 | — |
+
+The new `Sc` row, `DeviceOnboarding` in full:
+
+```
+status     released          attempts  2          lastError  (none)
+hideLabel  Microsoft System Services           last stage →  tier = private
+```
+
+| stage | timestamp | offset from `t0` (15:22:47) |
+|---|---|---|
+| `t0` (`timerStartedAt`) | 15:22:47.928 | — |
+| `hideDoneAt` | 15:29:21.629 | **+7 min** (first sweep past 5) |
+| `stayOnDoneAt` | 15:34:19.663 | **+12 min** (one sweep after hide) |
+| `movedAt` = `releasedAt` | 15:40:59.875 | **+18 min** (first sweep past 15) |
+
+Every stage fired **in the locked order** (§4), each quantised to the 5-minute sweep boundary as designed, ending `released` with the device **`tier: private`**. This is the first time the whole chain — hide, stay-on, move, release — has been driven end to end by real timers on real hardware.
+
+**Hide genuinely applied on the box** (read out of `hideOutput`, and every `VERIFY:` line is a *read-back*, not a self-report):
+
+```
+STEP:rename:tacticalrmm OK        STEP:rename:Mesh Agent OK
+STEP:hide_uninstall:Mesh Agent OK
+VERIFY:service:tacticalrmm  DisplayName=Microsoft System Services Status=Running
+VERIFY:service:Mesh Agent   DisplayName=Microsoft System Services Status=Running
+VERIFY:uninstall:Mesh Agent SystemComponent=1
+```
+
+**Delete proven against production data, with its audit trail intact.** The old `Sc` carries `removedAt = 15:13:35` and **still has its `DeviceOnboarding` row attached** — the soft-delete preserves history rather than orphaning it (0 heartbeat rows, so `DeviceHeartbeat` FK behaviour is unexercised here).
+
+**The sweep timer is firing on the deployed build:** `19:24:22` → `{"ok":true,"synced":2,"syncErrors":[],"checked":0,"acted":0}` with exit 0. `checked: 0` is correct and not a fault: both surviving onboarding rows are terminal (`released`), so nothing is in flight.
+
+### 19.2 The one correction this run forced
+
+The 15:29 hide produced **no `STEP:redescribe:` and no `VERIFY:description:` line** — but the fixed generator (`lib/agent-visibility.ts`) always emits both. That is how the run revealed it was **not** testing the fix: the hide executed on the *previous* build, and the LEAK-1/LEAK-2 fix only went live in the 19:35 build. Verified present in the running bundle via the §6 sourcemap recipe (14 raw hits for `STEP:redescribe`, 11 for `WOW6432Node`, and `lib/agent-visibility.ts` compiled into `chunks/lib_vantra-link_ts_*.js`).
+
+**Status, stated precisely:** the fix is **deployed and in the running build**, and is covered by `tests/agent-visibility.test.ts` (12/12) — but it has **not yet executed a hide in production**. Expected new lines on the next hide: `STEP:redescribe:<service> OK` and `VERIFY:description:<service> Description=Microsoft System Services`. One Reveal→Hide cycle on any device closes this.
+
+### 19.3 A verification trap found here (now in `HOW_WE_MOVE_FAST.md` §6)
+
+`/opt/spaceworker/.next/static/chunks/` holds **138** `.js` files and **accumulates orphans across deploys** — the *old* badge expression and the *new* one were both found there, so grepping that directory can neither confirm nor refute a UI change. `app-build-manifest.json` is not emitted by this production build. Verify by `BUILD_ID` mtime, the **server** `.map` sourcemap, or by proving the old literal no longer exists in the source at all.
+
+### 19.4 Still open (owner decisions, not defects)
+
+1. **`lastError` is not propagated from Vantra.** Device `I` released with `lastError` **empty**, so the owner is never told *why* it stayed Public — though Vantra holds the reason (`owner has no private organization to move into`). Fix is small: add `lastError` to the `sw/devices` payload, copy it on release, render it on a `released`-but-`public` device. Left open because `released` is a clean exit by design.
+2. Remaining Public devices are `I` and two `SpaceWorker browser` rows; neither has an onboarding row, so the sweep does not act on them (correct for the browser rows).
+3. ~89 pre-existing lint findings (25 `react/no-unescaped-entities` plus the rest) remain — a mechanical pass across ~10 files, deliberately out of scope for §16.
+

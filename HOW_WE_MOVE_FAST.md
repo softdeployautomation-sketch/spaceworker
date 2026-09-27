@@ -372,6 +372,23 @@ Added 2026-09-27 (TASK_128 §15 — verifying a deploy actually took):
   guard fires before anything destructive, with `400 "Unknown action."` as the
   contrast for a name that is not wired at all.
 
+- **2026-09-27 (TASK_128): `.next/static/chunks/` accumulates ORPHANS across
+  deploys — a `grep` there is not proof either way.** Measured on the live box:
+  **138** `.js` files under `static/chunks`, and the *old* expression
+  (`"private"===e.tier?"Private":"Public"`) was still present in several of them
+  while the *new* one was present in exactly one. Both were found, so a bare
+  `grep -rl` of the chunk dir can neither confirm nor refute a UI change — the
+  extract-the-tarball deploy never removes chunks from earlier builds, and
+  `app-build-manifest.json` (the dev-time route→chunk map, §6 above) is **not
+  emitted** in this production build (`find .next -name '*manifest*'` returns
+  `build-manifest`, `app-path-routes-manifest`, etc. — no `app-build-manifest`).
+  Order of preference instead: (1) `BUILD_ID` mtime *after* your deploy;
+  (2) the **server** `.map` recipe above — server chunks are the authoritative
+  compiled source; (3) grep the **repo** for the old expression and confirm it is
+  gone: if the old literal exists nowhere in the source, no chunk on the box can
+  be serving it; (4) if a chunk *is* known from a devtools network trace, anchor
+  on the presence of the **unique new** minified expression, never on absence.
+
 Added 2026-09-27 (owner: *"what exactly are this link errors you keep passing, and
 why can't they be fixed"* — the answer was two unrelated things):
 
