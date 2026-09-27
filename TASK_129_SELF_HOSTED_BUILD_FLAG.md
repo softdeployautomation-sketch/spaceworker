@@ -4,7 +4,7 @@
 
 **Full project plan**: `/Users/mikeolab/.claude/plans/transient-moseying-tome.md` (SpaceWorker OS self-hosted/standalone build — read the "Context" and "Phase 1" sections there for the big picture; this doc is just Phase 1's execution spec). This project is **not urgent** — see the branching note below before doing anything.
 
-## Built 2026-09-27 — §2–§5 IMPLEMENTED (Claude, branch `self-hosted-build`)
+## Built 2026-09-27 — §2–§5 IMPLEMENTED (Cline, branch `self-hosted-build`)
 
 **What shipped**
 - **§2** `app/admin/(protected)/admin-panel.tsx` — new `selfHosted: boolean` prop; `SELF_HOSTED_HIDDEN_TABS = ["payments","wallets","ai","licenses"]`; `visibleTabs` filters the nav; the four `{tab === "..." && <XTab />}` branches are also guarded with `!selfHosted` (defensive — the spec warned a future URL-synced/hash tab could otherwise land there). `app/admin/(protected)/page.tsx` passes `selfHosted={isSelfHosted()}`.
