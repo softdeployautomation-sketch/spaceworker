@@ -1,21 +1,47 @@
 # Task 127 — Device screenshot monitoring → AI summary → (later) agent control
 
-**Status: idea captured 2026-09-26, refined 2026-09-27. Phase 1 + Phase 2 are READY TO ASSIGN TO CLINE once the click-automation investigation below (Claude, live VM test) confirms the exact click sequence — do not start Phase 1 build before that lands. No deploy, no schema, no code yet.**
+**Status: idea captured 2026-09-26, refined 2026-09-27, click-automation CONFIRMED WORKING LIVE 2026-09-27 (Claude, real test device "Sc"). Phase 1 + Phase 2 are READY TO ASSIGN TO CLINE — the exact automation sequence below is proven, not theoretical. No deploy, no schema, no code yet; this doc is the full spec to build from.**
 **Context: user wants to test agent-driven device monitoring via Telegram; this was the example use case. Refined 2026-09-27: rather than a new MeshCentral API integration, drive the EXISTING console UI's own manual Connect button via browser automation. Also, explicitly, a later phase: not just observing the device but eventually CONTROLLING it — "help make purchases and so on" — see the safety section below before ever touching that phase.**
 
-## Live investigation in progress (2026-09-27, Claude)
-The owner confirmed today that the console's Connect button does NOT fully automate the MeshCentral session:
-after our own Connect click, MeshCentral's OWN in-iframe UI still requires a SEPARATE manual click to actually
-take "Control" (view rights vs. control rights are apparently not the same as loading `mesh.control` — this
-needs live confirmation, since `lib/trmm.ts`'s `MeshCentralUrls.control` is nominally already the control-mode
-URL, not the view-only one). Similarly, our own Disconnect only navigates the user away — it does NOT click
-MeshCentral's own in-iframe Disconnect, potentially leaving a mesh-side session dangling. Both of these must be
-understood and, if at all possible, automated (find the actual DOM element/selector for MeshCentral's in-iframe
-Control and Disconnect controls, and confirm whether `mesh.spaceworker.top` is same-enough-origin for
-script-driven clicks into the iframe, or whether this requires a different approach, e.g. a MeshCentral URL
-parameter that skips the manual Control click entirely) BEFORE Phase 1's build starts — this is the actual
-mechanism Phase 1 depends on. If it turns out NOT automatable, the whole "drive our own UI" approach in Phase 1
-needs to be reconsidered.
+## Live investigation — CONFIRMED WORKING (2026-09-27, Claude, Playwright against real device "Sc")
+Used Playwright (installed on the VPS — Ubuntu 22.04, `npx playwright install --with-deps chromium` worked
+cleanly; NOT yet a real project dependency, see open questions) with a real minted session cookie for the
+device's actual owner, against `https://spaceworker.top/console/<deviceId>`. Full sequence, proven end to end:
+
+1. **Our own Connect** — `page.getByRole("button", { name: /^connect$/i })` on the SpaceWorker console page.
+   This loads the `mesh.spaceworker.top` iframe (`mesh.control` URL) but does NOT start a live session by
+   itself — the iframe loads showing "Disconnected".
+2. **MeshCentral's OWN in-iframe Connect** — a SEPARATE button, inside the iframe, also literally labeled
+   "Connect" (top-left of MeshCentral's own toolbar). Playwright reaches it fine even though
+   `mesh.spaceworker.top` is a different origin from `spaceworker.top` — **Playwright drives the browser at
+   the CDP level, not via in-page script, so cross-origin iframes are NOT a blocker** the way an in-page
+   `document.querySelector` into a cross-origin iframe would be. Locate via
+   `page.frames().find(f => f.url().includes("mesh.spaceworker.top"))`, then
+   `meshFrame.getByRole("button", { name: /^connect$/i }).first().click()`. After this, the toolbar reads
+   "Disconnect | Connected" and the real remote desktop starts rendering.
+3. **The "Input" checkbox (`#DeskControl`)** — this IS the actual control-vs-view-only toggle the owner
+   described ("I still have to click control separately"), confirmed live. It's a plain checkbox, unchecked
+   by default even when the URL already carries control-level rights.
+   `meshFrame.locator("#DeskControl").check()` works. **Caution found live**: using `{ force: true }` on this
+   check may risk landing a stray click on the desktop canvas underneath (a context menu appeared on the
+   real desktop mid-test) — for the real build, verify the checkbox is genuinely actionable WITHOUT `force`
+   first (wait for it to be visible/stable), and only fall back to `force` if truly necessary, to avoid ever
+   sending an unintended click to the live desktop.
+4. **Screenshot** — a plain `page.screenshot()` once the frame has settled (a few seconds after step 2)
+   captures the real, live remote desktop. Confirmed: got a genuine desktop image back (icons, wallpaper,
+   taskbar, real file names) — proves the whole pipeline works, not just isolated pieces.
+5. **Clean disconnect — the important discovery**: the visible "Disconnect" element
+   (`<div class="cmtext" onclick="cmdeskaction(11,event)">Disconnect</div>`) is NOT independently clickable —
+   it lives inside a menu that isn't open by default, and Playwright's own actionability check fails on it
+   ("element is not visible") even after trying to open likely menu triggers. **The reliable fix: call
+   MeshCentral's own exposed JS function directly, bypassing the UI entirely**:
+   `meshFrame.evaluate(() => cmdeskaction(11, null))`. Confirmed live — toolbar cleanly returns to
+   "Connect | RDP Connect | Disconnected", screen goes black, no dangling session. This is MORE reliable than
+   DOM-clicking a menu item and should be the actual disconnect mechanism in the real build, not a fallback.
+
+**This resolves the original open question entirely: the whole flow is automatable with zero manual clicks,
+and the Disconnect side is actually simpler and more robust than expected (a direct function call, not
+UI-dependent).**
 
 ## Read first (mandatory, once picked up)
 - `lib/vantra-link.ts`, `lib/device-tools.ts` — how SpaceWorker already talks to Vantra's device layer (the `VANTRA_INTERNAL_TOKEN` cross-app auth pattern, mesh URL rewriting for `mesh.spaceworker.top`).
@@ -31,14 +57,26 @@ needs to be reconsidered.
 - Requires the target device's agent to be online at capture time; an asleep/offline device just misses that capture (must degrade gracefully, never error the whole sweep).
 - AI cost: analyzing every hourly frame with a vision model would multiply cost per device per day. Recommendation: batch it — one vision call per device per day over the day's collected frames, not one call per frame.
 
-## Phase 1 — automated capture (refined approach, 2026-09-27)
-Instead of a new MeshCentral API integration, drive SpaceWorker's OWN console page like a real (headless) user would:
-1. A headless browser (Playwright is the natural fit — check what's already in `package.json` before adding a new dependency) logs in with a real session, opens `/console/[deviceId]`, clicks the existing **Connect** button (`components/device-console.tsx`), waits for the MeshCentral iframe's remote-desktop view to actually render.
-2. Screenshot the rendered frame (the browser page itself, or specifically the iframe's canvas), save it, then close the session the same way a manual user would (don't leave sessions dangling — check what "disconnect" does in `device-console.tsx` today and mirror it).
-3. Runs on a systemd timer (same pattern as `automations-sweep`/`digest-sweep`), per opted-in device.
-4. Store frames as files (object storage or local disk path referenced by a new `DeviceScreenshot` row) — never inline base64 into Postgres.
+## Phase 1 — automated capture (CONFIRMED sequence, 2026-09-27)
+Playwright drives SpaceWorker's own console page exactly like the live investigation above proved:
+1. Headless Playwright (Chromium) with a real minted session — mint the same way `lib/auth.ts`'s
+   `createSessionToken` does (or, better, call the real login flow / reuse an internal minting helper — decide
+   the cleanest non-hacky way to get a session for the sweep's own service context, since the investigation
+   script minted one directly with `SESSION_SECRET`, which is fine for a one-off test but the real sweep needs
+   its own clean, auditable way to act as "the system," not literally forge a user token by hand each run).
+2. `goto("/console/<deviceId>")` → click our own Connect (`getByRole("button", {name: /^connect$/i})`).
+3. Find the `mesh.spaceworker.top` frame → click ITS OWN Connect button (same role/name query, scoped to the
+   frame) → wait for it to report "Connected".
+4. Check `#DeskControl` (the Input/control toggle) — verify actionable without `force` before falling back to
+   it, to avoid a stray click landing on the live desktop.
+5. `page.screenshot()` once settled (a few seconds after step 3).
+6. Disconnect via `meshFrame.evaluate(() => cmdeskaction(11, null))` — NOT DOM-clicking, this is the reliable
+   path (proven, see above).
+7. Close the Playwright context/browser.
+8. Runs on a systemd timer (same pattern as `automations-sweep`/`digest-sweep`), per opted-in device.
+9. Store frames as files (object storage or local disk path referenced by a new `DeviceScreenshot` row) — never inline base64 into Postgres.
 
-This reuses 100% of the existing, already-working Connect flow and auth — no new MeshCentral-side integration, no new trust boundary. The tradeoff: it's a real (if headless) browser session per capture, so it inherits whatever visible "someone is connected" indicator the manual flow already has.
+This reuses 100% of the existing, already-working Connect flow and auth — no new MeshCentral-side integration, no new trust boundary. The tradeoff: it's a real (if headless) browser session per capture, so it inherits whatever visible "someone is connected" indicator the manual flow already has — this was NOT verified during the investigation (no way to check the actual OS-level agent indicator from outside the VM) and remains a real open question below.
 
 ## Phase 2 — extraction + summary
 1. **End-of-day job**: for each device with today's frames, ONE vision-model call summarizing the set (not one call per frame) → a short human-readable summary.
@@ -62,8 +100,9 @@ Non-negotiable safety requirements, decided now so they can't get lost later:
 - Anything from Phase 3 — do not build control capability as part of shipping Phase 1/2.
 
 ## Open questions to resolve before starting Phase 1
-- Is Playwright (or similar) already a dependency anywhere in this repo, or would it be new? Check before assuming.
-- Does the visible "someone is viewing your screen" indicator (if the MeshCentral agent shows one) make even headless, brief captures too disruptive to be viable as "background monitoring"? Verify live on a real test device first.
+- Playwright is confirmed NOT a project dependency yet (installed manually, scratch-only, for this investigation). Add it as a real dependency (`npm install -D playwright` or similar) and check `npx playwright install --with-deps chromium` is run as part of the VPS setup/deploy (it downloads a real browser binary, ~300MB — decide if that belongs in the deploy tar or a one-time manual VPS install step, same category as the worker's Python venv).
+- The visible "someone is viewing your screen" / active-session indicator was NOT verified during this investigation (no way to observe the VM's own screen from outside it in this pass) — verify directly before treating captures as background/invisible.
+- How to mint the sweep's own session cleanly (see Phase 1 step 1) — not a hand-forged token per run.
 - Where do raw frames live (object storage vs. local disk vs. Postgres bytea) — no existing image-blob storage pattern in this repo to copy from; TASK_31's themed-template Flux images might be the closest precedent to check.
 - Exact vision model / cost per summary call, weighed against the existing per-user daily AI cap.
 
