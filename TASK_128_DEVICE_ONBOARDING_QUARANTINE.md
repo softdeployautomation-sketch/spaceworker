@@ -570,7 +570,33 @@ VERIFY:uninstall:Mesh Agent SystemComponent=1
 
 The 15:29 hide produced **no `STEP:redescribe:` and no `VERIFY:description:` line** — but the fixed generator (`lib/agent-visibility.ts`) always emits both. That is how the run revealed it was **not** testing the fix: the hide executed on the *previous* build, and the LEAK-1/LEAK-2 fix only went live in the 19:35 build. Verified present in the running bundle via the §6 sourcemap recipe (14 raw hits for `STEP:redescribe`, 11 for `WOW6432Node`, and `lib/agent-visibility.ts` compiled into `chunks/lib_vantra-link_ts_*.js`).
 
-**Status, stated precisely:** the fix is **deployed and in the running build**, and is covered by `tests/agent-visibility.test.ts` (12/12) — but it has **not yet executed a hide in production**. Expected new lines on the next hide: `STEP:redescribe:<service> OK` and `VERIFY:description:<service> Description=Microsoft System Services`. One Reveal→Hide cycle on any device closes this.
+**Status: the fix is deployed in the running build and has now EXECUTED on real hardware — both leaks verified closed.** The first attempt at this proof was invalid and is worth recording: the 15:29 hide emitted **no** `STEP:redescribe:` / `VERIFY:description:` line, which is how it became clear it had run on the *previous* build (the fix only went live at `BUILD_ID` `19:35:00`). Presence in the running bundle was then confirmed via the §6 sourcemap recipe (14 raw hits for `STEP:redescribe`, 11 for `WOW6432Node`, `lib/agent-visibility.ts` compiled into `chunks/lib_vantra-link_ts_*.js`).
+
+The owner then clicked **Hide** in the console on device `Sc`. New lines, absent at 15:29:
+
+```
+STEP:redescribe:tacticalrmm OK
+STEP:redescribe:Mesh Agent OK
+VERIFY:description:tacticalrmm Description=Microsoft System Services
+VERIFY:description:Mesh Agent  Description=Microsoft System Services
+STEP:hide_uninstall:{0D34D278-5FAF-4159-A4A0-4E2D2C08139D}_is1 OK
+```
+
+Read back independently off the VM through the same `run-command` channel:
+
+```
+tacticalrmm | DisplayName=Microsoft System Services | Desc=Microsoft System Services | Running
+Mesh Agent  | DisplayName=Microsoft System Services | Desc=Microsoft System Services | Running
+
+HIDDEN | "Mesh Agent"         | key=Mesh Agent          | hive=...\Uninstall
+HIDDEN | "Tactical RMM Agent" | key={0D34D278-...}_is1  | hive=...\WOW6432Node\Uninstall
+visible Tactical/Mesh entries = 0
+```
+
+That second row is precisely Leak 2: `Tactical RMM Agent` lived in the **WOW6432Node** hive the old script never swept, which is the concrete cause of the owner's *"why is the name showing tactical rmmmicrosoft"*. Both leaks closed, agent still **Running**.
+
+**A readability defect in the run output, found by the owner asking "did it work or are the names still exposed".** The `VERIFY:uninstall:` block (line 88) filters on `DisplayName -match 'Tactical|Mesh' -or SystemComponent -ne $null`, so it also lists unrelated apps that already carry a `SystemComponent` value — ~20 lines of EdgeWebView, Connection Manager and GUID keys, none of which the script touched (the true count of modified keys is the number of `STEP:hide_uninstall: … OK` lines: exactly 2). Worse, the line prints `$k.PSChildName` — the **key name, not the DisplayName** — so for a GUID key the reader cannot tell Tactical's entry from Microsoft's. Tightening it (match DisplayName only, and print the DisplayName) is a small, safe follow-up.
+
 
 ### 19.3 A verification trap found here (now in `HOW_WE_MOVE_FAST.md` §6)
 
