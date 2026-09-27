@@ -70,6 +70,25 @@ type PowerView = {
 
 type Tabs = "summary" | "control" | "command" | "clone" | "activity";
 
+// TASK_127 Phase 1 — the device-screen-monitoring read model, mirroring
+// GET /api/devices/:id/screenshots. Frame BYTES are not here: each frame is
+// fetched from its own route (which re-checks ownership), so the console never
+// holds a screen image in memory until the owner actually opens it.
+type ScreenMonitorView = {
+  device: { id: string; name: string; status: string; optIn: boolean };
+  policy: { enabled: boolean; intervalMinutes: number; retentionDays: number };
+  frames: Array<{
+    id: string;
+    status: string;
+    failureReason: string | null;
+    /** null on a FAILED frame — nothing was captured, so there is no time it was
+     *  captured at. Fall back to createdAt when labelling those. */
+    capturedAt: string | null;
+    createdAt: string;
+    bytes: number | null;
+  }>;
+};
+
 // TASK_114 — the /api/devices/:id/clone-setup read model (mirrors
 // lib/clone-setup.ts CloneSetupStatus; ids/paths never reach the UI copy).
 type CloneSetupStatus = {
@@ -1628,6 +1647,9 @@ function SummaryTab({
           </>
         )}
       </div>
+      {/* TASK_127 Phase 1 — screen monitoring. Placed on Summary, next to the
+          clone card, because this IS the owner's consent switch for it. */}
+      <ScreenMonitoringCard deviceId={device.id} />
       {/* Task 111 — compact clone card (always visible on Summary). The Open
           button is live-session-only; Manage switches to the Browser clone tab. */}
       <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
@@ -1652,6 +1674,158 @@ function SummaryTab({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** TASK_127 Phase 1 — the owner's own switch for screen monitoring, plus the
+ * frames it has produced.
+ *
+ * Self-contained (fetches its own state) because it owns a small piece of state
+ * that nothing else on this screen needs, and because the opt-in lives on the
+ * DEVICE, not the account: this is the consent boundary, so it is shown on the
+ * device's own Summary where the owner is already looking.
+ *
+ * Deliberately explicit about the two-switch design: an owner who switches this
+ * on while the operator has monitoring off must not be left thinking their screen
+ * is being photographed when it is not (and vice versa) — so the global state is
+ * stated in plain words, read-only. */
+function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
+  const [view, setView] = useState<ScreenMonitorView | null>(null);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState("");
+  const [openFrame, setOpenFrame] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`);
+      if (!res.ok) throw new Error("could not load screen monitoring");
+      setView((await res.json()) as ScreenMonitorView);
+      setErr("");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not load screen monitoring");
+    }
+  }, [deviceId]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function setOptIn(enabled: boolean) {
+    setBusy("optin");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) throw new Error("could not change the setting");
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not change the setting");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function forgetAll() {
+    setBusy("clear");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`, { method: "DELETE" });
+      if (!res.ok) throw new Error("could not delete the stored frames");
+      setOpenFrame(null);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not delete the stored frames");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // A failed frame has no capturedAt (nothing was captured) — label those by when
+  // the attempt happened, so the list never shows "Invalid Date".
+  const frameAt = (frame: ScreenMonitorView["frames"][number]) =>
+    new Date(frame.capturedAt ?? frame.createdAt);
+
+  return (
+    <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <Monitor className="h-3.5 w-3.5" /> Screen monitoring
+      </p>
+      {err && <p className="mt-1 text-xs text-red-500">{err}</p>}
+      {!view ? (
+        <p className="mt-1 text-sm text-fg-muted">checking…</p>
+      ) : (
+        <>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <p className="text-sm text-fg">
+              {view.device.optIn ? "On for this machine" : "Off for this machine"}
+            </p>
+            <button
+              onClick={() => setOptIn(!view.device.optIn)}
+              disabled={busy === "optin"}
+              className="rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+            >
+              {busy === "optin" ? "Saving…" : view.device.optIn ? "Switch off" : "Switch on"}
+            </button>
+            {view.frames.length > 0 && (
+              <button
+                onClick={forgetAll}
+                disabled={busy === "clear"}
+                className="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-black/10 hover:text-fg disabled:opacity-50 dark:hover:bg-white/10"
+              >
+                {busy === "clear" ? "Deleting…" : "Delete stored frames"}
+              </button>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-fg-muted">
+            {view.device.optIn
+              ? view.policy.enabled
+                ? `This machine is photographed about every ${view.policy.intervalMinutes} minute${
+                    view.policy.intervalMinutes === 1 ? "" : "s"
+                  } while it is online, and pictures are kept for ${view.policy.retentionDays} day${
+                    view.policy.retentionDays === 1 ? "" : "s"
+                  }.`
+                : "Switched on here, but screen monitoring is currently switched OFF service-wide, so nothing is being captured right now."
+              : "Nothing is captured from this machine while this is off."}
+          </p>
+          {view.frames.length > 0 && (
+            <>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {view.frames.slice(0, 8).map((frame) => (
+                  <button
+                    key={frame.id}
+                    onClick={() => setOpenFrame(openFrame === frame.id ? null : frame.id)}
+                    title={`${frame.status} · ${frameAt(frame).toLocaleString()}${
+                      frame.failureReason ? ` · ${frame.failureReason}` : ""
+                    }`}
+                    className={`rounded-md border px-2 py-1 text-xs transition-colors ${
+                      openFrame === frame.id
+                        ? "border-brand-600 text-fg"
+                        : "border-border text-fg-muted hover:text-fg"
+                    }`}
+                  >
+                    {frameAt(frame).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    {frame.status !== "captured" ? " ✕" : ""}
+                  </button>
+                ))}
+              </div>
+              {openFrame && (
+                <div className="mt-2">
+                  {/* Served by the frame route, which re-checks ownership on every
+                      request — the bytes are never inlined into the page. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={`/api/devices/${deviceId}/screenshots/${openFrame}`}
+                    alt="A stored screenshot of this device's screen"
+                    className="w-full rounded-md border border-border"
+                  />
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
     </div>
   );
 }
