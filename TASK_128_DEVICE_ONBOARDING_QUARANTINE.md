@@ -456,3 +456,23 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 
 **Not proven, and stated plainly:** the runtime *destructive* paths — an actual `deleteAgent`, an actual hide, an actual 15-minute move — were **not** exercised (that needs a real device, and a live delete would be irreversible). They are covered by code review, tsc, the 204/204 suite and the guard tests above, not by a live run. The UI was not rendered in a browser; the copy is guaranteed by the unit tests, not by eyeballing a dev server.
 
+### 17.1 Live pipeline observed in production (unplanned, 2026-09-27 ~15:54)
+
+The first §14 sweep after the deploy reported `{"ok":true,"synced":2,"checked":1,"acted":0}` and did something no unit test could: it **created the first real `DeviceOnboarding` rows in production**, and both landed exactly on the rules §13/§14 were written for.
+
+| | Device "Sc" | Device "I" |
+|---|---|---|
+| SW `tier` | `public` | `public` |
+| SW onboarding | **`pending`**, `attempts: 0`, no `lastError` | `released` |
+| elapsed at observation | **133 min** | 27 h |
+| device online? | **no** (`lastSeenAt` 09:15, ~6 h stale) | no |
+| Vantra `DeviceAutoMove` | `pending` (waiting for online) | `pending`, plus older rows **`failed`: "owner has no private organization to move into"** |
+
+**What this proves, live, with no fakes:**
+
+1. **The offline rule is real.** "Sc" sat at **133 minutes** past its window with `attempts: 0` and no error. It neither burned an attempt nor failed — still `pending`, still `tier: public`, still in the owner's list. That is the owner's requirement ("any failed attempt due to offline should retry… should always remain accessible in that position") observed in production rather than asserted by a test. It also shows the 35-minute **ceiling is correctly unreachable while offline**: the ceiling counts *attempts*, and a device that is never reachable never attempts. An offline device waits indefinitely instead of failing — deliberate, and the strip says `waiting for the device`.
+2. **§14 is what made it visible at all.** Before the sweep drove its own sync this row could not exist — every earlier cycle reported `checked: 0`. The first sync after deploy produced `synced: 2, checked: 1`.
+3. **The no-private-org fallback fired for real.** "I" belongs to an owner with **no private org** (verified: 3 `sw-` orgs, and that owner's only one is `public`). Vantra recorded `"owner has no private organization to move into"` on several older rows; the sweep released it at >20 min and it **stayed `public` and accessible** — the declared fallback, now confirmed against production data instead of reasoning.
+
+**One genuine gap found, deliberately not fixed here.** "I" exited as `released` with `lastError` **empty**, so the owner sees a device that stayed Public with no statement of *why* it never moved. The reason exists — Vantra holds it on its own row — but the `sw/devices` payload exposes only `autoMove{status,timerStartedAt}`, so the sync has nothing to copy. Against §8's "never fails silently", the fix is small and scoped: expose `lastError` in that payload, copy it onto the row on release, and let the console show it on a `released`-but-still-`public` device. Left as an owner decision because `released` is a *clean* exit by design and this may be intended — but today the only way to learn the reason is to query Vantra's table, which the owner cannot do.
+
