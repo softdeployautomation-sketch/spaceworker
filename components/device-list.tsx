@@ -9,11 +9,12 @@ import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { formatIdle } from "@/lib/device-idle";
 import {
+  ONBOARDING_ACCESSIBLE_NOTE,
   ONBOARDING_HIDE_MINUTES,
-  ONBOARDING_WINDOW_MINUTES,
-  formatOnboardingCountdown,
   formatOnboardingEta,
   isOnboardingTerminal,
+  onboardingClockText,
+  onboardingRowLabel,
   onboardingView,
 } from "@/lib/device-onboarding";
 
@@ -63,20 +64,6 @@ function relTime(iso: string | null): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
   return `${Math.floor(s / 86400)} d ago`;
-}
-
-/**
- * TASK_128 — the compact row badge's remaining window ("Quarantine · 12:30").
- * Derived from the SERVER's `timerStartedAt` and the client clock, so a reload
- * never jumps the clock back.
- */
-function quarantineClock(startedAt: string, nowMs: number): string {
-  const ms = Math.max(
-    0,
-    ONBOARDING_WINDOW_MINUTES * 60_000 - (nowMs - new Date(startedAt).getTime()),
-  );
-  const total = Math.round(ms / 1000);
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
 function osLabel(d: DeviceRow): string {
@@ -414,15 +401,15 @@ export function DeviceList() {
     return rows;
   }, [devices, filter, query]);
 
-  // TASK_128 — the SINGLE active onboarding device + the next in line. §4.2 is
-  // literal: "the single active onboarding device (earliest timerStartedAt among
-  // non-terminal rows already in step 2/3/4) plus one muted next up line".
-  //   - candidates = every non-terminal row (a step-1 row can still be "next
-  //     up": "starts in ~2 min" is exactly its truth);
-  //   - active     = the EARLIEST candidate already in step 2/3/4. A row still
-  //     in step 1 has nothing running yet, so per §4's timeline its t=0..5
-  //     footprint is the row badge (`Quarantine · 19:40 left`), not the strip;
-  //   - no active row -> the strip renders NOTHING (no empty shell).
+  // TASK_128 — the SINGLE active onboarding device + the next in line ("one
+  // process at a time. And the coming one.").
+  //   - candidates = every non-terminal row, earliest `timerStartedAt` first;
+  //   - active     = the EARLIEST candidate, from its very first sweep. The
+  //     owner asked to SEE public devices getting quarantined and moved, so
+  //     step 1 shows too ("Quarantined · waiting for the first check-in") —
+  //     the t=0..5 window is no longer badge-only;
+  //   - next       = the first OTHER candidate ("starts in ~N min");
+  //   - no candidates -> the strip renders NOTHING (no empty shell).
   const onboardingStrip = useMemo(() => {
     const rows = devices
       .filter((d) => d.onboarding && !isOnboardingTerminal(d.onboarding.status))
@@ -448,11 +435,16 @@ export function DeviceList() {
         nowMs,
       ),
     }));
-    const active = withView.find((w) => w.view.step >= 2) ?? null;
-    if (!active) return null;
-    const next = withView.find((w) => w !== active) ?? null;
-    return { active, next };
+    return { active: withView[0], next: withView[1] ?? null };
   }, [devices, nowMs]);
+
+  // TASK_128 — devices whose window ended WITHOUT moving. Rendered as a
+  // page-level alert so a failure can never be missed ("any device doesn't
+  // fail silently"). The device itself is left Public and fully usable.
+  const onboardingFailures = useMemo(
+    () => devices.filter((d) => d.onboarding?.status === "failed"),
+    [devices],
+  );
 
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
 
@@ -884,24 +876,41 @@ export function DeviceList() {
               </>
             )}
             <span className="text-fg-muted">·</span>
-            <span className="text-fg-muted">
-              {onboardingStrip.active.view.waitingForDevice
-                ? "waiting for the device"
-                : formatOnboardingCountdown(onboardingStrip.active.view.remainingMs)}
-            </span>
+            <span className="text-fg-muted">{onboardingClockText(onboardingStrip.active.view)}</span>
           </p>
-          {onboardingStrip.next && (
-            <p className="mt-1 text-xs text-fg-muted">
-              Next: {onboardingStrip.next.device.name} · starts in{" "}
-              {formatOnboardingEta(
-                Math.max(
-                  0,
-                  ONBOARDING_HIDE_MINUTES * 60_000 - onboardingStrip.next.view.elapsedMs,
-                ),
-              )}
-            </p>
-          )}
+          <p className="mt-1 text-xs text-fg-muted">
+            {onboardingStrip.active.view.detail}
+            {onboardingStrip.next && (
+              <>
+                {" · "}Next: {onboardingStrip.next.device.name} · starts in{" "}
+                {formatOnboardingEta(
+                  onboardingStrip.next.view.nextStageInMs ??
+                    Math.max(
+                      0,
+                      ONBOARDING_HIDE_MINUTES * 60_000 - onboardingStrip.next.view.elapsedMs,
+                    ),
+                )}
+              </>
+            )}
+          </p>
+          <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
         </div>
+      )}
+
+      {/* TASK_128 — a device that never moved is NEVER silent (owner rule). The
+          device is left on its public agent and stays fully usable; this line
+          says so, names it, and keeps the red badge on its row below. */}
+      {onboardingFailures.length > 0 && (
+        <p className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-500">
+          <span className="font-medium">
+            {onboardingFailures.length === 1
+              ? `${onboardingFailures[0].name} couldn't finish setup`
+              : `${onboardingFailures.length} devices couldn't finish setup (${onboardingFailures
+                  .map((d) => d.name)
+                  .join(", ")})`}
+          </span>{" "}
+          — still on your public agent and fully usable. Open the device to try again.
+        </p>
       )}
 
 
@@ -1007,9 +1016,16 @@ export function DeviceList() {
                     >
                       {d.tier === "private" ? "Private" : "Public"}
                     </span>
-                    {d.onboarding && !isOnboardingTerminal(d.onboarding.status) && (
-                      <span className="shrink-0 rounded-full border border-amber-500/40 px-2 py-0.5 text-[10px] font-medium text-amber-500">
-                        Quarantine · {quarantineClock(d.onboarding.timerStartedAt, nowMs)}
+                    {d.onboarding && onboardingRowLabel(d.onboarding, nowMs) && (
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                          d.onboarding.status === "failed"
+                            ? "border-red-500/40 text-red-500"
+                            : "border-amber-500/40 text-amber-500",
+                        )}
+                      >
+                        {onboardingRowLabel(d.onboarding, nowMs)}
                       </span>
                     )}
                   </span>

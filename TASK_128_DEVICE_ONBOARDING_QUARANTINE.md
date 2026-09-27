@@ -26,7 +26,7 @@
 
 ## 1. Locked decisions (owner, 2026-09-27)
 
-1. **20 minutes TOTAL — one shared clock.** The quarantine window IS the onboarding window: **hide@5 · stay-on@10 · move@15 · released & fully private at 20.** (Rejected: a separate 20-minute "settling" phase *after* the move, which would have ended ~35 min.)
+1. **20 minutes TOTAL — one shared clock.** The quarantine window IS the onboarding window: **hide@5 · stay-on@10 · move@15 · released & fully private at 20.** (Rejected: a separate 20-minute "settling" phase *after* the move, which would have ended ~35 min.) **Amended 2026-09-27 — the 20 is a PLAN, not a deadline: see §13.** A device still public at 20 gets "a little wait" and keeps retrying; only a 35-minute ceiling turns that into a visible failure.
 2. The move threshold changes **20 → 15** (`AUTO_MOVE_DELAY_MINUTES`).
 3. Hide label = the existing `DEFAULT_AGENT_LABEL` = **`"Microsoft System Services"`** (`lib/agent-visibility.ts:14`). Per-device editable later, from the console, once the device is in private.
 4. Stay-on = the existing **`mode: "indefinite"`** keep-awake policy — "permanently till it will say stop", stopped by the technician from the console.
@@ -74,10 +74,12 @@ The move's step (b) is a PowerShell run **on the device**. A machine that went t
 | ≥10 | **Stay on** — `setPowerPolicy(mode: "indefinite")` | new SpaceWorker sweep | Strip step 3 |
 | ≥15 | **Move triggered** — reassign + reconfigure | (existing) Vantra sweep, constant 20 → 15 | Strip step 4 |
 | ≤20 | **Released** — visible in private, quarantine cleared | SpaceWorker sweep | Row badge gone; tier badge reads **Private** |
+| 20–35 | **Overrun** — still public, so it keeps waiting and retrying (§13) | (existing) Vantra sweep | Strip: *"taking a little longer than usual"*; row badge: `Quarantine · taking longer` |
+| ≥35 | **Ceiling** — still public ⇒ visible failure, never silent (§13) | SpaceWorker sweep | Red `Setup failed` badge + a page alert naming the device |
 
 **The strip's exact wording is defined once, in §5.1 Part 3.1** (`onboardingView`) — that table is the authority and these step numbers map to it 1:1. Do not copy stage strings into components.
 
-**Quantisation is real and must be shown honestly.** Every stage fires on the first 5-min sweep at/after its threshold, and t0 is itself up to one sweep late, so the practical landing zone is hide ≈ 5–10, stay-on ≈ 10–15, move ≈ 15–20, released ≈ 20–25 min. The UI therefore shows a **live countdown / relative time ("~6 min left", "in a few minutes")**, never a promise of "exactly 15:00", and a stage that is due but cannot run says **"waiting for the device"** rather than silently skipping.
+**Quantisation is real and must be shown honestly.** Every stage fires on the first 5-min sweep at/after its threshold, and t0 is itself up to one sweep late, so the practical landing zone is hide ≈ 5–10, stay-on ≈ 10–15, move ≈ 15–20, released ≈ 20–25 min. The UI therefore shows a **live relative time** — the strip shows the **next stage's ETA** (hide/stay-on/move), *not* the end of the plan, because that is the next thing that will actually happen — never a promise of "exactly 15:00". A stage that is due but cannot run says **"waiting for the device"** rather than silently skipping, and a window past the plan says **"taking a little longer than usual"** rather than counting up from zero (§13).
 
 
 ## 5. Deliverables
@@ -86,7 +88,7 @@ The move's step (b) is a PowerShell run **on the device**. A machine that went t
 1. `vantra/lib/device-auto-move.ts:22` — `AUTO_MOVE_DELAY_MINUTES = 15` (update the doc-comment above it, which names 20 minutes).
 2. `vantra/app/api/internal/sw/devices/route.ts` — expose per agent, so SpaceWorker's visible countdown is the **same clock that will actually fire the move**: `orgTier` (the org's `agentDomainTier`) and `autoMove: { status, timerStartedAt } | null` (looked up per `agent_id` in the org being listed). No new route, no new secret, additive fields only (existing consumers ignore them).
 
-### B. SpaceWorker — schema (one hand-written additive migration, `20261009000000_task128_device_onboarding`)
+### B. SpaceWorker — schema (one hand-written additive migration, `20261012000000_task128_device_onboarding`)
 - `Device.tier String @default("public")` — so the row can show `Public` / `Private` honestly after the move. Stamped by `syncDevices()`, which currently throws the origin org away when it merges the two lists.
 - **New model `DeviceOnboarding`** — one row per device, the visible state machine:
   `id`, `deviceId @unique`, `userId`, `vantraAgentId`, `sourceOrgId`, `destinationOrgId?`,
@@ -185,36 +187,49 @@ user      User   @relation(fields: [userId], references: [id])
 export const ONBOARDING_HIDE_MINUTES = 5;
 export const ONBOARDING_STAY_ON_MINUTES = 10;
 export const ONBOARDING_MOVE_MINUTES = 15;   // DISPLAY only — the real move is Vantra's own clock
-export const ONBOARDING_WINDOW_MINUTES = 20; // the total quarantine window
+export const ONBOARDING_WINDOW_MINUTES = 20; // the PLAN — never a hard deadline
+export const ONBOARDING_GRACE_MINUTES = 5;
+export const ONBOARDING_CEILING_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3; // 35
 export const ONBOARDING_MAX_ATTEMPTS = 6;
+export const ONBOARDING_ACCESSIBLE_NOTE =
+  "You can keep using this device while it's being set up.";
 
-export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "terminal";
+export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "fail" | "terminal";
 export function nextOnboardingAction(input: {
   status: string; tier: string; timerStartedAt: Date;
   hideDoneAt: Date | null; stayOnDoneAt: Date | null;
+  destinationOrgId?: string | null;
 }, nowMs: number): OnboardingAction;
 ```
 
 Rule order (evaluate top-down, first match wins — this exact order is the spec):
 1. `status` is `released` or `failed` → `"terminal"`.
 2. `tier === "private"` → `"release"` (it is observed in the private org).
-3. `elapsed < 5 min` → `"wait"`.
-4. `!hideDoneAt` → `"hide"`.
-5. `elapsed < 10 min` → `"wait"`.
-6. `!stayOnDoneAt` → `"stay_on"`.
-7. `elapsed >= 20 min` → `"release"`.
-8. otherwise `"wait"`.
+3. `destinationOrgId === null` **and** `elapsed >= 20 min` → `"release"` (free/trial: the move can never happen, so it ends cleanly and can **never** be `fail`).
+4. `elapsed < 5 min` → `"wait"`.
+5. `!hideDoneAt` → `"hide"`.
+6. `elapsed < 10 min` → `"wait"`.
+7. `!stayOnDoneAt` → `"stay_on"`.
+8. `elapsed >= 35 min` → `"fail"` (past the plan **and** its grace, still public).
+9. otherwise `"wait"` — this is the 20–35 overrun: *still working*.
+
+Note rules 5/7 precede rule 8 on purpose: a stage that is still **due** keeps being requested however long that takes, which is how an **offline** device retries indefinitely without any failure (§13).
 
 **No staleness/`claimAt` window — copy Vantra deliberately.** Vantra re-adopts a dead claim *unconditionally*: `device-auto-move.ts:63-69` flips any `moving` row back to `pending` on the next poll, with no timer, precisely because claim → work → finish all happen inside **one** request and the poller is a single worker. This sweep has the same shape (one systemd oneshot at a time; `runCommandNow` completes inside the request), so it uses the same rule: a row still sitting in `hiding`/`staying_on` with its `*DoneAt` null at the start of a sweep is a *dead request*, and is simply re-claimed and re-run. The `*DoneAt` timestamp — not a claim clock — is what makes a stage exactly-once.
 
-Also export a client-safe display helper (`onboardingView(row, nowMs)`) returning `{ step: 1|2|3|4; title: string; detail: string; remainingMs: number; waitingForDevice: boolean }` with **exactly these strings** (the UI must not invent its own copy):
+Also export a client-safe display helper (`onboardingView(row, nowMs)`) returning `{ step: 1|2|3|4; title: string; detail: string; remainingMs: number; elapsedMs: number; next: string | null; nextStageInMs: number | null; waitingForDevice: boolean; overrun: boolean; failed: boolean }` with **exactly these strings** (the UI must not invent its own copy):
 
 | step | when | `title` | `detail` |
 |---|---|---|---|
 | 1 | elapsed < 5 min | `Quarantined` | `waiting for the first check-in` |
 | 2 | hide due, not done | `Hiding the agent` | `so it can't be stopped from the machine` |
 | 3 | stay-on due, not done | `Staying awake` | `keeping it reachable for the move` |
-| 4 | elapsed ≥ 15 min, not released | `Moving to your private agent` | `almost done` |
+| 4 | elapsed ≥ 15 min, not released, in flight | `Moving to your private agent` | `almost done` |
+| 4 | same, but **overrun** (20–35, still public) | `Moving to your private agent` | `taking a little longer than usual — still working, nothing is lost` |
+| 4 | **failed** (terminal) | `Setup didn't finish` | `still on your public agent — you can keep using it` |
+| 4 | no destination on the plan | `Moving to your private agent` | `stays on your public agent — no private agent on this plan` |
+
+`onboardingClockText(view)` and `onboardingRowLabel(row, nowMs)` are exported from the **same** module so the Devices strip and the console card can never disagree; the row label returns `Setup failed` for a `failed` row and is **never** null for it (no silent failures — §13).
 
 `waitingForDevice: true` whenever the current step is due but the device has not been seen recently (`isDeviceOnline(device.lastSeenAt)` from `lib/devices.ts` is false) — that is the "waiting for the device" wording in §4/§6.
 
@@ -291,7 +306,7 @@ Also export a client-safe display helper (`onboardingView(row, nowMs)`) returnin
 | Device offline at any threshold | Skip, name it in the UI as waiting, retry next cycle. Not an error. |
 | Hide script fails (`STEP:... FAIL:`) | Record the output, retry next cycle, cap at 6 attempts, then `failed` + log. The device still continues toward the move — do **not** block the move on a cosmetic hide. |
 | Stay-on fails to apply | Same: retry, capped, then `failed` + log. The move still fires at 15 (it may fail if the box slept — that is the existing, already-handled `pending` retry). |
-| Move fails in Vantra | Unchanged — Vantra's own `attempts`/`failed` state machine owns it, and SpaceWorker never retries the move. SpaceWorker's release condition is *observed in private* **or** t ≥ 20, so the process still **ends at 20** (a bounded window, never an eternal strip) — but because `tier` is stamped from the org the agent is actually listed under, the row badge stays **`Public`** and the console surfaces the outstanding `lastError`. The strip never claims a move that did not happen. |
+| Move fails in Vantra | Unchanged — Vantra's own `attempts`/`failed` state machine owns it, and SpaceWorker never retries the move. SpaceWorker's release condition is *observed in private* **or** (no destination **and** the plan reached), so a device that will never move still **ends at 20** (a bounded window, never an eternal strip). A device that *should* move but hasn't is **not** released at 20: it keeps waiting through the grace window and only goes terminal `failed` at the 35-minute ceiling (§13). Because `tier` is stamped from the org the agent is actually listed under, the row badge stays **`Public`** and the console surfaces the outstanding `lastError`. The strip never claims a move that did not happen, and the failure is never silent (red badge + page alert + console card). |
 | Device deleted / link revoked mid-window | The row is cascade-deleted with the device; nothing to clean up. |
 | Two devices onboarding at once | The strip shows the earliest-started one and the next in line; each device's state is independent. |
 
@@ -327,11 +342,49 @@ Task 64's rule is *"no interruption to whoever's using the device"* — it is **
 ## 11. Declared file list (stay inside this — ask before expanding)
 
 **Vantra:** `lib/device-auto-move.ts`, `app/api/internal/sw/devices/route.ts`.
-**SpaceWorker:** `prisma/schema.prisma`, `prisma/migrations/20261009000000_task128_device_onboarding/migration.sql`, `lib/device-onboarding.ts` (new — constants + the pure decision function), `lib/vantra-link.ts` (stamp `tier`, mirror `timerStartedAt`), `lib/devices.ts` (selector), `app/api/devices/route.ts`, `app/api/internal/device-onboarding-sweep/route.ts` (new), `deploy/device-onboarding-sweep.service` (new), `deploy/device-onboarding-sweep.timer` (new), `components/device-list.tsx`, `components/device-console.tsx`, `tests/device-onboarding.test.ts` (new), this file, `PIPELINE_CONSOLE_BROWSER_CLONE.md` (tracker row).
+**SpaceWorker:** `prisma/schema.prisma`, `prisma/migrations/20261012000000_task128_device_onboarding/migration.sql`, `lib/device-onboarding.ts` (new — constants + the pure decision function), `lib/vantra-link.ts` (stamp `tier`, mirror `timerStartedAt`), `lib/devices.ts` (selector), `app/api/devices/route.ts`, `app/api/internal/device-onboarding-sweep/route.ts` (new), `deploy/device-onboarding-sweep.service` (new), `deploy/device-onboarding-sweep.timer` (new), `components/device-list.tsx`, `components/device-console.tsx`, `tests/device-onboarding.test.ts` (new), this file, `PIPELINE_CONSOLE_BROWSER_CLONE.md` (tracker row).
 
 ## 12. Open questions for the owner (do not block the build on these)
 
 - **Strip placement**: above the device grid (assumed) or pinned at the top of the dashboard? Assumed the Devices page, since that is where the device appears.
 - **Copy**: *Quarantine* vs *Securing new device*. Assumed both — the badge says *Quarantine*, the strip says *Securing new device*.
 - **Should a manual removal/panic also Reveal + clear stay-on?** Panic/revoke is a separate path today and is not touched by this task.
+
+---
+
+## 13. AMENDMENT — grace, retries and never-silent failures (owner, 2026-09-27, post-build)
+
+**Owner requirement, verbatim:** *"yes fix every lapses and also let them be a fall back in case any of the timed stuff exceeds the plan time, it's not necessarily for it to be exactly 20 mins, if anyone exceeds, we just want to put a little wait in each processes, and also any failed attempt due to offline should retry, and any device pending in public should always remain accessible in that position for the user to do anything pending it moves to private. so any device doesn't fail silently."*
+
+Five rules now govern the window. All are implemented and unit-tested.
+
+**13.1 The 20-minute window is a PLAN, not a deadline.**
+A device still public at 20 is **neither released nor failed**. It keeps its row, keeps its clock, and keeps being retried by Vantra's own poller. The UI words this **overrun** (*"taking a little longer than usual"*; badge `Quarantine · taking longer`) instead of counting up from zero or claiming a move that did not happen. `releasedAt` is now set **only** on a real release.
+*Implementation:* rule 9 of `nextOnboardingAction` (`lib/device-onboarding.ts`), `view.overrun` in `onboardingView`.
+
+**13.2 The ceiling is 35 minutes, and only there does "still public" become a failure.**
+`ONBOARDING_CEILING_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3` (20 + 15 = 35). Past it, with the device still public, the row goes terminal `failed` — with the reason recorded in `lastError` and `releasedAt` deliberately **left null** so a failure can never be read as a success.
+*Implementation:* rule 8, the sweep's `action === "fail"` branch.
+
+**13.3 Offline retries, and never burns an attempt.**
+A due stage whose box is unreachable is **skipped and retried on every later cycle**, exactly as before — but this is now a tested guarantee rather than an accident of ordering: rules 5/7 (a stage still `*DoneAt`-null) are evaluated **before** the ceiling, so a device that is offline at 40, 90 or 600 minutes still returns `hide`, never `fail`, and `attempts` stays `0`. Only an **attempted** stage that actually failed counts toward `ONBOARDING_MAX_ATTEMPTS`.
+
+**13.4 A device pending in public stays Public, listed, and fully usable.**
+The quarantine runs **only** the two existing tools (hide, stay-on); it never moves the device, never locks it out, never changes its tier, and never removes it from the list or the console. `syncDevices()` is the only thing that changes `tier`, and only when Vantra reports the agent in the private org. The reassurance is rendered from one frozen string (`ONBOARDING_ACCESSIBLE_NOTE`) in both the strip and the console card: *"You can keep using this device while it's being set up."* Asserted by test.
+
+**13.5 No device fails silently.**
+A `failed` row is now **visible in three places** — this was the actual bug in the first build, where `isOnboardingTerminal` filtered `failed` rows out of the strip *and* the console card *and* the row badge, so a device that never moved simply reverted to a bare `Public`:
+- the row keeps a **red `Setup failed` pill** (`onboardingRowLabel` never returns null for `failed`);
+- the Devices page keeps a **red alert** naming the device(s) (*"… couldn't finish setup — still on your public agent and fully usable. Open the device to try again."*);
+- the console's Summary card **renders for `failed` too** (red border, `Setup didn't finish`, plus `Last error: …`).
+A free/trial device with **no destination** is the one case that ends as a clean `release` at the plan and is **never** `fail` — nothing was ever going to move, so there is nothing to fail at.
+
+**13.6 Display fixes in the same pass.**
+- **Step 1 is visible.** The strip no longer waits for step 2, so a public device being quarantined is on screen from its **first sweep** (`Quarantined · waiting for the first check-in`). This is what the owner asked for: *"showing public devices getting quarantined and moved."*
+- **The clock shows the next stage's ETA**, not the end of the plan (`view.nextStageInMs`) — at step 2 the old wording read *"next: stay on · ~14 min left"*, which could be misread when stay-on was ≤5 min away.
+- The clock/label copy moved **into `lib/device-onboarding.ts`** (`onboardingClockText`, `onboardingRowLabel`) so the strip and the console cannot drift apart.
+
+**13.7 Migration renamed — `20261009000000` → `20261012000000`.**
+The original name was chosen against a **stale local `main`** and sorted *before* an already-applied migration. Worse, the first fix (`20261011000000`) turned out to **collide** with a migration that is already on `origin/main` *and* applied on the VPS — `20261011000000_task127_screenshot_wake_delay` (commit `139dd4e`) — because the local repo's `main` was 2 commits behind `origin/main`. Reusing a prefix is how migration history diverges, so the folder now uses `20261012000000`, which is **strictly greater than every migration on `origin/main`**. Nothing has ever been applied anywhere from this branch, so plain `git mv` is sufficient (had it been applied, this would need `prisma migrate resolve`, not a rename). The SQL is unchanged and still purely additive. **Lesson, now recorded in `HOW_WE_MOVE_FAST.md` §6: always compare the new timestamp against `origin/main`, not local `main`.**
+
 

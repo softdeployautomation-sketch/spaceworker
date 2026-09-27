@@ -304,6 +304,43 @@ Added 2026-09-22 (Task 92):
   `relay_unreachable`, zero capture jobs, no session row) testable on live data with
   no Windows device online.
 
+Added 2026-09-27 (TASK_128 — the onboarding-quarantine window):
+
+- **`react-hooks/purity` rejects `Date.now()` during render — a live countdown
+  needs a tick, not an inline read.** Rendering `Date.now()` (or `new Date()`)
+  in a component body fails lint with *"Cannot call `Date.now()` during render"*,
+  because render must stay pure. The pattern that passes — and that the
+  Devices strip, its row badge and the console's Onboarding card all use — is
+  `const [nowMs, setNowMs] = useState(() => Date.now())` plus a
+  `setInterval(() => setNowMs(Date.now()), 60_000)` in a `useEffect` (the lazy
+  initialiser is fine; only the *render-time* call is impure). Keep it a
+  **separate** interval from the 20 s data poll: the countdown text must move
+  even when the list payload is unchanged.
+- **A "failed" state that the UI filters out is a silent failure.** TASK_128's
+  first build filtered non-terminal onboarding rows with
+  `isOnboardingTerminal`, which made a `failed` row vanish from the strip, from
+  the console card *and* from the row badge — so a device that never moved just
+  reverted to a plain `Public` and looked like nothing had happened. When you
+  add a terminal-failure status, grep every place that filters
+  `released | failed` together and make sure `failed` still renders somewhere
+  loud. Guard it with a test that asserts the failed *copy*, not just the status.
+- **Check the migration timestamp against `origin/main`, not local `main`, BEFORE
+  naming it.** TASK_128 was authored on a branch whose tip predated main's
+  screenshot migrations. The new migration was first named `20261009000000` —
+  sorting *before* an already-applied one — and the "fix" (`20261011000000`)
+  then **collided with a migration that was already on `origin/main` and already
+  applied on the VPS** (`20261011000000_task127_screenshot_wake_delay`, commit
+  `139dd4e`), because the local `main` ref was **2 commits behind `origin/main`**.
+  Nothing had been deployed, so a `git mv` was enough — but if it had been
+  applied anywhere this needs `prisma migrate resolve`, not a rename, and a
+  reused prefix is exactly how migration history diverges. Always:
+  ```
+  git fetch origin
+  git ls-tree --name-only origin/main prisma/migrations/ | tail -3
+  ```
+  and pick a timestamp **strictly greater** than the newest one on
+  `origin/main`. Never trust local `main` for this — it drifts.
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

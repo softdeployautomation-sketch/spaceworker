@@ -39,8 +39,9 @@ import {
   isValidAgentLabel,
 } from "@/lib/agent-visibility";
 import {
-  formatOnboardingCountdown,
+  ONBOARDING_ACCESSIBLE_NOTE,
   isOnboardingTerminal,
+  onboardingClockText,
   onboardingView,
 } from "@/lib/device-onboarding";
 
@@ -1681,10 +1682,12 @@ function SummaryTab({
       {/* TASK_128 — the onboarding quarantine, worded from the SAME 4 step
           labels as the Devices strip (no new tooling, no second stop: the
           technician's "till it will say stop" stays the existing Keep awake →
-          Stop). Renders nothing for a device that is not onboarding. */}
-      {device.onboarding && !isOnboardingTerminal(device.onboarding.status) && (
-        <OnboardingCard device={device} />
-      )}
+          Stop). Renders nothing for a device that released cleanly, and DOES
+          render for a `failed` one — a device that never moved must never look
+          like it silently succeeded (owner rule). */}
+      {device.onboarding &&
+        (!isOnboardingTerminal(device.onboarding.status) ||
+          device.onboarding.status === "failed") && <OnboardingCard device={device} />}
       {/* Task 111 — compact clone card (always visible on Summary). The Open
           button is live-session-only; Manage switches to the Browser clone tab. */}
       <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
@@ -1747,26 +1750,31 @@ function OnboardingCard({ device }: { device: DeviceView }) {
     nowMs,
   );
   return (
-    <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+    <div
+      className={cn(
+        "rounded-lg border bg-bg px-3 py-2 sm:col-span-2",
+        view.failed ? "border-red-500/40" : "border-border",
+      )}
+    >
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
         <ShieldCheck className="h-3.5 w-3.5" /> Onboarding
       </p>
       <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
         <span>{view.step} of 4</span>
         <span className="text-fg-muted">·</span>
-        <span>{view.title.toLowerCase()}</span>
-        <span className="text-fg-muted">·</span>
-        <span className="text-fg-muted">
-          {view.waitingForDevice
-            ? "waiting for the device"
-            : formatOnboardingCountdown(view.remainingMs)}
+        <span className={view.failed ? "text-red-500" : undefined}>
+          {view.title.toLowerCase()}
         </span>
+        <span className="text-fg-muted">·</span>
+        <span className="text-fg-muted">{onboardingClockText(view)}</span>
         <span className="text-fg-muted">·</span>
         <span className="text-fg-muted">
           {device.tier === "private" ? "Private" : "Public"}
         </span>
       </p>
       <p className="mt-1 text-xs text-fg-muted">{view.detail}</p>
+      {/* The owner's promise: quarantine never takes the device away. */}
+      <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
       {/* §6 — a move that never landed leaves the device Public and the reason
           here, so the process never reads as silently successful. */}
       {row.lastError && (

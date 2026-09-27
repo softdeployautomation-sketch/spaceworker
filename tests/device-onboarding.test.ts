@@ -3,11 +3,17 @@ import assert from "node:assert/strict";
 import Module from "node:module";
 
 import {
+  ONBOARDING_ACCESSIBLE_NOTE,
+  ONBOARDING_CEILING_MINUTES,
+  ONBOARDING_GRACE_MINUTES,
   ONBOARDING_MAX_ATTEMPTS,
+  ONBOARDING_WINDOW_MINUTES,
   formatOnboardingCountdown,
   formatOnboardingEta,
   isOnboardingTerminal,
   nextOnboardingAction,
+  onboardingClockText,
+  onboardingRowLabel,
   onboardingView,
 } from "../lib/device-onboarding";
 import { DEFAULT_AGENT_LABEL, buildHideAgentScript } from "../lib/agent-visibility";
@@ -291,16 +297,52 @@ test("stay_on fires at exactly 10 minutes once hide is done, not a second earlie
   assert.equal(nextOnboardingAction(baseInput(done), at(10)), "stay_on");
 });
 
-test("release fires at exactly 20 minutes once both stages are done, not a second earlier", () => {
+test("grace is real: the 20-minute plan is not a deadline, the ceiling is", () => {
+  assert.equal(ONBOARDING_WINDOW_MINUTES, 20);
+  assert.ok(ONBOARDING_GRACE_MINUTES > 0);
+  assert.equal(ONBOARDING_CEILING_MINUTES, 35);
+  assert.ok(ONBOARDING_CEILING_MINUTES > ONBOARDING_WINDOW_MINUTES);
+});
+
+test("the plan at 20 is GRACE, not a release: it waits, and only the ceiling fails", () => {
   const done = {
     hideDoneAt: new Date(T0 + 5 * 60_000),
     stayOnDoneAt: new Date(T0 + 10 * 60_000),
   };
+  // Past the plan, still public: "a little wait" — never a release, never a failure.
   assert.equal(nextOnboardingAction(baseInput(done), at(20, -1)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(20)), "release");
+  assert.equal(nextOnboardingAction(baseInput(done), at(20)), "wait");
+  assert.equal(nextOnboardingAction(baseInput(done), at(34, 59)), "wait");
+  // The ceiling (plan + three grace periods) is the only thing that ends it.
+  assert.equal(nextOnboardingAction(baseInput(done), at(35)), "fail");
 });
 
-test("order is hide -> stay_on -> release, and stay_on cannot fire before hide is done", () => {
+test("a move that lands late still releases — the ceiling never beats a real move", () => {
+  assert.equal(nextOnboardingAction(baseInput({ tier: "private" }), at(40)), "release");
+});
+
+test("an unreachable stage keeps retrying past the ceiling — offline is never a failure", () => {
+  // The box was offline the whole time, so hide never ran. The action stays
+  // `hide` however long that takes: the stage is still DUE, and the caller
+  // skips it without burning an attempt, so it retries on every cycle.
+  assert.equal(nextOnboardingAction(baseInput(), at(40)), "hide");
+  assert.equal(nextOnboardingAction(baseInput(), at(600)), "hide");
+});
+
+test("no destination: the stages still run, then it releases at the plan and can NEVER fail", () => {
+  const none = { destinationOrgId: null };
+  assert.equal(nextOnboardingAction(baseInput(none), at(6)), "hide"); // stages still run
+  const done = {
+    ...none,
+    hideDoneAt: new Date(T0 + 5 * 60_000),
+    stayOnDoneAt: new Date(T0 + 10 * 60_000),
+  };
+  assert.equal(nextOnboardingAction(baseInput(done), at(19, 59)), "wait");
+  assert.equal(nextOnboardingAction(baseInput(done), at(20)), "release");
+  assert.equal(nextOnboardingAction(baseInput(done), at(90)), "release"); // never `fail`
+});
+
+test("order is hide -> stay_on -> wait -> fail, and stay_on cannot fire before hide is done", () => {
   // 12 min in with hide still not done: the decision is STILL hide, never stay_on.
   assert.equal(nextOnboardingAction(baseInput(), at(12)), "hide");
   const hideDone = { hideDoneAt: new Date(T0 + 6 * 60_000) };
@@ -308,7 +350,8 @@ test("order is hide -> stay_on -> release, and stay_on cannot fire before hide i
   assert.equal(nextOnboardingAction(baseInput(hideDone), at(11)), "stay_on");
   const bothDone = { ...hideDone, stayOnDoneAt: new Date(T0 + 11 * 60_000) };
   assert.equal(nextOnboardingAction(baseInput(bothDone), at(16)), "wait"); // 15..20 = moving, not an action
-  assert.equal(nextOnboardingAction(baseInput(bothDone), at(20)), "release");
+  assert.equal(nextOnboardingAction(baseInput(bothDone), at(20)), "wait"); // past the plan: a little wait
+  assert.equal(nextOnboardingAction(baseInput(bothDone), at(35)), "fail"); // ceiling
 });
 
 test("tier private releases early, whatever the clock", () => {
@@ -398,7 +441,7 @@ test("step 4 copy is exactly the spec's", () => {
   );
 });
 
-test("no private destination: step 4 says so, and the window still ends at 20", () => {
+test("no private destination: step 4 says so, and the plan still ends it cleanly", () => {
   const v = onboardingView(viewInput({ destinationOrgId: null }), at(16));
   assert.equal(v.detail, "stays on your public agent — no private agent on this plan");
   assert.equal(
@@ -409,10 +452,27 @@ test("no private destination: step 4 says so, and the window still ends at 20", 
         timerStartedAt: BASE,
         hideDoneAt: new Date(T0 + 5 * 60_000),
         stayOnDoneAt: new Date(T0 + 10 * 60_000),
+        destinationOrgId: null,
       },
       at(20),
     ),
     "release",
+  );
+  // The same row WITH a destination would still be waiting — the difference is
+  // the destination, not the clock.
+  assert.equal(
+    nextOnboardingAction(
+      {
+        status: "pending",
+        tier: "public",
+        timerStartedAt: BASE,
+        hideDoneAt: new Date(T0 + 5 * 60_000),
+        stayOnDoneAt: new Date(T0 + 10 * 60_000),
+        destinationOrgId: "org_private",
+      },
+      at(20),
+    ),
+    "wait",
   );
 });
 
@@ -442,6 +502,80 @@ test("isOnboardingTerminal only covers released/failed", () => {
   for (const s of ["pending", "hiding", "staying_on", "moving"]) {
     assert.equal(isOnboardingTerminal(s), false);
   }
+});
+
+test("overrun is a little wait, not a failure: the row stays live and says so", () => {
+  const done = {
+    hideDoneAt: new Date(T0 + 5 * 60_000),
+    stayOnDoneAt: new Date(T0 + 10 * 60_000),
+  };
+  const v = onboardingView(viewInput(done), at(25));
+  assert.equal(v.overrun, true);
+  assert.equal(v.failed, false, "overrun is NOT a failure");
+  assert.equal(v.detail, "taking a little longer than usual — still working, nothing is lost");
+  assert.equal(onboardingClockText(v), "taking a little longer than usual");
+  // Still inside the plan: not overrun, and it counts the next stage down.
+  assert.equal(onboardingView(viewInput(done), at(12)).overrun, false);
+});
+
+test("a failed row is worded as a failure and never as still-going", () => {
+  const v = onboardingView(viewInput({ status: "failed" }), at(40));
+  assert.equal(v.failed, true);
+  assert.equal(v.overrun, false, "a terminal row is never 'overrunning'");
+  assert.equal(v.title, "Setup didn't finish");
+  assert.equal(v.detail, "still on your public agent — you can keep using it");
+  assert.equal(onboardingClockText(v), "stopped");
+});
+
+test("the strip shows the NEXT stage's ETA, not the end of the plan", () => {
+  assert.equal(onboardingView(viewInput(), at(2)).nextStageInMs, 3 * 60_000); // hide at 5
+  assert.equal(
+    onboardingView(viewInput({ hideDoneAt: new Date(T0 + 5 * 60_000) }), at(7)).nextStageInMs,
+    3 * 60_000, // stay-on at 10
+  );
+  assert.equal(
+    onboardingView(
+      viewInput({
+        hideDoneAt: new Date(T0 + 5 * 60_000),
+        stayOnDoneAt: new Date(T0 + 10 * 60_000),
+      }),
+      at(12),
+    ).nextStageInMs,
+    3 * 60_000, // move at 15
+  );
+  // Nothing left ahead → null, so the strip falls back to the window/overrun wording.
+  assert.equal(
+    onboardingView(
+      viewInput({
+        hideDoneAt: new Date(T0 + 5 * 60_000),
+        stayOnDoneAt: new Date(T0 + 10 * 60_000),
+      }),
+      at(16),
+    ).nextStageInMs,
+    null,
+  );
+});
+
+test("a device may be quarantined from its very first sweep — step 1 is visible", () => {
+  const v = onboardingView(viewInput(), at(1));
+  assert.equal(v.step, 1);
+  assert.equal(v.overrun, false);
+  assert.equal(v.failed, false);
+  assert.equal(onboardingClockText(v), "~4 min");
+});
+
+test("the row label never hides a failure", () => {
+  assert.equal(onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(10)), "Quarantine · 10:00");
+  assert.equal(
+    onboardingRowLabel({ status: "moving", timerStartedAt: BASE }, at(25)),
+    "Quarantine · taking longer",
+  );
+  assert.equal(onboardingRowLabel({ status: "released", timerStartedAt: BASE }, at(25)), null);
+  assert.equal(onboardingRowLabel({ status: "failed", timerStartedAt: BASE }, at(25)), "Setup failed");
+});
+
+test("quarantine never takes the device away — the promise is a frozen string", () => {
+  assert.equal(ONBOARDING_ACCESSIBLE_NOTE, "You can keep using this device while it's being set up.");
 });
 
 
@@ -560,7 +694,7 @@ test("a keep-awake failure retries and is capped at 6 -> failed", async () => {
 });
 
 
-test("the window records `moving` once at 15 min, then releases at 20", async () => {
+test("the window records `moving` once at 15 min, then WAITS past the plan instead of releasing", async () => {
   addDevice("d1");
   addOnboarding("d1", {
     timerStartedAt: minutesAgo(16),
@@ -572,12 +706,65 @@ test("the window records `moving` once at 15 min, then releases at 20", async ()
   await post();
   assert.equal(movingWrites, 1, "recorded once, not on every sweep");
 
+  // Past the plan at 21 minutes with the device still public: NOT released, NOT
+  // failed — the owner's "little wait". The row stays live and keeps its clock.
   rows[0].timerStartedAt = minutesAgo(21);
   const res = await post();
+  assert.equal(rows[0].status, "moving");
+  assert.equal(rows[0].releasedAt, null, "the plan is not a release");
+  assert.equal(res.body.acted, 0, "nothing to do but wait");
+
+  // Past the ceiling and still public: the ONE visible failure — never silent.
+  rows[0].timerStartedAt = minutesAgo(36);
+  await post();
+  assert.equal(rows[0].status, "failed");
+  assert.equal(rows[0].releasedAt, null, "a failure is never a release");
+  assert.ok(rows[0].lastError, "the reason is recorded, not swallowed");
+});
+
+test("a late-landing move still releases, even past the ceiling", async () => {
+  addDevice("d1", { tier: "private" });
+  addOnboarding("d1", {
+    timerStartedAt: minutesAgo(40),
+    hideDoneAt: minutesAgo(35),
+    stayOnDoneAt: minutesAgo(30),
+  });
+  await post();
   assert.equal(rows[0].status, "released");
-  assert.ok(rows[0].releasedAt);
-  assert.equal(rows[0].movedAt, null, "still public, so no movedAt is claimed");
-  assert.equal(res.body.acted, 1);
+  assert.ok(rows[0].movedAt, "observed private ⇒ the move really landed");
+});
+
+test("an offline device retries on every cycle: no attempt burned, no silent failure", async () => {
+  addDevice("d1", { online: false });
+  addOnboarding("d1", { timerStartedAt: minutesAgo(40) });
+  const res = await post();
+  assert.equal(hideCalls.length, 0, "nothing was attempted");
+  assert.equal(rows[0].attempts, 0, "offline never burns an attempt");
+  assert.equal(rows[0].status, "pending");
+  assert.equal(res.body.acted, 0);
+
+  // Still retrying — not failed — well past the plan AND the ceiling, because
+  // the stage is still DUE and the box simply is not reachable yet.
+  await post();
+  assert.equal(rows[0].status, "pending");
+  assert.equal(rows[0].attempts, 0);
+  assert.equal(rows[0].lastError, null);
+
+  // The box comes back: the very next sweep runs the stage it owed.
+  devices.get("d1")!.lastSeenAt = new Date();
+  await post();
+  assert.ok(rows[0].hideDoneAt, "the owed stage finally ran");
+});
+
+test("a device pending in public keeps its Public tier and stays ours to use", async () => {
+  addDevice("d1");
+  addOnboarding("d1", { timerStartedAt: minutesAgo(6) });
+  await post();
+  // The sweep only runs the stage; it never moves the device or takes it away.
+  assert.equal(devices.get("d1")!.tier, "public");
+  assert.ok(rows[0].hideDoneAt);
+  assert.equal(rows[0].status, "pending", "hide done, waiting for stay-on");
+  assert.equal(rows[0].releasedAt, null);
 });
 
 test("tier private releases immediately and records movedAt", async () => {
@@ -588,7 +775,7 @@ test("tier private releases immediately and records movedAt", async () => {
   assert.ok(rows[0].movedAt);
 });
 
-test("no private destination: the window still releases at 20 with the device public", async () => {
+test("no private destination: releases cleanly at the plan and is never a failure", async () => {
   addDevice("d1");
   addOnboarding("d1", {
     destinationOrgId: null,
@@ -600,6 +787,18 @@ test("no private destination: the window still releases at 20 with the device pu
   assert.equal(rows[0].status, "released");
   assert.equal(rows[0].movedAt, null);
   assert.equal(devices.get("d1")!.tier, "public");
+
+  // Even far past the ceiling a free/trial device is NEVER `failed`: nothing was
+  // ever going to move, so there is nothing to fail at.
+  const second = addOnboarding("d1b", {
+    destinationOrgId: null,
+    timerStartedAt: minutesAgo(90),
+    hideDoneAt: minutesAgo(85),
+    stayOnDoneAt: minutesAgo(80),
+  });
+  addDevice("d1b");
+  await post();
+  assert.equal(second.status, "released");
 });
 
 test("a terminal row is never loaded or acted on", async () => {

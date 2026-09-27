@@ -21,11 +21,28 @@ import {
 // hit by deploy/device-onboarding-sweep.timer every 5 minutes (the stage
 // thresholds are 5-minute-quantised by design, mirroring Vantra's own poller).
 //
-// One shared 20-minute clock per device: hide@5 · stay-on@10 · move@15 ·
+// One shared clock per device: hide@5 · stay-on@10 · move@15 (Vantra's) ·
 // released by 20. The MOVE itself is Vantra's (lib/device-auto-move.ts) and is
 // never fired from here; this sweep only runs the two EXISTING SpaceWorker
 // tools (runCommandNow + buildHideAgentScript / setPowerPolicy) and mirrors the
-// release once the device is observed private or the window ends.
+// release once the device is observed private.
+//
+// GRACE, not a deadline (owner rule: "it's not necessarily for it to be exactly
+// 20 mins — if anyone exceeds, we just want to put a little wait in each
+// process"). The 20-minute window is the PLAN:
+//   - a device still public at 20 is NOT released and NOT failed; its row stays
+//     live and keeps being retried (the UI words this `overrun`);
+//   - only the ceiling (20 + 3 grace periods) turns that into `failed`, which
+//     is surfaced loudly — never silently (the row keeps a red badge and the
+//     Devices page keeps an alert naming it, with the device left Public and
+//     fully usable);
+//   - a free/trial device with no destination is released cleanly at the plan
+//     and is never treated as a failure — nothing is hidden for a move that
+//     can never happen.
+//
+// OFFLINE retries, and never burns an attempt: a due stage whose box is not
+// reachable is skipped and retried on every later cycle. Only an ATTEMPTED
+// stage that actually failed counts toward ONBOARDING_MAX_ATTEMPTS.
 //
 // Exactly-once: a crash-safe `updateMany` claim keyed on the stage's own
 // `*DoneAt` (null) before the work runs, copied from device-auto-move.ts:98-102.
@@ -60,6 +77,7 @@ export async function POST(req: Request) {
         timerStartedAt: row.timerStartedAt,
         hideDoneAt: row.hideDoneAt,
         stayOnDoneAt: row.stayOnDoneAt,
+        destinationOrgId: row.destinationOrgId,
       },
       now,
     );
@@ -134,6 +152,24 @@ export async function POST(req: Request) {
             status: "released",
             claimAt: null,
             ...(device.tier === "private" ? { movedAt: new Date() } : {}),
+          },
+        });
+        acted++;
+      } else if (action === "fail") {
+        // Past the plan AND its grace, and still public. The ONLY way a device
+        // goes terminal without having moved — and it is never silent: the row
+        // keeps a red `Setup failed` badge and the Devices page keeps an alert
+        // naming it, with the device left exactly where the owner can still
+        // use it (`Public`, fully accessible). We do NOT set releasedAt: the
+        // window genuinely never released.
+        await prisma.deviceOnboarding.update({
+          where: { id: row.id },
+          data: {
+            status: "failed",
+            claimAt: null,
+            lastError:
+              row.lastError ??
+              "move_not_landed_after_grace — still on your public agent, still fully usable",
           },
         });
         acted++;

@@ -1863,10 +1863,16 @@ model DeviceScreenshot {
 // One row per device: the visible state machine behind the Devices-page strip.
 // The public→private MOVE itself stays Vantra's (lib/device-auto-move.ts) — this
 // row only records the SpaceWorker-side stages (hide@5, stay-on@10) and mirrors
-// the release once the device is observed in the private org or the 20-minute
-// window ends. `timerStartedAt` is COPIED from Vantra's
-// DeviceAutoMove.timerStartedAt (never invented locally) so the countdown the
-// owner sees is the same clock that will actually fire the move.
+// the release once the device is observed in the private org. `timerStartedAt`
+// is COPIED from Vantra's DeviceAutoMove.timerStartedAt (never invented locally)
+// so the countdown the owner sees is the same clock that will actually fire the
+// move.
+//
+// GRACE, not a deadline (owner rule): the 20-minute window is the PLAN. A device
+// still public at 20 is neither released nor failed — the row stays live and
+// keeps being retried, and `releasedAt` is only ever set on a real release
+// (observed private, or a free/trial account with no destination). Only the
+// ceiling (ONBOARDING_CEILING_MINUTES) turns "still public" into `failed`.
 //
 // Status union (TEXT + documented, the codebase style — no DB enum):
 //   pending | hiding | staying_on | moving | released | failed
@@ -1874,8 +1880,11 @@ model DeviceScreenshot {
 //     hiding     = the hide command is in flight (crash-safe claim)
 //     staying_on = the indefinite keep-awake apply is in flight (crash-safe claim)
 //     moving     = the window reached 15 min, so the move is due (non-terminal)
-//     released   = terminal: observed private, window ended, or no destination
-//     failed     = terminal: a stage exhausted ONBOARDING_MAX_ATTEMPTS
+//     released   = terminal, SUCCESS: observed private, or no destination at all
+//     failed     = terminal, and NEVER silent: a stage exhausted
+//                  ONBOARDING_MAX_ATTEMPTS, or the ceiling passed with the device
+//                  still public. The device is left Public and fully usable, and
+//                  the row keeps a red badge plus a page-level alert naming it.
 //
 // Exactly-once discipline mirrors device-auto-move.ts: a `*DoneAt` timestamp —
 // not a claim clock — is what makes a stage run once, and a row left in
@@ -1914,13 +1923,18 @@ model DeviceOnboarding {
   stayOnDoneAt     DateTime?
   // When the device was observed in the private org (release via tier).
   movedAt          DateTime?
-  // When the window ended and the row went terminal (t≥20, or observed private).
+  // Set ONLY on a real release — observed private, or a free/trial account with
+  // no destination at the plan. Never set on `failed`, so the row can never read
+  // as a success it did not achieve.
   releasedAt       DateTime?
   // "pending" | "hiding" | "staying_on" | "moving" | "released" | "failed".
   status           String    @default("pending")
-  // Per-stage transient-failure retries, capped by ONBOARDING_MAX_ATTEMPTS —
-  // a stage that can never succeed must end `failed`, never retry forever.
+  // Per-stage transient-failure retries, capped by ONBOARDING_MAX_ATTEMPTS — a
+  // stage that can never succeed must end `failed`, never retry forever. An
+  // OFFLINE skip never increments this: an offline box retries indefinitely.
   attempts         Int       @default(0)
+  // Why a row is not moving (a failed stage, or the ceiling with the device
+  // still public). Surfaced in the console and the strip, never swallowed.
   lastError        String?
   // Diagnostic only — the last claim timestamp; never a staleness gate.
   claimAt          DateTime?

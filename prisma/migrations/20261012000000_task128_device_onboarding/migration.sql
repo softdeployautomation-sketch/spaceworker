@@ -5,7 +5,17 @@
 -- exists until a device is next synced through lib/vantra-link.ts syncDevices()
 -- (which stamps the tier and opens the row). The public→private move itself is
 -- unchanged and still Vantra's (lib/device-auto-move.ts) — this only records the
--- SpaceWorker-side hide@5 / stay-on@10 stages and the release.
+-- SpaceWorker-side hide@5 / stay-on@10 stages and the release. The 20-minute
+-- window is a PLAN, not a deadline: a device still public at 20 keeps its row
+-- and keeps being retried, and only the ceiling turns that into a visible
+-- `failed` — so this file needs no notion of the grace itself. Renamed from
+-- 20261009000000 to 20261012000000, which is strictly AFTER every migration
+-- already on `origin/main`: 20261010000000_task127_screenshot_interval_override
+-- and 20261011000000_task127_screenshot_wake_delay. The latter is already APPLIED
+-- on the VPS, so the 20261011 prefix was taken and must not be reused.
+-- Migrations apply in name order, so a duplicate prefix is exactly how history
+-- diverges — never pick a timestamp that is not strictly greater than the newest
+-- one on the remote.
 --
 -- Column order matches the datamodel (and `prisma migrate diff` output), so the
 -- file stays reproducible from schema.prisma.
