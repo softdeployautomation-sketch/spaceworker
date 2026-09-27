@@ -40,6 +40,7 @@ import {
 } from "@/lib/agent-visibility";
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
+  formatOnboardingElapsed,
   isOnboardingTerminal,
   onboardingClockText,
   onboardingView,
@@ -1746,6 +1747,7 @@ function OnboardingCard({ device }: { device: DeviceView }) {
       releasedAt: row.releasedAt,
       destinationOrgId: row.destinationOrgId,
       isOnline: device.status === "online" || device.status === "asleep",
+      lastError: row.lastError,
     },
     nowMs,
   );
@@ -1753,7 +1755,14 @@ function OnboardingCard({ device }: { device: DeviceView }) {
     <div
       className={cn(
         "rounded-lg border bg-bg px-3 py-2 sm:col-span-2",
-        view.failed ? "border-red-500/40" : "border-border",
+        // Red = a genuine failure; amber = still waiting, not broken (owner
+        // decision 2026-09-27). Keeping them distinct is what lets the owner
+        // trust the red.
+        view.failed
+          ? "border-red-500/40"
+          : view.stuck
+            ? "border-amber-500/40"
+            : "border-border",
       )}
     >
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -1775,9 +1784,18 @@ function OnboardingCard({ device }: { device: DeviceView }) {
       <p className="mt-1 text-xs text-fg-muted">{view.detail}</p>
       {/* The owner's promise: quarantine never takes the device away. */}
       <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
+      {/* Owner decision 2026-09-27 — "much longer than usual" is loud but NOT a
+          failure: amber, with the elapsed time and the reason. */}
+      {view.stuck && view.stuckReason && (
+        <p className="mt-1 text-xs text-amber-500">
+          Taking much longer than usual — {formatOnboardingElapsed(view.elapsedMs)} so far.{" "}
+          {view.stuckReason}
+        </p>
+      )}
       {/* §6 — a move that never landed leaves the device Public and the reason
-          here, so the process never reads as silently successful. */}
-      {row.lastError && (
+          here, so the process never reads as silently successful. Suppressed
+          while stuck because the line above already carries the same reason. */}
+      {row.lastError && !view.stuck && (
         <p className="mt-1 text-xs text-amber-500">Last error: {row.lastError}</p>
       )}
     </div>

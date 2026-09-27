@@ -372,6 +372,27 @@ Added 2026-09-27 (TASK_128 §15 — verifying a deploy actually took):
   guard fires before anything destructive, with `400 "Unknown action."` as the
   contrast for a name that is not wired at all.
 
+Added 2026-09-27 (TASK_128 §16 — a timer is not a failure detector):
+
+- **Never make elapsed wall-clock time terminal for a device you can only observe
+  intermittently.** TASK_128's onboarding clock starts when Vantra first *sees*
+  the agent and keeps running whether or not the machine is reachable — so the
+  elapsed value silently includes every hour the box spent **switched off**. A
+  35-minute ceiling built on that number marked a perfectly healthy device
+  `failed` on the first sweep after it came back, and because `failed` was
+  terminal the red badge then *stuck* even after the move succeeded. If a
+  "stuck" signal is needed, make it a **warning** (a separate display state
+  carrying the elapsed time and the *reason*), and let the terminal state come
+  only from genuine **attempt** counts — which is what Vantra's
+  `device-auto-move.ts` already does (`attempts >= 6`, and it returns early
+  without acting when the device is offline). The general rule: **time is
+  evidence of waiting, attempts are evidence of failing.** Keep red for the
+  second one only, so the colour stays trustworthy.
+  Related, and the reason this was easy to miss: the two halves of the same
+  feature had *different* failure semantics — Vantra (which performs the move)
+  waits forever while offline; SpaceWorker (which only observes) was the one
+  inventing a deadline.
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

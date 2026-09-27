@@ -26,7 +26,7 @@
 
 ## 1. Locked decisions (owner, 2026-09-27)
 
-1. **20 minutes TOTAL — one shared clock.** The quarantine window IS the onboarding window: **hide@5 · stay-on@10 · move@15 · released & fully private at 20.** (Rejected: a separate 20-minute "settling" phase *after* the move, which would have ended ~35 min.) **Amended 2026-09-27 — the 20 is a PLAN, not a deadline: see §13.** A device still public at 20 gets "a little wait" and keeps retrying; only a 35-minute ceiling turns that into a visible failure.
+1. **20 minutes TOTAL — one shared clock.** The quarantine window IS the onboarding window: **hide@5 · stay-on@10 · move@15 · released & fully private at 20.** (Rejected: a separate 20-minute "settling" phase *after* the move, which would have ended ~35 min.) **Amended 2026-09-27 — the 20 is a PLAN, not a deadline: see §13.** A device still public at 20 gets "a little wait" and keeps retrying. **Amended again 2026-09-27 (see §16): the clock can no longer fail a device at all** — a long wait is surfaced as a loud amber warning, and only genuine repeated stage failures go terminal.
 2. The move threshold changes **20 → 15** (`AUTO_MOVE_DELAY_MINUTES`).
 3. Hide label = the existing `DEFAULT_AGENT_LABEL` = **`"Microsoft System Services"`** (`lib/agent-visibility.ts:14`). Per-device editable later, from the console, once the device is in private.
 4. Stay-on = the existing **`mode: "indefinite"`** keep-awake policy — "permanently till it will say stop", stopped by the technician from the console.
@@ -75,7 +75,7 @@ The move's step (b) is a PowerShell run **on the device**. A machine that went t
 | ≥15 | **Move triggered** — reassign + reconfigure | (existing) Vantra sweep, constant 20 → 15 | Strip step 4 |
 | ≤20 | **Released** — visible in private, quarantine cleared | SpaceWorker sweep | Row badge gone; tier badge reads **Private** |
 | 20–35 | **Overrun** — still public, so it keeps waiting and retrying (§13) | (existing) Vantra sweep | Strip: *"taking a little longer than usual"*; row badge: `Quarantine · taking longer` |
-| ≥35 | **Ceiling** — still public ⇒ visible failure, never silent (§13) | SpaceWorker sweep | Red `Setup failed` badge + a page alert naming the device |
+| ≥35 | **Stuck** — still public, still retrying, **loud but NOT failed** (§16) | (existing) Vantra sweep | Amber strip + amber alert naming the device, the elapsed time and the reason; row badge `Quarantine · stuck` |
 
 **The strip's exact wording is defined once, in §5.1 Part 3.1** (`onboardingView`) — that table is the authority and these step numbers map to it 1:1. Do not copy stage strings into components.
 
@@ -189,12 +189,12 @@ export const ONBOARDING_STAY_ON_MINUTES = 10;
 export const ONBOARDING_MOVE_MINUTES = 15;   // DISPLAY only — the real move is Vantra's own clock
 export const ONBOARDING_WINDOW_MINUTES = 20; // the PLAN — never a hard deadline
 export const ONBOARDING_GRACE_MINUTES = 5;
-export const ONBOARDING_CEILING_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3; // 35
-export const ONBOARDING_MAX_ATTEMPTS = 6;
+export const ONBOARDING_STUCK_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3; // 35 — WARN, never fail (§16)
+export const ONBOARDING_MAX_ATTEMPTS = 6;    // the ONLY thing that makes a row `failed`
 export const ONBOARDING_ACCESSIBLE_NOTE =
   "You can keep using this device while it's being set up.";
 
-export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "fail" | "terminal";
+export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "terminal";
 export function nextOnboardingAction(input: {
   status: string; tier: string; timerStartedAt: Date;
   hideDoneAt: Date | null; stayOnDoneAt: Date | null;
@@ -205,19 +205,20 @@ export function nextOnboardingAction(input: {
 Rule order (evaluate top-down, first match wins — this exact order is the spec):
 1. `status` is `released` or `failed` → `"terminal"`.
 2. `tier === "private"` → `"release"` (it is observed in the private org).
-3. `destinationOrgId === null` **and** `elapsed >= 20 min` → `"release"` (free/trial: the move can never happen, so it ends cleanly and can **never** be `fail`).
+3. `destinationOrgId === null` **and** `elapsed >= 20 min` → `"release"` (free/trial: the move can never happen, so it ends cleanly).
 4. `elapsed < 5 min` → `"wait"`.
 5. `!hideDoneAt` → `"hide"`.
 6. `elapsed < 10 min` → `"wait"`.
 7. `!stayOnDoneAt` → `"stay_on"`.
-8. `elapsed >= 35 min` → `"fail"` (past the plan **and** its grace, still public).
-9. otherwise `"wait"` — this is the 20–35 overrun: *still working*.
+8. otherwise `"wait"` — past the plan (and past the 35-minute mark): *still working, still retrying*.
 
-Note rules 5/7 precede rule 8 on purpose: a stage that is still **due** keeps being requested however long that takes, which is how an **offline** device retries indefinitely without any failure (§13).
+There is deliberately **no** time-based `fail` rule — see §16 for why (elapsed time includes the hours a box spent switched off, which is not a failure of the process).
+
+Note rules 5/7 precede nothing time-based on purpose: a stage that is still **due** keeps being requested however long that takes, which is how an **offline** device retries indefinitely without any failure (§13).
 
 **No staleness/`claimAt` window — copy Vantra deliberately.** Vantra re-adopts a dead claim *unconditionally*: `device-auto-move.ts:63-69` flips any `moving` row back to `pending` on the next poll, with no timer, precisely because claim → work → finish all happen inside **one** request and the poller is a single worker. This sweep has the same shape (one systemd oneshot at a time; `runCommandNow` completes inside the request), so it uses the same rule: a row still sitting in `hiding`/`staying_on` with its `*DoneAt` null at the start of a sweep is a *dead request*, and is simply re-claimed and re-run. The `*DoneAt` timestamp — not a claim clock — is what makes a stage exactly-once.
 
-Also export a client-safe display helper (`onboardingView(row, nowMs)`) returning `{ step: 1|2|3|4; title: string; detail: string; remainingMs: number; elapsedMs: number; next: string | null; nextStageInMs: number | null; waitingForDevice: boolean; overrun: boolean; failed: boolean }` with **exactly these strings** (the UI must not invent its own copy):
+Also export a client-safe display helper (`onboardingView(row, nowMs)`) returning `{ step: 1|2|3|4; title: string; detail: string; remainingMs: number; elapsedMs: number; next: string | null; nextStageInMs: number | null; waitingForDevice: boolean; overrun: boolean; stuck: boolean; stuckReason: string | null; failed: boolean }` with **exactly these strings** (the UI must not invent its own copy):
 
 | step | when | `title` | `detail` |
 |---|---|---|---|
@@ -226,10 +227,11 @@ Also export a client-safe display helper (`onboardingView(row, nowMs)`) returnin
 | 3 | stay-on due, not done | `Staying awake` | `keeping it reachable for the move` |
 | 4 | elapsed ≥ 15 min, not released, in flight | `Moving to your private agent` | `almost done` |
 | 4 | same, but **overrun** (20–35, still public) | `Moving to your private agent` | `taking a little longer than usual — still working, nothing is lost` |
+| 4 | same, but **stuck** (≥35, still public, still retrying) | `Moving to your private agent` | `much longer than usual — nothing is lost; we keep retrying every 5 minutes` |
 | 4 | **failed** (terminal) | `Setup didn't finish` | `still on your public agent — you can keep using it` |
 | 4 | no destination on the plan | `Moving to your private agent` | `stays on your public agent — no private agent on this plan` |
 
-`onboardingClockText(view)` and `onboardingRowLabel(row, nowMs)` are exported from the **same** module so the Devices strip and the console card can never disagree; the row label returns `Setup failed` for a `failed` row and is **never** null for it (no silent failures — §13).
+`onboardingClockText(view)`, `onboardingRowLabel(row, nowMs)` and `formatOnboardingElapsed(ms)` are exported from the **same** module so the Devices strip and the console card can never disagree; the row label returns `Setup failed` for a `failed` row, `Quarantine · stuck` past the 35-minute mark, and is **never** null for a `failed` row (no silent failures — §13). `stuckReason` carries the owner-requested *reason*: the row's own `lastError` when a stage really failed, otherwise honest wording about reachability (§16).
 
 `waitingForDevice: true` whenever the current step is due but the device has not been seen recently (`isDeviceOnline(device.lastSeenAt)` from `lib/devices.ts` is false) — that is the "waiting for the device" wording in §4/§6.
 
@@ -366,12 +368,12 @@ Five rules now govern the window. All are implemented and unit-tested.
 A device still public at 20 is **neither released nor failed**. It keeps its row, keeps its clock, and keeps being retried by Vantra's own poller. The UI words this **overrun** (*"taking a little longer than usual"*; badge `Quarantine · taking longer`) instead of counting up from zero or claiming a move that did not happen. `releasedAt` is now set **only** on a real release.
 *Implementation:* rule 9 of `nextOnboardingAction` (`lib/device-onboarding.ts`), `view.overrun` in `onboardingView`.
 
-**13.2 The ceiling is 35 minutes, and only there does "still public" become a failure.**
-`ONBOARDING_CEILING_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3` (20 + 15 = 35). Past it, with the device still public, the row goes terminal `failed` — with the reason recorded in `lastError` and `releasedAt` deliberately **left null** so a failure can never be read as a success.
-*Implementation:* rule 8, the sweep's `action === "fail"` branch.
+**13.2 The 35-minute mark is a WARNING, and the clock never fails a device.**
+*(Superseded 2026-09-27 by §16 — it originally made 35 minutes terminal `failed`. The reasoning below is kept because it explains the mistake.)*
+The first pass made `ONBOARDING_CEILING_MINUTES = 20 + 5×3 = 35` the point at which "still public" became a terminal `failed`. That was wrong: the elapsed clock counts time the device spent **switched off**, so a healthy box that was merely offline for 35 minutes would be marked `failed` the moment it came back — a false alarm, and the opposite of the owner's own rule that an offline device must retry. The constant survives as `ONBOARDING_STUCK_MINUTES` and now only drives UI escalation. **`failed` comes from `ONBOARDING_MAX_ATTEMPTS` alone** (six attempted-and-failed stages) — see §16.
 
 **13.3 Offline retries, and never burns an attempt.**
-A due stage whose box is unreachable is **skipped and retried on every later cycle**, exactly as before — but this is now a tested guarantee rather than an accident of ordering: rules 5/7 (a stage still `*DoneAt`-null) are evaluated **before** the ceiling, so a device that is offline at 40, 90 or 600 minutes still returns `hide`, never `fail`, and `attempts` stays `0`. Only an **attempted** stage that actually failed counts toward `ONBOARDING_MAX_ATTEMPTS`.
+A due stage whose box is unreachable is **skipped and retried on every later cycle**, exactly as before — but this is now a tested guarantee rather than an accident of ordering: rules 5/7 (a stage still `*DoneAt`-null) are evaluated **before** any time-based rule, so a device that is offline at 40, 90 or 600 minutes still returns `hide`, and `attempts` stays `0`. Only an **attempted** stage that actually failed counts toward `ONBOARDING_MAX_ATTEMPTS`. Since §16 removed the last time-based terminal rule, there is now nothing on the clock that can fail an offline device at all.
 
 **13.4 A device pending in public stays Public, listed, and fully usable.**
 The quarantine runs **only** the two existing tools (hide, stay-on); it never moves the device, never locks it out, never changes its tier, and never removes it from the list or the console. `syncDevices()` is the only thing that changes `tier`, and only when Vantra reports the agent in the private org. The reassurance is rendered from one frozen string (`ONBOARDING_ACCESSIBLE_NOTE`) in both the strip and the console card: *"You can keep using this device while it's being set up."* Asserted by test.
@@ -426,7 +428,31 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 
 **15.7 Verified.** `npx tsc --noEmit` clean in both repos; SpaceWorker `tests/*.test.ts` **201/201** (the suite gained 7 queue tests); Vantra lint clean; the only SpaceWorker lint finding is the **pre-existing** `react-hooks/set-state-in-effect` on the Task 106 poll effect, unchanged by this amendment.
 
-## 16. Change log
+## 16. AMENDMENT — the clock can no longer fail a device; a long wait is LOUD but amber (owner, 2026-09-27, post-deploy)
+
+**Owner decision, verbatim (chosen from a 4-option question):** *"Same as recommended, but also warn loudly in the UI after 35 min (amber, with the elapsed time and the reason) so a stuck device is still visible without being marked failed."*
+
+**16.1 The bug this fixes.** §13.2 made 35 minutes of elapsed time terminal `failed`. `timerStartedAt` is set by Vantra at first sighting and the clock keeps running whether or not the machine is reachable, so **the elapsed time includes every hour the box spent switched off**. A device that was simply off overnight, then came back at 40 minutes, would be marked `failed` **on the sweep that followed its return** — a red *"Setup didn't finish"* on a perfectly healthy device, and the opposite of §13.3 (an offline device retries) and §13.4 (a public device stays usable). Because `failed` is terminal, that badge would then *stick* even after Vantra successfully moved the device to private.
+
+**16.2 The live evidence.** Production made it concrete on 2026-09-27: device **`Sc`** — `tier: public`, `attempts: 0`, **offline for 142 minutes**, `hideDoneAt`/`stayOnDoneAt` both null, and a **valid `destinationOrgId`** (`cmue394ot000xkpvs7kldwwuw`), so rule 3 (the clean free/trial release) could never apply to it. The moment it came back online it would have run hide → stay-on → **`failed`**, while Vantra's own row was still `pending` and about to move it successfully. Contrast device **`I`**, which has **no** destination — that one correctly *released* at >20 min and stayed public, which is why the two devices behaved differently. Vantra itself has **no** time ceiling at all: its compiled build returns early and un-actioned unless the device is online (`if (Date.now() - s.timerStartedAt.getTime() < 9e5 || !i) return;`), and only ever fails on its own `attempts >= 6`. SpaceWorker's clock was the odd one out.
+
+**16.3 The rule now.** `failed` has exactly **one** cause: `ONBOARDING_MAX_ATTEMPTS` (6) genuinely attempted-and-failed stages — which is the same "6 failures" semantics Vantra already uses. Nothing time-based is terminal any more; `nextOnboardingAction` can return only `hide | stay_on | release | wait | terminal`, and the sweep's `action === "fail"` branch is **deleted**. A device that is past 35 minutes and still public keeps its row, keeps retrying every 5 minutes and stays fully usable.
+
+**16.4 The loud-but-amber warning (what the owner asked for).** `ONBOARDING_CEILING_MINUTES` is renamed `ONBOARDING_STUCK_MINUTES` (same value, 20 + 5×3 = 35) and now drives **display only** via a new `view.stuck` / `view.stuckReason`:
+- **Strip** — amber border + amber `TriangleAlert` icon instead of the brand shield, the clock reading *"taking much longer than usual — 47 min so far"*, the detail *"much longer than usual — nothing is lost; we keep retrying every 5 minutes"*, and the **reason** on its own amber line.
+- **Page alert** — a **separate** amber alert beside the existing red one, naming the device(s) and the elapsed time: *"Sc is taking much longer than usual (2h 22m) — we can't reach it yet — it retries every 5 minutes. Nothing is lost and the device stays fully usable…"*.
+- **Row badge** — `Quarantine · stuck` (amber), replacing `Quarantine · taking longer`.
+- **Console card** — amber border, and the same elapsed-time sentence.
+
+**16.5 `stuckReason` is honest, never invented.** In priority order: the row's own `lastError` when a stage really failed (trimmed; whitespace-only counts as absent) → *"we can't reach it yet — it retries every 5 minutes"* when the device is offline → *"the move to your private agent hasn't landed yet"* when it is online. `stuckReason` is `null` unless `stuck` is true.
+
+**16.6 Red keeps its meaning.** This is the point of choosing amber over red: **red now means a genuine repeated failure and nothing else**, so the owner can trust it. Because "a long wait" and "a broken thing" are no longer the same colour, neither has to be quiet — §13.5's no-silent-failures rule is preserved *and* extended to the waiting case.
+
+**16.7 Elapsed-time formatter.** `formatOnboardingElapsed(ms)` is new: `"47 min"` under an hour, `"2h 22m"` / `"2h"` above it, never `0`. The existing countdown formatters only look forward, so the warning needed its own — reusing them would have printed "~0 min left", which reads as *progress*.
+
+**16.8 Verified.** `npx tsc --noEmit` clean in **both** repos (this amendment touches no Vantra file). Whole SpaceWorker suite **207/207**, `tests/device-onboarding.test.ts` **62/62** (up from 51: the ceiling tests were rewritten, plus 6 new ones covering the warning boundary at 34:59/35:00, that a terminal or private row is never `stuck`, the three-way `stuckReason` priority, the exact clock/detail strings, the formatter, and the `Quarantine · stuck` badge). Crucially the sweep test now drives a row **142 minutes** old and asserts `status: "moving"`, `attempts: 0`, `lastError: null` — the live `Sc` shape, asserted instead of hoped. Lint unchanged: the same 3 pre-existing `react-hooks/set-state-in-effect` findings, byte-identical on `HEAD` (verified by stashing).
+
+## 17. Change log
 
 | Date | Change |
 | --- | --- |
@@ -435,8 +461,9 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 | 2026-09-27 | §14 — the sweep syncs linked users itself (+ `synced`/`syncErrors` in the response); the `P2002` race guard from having two sync callers. |
 | 2026-09-27 | §15 — Delete on both tiers (`Device.removedAt` + `20261013000000_task128_device_removal`, Vantra's `delete` action), the bounded queue scroller, and the public PowerShell command (Vantra `install-link` `as: "powershell"`). Declared file list extended below. |
 | 2026-09-27 | §15 **verified and DEPLOYED.** Merged with `origin/main` (one conflict — both sides added `Device` columns; kept both). Vantra `0f6cfdf` and SpaceWorker `f8081e0` on `main`; `20261013000000_task128_device_removal` APPLIED; live evidence below. |
+| 2026-09-27 | **§16 — the clock no longer fails a device.** `ONBOARDING_CEILING_MINUTES` → `ONBOARDING_STUCK_MINUTES` (display only); the sweep's `fail` branch deleted; `failed` now comes from `ONBOARDING_MAX_ATTEMPTS` alone; new `view.stuck`/`view.stuckReason` + `formatOnboardingElapsed` drive a loud amber strip/alert/badge/console warning carrying the elapsed time and the reason. Motivated by live device `Sc` (offline 142 min, `attempts: 0`, would have been marked failed on return). Suite 207/207. |
 
-## 17. §15 — the deployed-and-verified record (owner, 2026-09-27)
+## 18. §15 — the deployed-and-verified record (owner, 2026-09-27)
 
 **Commits on `main`:** Vantra `0f6cfdf`; SpaceWorker `f8081e0` (the merge of §15 with `origin/main`).
 **Migrations, in order, all APPLIED on the VPS:** `…1200000_task128_device_onboarding` (already), `…1300000_task128_device_removal` (**new**).

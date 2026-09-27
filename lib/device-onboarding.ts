@@ -31,18 +31,26 @@ export const ONBOARDING_WINDOW_MINUTES = 20; // the PLAN — never a hard deadli
  */
 export const ONBOARDING_GRACE_MINUTES = 5;
 /**
- * The hard ceiling = plan + three grace periods. Only here does a device that
- * is STILL public go terminal `failed` — and `failed` is never silent: the row
- * keeps a red badge and the page keeps an alert naming it.
+ * How long "a little wait" can run before the UI stops being quiet about it.
+ * NOT a failure, and NOT a deadline (owner decision 2026-09-27): nothing
+ * terminal happens here any more. A device past this mark that is still public
+ * keeps its row, keeps retrying every 5 minutes and stays fully usable — the UI
+ * just says so LOUDLY (amber, with the elapsed time and the reason), because a
+ * box that was merely switched off must never be mistaken for a failed one.
+ *
+ * `failed` now comes from exactly one genuine place: ONBOARDING_MAX_ATTEMPTS
+ * attempted-and-failed stages (below). The clock can no longer fail anything.
+ * This also matches the mover: Vantra's device-auto-move.ts has no time ceiling
+ * either — it waits while a device is offline and retries on every poll.
  */
-export const ONBOARDING_CEILING_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3;
+export const ONBOARDING_STUCK_MINUTES = ONBOARDING_WINDOW_MINUTES + ONBOARDING_GRACE_MINUTES * 3;
 export const ONBOARDING_MAX_ATTEMPTS = 6;
 
 /** Rendered wherever a quarantined device appears — the owner's own promise. */
 export const ONBOARDING_ACCESSIBLE_NOTE =
   "You can keep using this device while it's being set up.";
 
-export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "fail" | "terminal";
+export type OnboardingAction = "hide" | "stay_on" | "release" | "wait" | "terminal";
 
 const MINUTE_MS = 60_000;
 
@@ -56,13 +64,24 @@ const MINUTE_MS = 60_000;
  *   5. hide not done               -> hide
  *   6. elapsed < 10 min            -> wait
  *   7. stay-on not done            -> stay_on (cannot fire before hide is done)
- *   8. elapsed >= 35 min ceiling   -> fail (past the plan AND its grace, still public)
- *   9. otherwise                   -> wait (this is the 20..35 overrun: still working)
+ *   8. otherwise                   -> wait (past the plan: still working, still retrying)
  *
- * Grace, not a deadline (rule 9): the 20-minute window is the PLAN. A device
- * still public at 20 is NOT released and NOT failed — it keeps its row, keeps
- * being retried by Vantra's own poller, and the UI says so (`overrun`). Only
- * the 35-minute ceiling turns that into a terminal `failed`.
+ * Grace, not a deadline (rule 8): the 20-minute window is the PLAN. A device
+ * still public at 20 — or at 35, or at 4 hours — is NEVER released early and
+ * NEVER failed. It keeps its row, keeps being retried by Vantra's own poller,
+ * and the UI escalates its wording (`overrun`, then `stuck`) instead of lying
+ * about its state.
+ *
+ * WHY THERE IS NO TIME CEILING (owner decision 2026-09-27): the elapsed clock
+ * counts time the device spent SWITCHED OFF, which is not a failure of the
+ * process. Previously a box that was offline for 35+ minutes would be marked
+ * `failed` the moment it came back online — a false alarm on a healthy device,
+ * and one that contradicted both the owner's rule ("any failed attempt due to
+ * offline should retry") and Vantra, which keeps waiting indefinitely. So the
+ * clock now only ever reports; `failed` is reserved for genuine repeated
+ * failures (ONBOARDING_MAX_ATTEMPTS), which is what ONBOARDING_STUCK_MINUTES
+ * used to be confused with. A stuck device is surfaced LOUDLY in the UI
+ * (amber + elapsed + reason) so "still waiting" is never silent either.
  *
  * Offline is not a failure either: a due stage whose device is not reachable
  * returns its action anyway, and the CALLER skips without burning an attempt
@@ -98,7 +117,6 @@ export function nextOnboardingAction(
   if (!input.hideDoneAt) return "hide";
   if (elapsedMs < ONBOARDING_STAY_ON_MINUTES * MINUTE_MS) return "wait";
   if (!input.stayOnDoneAt) return "stay_on";
-  if (elapsedMs >= ONBOARDING_CEILING_MINUTES * MINUTE_MS) return "fail";
   return "wait";
 }
 
@@ -125,6 +143,13 @@ export interface OnboardingViewInput {
    * server-only module.
    */
   isOnline: boolean;
+  /**
+   * The row's own last failure detail, when a stage attempt failed. Surfaced
+   * verbatim by `stuckReason` — the owner asked for a stuck device to be warned
+   * about "with the elapsed time and the reason", so the reason has to travel
+   * with the view instead of being guessed at in the component.
+   */
+  lastError?: string | null;
 }
 
 export interface OnboardingView {
@@ -149,9 +174,21 @@ export interface OnboardingView {
   /**
    * Past the 20-minute plan and still public — NOT a failure. The owner's rule:
    * a device that exceeds the plan just gets "a little wait", so the row stays
-   * live and keeps retrying until the ceiling.
+   * live and keeps retrying indefinitely (§16: nothing on the clock is terminal).
    */
   overrun: boolean;
+  /**
+   * Past ONBOARDING_STUCK_MINUTES, still public, still live — the state the
+   * owner asked to be warned about LOUDLY. Still NOT a failure: the row stays
+   * live and keeps retrying, so this only escalates the UI's wording.
+   */
+  stuck: boolean;
+  /**
+   * Why it is stuck, in the owner's words: the row's own `lastError` when a
+   * stage really failed, otherwise whether we simply cannot reach the machine.
+   * Null unless `stuck`.
+   */
+  stuckReason: string | null;
   /** Terminal failure — the row keeps a red badge and a page alert, never silent. */
   failed: boolean;
 }
@@ -175,6 +212,18 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
   const failed = row.status === "failed";
   // Past the plan, still public, still live — the "little wait" state.
   const overrun = !terminalOrPrivate && elapsedMs >= ONBOARDING_WINDOW_MINUTES * MINUTE_MS;
+  // Past the plan AND its grace, still public, still live. NOT a failure — the
+  // owner wants it LOUD (amber + elapsed + reason), not terminal. This is the
+  // state a device that was simply switched off lands in, which is exactly why
+  // it must never read as an error.
+  const stuck = !terminalOrPrivate && elapsedMs >= ONBOARDING_STUCK_MINUTES * MINUTE_MS;
+  const lastError = typeof row.lastError === "string" ? row.lastError.trim() : "";
+  const stuckReason = stuck
+    ? lastError ||
+      (row.isOnline
+        ? "the move to your private agent hasn't landed yet"
+        : "we can't reach it yet — it retries every 5 minutes")
+    : null;
   let step: 1 | 2 | 3 | 4;
   if (terminalOrPrivate) step = 4;
   else if (elapsedMs < ONBOARDING_HIDE_MINUTES * MINUTE_MS) step = 1;
@@ -214,6 +263,8 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
       nextStageInMs,
       waitingForDevice,
       overrun,
+      stuck,
+      stuckReason,
       failed,
     };
   }
@@ -228,6 +279,8 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
       nextStageInMs,
       waitingForDevice,
       overrun,
+      stuck,
+      stuckReason,
       failed,
     };
   }
@@ -242,6 +295,8 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
       nextStageInMs,
       waitingForDevice,
       overrun,
+      stuck,
+      stuckReason,
       failed,
     };
   }
@@ -251,9 +306,11 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
     detail: failed
       ? "still on your public agent — you can keep using it"
       : row.destinationOrgId
-        ? overrun
-          ? "taking a little longer than usual — still working, nothing is lost"
-          : "almost done"
+        ? stuck
+          ? "much longer than usual — nothing is lost"
+          : overrun
+            ? "taking a little longer than usual — still working, nothing is lost"
+            : "almost done"
         : "stays on your public agent — no private agent on this plan",
     remainingMs,
     elapsedMs,
@@ -261,6 +318,8 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
     nextStageInMs,
     waitingForDevice,
     overrun,
+    stuck,
+    stuckReason,
     failed,
   };
 }
@@ -321,13 +380,30 @@ export function formatOnboardingEta(ms: number): string {
 }
 
 /**
- * The ONE clock string for a running window — shared by the Devices strip and
- * the console card so the two can never disagree. It never promises an exact
- * time: a blocked stage says it is waiting, and a window past the plan says so
- * instead of counting up from zero.
+ * "47 min" / "2h 05m" — how long a stuck device has been waiting.
+ *
+ * The countdown formatters only ever look FORWARD (they count down to a stage),
+ * so a device that has overrun needs its own: the owner asked for the warning to
+ * carry the elapsed time, and "~0 min left" would be a lie here.
+ */
+export function formatOnboardingElapsed(elapsedMs: number): string {
+  const totalMinutes = Math.max(1, Math.floor(elapsedMs / MINUTE_MS));
+  if (totalMinutes < 60) return `${totalMinutes} min`;
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
+/**
+ * The ONE clock string for a running window — shared by the Devices strip, the
+ * queue's "in line" rows and the console card so none of them can disagree. It
+ * never promises an exact time: a blocked stage says it is waiting, a window
+ * past the plan says so, and a stuck one states how long it has been waiting
+ * (never a count-up from zero, which would read as progress).
  */
 export function onboardingClockText(view: OnboardingView): string {
   if (view.failed) return "stopped";
+  if (view.stuck) return `taking much longer than usual — ${formatOnboardingElapsed(view.elapsedMs)} so far`;
   if (view.waitingForDevice) return "waiting for the device";
   if (view.overrun) return "taking a little longer than usual";
   if (view.nextStageInMs !== null) return formatOnboardingEta(view.nextStageInMs);
@@ -348,6 +424,9 @@ export function onboardingRowLabel(
   if (isOnboardingTerminal(row.status)) return null;
   const startedMs = (toDate(row.timerStartedAt) ?? new Date(nowMs)).getTime();
   const elapsedMs = nowMs - startedMs;
+  // Loud, but still amber — a stuck device is waiting, not broken (owner
+  // decision 2026-09-27). Only a genuine repeated failure goes red.
+  if (elapsedMs >= ONBOARDING_STUCK_MINUTES * MINUTE_MS) return "Quarantine · stuck";
   if (elapsedMs >= ONBOARDING_WINDOW_MINUTES * MINUTE_MS) return "Quarantine · taking longer";
   const leftMs = Math.max(0, ONBOARDING_WINDOW_MINUTES * MINUTE_MS - elapsedMs);
   const totalSeconds = Math.round(leftMs / 1000);

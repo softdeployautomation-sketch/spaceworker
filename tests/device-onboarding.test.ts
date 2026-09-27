@@ -4,11 +4,12 @@ import Module from "node:module";
 
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
-  ONBOARDING_CEILING_MINUTES,
   ONBOARDING_GRACE_MINUTES,
   ONBOARDING_MAX_ATTEMPTS,
+  ONBOARDING_STUCK_MINUTES,
   ONBOARDING_WINDOW_MINUTES,
   formatOnboardingCountdown,
+  formatOnboardingElapsed,
   formatOnboardingEta,
   isOnboardingTerminal,
   nextOnboardingAction,
@@ -330,14 +331,14 @@ test("stay_on fires at exactly 10 minutes once hide is done, not a second earlie
   assert.equal(nextOnboardingAction(baseInput(done), at(10)), "stay_on");
 });
 
-test("grace is real: the 20-minute plan is not a deadline, the ceiling is", () => {
+test("grace is real: the 20-minute plan is not a deadline, and the 35-minute mark is a WARNING, not a fail", () => {
   assert.equal(ONBOARDING_WINDOW_MINUTES, 20);
   assert.ok(ONBOARDING_GRACE_MINUTES > 0);
-  assert.equal(ONBOARDING_CEILING_MINUTES, 35);
-  assert.ok(ONBOARDING_CEILING_MINUTES > ONBOARDING_WINDOW_MINUTES);
+  assert.equal(ONBOARDING_STUCK_MINUTES, 35);
+  assert.ok(ONBOARDING_STUCK_MINUTES > ONBOARDING_WINDOW_MINUTES);
 });
 
-test("the plan at 20 is GRACE, not a release: it waits, and only the ceiling fails", () => {
+test("the clock can NEVER fail a device: past the plan, and past the 35-minute mark, it still waits", () => {
   const done = {
     hideDoneAt: new Date(T0 + 5 * 60_000),
     stayOnDoneAt: new Date(T0 + 10 * 60_000),
@@ -346,8 +347,13 @@ test("the plan at 20 is GRACE, not a release: it waits, and only the ceiling fai
   assert.equal(nextOnboardingAction(baseInput(done), at(20, -1)), "wait");
   assert.equal(nextOnboardingAction(baseInput(done), at(20)), "wait");
   assert.equal(nextOnboardingAction(baseInput(done), at(34, 59)), "wait");
-  // The ceiling (plan + three grace periods) is the only thing that ends it.
-  assert.equal(nextOnboardingAction(baseInput(done), at(35)), "fail");
+  // Owner decision 2026-09-27: the 35-minute mark used to `fail` here. It no
+  // longer does ANYTHING terminal — elapsed time includes the hours a box spent
+  // switched off, which is not a failure of the process. It waits, and the UI
+  // escalates to a loud amber warning instead.
+  assert.equal(nextOnboardingAction(baseInput(done), at(35)), "wait");
+  assert.equal(nextOnboardingAction(baseInput(done), at(35, 1)), "wait");
+  assert.equal(nextOnboardingAction(baseInput(done), at(600)), "wait");
 });
 
 test("a move that lands late still releases — the ceiling never beats a real move", () => {
@@ -375,7 +381,7 @@ test("no destination: the stages still run, then it releases at the plan and can
   assert.equal(nextOnboardingAction(baseInput(done), at(90)), "release"); // never `fail`
 });
 
-test("order is hide -> stay_on -> wait -> fail, and stay_on cannot fire before hide is done", () => {
+test("order is hide -> stay_on -> wait, and stay_on cannot fire before hide is done", () => {
   // 12 min in with hide still not done: the decision is STILL hide, never stay_on.
   assert.equal(nextOnboardingAction(baseInput(), at(12)), "hide");
   const hideDone = { hideDoneAt: new Date(T0 + 6 * 60_000) };
@@ -384,7 +390,7 @@ test("order is hide -> stay_on -> wait -> fail, and stay_on cannot fire before h
   const bothDone = { ...hideDone, stayOnDoneAt: new Date(T0 + 11 * 60_000) };
   assert.equal(nextOnboardingAction(baseInput(bothDone), at(16)), "wait"); // 15..20 = moving, not an action
   assert.equal(nextOnboardingAction(baseInput(bothDone), at(20)), "wait"); // past the plan: a little wait
-  assert.equal(nextOnboardingAction(baseInput(bothDone), at(35)), "fail"); // ceiling
+  assert.equal(nextOnboardingAction(baseInput(bothDone), at(35)), "wait"); // past the warning mark: STILL waits
 });
 
 test("tier private releases early, whatever the clock", () => {
@@ -549,6 +555,113 @@ test("overrun is a little wait, not a failure: the row stays live and says so", 
   assert.equal(onboardingClockText(v), "taking a little longer than usual");
   // Still inside the plan: not overrun, and it counts the next stage down.
   assert.equal(onboardingView(viewInput(done), at(12)).overrun, false);
+});
+
+// ---------------------------------------------------------------------------
+// The 35-minute mark is a WARNING, not a failure (owner decision 2026-09-27)
+// ---------------------------------------------------------------------------
+
+const bothStagesDone = {
+  hideDoneAt: new Date(T0 + 5 * 60_000),
+  stayOnDoneAt: new Date(T0 + 10 * 60_000),
+};
+
+test("stuck is a WARNING state past 35 minutes — never a failure", () => {
+  assert.equal(onboardingView(viewInput(bothStagesDone), at(25)).stuck, false, "25 min: only overrun");
+  assert.equal(onboardingView(viewInput(bothStagesDone), at(34, 59)).stuck, false, "a second before");
+  const v = onboardingView(viewInput(bothStagesDone), at(35));
+  assert.equal(v.stuck, true);
+  assert.equal(
+    v.failed,
+    false,
+    "the clock must NEVER fail a device — that is the whole point of this change",
+  );
+  assert.equal(v.overrun, true, "stuck still counts as overrun, it is the louder tier of it");
+  // And the decision function agrees: no action, so nothing terminal is written.
+  assert.equal(nextOnboardingAction(baseInput(bothStagesDone), at(35)), "wait");
+});
+
+test("stuck is never reported for a terminal or private row", () => {
+  for (const over of [
+    { status: "failed" },
+    { status: "released" },
+    { tier: "private" },
+  ]) {
+    const v = onboardingView(viewInput({ ...bothStagesDone, ...over }), at(90));
+    assert.equal(v.stuck, false, JSON.stringify(over));
+  }
+});
+
+test("stuckReason carries the real reason: lastError first, then honesty about reachability", () => {
+  // 1. A genuine stage failure's own message wins.
+  assert.equal(
+    onboardingView(
+      viewInput({ ...bothStagesDone, lastError: "agent_unreachable", isOnline: true }),
+      at(40),
+    ).stuckReason,
+    "agent_unreachable",
+  );
+  // 2. No error, device offline — say we cannot reach it, do not invent a failure.
+  assert.equal(
+    onboardingView(viewInput({ ...bothStagesDone, lastError: null, isOnline: false }), at(40))
+      .stuckReason,
+    "we can't reach it yet — it retries every 5 minutes",
+  );
+  // 3. No error, device online — the move simply has not landed.
+  assert.equal(
+    onboardingView(viewInput({ ...bothStagesDone, lastError: null, isOnline: true }), at(40))
+      .stuckReason,
+    "the move to your private agent hasn't landed yet",
+  );
+  // Whitespace-only lastError is treated as absent, not printed as blank.
+  assert.equal(
+    onboardingView(viewInput({ ...bothStagesDone, lastError: "   ", isOnline: true }), at(40))
+      .stuckReason,
+    "the move to your private agent hasn't landed yet",
+  );
+  // And there is no reason at all unless it is actually stuck.
+  assert.equal(onboardingView(viewInput({ ...bothStagesDone, lastError: "x" }), at(30)).stuckReason, null);
+});
+
+test("the stuck clock carries the elapsed time, and the copy says it is not a failure", () => {
+  const v = onboardingView(viewInput(bothStagesDone), at(47));
+  assert.equal(onboardingClockText(v), "taking much longer than usual — 47 min so far");
+  assert.equal(
+    v.detail,
+    "much longer than usual — nothing is lost",
+  );
+  // A very long wait must not read as a tiny number.
+  assert.equal(
+    onboardingClockText(onboardingView(viewInput(bothStagesDone), at(3 * 60 + 5))),
+    "taking much longer than usual — 3h 05m so far",
+  );
+  assert.equal(
+    onboardingClockText(onboardingView(viewInput(bothStagesDone), at(2 * 60))),
+    "taking much longer than usual — 2h so far",
+  );
+});
+
+test("formatOnboardingElapsed rounds down to whole minutes and never reports 0", () => {
+  assert.equal(formatOnboardingElapsed(0), "1 min");
+  assert.equal(formatOnboardingElapsed(59_000), "1 min");
+  assert.equal(formatOnboardingElapsed(60_000), "1 min");
+  assert.equal(formatOnboardingElapsed(47 * 60_000), "47 min");
+  assert.equal(formatOnboardingElapsed(59 * 60_000 + 59_000), "59 min");
+  assert.equal(formatOnboardingElapsed(60 * 60_000), "1h");
+  assert.equal(formatOnboardingElapsed(125 * 60_000), "2h 05m");
+});
+
+test("a stuck device keeps an amber row label, never the red failure one", () => {
+  assert.equal(
+    onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(34, 59)),
+    "Quarantine · taking longer",
+  );
+  assert.equal(
+    onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(35)),
+    "Quarantine · stuck",
+  );
+  // The RED label is still reserved for a genuine repeated failure.
+  assert.equal(onboardingRowLabel({ status: "failed", timerStartedAt: BASE }, at(35)), "Setup failed");
 });
 
 test("a failed row is worded as a failure and never as still-going", () => {
@@ -747,15 +860,44 @@ test("the window records `moving` once at 15 min, then WAITS past the plan inste
   assert.equal(rows[0].releasedAt, null, "the plan is not a release");
   assert.equal(res.body.acted, 0, "nothing to do but wait");
 
-  // Past the ceiling and still public: the ONE visible failure — never silent.
+  // Owner decision 2026-09-27: past the 35-minute mark the sweep must STILL not
+  // fail it. A device that was merely switched off is not a failed device — it
+  // keeps its row, keeps retrying, and the UI escalates to an amber warning
+  // (`view.stuck`) carrying the elapsed time and the reason.
   rows[0].timerStartedAt = minutesAgo(36);
+  const late = await post();
+  assert.equal(rows[0].status, "moving", "the clock NEVER fails a device");
+  assert.equal(rows[0].releasedAt, null, "and it never releases either");
+  assert.equal(rows[0].lastError, null, "nothing failed, so nothing is recorded as an error");
+  assert.equal(late.body.acted, 0);
+
+  // The live case that motivated this: `Sc` was observed offline for 142
+  // minutes. Hours of not being reachable must still be a wait, not a failure.
+  rows[0].timerStartedAt = minutesAgo(142);
   await post();
-  assert.equal(rows[0].status, "failed");
-  assert.equal(rows[0].releasedAt, null, "a failure is never a release");
-  assert.ok(rows[0].lastError, "the reason is recorded, not swallowed");
+  assert.equal(rows[0].status, "moving");
+  assert.equal(rows[0].attempts, 0, "offline never burns an attempt, however long");
+
+  // And the row still reads honestly: amber "stuck", never red "failed".
+  const view = onboardingView(
+    {
+      status: rows[0].status,
+      tier: devices.get("d1")!.tier,
+      timerStartedAt: rows[0].timerStartedAt,
+      hideDoneAt: rows[0].hideDoneAt,
+      stayOnDoneAt: rows[0].stayOnDoneAt,
+      destinationOrgId: rows[0].destinationOrgId,
+      isOnline: true,
+      lastError: rows[0].lastError,
+    },
+    Date.now(),
+  );
+  assert.equal(view.stuck, true, "the UI is loud about it");
+  assert.equal(view.failed, false, "but it is NOT a failure");
+  assert.match(onboardingClockText(view), /taking much longer than usual — 2h 22m so far/);
 });
 
-test("a late-landing move still releases, even past the ceiling", async () => {
+test("a late-landing move still releases, however long it took", async () => {
   addDevice("d1", { tier: "private" });
   addOnboarding("d1", {
     timerStartedAt: minutesAgo(40),
@@ -776,8 +918,8 @@ test("an offline device retries on every cycle: no attempt burned, no silent fai
   assert.equal(rows[0].status, "pending");
   assert.equal(res.body.acted, 0);
 
-  // Still retrying — not failed — well past the plan AND the ceiling, because
-  // the stage is still DUE and the box simply is not reachable yet.
+  // Still retrying — not failed — well past the plan AND the 35-minute warning
+  // mark, because the stage is still DUE and the box simply is not reachable yet.
   await post();
   assert.equal(rows[0].status, "pending");
   assert.equal(rows[0].attempts, 0);
@@ -821,8 +963,8 @@ test("no private destination: releases cleanly at the plan and is never a failur
   assert.equal(rows[0].movedAt, null);
   assert.equal(devices.get("d1")!.tier, "public");
 
-  // Even far past the ceiling a free/trial device is NEVER `failed`: nothing was
-  // ever going to move, so there is nothing to fail at.
+  // Even far past the warning mark a free/trial device is NEVER `failed`: nothing
+  // was ever going to move, so there is nothing to fail at.
   const second = addOnboarding("d1b", {
     destinationOrgId: null,
     timerStartedAt: minutesAgo(90),

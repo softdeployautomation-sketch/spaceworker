@@ -33,10 +33,17 @@ import {
 // process"). The 20-minute window is the PLAN:
 //   - a device still public at 20 is NOT released and NOT failed; its row stays
 //     live and keeps being retried (the UI words this `overrun`);
-//   - only the ceiling (20 + 3 grace periods) turns that into `failed`, which
-//     is surfaced loudly — never silently (the row keeps a red badge and the
-//     Devices page keeps an alert naming it, with the device left Public and
-//     fully usable);
+//   - there is NO time ceiling. The clock can no longer fail a device, because
+//     elapsed time includes the hours a box spent switched OFF, which is not a
+//     failure of the process (owner decision 2026-09-27). A device previously
+//     offline for 35+ minutes used to be marked `failed` the moment it came back
+//     — a false alarm on a healthy device, and the opposite of "any failed
+//     attempt due to offline should retry";
+//   - past ONBOARDING_STUCK_MINUTES the UI instead escalates to a LOUD amber
+//     warning that names the device, the elapsed time and the reason, so a stuck
+//     device is visible WITHOUT being marked failed. `failed` is reserved for
+//     ONBOARDING_MAX_ATTEMPTS genuinely attempted-and-failed stages, which keeps
+//     a red badge meaning something;
 //   - a free/trial device with no destination is released cleanly at the plan
 //     and is never treated as a failure — nothing is hidden for a move that
 //     can never happen.
@@ -180,24 +187,6 @@ export async function POST(req: Request) {
             status: "released",
             claimAt: null,
             ...(device.tier === "private" ? { movedAt: new Date() } : {}),
-          },
-        });
-        acted++;
-      } else if (action === "fail") {
-        // Past the plan AND its grace, and still public. The ONLY way a device
-        // goes terminal without having moved — and it is never silent: the row
-        // keeps a red `Setup failed` badge and the Devices page keeps an alert
-        // naming it, with the device left exactly where the owner can still
-        // use it (`Public`, fully accessible). We do NOT set releasedAt: the
-        // window genuinely never released.
-        await prisma.deviceOnboarding.update({
-          where: { id: row.id },
-          data: {
-            status: "failed",
-            claimAt: null,
-            lastError:
-              row.lastError ??
-              "move_not_landed_after_grace — still on your public agent, still fully usable",
           },
         });
         acted++;

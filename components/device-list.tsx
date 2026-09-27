@@ -12,6 +12,7 @@ import {
   Search,
   ShieldCheck,
   Trash2,
+  TriangleAlert,
 } from "lucide-react";
 
 import { useConfirm } from "@/components/confirm-provider";
@@ -21,8 +22,10 @@ import { cn } from "@/lib/cn";
 import { formatIdle } from "@/lib/device-idle";
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
+  formatOnboardingElapsed,
   onboardingClockText,
   onboardingRowLabel,
+  onboardingView,
   orderOnboardingQueue,
 } from "@/lib/device-onboarding";
 
@@ -559,6 +562,7 @@ export function DeviceList() {
               releasedAt: d.onboarding.releasedAt,
               destinationOrgId: d.onboarding.destinationOrgId,
               isOnline: d.onboarding.isOnline,
+              lastError: d.onboarding.lastError,
             }
           : null,
       })),
@@ -574,6 +578,35 @@ export function DeviceList() {
   const onboardingFailures = useMemo(
     () => devices.filter((d) => d.onboarding?.status === "failed"),
     [devices],
+  );
+
+  // TASK_128 (owner decision 2026-09-27) — devices past ONBOARDING_STUCK_MINUTES
+  // that are STILL public and STILL retrying. Deliberately NOT failures: the
+  // owner asked for these to be warned about "loudly (amber, with the elapsed
+  // time and the reason) so a stuck device is still visible without being marked
+  // failed". Derived through the same `onboardingView` the strip uses, so the
+  // alert and the strip can never disagree about who is stuck or for how long.
+  const onboardingStuck = useMemo(
+    () =>
+      devices.flatMap((d) => {
+        if (!d.onboarding) return [];
+        const view = onboardingView(
+          {
+            status: d.onboarding.status,
+            tier: d.tier,
+            timerStartedAt: d.onboarding.timerStartedAt,
+            hideDoneAt: d.onboarding.hideDoneAt,
+            stayOnDoneAt: d.onboarding.stayOnDoneAt,
+            releasedAt: d.onboarding.releasedAt,
+            destinationOrgId: d.onboarding.destinationOrgId,
+            isOnline: d.onboarding.isOnline,
+            lastError: d.onboarding.lastError,
+          },
+          nowMs,
+        );
+        return view.stuck ? [{ device: d, view }] : [];
+      }),
+    [devices, nowMs],
   );
 
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
@@ -1055,9 +1088,23 @@ export function DeviceList() {
           the UI cannot drift from the state machine; nothing renders when no
           device is onboarding. */}
       {onboardingStrip && (
-        <div className="rounded-xl border border-border bg-bg-elevated px-4 py-3">
+        <div
+          className={cn(
+            "rounded-xl border px-4 py-3",
+            // Loud, but amber rather than red: a stuck device is WAITING, not
+            // broken (owner decision 2026-09-27). Red stays reserved for a
+            // genuine repeated failure, so the colour keeps its meaning.
+            onboardingStrip.active.view.stuck
+              ? "border-amber-500/40 bg-amber-500/5"
+              : "border-border bg-bg-elevated",
+          )}
+        >
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
-            <ShieldCheck className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
+            {onboardingStrip.active.view.stuck ? (
+              <TriangleAlert className="h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+            ) : (
+              <ShieldCheck className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
+            )}
             <span className="font-medium">Securing new device</span>
             <span className="text-fg-muted">·</span>
             <span className="font-mono">{onboardingStrip.active.device.name}</span>
@@ -1072,9 +1119,21 @@ export function DeviceList() {
               </>
             )}
             <span className="text-fg-muted">·</span>
-            <span className="text-fg-muted">{onboardingClockText(onboardingStrip.active.view)}</span>
+            <span
+              className={onboardingStrip.active.view.stuck ? "text-amber-500" : "text-fg-muted"}
+            >
+              {onboardingClockText(onboardingStrip.active.view)}
+            </span>
           </p>
           <p className="mt-1 text-xs text-fg-muted">{onboardingStrip.active.view.detail}</p>
+          {/* The owner asked for the warning to carry "the elapsed time and the
+              reason" — the elapsed time is in the clock above, and this is the
+              reason (a real lastError, or honestly "we can't reach it"). */}
+          {onboardingStrip.active.view.stuckReason && (
+            <p className="mt-1 text-xs text-amber-500">
+              {onboardingStrip.active.view.stuckReason}
+            </p>
+          )}
           {/* TASK_128 §15 — the COMING ones, in a bounded scroller. The owner:
               "make a scroll in case the public pending devices are a lot so they
               don't fill up the screen." So the strip is always a few lines tall,
@@ -1120,6 +1179,38 @@ export function DeviceList() {
                   .join(", ")})`}
           </span>{" "}
           — still on your public agent and fully usable. Open the device to try again.
+        </p>
+      )}
+
+      {/* TASK_128 (owner decision 2026-09-27) — "much longer than usual" is never
+          silent either, but it is explicitly NOT a failure: the row stays live,
+          keeps retrying every 5 minutes, and the device is left fully usable.
+          Amber, named, with the elapsed time and the reason the owner asked for.
+          With SEVERAL stuck devices we deliberately do not quote one device's
+          `stuckReason` for all of them — that would attribute the wrong cause. */}
+      {onboardingStuck.length > 0 && (
+        <p className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-500">
+          {onboardingStuck.length === 1 ? (
+            <>
+              <span className="font-medium">
+                {onboardingStuck[0].device.name} is taking much longer than usual (
+                {formatOnboardingElapsed(onboardingStuck[0].view.elapsedMs)})
+              </span>{" "}
+              — {onboardingStuck[0].view.stuckReason}. Nothing is lost and the device stays
+              fully usable.
+            </>
+          ) : (
+            <>
+              <span className="font-medium">
+                {onboardingStuck.length} devices are taking much longer than usual —{" "}
+                {onboardingStuck
+                  .map((s) => `${s.device.name} ${formatOnboardingElapsed(s.view.elapsedMs)}`)
+                  .join(", ")}
+              </span>{" "}
+              — they keep retrying every 5 minutes. Nothing is lost and the devices stay fully
+              usable.
+            </>
+          )}
         </p>
       )}
 
