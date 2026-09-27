@@ -135,6 +135,7 @@ export default async function SettingsPage() {
               telegramChatEnabled: user.telegramChatEnabled,
               notifyDeviceOffline: user.notifyDeviceOffline,
               notifyDeviceOnline: user.notifyDeviceOnline,
+              agentWidgetEnabled: user.agentWidgetEnabled,
               digestEnabled: user.digestEnabled,
               deviceTelemetryEnabled: user.deviceTelemetryEnabled,
               agentActionsEnabled: user.agentActionsEnabled,

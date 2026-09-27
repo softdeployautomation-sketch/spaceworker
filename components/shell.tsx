@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { AgentWidget } from "@/components/agent-widget";
 import { DesktopClock } from "@/components/clock";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { DesktopBackground } from "@/components/desktop-background";
@@ -61,6 +62,11 @@ export function Shell({ children, buildTarget }: ShellProps) {
 
       {/* Application dock (desktop nav). */}
       <Dock buildTarget={buildTarget} />
+
+      {/* 2026-09-27 — the floating agent widget. Web-hosted only: the EXE
+          runtime (buildTarget set) has no DATABASE_URL, and /api/agent is a
+          real Prisma-backed route — it would just fail there. */}
+      {!buildTarget && <AgentWidget />}
     </div>
   );
 }

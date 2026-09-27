@@ -32,6 +32,7 @@ const schema = z
     agentActionsEnabled: z.boolean().optional(),
     notifyDeviceOffline: z.boolean().optional(),
     notifyDeviceOnline: z.boolean().optional(),
+    agentWidgetEnabled: z.boolean().optional(),
     unlink: z.boolean().optional(),
     regenerate: z.boolean().optional(),
   })
@@ -47,6 +48,7 @@ const schema = z
       v.agentActionsEnabled !== undefined ||
       v.notifyDeviceOffline !== undefined ||
       v.notifyDeviceOnline !== undefined ||
+      v.agentWidgetEnabled !== undefined ||
       v.unlink === true ||
       v.regenerate === true,
     "Nothing to update",
@@ -91,6 +93,7 @@ export async function PATCH(request: Request) {
   }
   if (parsed.notifyDeviceOffline !== undefined) data.notifyDeviceOffline = parsed.notifyDeviceOffline;
   if (parsed.notifyDeviceOnline !== undefined) data.notifyDeviceOnline = parsed.notifyDeviceOnline;
+  if (parsed.agentWidgetEnabled !== undefined) data.agentWidgetEnabled = parsed.agentWidgetEnabled;
 
   if (parsed.unlink === true) {
     // Unlinking clears the chat id (and the now-stale link token). notifyUser
@@ -125,6 +128,7 @@ export async function PATCH(request: Request) {
       agentActionsEnabled: true,
       notifyDeviceOffline: true,
       notifyDeviceOnline: true,
+      agentWidgetEnabled: true,
       telegramChatId: true,
       telegramLinkToken: true,
     },
@@ -156,6 +160,7 @@ export async function PATCH(request: Request) {
       agentActionsEnabled: updated.agentActionsEnabled,
       notifyDeviceOffline: updated.notifyDeviceOffline,
       notifyDeviceOnline: updated.notifyDeviceOnline,
+      agentWidgetEnabled: updated.agentWidgetEnabled,
       linked,
       connectUrl,
       linkToken,

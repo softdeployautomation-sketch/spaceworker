@@ -679,7 +679,17 @@ export async function listThreadMessages(userId: string): Promise<AgentThreadMes
   }));
 }
 
-export async function runAgentTurn(opts: { userId: string; message: string }): Promise<AgentTurnResult> {
+export async function runAgentTurn(opts: {
+  userId: string;
+  message: string;
+  // 2026-09-27 — the floating agent widget's page-awareness. A short,
+  // client-supplied string (e.g. "Viewing: Devices — 3 online, 1 offline"),
+  // never raw page HTML/DOM — injected into just THIS call's message array
+  // below, never persisted to AgentMessage/thread history, so it can't bloat
+  // storage or leak into a later turn's context by accident. Keeps cost
+  // bounded: one short string per turn, not a page dump.
+  pageContext?: string;
+}): Promise<AgentTurnResult> {
   const thread = await getOrCreateThread(opts.userId);
 
   await prisma.agentMessage.create({
@@ -728,7 +738,13 @@ export async function runAgentTurn(opts: { userId: string; message: string }): P
   }
 
   const result = await channelryAiChat({
-    messages: [{ role: "system", content: AGENT_SYSTEM_PROMPT }, ...dialogue],
+    messages: [
+      { role: "system", content: AGENT_SYSTEM_PROMPT },
+      ...(opts.pageContext
+        ? [{ role: "system" as const, content: `Current page context: ${opts.pageContext}` }]
+        : []),
+      ...dialogue,
+    ],
     tools: AGENT_TOOLS,
     max_tokens: 900,
     external_user_id: opts.userId,

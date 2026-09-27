@@ -87,6 +87,11 @@ model User {
   // default, same reasoning as Vantra's.
   notifyDeviceOffline      Boolean                @default(true)
   notifyDeviceOnline       Boolean                @default(true)
+  // 2026-09-27 — the floating agent widget's own mute switch (distinct from
+  // agentActionsEnabled, which only gates PROPOSALS). Off hides the widget
+  // entirely; on by default since it's a pure UI convenience, not a new
+  // capability with any side effect of its own.
+  agentWidgetEnabled       Boolean                @default(true)
   createdAt                DateTime               @default(now())
   verifications            VerificationCode[]
   rateLimits               RateLimitEvent[]

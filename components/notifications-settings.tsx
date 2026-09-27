@@ -14,6 +14,7 @@ interface NotificationPrefs {
   telegramChatEnabled: boolean;
   notifyDeviceOffline: boolean;
   notifyDeviceOnline: boolean;
+  agentWidgetEnabled: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
   agentActionsEnabled: boolean;
@@ -182,6 +183,13 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.agentActionsEnabled}
         disabled={busy !== null}
         onToggle={(v) => void patch({ agentActionsEnabled: v }, "Agent actions preference saved")}
+      />
+      <Toggle
+        label="Floating agent icon"
+        description="Show the always-available agent icon in the corner of every dashboard page. Off hides it completely — turn it back on here."
+        checked={prefs.agentWidgetEnabled}
+        disabled={busy !== null}
+        onToggle={(v) => void patch({ agentWidgetEnabled: v }, "Agent widget preference saved")}
       />
       <div className="rounded-lg border border-border bg-bg-elevated p-3 text-sm">
         <div className="flex items-center justify-between gap-3">

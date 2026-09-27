@@ -22,6 +22,12 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
     select: { id: true, kind: true, payload: true, proposal: true, expiresAt: true },
   });
+  // 2026-09-27 — the floating widget's own mute switch (additive field; the
+  // automations page's existing consumer of this route just ignores it).
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { agentWidgetEnabled: true },
+  });
 
   return NextResponse.json({
     messages,
@@ -32,6 +38,7 @@ export async function GET() {
       proposal: p.proposal,
       expiresAt: p.expiresAt.toISOString(),
     })),
+    widgetEnabled: user?.agentWidgetEnabled ?? true,
   });
 }
 
@@ -39,7 +46,7 @@ export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  let body: { message?: unknown };
+  let body: { message?: unknown; pageContext?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -49,9 +56,13 @@ export async function POST(req: Request) {
   if (!message) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
+  // Widget page-awareness — a short client-supplied label, capped so a caller
+  // can never smuggle a large payload into every turn's AI call.
+  const pageContext =
+    typeof body?.pageContext === "string" ? body.pageContext.trim().slice(0, 300) : undefined;
 
   try {
-    const result = await runAgentTurn({ userId: session.userId, message });
+    const result = await runAgentTurn({ userId: session.userId, message, pageContext });
     const messages = await listThreadMessages(session.userId);
     return NextResponse.json({ ...result, messages });
   } catch (err) {
