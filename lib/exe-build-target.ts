@@ -20,3 +20,16 @@ export function exeBuildTarget(): ExeBuildTarget {
   const raw = process.env.BUILD_TARGET ?? "";
   return isExeBuildTarget(raw) ? raw : "extractor";
 }
+
+// Self-hosted, standalone build (2026-09-27 — the self-hosted product line).
+// Orthogonal to BUILD_TARGET (which product variant is built): a self-hosted
+// deployment can in principle be any variant. Gates everything that only
+// makes sense for OUR shared hosting — the storefront/payments/wallets/
+// pooled-AI-usage/our-own-license-issuance admin tabs and their API routes,
+// the hosted-EXE trial/account-linking flow (lib/exe-runtime.ts), and the
+// cross-origin admin-console iframe embed (next.config.ts's CSP). The web app
+// never sets this (same discipline as BUILD_TARGET/SPACEWORKER_LOCAL_EXE) —
+// only a self-hosted build's own .env ever does.
+export function isSelfHosted(): boolean {
+  return process.env.SELF_HOSTED === "true";
+}

@@ -1,4 +1,5 @@
 import "server-only";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // Fixed 2026-09-14, before this branch merged to main: /api/exe-license/status
 // and /api/exe-license/activate are part of THIS SAME Next.js codebase — the
@@ -38,7 +39,19 @@ export const HOSTED_APP_URL = "https://spaceworker.top";
 
 /** Resolves an account path ("/signup", "/login") to the hosted app's real URL
  * when rendering inside the local EXE runtime; unchanged (relative) everywhere
- * else, including the real deployed web app. */
+ * else, including the real deployed web app.
+ *
+ * A self-hosted build (Phase 1, 2026-09-27) is explicitly excluded from this
+ * redirect even while running as a local EXE runtime: there is no "our hosted
+ * account" for a self-hosted customer to sign into or buy a license from —
+ * that customer's own instance IS the whole product. Falling through to the
+ * plain `path` here means callers (LicenseGate, ExeLicensePanel, the
+ * marketing/pricing pages if a self-hosted build somehow renders them) get an
+ * ordinary local link instead of a link to spaceworker.top. NOTE: this does
+ * NOT yet change what those links say ("Sign in" / "Buy a license" copy) — see
+ * TASK_129 §2 for why that's deliberately left to the Phase 5 license-wizard
+ * work instead of stubbed here. */
 export function accountHref(path: string): string {
+  if (isSelfHosted()) return path;
   return isLocalExeRuntime() ? `${HOSTED_APP_URL}${path}` : path;
 }

@@ -39,7 +39,17 @@ const nextConfig: NextConfig = {
           {
             key: "Content-Security-Policy",
             value:
-              "frame-ancestors 'self' https://vantra.spaceworker.top; " +
+              // Self-hosted build-time flag (2026-09-27, TASK_129 Phase 1): a
+              // self-hosted deployment has no vantra.spaceworker.top admin
+              // console to embed this app inside — that cross-origin allow
+              // only exists for OUR OWN shared-hosting ops console. Default
+              // to 'self' only there (same pattern as MESH_FRAME_ORIGINS
+              // below); an explicit FRAME_ANCESTORS build-time env still wins
+              // if a self-hosted deployment somehow needs its own admin-embed
+              // origin later. Read at BUILD time, same caveat as
+              // MESH_FRAME_ORIGINS's own comment below: this is next.config.ts,
+              // resolved once by `next build`, never per-request.
+              `frame-ancestors ${process.env.FRAME_ANCESTORS ?? (process.env.SELF_HOSTED === "true" ? "'self'" : "'self' https://vantra.spaceworker.top")}; ` +
               // Task 95 — Devices v2 remote control: MeshCentral's desktop /
               // terminal / file panes load in iframes on the device console.
               // 2026-09-25 (live incident): this reads process.env at
