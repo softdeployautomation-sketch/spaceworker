@@ -6,6 +6,7 @@ import {
   channelryAiChat,
   channelryAiConfigured,
 } from "@/lib/channelry-ai";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // /api/admin/ai — SpaceWorker's admin-side mirror of the Channelry connection
 // check. GET reports whether the key is configured (a boolean, never the raw
@@ -14,12 +15,14 @@ import {
 // live-fire test used: cost_hundredths_cent >= 1).
 
 export async function GET() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   return NextResponse.json({ configured: channelryAiConfigured() });
 }
 
 export async function POST() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 

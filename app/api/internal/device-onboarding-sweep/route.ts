@@ -64,6 +64,13 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // TASK_129 — see device-status-sweep/route.ts: a self-hosted deployment with
+  // no configured internal device-check-in service must no-op cleanly (200) on
+  // each timer fire, not error. Inert on a hosted deploy (both vars always set).
+  if (!process.env.VANTRA_INTERNAL_URL || !process.env.VANTRA_INTERNAL_TOKEN) {
+    return NextResponse.json({ ok: true, skipped: "device management not configured" });
+  }
+
   // AUTOMATION, not a dashboard side-effect (owner rule: "we want all
   // automated"). `DeviceOnboarding` rows are written ONLY by `syncDevices()`,
   // which has no timer of its own (lib/clone.ts:506 says exactly that) — it runs

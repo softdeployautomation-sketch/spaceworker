@@ -2,6 +2,7 @@ import { getAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
 import { redirect } from "next/navigation";
 import { trialDayKey } from "@/lib/trial";
+import { isSelfHosted } from "@/lib/exe-build-target";
 import AdminPanel from "./admin-panel";
 
 export default async function AdminPage() {
@@ -31,6 +32,7 @@ export default async function AdminPage() {
 
   return (
     <AdminPanel
+      selfHosted={isSelfHosted()}
       initialUsers={users.map((u) => ({
         ...u,
         createdAt: u.createdAt.toISOString(),

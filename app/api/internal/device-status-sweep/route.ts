@@ -22,6 +22,15 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // TASK_129 — a self-hosted deployment that hasn't set up device management
+  // (the future SpaceWorker RMM Engine) has no internal device-check-in service
+  // to talk to. No-op cleanly (200) instead of erroring every 5-minute timer
+  // fire; a hosted deploy always has both vars set, so this is inert there and
+  // the sweep behaves exactly as before.
+  if (!process.env.VANTRA_INTERNAL_URL || !process.env.VANTRA_INTERNAL_TOKEN) {
+    return NextResponse.json({ ok: true, skipped: "device management not configured" });
+  }
+
   // Only devices whose owner has the master telemetry toggle on AND wants at
   // least one direction of alert — everyone else is skipped before any work.
   const devices = await prisma.device.findMany({

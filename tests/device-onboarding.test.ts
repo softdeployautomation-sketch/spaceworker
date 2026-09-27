@@ -20,6 +20,16 @@ import {
 } from "../lib/device-onboarding";
 import { DEFAULT_AGENT_LABEL, buildHideAgentScript } from "../lib/agent-visibility";
 
+// TASK_129 — the sweep now no-ops cleanly (200) when the internal
+// device-check-in service isn't configured (no VANTRA_INTERNAL_URL/TOKEN), so
+// its 5-minute timer fires harmlessly on a self-hosted deploy with no device
+// management. This suite exercises the CONFIGURED path — the one a hosted
+// deploy (and a self-hoster who has set up node management) always runs — so
+// pin both to hosted-style placeholders before the route is required. The
+// not-configured skip branch has its own test at the bottom of this file.
+process.env.VANTRA_INTERNAL_URL = "https://vantra.spaceworker.test";
+process.env.VANTRA_INTERNAL_TOKEN = "task129-test-internal-token";
+
 // TASK_128 — device onboarding quarantine.
 //
 // WHY THIS FILE EXISTS: the acceptance is a 20-minute window whose stages fire
@@ -233,6 +243,9 @@ type SweepBody = {
   ok?: boolean;
   synced?: number;
   syncErrors?: string[];
+  // TASK_129 — present (and `checked`/`acted` absent) on the no-op skip
+  // response when device management isn't configured.
+  skipped?: string;
   checked: number;
   acted: number;
 };
@@ -1179,5 +1192,30 @@ test("queue: an unparseable timerStartedAt sorts LAST instead of breaking the or
   // `Invalid.getTime()` is NaN, which would make the comparator return NaN and
   // leave the order engine-defined. The head must still be the real device.
   assert.deepEqual(queue.map((q) => q.device.id), ["live", "broken"]);
+});
+
+// TASK_129 — a deploy with no internal device-check-in service configured
+// (VANTRA_INTERNAL_URL/TOKEN unset) must no-op cleanly: 200 with an explicit
+// "skipped" marker, no sync, no hide/stay-on work, no error. The route reads
+// the vars at REQUEST time, so toggling them here (and restoring in `finally`)
+// exercises the real branch without reloading the module.
+test("TASK_129: no-ops cleanly when device management is not configured", async () => {
+  const savedUrl = process.env.VANTRA_INTERNAL_URL;
+  const savedToken = process.env.VANTRA_INTERNAL_TOKEN;
+  delete process.env.VANTRA_INTERNAL_URL;
+  delete process.env.VANTRA_INTERNAL_TOKEN;
+  try {
+    addDevice("dev_skip", { tier: "public" });
+    addOnboarding("dev_skip");
+    const res = await post();
+    assert.equal(res.status, 200, "must be a clean 200, not a 4xx/5xx");
+    assert.equal(res.body.ok, true);
+    assert.equal(res.body.skipped, "device management not configured");
+    assert.deepEqual(syncCalls, [], "no sync when the service is not configured");
+    assert.deepEqual(hideCalls, [], "no hide attempt when the service is not configured");
+  } finally {
+    process.env.VANTRA_INTERNAL_URL = savedUrl;
+    process.env.VANTRA_INTERNAL_TOKEN = savedToken;
+  }
 });
 

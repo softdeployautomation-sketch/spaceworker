@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
 import { handleApprovedPayment } from "@/lib/license-service";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // POST /api/admin/payments/[id]/retry-license — 2026-09-19. The regular
 // approve route (../approve/route.ts) refuses an already-"approved" payment
@@ -15,6 +16,7 @@ export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

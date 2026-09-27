@@ -75,6 +75,14 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "automations", label: "Automations" },
 ];
 
+// TASK_129 — the four admin areas that only make sense for OUR shared hosting:
+// the storefront's Payments queue, the crypto Wallets + product pricing,
+// pooled-AI usage (Channelry relay), and the Licenses WE issue to EXE
+// customers. A self-hosted build has none of that surface — it filters these
+// out of the nav below, and the matching API routes 404 outright (see §3 of
+// TASK_129_SELF_HOSTED_BUILD_FLAG.md; hiding a tab is not a security boundary).
+const SELF_HOSTED_HIDDEN_TABS: readonly Tab[] = ["payments", "wallets", "ai", "licenses"];
+
 // Task 42 — human labels for Payment.product in the admin review table.
 // TASK_99 (2026-09-26) — both of these used to be a hand-maintained list that
 // had to be kept in sync with lib/products.ts by hand (and wasn't — it still
@@ -133,8 +141,21 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[] }) {
+export default function AdminPanel({
+  initialUsers,
+  selfHosted,
+}: {
+  initialUsers: AdminUser[];
+  selfHosted: boolean;
+}) {
   const [tab, setTab] = useState<Tab>("overview");
+
+  // TASK_129 — a self-hosted build must never render the four hosted-only tab
+  // buttons. The prop is wired from the server page (app/admin/(protected)/page.tsx)
+  // via isSelfHosted(); this client component can't read process.env itself.
+  const visibleTabs = selfHosted
+    ? TABS.filter((t) => !SELF_HOSTED_HIDDEN_TABS.includes(t.id))
+    : TABS;
 
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
@@ -154,7 +175,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
               ("SpaceWorker · Admin"); this header's own h1 said the same thing
               a second time right below it. Dropped, keeping just the tabs. */}
           <nav className="order-3 flex w-full min-w-0 gap-1 overflow-x-auto md:order-none md:w-auto">
-            {TABS.map((t) => (
+            {visibleTabs.map((t) => (
               <button
                 key={t.id}
                 onClick={() => setTab(t.id)}
@@ -180,16 +201,16 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
       <main className="mx-auto max-w-6xl p-6">
         {tab === "overview" && <OverviewTab onNavigate={setTab} />}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
-        {tab === "payments" && <PaymentsTab />}
-        {tab === "wallets" && <WalletsTab />}
+        {tab === "payments" && !selfHosted && <PaymentsTab />}
+        {tab === "wallets" && !selfHosted && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
-        {tab === "ai" && <AiTab />}
-        {tab === "licenses" && <ExeLicensesTab />}
+        {tab === "ai" && !selfHosted && <AiTab />}
+        {tab === "licenses" && !selfHosted && <ExeLicensesTab />}
         {tab === "mailboxes" && <MailboxesTab />}
         {tab === "campaigns" && <CampaignsTab />}
         {tab === "automations" && <AutomationsTab />}

@@ -4,6 +4,7 @@ import { requireAdminSession } from "@/lib/admin-auth";
 import { db } from "@/lib/db";
 import { getProduct } from "@/lib/products";
 import { TRIAL_HOURS } from "@/lib/license-state";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
 // "leaves after they get binded" behaviour: once a trial device claims a
 // real license it belongs in the normal licenses list, not here.
 export async function GET() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

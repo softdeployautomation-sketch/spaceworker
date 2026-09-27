@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // GET /api/admin/payments — flagged + pending payments with user email and last
 // check, PLUS (2026-09-19) any "approved" EXE-product payment with no matching
@@ -10,6 +11,7 @@ import { getAdminSession } from "@/lib/admin-auth";
 // "approved" with no license BEFORE that fix existed, since this status
 // combination would otherwise never surface anywhere in admin.
 export async function GET() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

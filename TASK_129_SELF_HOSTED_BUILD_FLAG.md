@@ -1,8 +1,30 @@
 # Task 129 — `SELF_HOSTED` build-time flag (Phase 1 of the self-hosted SpaceWorker OS project)
 
-**Status: Phase 1 split in progress. §1 (foundation) is BUILT and verified on branch `self-hosted-build`. §2-§5 below are the open work — pick up from there.**
+**Status: §2–§5 BUILT and verified on branch `self-hosted-build` (2026-09-27). §1 (foundation) was already built. See the "Built 2026-09-27" section just below for exactly what shipped, the verification evidence, and the one environment caveat a reviewer must know. Nothing here is merged to `main`.**
 
 **Full project plan**: `/Users/mikeolab/.claude/plans/transient-moseying-tome.md` (SpaceWorker OS self-hosted/standalone build — read the "Context" and "Phase 1" sections there for the big picture; this doc is just Phase 1's execution spec). This project is **not urgent** — see the branching note below before doing anything.
+
+## Built 2026-09-27 — §2–§5 IMPLEMENTED (Claude, branch `self-hosted-build`)
+
+**What shipped**
+- **§2** `app/admin/(protected)/admin-panel.tsx` — new `selfHosted: boolean` prop; `SELF_HOSTED_HIDDEN_TABS = ["payments","wallets","ai","licenses"]`; `visibleTabs` filters the nav; the four `{tab === "..." && <XTab />}` branches are also guarded with `!selfHosted` (defensive — the spec warned a future URL-synced/hash tab could otherwise land there). `app/admin/(protected)/page.tsx` passes `selfHosted={isSelfHosted()}`.
+- **§3** nine admin routes 404 *before* any admin-session check (12 handlers): `payments` GET; `payments/[id]/{approve,reject,retry-license}` POST; `wallets` GET+PUT; `ai` GET+POST; `ai-usage` GET+PATCH; `exe-licenses` POST+GET; `exe-trials` GET.
+- **§4** `internal/payment-verify` POST 404s before the bearer check; `device-status-sweep` + `device-onboarding-sweep` no-op `200 {ok:true,skipped:"device management not configured"}` when `VANTRA_INTERNAL_URL`/`VANTRA_INTERNAL_TOKEN` is unset — **after** the bearer check — and are unchanged when both are set. These two deliberately do **not** import `isSelfHosted`, so a self-hoster who HAS set up device management still gets working sweeps.
+- New tests: `tests/device-status-sweep.test.ts` (2), a skip-branch test appended to `tests/device-onboarding.test.ts`, and `tests/admin-panel-self-hosted.test.ts` (2), which SSR-renders the **real** `AdminPanel`.
+- `tests/device-onboarding.test.ts` now pins both Vantra env vars (that suite exercises the configured path). Without that, the new §4 guard correctly skipped and 21 pre-existing tests failed — a real regression the suite caught.
+
+**Verification (all genuinely executed)**
+- `npx tsc --noEmit` → exit 0.
+- `npx eslint` over the 14 changed source files + 3 test files → 39 errors, **all pre-existing** in `admin-panel.tsx` (`react-hooks/set-state-in-effect` + one `no-html-link-for-pages`); a clean-checkout baseline of that same file is also 39. Zero new.
+- `npx tsx --test tests/*.test.ts` → **227 pass / 0 fail** (222 before + 5 new).
+- Two real builds with real captured exit codes (redirect to a file, not a pipe): `CI=true NODE_ENV=production npm run build` → `HOSTED_EXIT:0`; `SELF_HOSTED=true CI=true NODE_ENV=production npm run build` → `SELF_EXIT:0`.
+- Live `next start` of the SELF_HOSTED build (started with `SELF_HOSTED=true`): every gated route → **404** (wallets GET/PUT, payments GET, ai GET/POST, ai-usage GET, exe-licenses GET, exe-trials GET, internal payment-verify POST even with a valid bearer); control `/api/admin/services` → **403** (proves the 404s are not blanket); both sweeps with a valid bearer and both Vantra vars unset → **200** `{"ok":true,"skipped":"device management not configured"}`; a sweep with no bearer → **401** (bearer still comes first).
+- §5.4(b) `/admin` render: SSR render of the real component — self-hosted renders exactly the 11 kept tab buttons and none of Payments/Wallets/AI/Licenses; hosted renders all 15.
+
+**The one caveat a reviewer must know**
+The live `/admin` *page* could not be curled against the local DB: the local `spaceworker` Postgres (`127.0.0.1:5432`) has an inconsistent schema — `prisma migrate deploy` fails at `20260921000000_device_tools_v2` with `relation "Device" does not exist`, and a direct request throws `column User.premiumExpiresAt does not exist` (P2022). That is a pre-existing local-environment problem, unrelated to this change. `tests/admin-panel-self-hosted.test.ts` therefore proves the same end result at the component level — the prop is the component's whole contract, and production wires it from `isSelfHosted()` (itself exercised by the clean `tsc` and the successful SELF_HOSTED build). A reviewer with a healthy DB can repeat the page-level check by starting with `SELF_HOSTED=true` and logging in with `ADMIN_TOKEN`.
+
+**Deliberately not done** (unchanged from the spec below): license-activation copy (Phase 5), the EXE hosted trial-ping, and anything RMM/WSL2/license-scheme.
 
 ## Branch / workflow (read first, this is not optional)
 

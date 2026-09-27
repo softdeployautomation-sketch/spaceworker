@@ -8,6 +8,7 @@ import {
   channelryAiConfigured,
 } from "@/lib/channelry-ai";
 import { startOfTodayUTC } from "@/lib/agent";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // /api/admin/ai-usage — Task 40 admin visibility + real-time per-user AI cap
 // adjustment.
@@ -25,6 +26,7 @@ import { startOfTodayUTC } from "@/lib/agent";
 const POOL_CAP_HUNDREDTHS_CENT = 500000; // Channelry's $50/day pooled client cap
 
 export async function GET() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
@@ -96,6 +98,7 @@ export async function GET() {
 }
 
 export async function PATCH(req: Request) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 

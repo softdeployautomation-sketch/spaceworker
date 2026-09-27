@@ -3,12 +3,14 @@ import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
 // POST only. Gated by bearer token; run via deploy/payment-verify.service timer.
 // Re-checks all pending payments and approves those now confirmed on-chain.
 export async function POST(req: Request) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

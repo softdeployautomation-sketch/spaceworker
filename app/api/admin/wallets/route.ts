@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
 import { ALL_PRODUCTS, type AdminSettingPriceFields } from "@/lib/products";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 const PRICE_FIELDS = ALL_PRODUCTS.map((p) => p.priceField);
 
@@ -16,6 +17,7 @@ function priceFieldsOf(settings: Record<string, unknown>): AdminSettingPriceFiel
 
 // GET /api/admin/wallets — read the AdminSetting singleton (created with defaults if missing).
 export async function GET() {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -37,6 +39,7 @@ export async function GET() {
 
 // PUT /api/admin/wallets — body: wallet addresses + any/all product prices.
 export async function PUT(req: Request) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await getAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });

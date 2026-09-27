@@ -10,6 +10,7 @@ import { generateLicenseClaimToken, hashLicenseClaimToken, LICENSE_CLAIM_TTL_MS 
 import { exeLicenseIssuedEmailHtml, exeLicenseWelcomeEmailHtml, sendEmail } from "@/lib/email";
 import { env } from "@/lib/env";
 import { notifyAdmin } from "@/lib/telegram";
+import { isSelfHosted } from "@/lib/exe-build-target";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
 //   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
@@ -46,6 +47,7 @@ import { notifyAdmin } from "@/lib/telegram";
 // parent with the same shape.
 
 export async function POST(req: Request) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -468,6 +470,7 @@ async function issueLicense(
 // the same table every action already writes to. Email still narrows to one
 // buyer's licenses, unchanged, for the claim/transfer/unbind actions below.
 export async function GET(req: Request) {
+  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
   if (!isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
