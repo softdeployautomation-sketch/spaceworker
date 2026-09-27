@@ -1,7 +1,21 @@
 # Task 127 — Device screenshot monitoring → AI summary → (later) agent control
 
-**Status: idea captured 2026-09-26, refined 2026-09-27. NOT started. No deploy, no schema, no code yet.**
+**Status: idea captured 2026-09-26, refined 2026-09-27. Phase 1 + Phase 2 are READY TO ASSIGN TO CLINE once the click-automation investigation below (Claude, live VM test) confirms the exact click sequence — do not start Phase 1 build before that lands. No deploy, no schema, no code yet.**
 **Context: user wants to test agent-driven device monitoring via Telegram; this was the example use case. Refined 2026-09-27: rather than a new MeshCentral API integration, drive the EXISTING console UI's own manual Connect button via browser automation. Also, explicitly, a later phase: not just observing the device but eventually CONTROLLING it — "help make purchases and so on" — see the safety section below before ever touching that phase.**
+
+## Live investigation in progress (2026-09-27, Claude)
+The owner confirmed today that the console's Connect button does NOT fully automate the MeshCentral session:
+after our own Connect click, MeshCentral's OWN in-iframe UI still requires a SEPARATE manual click to actually
+take "Control" (view rights vs. control rights are apparently not the same as loading `mesh.control` — this
+needs live confirmation, since `lib/trmm.ts`'s `MeshCentralUrls.control` is nominally already the control-mode
+URL, not the view-only one). Similarly, our own Disconnect only navigates the user away — it does NOT click
+MeshCentral's own in-iframe Disconnect, potentially leaving a mesh-side session dangling. Both of these must be
+understood and, if at all possible, automated (find the actual DOM element/selector for MeshCentral's in-iframe
+Control and Disconnect controls, and confirm whether `mesh.spaceworker.top` is same-enough-origin for
+script-driven clicks into the iframe, or whether this requires a different approach, e.g. a MeshCentral URL
+parameter that skips the manual Control click entirely) BEFORE Phase 1's build starts — this is the actual
+mechanism Phase 1 depends on. If it turns out NOT automatable, the whole "drive our own UI" approach in Phase 1
+needs to be reconsidered.
 
 ## Read first (mandatory, once picked up)
 - `lib/vantra-link.ts`, `lib/device-tools.ts` — how SpaceWorker already talks to Vantra's device layer (the `VANTRA_INTERNAL_TOKEN` cross-app auth pattern, mesh URL rewriting for `mesh.spaceworker.top`).
@@ -37,6 +51,7 @@ The user's stated end goal goes beyond watching: "the next step will be to contr
 Non-negotiable safety requirements, decided now so they can't get lost later:
 - **Every control action (mouse/keyboard/form input on the real device) is an `AgentPendingAction`, no exceptions.** The existing approval gate (CROSS-TRACK RULE 1) is the ONLY path to a real device mutation anywhere in this codebase — control-phase actions do not get a bypass just because they originate from an automated monitoring loop instead of a chat message.
 - **A purchase (anything spending real money) needs its own, more deliberate confirmation** than a generic pending-action tap — at minimum, the proposal must show exactly what will be bought, for how much, and on which site/account, before a human taps approve. Silent/implicit approval (e.g. "auto-approve if under $X") is explicitly OUT OF SCOPE unless the user asks for that tradeoff explicitly and separately, in writing, at build time.
+- **Confirmed 2026-09-27 (owner)**: the flow is propose → human says proceed → AND every individual checkout step is independently gated too, not just the initial "go do this" approval. Two-stage gating, not one: (1) approve the overall task/intent, (2) approve the actual checkout/payment submission as its own, separate tap, showing the real amount/destination at that moment (not just what was proposed earlier, in case the actual checkout total differs).
 - **Research question, not yet answered**: "we already have apps doing that, we can fork one" — identify which existing open-source computer-use/browser-use agent (e.g. browser-use, Skyvern, self-operating-computer, or similar) is the best fit to fork vs. build fresh, but do this as its own research pass at pickup time, not assumed now.
 - Consider whether Phase 3 needs a distinct per-device, per-capability opt-in (separate from Phase 1's monitoring opt-in) — controlling a device is a materially different consent boundary than screenshotting it.
 
