@@ -84,3 +84,17 @@ export async function usableTemplateWhere(
       }
     : { id: campaignId, userId };
 }
+
+/**
+ * Load a template campaign (tier a: the user's own; tier b: a system-owned
+ * ready-made one) with just its variants' subject/bodyHtml — everything a
+ * caller needs to CLONE it into a fresh campaign via createCampaign(). Shared
+ * by the automation run-time clone (lib/automation-run.ts) and the plain
+ * "New campaign" template picker (POST /api/campaigns).
+ */
+export async function loadTemplateCampaign(campaignId: string, userId: string) {
+  return prisma.emailCampaign.findFirst({
+    where: await usableTemplateWhere(campaignId, userId),
+    include: { variants: { orderBy: { createdAt: "asc" }, select: { subject: true, bodyHtml: true } } },
+  });
+}

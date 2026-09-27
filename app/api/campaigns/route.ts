@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
 import { leadToRecipient, insertManualRecipients } from "@/lib/campaign-recipients";
 import { createCampaign } from "@/lib/campaign-create";
+import { loadTemplateCampaign } from "@/lib/campaign-templates";
 
 interface VariantInput {
   subject?: string;
@@ -63,6 +64,10 @@ export async function POST(req: Request) {
     // CTA link, not an unrelated image src). Omitted = cloak everything detected
     // (legacy behavior); an explicit array — including empty — restricts to it.
     cloakedUrls?: unknown;
+    // Clone this template campaign's subject/body variants instead of the raw
+    // subjects/bodies/variants above — the "New campaign" modal's template
+    // picker (mirrors the automation builder's campaignTemplateId field).
+    campaignTemplateId?: unknown;
   };
 
   try {
@@ -75,7 +80,7 @@ export async function POST(req: Request) {
   const mailboxIds = Array.isArray(body.mailboxIds)
     ? body.mailboxIds.map((m) => String(m).trim()).filter((m) => m.length > 0)
     : [];
-  const variants = Array.isArray(body.variants)
+  let variants = Array.isArray(body.variants)
     ? body.variants
         .map((v) => ({ subject: (v.subject ?? "").trim(), bodyHtml: v.bodyHtml ?? "" }))
         .filter((v) => v.subject.length > 0 && v.bodyHtml.trim().length > 0)
@@ -88,7 +93,9 @@ export async function POST(req: Request) {
   let bodies = rawBodies.map((b) => String(b ?? "").trim()).filter((b) => b.length > 0);
   subjects = [...new Set(subjects)];
   bodies = [...new Set(bodies)];
-  const decoupled = subjects.length > 0 || bodies.length > 0;
+  let decoupled = subjects.length > 0 || bodies.length > 0;
+  const campaignTemplateId =
+    typeof body.campaignTemplateId === "string" ? body.campaignTemplateId.trim() : "";
   const searchJobId = body.searchJobId ? String(body.searchJobId).trim() : null;
   // Task 26, Piece 4 — third recipient source: an explicit list of validated Lead
   // ids (created atomically with the campaign). Dedup the raw list up front.
@@ -133,6 +140,31 @@ export async function POST(req: Request) {
       { status: 400 }
     );
   }
+
+  // Template picker (the campaigns page's "Use a template" select, mirroring
+  // the automation builder's campaignTemplateId field) — clones the picked
+  // campaign's subject/body variants in place of any raw subjects/bodies/
+  // variants the client also sent, exactly the way lib/automation-run.ts's
+  // send phase clones a template at run time. usableTemplateWhere() enforces
+  // that the id is either this user's own campaign or, when configured, the
+  // system-owned ready-made-templates account's — never another user's.
+  if (campaignTemplateId) {
+    const template = await loadTemplateCampaign(campaignTemplateId, session.userId);
+    if (!template) {
+      return NextResponse.json({ error: "Template not found" }, { status: 400 });
+    }
+    if (template.variants.length === 0) {
+      return NextResponse.json(
+        { error: "That template has no subject/body content yet" },
+        { status: 400 }
+      );
+    }
+    variants = template.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml }));
+    subjects = [];
+    bodies = [];
+    decoupled = false;
+  }
+
   if (variants.length === 0 && subjects.length === 0 && bodies.length === 0) {
     return NextResponse.json(
       { error: "Provide at least one subject line and body (or independent subject/body lists)" },

@@ -83,6 +83,8 @@ function currentPageContext(pathname: string, pageCtx: ReturnType<typeof useAgen
   return rich || `Viewing: ${pageLabel(pathname)}`;
 }
 
+const isCampaignsTab = (pathname: string) => pathname.startsWith("/dashboard/campaigns");
+
 export function AgentWidget() {
   const pathname = usePathname();
   const pageCtx = useAgentPageContext();
@@ -371,20 +373,32 @@ export function AgentWidget() {
                     disabled={agentActionsEnabled === null || settingsBusy === "agentActions"}
                     onClick={() => void toggleAgentActions(!agentActionsEnabled)}
                     className={cn(
-                      "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                      "relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50",
                       agentActionsEnabled ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
                     )}
                   >
                     <span
                       className={cn(
-                        "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
-                        agentActionsEnabled ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                        "absolute top-1 h-5 w-5 rounded-full bg-white transition-all",
+                        agentActionsEnabled ? "left-[calc(100%-1.5rem)]" : "left-1",
                       )}
                     />
                   </button>
                 </div>
               </div>
 
+              {isCampaignsTab(pathname ?? "") ? (
+                <>
+                  <p className="mt-4 text-xs font-medium uppercase tracking-wide text-fg-muted">
+                    Campaigns
+                  </p>
+                  <p className="mt-1 text-sm text-fg-muted">
+                    Ask the agent to draft a campaign from a template, start a test send, or pause a
+                    running campaign — switch back to chat and just ask.
+                  </p>
+                </>
+              ) : (
+              <>
               <p className="mt-4 text-xs font-medium uppercase tracking-wide text-fg-muted">
                 Screen monitoring
               </p>
@@ -395,7 +409,7 @@ export function AgentWidget() {
               ) : devices.length === 0 ? (
                 <p className="mt-1 text-sm text-fg-muted">No devices yet.</p>
               ) : (
-                <div className="mt-2 flex flex-col gap-2">
+                <div className="mt-2 flex max-h-56 flex-col gap-2 overflow-y-auto pr-1">
                   {devices.map((d) => (
                     <div
                       key={d.id}
@@ -413,14 +427,14 @@ export function AgentWidget() {
                           disabled={d.screenshotOptIn === null || settingsBusy === d.id}
                           onClick={() => void toggleDeviceScreenshots(d.id, !d.screenshotOptIn)}
                           className={cn(
-                            "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                            "relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50",
                             d.screenshotOptIn ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
                           )}
                         >
                           <span
                             className={cn(
-                              "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
-                              d.screenshotOptIn ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                              "absolute top-1 h-5 w-5 rounded-full bg-white transition-all",
+                              d.screenshotOptIn ? "left-[calc(100%-1.5rem)]" : "left-1",
                             )}
                           />
                         </button>
@@ -460,6 +474,8 @@ export function AgentWidget() {
                 Editing a device&apos;s own capture schedule (interval, or capturing right now) stays in
                 that device&apos;s own console — this is just on/off.
               </p>
+              </>
+              )}
               {settingsError && <p className="mt-2 text-xs text-red-500">{settingsError}</p>}
             </div>
           ) : (

@@ -26,6 +26,16 @@ type Mailbox = {
   fromAddresses: string[];
 };
 
+// Ready-made ("system-owned") campaign templates — same shape the Automations
+// builder's picker uses (app/api/automations/templates/route.ts), reused here
+// so a template added in the admin panel is actually pickable when creating a
+// plain campaign, not just when building an automation.
+type CampaignTemplateOption = {
+  id: string;
+  name: string;
+  variants: { id: string }[];
+};
+
 // Task 26, Piece 4 — "Pick from my leads" recipient picker data (GET /api/leads/selectable).
 type PickerJob = {
   id: string;
@@ -96,6 +106,11 @@ export default function CampaignsPage() {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [selectedMailboxIds, setSelectedMailboxIds] = useState<string[]>([]);
   const [subjects, setSubjects] = useState<string[]>([""]);
+  // Ready-made template picker — id of an EmailCampaign (either this user's own
+  // or a system-owned "ready-made" one) to clone subject/body content from.
+  // Empty string = build content by hand (today's default behavior).
+  const [templates, setTemplates] = useState<CampaignTemplateOption[]>([]);
+  const [campaignTemplateId, setCampaignTemplateId] = useState("");
   // Task 29, item 4 — independent body list (was a single shared body). Bodies
   // rotate on their own index, cross-combined with the subject list per recipient.
   const [bodies, setBodies] = useState<string[]>([""]);
@@ -183,9 +198,15 @@ export default function CampaignsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/campaigns");
+      const [res, templRes] = await Promise.all([
+        fetch("/api/campaigns"),
+        fetch("/api/automations/templates"),
+      ]);
       if (!res.ok) throw new Error("Failed to load campaigns");
       setCampaigns((await res.json()) as Campaign[]);
+      // Best-effort — an empty/failed templates fetch just means no ready-made
+      // templates show up in the picker, never blocks the page itself.
+      if (templRes.ok) setTemplates((await templRes.json()) as CampaignTemplateOption[]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load campaigns");
     } finally {
@@ -221,6 +242,7 @@ export default function CampaignsPage() {
 
   function openNew() {
     setName("");
+    setCampaignTemplateId("");
     setSubjects([""]);
     setBodies([""]);
     setShowPreview(false);
@@ -435,10 +457,14 @@ export default function CampaignsPage() {
 
   async function submit() {
     setFormError("");
+    const usingTemplate = campaignTemplateId.trim().length > 0;
     const content = validContent();
     if (!name.trim()) { setFormError("Name is required"); return; }
     if (selectedMailboxIds.length === 0) { setFormError("Select at least one sending mailbox"); return; }
-    if (content.subjects.length === 0 || content.bodies.length === 0) { setFormError("Add at least one subject line and one body"); return; }
+    if (!usingTemplate && (content.subjects.length === 0 || content.bodies.length === 0)) {
+      setFormError("Add at least one subject line and one body, or pick a template");
+      return;
+    }
     // Task 26, Piece 4 — the source-dependent validity checks. The locked
     // ?fromSearchJob mode keeps its old "loaded job, has emails" check.
     if (fromSearchJobId) {
@@ -461,8 +487,9 @@ export default function CampaignsPage() {
         body: JSON.stringify({
           name: name.trim(),
           mailboxIds: selectedMailboxIds,
-          subjects: content.subjects,
-          bodies: content.bodies,
+          ...(usingTemplate
+            ? { campaignTemplateId: campaignTemplateId.trim() }
+            : { subjects: content.subjects, bodies: content.bodies }),
           rotateEvery: Number(rotateEvery) || 1,
           batchSize: Number(batchSize) || 50,
           // Task 35 — optional send pacing bounds (seconds). Empty/missing falls
@@ -657,6 +684,43 @@ export default function CampaignsPage() {
                 </div>
               </div>
 
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Use a template <span className="text-xs font-normal text-zinc-400">— optional; clones its subject/body instead of writing your own below</span>
+                <select
+                  value={campaignTemplateId}
+                  onChange={(e) => setCampaignTemplateId(e.target.value)}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                >
+                  <option value="">Write my own subject/body below</option>
+                  {campaigns.filter((c) => (c.variants?.length ?? 0) > 0).length > 0 && (
+                    <optgroup label="My campaigns">
+                      {campaigns
+                        .filter((c) => (c.variants?.length ?? 0) > 0)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.variants!.length} variant{c.variants!.length === 1 ? "" : "s"})
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
+                  {templates.length > 0 && (
+                    <optgroup label="Ready-made templates">
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.variants.length} variant{t.variants.length === 1 ? "" : "s"})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+              </label>
+
+              {campaignTemplateId ? (
+                <p className="rounded-lg border border-dashed border-zinc-300 px-3 py-2 text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                  This campaign will send the picked template&apos;s subject/body exactly as authored there.
+                  Clear the template above to write your own instead.
+                </p>
+              ) : (
               <div className="flex flex-col gap-1 text-sm font-medium">
                 <span>
                   Subject lines <span className="text-xs text-zinc-400">— rotate on their own index, independently of bodies</span>
@@ -683,6 +747,7 @@ export default function CampaignsPage() {
                   )}
                 </div>
               </div>
+              )}
 
               <label className="flex flex-col gap-1 text-sm font-medium">
                 Rotate every N emails
@@ -754,6 +819,7 @@ export default function CampaignsPage() {
                 </p>
               </details>
 
+              {!campaignTemplateId && (
               <div className="flex flex-col gap-1 text-sm font-medium">
                 Bodies <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc.; each body rotates on its own index'}</span>
                 <div className="mt-1 flex flex-col gap-2">
@@ -778,6 +844,7 @@ export default function CampaignsPage() {
                   )}
                 </div>
               </div>
+              )}
 
               {/* Task 30, item 3 — opt-in link cloaking, shown ONLY while a body
                   actually contains http(s):// links (no UI clutter for a
@@ -853,7 +920,7 @@ export default function CampaignsPage() {
                   through renderMerge() with real (or empty) sample merge
                   variables, body shown as HTML the way a mail client renders it,
                   in a sandboxed iframe (never dangerouslySetInnerHTML). */}
-              {(() => {
+              {!campaignTemplateId && (() => {
                 const content = validContent();
                 const subjIndex = Math.min(previewSubjectIndex, Math.max(content.subjects.length - 1, 0));
                 const bodyIndex = Math.min(previewBodyIndex, Math.max(content.bodies.length - 1, 0));
