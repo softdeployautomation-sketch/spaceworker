@@ -973,8 +973,13 @@ Verified live during this pass: site `200`, all five services `active`.
   retries) and §13.4 (stays usable). Worse, `failed` is terminal, so the badge would stick
   even after Vantra moved the device successfully. **Live proof:** device **`Sc`** —
   `tier: public`, `attempts: 0`, **offline 142 min**, no stage done, and a **valid
-  `destinationOrgId`**, so the clean free/trial release could never apply to it: it was one
-  heartbeat away from a false failure. Contrast **`I`** (no destination), which correctly
+  `destinationOrgId`**, so the clean free/trial release could never apply to it.
+  (Precisely: its stages were still outstanding, which *delayed* the false failure
+  rather than removing it — the ceiling rule sat after the hide/stay-on rules, so
+  the sweep kept returning `hide` while the box was unreachable; once it returned
+  the order was hide → stay-on → and the next sweep would have hit the ceiling.
+  A device whose two stages were already done would have been failed on the very
+  first sweep back.) Contrast **`I`** (no destination), which correctly
   released and stayed public. Vantra has no time ceiling at all — its compiled build
   returns early and un-actioned unless the device is online, and fails only on `attempts >= 6`.
   **The fix (owner's chosen option):** `ONBOARDING_CEILING_MINUTES` → `ONBOARDING_STUCK_MINUTES`
@@ -991,4 +996,16 @@ Verified live during this pass: site `200`, all five services `active`.
   (was 51); lint unchanged (same 3 pre-existing findings, byte-identical on `HEAD`). The sweep
   test now drives a row **142 minutes** old and asserts `moving` / `attempts: 0` / `lastError:
   null` — the live `Sc` shape, asserted rather than hoped.
+  **DEPLOYED 2026-09-27** — SpaceWorker `df3129a` (merge of the §16 branch with
+  `origin/main`; three doc-only conflicts, all one-sided; `prisma/schema.prisma`
+  ended byte-identical to main, so **no migration**). Verified against the RUNNING
+  BUILD: `.next/BUILD_ID` rebuilt during the deploy (14:42:45 UTC); the compiled
+  sourcemap carries `ONBOARDING_STUCK_MINUTES` and `const terminal = attempts >=
+  ONBOARDING_MAX_ATTEMPTS`; `action === "fail"` appears in **0** build files; red
+  still exists (`Setup failed` / `Setup didn't finish`, 16 files each); amber
+  strings present in the client chunks; services active; timer firing every 5 min;
+  route mounted (401, not 404). `Sc` re-read after the deploy: still `pending`,
+  `attempts: 0`, `lastError` empty, **elapsed 3 h 02 m** — five times the old
+  ceiling and still a wait, not a failure. Not proven: the amber warning was not
+  rendered in a browser, and `Sc` has never been online during a sweep.
 
