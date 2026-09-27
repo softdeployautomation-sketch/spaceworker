@@ -1170,6 +1170,12 @@ model Device {
   // monitored must never silently monitor the user's other machines. Default
   // false — a device nobody opted in is never captured.
   screenshotMonitoringEnabled Boolean   @default(false)
+  // 2026-09-27 — per-device schedule override. Null (the default) means "use
+  // the admin's global screenshotCaptureIntervalMinutes" — most devices never
+  // need this. Set means THIS device is captured on its own cadence instead,
+  // e.g. compressing a test window to 1 minute without touching every other
+  // opted-in device's schedule.
+  screenshotIntervalMinutesOverride Int?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

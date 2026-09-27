@@ -5,7 +5,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { db } from "./db";
+import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
+import { createSessionToken, SESSION_COOKIE } from "./auth";
 import { requestSlot, type PressureSnapshot } from "./resource-governor";
 
 // ---------------------------------------------------------------------------
@@ -197,6 +199,94 @@ export interface CaptureOutcome {
  */
 export type CaptureFn = (device: CaptureTarget, framePath: string) => Promise<CaptureOutcome>;
 
+/** Never let an unexpected upstream body become a row's failure reason. */
+function shortReason(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return message.replace(/\s+/g, " ").slice(0, 300);
+}
+
+/**
+ * The real CaptureFn — delegates each frame to browser-capture/server.ts over
+ * loopback Bearer, so this side (and everything that calls it: the sweep,
+ * the manual "capture now" trigger) does all the database work and owns no
+ * browser footprint. Moved here (not the sweep route) so both real callers
+ * share the exact same tested implementation instead of two copies drifting.
+ *
+ * Authority to act: this runs as the DEVICE'S OWNER, because that is honestly
+ * what it is doing — viewing that owner's device through that owner's own
+ * console. The token comes from the app's own `createSessionToken` (the same
+ * call the login route makes), is used once, and is never logged or persisted.
+ */
+export const captureViaService: CaptureFn = async (device, framePath): Promise<CaptureOutcome> => {
+  // Re-check liveness at capture time, not just when the caller decided to
+  // ask: the device can go offline in between, and the console's own Connect
+  // button is disabled for an offline machine — so the only possible outcomes
+  // would be a confusing failure row and a wasted slot.
+  const fresh = await db.device.findUnique({
+    where: { id: device.id },
+    select: { status: true, user: { select: { email: true, emailVerified: true } } },
+  });
+  if (!fresh || fresh.status !== "online") return { failureReason: "device_offline" };
+
+  const token = await createSessionToken({
+    sub: device.userId,
+    email: fresh.user.email,
+    emailVerified: fresh.user.emailVerified,
+    scope: "full",
+  });
+
+  const base = new URL(env.appBaseUrl);
+  const serviceUrl = process.env.SCREENSHOT_CAPTURE_URL ?? "http://127.0.0.1:3403";
+  const serviceToken = process.env.SCREENSHOT_CAPTURE_TOKEN;
+  if (!serviceToken) {
+    return { failureReason: "capture_service_token_not_set" };
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(`${serviceUrl}/capture`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${serviceToken}`,
+      },
+      body: JSON.stringify({
+        consoleUrl: `${env.appBaseUrl}/console/${device.id}`,
+        cookieName: SESSION_COOKIE,
+        cookieValue: token,
+        cookieDomain: base.hostname,
+        secureCookie: base.protocol === "https:",
+        outputPath: framePath,
+      }),
+      // Slightly longer than the service's own 75s watchdog so the service's
+      // specific failure reason wins the race instead of a bare client abort.
+      signal: AbortSignal.timeout(90_000),
+    });
+  } catch (err) {
+    return { failureReason: `capture_service_unreachable: ${shortReason(err)}` };
+  }
+
+  if (!response.ok) {
+    return { failureReason: `capture_service_http_${response.status}: ${shortReason(await response.text())}` };
+  }
+
+  const body = (await response.json()) as {
+    ok?: boolean;
+    failureReason?: string;
+    bytes?: number;
+    width?: number;
+    height?: number;
+  };
+  if (!body.ok) return { failureReason: body.failureReason ?? "capture_failed" };
+
+  return {
+    filePath: frameRelPathFromAbs(framePath),
+    bytes: body.bytes,
+    width: body.width,
+    height: body.height,
+  };
+};
+
 export interface CapturePassOptions {
   now?: Date;
   /** Injected pressure (tests/diagnostics); production omits it. */
@@ -285,7 +375,7 @@ export async function listDueDevices(
 ): Promise<CaptureTarget[]> {
   const candidates = await db.device.findMany({
     where: { screenshotMonitoringEnabled: true, status: "online" },
-    select: { id: true, userId: true, name: true },
+    select: { id: true, userId: true, name: true, screenshotIntervalMinutesOverride: true },
     orderBy: { id: "asc" },
   });
   if (candidates.length === 0) return [];
@@ -318,8 +408,16 @@ export async function listDueDevices(
     if (at) lastAttempt.set(row.deviceId, at);
   }
 
-  const intervalMs = intervalMinutes * 60 * 1000;
   return eligible.filter((device) => {
+    // A per-device override (if set) replaces the global interval entirely
+    // for THIS device — e.g. compressing a test window to 1 minute without
+    // touching every other opted-in device's schedule.
+    const effectiveMinutes =
+      typeof device.screenshotIntervalMinutesOverride === "number" &&
+      device.screenshotIntervalMinutesOverride > 0
+        ? device.screenshotIntervalMinutesOverride
+        : intervalMinutes;
+    const intervalMs = effectiveMinutes * 60 * 1000;
     const last = lastAttempt.get(device.id);
     return !last || now.getTime() - last.getTime() >= intervalMs;
   });
@@ -474,6 +572,99 @@ export async function runCapturePass(
 
   await Promise.allSettled(inflight);
   return result;
+}
+
+export interface CaptureNowResult {
+  status: "captured" | "failed" | "queued" | "refused";
+  reason?: string;
+  frameId?: string;
+}
+
+/**
+ * Manual, on-demand capture of ONE specific device — an explicit ask, not a
+ * scheduled one, so it bypasses `listDueDevices`'s interval/"due" check. Every
+ * OTHER real gate still applies: the master switch, this device's own opt-in,
+ * an online check, "not already mid-capture," and the exact same governor
+ * admission a scheduled capture goes through. Exists so an owner can verify
+ * monitoring works (or grab one fresh frame right now) without waiting for,
+ * or holding a device online through, a full interval window.
+ */
+export async function captureDeviceNow(
+  deviceId: string,
+  capture: CaptureFn,
+  now: Date = new Date(),
+): Promise<CaptureNowResult> {
+  const settings = resolveScreenshotSettings(await getAdminSettings());
+  if (!settings.enabled) return { status: "refused", reason: "monitoring_disabled" };
+
+  const device = await db.device.findUnique({
+    where: { id: deviceId },
+    select: { id: true, userId: true, name: true, status: true, screenshotMonitoringEnabled: true },
+  });
+  if (!device) return { status: "refused", reason: "device_not_found" };
+  if (!device.screenshotMonitoringEnabled) return { status: "refused", reason: "not_opted_in" };
+  if (device.status !== "online") return { status: "refused", reason: "device_offline" };
+
+  const alreadyCapturing = await db.deviceScreenshot.findFirst({
+    where: { deviceId, status: "capturing" },
+    select: { id: true },
+  });
+  if (alreadyCapturing) return { status: "refused", reason: "already_capturing" };
+
+  const decision = await requestSlot("deviceScreenshots", {
+    userId: device.userId,
+    ref: device.id,
+    now,
+  });
+  if (decision.status !== "granted") {
+    return { status: decision.status === "queued" ? "queued" : "refused", reason: decision.reason };
+  }
+
+  const frame = await db.deviceScreenshot.create({
+    data: {
+      deviceId: device.id,
+      userId: device.userId,
+      status: "capturing",
+      summaryDate: startOfUtcDay(now),
+    },
+    select: { id: true },
+  });
+  const relPath = frameRelPath(device.id, now, frame.id);
+  const absPath = await prepareFramePath(relPath);
+
+  try {
+    const outcome = await capture({ id: device.id, userId: device.userId, name: device.name }, absPath);
+    if (outcome.filePath && !outcome.failureReason) {
+      await db.deviceScreenshot.update({
+        where: { id: frame.id },
+        data: {
+          status: "captured",
+          filePath: outcome.filePath,
+          bytes: outcome.bytes ?? null,
+          width: outcome.width ?? null,
+          height: outcome.height ?? null,
+          capturedAt: new Date(),
+        },
+      });
+      return { status: "captured", frameId: frame.id };
+    }
+    await db.deviceScreenshot.update({
+      where: { id: frame.id },
+      data: { status: "failed", failureReason: outcome.failureReason ?? "no_frame" },
+    });
+    return { status: "failed", reason: outcome.failureReason ?? "no_frame", frameId: frame.id };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : "capture_error";
+    try {
+      await db.deviceScreenshot.update({
+        where: { id: frame.id },
+        data: { status: "failed", failureReason: reason.slice(0, 500) },
+      });
+    } catch {
+      // Nothing more we can do; the reaper will clear it.
+    }
+    return { status: "failed", reason, frameId: frame.id };
+  }
 }
 
 // ---------------------------------------------------------------------------
