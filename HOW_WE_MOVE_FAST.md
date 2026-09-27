@@ -372,6 +372,43 @@ Added 2026-09-27 (TASK_128 §15 — verifying a deploy actually took):
   guard fires before anything destructive, with `400 "Unknown action."` as the
   contrast for a name that is not wired at all.
 
+Added 2026-09-27 (owner: *"what exactly are this link errors you keep passing, and
+why can't they be fixed"* — the answer was two unrelated things):
+
+- **`npm run lint` here reports ~42,000 problems because bare `eslint` walks
+  `src-tauri/target/`.** `package.json`'s `lint` script is a bare `eslint` with
+  no path argument, and `eslint.config.mjs` only ignored the four
+  `eslint-config-next` defaults (`.next`, `out`, `build`, `next-env.d.ts`) — not
+  the Tauri build output. So a whole-repo run walks the release bundle,
+  including a fully-bundled Next standalone `server.js` (one minified line,
+  which is why the positions look like `1:5562`), and piles up
+  **42,652 problems (3,481 errors / 39,171 warnings)** that nobody can act on.
+  `src-tauri/target/` is already in `.gitignore:17`, so none of it is source.
+  With `globalIgnores(["src-tauri/target/**"])` added, the same run over
+  `app components lib tests` drops to **89 problems in 28 files** — all
+  pre-existing and unrelated. **A linter that always screams is a linter nobody
+  reads**, and that noise is exactly what hid the three real findings below. When
+  a repo's lint output is in the thousands, suspect build output before suspecting
+  the code: `npx eslint . -f json | …` grouped by file names the culprit in one go.
+- **`react-hooks/set-state-in-effect` (eslint-plugin-react-hooks 7.1.1) flags a
+  *direct call to any function that transitively contains `setState`*, without
+  checking that any `setState` runs synchronously.** Proof, using this repo's own
+  config — three cases in one scratch component: (A) an `async` loader whose only
+  `setState` is *after* an `await`, called directly in the effect body →
+  **flagged**; (B) a genuinely synchronous `setState` in the body → flagged (the
+  real bug it is designed to catch); (C) the **identical** async loader reached via
+  `setInterval` → **clean**. A and C differ only in whether the call is direct, so
+  the trigger is structural, not runtime. Consequences: the idiomatic
+  `useEffect(() => { void load(); }, [load])` pattern — where `load` awaits its
+  fetch before touching state — is a **false positive**, and *disabling the rule
+  globally would blind you to (B)*. Use a **narrow suppression at each site**
+  (`// eslint-disable-next-line react-hooks/set-state-in-effect -- <why>`, or a
+  scoped `/* eslint-disable */ … /* eslint-enable */` pair around just that
+  effect) and say in the comment *why* every `setState` is behind an `await`, so
+  the next reader can check the claim instead of trusting it. This is also how to
+  tell a real finding from a false one: a **real** one has a synchronous
+  `setState` on the path you can point at.
+
 Added 2026-09-27 (TASK_128 §16 — a timer is not a failure detector):
 
 - **Never make elapsed wall-clock time terminal for a device you can only observe

@@ -626,10 +626,19 @@ export function DeviceConsole({
     }
   }, []);
 
+  // Both callees are `useCallback(async () => …)` in which every setState
+  // follows an await, so nothing sets state synchronously in this effect body.
+  // This is the same false positive as the Devices list (that file carries the
+  // full explanation and the three-case probe evidence): the rule flags a
+  // DIRECT call to any function that transitively contains setState regardless
+  // of an await boundary, and does not flag the identical call made from a
+  // timer. Scoped to just this effect; the rule stays armed everywhere else.
+  /* eslint-disable react-hooks/set-state-in-effect -- callees await before every setState */
   useEffect(() => {
     loadDevice();
     loadToolData();
   }, [loadDevice, loadToolData]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Light polling keeps status/queue/PIN/clone state honest without
   // hammering. Paused while the document is hidden.
@@ -1787,10 +1796,16 @@ function OnboardingCard({ device }: { device: DeviceView }) {
         </span>
         <span className="text-fg-muted">·</span>
         <span className="text-fg-muted">{onboardingClockText(view)}</span>
-        <span className="text-fg-muted">·</span>
-        <span className="text-fg-muted">
-          {device.tier === "private" ? "Private" : "Public"}
-        </span>
+        {/* Owner 2026-09-27 — same rule as the Devices row badge: only PUBLIC
+            is ever named. A private device gets no tier text ("not Public"
+            already says private), so the separator is dropped with it rather
+            than left dangling. */}
+        {device.tier !== "private" && (
+          <>
+            <span className="text-fg-muted">·</span>
+            <span className="text-fg-muted">Public</span>
+          </>
+        )}
       </p>
       <p className="mt-1 text-xs text-fg-muted">{view.detail}</p>
       {/* The owner's promise: quarantine never takes the device away. */}
@@ -1842,7 +1857,10 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
     }
   }, [deviceId]);
 
+  // Same false positive as the loadDevice/loadToolData effect above — `load`
+  // awaits the fetch before either setView or setErr runs.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- setView/setErr are behind the fetch await, not synchronous
     load();
   }, [load]);
 

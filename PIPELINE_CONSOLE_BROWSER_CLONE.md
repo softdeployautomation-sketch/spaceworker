@@ -1009,3 +1009,38 @@ Verified live during this pass: site `200`, all five services `active`.
   ceiling and still a wait, not a failure. Not proven: the amber warning was not
   rendered in a browser, and `Sc` has never been online during a sweep.
 
+- 2026-09-27 — **BUILD-11 / TASK_128 — the standing lint noise, diagnosed and fixed
+  (owner: *"what exactly are this link errors you keep passing, and why can't they
+  be fixed, what's the blocker exactly"*).** Two unrelated things, neither a blocker:
+  **(1) the 3 findings I had been "passing" were genuine FALSE POSITIVES** —
+  `react-hooks/set-state-in-effect` fires on a *direct call to any function that
+  transitively contains `setState`* without checking that a `setState` actually runs
+  synchronously. Proven against this repo's own config
+  (eslint-plugin-react-hooks **7.1.1**) with a three-case probe: an `async` loader
+  whose only `setState` is **after an `await`**, called directly in the effect body →
+  **flagged**; a genuinely synchronous `setState` → flagged (the real bug); the
+  **identical** loader reached via `setInterval` → **clean**. A and C differ only in
+  whether the call is direct, so the trigger is structural. Fixed with **narrow,
+  commented suppressions at the 3 sites** (`device-list.tsx` 1,
+  `device-console.tsx` 2) rather than a global disable, which would have blinded the
+  rule to the real bug. **(2) the 42,652-problem `npm run lint` was never the code** —
+  the `lint` script is a bare `eslint` with no path, and `eslint.config.mjs` ignored
+  only the four `eslint-config-next` defaults, so whole-repo runs walked
+  `src-tauri/target/` (the Tauri release bundle, including a bundled Next standalone
+  `server.js` — hence the `1:5562`-style positions). That path is already in
+  `.gitignore:17`, i.e. never source. Added
+  `globalIgnores(["src-tauri/target/**"])`; source-only lint
+  (`app components lib tests`) drops **42,652 → 89** problems in 28 files, none of
+  them TASK_128 (my 4 files report **0**). The remaining 89 are pre-existing and
+  untouched by this task — 38 further instances of the same
+  `set-state-in-effect` false positive (35 of them in
+  `app/admin/(protected)/admin-panel.tsx`), 25 cosmetic
+  `react/no-unescaped-entities`, 7 `no-explicit-any`, 4 `no-require-imports` in
+  `.js`/`.cjs` build scripts, 2 `purity`, 1 `no-html-link-for-pages`. **Not fixed
+  here** — that is mechanical work across ~10 files and out of this task's declared
+  scope; recommended as separate housekeeping. Recorded in `HOW_WE_MOVE_FAST.md` §6.
+  Files: `eslint.config.mjs`, `components/device-list.tsx`,
+  `components/device-console.tsx`, `lib/agent-visibility.ts`,
+  `tests/agent-visibility.test.ts`, `HOW_WE_MOVE_FAST.md`. Gate: `tsc` 0 errors,
+  full suite **222/222**.
+

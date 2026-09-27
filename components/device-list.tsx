@@ -237,7 +237,21 @@ export function DeviceList() {
   // Task 106 (bit C1) — live refresh: re-poll every 20 s, paused while the
   // document is hidden so a background tab does not hammer the API. Manual
   // Refresh button stays. Cleared on unmount.
+  //
+  // WHY THE DISABLE BELOW IS A FALSE POSITIVE (owner 2026-09-27: "what exactly
+  // are this link errors you keep passing"). `react-hooks/set-state-in-effect`
+  // fires on any function that transitively contains setState being INVOKED
+  // directly in an effect body — it never checks that a setState actually runs
+  // synchronously. Here none does: `refreshAll` is
+  // `await loadLink(); await load();`, and every setState in that chain
+  // (`setError` / `setDevices` / `setLoaded`) sits behind an await. Proven
+  // against this repo's own eslint config (eslint-plugin-react-hooks 7.1.1)
+  // with a three-case probe: an async loader called directly in the body is
+  // flagged even when its only setState follows an await, while the IDENTICAL
+  // loader reached via setInterval is clean. The rule stays armed repo-wide
+  // otherwise, so a genuinely synchronous setState-in-effect is still caught.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- every setState in refreshAll is behind an await, not synchronous
     void refreshAll();
     const tick = () => {
       if (document.visibilityState === "hidden") return;
@@ -1310,19 +1324,19 @@ export function DeviceList() {
                     )}
                     <span className="truncate font-mono text-sm text-fg">{d.name}</span>
                     {/* TASK_128 — the row's ENTIRE footprint: the honest tier
-                        badge (Public until the move lands, Private after) plus a
-                        compact quarantine clock while the window is running.
-                        No per-row stage text, no second card. */}
-                    <span
-                      className={cn(
-                        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                        d.tier === "private"
-                          ? "border-emerald-500/40 text-emerald-500"
-                          : "border-border text-fg-muted",
-                      )}
-                    >
-                      {d.tier === "private" ? "Private" : "Public"}
-                    </span>
+                        badge plus a compact quarantine clock while the window
+                        is running.
+                        No per-row stage text, no second card.
+                        Owner 2026-09-27: the tier badge is now PUBLIC-ONLY. A
+                        private device renders no pill at all — "not Public"
+                        already says private, so the green chip was pure noise
+                        repeated on every settled row. Public is the state worth
+                        calling out, because it is the temporary one. */}
+                    {d.tier !== "private" && (
+                      <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
+                        Public
+                      </span>
+                    )}
                     {d.onboarding && onboardingRowLabel(d.onboarding, nowMs) && (
                       <span
                         className={cn(
