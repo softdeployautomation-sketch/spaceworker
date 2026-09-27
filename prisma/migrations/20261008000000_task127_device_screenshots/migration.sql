@@ -15,10 +15,13 @@
 -- The four admin dials. screenshotCapturesMaxConcurrent is also the governor's
 -- cap column for the new `deviceScreenshots` feature (TASK_105's registry), so
 -- it is the single place the "how many captures at once" number lives.
+--
+-- Column order is alphabetical, matching what `prisma migrate diff` generates,
+-- so this file stays reproducible from the datamodel.
 ALTER TABLE "AdminSetting"
-  ADD COLUMN "screenshotMonitoringEnabled" BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN "screenshotCapturesMaxConcurrent" INTEGER NOT NULL DEFAULT 2,
   ADD COLUMN "screenshotCaptureIntervalMinutes" INTEGER NOT NULL DEFAULT 60,
+  ADD COLUMN "screenshotCapturesMaxConcurrent" INTEGER NOT NULL DEFAULT 2,
+  ADD COLUMN "screenshotMonitoringEnabled" BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN "screenshotRetentionDays" INTEGER NOT NULL DEFAULT 14;
 
 -- The per-device opt-in — the consent boundary the task doc makes
