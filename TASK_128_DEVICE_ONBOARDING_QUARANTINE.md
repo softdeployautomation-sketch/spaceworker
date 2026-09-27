@@ -582,3 +582,22 @@ The 15:29 hide produced **no `STEP:redescribe:` and no `VERIFY:description:` lin
 2. Remaining Public devices are `I` and two `SpaceWorker browser` rows; neither has an onboarding row, so the sweep does not act on them (correct for the browser rows).
 3. ~89 pre-existing lint findings (25 `react/no-unescaped-entities` plus the rest) remain — a mechanical pass across ~10 files, deliberately out of scope for §16.
 
+### 19.5 The UI Hide button carries the fix too — verified against the CLIENT chunk
+
+The sweep's hide is built **server-side**, but the console's Hide/Reveal button builds its script **in the browser**: `components/device-console.tsx:1074` calls `buildHideAgentScript(label)` client-side and POSTs the finished text as `cmd` to `/api/devices/[deviceId]/run-command`. So the server-chunk proof in §19.2 does **not** cover the button, and the browser bundle had to be checked separately.
+
+Located by mtime rather than by grep alone (the orphan trap in §19.3): **40** of **140** chunks were written by the current build, and exactly one of them carries the fix —
+
+```
+/opt/spaceworker/.next/static/chunks/19_w7tx7tzqc1.js   mtime 19:34:48, 90 KB
+  "Hide agent" / "Reveal agent" / "Agent visibility" / "Cosmetic only"   → it IS the console bundle
+  STEP:redescribe:' + $s.Name + ' OK'
+  VERIFY:description: ... ' Description=' + $d
+  WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall
+```
+
+Control: of **40 stale chunks** sampled in the same directory, **0** contain the fix — so the hit is the fresh bundle, not an orphan. **The button will therefore run the fixed script**; expect the output pane to show `STEP:redescribe:<service> OK` and `VERIFY:description:<service> Description=Microsoft System Services`, neither of which appeared in the 15:29 run.
+
+Because the chunk hash changed with the build, the page references a new filename and the browser cannot serve the old one from cache; a hard reload before clicking removes even that doubt. Re-running Hide on the already-hidden `Sc` is safe and *desirable*: `Set-ItemProperty` creates the `Description` value if absent, so the click both proves the fix and closes the existing leak on that box. `Reveal` → `Hide` is the stronger test, since it also exercises `buildRevealAgentScript`'s Description restore.
+
+
