@@ -940,3 +940,27 @@ Verified live during this pass: site `200`, all five services `active`.
   `npx tsc --noEmit` clean; whole suite **194/194**; eslint clean on every file touched.
 
 
+- 2026-09-27 — **BUILD-11 / TASK_128 §15 VERIFIED + DEPLOYED.** Commits on `main`: Vantra
+  `0f6cfdf`, SpaceWorker `f8081e0` (a merge — `origin/main` was 5 commits ahead with
+  TASK_127's wake delay, the manual-capture route, the widget settings panel and the env
+  placeholder guard). Exactly ONE conflict, in `prisma/schema.prisma` (both sides added
+  `Device` columns) — resolved by keeping both; `prisma migrate diff` from main's schema
+  then reproduced **exactly** `ADD COLUMN "removedAt"`, so the new migration is still
+  additive and accurate. Merged tree: tsc clean, suite **204/204**. Deploy was CI in both
+  repos (Vantra first — it owns the clock). Live: all three SpaceWorker services `active`;
+  `…1300000_task128_device_removal` **APPLIED**; `Device.removedAt` exists (nullable);
+  **0** devices marked removed; `device-onboarding-sweep.timer` still enabled+active and
+  firing every 5 min. **Public PowerShell proven end to end** against a real `sw-` org:
+  `{"as":"powershell"}` → `command` (972 chars), **no** `downloadUrl`; the `{}` control →
+  `downloadUrl`, **no** `command` (the byte-compat claim, on the deployed build); private
+  unchanged. **Delete action proven safe** by aiming it at a non-existent agent: `404
+  "Device not found."` (action accepted, tenant guard fires before TRMM, nothing deleted)
+  against `400 "Unknown action."` for an unwired name. **Trap found and recorded:** the
+  deploy ships a prebuilt tarball and never ships `lib/`, so `/opt/vantra/lib/` is a stale
+  Sep 22 tree — grepping it reported `AUTO_MOVE_DELAY_MINUTES = 20` and looked like the
+  15-minute change had never shipped. The running build was compiled from `= 15` (read out
+  of the server chunk sourcemap, `BUILD_ID` rebuilt during the deploy). Now an entry in
+  `HOW_WE_MOVE_FAST.md` §6: verify a deploy against the BUILD, never a `/opt` source file.
+  **Not proven:** the destructive runtime paths (a real delete, a real hide, a real
+  15-minute move) need a real device and were not run; and the UI was not browser-rendered.
+
