@@ -15,7 +15,11 @@ type Campaign = {
   status: string;
   createdAt: string;
   _count?: { items: number };
-  variants?: { id: string; subject: string }[];
+  // bodyHtml is always present in the real GET /api/campaigns response (the
+  // route includes full variant rows) — declared optional here only because
+  // this type is reused for contexts that don't need it, not because it can
+  // actually be missing when loading a template's content below.
+  variants?: { id: string; subject: string; bodyHtml?: string }[];
 };
 
 type Mailbox = {
@@ -24,6 +28,19 @@ type Mailbox = {
   host: string;
   username: string;
   fromAddresses: string[];
+};
+
+// Ready-made ("system-owned") campaign templates — same endpoint the
+// Automations builder's picker uses (app/api/automations/templates/route.ts),
+// reused here so a template added in the admin panel is actually pickable
+// when creating a plain campaign, not just when building an automation.
+// Includes subject/bodyHtml (unlike the Automations builder's own use of this
+// same list) so picking one can load its real content into the editable
+// Subject lines / Bodies fields below, not just clone it blind.
+type CampaignTemplateOption = {
+  id: string;
+  name: string;
+  variants: { id: string; subject: string; bodyHtml: string }[];
 };
 
 // Task 26, Piece 4 — "Pick from my leads" recipient picker data (GET /api/leads/selectable).
@@ -96,6 +113,11 @@ export default function CampaignsPage() {
   const [mailboxes, setMailboxes] = useState<Mailbox[]>([]);
   const [selectedMailboxIds, setSelectedMailboxIds] = useState<string[]>([]);
   const [subjects, setSubjects] = useState<string[]>([""]);
+  // Ready-made template picker — id of an EmailCampaign (either this user's own
+  // or a system-owned "ready-made" one) to clone subject/body content from.
+  // Empty string = build content by hand (today's default behavior).
+  const [templates, setTemplates] = useState<CampaignTemplateOption[]>([]);
+  const [campaignTemplateId, setCampaignTemplateId] = useState("");
   // Task 29, item 4 — independent body list (was a single shared body). Bodies
   // rotate on their own index, cross-combined with the subject list per recipient.
   const [bodies, setBodies] = useState<string[]>([""]);
@@ -183,9 +205,15 @@ export default function CampaignsPage() {
     setLoading(true);
     setError("");
     try {
-      const res = await fetch("/api/campaigns");
+      const [res, templRes] = await Promise.all([
+        fetch("/api/campaigns"),
+        fetch("/api/automations/templates"),
+      ]);
       if (!res.ok) throw new Error("Failed to load campaigns");
       setCampaigns((await res.json()) as Campaign[]);
+      // Best-effort — an empty/failed templates fetch just means no ready-made
+      // templates show up in the picker, never blocks the page itself.
+      if (templRes.ok) setTemplates((await templRes.json()) as CampaignTemplateOption[]);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load campaigns");
     } finally {
@@ -221,6 +249,7 @@ export default function CampaignsPage() {
 
   function openNew() {
     setName("");
+    setCampaignTemplateId("");
     setSubjects([""]);
     setBodies([""]);
     setShowPreview(false);
@@ -352,6 +381,23 @@ export default function CampaignsPage() {
   }
   function removeBody(index: number) {
     setBodies(bodies.filter((_, i) => i !== index));
+  }
+
+  // Loads a picked template's (or one of my own campaigns') subject/body
+  // variants straight into the editable Subject lines / Bodies fields, so the
+  // user sees real content immediately and can freely edit it before creating
+  // — never a blind server-side clone. Clearing the picker (empty id) leaves
+  // whatever is currently typed alone.
+  function applyTemplate(id: string) {
+    setCampaignTemplateId(id);
+    if (!id) return;
+    const own = campaigns.find((c) => c.id === id);
+    const variants = own
+      ? (own.variants ?? []).map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml ?? "" }))
+      : (templates.find((t) => t.id === id)?.variants ?? []);
+    if (variants.length === 0) return;
+    setSubjects(variants.map((v) => v.subject));
+    setBodies(variants.map((v) => v.bodyHtml));
   }
 
   // Task 29, item 4 — decoupled content: a subject list and a body list, each
@@ -656,6 +702,42 @@ export default function CampaignsPage() {
                   })}
                 </div>
               </div>
+
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Use a template <span className="text-xs font-normal text-zinc-400">— optional; loads its subject/body below so you can edit them before creating</span>
+                <select
+                  value={campaignTemplateId}
+                  onChange={(e) => applyTemplate(e.target.value)}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                >
+                  <option value="">Write my own subject/body below</option>
+                  {campaigns.filter((c) => (c.variants?.length ?? 0) > 0).length > 0 && (
+                    <optgroup label="My campaigns">
+                      {campaigns
+                        .filter((c) => (c.variants?.length ?? 0) > 0)
+                        .map((c) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({c.variants!.length} variant{c.variants!.length === 1 ? "" : "s"})
+                          </option>
+                        ))}
+                    </optgroup>
+                  )}
+                  {templates.length > 0 && (
+                    <optgroup label="Ready-made templates">
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.variants.length} variant{t.variants.length === 1 ? "" : "s"})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                </select>
+                {campaignTemplateId && (
+                  <span className="text-xs text-zinc-400">
+                    Loaded — edit the subject lines/bodies below freely, they&apos;re just a starting point.
+                  </span>
+                )}
+              </label>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
                 <span>
