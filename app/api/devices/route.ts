@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import {
   deviceListSelector,
   DEVICE_ONLINE_WINDOW_MS,
+  isDeviceOnline,
   toDeviceView,
 } from "@/lib/devices";
 import { fetchUserIdle } from "@/lib/vantra-link";
@@ -44,7 +45,17 @@ export async function GET() {
     onlineWindowMs: DEVICE_ONLINE_WINDOW_MS,
     devices: devices.map((d) => {
       const view = toDeviceView(d);
-      return { ...view, idleSeconds: idleByHostname[view.name] ?? null };
+      return {
+        ...view,
+        // TASK_128 — the strip's "waiting for the device" needs the same online
+        // derivation the rest of the app uses (`isDeviceOnline(lastSeenAt)`);
+        // computing it here keeps the client helper free of the server-only
+        // module.
+        onboarding: view.onboarding
+          ? { ...view.onboarding, isOnline: isDeviceOnline(view.lastSeenAt) }
+          : null,
+        idleSeconds: idleByHostname[view.name] ?? null,
+      };
     }),
   });
 }

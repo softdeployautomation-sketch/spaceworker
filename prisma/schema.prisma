@@ -131,6 +131,8 @@ model User {
   governorQueueEntries     GovernorQueueEntry[]
   // TASK_127 — Phase 1 device screenshot monitoring (frames + opt-in).
   deviceScreenshots        DeviceScreenshot[]
+  // TASK_128 — the visible public→private onboarding quarantine (one row/device).
+  deviceOnboardings        DeviceOnboarding[]
 }
 
 model VerificationCode {
@@ -1170,6 +1172,13 @@ model Device {
   // monitored must never silently monitor the user's other machines. Default
   // false — a device nobody opted in is never captured.
   screenshotMonitoringEnabled Boolean   @default(false)
+  // TASK_128 — which org the agent was last listed under, stamped by
+  // syncDevices() from the Vantra `sw/devices` response: "public" until the
+  // Vantra auto-move lands, "private" after. Existing rows default to
+  // "public" (the additive migration changes no behaviour), so the row can
+  // honestly show `Public` / `Private` and the onboarding strip never claims a
+  // move that did not happen.
+  tier                        String    @default("public")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1186,6 +1195,9 @@ model Device {
   audits                DeviceAudit[]
   // TASK_127 — Phase 1 captured frames for this device.
   screenshots           DeviceScreenshot[]
+  // TASK_128 — the visible onboarding-quarantine state machine (one row while
+  // the device is public / being moved; terminal once released or failed).
+  onboarding            DeviceOnboarding?
   // Task 97 — Browser Clone. A device can be the capture SOURCE (the user's
   // work PC) and/or the clone DESTINATION (a hosted clone PC, deviceKind
   // "hosted"), and it can host the egress relay and the browser sessions.
@@ -1844,4 +1856,80 @@ model DeviceScreenshot {
   @@index([deviceId, summaryDate, status])
   @@index([userId, createdAt])
   @@index([summaryDate, status])
+}
+
+// TASK_128 — the device onboarding quarantine ("one process at a time").
+//
+// One row per device: the visible state machine behind the Devices-page strip.
+// The public→private MOVE itself stays Vantra's (lib/device-auto-move.ts) — this
+// row only records the SpaceWorker-side stages (hide@5, stay-on@10) and mirrors
+// the release once the device is observed in the private org or the 20-minute
+// window ends. `timerStartedAt` is COPIED from Vantra's
+// DeviceAutoMove.timerStartedAt (never invented locally) so the countdown the
+// owner sees is the same clock that will actually fire the move.
+//
+// Status union (TEXT + documented, the codebase style — no DB enum):
+//   pending | hiding | staying_on | moving | released | failed
+//     pending    = idle / waiting for the next threshold
+//     hiding     = the hide command is in flight (crash-safe claim)
+//     staying_on = the indefinite keep-awake apply is in flight (crash-safe claim)
+//     moving     = the window reached 15 min, so the move is due (non-terminal)
+//     released   = terminal: observed private, window ended, or no destination
+//     failed     = terminal: a stage exhausted ONBOARDING_MAX_ATTEMPTS
+//
+// Exactly-once discipline mirrors device-auto-move.ts: a `*DoneAt` timestamp —
+// not a claim clock — is what makes a stage run once, and a row left in
+// hiding/staying_on with its `*DoneAt` null by a dead request is re-adopted
+// as unclaimed on the next sweep (no staleness timer). `claimAt` is diagnostic
+// only and is never a gate.
+model DeviceOnboarding {
+  id               String    @id @default(cuid())
+  deviceId         String    @unique
+  // Operational lifecycle state, not an audit record — cascades with its device
+  // and user (same reasoning as DeviceScreenshot: an onboarding row for a
+  // deleted device has nothing to preserve).
+  device           Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The Vantra agent id this row tracks (plain scalar — the row is operational
+  // state keyed by our own Device.id, not a second identity layer).
+  vantraAgentId    String
+  // The public org the device was listed under, and the private companion it is
+  // moving to. `destinationOrgId` is null for a free/trial account with no
+  // private org — the UI words that as "stays on your public agent".
+  sourceOrgId      String
+  destinationOrgId String?
+  // Copied from DeviceAutoMove.timerStartedAt on row creation. NEVER overwritten
+  // by a later sync (an existing row keeps the clock that is already running).
+  timerStartedAt   DateTime  @default(now())
+  // The label the hide stage used ("Microsoft System Services" by default);
+  // editable later from the console's existing Agent visibility card.
+  hideLabel        String?
+  // Set when the hide command reported success — the exactly-once gate for the
+  // hide stage. `hideOutput` keeps the script's STEP: lines for the console.
+  hideDoneAt       DateTime?
+  hideOutput       String?
+  // Set when setPowerPolicy("indefinite") applied — the exactly-once gate for
+  // the stay-on stage (stopped by the technician from the console).
+  stayOnDoneAt     DateTime?
+  // When the device was observed in the private org (release via tier).
+  movedAt          DateTime?
+  // When the window ended and the row went terminal (t≥20, or observed private).
+  releasedAt       DateTime?
+  // "pending" | "hiding" | "staying_on" | "moving" | "released" | "failed".
+  status           String    @default("pending")
+  // Per-stage transient-failure retries, capped by ONBOARDING_MAX_ATTEMPTS —
+  // a stage that can never succeed must end `failed`, never retry forever.
+  attempts         Int       @default(0)
+  lastError        String?
+  // Diagnostic only — the last claim timestamp; never a staleness gate.
+  claimAt          DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Read paths that actually exist (TASK_107 discipline — index what is queried):
+  //   the sweep's non-terminal scan -> status
+  //   a user's onboarding rows      -> userId + status
+  @@index([status])
+  @@index([userId, status])
 }

@@ -1,0 +1,16 @@
+# Install: sudo cp device-onboarding-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now device-onboarding-sweep.timer
+[Unit]
+Description=Run the SpaceWorker device onboarding quarantine sweep every 5 minutes
+
+# The stage thresholds (hide@5 / stay-on@10 / release@20) are 5-minute-quantised
+# BY DESIGN — every stage fires on the first sweep at/after its minute mark,
+# mirroring Vantra's own 5-minute telegram-device-check poller that fires the
+# actual move. A shorter cadence would not make a stage land sooner than the
+# move's own poller allows.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=device-onboarding-sweep.service
+
+[Install]
+WantedBy=timers.target

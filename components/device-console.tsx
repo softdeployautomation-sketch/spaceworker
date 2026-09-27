@@ -38,6 +38,11 @@ import {
   buildRevealAgentScript,
   isValidAgentLabel,
 } from "@/lib/agent-visibility";
+import {
+  formatOnboardingCountdown,
+  isOnboardingTerminal,
+  onboardingView,
+} from "@/lib/device-onboarding";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -59,6 +64,22 @@ type DeviceView = {
   powerPolicy: { mode: string; until: string | null } | null;
   // Task 106 (bit C1) — MeshCentral `idletime` in seconds (null when unknown).
   idleSeconds: number | null;
+  // TASK_128 — Public/Private tier + the onboarding row. `hideLabel` prefills
+  // the existing Agent-visibility card so the device hidden during quarantine
+  // shows the SAME label the stage used (reuse only — no second tool);
+  // `lastError` is what the Summary card surfaces when a move never landed
+  // (§6 — the row badge stays Public and the console says why).
+  tier: string;
+  onboarding: {
+    status: string;
+    timerStartedAt: string;
+    hideDoneAt: string | null;
+    stayOnDoneAt: string | null;
+    releasedAt: string | null;
+    hideLabel: string | null;
+    destinationOrgId: string | null;
+    lastError: string | null;
+  } | null;
 };
 
 // TASK_123 (B12) — GET /api/devices/:id/power's read model (lib/device-tools.ts
@@ -997,7 +1018,14 @@ export function DeviceConsole({
       void loadToolData();
     }
   }
-  const [agentLabel, setAgentLabel] = useState(DEFAULT_AGENT_LABEL);
+  // TASK_128 — the Agent-visibility card is prefilled from the onboarding row's
+  // `hideLabel`, so a device hidden during quarantine shows the label the stage
+  // actually used and the owner edits that ONE tool ("individual can change that
+  // when it's in private"). `agentLabelEdit === null` means "untouched → use the
+  // stored label"; once the user types, their value wins. Derived during render,
+  // so there is no setState-in-effect (which the repo's lint rejects).
+  const [agentLabelEdit, setAgentLabelEdit] = useState<string | null>(null);
+  const agentLabel = agentLabelEdit ?? device?.onboarding?.hideLabel ?? DEFAULT_AGENT_LABEL;
   async function runAgentVisibility(mode: "hide" | "reveal") {
     const label = agentLabel.trim() || DEFAULT_AGENT_LABEL;
     if (mode === "hide" && !isValidAgentLabel(label)) {
@@ -1436,7 +1464,7 @@ export function DeviceConsole({
               runOut={runOut}
               queuePin={queuePin}
               agentLabel={agentLabel}
-              setAgentLabel={setAgentLabel}
+              setAgentLabel={setAgentLabelEdit}
               runAgentVisibility={runAgentVisibility}
             />
           )}
@@ -1650,6 +1678,13 @@ function SummaryTab({
       {/* TASK_127 Phase 1 — screen monitoring. Placed on Summary, next to the
           clone card, because this IS the owner's consent switch for it. */}
       <ScreenMonitoringCard deviceId={device.id} />
+      {/* TASK_128 — the onboarding quarantine, worded from the SAME 4 step
+          labels as the Devices strip (no new tooling, no second stop: the
+          technician's "till it will say stop" stays the existing Keep awake →
+          Stop). Renders nothing for a device that is not onboarding. */}
+      {device.onboarding && !isOnboardingTerminal(device.onboarding.status) && (
+        <OnboardingCard device={device} />
+      )}
       {/* Task 111 — compact clone card (always visible on Summary). The Open
           button is live-session-only; Manage switches to the Browser clone tab. */}
       <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
@@ -1674,6 +1709,69 @@ function SummaryTab({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * TASK_128 — the console's Summary card for an onboarding device.
+ *
+ * Reuse only: the four step labels come from `onboardingView` (the same source
+ * the Devices strip uses), `Public`/`Private` is the row badge, and nothing here
+ * acts on the device — the hide/stay-on stages are the sweep's, and the
+ * technician's stop stays the existing Keep-awake Stop.
+ */
+function OnboardingCard({ device }: { device: DeviceView }) {
+  const row = device.onboarding;
+  // TASK_128 — the countdown needs a clock, and reading one during render is
+  // impure (`react-hooks/purity`). Same 1-minute tick as the Devices strip; it
+  // re-renders only this card, and always derives from the server's
+  // timerStartedAt so a reload never "jumps the clock back".
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  if (!row) return null;
+  const view = onboardingView(
+    {
+      status: row.status,
+      tier: device.tier,
+      timerStartedAt: row.timerStartedAt,
+      hideDoneAt: row.hideDoneAt,
+      stayOnDoneAt: row.stayOnDoneAt,
+      releasedAt: row.releasedAt,
+      destinationOrgId: row.destinationOrgId,
+      isOnline: device.status === "online" || device.status === "asleep",
+    },
+    nowMs,
+  );
+  return (
+    <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <ShieldCheck className="h-3.5 w-3.5" /> Onboarding
+      </p>
+      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
+        <span>{view.step} of 4</span>
+        <span className="text-fg-muted">·</span>
+        <span>{view.title.toLowerCase()}</span>
+        <span className="text-fg-muted">·</span>
+        <span className="text-fg-muted">
+          {view.waitingForDevice
+            ? "waiting for the device"
+            : formatOnboardingCountdown(view.remainingMs)}
+        </span>
+        <span className="text-fg-muted">·</span>
+        <span className="text-fg-muted">
+          {device.tier === "private" ? "Private" : "Public"}
+        </span>
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">{view.detail}</p>
+      {/* §6 — a move that never landed leaves the device Public and the reason
+          here, so the process never reads as silently successful. */}
+      {row.lastError && (
+        <p className="mt-1 text-xs text-amber-500">Last error: {row.lastError}</p>
+      )}
     </div>
   );
 }

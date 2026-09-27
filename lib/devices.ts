@@ -50,6 +50,23 @@ export const deviceListSelector = {
   lastSeenAt: true,
   createdAt: true,
   powerPolicy: { select: { mode: true, until: true } },
+  // TASK_128 — the row badge (Public/Private) + the onboarding strip render
+  // from this selector, so the list needs no second call. `destinationOrgId`
+  // and `hideLabel` are here because the strip (§5E wording) and the console's
+  // Agent-visibility prefill (§4.3) both read them.
+  tier: true,
+  onboarding: {
+    select: {
+      status: true,
+      timerStartedAt: true,
+      hideDoneAt: true,
+      stayOnDoneAt: true,
+      releasedAt: true,
+      hideLabel: true,
+      destinationOrgId: true,
+      lastError: true,
+    },
+  },
 } satisfies Prisma.DeviceSelect;
 
 export type DeviceWithPolicy = Prisma.DeviceGetPayload<{

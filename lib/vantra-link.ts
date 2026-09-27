@@ -7,6 +7,7 @@ import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
 import { recordAgentActionAudit } from "./devices";
+import { DEFAULT_AGENT_LABEL } from "./agent-visibility";
 import { notifyPendingActionViaTelegram } from "./agent-approval-notify";
 import {
   executePinRequest,
@@ -680,23 +681,35 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       orgIds.map((orgId) =>
         vantraFetch<{
           ok: boolean;
+          // TASK_128 — additive: absent on an older Vantra, so both fields are
+          // optional and the list-position fallback below covers it.
+          orgTier?: string;
           devices: Array<{
             vantraAgentId: string; name: string; online: boolean; status: string;
             osName: string | null; operatingSystem: string | null; lastSeen: string;
+            autoMove?: { status: string; timerStartedAt: string } | null;
           }>;
         }>(`/api/internal/sw/devices?orgId=${encodeURIComponent(orgId)}`).catch(() => null),
       ),
     );
     type SwAgentRow = NonNullable<(typeof lists)[number]>["devices"][number];
-    const merged = new Map<string, SwAgentRow>();
-    for (const list of lists) {
+    // TASK_128 — stop discarding the origin org: keep it (and the tier) per
+    // agent. `orgTier` is Vantra's new field; the fallback is deliberate and
+    // required — orgIds[0] is public, orgIds[1] is the private companion — so
+    // SpaceWorker works even if the Vantra half lands AFTER it.
+    const merged = new Map<string, { row: SwAgentRow; orgId: string; tier: string }>();
+    for (let i = 0; i < lists.length; i++) {
+      const list = lists[i];
       if (!list) continue;
-      for (const d of list.devices) merged.set(d.vantraAgentId, d);
+      const orgId = orgIds[i];
+      const tier = list.orgTier ?? (i === 0 ? "public" : "private");
+      for (const d of list.devices) merged.set(d.vantraAgentId, { row: d, orgId, tier });
     }
     const now = new Date();
     const devices = [...merged.values()];
-    for (const d of devices) {
-      await db.device.upsert({
+    for (const entry of devices) {
+      const d = entry.row;
+      const saved = await db.device.upsert({
         where: { vantraAgentId: d.vantraAgentId },
         update: {
           userId,
@@ -704,6 +717,7 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           osName: d.osName,
           status: d.online ? "online" : "offline",
           lastSeenAt: d.lastSeen ? new Date(d.lastSeen) : now,
+          tier: entry.tier,
         },
         create: {
           userId,
@@ -712,8 +726,45 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           osName: d.osName,
           status: d.online ? "online" : "offline",
           lastSeenAt: d.lastSeen ? new Date(d.lastSeen) : now,
+          tier: entry.tier,
         },
       });
+      // TASK_128 — the visible onboarding row. `timerStartedAt` is COPIED from
+      // Vantra's DeviceAutoMove row (never invented locally) so the countdown
+      // the owner sees is the clock that will actually fire the move. It is
+      // never overwritten on an existing row: only created once.
+      if (entry.tier === "private") {
+        // Observed in the private org → the move landed; release the row.
+        await db.deviceOnboarding.updateMany({
+          where: { deviceId: saved.id, status: { notIn: ["released", "failed"] } },
+          data: { releasedAt: now, movedAt: now, status: "released", claimAt: null },
+        });
+      } else {
+        const existing = await db.deviceOnboarding.findUnique({
+          where: { deviceId: saved.id },
+          select: { id: true },
+        });
+        if (!existing) {
+          await db.deviceOnboarding.create({
+            data: {
+              deviceId: saved.id,
+              userId,
+              vantraAgentId: d.vantraAgentId,
+              sourceOrgId: entry.orgId,
+              destinationOrgId: link.privateOrgId,
+              timerStartedAt: d.autoMove?.timerStartedAt
+                ? new Date(d.autoMove.timerStartedAt)
+                : now,
+              hideLabel: DEFAULT_AGENT_LABEL,
+              status: "pending",
+              // §5E — a Vantra move that already failed (e.g. no private org)
+              // is recorded here so the console can surface it. The strip words
+              // the no-destination case from `destinationOrgId` being null.
+              lastError: d.autoMove?.status === "failed" ? "auto_move_failed" : null,
+            },
+          });
+        }
+      }
     }
     await db.vantraLink.update({
       where: { id: link.id },
@@ -730,10 +781,10 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       },
     });
     return {
-      devices: devices.map((d) => ({
-        vantraAgentId: d.vantraAgentId,
-        name: d.name,
-        online: d.online,
+      devices: devices.map((entry) => ({
+        vantraAgentId: entry.row.vantraAgentId,
+        name: entry.row.name,
+        online: entry.row.online,
       })),
     };
   } catch (err) {

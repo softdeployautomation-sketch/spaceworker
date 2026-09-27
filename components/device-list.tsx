@@ -2,12 +2,20 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search } from "lucide-react";
+import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search, ShieldCheck } from "lucide-react";
 
 import { PanicButton } from "@/components/panic-button";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { formatIdle } from "@/lib/device-idle";
+import {
+  ONBOARDING_HIDE_MINUTES,
+  ONBOARDING_WINDOW_MINUTES,
+  formatOnboardingCountdown,
+  formatOnboardingEta,
+  isOnboardingTerminal,
+  onboardingView,
+} from "@/lib/device-onboarding";
 
 // Task 95 — Devices v2 list, ScreenConnect-style session grid. ONE device =
 // ONE row with ONE status (from /api/devices only, derived from OUR heartbeat
@@ -25,6 +33,22 @@ type DeviceRow = {
   // Task 106 (bit C1) — MeshCentral `idletime`, normalised to seconds by
   // Vantra (`/api/devices` enriches each row best-effort; null when unknown).
   idleSeconds: number | null;
+  // TASK_128 — which org the agent is in ("public" | "private") and the visible
+  // onboarding row (null when none). `isOnline` is computed server-side with
+  // `isDeviceOnline(lastSeenAt)` so the strip's "waiting for the device" matches
+  // the rest of the app without the client importing the server-only module.
+  tier: string;
+  onboarding: {
+    status: string;
+    timerStartedAt: string;
+    hideDoneAt: string | null;
+    stayOnDoneAt: string | null;
+    releasedAt: string | null;
+    hideLabel: string | null;
+    destinationOrgId: string | null;
+    lastError: string | null;
+    isOnline: boolean;
+  } | null;
 };
 
 // Task 121 — the artifact names a public mint sends. Mirrors `InstallerNames`
@@ -39,6 +63,20 @@ function relTime(iso: string | null): string {
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
   return `${Math.floor(s / 86400)} d ago`;
+}
+
+/**
+ * TASK_128 — the compact row badge's remaining window ("Quarantine · 12:30").
+ * Derived from the SERVER's `timerStartedAt` and the client clock, so a reload
+ * never jumps the clock back.
+ */
+function quarantineClock(startedAt: string, nowMs: number): string {
+  const ms = Math.max(
+    0,
+    ONBOARDING_WINDOW_MINUTES * 60_000 - (nowMs - new Date(startedAt).getTime()),
+  );
+  const total = Math.round(ms / 1000);
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
 function osLabel(d: DeviceRow): string {
@@ -111,6 +149,10 @@ export function DeviceList() {
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  // TASK_128 — a 1-minute tick only re-renders the onboarding strip's live
+  // countdown; it does NOT fetch. The countdown derives from the server's
+  // timerStartedAt, so a reload never "jumps the clock back" (no websocket).
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const loadLink = useCallback(async () => {
     try {
@@ -199,6 +241,14 @@ export function DeviceList() {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [refreshAll]);
+
+  // TASK_128 — 1-minute tick for the onboarding strip/badge countdown. Separate
+  // from the 20 s data poll on purpose: the time text must move even when the
+  // list payload is unchanged.
+  useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
 
   async function enable() {
     setBusy("enable");
@@ -363,6 +413,46 @@ export function DeviceList() {
     if (q) rows = rows.filter((d) => `${d.name} ${d.osName ?? ""}`.toLowerCase().includes(q));
     return rows;
   }, [devices, filter, query]);
+
+  // TASK_128 — the SINGLE active onboarding device + the next in line. §4.2 is
+  // literal: "the single active onboarding device (earliest timerStartedAt among
+  // non-terminal rows already in step 2/3/4) plus one muted next up line".
+  //   - candidates = every non-terminal row (a step-1 row can still be "next
+  //     up": "starts in ~2 min" is exactly its truth);
+  //   - active     = the EARLIEST candidate already in step 2/3/4. A row still
+  //     in step 1 has nothing running yet, so per §4's timeline its t=0..5
+  //     footprint is the row badge (`Quarantine · 19:40 left`), not the strip;
+  //   - no active row -> the strip renders NOTHING (no empty shell).
+  const onboardingStrip = useMemo(() => {
+    const rows = devices
+      .filter((d) => d.onboarding && !isOnboardingTerminal(d.onboarding.status))
+      .sort(
+        (a, b) =>
+          new Date(a.onboarding!.timerStartedAt).getTime() -
+          new Date(b.onboarding!.timerStartedAt).getTime(),
+      );
+    if (rows.length === 0) return null;
+    const withView = rows.map((d) => ({
+      device: d,
+      view: onboardingView(
+        {
+          status: d.onboarding!.status,
+          tier: d.tier,
+          timerStartedAt: d.onboarding!.timerStartedAt,
+          hideDoneAt: d.onboarding!.hideDoneAt,
+          stayOnDoneAt: d.onboarding!.stayOnDoneAt,
+          releasedAt: d.onboarding!.releasedAt,
+          destinationOrgId: d.onboarding!.destinationOrgId,
+          isOnline: d.onboarding!.isOnline,
+        },
+        nowMs,
+      ),
+    }));
+    const active = withView.find((w) => w.view.step >= 2) ?? null;
+    if (!active) return null;
+    const next = withView.find((w) => w !== active) ?? null;
+    return { active, next };
+  }, [devices, nowMs]);
 
   const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
 
@@ -771,6 +861,50 @@ export function DeviceList() {
 
       {error && <p className="text-sm text-red-500">{error}</p>}
 
+      {/* TASK_128 — "one process at a time. And the coming one." ONE slim strip
+          above the grid showing only the active onboarding device, plus a muted
+          line for the next in line. Every string comes from onboardingView() so
+          the UI cannot drift from the state machine; nothing renders when no
+          device is onboarding. */}
+      {onboardingStrip && (
+        <div className="rounded-xl border border-border bg-bg-elevated px-4 py-3">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
+            <span className="font-medium">Securing new device</span>
+            <span className="text-fg-muted">·</span>
+            <span className="font-mono">{onboardingStrip.active.device.name}</span>
+            <span className="text-fg-muted">·</span>
+            <span className="text-fg-muted">{onboardingStrip.active.view.step} of 4</span>
+            <span className="text-fg-muted">·</span>
+            <span>{onboardingStrip.active.view.title.toLowerCase()}</span>
+            {onboardingStrip.active.view.next && (
+              <>
+                <span className="text-fg-muted">·</span>
+                <span className="text-fg-muted">next: {onboardingStrip.active.view.next}</span>
+              </>
+            )}
+            <span className="text-fg-muted">·</span>
+            <span className="text-fg-muted">
+              {onboardingStrip.active.view.waitingForDevice
+                ? "waiting for the device"
+                : formatOnboardingCountdown(onboardingStrip.active.view.remainingMs)}
+            </span>
+          </p>
+          {onboardingStrip.next && (
+            <p className="mt-1 text-xs text-fg-muted">
+              Next: {onboardingStrip.next.device.name} · starts in{" "}
+              {formatOnboardingEta(
+                Math.max(
+                  0,
+                  ONBOARDING_HIDE_MINUTES * 60_000 - onboardingStrip.next.view.elapsedMs,
+                ),
+              )}
+            </p>
+          )}
+        </div>
+      )}
+
+
       {/* ScreenConnect-style toolbar: tabs + filter + refresh */}
       <div className="rounded-xl border border-border bg-bg-elevated">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -859,6 +993,25 @@ export function DeviceList() {
                       <Moon className="h-4 w-4 shrink-0 text-fg-muted" />
                     )}
                     <span className="truncate font-mono text-sm text-fg">{d.name}</span>
+                    {/* TASK_128 — the row's ENTIRE footprint: the honest tier
+                        badge (Public until the move lands, Private after) plus a
+                        compact quarantine clock while the window is running.
+                        No per-row stage text, no second card. */}
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                        d.tier === "private"
+                          ? "border-emerald-500/40 text-emerald-500"
+                          : "border-border text-fg-muted",
+                      )}
+                    >
+                      {d.tier === "private" ? "Private" : "Public"}
+                    </span>
+                    {d.onboarding && !isOnboardingTerminal(d.onboarding.status) && (
+                      <span className="shrink-0 rounded-full border border-amber-500/40 px-2 py-0.5 text-[10px] font-medium text-amber-500">
+                        Quarantine · {quarantineClock(d.onboarding.timerStartedAt, nowMs)}
+                      </span>
+                    )}
                   </span>
                   <span className="hidden text-sm text-fg-muted md:block">{osLabel(d)}</span>
                   <span className="flex items-center gap-2 text-sm">
