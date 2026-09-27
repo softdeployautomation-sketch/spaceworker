@@ -1179,6 +1179,25 @@ model Device {
   // honestly show `Public` / `Private` and the onboarding strip never claims a
   // move that did not happen.
   tier                        String    @default("public")
+  // 2026-09-27 — per-device schedule override. Null (the default) means "use
+  // the admin's global screenshotCaptureIntervalMinutes" — most devices never
+  // need this. Set means THIS device is captured on its own cadence instead,
+  // e.g. compressing a test window to 1 minute without touching every other
+  // opted-in device's schedule.
+  screenshotIntervalMinutesOverride Int?
+  // 2026-09-27 — "start monitoring N minutes after this device comes back
+  // online," for a device that's opted in while offline (or regularly sleeps)
+  // — a grace period so capture doesn't start the instant the machine wakes,
+  // before whoever's using it has settled in. Null/0 = start as soon as it's
+  // online and due, same as today's behaviour.
+  screenshotWakeDelayMinutes  Int?
+  // Internal bookkeeping (never user-set directly): when THIS module last
+  // observed the device transition offline -> online. Cleared back to null
+  // the moment it's seen offline again, so the delay above is measured from
+  // the MOST RECENT wake, never a stale one. Deliberately owned entirely by
+  // lib/device-screenshots.ts (set/cleared inside listDueDevices) rather than
+  // the heartbeat ingest path, so this feature needs no changes there.
+  screenshotOnlineSinceAt     DateTime?
   // TASK_128 §15 — soft removal (the owner's Delete button, both tiers). A real
   // `db.device.delete()` is not available here: every Device child foreign key
   // except DeviceScreenshot/DeviceOnboarding defaults to RESTRICT, and a device

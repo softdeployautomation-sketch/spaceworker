@@ -98,8 +98,19 @@ type Tabs = "summary" | "control" | "command" | "clone" | "activity";
 // fetched from its own route (which re-checks ownership), so the console never
 // holds a screen image in memory until the owner actually opens it.
 type ScreenMonitorView = {
-  device: { id: string; name: string; status: string; optIn: boolean };
-  policy: { enabled: boolean; intervalMinutes: number; retentionDays: number };
+  device: {
+    id: string;
+    name: string;
+    status: string;
+    optIn: boolean;
+    intervalMinutesOverride: number | null;
+  };
+  policy: {
+    enabled: boolean;
+    intervalMinutes: number;
+    retentionDays: number;
+    effectiveIntervalMinutes: number;
+  };
   frames: Array<{
     id: string;
     status: string;
@@ -1852,6 +1863,59 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
     }
   }
 
+  const [intervalDraft, setIntervalDraft] = useState("");
+  const [editingInterval, setEditingInterval] = useState(false);
+
+  async function saveIntervalOverride(value: number | null) {
+    setBusy("interval");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ intervalMinutesOverride: value }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(typeof data.error === "string" ? data.error : "could not change the schedule");
+      }
+      setEditingInterval(false);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not change the schedule");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  const [captureMsg, setCaptureMsg] = useState("");
+
+  async function captureNow() {
+    setBusy("capture");
+    setCaptureMsg("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots/capture`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setCaptureMsg("Captured — see it below.");
+      } else if (res.status === 409) {
+        setCaptureMsg("This machine is offline right now, so there's nothing to capture.");
+      } else if (data.reason === "already_capturing") {
+        setCaptureMsg("A capture is already in progress for this machine — try again shortly.");
+      } else if (data.reason === "monitoring_disabled") {
+        setCaptureMsg("Screen monitoring is switched off service-wide right now.");
+      } else if (res.status === 202) {
+        setCaptureMsg("Queued — the box is under load, this will run shortly.");
+      } else {
+        setCaptureMsg(`Capture didn't produce a frame (${data.reason ?? "unknown reason"}).`);
+      }
+      await load();
+    } catch {
+      setCaptureMsg("Network error — try again.");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function forgetAll() {
     setBusy("clear");
     try {
@@ -1892,6 +1956,16 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
             >
               {busy === "optin" ? "Saving…" : view.device.optIn ? "Switch off" : "Switch on"}
             </button>
+            {view.device.optIn && view.policy.enabled && (
+              <button
+                onClick={captureNow}
+                disabled={busy === "capture" || view.device.status !== "online"}
+                title={view.device.status !== "online" ? "This machine is offline" : undefined}
+                className="rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+              >
+                {busy === "capture" ? "Capturing…" : "Capture now"}
+              </button>
+            )}
             {view.frames.length > 0 && (
               <button
                 onClick={forgetAll}
@@ -1902,17 +1976,74 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
               </button>
             )}
           </div>
+          {captureMsg && <p className="mt-1 text-xs text-fg-muted">{captureMsg}</p>}
           <p className="mt-1 text-xs text-fg-muted">
             {view.device.optIn
               ? view.policy.enabled
-                ? `This machine is photographed about every ${view.policy.intervalMinutes} minute${
-                    view.policy.intervalMinutes === 1 ? "" : "s"
+                ? `This machine is photographed about every ${view.policy.effectiveIntervalMinutes} minute${
+                    view.policy.effectiveIntervalMinutes === 1 ? "" : "s"
+                  }${
+                    view.device.intervalMinutesOverride !== null ? " (custom for this machine)" : ""
                   } while it is online, and pictures are kept for ${view.policy.retentionDays} day${
                     view.policy.retentionDays === 1 ? "" : "s"
                   }.`
                 : "Switched on here, but screen monitoring is currently switched OFF service-wide, so nothing is being captured right now."
               : "Nothing is captured from this machine while this is off."}
           </p>
+          {view.device.optIn && (
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              {editingInterval ? (
+                <>
+                  <input
+                    type="number"
+                    min={1}
+                    max={1440}
+                    value={intervalDraft}
+                    onChange={(e) => setIntervalDraft(e.target.value)}
+                    placeholder={String(view.policy.intervalMinutes)}
+                    className="w-20 rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
+                  />
+                  <span className="text-xs text-fg-muted">minutes for this machine</span>
+                  <button
+                    onClick={() => {
+                      const n = Number(intervalDraft);
+                      if (Number.isFinite(n) && n >= 1 && n <= 1440) void saveIntervalOverride(Math.floor(n));
+                      else setErr("Enter a whole number of minutes between 1 and 1440.");
+                    }}
+                    disabled={busy === "interval"}
+                    className="rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                  >
+                    {busy === "interval" ? "Saving…" : "Save"}
+                  </button>
+                  {view.device.intervalMinutesOverride !== null && (
+                    <button
+                      onClick={() => void saveIntervalOverride(null)}
+                      disabled={busy === "interval"}
+                      className="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-black/10 hover:text-fg disabled:opacity-50 dark:hover:bg-white/10"
+                    >
+                      Use default
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setEditingInterval(false)}
+                    className="text-xs text-fg-muted hover:text-fg"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => {
+                    setIntervalDraft(String(view.policy.effectiveIntervalMinutes));
+                    setEditingInterval(true);
+                  }}
+                  className="text-xs text-fg-muted underline-offset-2 hover:text-fg hover:underline"
+                >
+                  Edit schedule for this machine
+                </button>
+              )}
+            </div>
+          )}
           {view.frames.length > 0 && (
             <>
               <div className="mt-2 flex flex-wrap gap-2">
