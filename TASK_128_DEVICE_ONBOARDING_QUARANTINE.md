@@ -227,7 +227,7 @@ Also export a client-safe display helper (`onboardingView(row, nowMs)`) returnin
 | 3 | stay-on due, not done | `Staying awake` | `keeping it reachable for the move` |
 | 4 | elapsed ≥ 15 min, not released, in flight | `Moving to your private agent` | `almost done` |
 | 4 | same, but **overrun** (20–35, still public) | `Moving to your private agent` | `taking a little longer than usual — still working, nothing is lost` |
-| 4 | same, but **stuck** (≥35, still public, still retrying) | `Moving to your private agent` | `much longer than usual — nothing is lost; we keep retrying every 5 minutes` |
+| 4 | same, but **stuck** (≥35, still public, still retrying) | `Moving to your private agent` | `much longer than usual — nothing is lost` |
 | 4 | **failed** (terminal) | `Setup didn't finish` | `still on your public agent — you can keep using it` |
 | 4 | no destination on the plan | `Moving to your private agent` | `stays on your public agent — no private agent on this plan` |
 
@@ -457,7 +457,7 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 | Date | Change |
 | --- | --- |
 | 2026-09-27 | Built (Vantra `cb14182`, SpaceWorker `c9458a7`); merged with TASK_127 as `a7a7448`; deployed. |
-| 2026-09-27 | §13 — grace (plan ≠ deadline, 35-min ceiling), offline retry never burns an attempt, Public stays usable, `failed` visible in three places, migration renamed to `20261012000000`. |
+| 2026-09-27 | §13 — grace (plan ≠ deadline, then a 35-min *failure* ceiling), offline retry never burns an attempt, Public stays usable, `failed` visible in three places, migration renamed to `20261012000000`. *(The failure half was wrong — see §16.)* |
 | 2026-09-27 | §14 — the sweep syncs linked users itself (+ `synced`/`syncErrors` in the response); the `P2002` race guard from having two sync callers. |
 | 2026-09-27 | §15 — Delete on both tiers (`Device.removedAt` + `20261013000000_task128_device_removal`, Vantra's `delete` action), the bounded queue scroller, and the public PowerShell command (Vantra `install-link` `as: "powershell"`). Declared file list extended below. |
 | 2026-09-27 | §15 **verified and DEPLOYED.** Merged with `origin/main` (one conflict — both sides added `Device` columns; kept both). Vantra `0f6cfdf` and SpaceWorker `f8081e0` on `main`; `20261013000000_task128_device_removal` APPLIED; live evidence below. |
@@ -483,7 +483,7 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 
 **Not proven, and stated plainly:** the runtime *destructive* paths — an actual `deleteAgent`, an actual hide, an actual 15-minute move — were **not** exercised (that needs a real device, and a live delete would be irreversible). They are covered by code review, tsc, the 204/204 suite and the guard tests above, not by a live run. The UI was not rendered in a browser; the copy is guaranteed by the unit tests, not by eyeballing a dev server.
 
-### 17.1 Live pipeline observed in production (unplanned, 2026-09-27 ~15:54)
+### 18.1 Live pipeline observed in production (unplanned, 2026-09-27 ~15:54)
 
 The first §14 sweep after the deploy reported `{"ok":true,"synced":2,"checked":1,"acted":0}` and did something no unit test could: it **created the first real `DeviceOnboarding` rows in production**, and both landed exactly on the rules §13/§14 were written for.
 
@@ -497,7 +497,7 @@ The first §14 sweep after the deploy reported `{"ok":true,"synced":2,"checked":
 
 **What this proves, live, with no fakes:**
 
-1. **The offline rule is real.** "Sc" sat at **133 minutes** past its window with `attempts: 0` and no error. It neither burned an attempt nor failed — still `pending`, still `tier: public`, still in the owner's list. That is the owner's requirement ("any failed attempt due to offline should retry… should always remain accessible in that position") observed in production rather than asserted by a test. It also shows the 35-minute **ceiling is correctly unreachable while offline**: the ceiling counts *attempts*, and a device that is never reachable never attempts. An offline device waits indefinitely instead of failing — deliberate, and the strip says `waiting for the device`.
+1. **The offline rule is real.** "Sc" sat at **133 minutes** past its window with `attempts: 0` and no error. It neither burned an attempt nor failed — still `pending`, still `tier: public`, still in the owner's list. That is the owner's requirement ("any failed attempt due to offline should retry… should always remain accessible in that position") observed in production rather than asserted by a test. At the time this was attributed to the 35-minute ceiling counting *attempts* — **§16 has since removed that ceiling entirely**, so the conclusion is now stronger, not weaker: nothing on the clock can fail an offline device at all. An offline device waits indefinitely instead of failing — deliberate, and the strip says `waiting for the device` (then escalates to the amber `stuck` warning after 35 min).
 2. **§14 is what made it visible at all.** Before the sweep drove its own sync this row could not exist — every earlier cycle reported `checked: 0`. The first sync after deploy produced `synced: 2, checked: 1`.
 3. **The no-private-org fallback fired for real.** "I" belongs to an owner with **no private org** (verified: 3 `sw-` orgs, and that owner's only one is `public`). Vantra recorded `"owner has no private organization to move into"` on several older rows; the sweep released it at >20 min and it **stayed `public` and accessible** — the declared fallback, now confirmed against production data instead of reasoning.
 
