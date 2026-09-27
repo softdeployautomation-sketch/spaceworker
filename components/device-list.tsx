@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search } from "lucide-react";
 
 import { PanicButton } from "@/components/panic-button";
+import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { formatIdle } from "@/lib/device-idle";
 
@@ -378,6 +379,20 @@ export function DeviceList() {
     if (d.idleSeconds === null) return statusWord(d.status);
     return `${statusWord(d.status)} · ${formatIdle(d.idleSeconds)}`;
   };
+
+  // 2026-09-27 — hand the floating agent widget a real, compact summary of
+  // what's actually on screen (per-device name + status), not just "you're
+  // on the Devices page." Only this page's own already-fetched state, never
+  // a bigger app-wide dump. Cleared on unmount by the hook's own null-guard
+  // pattern isn't automatic here, so an empty array still yields a clear
+  // (if not yet loaded) rather than a stale one from a previous mount.
+  useSetAgentPageContext(
+    loaded
+      ? devices.length === 0
+        ? "Devices page: no devices yet."
+        : `Devices page: ${devices.map((d) => `${d.name} (${statusIdleLabel(d)})`).join(", ")}`
+      : null,
+  );
 
   return (
     <div className="space-y-5">

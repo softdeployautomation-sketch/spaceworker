@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { AgentWidget } from "@/components/agent-widget";
+import { AgentPageContextProvider } from "@/lib/agent-page-context";
 import { DesktopClock } from "@/components/clock";
 import { DashboardNav } from "@/components/dashboard-nav";
 import { DesktopBackground } from "@/components/desktop-background";
@@ -17,7 +18,8 @@ interface ShellProps {
 
 export function Shell({ children, buildTarget }: ShellProps) {
   return (
-    <div className="relative min-h-screen">
+    <AgentPageContextProvider>
+      <div className="relative min-h-screen">
       {/* Static 3D ambient desktop scene, behind everything else. */}
       <DesktopBackground />
 
@@ -67,7 +69,8 @@ export function Shell({ children, buildTarget }: ShellProps) {
           runtime (buildTarget set) has no DATABASE_URL, and /api/agent is a
           real Prisma-backed route — it would just fail there. */}
       {!buildTarget && <AgentWidget />}
-    </div>
+      </div>
+    </AgentPageContextProvider>
   );
 }
 

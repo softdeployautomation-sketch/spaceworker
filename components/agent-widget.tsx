@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { usePathname } from "next/navigation";
 
 import { Button, Spinner } from "@/components/ui";
+import { useAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 
 // 2026-09-27 — the floating agent widget: a persistent, page-aware, mutable
@@ -67,8 +68,16 @@ function pageLabel(pathname: string): string {
 // the widget is meant to have without pretending to know stages it can't see.
 const THINKING_PHRASES = ["Thinking…", "Reading your message…", "Preparing a reply…"];
 
+// The richer, page-supplied context (see lib/agent-page-context.tsx) if the
+// current page opted in, falling back to the generic route label otherwise.
+function currentPageContext(pathname: string, pageCtx: ReturnType<typeof useAgentPageContext>): string {
+  const rich = pageCtx?.getContext();
+  return rich || `Viewing: ${pageLabel(pathname)}`;
+}
+
 export function AgentWidget() {
   const pathname = usePathname();
+  const pageCtx = useAgentPageContext();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<WidgetMessage[]>([]);
@@ -145,7 +154,7 @@ export function AgentWidget() {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, pageContext: `Viewing: ${pageLabel(pathname ?? "")}` }),
+        body: JSON.stringify({ message: text, pageContext: currentPageContext(pathname ?? "", pageCtx) }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
