@@ -20,6 +20,11 @@ type Campaign = {
   // this type is reused for contexts that don't need it, not because it can
   // actually be missing when loading a template's content below.
   variants?: { id: string; subject: string; bodyHtml?: string }[];
+  // Opted into the "My campaigns" group of the template picker below (and,
+  // separately, into the admin Campaign Templates tab's promote-to-general
+  // review list). Off by default — not every one-off campaign is meant to be
+  // reused.
+  savedAsTemplate?: boolean;
 };
 
 type Mailbox = {
@@ -246,6 +251,25 @@ export default function CampaignsPage() {
       })
       .catch(() => setLeadCountError("Couldn't load that job's leads."));
   }, [fromSearchJobId]);
+
+  const [templateBusyId, setTemplateBusyId] = useState<string | null>(null);
+  async function toggleSavedAsTemplate(id: string, next: boolean) {
+    setTemplateBusyId(id);
+    try {
+      const res = await fetch(`/api/campaigns/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ savedAsTemplate: next }),
+      });
+      if (res.ok) {
+        setCampaigns((prev) => prev.map((c) => (c.id === id ? { ...c, savedAsTemplate: next } : c)));
+      }
+    } catch {
+      // Best-effort — the row's toggle just stays at its last known state.
+    } finally {
+      setTemplateBusyId(null);
+    }
+  }
 
   function openNew() {
     setName("");
@@ -619,6 +643,7 @@ export default function CampaignsPage() {
                 <th className="px-4 py-3 font-medium">Status</th>
                 <th className="px-4 py-3 font-medium">Recipients</th>
                 <th className="px-4 py-3 font-medium">Created</th>
+                <th className="px-4 py-3 font-medium">Template</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -646,6 +671,30 @@ export default function CampaignsPage() {
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{c._count?.items ?? 0}</td>
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
                     {new Date(c.createdAt).toLocaleString()}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void toggleSavedAsTemplate(c.id, !c.savedAsTemplate);
+                      }}
+                      disabled={templateBusyId === c.id || (c.variants?.length ?? 0) === 0}
+                      title={
+                        (c.variants?.length ?? 0) === 0
+                          ? "Add a subject/body before saving this as a template"
+                          : c.savedAsTemplate
+                            ? "Remove from your reusable templates"
+                            : "Save as a reusable template"
+                      }
+                      className={`rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                        c.savedAsTemplate
+                          ? "border-indigo-300 bg-indigo-50 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
+                          : "border-zinc-300 bg-white text-zinc-500 hover:bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-400"
+                      }`}
+                    >
+                      {templateBusyId === c.id ? "…" : c.savedAsTemplate ? "★ Saved" : "☆ Save as template"}
+                    </button>
                   </td>
                 </tr>
               ))}
@@ -711,10 +760,10 @@ export default function CampaignsPage() {
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 >
                   <option value="">Write my own subject/body below</option>
-                  {campaigns.filter((c) => (c.variants?.length ?? 0) > 0).length > 0 && (
-                    <optgroup label="My campaigns">
+                  {campaigns.filter((c) => c.savedAsTemplate && (c.variants?.length ?? 0) > 0).length > 0 && (
+                    <optgroup label="My templates">
                       {campaigns
-                        .filter((c) => (c.variants?.length ?? 0) > 0)
+                        .filter((c) => c.savedAsTemplate && (c.variants?.length ?? 0) > 0)
                         .map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name} ({c.variants!.length} variant{c.variants!.length === 1 ? "" : "s"})

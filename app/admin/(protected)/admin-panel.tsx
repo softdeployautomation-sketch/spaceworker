@@ -3114,6 +3114,124 @@ type AdminTemplate = {
   variants: { id: string; subject: string; bodyHtml: string }[];
 };
 
+type UserTemplate = {
+  id: string;
+  name: string;
+  ownerEmail: string;
+  variants: { id: string; subject: string; bodyHtml: string }[];
+  promotedTemplateId: string | null;
+  createdAt: string;
+};
+
+// User-submitted campaign templates — campaigns a user flagged "Save as
+// template" on their own Campaigns page (PATCH /api/campaigns/[id]). Distinct
+// review queue from the "Ready-made templates" table above: an admin browses
+// what users found worth reusing and, on approval, clones one into the
+// system-owned group via /promote — the user's own campaign is never touched
+// beyond stamping which general template it became (so this can't double-add).
+function UserSubmittedTemplatesSection({ onPromoted }: { onPromoted: () => void }) {
+  const [rows, setRows] = useState<UserTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [promotingId, setPromotingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/user-campaign-templates");
+      if (!res.ok) throw new Error("Failed to load user-submitted templates");
+      setRows((await res.json()) as UserTemplate[]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load user-submitted templates");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function promote(id: string) {
+    setPromotingId(id);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/user-campaign-templates/${id}/promote`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Promote failed");
+      } else {
+        await load();
+        onPromoted();
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setPromotingId(null);
+    }
+  }
+
+  return (
+    <div className="mt-10">
+      <h3 className="text-lg font-semibold tracking-tight">User-submitted templates</h3>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Campaigns users have flagged &quot;Save as template&quot; on their own Campaigns page. Promote
+        one you like into the general &quot;Ready-made templates&quot; table above — it clones its
+        content into a new system-owned template; the user&apos;s own campaign is untouched.
+      </p>
+      {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {loading ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">Name</th>
+                <th className="px-4 py-3 font-medium">Saved by</th>
+                <th className="px-4 py-3 font-medium">Variants</th>
+                <th className="px-4 py-3 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="px-4 py-3 font-medium text-zinc-800 dark:text-zinc-200">{r.name}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{r.ownerEmail}</td>
+                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                    {r.variants.length === 0 ? "—" : r.variants.map((v) => `"${v.subject}"`).join(", ")}
+                  </td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => promote(r.id)}
+                      disabled={promotingId === r.id || !!r.promotedTemplateId}
+                      className="rounded-lg bg-indigo-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+                    >
+                      {r.promotedTemplateId
+                        ? "Already added"
+                        : promotingId === r.id
+                          ? "Adding…"
+                          : "Add to general templates"}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-zinc-500 dark:text-zinc-400">
+                    No user-submitted templates yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Task 28, item 5 — admin authoring of "ready-made" campaign templates (the
 // "Ready-made templates" group in the Automations builder). Templates are just
 // EmailCampaign rows owned by the SYSTEM_TEMPLATES_USER_EMAIL account, with
@@ -3320,6 +3438,8 @@ return (
           </table>
         </div>
       )}
+
+      <UserSubmittedTemplatesSection onPromoted={load} />
     </div>
   );
 }
