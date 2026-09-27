@@ -1239,6 +1239,197 @@ const GOVERNOR_NUMBER_ROWS: Array<{
   { field: "queueTimeoutSec", label: "Queue timeout (seconds)", hint: "How long a queued request may wait before the sweep releases it (never wedged forever).", min: 60 },
   { field: "starvationPromoteMin", label: "Starvation promotion (minutes)", hint: "A free/trial request that has waited this long is promoted into the premium class, so free users are never starved.", min: 1 },
 ];
+// ---------------------------------------------------------------------------
+// TASK_127 Phase 1 — device screen monitoring (capture)
+// ---------------------------------------------------------------------------
+
+type ScreenshotSettingsState = {
+  enabled: boolean;
+  maxConcurrent: number;
+  intervalMinutes: number;
+  retentionDays: number;
+};
+
+type ScreenshotViewState = {
+  settings: ScreenshotSettingsState;
+  live: {
+    capturing: number;
+    captured: number;
+    failed: number;
+    optedInDevices: number;
+    lastCapturedAt: string | null;
+    lastCapturedDeviceId: string | null;
+  };
+};
+
+const SCREENSHOT_NUMBER_ROWS: Array<{
+  field: Exclude<keyof ScreenshotSettingsState, "enabled">;
+  label: string;
+  hint: string;
+  min: number;
+  max: number;
+}> = [
+  {
+    field: "maxConcurrent",
+    label: "Captures at once",
+    hint: "How many headless browsers may run at the same time. This is ALSO the queue's cap for screen captures, so extra devices wait instead of piling on. Start at 1 to measure what one capture costs in RAM before raising it.",
+    min: 1,
+    max: 10,
+  },
+  {
+    field: "intervalMinutes",
+    label: "Capture every (minutes)",
+    hint: "Per device. Frames are the raw material for the end-of-day summary, so this is how many frames a day would describe.",
+    min: 1,
+    max: 1440,
+  },
+  {
+    field: "retentionDays",
+    label: "Keep frames for (days)",
+    hint: "Older frames are deleted from disk and their rows removed by the sweep. This is a real deletion, not a hide.",
+    min: 1,
+    max: 365,
+  },
+];
+
+
+
+
+function ScreenshotPanel() {
+  const [state, setState] = useState<ScreenshotViewState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/screenshots");
+      if (!res.ok) throw new Error("Failed to load the screen monitoring settings");
+      setState((await res.json()) as ScreenshotViewState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load the screen monitoring settings");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function patch(field: string, body: Record<string, boolean | number>) {
+    setSaving(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/screenshots", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState(data as ScreenshotViewState);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Device screen monitoring</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Periodically opens each opted-in device&apos;s console, connects to it, and saves one picture of the screen.
+        This switch is only HALF the story — a device is never captured unless its OWN owner has also switched
+        monitoring on for that device, so leaving this on captures nothing by itself. Both default to off.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="mt-4 flex flex-col gap-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">Automatic screen capture</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.live.optedInDevices === 0
+                    ? "No device has monitoring switched on yet, so nothing would be captured even with this on."
+                    : `${state.live.optedInDevices} device${state.live.optedInDevices === 1 ? "" : "s"} opted in by their owner.`}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.live.capturing} capturing now · {state.live.captured} frame
+                  {state.live.captured === 1 ? "" : "s"} stored · {state.live.failed} failed
+                  {state.live.lastCapturedAt
+                    ? ` · last frame ${new Date(state.live.lastCapturedAt).toLocaleString()}`
+                    : " · no frame captured yet"}
+                </p>
+              </div>
+              <button
+                onClick={() => patch("enabled", { enabled: !state.settings.enabled })}
+                disabled={saving === "enabled"}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.settings.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.settings.enabled ? "Monitoring on" : "Monitoring off"}
+              </button>
+            </div>
+          </div>
+
+          {SCREENSHOT_NUMBER_ROWS.map((row) => {
+            const current = state.settings[row.field];
+            const draft = drafts[row.field];
+            return (
+              <div
+                key={row.field}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">{row.label}</p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={row.min}
+                    max={row.max}
+                    value={draft ?? String(current)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                    className="w-24 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
+                  <button
+                    onClick={() => {
+                      const n = Number(draft ?? current);
+                      if (!Number.isFinite(n) || !Number.isInteger(n) || n < row.min || n > row.max) {
+                        setError(`${row.label} must be a whole number between ${row.min} and ${row.max}`);
+                        return;
+                      }
+                      patch(row.field, { [row.field]: n });
+                    }}
+                    disabled={saving === row.field || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Set
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 
 
 function GovernorPanel() {
@@ -2116,6 +2307,7 @@ function InfrastructureTab() {
       </div>
 
       <GovernorPanel />
+      <ScreenshotPanel />
       <CloneLimitsPanel />
       <VantraLinksPanel />
     </div>

@@ -119,6 +119,8 @@ let live: {
   clones: number;
   clonesByUser: Record<string, number>;
   hostedDevices: number;
+  /** TASK_127: device screen captures in flight (status "capturing"). */
+  deviceScreenshots: number;
 };
 
 beforeEach(() => {
@@ -159,6 +161,7 @@ beforeEach(() => {
     clones: 0,
     clonesByUser: {},
     hostedDevices: 0,
+    deviceScreenshots: 0,
   };
 });
 
@@ -176,6 +179,9 @@ const fakeDb = {
   hostedBrowserSession: {
     findMany: async () => Array.from({ length: live.hostedDevices }, (_, i) => ({ deviceId: `hosted-${i}` })),
   },
+  // TASK_127: the in-flight screen captures. The "capturing" row IS the slot,
+  // so the governor's live count is simply how many exist.
+  deviceScreenshot: { count: async () => live.deviceScreenshots },
   governorQueueEntry: {
     create: async (args: DbArgs) => {
       const data = args.data ?? {};
@@ -440,11 +446,26 @@ test("the registry covers every high-RAM consumer, including the clone pair", ()
     false,
     "a per-user proposal cap on the user's own PC is not something this box's queue can relieve"
   );
-  // The four features that genuinely hold VPS RAM are the queueable ones.
+  // The features that genuinely hold VPS RAM are the queueable ones. TASK_127
+  // added `deviceScreenshots`: a capture is a real headless Chromium on THIS box,
+  // so it belongs in exactly this list.
   assert.deepEqual(
     GOVERNOR_FEATURES.filter((key) => FEATURE_REGISTRY[key].queueable),
-    ["dispatchLight", "dispatchHeavy", "browserSessions", "cloneSessions", "hostedPool"]
+    [
+      "dispatchLight",
+      "dispatchHeavy",
+      "browserSessions",
+      "cloneSessions",
+      "hostedPool",
+      "deviceScreenshots",
+    ]
   );
+  // Its cap is the one the owner tunes from the admin panel.
+  assert.equal(
+    FEATURE_REGISTRY.deviceScreenshots.maxColumn,
+    "screenshotCapturesMaxConcurrent"
+  );
+  assert.equal(FEATURE_REGISTRY.deviceScreenshots.maxDefault, 2);
 });
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ export const GOVERNOR_FEATURES = [
   "deviceActions",
   "cloneSessions",
   "hostedPool",
+  "deviceScreenshots",
 ] as const;
 
 export type GovernorFeature = (typeof GOVERNOR_FEATURES)[number];
@@ -328,7 +329,8 @@ export type GovernorCapColumn =
   | "vantraLinksMax"
   | "deviceActionsMaxConcurrent"
   | "cloneMaxConcurrent"
-  | "hostedPoolSize";
+  | "hostedPoolSize"
+  | "screenshotCapturesMaxConcurrent";
 
 export type GovernorEnabledColumn =
   | "dispatchLightEnabled"
@@ -336,7 +338,8 @@ export type GovernorEnabledColumn =
   | "browserSessionsEnabled"
   | "vantraLinksEnabled"
   | "deviceActionsEnabled"
-  | "cloneSessionsEnabled";
+  | "cloneSessionsEnabled"
+  | "screenshotMonitoringEnabled";
 
 export type GovernorPerUserColumn = "clonePerUserCap";
 
@@ -507,6 +510,34 @@ export const FEATURE_REGISTRY: Record<GovernorFeature, GovernorFeatureDefinition
           distinct: ["deviceId"],
         })
       ).length,
+  },
+  deviceScreenshots: {
+    key: "deviceScreenshots",
+    // TASK_127 Phase 1 — one live capture is a real headless Chromium on THIS
+    // box, so it is a first-class RAM consumer exactly like a clone session or a
+    // browser session. Owner, 2026-09-27: start at 2 captures at once, measure
+    // what 1 does to RAM, then tune `screenshotCapturesMaxConcurrent` in the
+    // admin panel — no code change needed, because the cap is read from there.
+    //
+    // The "live count IS the slot" rule (same as cloneSessions): a capture holds
+    // its admission for exactly as long as its DeviceScreenshot row sits in
+    // "capturing" — the row is created BEFORE the browser launches and updated
+    // when it finishes, so the count can never drift from what is really
+    // running. A worker killed mid-capture is reaped by the sweep (which marks
+    // the row "failed"), which is also what releases the slot again.
+    label: "Device screen captures",
+    maxColumn: "screenshotCapturesMaxConcurrent",
+    maxDefault: 2,
+    enabledColumn: "screenshotMonitoringEnabled",
+    pausedReason: "screenshot_monitoring_disabled",
+    queueable: true,
+    liveCount: (scope) =>
+      db.deviceScreenshot.count({
+        where: {
+          status: "capturing",
+          ...(scope.userId ? { userId: scope.userId } : {}),
+        },
+      }),
   },
 };
 

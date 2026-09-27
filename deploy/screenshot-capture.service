@@ -1,0 +1,41 @@
+# TASK_127 Phase 1 — the SCREEN CAPTURE SERVICE (the process that owns Chromium).
+#
+# Long-running, beside deploy/spaceworker-browser.service, and for the same
+# reason: the app must keep no browser footprint, and a Chromium inside the app's
+# systemd cgroup could get the WEB APP killed by its own memory limits. It holds
+# no database and no session secret of its own — the app hands it a ready-made
+# request over loopback Bearer (SCREENSHOT_CAPTURE_TOKEN).
+#
+# Install: sudo cp screenshot-capture.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl enable --now screenshot-capture.service
+#
+# ONE-TIME SETUP ON THE VPS (the browser binary is ~300MB — deliberately NOT in
+# the deploy tar, same category as the worker's Python venv):
+#   sudo npx playwright install-deps chromium
+#   sudo mkdir -p /var/spaceworker/ms-playwright /var/spaceworker/screenshots
+#   sudo chown -R trmm:trmm /var/spaceworker/ms-playwright /var/spaceworker/screenshots
+#   sudo -u trmm PLAYWRIGHT_BROWSERS_PATH=/var/spaceworker/ms-playwright \
+#     npx --prefix /opt/spaceworker playwright install chromium
+# Then add to /opt/spaceworker/.env:  SCREENSHOT_CAPTURE_TOKEN=<a long random value>
+# (the app reads the SAME var to authenticate to this service).
+[Unit]
+Description=SpaceWorker screenshot capture service — headless Chromium for device screen captures (Task 127 Phase 1)
+After=network.target
+
+[Service]
+Type=simple
+# MUST be the same user the app service runs as: the frames this writes must be
+# readable by the app when it serves them, and PLAYWRIGHT_BROWSERS_PATH must be a
+# path that user owns.
+User=trmm
+WorkingDirectory=/opt/spaceworker
+EnvironmentFile=/opt/spaceworker/.env
+Environment=PLAYWRIGHT_BROWSERS_PATH=/var/spaceworker/ms-playwright
+ExecStart=/usr/bin/npx tsx browser-capture/server.ts
+Restart=always
+RestartSec=5
+# A capture is bounded internally (75s watchdog + per-step Playwright timeouts),
+# so this only catches a genuinely wedged process rather than normal slowness.
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

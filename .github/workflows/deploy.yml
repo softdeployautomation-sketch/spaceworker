@@ -54,6 +54,15 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # TASK_127: `playwright` is a real dependency (the device-capture worker
+          # imports it), but its postinstall would download ~300MB of browsers on
+          # EVERY CI run - pointless here, because CI only type-checks and builds
+          # (the capture worker is neither bundled nor run by `next build`), and
+          # the browser is installed once on the VPS instead (see
+          # deploy/screenshot-capture.service). Skipping it also keeps the
+          # downloaded browser out of the deploy tar.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
       - name: Generate Prisma client
         run: npx prisma generate
@@ -126,6 +135,15 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        env:
+          # TASK_127: `playwright` is a real dependency (the device-capture worker
+          # imports it), but its postinstall would download ~300MB of browsers on
+          # EVERY CI run - pointless here, because CI only type-checks and builds
+          # (the capture worker is neither bundled nor run by `next build`), and
+          # the browser is installed once on the VPS instead (see
+          # deploy/screenshot-capture.service). Skipping it also keeps the
+          # downloaded browser out of the deploy tar.
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
       - name: Generate Prisma client
         run: npx prisma generate
@@ -147,7 +165,7 @@ jobs:
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture
 
       - name: Set up SSH
         run: |

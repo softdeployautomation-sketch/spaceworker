@@ -1,0 +1,18 @@
+# Install: sudo cp screenshot-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now screenshot-sweep.timer
+[Unit]
+Description=Run the SpaceWorker device screenshot capture sweep every minute
+
+# One-minute cadence on purpose. The CADENCE OF CAPTURES is not set here — it is
+# screenshotCaptureIntervalMinutes per device, which the owner can dial down to 1
+# minute to compress a test window. This timer only decides how often the sweep
+# LOOKS, and a pass with nothing due is a couple of small queries plus an exit
+# (and with monitoring off it exits before even that). systemd will not start a
+# second instance while one is active, and the governor's cap is counted from
+# database rows, so overlapping ticks can never exceed the concurrency cap.
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=1min
+Unit=screenshot-sweep.service
+
+[Install]
+WantedBy=timers.target

@@ -129,6 +129,8 @@ model User {
   hostedBrowserSessions    HostedBrowserSession[]
   // TASK_105 — the resource governor's durable wait list.
   governorQueueEntries     GovernorQueueEntry[]
+  // TASK_127 — Phase 1 device screenshot monitoring (frames + opt-in).
+  deviceScreenshots        DeviceScreenshot[]
 }
 
 model VerificationCode {
@@ -160,36 +162,36 @@ model RateLimitEvent {
 }
 
 model AdminSetting {
-  id                      String   @id @default("singleton")
-  updatedAt               DateTime @updatedAt
-  btcWallet               String?
-  usdtWallet              String? // USDT-TRC20 (Tron) — the original/default USDT chain
+  id                             String   @id @default("singleton")
+  updatedAt                      DateTime @updatedAt
+  btcWallet                      String?
+  usdtWallet                     String? // USDT-TRC20 (Tron) — the original/default USDT chain
   // USDT-ERC20 (Ethereum) — a second USDT wallet so buyers on Ethereum-native
   // exchanges (which often don't support Tron withdrawals) can pay directly
   // instead of needing to bridge/swap first. Independent from usdtWallet —
   // both can be configured at once, admin picks which chains are live.
-  usdtErc20Wallet         String?
+  usdtErc20Wallet                String?
   // Task 42 — one price per product sold on the store/landing page (all real
   // launch prices decided 2026-09-14, still admin-adjustable at runtime). The
   // old planPriceUsd field was renamed to webSubscriptionPriceUsd (same role,
   // new default 25 = the store's web-subscription price, superseding 9.99).
-  webSubscriptionPriceUsd Float    @default(25) // /month
-  extractorExePriceUsd    Float    @default(50) // one-time, 6-month term
-  mailerExePriceUsd       Float    @default(50) // one-time, 6-month term
-  combinedExePriceUsd     Float    @default(70) // one-time, 6-month term
-  automationExePriceUsd   Float    @default(100) // one-time, 6-month term — top tier
+  webSubscriptionPriceUsd        Float    @default(25) // /month
+  extractorExePriceUsd           Float    @default(50) // one-time, 6-month term
+  mailerExePriceUsd              Float    @default(50) // one-time, 6-month term
+  combinedExePriceUsd            Float    @default(70) // one-time, 6-month term
+  automationExePriceUsd          Float    @default(100) // one-time, 6-month term — top tier
   // TASK_99 / plan §COMMERCIAL C3 — module store: pick-your-capability web
   // subscriptions, each granting its own UserEntitlement instead of the full
   // tier-5 bundle. Placeholder launch prices — owner sets the real numbers in
   // Admin > Wallets & Prices.
-  extractorModulePriceUsd        Float @default(9) // /month
-  mailerModulePriceUsd           Float @default(9) // /month
-  assistantDevicesModulePriceUsd Float @default(15) // /month
+  extractorModulePriceUsd        Float    @default(9) // /month
+  mailerModulePriceUsd           Float    @default(9) // /month
+  assistantDevicesModulePriceUsd Float    @default(15) // /month
   // New EXE product (owner, 2026-09-26): the AI assistant + device control as
   // a lightweight desktop app. No build variant exists yet (same state
   // mailer/combined/automation EXE already sell in — TASK_27 Part A: "only
   // Extractor is wired into CI today") — sellable now, buildable later.
-  agentExePriceUsd Float @default(50) // one-time, 6-month term
+  agentExePriceUsd               Float    @default(50) // one-time, 6-month term
 
   // Task 46 — admin admission control for the two mechanisms that actually spend
   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
@@ -275,6 +277,26 @@ model AdminSetting {
   // EXE's hosted-fetch wrapper watches for that shape.
   maintenanceModeWeb    Boolean @default(false)
   maintenanceModeExeApi Boolean @default(false)
+
+  // TASK_127 — device screenshot monitoring (Phase 1: automated capture).
+  // Phase 1 is what actually spends real RAM on this box (each capture is a real
+  // headless Chromium), so its concurrency cap is a governor feature like every
+  // other RAM-holding mechanism — added to TASK_105's registry as
+  // `deviceScreenshots`, never enforced with a second, parallel counter.
+  //   screenshotMonitoringEnabled    = master switch. false (the default) =>
+  //                                    the sweep captures nothing at all.
+  //   screenshotCapturesMaxConcurrent = how many captures may run AT ONCE.
+  //                                    Owner, 2026-09-27: start at 2, measure
+  //                                    what 1 does to RAM, then tune here.
+  //   screenshotCaptureIntervalMinutes = per-device cadence between captures.
+  //   screenshotRetentionDays        = how long raw frames stay on disk before
+  //                                    the sweep deletes them (frames are the
+  //                                    sensitive artefact — a retention policy
+  //                                    is part of the feature, not a follow-up).
+  screenshotMonitoringEnabled      Boolean @default(false)
+  screenshotCapturesMaxConcurrent  Int     @default(2)
+  screenshotCaptureIntervalMinutes Int     @default(60)
+  screenshotRetentionDays          Int     @default(14)
 }
 
 model Mailbox {
@@ -1137,10 +1159,17 @@ model Device {
   // for waking a machine that's already asleep. `powerLanSubnet` is the
   // computed /24 (e.g. "192.168.0.0/24") lib/wol.ts's selectWolPeer matches
   // peers against — D2, never MeshCentral's same-mesh relay (R2).
-  powerMac          String?
-  powerLanIp        String?
-  powerLanSubnet    String?
-  powerMacUpdatedAt DateTime?
+  powerMac                    String?
+  powerLanIp                  String?
+  powerLanSubnet              String?
+  powerMacUpdatedAt           DateTime?
+  // TASK_127 — per-device OPT-IN for Phase 1 screenshot monitoring. This is the
+  // consent boundary the task doc makes non-negotiable ("Any capture without the
+  // device owner's explicit per-device opt-in" is an explicit non-goal), so it is
+  // a per-DEVICE switch, not merely a global admin toggle: one device being
+  // monitored must never silently monitor the user's other machines. Default
+  // false — a device nobody opted in is never captured.
+  screenshotMonitoringEnabled Boolean   @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1155,6 +1184,8 @@ model Device {
   outgoingRelationships DeviceRelationship[]   @relation("sourceDevice")
   incomingRelationships DeviceRelationship[]   @relation("targetDevice")
   audits                DeviceAudit[]
+  // TASK_127 — Phase 1 captured frames for this device.
+  screenshots           DeviceScreenshot[]
   // Task 97 — Browser Clone. A device can be the capture SOURCE (the user's
   // work PC) and/or the clone DESTINATION (a hosted clone PC, deviceKind
   // "hosted"), and it can host the egress relay and the browser sessions.
@@ -1752,4 +1783,65 @@ model GovernorQueueEntry {
   @@index([feature, ref, status])
   @@index([userId, status])
   @@index([status, expiresAt])
+}
+
+// TASK_127 Phase 1 — one captured FRAME of a device's screen.
+//
+// The bytes NEVER live in Postgres. A frame row holds a RELATIVE path under the
+// screenshot root (resolved by lib/device-screenshots.ts), matching this
+// codebase's existing discipline of keeping large/sensitive artefacts out of the
+// database (worker files, browser profiles). Base64-in-a-column was explicitly
+// ruled out by the task doc — a day of frames would bloat every backup and every
+// query that touches the row.
+//
+// A row is ALSO the slot. `status = "capturing"` is exactly what the governor's
+// `deviceScreenshots` liveCount counts, so a capture holds its admission for
+// precisely as long as it is really running — the same "the live count IS the
+// slot" design a CloneJob uses (TASK_105 has no explicit release call). That is
+// why the row is created BEFORE the browser starts and updated when it finishes,
+// and why the sweep reaps rows stuck in "capturing": a worker killed mid-capture
+// must never wedge the concurrency cap forever.
+//
+// Status union (TEXT + documented, the codebase style — no DB enum):
+//   capturing | captured | failed
+//     capturing = in flight right now; HOLDS a governor slot
+//     captured  = a real frame is on disk at filePath
+//     failed    = no frame; failureReason says why (offline, no_session, timeout)
+model DeviceScreenshot {
+  id            String    @id @default(cuid())
+  deviceId      String
+  // Operational capture state, not an audit record — cascades with its device
+  // and user (same reasoning as GovernorQueueEntry: a frame of a deleted
+  // account's screen has nothing to preserve, and the file is deleted with it).
+  device        Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "capturing" | "captured" | "failed"
+  status        String    @default("capturing")
+  // Path RELATIVE to the screenshot root — never absolute (so the root can move
+  // without rewriting rows), and never the bytes themselves.
+  filePath      String?
+  bytes         Int?
+  width         Int?
+  height        Int?
+  // Why a failed capture failed — a stable machine-ish reason string.
+  failureReason String?
+  // The UTC day this frame belongs to, stamped at insert so Phase 2's daily
+  // summary is one indexed range read instead of a timezone computation per row.
+  summaryDate   DateTime
+  // When the frame was actually TAKEN (set on completion, not on insert — the
+  // row is created before the browser launches so it can hold the slot).
+  capturedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Read paths that actually exist (TASK_107 discipline — index what is queried):
+  //   the governor's live count    -> status ("capturing")
+  //   a device's frames for a day  -> deviceId + summaryDate
+  //   the retention purge          -> summaryDate + status
+  //   a user's recent frames       -> userId + createdAt
+  @@index([status])
+  @@index([deviceId, summaryDate, status])
+  @@index([userId, createdAt])
+  @@index([summaryDate, status])
 }
