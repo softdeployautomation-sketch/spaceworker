@@ -1,0 +1,23 @@
+-- TASK_128 §15 — device removal (the owner's "delete button for each device,
+-- in the public and in the private"). ADDITIVE: every existing row gets NULL,
+-- which means "not removed", so nothing changes until a user removes a device.
+--
+-- WHY A MARKER AND NOT A ROW DELETION: every Device child foreign key except
+-- DeviceScreenshot and DeviceOnboarding is RESTRICT, and a device ALWAYS has
+-- DeviceHeartbeat rows — so `DELETE FROM "Device"` raises a foreign-key
+-- violation, and deleting the history first would destroy the audit trail the
+-- console's Activity tab is built on. The AGENT side really is removed: the
+-- delete route calls Vantra's `deleteAgent` (uninstall command + TRMM record
+-- removal) before this column is ever set, and refuses to set it if that call
+-- failed — so the UI can never claim a removal that did not happen.
+--
+-- Strictly after the newest migration on the remote:
+-- 20261012000000_task128_device_onboarding is APPLIED on the VPS (it shipped
+-- with the TASK_128 merge), so this must sort above it and must never reuse its
+-- prefix — migrations apply in name order, and a duplicate prefix is exactly
+-- how history diverges.
+--
+-- Column order matches the datamodel, so the file stays reproducible from
+-- schema.prisma.
+ALTER TABLE "Device"
+  ADD COLUMN "removedAt" TIMESTAMP(3);

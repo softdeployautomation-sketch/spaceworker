@@ -29,7 +29,14 @@ export async function GET() {
   // device list, get clicked into a console, or be targeted by a device
   // action meant for a real machine.
   const devices = await prisma.device.findMany({
-    where: { userId: session.userId, deviceKind: { not: "hosted" } },
+    where: {
+      userId: session.userId,
+      deviceKind: { not: "hosted" },
+      // TASK_128 §15 — a removed device (the Delete button) leaves no ghost
+      // row behind: filtered HERE, at the one read every devices surface goes
+      // through, rather than merely hidden in the component.
+      removedAt: null,
+    },
     orderBy: { createdAt: "asc" },
     select: deviceListSelector,
   });

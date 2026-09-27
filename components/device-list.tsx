@@ -2,20 +2,28 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Activity, Moon, Monitor, Plus, PlugZap, RefreshCw, Search, ShieldCheck } from "lucide-react";
+import {
+  Activity,
+  Moon,
+  Monitor,
+  Plus,
+  PlugZap,
+  RefreshCw,
+  Search,
+  ShieldCheck,
+  Trash2,
+} from "lucide-react";
 
+import { useConfirm } from "@/components/confirm-provider";
 import { PanicButton } from "@/components/panic-button";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { formatIdle } from "@/lib/device-idle";
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
-  ONBOARDING_HIDE_MINUTES,
-  formatOnboardingEta,
-  isOnboardingTerminal,
   onboardingClockText,
   onboardingRowLabel,
-  onboardingView,
+  orderOnboardingQueue,
 } from "@/lib/device-onboarding";
 
 // Task 95 — Devices v2 list, ScreenConnect-style session grid. ONE device =
@@ -133,9 +141,23 @@ export function DeviceList() {
     installerNames: InstallerNames | null;
   } | null>(null);
   const [psRevealed, setPsRevealed] = useState(false);
+  // TASK_128 §15 — the PUBLIC tier's PowerShell command (owner request: the
+  // same convenience the private tier has). Held in memory only: the public
+  // tier's primary artifact stays the shareable link, and Vantra does not store
+  // this one (see `mintPublicPsCommand` in lib/vantra-link.ts).
+  const [publicPs, setPublicPs] = useState<{ command: string; expiresAt: string } | null>(null);
+  const [publicPsRevealed, setPublicPsRevealed] = useState(false);
+  // TASK_128 §15 — which row's Delete is in flight (per-row spinner, so a slow
+  // removal never freezes the whole list).
+  const [removingId, setRemovingId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
+  // TASK_128 §15 — the in-app themed confirm (components/confirm-provider.tsx),
+  // the same dialog the console uses, never `window.confirm`: removal is
+  // irreversible, and a Private device carries an EXTRA warning (it lives on the
+  // owner's private agent domain, not the shareable public one).
+  const confirm = useConfirm();
   // TASK_128 — a 1-minute tick only re-renders the onboarding strip's live
   // countdown; it does NOT fetch. The countdown derives from the server's
   // timerStartedAt, so a reload never "jumps the clock back" (no websocket).
@@ -322,6 +344,116 @@ export function DeviceList() {
     }
   }
 
+  // TASK_128 §15 — mint the PUBLIC tier's PowerShell install command. Same
+  // endpoint as every other mint, distinguished by `kind: "public-powershell"`
+  // (Vantra reads a top-level `as: "powershell"` — a SIBLING of `installer`, so
+  // the frozen TASK_121 contract is untouched). Returned inline, never stored.
+  async function mintPublicPs() {
+    setBusy("install-public-powershell");
+    setError("");
+    try {
+      const res = await fetch("/api/assistant/vantra/install-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "public-powershell" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // `vantra_deploy_outdated` is a deploy-order problem (Vantra does not
+        // know the flag yet), not something the user did — say so plainly
+        // instead of showing a raw code.
+        if (data.error === "vantra_deploy_outdated") {
+          throw new Error("This isn't available yet — the device service is mid-update. Try again shortly.");
+        }
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't generate the command");
+      }
+      setPublicPs({ command: String(data.command ?? ""), expiresAt: String(data.expiresAt ?? "") });
+      setPublicPsRevealed(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't generate the command");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // TASK_128 §15 — the owner's Delete button, on BOTH tiers.
+  //
+  // A Private device gets an EXTRA warning: it lives on the private agent
+  // domain, so removing it is a different promise than removing a public one.
+  // There is no `window.confirm` here — the themed dialog matches the rest of
+  // the app (and the desktop EXE build has no browser chrome to fall back on).
+  //
+  // Never silent: an agent the service can't reach answers `agent_offline`, and
+  // that is surfaced with the documented local-only escape hatch — which is
+  // NEVER the default, and says in plain words that the agent stays installed.
+  async function removeDeviceRow(d: DeviceRow) {
+    const isPrivate = d.tier === "private";
+    if (
+      !(await confirm({
+        title: `Remove ${d.name}?`,
+        description: isPrivate ? (
+          <>
+            <span className="block">
+              This uninstalls the agent from the machine and removes it from your{" "}
+              <span className="font-medium">private</span> agent. This can&apos;t be undone — you&apos;d
+              have to install the agent again.
+            </span>
+            <span className="mt-2 block font-medium">
+              This is a private-agent device: only you can reach it.
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="block">
+              This uninstalls the agent from the machine and removes it from your list. This
+              can&apos;t be undone — you&apos;d have to install the agent again.
+            </span>
+            <span className="mt-2 block text-fg-muted">
+              The machine&apos;s history (sessions, activity) is kept.
+            </span>
+          </>
+        ),
+        confirmLabel: "Remove device",
+        confirmVariant: "danger",
+      }))
+    ) {
+      return;
+    }
+
+    setRemovingId(d.id);
+    setError("");
+    try {
+      let res = await fetch(`/api/devices/${d.id}`, { method: "DELETE" });
+      let data: { error?: unknown } = await res.json().catch(() => ({}));
+      if (!res.ok && data.error === "agent_offline") {
+        const hideOnly = await confirm({
+          title: `Couldn't remove ${d.name}`,
+          description:
+            "The removal didn't go through, so nothing was changed. You can hide it from this list instead — the agent stays installed on the machine until you remove it there.",
+          confirmLabel: "Hide from list anyway",
+          confirmVariant: "danger",
+        });
+        if (!hideOnly) return;
+        res = await fetch(`/api/devices/${d.id}?local=1`, { method: "DELETE" });
+        data = await res.json().catch(() => ({}));
+      }
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string" ? data.error : "Couldn't remove the device",
+        );
+      }
+      // Drop the row immediately — /api/devices already filters `removedAt`, so
+      // the next poll agrees; this just makes the click feel instant. The
+      // device's onboarding row was closed server-side too, so it also leaves
+      // the quarantine strip.
+      setDevices((prev) => prev.filter((x) => x.id !== d.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't remove the device");
+    } finally {
+      setRemovingId("");
+    }
+  }
+
   // Task 121 (D7/Q3) — Vantra's `applyNamePreset`, verbatim: one click fills
   // link / folder / zip with the same pre-tested token (e.g. `taxreturn` →
   // `taxreturn.zip`).
@@ -401,41 +533,39 @@ export function DeviceList() {
     return rows;
   }, [devices, filter, query]);
 
-  // TASK_128 — the SINGLE active onboarding device + the next in line ("one
-  // process at a time. And the coming one.").
-  //   - candidates = every non-terminal row, earliest `timerStartedAt` first;
-  //   - active     = the EARLIEST candidate, from its very first sweep. The
-  //     owner asked to SEE public devices getting quarantined and moved, so
-  //     step 1 shows too ("Quarantined · waiting for the first check-in") —
-  //     the t=0..5 window is no longer badge-only;
-  //   - next       = the first OTHER candidate ("starts in ~N min");
+  // TASK_128 — the onboarding QUEUE, ordered by `orderOnboardingQueue` in
+  // lib/device-onboarding.ts (pure and unit-tested, so the component cannot
+  // invent its own order):
+  //   - queue[0] = the EARLIEST candidate, from its very first sweep. The owner
+  //     asked to SEE public devices getting quarantined and moved, so step 1
+  //     shows too ("Quarantined · waiting for the first check-in") — the t=0..5
+  //     window is no longer badge-only;
+  //   - the REST render beneath it inside a bounded scroller — the owner:
+  //     "make a scroll in case the public pending devices are a lot so they
+  //     don't fill up the screen." The strip itself therefore never grows past
+  //     a few lines no matter how many devices are queued;
   //   - no candidates -> the strip renders NOTHING (no empty shell).
   const onboardingStrip = useMemo(() => {
-    const rows = devices
-      .filter((d) => d.onboarding && !isOnboardingTerminal(d.onboarding.status))
-      .sort(
-        (a, b) =>
-          new Date(a.onboarding!.timerStartedAt).getTime() -
-          new Date(b.onboarding!.timerStartedAt).getTime(),
-      );
-    if (rows.length === 0) return null;
-    const withView = rows.map((d) => ({
-      device: d,
-      view: onboardingView(
-        {
-          status: d.onboarding!.status,
-          tier: d.tier,
-          timerStartedAt: d.onboarding!.timerStartedAt,
-          hideDoneAt: d.onboarding!.hideDoneAt,
-          stayOnDoneAt: d.onboarding!.stayOnDoneAt,
-          releasedAt: d.onboarding!.releasedAt,
-          destinationOrgId: d.onboarding!.destinationOrgId,
-          isOnline: d.onboarding!.isOnline,
-        },
-        nowMs,
-      ),
-    }));
-    return { active: withView[0], next: withView[1] ?? null };
+    const queue = orderOnboardingQueue(
+      devices.map((d) => ({
+        device: d,
+        onboarding: d.onboarding
+          ? {
+              status: d.onboarding.status,
+              tier: d.tier,
+              timerStartedAt: d.onboarding.timerStartedAt,
+              hideDoneAt: d.onboarding.hideDoneAt,
+              stayOnDoneAt: d.onboarding.stayOnDoneAt,
+              releasedAt: d.onboarding.releasedAt,
+              destinationOrgId: d.onboarding.destinationOrgId,
+              isOnline: d.onboarding.isOnline,
+            }
+          : null,
+      })),
+      nowMs,
+    );
+    if (queue.length === 0) return null;
+    return { active: queue[0], rest: queue.slice(1) };
   }, [devices, nowMs]);
 
   // TASK_128 — devices whose window ended WITHOUT moving. Rendered as a
@@ -777,6 +907,72 @@ export function DeviceList() {
                     <p className="text-xs text-fg-muted">
                       One-time link, valid 72 hours — run it on the machine you want linked.
                     </p>
+
+                    {/* TASK_128 §15 — the PUBLIC tier's PowerShell option (owner
+                        request: "just the way we have for private"). Same
+                        generate/reveal/copy shape as the private block below, and
+                        the command is masked until Reveal for the same reason
+                        (shoulder-surfing): it names the public agent host, which
+                        the shareable link deliberately hides. No premium gate —
+                        it enrolls into the same public agent the link does, so it
+                        grants nothing new; it only skips the download step. */}
+                    <div className="space-y-2 rounded-lg border border-border bg-bg px-3 py-3">
+                      <p className="text-xs font-medium text-fg">
+                        Prefer PowerShell?{" "}
+                        <span className="font-normal text-fg-muted">(public agent)</span>
+                      </p>
+                      {!publicPs ? (
+                        <>
+                          <button
+                            onClick={() => void mintPublicPs()}
+                            disabled={busy === "install-public-powershell"}
+                            className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                          >
+                            {busy === "install-public-powershell"
+                              ? "Generating…"
+                              : "Generate PowerShell command"}
+                          </button>
+                          <p className="text-xs text-fg-muted">
+                            Skip the download — mint a command to run in an elevated PowerShell on
+                            the target machine.
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
+                            {publicPsRevealed ? publicPs.command : maskCommand(publicPs.command)}
+                          </pre>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={() => setPublicPsRevealed((v) => !v)}
+                              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+                            >
+                              {publicPsRevealed ? "Hide" : "Reveal"}
+                            </button>
+                            <button
+                              onClick={() => void copyText("public-ps", publicPs.command)}
+                              disabled={!publicPsRevealed}
+                              title={publicPsRevealed ? undefined : "Reveal first, then copy"}
+                              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                            >
+                              {copied === "public-ps" ? "Copied ✓" : "Copy command"}
+                            </button>
+                            <button
+                              onClick={() => void mintPublicPs()}
+                              disabled={busy === "install-public-powershell"}
+                              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg-muted transition-colors hover:text-fg disabled:opacity-50"
+                            >
+                              {busy === "install-public-powershell" ? "Generating…" : "New command"}
+                            </button>
+                          </div>
+                          <p className="text-xs text-fg-muted">
+                            Run in an elevated PowerShell on the target machine. Valid 72 hours —
+                            the device lands on your public agent, then moves to your private agent
+                            on its own.
+                          </p>
+                        </>
+                      )}
+                    </div>
                     {link.status === "pending_install" && (
                       <p className="text-xs text-amber-500">
                         Waiting for install — the machine appears here the moment the agent checks in.
@@ -878,21 +1074,35 @@ export function DeviceList() {
             <span className="text-fg-muted">·</span>
             <span className="text-fg-muted">{onboardingClockText(onboardingStrip.active.view)}</span>
           </p>
-          <p className="mt-1 text-xs text-fg-muted">
-            {onboardingStrip.active.view.detail}
-            {onboardingStrip.next && (
-              <>
-                {" · "}Next: {onboardingStrip.next.device.name} · starts in{" "}
-                {formatOnboardingEta(
-                  onboardingStrip.next.view.nextStageInMs ??
-                    Math.max(
-                      0,
-                      ONBOARDING_HIDE_MINUTES * 60_000 - onboardingStrip.next.view.elapsedMs,
-                    ),
-                )}
-              </>
-            )}
-          </p>
+          <p className="mt-1 text-xs text-fg-muted">{onboardingStrip.active.view.detail}</p>
+          {/* TASK_128 §15 — the COMING ones, in a bounded scroller. The owner:
+              "make a scroll in case the public pending devices are a lot so they
+              don't fill up the screen." So the strip is always a few lines tall,
+              no matter how many devices are queued behind the active one, and
+              every line uses the SAME clock string as the active device
+              (`onboardingClockText`) so no two rows can disagree. */}
+          {onboardingStrip.rest.length > 0 && (
+            <div className="mt-2 border-t border-border pt-2">
+              <p className="text-xs font-medium text-fg-muted">
+                {onboardingStrip.rest.length === 1
+                  ? "1 more in line"
+                  : `${onboardingStrip.rest.length} more in line`}
+              </p>
+              <div className="mt-1 max-h-24 space-y-1 overflow-y-auto pr-1">
+                {onboardingStrip.rest.map((item) => (
+                  <p
+                    key={item.device.id}
+                    className="flex items-center justify-between gap-3 text-xs text-fg-muted"
+                  >
+                    <span className="truncate font-mono">{item.device.name}</span>
+                    <span className="shrink-0">
+                      {item.view.title.toLowerCase()} · {onboardingClockText(item.view)}
+                    </span>
+                  </p>
+                ))}
+              </div>
+            </div>
+          )}
           <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
         </div>
       )}
@@ -990,11 +1200,17 @@ export function DeviceList() {
                     ? "bg-amber-400"
                     : "bg-zinc-400";
               return (
-                <Link
-                  key={d.id}
-                  href={`/dashboard/devices/${d.id}`}
-                  className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 border-b border-border px-4 py-3 transition-colors last:border-b-0 hover:bg-black/5 md:grid-cols-[minmax(0,1fr)_140px_200px_36px] dark:hover:bg-white/5"
-                >
+                // TASK_128 §15 — the Delete button must NOT nest inside the row's
+                // Link (a <button> inside an <a> is invalid markup and would also
+                // navigate on click). So it is a SIBLING, absolutely positioned
+                // over the row's trailing edge, and the Link carries right padding
+                // so no cell runs underneath it. The row's bottom border moves up
+                // to this wrapper because `last:` now applies here, not the Link.
+                <div key={d.id} className="group relative border-b border-border last:border-b-0">
+                  <Link
+                    href={`/dashboard/devices/${d.id}`}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 pr-14 transition-colors hover:bg-black/5 md:grid-cols-[minmax(0,1fr)_140px_200px_36px] dark:hover:bg-white/5"
+                  >
                   <span className="flex min-w-0 items-center gap-2.5">
                     {online ? (
                       <Monitor className="h-4 w-4 shrink-0 text-fg-muted" />
@@ -1047,7 +1263,23 @@ export function DeviceList() {
                       <Activity className="h-4 w-4 text-fg-muted/60" />
                     )}
                   </span>
-                </Link>
+                  </Link>
+                  {/* TASK_128 §15 — remove the device, on BOTH tiers (the confirm
+                      dialog adds the extra Private warning). Visible on touch and
+                      on desktop it fades in on row hover / keyboard focus, so it
+                      never competes with the row's own status while staying
+                      reachable without a mouse. */}
+                  <button
+                    type="button"
+                    onClick={() => void removeDeviceRow(d)}
+                    disabled={removingId === d.id}
+                    title={`Remove ${d.name}`}
+                    aria-label={`Remove ${d.name}`}
+                    className="absolute right-2 top-1/2 z-10 -translate-y-1/2 rounded-md border border-transparent p-1.5 text-fg-muted opacity-100 transition-all hover:border-red-500/40 hover:text-red-500 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40 disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
               );
             })}
           </div>

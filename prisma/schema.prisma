@@ -1179,6 +1179,17 @@ model Device {
   // honestly show `Public` / `Private` and the onboarding strip never claims a
   // move that did not happen.
   tier                        String    @default("public")
+  // TASK_128 §15 — soft removal (the owner's Delete button, both tiers). A real
+  // `db.device.delete()` is not available here: every Device child foreign key
+  // except DeviceScreenshot/DeviceOnboarding defaults to RESTRICT, and a device
+  // ALWAYS has DeviceHeartbeat rows, so a hard delete would throw a
+  // foreign-key violation — and clearing the children first would destroy the
+  // audit trail the console's Activity tab is built on. `removedAt` set ⇒ the
+  // device is gone from the list and its console (filtered at the query, not
+  // cosmetically), the Vantra/TRMM agent is really gone (the delete route
+  // uninstalls it FIRST, and refuses to set this column if that failed), and
+  // the machine's history is preserved.
+  removedAt                   DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

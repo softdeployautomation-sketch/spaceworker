@@ -565,6 +565,57 @@ export async function mintInstallLink(
 }
 
 /**
+ * TASK_128 §15 — the PUBLIC tier's PowerShell install command (owner request:
+ * "add a powershell generation option for public devices just the way we have
+ * for private").
+ *
+ * Same Vantra mint the private tier uses, aimed at the PUBLIC org, with the
+ * additive top-level `as: "powershell"` flag Vantra's install-link route reads.
+ * That key is a SIBLING of `installer` on purpose: `lib/sw-installer-names.ts`
+ * is the frozen TASK_121 contract, and an older Vantra never sees this body at
+ * all, so nothing about the existing link/exe/ZIP paths changes.
+ *
+ * DELIBERATELY NOT PERSISTED (unlike `privatePsCommand`): the public tier's
+ * primary artifact stays the shareable wrapper link, this command is a
+ * 72 h-scoped convenience the panel mints on demand and holds in memory, and
+ * adding two more columns to VantraLink for a secondary artifact is churn the
+ * owner did not ask for. The private tier's stored command is untouched.
+ *
+ * The reveal is the caller's business (the panel masks it behind an explicit
+ * Reveal, exactly like the private command) — but note this command DOES name
+ * the public agent host, which the wrapper link deliberately hides. That is the
+ * trade the owner asked for; it is recorded in TASK_128 §15.
+ */
+export async function mintPublicPsCommand(
+  userId: string,
+): Promise<{ command: string; expiresAt: Date }> {
+  const link = await db.vantraLink.findUnique({ where: { userId } });
+  if (!link || link.status === "revoked") throw new Error("no_link");
+
+  const minted = await vantraFetch<{ ok: boolean; command?: string }>(
+    `/api/internal/sw/orgs/${link.orgId}/install-link`,
+    { method: "POST", body: JSON.stringify({ as: "powershell" }) },
+  );
+  // Deploy-order guard: an older Vantra answers the public shape (a
+  // `downloadUrl`, no `command`) because it does not know the flag yet. Saying
+  // so plainly beats handing the panel an empty code block.
+  if (typeof minted.command !== "string" || !minted.command) {
+    throw new Error("vantra_deploy_outdated");
+  }
+
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_public_ps_minted",
+    status: "executed",
+    detail: { orgId: link.orgId },
+  });
+  return {
+    command: minted.command,
+    expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+  };
+}
+
+/**
  * Resolves a one-time install token to the real (server-only) download URL.
  *
  * Task 121 (§4a, Q1): the minted URL is remembered on the row, so this is a
@@ -729,6 +780,14 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           tier: entry.tier,
         },
       });
+      // TASK_128 §15 — a REMOVED device (the owner's Delete button) is never
+      // resurrected: no onboarding row, no strip entry, no badge. The upsert
+      // above cannot clear `removedAt` (it is not in the data it writes), so
+      // the row can only come back if the owner adds the machine again — which
+      // enrolls a NEW agent id, so it arrives as a genuinely new device with
+      // its own 20-minute quarantine.
+      if (saved.removedAt) continue;
+
       // TASK_128 — the visible onboarding row. `timerStartedAt` is COPIED from
       // Vantra's DeviceAutoMove row (never invented locally) so the countdown
       // the owner sees is the clock that will actually fire the move. It is
@@ -805,6 +864,79 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
     });
     throw err;
   }
+}
+
+/**
+ * TASK_128 §15 — the owner's device removal, both tiers.
+ *
+ * ORDER IS THE POINT: the agent is really removed FIRST (Vantra's tenant-checked
+ * `delete` action = TRMM uninstall + agent-record removal), and only then is the
+ * local row marked gone. A removal that only touched our own database would
+ * leave a live, still-checking-in agent behind a hidden row — a silent lie, and
+ * exactly the kind of thing the owner keeps flagging.
+ *
+ * An offline MACHINE is not a refusal: TRMM's `deleteAgent` fires the uninstall
+ * best-effort and removes the agent record either way, so a sleeping or wiped PC
+ * can still be removed. A 503 means the removal genuinely did not happen (TRMM
+ * unreachable, or an agent id TRMM does not know) and is surfaced here as
+ * `agent_offline`; the row is then left EXACTLY as it was, because a removal that
+ * did not happen must never look done.
+ *
+ * `localOnly` is the escape hatch for the residual case — an agent that cannot be
+ * removed through the service at all: it hides the row WITHOUT touching the
+ * agent, and the UI says precisely that. It is never the default.
+ *
+ * The row is MARKED, not deleted — see Device.removedAt in schema.prisma: the
+ * RESTRICT child foreign keys (plus the heartbeat history) make a real
+ * `device.delete()` both impossible and destructive. Its onboarding row is
+ * closed at the same time so the sweep stops working on a device that is gone.
+ */
+export async function removeDevice(opts: {
+  userId: string;
+  deviceId: string;
+  localOnly?: boolean;
+}): Promise<{ agentRemoved: boolean }> {
+  const device = await db.device.findFirst({
+    where: { id: opts.deviceId, userId: opts.userId, removedAt: null },
+    select: { id: true, name: true, vantraAgentId: true },
+  });
+  if (!device) throw new Error("device_not_found");
+
+  let agentRemoved = false;
+  if (!opts.localOnly && device.vantraAgentId) {
+    try {
+      await vantraFetch(
+        `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
+        { method: "POST", body: JSON.stringify({ action: "delete" }) },
+      );
+      agentRemoved = true;
+    } catch (err) {
+      // 503 = the removal genuinely did not happen (TRMM unreachable, or an
+      // agent id TRMM doesn't know). Anything else is a real failure: re-throw.
+      if (err instanceof Error && err.message.startsWith("vantra_503")) {
+        throw new Error("agent_offline");
+      }
+      throw err;
+    }
+  }
+
+  const now = new Date();
+  await db.device.update({ where: { id: device.id }, data: { removedAt: now } });
+  // Close the quarantine row too, or the sweep would keep trying to hide/keep
+  // awake/move an agent that no longer exists (the row is terminal, so the
+  // sweep's non-terminal scan skips it from here on).
+  await db.deviceOnboarding.updateMany({
+    where: { deviceId: device.id, status: { notIn: ["released", "failed"] } },
+    data: { status: "released", releasedAt: now, claimAt: null, lastError: "device_removed" },
+  });
+  await recordAgentActionAudit({
+    userId: opts.userId,
+    action: opts.localOnly ? "device_removed_local" : "device_removed",
+    status: "executed",
+    sourceDeviceId: device.id,
+    detail: { name: device.name, agentRemoved },
+  });
+  return { agentRemoved };
 }
 
 export type DeviceActionKind =

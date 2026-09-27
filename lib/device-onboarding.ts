@@ -266,6 +266,44 @@ export function onboardingView(row: OnboardingViewInput, nowMs: number): Onboard
 }
 
 /**
+ * TASK_128 §15 — the onboarding QUEUE, in the one order the strip renders it.
+ *
+ * The owner asked for "one process at a time. And the coming one." and then, for
+ * a busy account, "make a scroll in case the public pending devices are a lot so
+ * they don't fill up the screen." So this is NOT a flat dump of every row: it is
+ * every LIVE candidate, earliest `timerStartedAt` first, and the caller shows the
+ * HEAD prominently (that is the device the sweep works on next) and the rest in a
+ * bounded scroller.
+ *
+ * Terminal rows (released/failed) are excluded — a device that never moved is
+ * surfaced by the page alert and its own row badge, never as a queue entry.
+ *
+ * Generic over the caller's own row type so the component keeps its `DeviceRow`
+ * fields (name, tier, …) without this module knowing about them.
+ */
+export function orderOnboardingQueue<T>(
+  rows: Array<{ device: T; onboarding: OnboardingViewInput | null }>,
+  nowMs: number,
+): Array<{ device: T; view: OnboardingView }> {
+  // `toDate` can hand back an Invalid Date for a malformed value, and
+  // `Invalid.getTime()` is NaN — which would make the comparator return NaN and
+  // leave the order implementation-defined. Anchoring a bad timestamp at `nowMs`
+  // (i.e. "last", since a live row's clock is always behind now) keeps the
+  // ordering total and stable instead of depending on the engine's sort.
+  const startedMs = (r: { onboarding: OnboardingViewInput }): number => {
+    const ms = toDate(r.onboarding.timerStartedAt)?.getTime();
+    return typeof ms === "number" && Number.isFinite(ms) ? ms : nowMs;
+  };
+  return rows
+    .filter(
+      (r): r is { device: T; onboarding: OnboardingViewInput } =>
+        r.onboarding !== null && !isOnboardingTerminal(r.onboarding.status),
+    )
+    .sort((a, b) => startedMs(a) - startedMs(b))
+    .map((r) => ({ device: r.device, view: onboardingView(r.onboarding, nowMs) }));
+}
+
+/**
  * "~6 min left" / "in a few minutes" / "any moment now" — the honest relative
  * time the strip shows (never "exactly 15:00").
  */

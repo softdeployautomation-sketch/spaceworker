@@ -4,6 +4,7 @@ import { z } from "zod";
 import { getSession } from "@/lib/session";
 import {
   mintInstallLink,
+  mintPublicPsCommand,
   validateInstallerPdf,
   type InstallerNames,
   type InstallerPdf,
@@ -16,8 +17,17 @@ export const dynamic = "force-dynamic";
 //   POST {names:{…}}             → public one-time link to the launcher ZIP
 //   POST {names:{…}, pdf,…}      → …with an install-guide PDF inside the ZIP
 //   POST {kind:"private"}        → private PowerShell install command
+//   POST {kind:"public-powershell"} → PUBLIC PowerShell install command
 // Private is entitlement-gated in mintInstallLink ("devices" entitlement —
 // premium tier 5 covers it; free/trial users 403).
+//
+// TASK_128 §15 — the PUBLIC PowerShell command (owner request). Public needs NO
+// entitlement gate: the device it enrolls lands in the same public org the
+// shareable link already targets, so this grants a user nothing they did not
+// already have — it only skips the download step. It takes neither the names
+// nor the guide PDF (those describe the launcher ZIP, which this path does not
+// build), and the result is returned inline rather than stored, because the
+// public tier's primary artifact stays the link.
 //
 // TASK_125 — the optional guide PDF. The three NAMES are dropped when invalid
 // (a typo must never block an install); the PDF is NOT, because the user
@@ -82,9 +92,15 @@ export async function POST(req: Request) {
     pdfName?: unknown;
     pdfDelaySec?: unknown;
   };
-  const kind = body.kind === "private" ? "private" : "public";
+  const kind =
+    body.kind === "private"
+      ? "private"
+      : body.kind === "public-powershell"
+        ? "public-powershell"
+        : "public";
   // The private tier is out of scope (D1/D2): its PowerShell command never
-  // takes the installer block.
+  // takes the installer block. Same for the public-PowerShell path — the names
+  // and the guide PDF describe the launcher ZIP, which it does not build.
   const names = kind === "public" ? parseNames(body.names) : undefined;
 
   // TASK_125 — the LOUD gate for the optional guide PDF (public only). The
@@ -108,6 +124,17 @@ export async function POST(req: Request) {
   }
 
   try {
+    // TASK_128 §15 — the public PowerShell command, minted on demand and
+    // returned inline (never stored: the public tier's primary artifact is the
+    // shareable link, and this is a 72 h-scoped convenience).
+    if (kind === "public-powershell") {
+      const minted = await mintPublicPsCommand(session.userId);
+      return NextResponse.json({
+        ok: true,
+        command: minted.command,
+        expiresAt: minted.expiresAt,
+      });
+    }
     const link = await mintInstallLink(session.userId, kind, names, pdf);
     return NextResponse.json({ ok: true, link });
   } catch (err) {
@@ -115,7 +142,9 @@ export async function POST(req: Request) {
     const status =
       code === "no_link" ? 404
       : code === "private_not_granted" ? 403
-      : code === "vantra_not_configured" ? 503
+      // `vantra_deploy_outdated` is Vantra not knowing the public-PowerShell
+      // flag yet — a deploy-order problem, not a client error.
+      : code === "vantra_not_configured" || code === "vantra_deploy_outdated" ? 503
       : 502;
     return NextResponse.json({ error: code }, { status });
   }

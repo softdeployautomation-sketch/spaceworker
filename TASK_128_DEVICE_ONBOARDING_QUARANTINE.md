@@ -344,6 +344,10 @@ Task 64's rule is *"no interruption to whoever's using the device"* — it is **
 **Vantra:** `lib/device-auto-move.ts`, `app/api/internal/sw/devices/route.ts`.
 **SpaceWorker:** `prisma/schema.prisma`, `prisma/migrations/20261012000000_task128_device_onboarding/migration.sql`, `lib/device-onboarding.ts` (new — constants + the pure decision function), `lib/vantra-link.ts` (stamp `tier`, mirror `timerStartedAt`), `lib/devices.ts` (selector), `app/api/devices/route.ts`, `app/api/internal/device-onboarding-sweep/route.ts` (new), `deploy/device-onboarding-sweep.service` (new), `deploy/device-onboarding-sweep.timer` (new), `components/device-list.tsx`, `components/device-console.tsx`, `tests/device-onboarding.test.ts` (new), this file, `PIPELINE_CONSOLE_BROWSER_CLONE.md` (tracker row).
 
+**§15 additions to the list (owner-extended, recorded here rather than silently expanded):**
+**Vantra:** `app/api/internal/sw/orgs/[orgId]/install-link/route.ts` (the `as: "powershell"` public branch), `app/api/internal/sw/devices/[agentId]/action/route.ts` (the `delete` action).
+**SpaceWorker:** `prisma/migrations/20261013000000_task128_device_removal/migration.sql` (new), `app/api/devices/[deviceId]/route.ts` (new — the DELETE route; this path was previously unrouted), plus the §15 hunks in `prisma/schema.prisma`, `lib/vantra-link.ts`, `app/api/devices/route.ts`, `app/api/assistant/vantra/install-link/route.ts`, `components/device-list.tsx`, `lib/device-onboarding.ts` and `tests/device-onboarding.test.ts`.
+
 ## 12. Open questions for the owner (do not block the build on these)
 
 - **Strip placement**: above the device grid (assumed) or pinned at the top of the dashboard? Assumed the Devices page, since that is where the device appears.
@@ -400,10 +404,33 @@ The original name was chosen against a **stale local `main`** and sorted *before
 
 **14.4 Scope note.** No new endpoint, unit or cron was added — the existing 5-minute oneshot does the sync. The `Device.tier` / countdown semantics are unchanged; §13 still governs grace, retries and visibility.
 
-## 15. Change log
+## 15. AMENDMENT — Delete, the queue scroller, and public PowerShell (owner, post-build)
+
+**Owner requirement, verbatim:** *"Also add a delete button for each devices both in the public and private, make sure private as a warning before delete, and also make a scroll in case the public pending devices are a lot so they don't fill up the screen, and also add a powershell generation option for public devices just the way we have for private, so users can also use the powershell command for public."*
+
+**15.1 Delete, on BOTH tiers — and why the row is MARKED, not deleted.**
+A real `db.device.delete()` is not available to us: every `Device` child foreign key except `DeviceScreenshot`/`DeviceOnboarding` defaults to `RESTRICT`, and a device **always** has `DeviceHeartbeat` rows, so a hard delete raises a foreign-key violation — and clearing the children first would destroy the audit trail the console's Activity tab is built on. So `Device.removedAt` is a **soft-removal marker**: the row is filtered at the query (`app/api/devices/route.ts`, the one read every devices surface goes through — not cosmetically hidden in the component), the device's console disappears, its onboarding row is closed (`released` + `lastError: "device_removed"`, so the sweep stops working on a machine that is gone), and `syncDevices()` refuses to resurrect it. Re-adding the same machine enrolls a NEW agent id, so it arrives as a genuinely new device with its own 20-minute quarantine.
+*Migration:* `20261013000000_task128_device_removal` — one additive `ADD COLUMN "removedAt" TIMESTAMP(3)`, strictly after the newest name on `origin/main`.
+
+**15.2 The agent is really removed FIRST — order is the point.**
+`DELETE /api/devices/[deviceId]` calls Vantra's tenant-checked `delete` action (`lib/trmm.ts deleteAgent`: fires the uninstall at the agent, then removes the agent record) and only then sets `removedAt`. A removal that touched only our own database would leave a live, still-checking-in agent behind a hidden row — a silent lie. **An OFFLINE machine is not a refusal**: TRMM removes the agent record whether or not the box answers, so a sleeping or wiped PC is still removable. A 503 means the removal genuinely did not happen (TRMM unreachable, or an agent id TRMM does not know); it surfaces as `agent_offline` and the row is left **exactly** as it was, so a removal that did not happen can never look done. `DELETE ?local=1` is the UI's explicitly-confirmed escape hatch for the residual case — hide the row, leave the agent installed — and the dialog says precisely that. It is never the default.
+*Tenant scope:* Vantra's `assertAgentInSwOrg(agentId)` runs before the action switch, so only an agent inside a `sw-*` org is reachable; anything else is a 404 (not a 403) so a prober cannot confirm existence.
+
+**15.3 Private gets an extra warning.** The confirm dialog (the app's themed `ConfirmDialog` via `useConfirm()`, never `window.confirm` — the desktop EXE build has no browser chrome to blame it on) says, for `tier === "private"` only, that the device lives on the owner's **private** agent and that only they can reach it. The public wording adds that the machine's history is kept.
+
+**15.4 The queue scrolls instead of growing.** `orderOnboardingQueue()` (new, pure, in `lib/device-onboarding.ts`) filters terminal rows and orders the rest by `timerStartedAt` — the head **is** the device the sweep works on next. The strip renders the head in full and everything else inside a `max-h-24 overflow-y-auto` scroller ("1 more in line" / "N more in line"), so a busy account queues ten devices without the strip eating the page. Nothing is dropped to keep it short. Every row uses the same `onboardingClockText()` as the head, so no two lines can disagree. An unparseable `timerStartedAt` sorts **last** rather than returning NaN from the comparator and leaving the order engine-defined.
+
+**15.5 Public PowerShell — deliberately NOT persisted.** `POST {kind:"public-powershell"}` → `mintPublicPsCommand()` → Vantra's install-link route, opt-in via a **top-level `as: "powershell"`** sibling of `installer` (NOT a new `installer.kind`, because `lib/sw-installer-names.ts` is the frozen TASK_121 contract and an older SpaceWorker never sends the key, so its response stays byte-identical). Reuses the private branch's exact `createManualInstaller` call against the org's **public** api base. No premium gate: it enrolls into the same public org the shareable link already targets, so it grants the user nothing new — it only skips the download step. Unlike `privatePsCommand` it is **not stored** (the public tier's primary artifact stays the link; two more columns on `VantraLink` for a 72 h convenience is churn the owner did not ask for), so it is returned inline and held in component state, masked until an explicit **Reveal** for the same shoulder-surfing reason as the private command — it names the public agent host, which the wrapper link deliberately hides. **Deploy-order guard:** an older Vantra answers the public shape (a `downloadUrl`, no `command`), which the minter turns into a plain `vantra_deploy_outdated` (503) instead of handing the panel an empty code block.
+
+**15.6 One correction to §3's original claim.** The pre-build note said *"an agent Vantra cannot reach refuses with 503"*. That was only half true, and the code comments are now accurate: TRMM's `deleteAgent` removes the record **regardless** of the agent's reachability, so 503 means TRMM itself was unreachable (or the id is unknown), not that the machine was asleep. Nothing about the delete path depends on the box being awake.
+
+**15.7 Verified.** `npx tsc --noEmit` clean in both repos; SpaceWorker `tests/*.test.ts` **201/201** (the suite gained 7 queue tests); Vantra lint clean; the only SpaceWorker lint finding is the **pre-existing** `react-hooks/set-state-in-effect` on the Task 106 poll effect, unchanged by this amendment.
+
+## 16. Change log
 
 | Date | Change |
 | --- | --- |
 | 2026-09-27 | Built (Vantra `cb14182`, SpaceWorker `c9458a7`); merged with TASK_127 as `a7a7448`; deployed. |
 | 2026-09-27 | §13 — grace (plan ≠ deadline, 35-min ceiling), offline retry never burns an attempt, Public stays usable, `failed` visible in three places, migration renamed to `20261012000000`. |
 | 2026-09-27 | §14 — the sweep syncs linked users itself (+ `synced`/`syncErrors` in the response); the `P2002` race guard from having two sync callers. |
+| 2026-09-27 | §15 — Delete on both tiers (`Device.removedAt` + `20261013000000_task128_device_removal`, Vantra's `delete` action), the bounded queue scroller, and the public PowerShell command (Vantra `install-link` `as: "powershell"`). Declared file list extended below. |

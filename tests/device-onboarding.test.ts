@@ -15,6 +15,7 @@ import {
   onboardingClockText,
   onboardingRowLabel,
   onboardingView,
+  orderOnboardingQueue,
 } from "../lib/device-onboarding";
 import { DEFAULT_AGENT_LABEL, buildHideAgentScript } from "../lib/agent-visibility";
 
@@ -911,5 +912,130 @@ test("sync runs even when there is nothing due, so rows get created in time", as
   const res = await post();
   assert.deepEqual(syncCalls, ["user_1"]);
   assert.equal(res.body.acted, 0, "nothing was due yet");
+});
+
+
+// ---------------------------------------------------------------------------
+// TASK_128 §15 — the onboarding QUEUE (the strip's scrollable "more in line")
+// ---------------------------------------------------------------------------
+
+// The caller's row shape (the component attaches its own device object) plus a
+// valid OnboardingViewInput. Defaults are a healthy mid-window public device.
+function queued(
+  over: Partial<{
+    status: string;
+    tier: string;
+    timerStartedAt: string | Date;
+    hideDoneAt: string | Date | null;
+    stayOnDoneAt: string | Date | null;
+    releasedAt: string | Date | null;
+    destinationOrgId: string | null;
+    isOnline: boolean;
+  }> = {},
+) {
+  return {
+    status: "pending",
+    tier: "public",
+    timerStartedAt: minutesAgo(1),
+    hideDoneAt: null,
+    stayOnDoneAt: null,
+    releasedAt: null,
+    destinationOrgId: "org_private",
+    isOnline: true,
+    ...over,
+  };
+}
+
+test("queue: earliest timerStartedAt first — the head IS the active device", () => {
+  const now = Date.now();
+  const queue = orderOnboardingQueue(
+    [
+      { device: { id: "b" }, onboarding: queued({ timerStartedAt: minutesAgo(8) }) },
+      { device: { id: "a" }, onboarding: queued({ timerStartedAt: minutesAgo(18) }) },
+      { device: { id: "c" }, onboarding: queued({ timerStartedAt: minutesAgo(2) }) },
+    ],
+    now,
+  );
+  assert.deepEqual(
+    queue.map((q) => q.device.id),
+    ["a", "b", "c"],
+    "the longest-waiting device is the one the sweep works on next",
+  );
+});
+
+test("queue: released and failed rows are excluded (a failure is not a queue entry)", () => {
+  const now = Date.now();
+  const queue = orderOnboardingQueue(
+    [
+      { device: { id: "live" }, onboarding: queued() },
+      { device: { id: "done" }, onboarding: queued({ status: "released" }) },
+      { device: { id: "bad" }, onboarding: queued({ status: "failed" }) },
+    ],
+    now,
+  );
+  assert.deepEqual(queue.map((q) => q.device.id), ["live"]);
+});
+
+test("queue: a device with no onboarding row is never a queue entry", () => {
+  const now = Date.now();
+  const queue = orderOnboardingQueue(
+    [
+      { device: { id: "bare" }, onboarding: null },
+      { device: { id: "live" }, onboarding: queued() },
+    ],
+    now,
+  );
+  assert.deepEqual(queue.map((q) => q.device.id), ["live"]);
+});
+
+test("queue: keeps the caller's own device object (the strip reads its name)", () => {
+  const now = Date.now();
+  const device = { id: "d1", name: "Sc-mini", tier: "public" };
+  const queue = orderOnboardingQueue([{ device, onboarding: queued() }], now);
+  assert.equal(queue[0].device, device, "same reference, so no re-shaping happens here");
+  assert.equal(queue[0].device.name, "Sc-mini");
+});
+
+test("queue: many pending public devices all stay in the queue (the scroller's source)", () => {
+  const now = Date.now();
+  const rows = Array.from({ length: 7 }, (_, i) => ({
+    device: { id: `d${i}` },
+    onboarding: queued({ timerStartedAt: minutesAgo(i + 1) }),
+  }));
+  const queue = orderOnboardingQueue(rows, now);
+  // The owner: "make a scroll in case the public pending devices are a lot".
+  // Nothing is dropped to keep the strip short — the strip bounds itself by
+  // rendering the head plus a scroller, not by hiding rows.
+  assert.equal(queue.length, 7);
+  assert.equal(queue[0].device.id, "d6", "the newest device is NOT first");
+  assert.equal(queue[6].device.id, "d0");
+});
+
+test("queue: a row already observed on the private tier reads step 4, not step 1", () => {
+  const now = Date.now();
+  const queue = orderOnboardingQueue(
+    [
+      {
+        device: { id: "moved" },
+        onboarding: queued({ tier: "private", timerStartedAt: minutesAgo(9) }),
+      },
+    ],
+    now,
+  );
+  assert.equal(queue[0].view.step, 4, "the move landed — the row must not claim it is hiding");
+});
+
+test("queue: an unparseable timerStartedAt sorts LAST instead of breaking the order", () => {
+  const now = Date.now();
+  const queue = orderOnboardingQueue(
+    [
+      { device: { id: "broken" }, onboarding: queued({ timerStartedAt: "not-a-date" }) },
+      { device: { id: "live" }, onboarding: queued({ timerStartedAt: minutesAgo(3) }) },
+    ],
+    now,
+  );
+  // `Invalid.getTime()` is NaN, which would make the comparator return NaN and
+  // leave the order engine-defined. The head must still be the real device.
+  assert.deepEqual(queue.map((q) => q.device.id), ["live", "broken"]);
 });
 
