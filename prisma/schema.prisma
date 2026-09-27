@@ -415,6 +415,21 @@ model EmailCampaign {
   // Shape: { subject, bodyHtml, fromAddress, remaining }. null = not pinned.
   // Achieved as a JSON column — no separate table.
   pinnedOverride        Json?
+  // A user opts a campaign of their own into the "My campaigns" group of the
+  // campaigns page's template picker by flipping this on (default off — not
+  // every one-off campaign should clutter that list). Admin's Campaign
+  // Templates tab separately surfaces every savedAsTemplate row across ALL
+  // users (with the owner's email) so an admin can review one and, on
+  // approval, promote it into the system-owned "Ready-made templates" group.
+  savedAsTemplate       Boolean               @default(false)
+  // Set once an admin promotes this campaign into a general (system-owned)
+  // template — the id of the CLONE that promotion created (never this row
+  // itself; the original stays the user's own). Makes promotion idempotent:
+  // the admin UI disables/relabels the button once this is set, so clicking
+  // it twice can't create duplicate general templates. Null = not promoted
+  // yet. Loosely referenced (no FK), same convention as searchJobId above —
+  // the system template can be deleted independently without touching this.
+  promotedTemplateId    String?
   createdAt             DateTime              @default(now())
   variants              CampaignVariant[]
   checks                DeliverabilityCheck[]

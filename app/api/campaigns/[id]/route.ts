@@ -42,3 +42,42 @@ export async function GET(
 
   return NextResponse.json({ ...campaign, mailboxes });
 }
+
+// PATCH /api/campaigns/[id]  body: { savedAsTemplate: boolean }
+// Lets a user flag/unflag one of their OWN campaigns as reusable — it then
+// appears in the "My campaigns" group of the template picker (campaigns page
+// + Automations builder) and becomes visible to admins in the Campaign
+// Templates tab as a candidate to promote into the general "Ready-made
+// templates" group. The only field this route can change today.
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { id } = await params;
+
+  let body: { savedAsTemplate?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
+  }
+  if (typeof body.savedAsTemplate !== "boolean") {
+    return NextResponse.json({ error: "savedAsTemplate must be a boolean" }, { status: 400 });
+  }
+
+  const owned = await prisma.emailCampaign.findFirst({ where: { id, userId: session.userId }, select: { id: true } });
+  if (!owned) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+
+  const updated = await prisma.emailCampaign.update({
+    where: { id },
+    data: { savedAsTemplate: body.savedAsTemplate },
+    select: { id: true, savedAsTemplate: true },
+  });
+  return NextResponse.json(updated);
+}
