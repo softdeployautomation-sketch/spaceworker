@@ -388,3 +388,22 @@ A free/trial device with **no destination** is the one case that ends as a clean
 The original name was chosen against a **stale local `main`** and sorted *before* an already-applied migration. Worse, the first fix (`20261011000000`) turned out to **collide** with a migration that is already on `origin/main` *and* applied on the VPS — `20261011000000_task127_screenshot_wake_delay` (commit `139dd4e`) — because the local repo's `main` was 2 commits behind `origin/main`. Reusing a prefix is how migration history diverges, so the folder now uses `20261012000000`, which is **strictly greater than every migration on `origin/main`**. Nothing has ever been applied anywhere from this branch, so plain `git mv` is sufficient (had it been applied, this would need `prisma migrate resolve`, not a rename). The SQL is unchanged and still purely additive. **Lesson, now recorded in `HOW_WE_MOVE_FAST.md` §6: always compare the new timestamp against `origin/main`, not local `main`.**
 
 
+
+
+## 14. AMENDMENT — the sweep drives the sync itself (owner, 2026-09-27, post-deploy finding)
+
+**14.1 The gap.** `DeviceOnboarding` rows are written by exactly one function — `syncDevices()` (`lib/vantra-link.ts:748`) — and that function had **no timer**: it ran when a human opened the device list. So the hide@5 and stay-on@10 stages only ever happened for users who happened to visit their dashboard, while Vantra's move fired on its **own** clock regardless. A freshly installed public device could therefore be **moved at 15 minutes having never been hidden and never been kept awake** — precisely the failure this task exists to prevent, and invisible in both directions (no row ⇒ `checked: 0` ⇒ the sweep reports success while doing nothing).
+
+**14.2 The fix.** `device-onboarding-sweep` re-syncs every linked user **before** it acts: it loads `vantraLink.findMany({ where: { status: { not: "revoked" } }, select: { userId: true } })` and calls `await syncDevices(link.userId)` per user, best-effort, collecting failures into `syncErrors` (never thrown). Revoked links are skipped — they have no org. The response now reports `{ ok, synced, syncErrors, checked, acted }` so the timer's journal states **out loud** whether the automation half ran; a sweep that silently synced nobody is how this hid in the first place. This makes the pipeline genuinely automated (owner rule: *"we want all automated"*) and is what makes "no device fails silently" true for a device nobody has looked at yet.
+
+**14.3 Concurrency hardening it required.** `DeviceOnboarding.deviceId` is UNIQUE and `syncDevices()` now has **two** callers that can overlap (the 5-minute sweep and a user's page load), so the `findUnique` → `create` pair can race. The loser's `P2002` is the desired end state (the row exists) and is now swallowed deliberately; **any other** error still throws and is recorded in the link's `lastError`. Same inline P2002 convention as `app/api/leads/merge/route.ts`.
+
+**14.4 Scope note.** No new endpoint, unit or cron was added — the existing 5-minute oneshot does the sync. The `Device.tier` / countdown semantics are unchanged; §13 still governs grace, retries and visibility.
+
+## 15. Change log
+
+| Date | Change |
+| --- | --- |
+| 2026-09-27 | Built (Vantra `cb14182`, SpaceWorker `c9458a7`); merged with TASK_127 as `a7a7448`; deployed. |
+| 2026-09-27 | §13 — grace (plan ≠ deadline, 35-min ceiling), offline retry never burns an attempt, Public stays usable, `failed` visible in three places, migration renamed to `20261012000000`. |
+| 2026-09-27 | §14 — the sweep syncs linked users itself (+ `synced`/`syncErrors` in the response); the `P2002` race guard from having two sync callers. |

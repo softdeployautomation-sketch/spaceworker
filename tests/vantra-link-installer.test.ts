@@ -62,6 +62,9 @@ interface DbArgs {
   where?: Record<string, unknown>;
   data?: Record<string, unknown>;
   select?: Record<string, boolean>;
+  // TASK_128 — db.device.upsert({ ... create: {...} }) is the only caller that
+  // passes this; kept optional so every other fake stays as-is.
+  create?: Record<string, unknown>;
 }
 
 interface AuditCall {
@@ -128,6 +131,11 @@ beforeEach(() => {
   sessionValue = { userId: USER_ID };
   routeMintCalls = [];
   mintError = null;
+  deviceRows.clear();
+  onboardingRows.clear();
+  onboardingUpdates = [];
+  onboardingCreateError = null;
+  devicesResponse = { ok: true, orgTier: "public", devices: [] };
 });
 
 /** Honours Prisma's `select` so a forgotten column cannot hide behind the fake. */
@@ -139,6 +147,15 @@ function project(source: Record<string, unknown>, select?: Record<string, boolea
   }
   return out;
 }
+
+// TASK_128 — state for the syncDevices tests.
+const deviceRows = new Map<string, Record<string, unknown>>();
+const onboardingRows = new Map<string, Record<string, unknown>>();
+let onboardingUpdates: Array<Record<string, unknown>> = [];
+/** Forced error for the next DeviceOnboarding.create — proves P2002 tolerance. */
+let onboardingCreateError: unknown = null;
+/** What a (stubbed) Vantra /sw/devices call answers with. */
+let devicesResponse: Record<string, unknown> = { ok: true, orgTier: "public", devices: [] };
 
 const fakeDb = {
   vantraLink: {
@@ -161,6 +178,34 @@ const fakeDb = {
       dbUpdates.push({ ...patch });
       Object.assign(row, patch);
       return { ...row };
+    },
+  },
+  // TASK_128 — enough of the Device + DeviceOnboarding surface for syncDevices'
+  // own decisions (which row it creates, and what it does when a racing sync
+  // wins the UNIQUE(deviceId) insert first).
+  device: {
+    upsert: async ({ where, create }: DbArgs) => {
+      const key = String(where?.vantraAgentId ?? "");
+      const existing = deviceRows.get(key);
+      if (existing) return { ...existing };
+      const saved = { id: `dev-${key}`, ...(create ?? {}) };
+      deviceRows.set(key, saved);
+      return { ...saved };
+    },
+  },
+  deviceOnboarding: {
+    findUnique: async ({ where }: DbArgs) => {
+      return onboardingRows.get(String(where?.deviceId ?? "")) ?? null;
+    },
+    create: async ({ data }: DbArgs) => {
+      if (onboardingCreateError) throw onboardingCreateError;
+      const created = { id: `onb-${onboardingRows.size + 1}`, ...(data ?? {}) };
+      onboardingRows.set(String((data ?? {}).deviceId ?? ""), created);
+      return { ...created };
+    },
+    updateMany: async ({ data }: DbArgs) => {
+      onboardingUpdates.push({ ...(data ?? {}) });
+      return { count: 0 };
     },
   },
 };
@@ -252,10 +297,13 @@ installRequireHook();
     body: typeof init?.body === "string" ? init.body : null,
     authorization: headers.Authorization,
   });
+  // TASK_128 — syncDevices reads the device list; everything else in this file
+  // is the mint surface and keeps answering with `mintResponse`.
+  const payload = String(url).includes("/sw/devices") ? devicesResponse : mintResponse;
   return {
     ok: true,
     status: 200,
-    json: async () => mintResponse,
+    json: async () => payload,
     text: async () => "",
   } as unknown as Response;
 };
@@ -267,6 +315,9 @@ const {
   revokeVantraLink,
   safeInstallerName,
   getVantraLinkView,
+  // TASK_128 — the sweep calls this itself now, so its own insert path is
+  // covered here rather than only through the dashboard.
+  syncDevices,
   // TASK_125 — the real PDF validator, handed to the route stub below so the
   // API-boundary tests exercise the module's OWN gate rather than a copy.
   validateInstallerPdf: realValidateInstallerPdf,
@@ -963,6 +1014,94 @@ test("TASK_125 route: the private tier ignores a PDF entirely (no 400, no forwar
   assert.equal(res.status, 200, "the private branch never even reads the installer block");
   assert.equal(routeMintCalls[0].kind, "private");
   assert.equal(routeMintCalls[0].pdf, null);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_128 — syncDevices' own insert path (the onboarding sweep calls it on
+// every cycle now, so it is no longer only reached by opening the dashboard)
+// ---------------------------------------------------------------------------
+
+/** One public device as Vantra answers, with an optional auto-move clock. */
+function publicDevicesPayload(autoMove?: { status: string; timerStartedAt: string }) {
+  return {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: "agent_a",
+        name: "Sc-mini",
+        online: true,
+        status: "online",
+        osName: "windows",
+        operatingSystem: "Windows 11",
+        lastSeen: new Date().toISOString(),
+        ...(autoMove ? { autoMove } : {}),
+      },
+    ],
+  };
+}
+
+test("syncDevices creates the onboarding row from Vantra's own clock", async () => {
+  const started = new Date("2026-09-27T10:00:00.000Z");
+  devicesResponse = publicDevicesPayload({
+    status: "pending",
+    timerStartedAt: started.toISOString(),
+  });
+
+  const res = await syncDevices(USER_ID);
+
+  assert.equal(res.devices.length, 1);
+  const created = onboardingRows.get("dev-agent_a");
+  assert.ok(created, "a public device gets an onboarding row");
+  // The countdown the owner sees must be Vantra's clock, never a local invention.
+  assert.deepEqual(created.timerStartedAt, started);
+  assert.equal(created.status, "pending");
+  assert.equal(created.vantraAgentId, "agent_a");
+  assert.equal(created.userId, USER_ID);
+});
+
+test("a device with no auto-move row yet is still given a row to count from", async () => {
+  devicesResponse = publicDevicesPayload();
+  await syncDevices(USER_ID);
+  const created = onboardingRows.get("dev-agent_a");
+  assert.ok(created, "the row exists even before Vantra has sighted the device");
+  assert.equal(created.status, "pending");
+  assert.equal(created.lastError, null);
+});
+
+test("syncDevices survives a racing sync winning the UNIQUE(deviceId) insert", async () => {
+  // The sweep (every 5 min) and a user opening their device list can sync the
+  // same user at the same moment. The loser's create throws P2002; that is the
+  // desired end state, so it must NOT surface as a sync failure.
+  devicesResponse = publicDevicesPayload();
+  onboardingCreateError = Object.assign(new Error("unique constraint"), { code: "P2002" });
+
+  const res = await syncDevices(USER_ID);
+
+  assert.equal(res.devices.length, 1, "the sync still reports the device");
+  assert.equal(onboardingRows.size, 0, "the winner's row is left alone");
+  assert.equal(dbUpdates.at(-1)?.lastError, null, "no error recorded on the link");
+});
+
+test("a real (non-P2002) insert failure still fails the sync loudly", async () => {
+  devicesResponse = publicDevicesPayload();
+  onboardingCreateError = new Error("db is on fire");
+
+  await assert.rejects(() => syncDevices(USER_ID), /db is on fire/);
+  // ...and the failure is recorded on the link, never swallowed silently.
+  assert.equal(dbUpdates.at(-1)?.lastError, "db is on fire");
+});
+
+test("a private-org sighting releases the row instead of leaving it counting", async () => {
+  devicesResponse = publicDevicesPayload();
+  await syncDevices(USER_ID);
+  assert.equal(onboardingRows.size, 1, "row seeded while public");
+
+  devicesResponse = { ...publicDevicesPayload(), orgTier: "private" };
+  await syncDevices(USER_ID);
+
+  const released = onboardingUpdates.at(-1);
+  assert.equal(released?.status, "released", "observed private ⇒ the row is released");
 });
 
 

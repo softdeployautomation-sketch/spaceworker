@@ -745,24 +745,35 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           select: { id: true },
         });
         if (!existing) {
-          await db.deviceOnboarding.create({
-            data: {
-              deviceId: saved.id,
-              userId,
-              vantraAgentId: d.vantraAgentId,
-              sourceOrgId: entry.orgId,
-              destinationOrgId: link.privateOrgId,
-              timerStartedAt: d.autoMove?.timerStartedAt
-                ? new Date(d.autoMove.timerStartedAt)
-                : now,
-              hideLabel: DEFAULT_AGENT_LABEL,
-              status: "pending",
-              // §5E — a Vantra move that already failed (e.g. no private org)
-              // is recorded here so the console can surface it. The strip words
-              // the no-destination case from `destinationOrgId` being null.
-              lastError: d.autoMove?.status === "failed" ? "auto_move_failed" : null,
-            },
-          });
+          try {
+            await db.deviceOnboarding.create({
+              data: {
+                deviceId: saved.id,
+                userId,
+                vantraAgentId: d.vantraAgentId,
+                sourceOrgId: entry.orgId,
+                destinationOrgId: link.privateOrgId,
+                timerStartedAt: d.autoMove?.timerStartedAt
+                  ? new Date(d.autoMove.timerStartedAt)
+                  : now,
+                hideLabel: DEFAULT_AGENT_LABEL,
+                status: "pending",
+                // §5E — a Vantra move that already failed (e.g. no private org)
+                // is recorded here so the console can surface it. The strip words
+                // the no-destination case from `destinationOrgId` being null.
+                lastError: d.autoMove?.status === "failed" ? "auto_move_failed" : null,
+              },
+            });
+          } catch (err) {
+            // TASK_128 — `deviceId` is UNIQUE, and syncDevices() now runs from
+            // BOTH the onboarding sweep (every 5 min) and a user opening their
+            // device list, so two syncs can race between the findUnique above
+            // and this create. The loser's P2002 means the row already exists
+            // (created by the winner) — which is the desired end state, so it is
+            // swallowed deliberately. Anything else is a real failure and is
+            // re-thrown. Same inline P2002 check as app/api/leads/merge/route.ts.
+            if ((err as { code?: string }).code !== "P2002") throw err;
+          }
         }
       }
     }

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { requireInternalBearer } from "@/lib/internal-auth";
 import { isDeviceOnline } from "@/lib/devices";
 import { runCommandNow, setPowerPolicy } from "@/lib/device-tools";
+import { syncDevices } from "@/lib/vantra-link";
 import {
   DEFAULT_AGENT_LABEL,
   buildHideAgentScript,
@@ -54,6 +55,33 @@ import {
 export async function POST(req: Request) {
   if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // AUTOMATION, not a dashboard side-effect (owner rule: "we want all
+  // automated"). `DeviceOnboarding` rows are written ONLY by `syncDevices()`,
+  // which has no timer of its own (lib/clone.ts:506 says exactly that) — it runs
+  // when a human opens the device list. Without this step the hide@5/stay-on@10
+  // stages would only ever run for users who happened to visit their dashboard,
+  // so a freshly installed public device could be moved by Vantra at 15 minutes
+  // having never been hidden or kept awake: the exact failure this task exists
+  // to prevent. Re-sync every linked user first, then act on the rows.
+  //
+  // Best-effort per user: one broken/revoked link must never abort the sweep or
+  // stop the other users' devices being quarantined (each failure is recorded in
+  // `syncErrors`, never thrown). Revoked links are skipped — they have no org.
+  const links = await prisma.vantraLink.findMany({
+    where: { status: { not: "revoked" } },
+    select: { userId: true },
+  });
+  let synced = 0;
+  const syncErrors: string[] = [];
+  for (const link of links) {
+    try {
+      await syncDevices(link.userId);
+      synced++;
+    } catch (err) {
+      syncErrors.push(`${link.userId}:${errorDetail(err)}`);
+    }
   }
 
   const rows = await prisma.deviceOnboarding.findMany({
@@ -191,7 +219,10 @@ export async function POST(req: Request) {
   }
 
   console.log(`[device-onboarding-sweep] checked ${checked}, acted ${acted}`);
-  return NextResponse.json({ ok: true, checked, acted });
+  // `synced`/`syncErrors` are reported so the timer's journal says out loud
+  // whether the automation half ran — a sweep that silently synced nobody is
+  // how this gap hid in the first place.
+  return NextResponse.json({ ok: true, synced, syncErrors, checked, acted });
 }
 
 function errorDetail(err: unknown): string {

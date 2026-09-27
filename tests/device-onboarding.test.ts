@@ -128,6 +128,24 @@ const fakePrisma = {
       return { ...row };
     },
   },
+  vantraLink: {
+    async findMany() {
+      return vantraLinks.filter((l) => l.status !== "revoked");
+    },
+  },
+};
+
+// TASK_128 — the sweep must re-sync each linked user itself (DeviceOnboarding
+// rows have no other writer). These record what the sweep asked for.
+let vantraLinks: Array<{ userId: string; status: string }> = [];
+let syncCalls: string[] = [];
+/** A userId whose sync throws — proves one broken link cannot abort the sweep. */
+let failSyncUser: string | null = null;
+
+const fakeSyncDevices = async (userId: string) => {
+  syncCalls.push(userId);
+  if (failSyncUser && userId === failSyncUser) throw new Error("no_link");
+  return { devices: [] as unknown[] };
 };
 
 let hideCalls: Array<Record<string, unknown>> = [];
@@ -188,6 +206,9 @@ function installRequireHook(): void {
       if (request === "@/lib/device-tools") {
         return { runCommandNow: fakeRunCommandNow, setPowerPolicy: fakeSetPowerPolicy };
       }
+      if (request === "@/lib/vantra-link") {
+        return { syncDevices: fakeSyncDevices };
+      }
       // The rule module and the script builders are REAL — the route's own
       // decisions are what these tests are about.
       if (request === "@/lib/device-onboarding") return realOnboarding;
@@ -202,9 +223,17 @@ const realOnboarding = require("../lib/device-onboarding") as typeof import("../
 const realAgentVisibility = require("../lib/agent-visibility") as typeof import("../lib/agent-visibility");
 installRequireHook();
 const routeModule = require("../app/api/internal/device-onboarding-sweep/route") as {
-  POST: (req: Request) => Promise<{ status: number; body: { checked: number; acted: number } }>;
+  POST: (req: Request) => Promise<{ status: number; body: SweepBody }>;
 };
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+type SweepBody = {
+  ok?: boolean;
+  synced?: number;
+  syncErrors?: string[];
+  checked: number;
+  acted: number;
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -257,7 +286,7 @@ function addOnboarding(deviceId: string, over: Partial<OnboardingRow> = {}): Onb
   return row;
 }
 
-function post(): Promise<{ status: number; body: { checked: number; acted: number } }> {
+function post(): Promise<{ status: number; body: SweepBody }> {
   return routeModule.POST(new Request("https://spaceworker.test/api/internal/device-onboarding-sweep", { method: "POST" }));
 }
 
@@ -271,6 +300,9 @@ beforeEach(() => {
   bearerOk = true;
   movingWrites = 0;
   failUpdateId = null;
+  vantraLinks = [];
+  syncCalls = [];
+  failSyncUser = null;
 });
 
 // ---------------------------------------------------------------------------
@@ -821,5 +853,63 @@ test("one device's failure never aborts the sweep for the rest", async () => {
   assert.equal(res.body.checked, 2);
   const good = rows.find((r) => r.deviceId === "good")!;
   assert.ok(good.hideDoneAt, "the second device was still processed");
+});
+
+// ---------------------------------------------------------------------------
+// Automation — the sweep re-syncs linked users itself, so the quarantine
+// stages no longer depend on someone opening the dashboard
+// ---------------------------------------------------------------------------
+
+test("the sweep syncs every linked user before acting, and reports it", async () => {
+  vantraLinks = [
+    { userId: "user_1", status: "active" },
+    { userId: "user_2", status: "pending_install" },
+  ];
+  const res = await post();
+  assert.equal(res.status, 200);
+  assert.equal(res.body.synced, 2);
+  assert.deepEqual(syncCalls, ["user_1", "user_2"]);
+  assert.deepEqual(res.body.syncErrors, []);
+});
+
+test("a user with no devices is still synced — new devices appear on their own", async () => {
+  // The whole point: nobody has to open the dashboard for a freshly installed
+  // public device to start being quarantined.
+  vantraLinks = [{ userId: "user_1", status: "active" }];
+  const res = await post();
+  assert.deepEqual(syncCalls, ["user_1"]);
+  assert.equal(res.body.checked, 0);
+});
+
+test("a broken/revoked link never aborts the sweep for other users", async () => {
+  vantraLinks = [
+    { userId: "broken", status: "active" },
+    { userId: "user_1", status: "active" },
+  ];
+  failSyncUser = "broken";
+  const res = await post();
+  assert.equal(res.status, 200);
+  assert.equal(res.body.synced, 1, "the healthy link was still synced");
+  assert.equal(res.body.syncErrors?.length, 1);
+  assert.match(res.body.syncErrors?.[0] ?? "", /^broken:/);
+});
+
+test("revoked links are never synced", async () => {
+  vantraLinks = [{ userId: "gone", status: "revoked" }];
+  const res = await post();
+  assert.deepEqual(syncCalls, []);
+  assert.equal(res.body.synced, 0);
+});
+
+test("sync runs even when there is nothing due, so rows get created in time", async () => {
+  // Devices install and sit public for minutes before hide is due; if the sync
+  // were skipped on an idle sweep, its clock would only start on the next
+  // sweep that already had work — i.e. never.
+  vantraLinks = [{ userId: "user_1", status: "active" }];
+  addDevice("d1");
+  addOnboarding("d1", { timerStartedAt: minutesAgo(1) });
+  const res = await post();
+  assert.deepEqual(syncCalls, ["user_1"]);
+  assert.equal(res.body.acted, 0, "nothing was due yet");
 });
 
