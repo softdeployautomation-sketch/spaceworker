@@ -2,6 +2,7 @@ import { jwtVerify, type JWTPayload } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getMaintenanceFlags, MAINTENANCE_PAGE_HTML } from "@/lib/maintenance";
+import { shouldRedirectToSetup } from "@/lib/self-hosted-setup-gate";
 
 // Next.js 16 renamed `middleware` to `proxy` (the `middleware.ts` convention is
 // deprecated). This file provides the same auth-gate behavior from the plan:
@@ -60,6 +61,20 @@ const secret = () => encoder.encode(process.env.SESSION_SECRET ?? "");
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // TASK_130 §4 — first-run gate. A self-hosted build whose setup-state file
+  // has no completedAt redirects EVERYTHING (except the wizard, its APIs, and
+  // Next's static assets — see lib/self-hosted-setup-gate.ts) to /setup. This
+  // runs before the maintenance and auth gates on purpose: an install that has
+  // never been configured must be able to complete setup regardless. A
+  // non-self-hosted build (our own hosted SaaS) returns false here and is
+  // completely untouched. proxy.ts is Node runtime in Next 16 (the docs'
+  // "Proxy defaults to the Node.js runtime"), so the gate's file read is fine —
+  // this file already takes the same class of Node-only dependency via
+  // @/lib/maintenance.
+  if (await shouldRedirectToSetup(pathname)) {
+    return redirectTo(request, "/setup");
+  }
 
   // Task 27 Part A — local EXE runtime: the desktop EXE has NO web login by
   // design. Access control is handled entirely by the local <LicenseGate> in the

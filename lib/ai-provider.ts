@@ -65,6 +65,20 @@ export function aiProviderConfigured(): boolean {
   return env.aiProviderApiKey.trim().length > 0;
 }
 
+/**
+ * TASK_130 — explicit credential override. The first-run wizard must test a
+ * key the user just typed, BEFORE it's in .env / `env.aiProviderApiKey` (which
+ * is evaluated once at boot and cannot see it). Rather than duplicate this
+ * whole module into the setup route, every read of a credential below goes
+ * through this override, and callers with no override get today's behaviour
+ * byte-for-byte.
+ */
+export interface AiProviderOverride {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
 function toMessages(opts: AiProviderChatOptions): Array<{ role: string; content: string }> {
   if (opts.messages && opts.messages.length > 0) return opts.messages;
   const messages: Array<{ role: string; content: string }> = [];
@@ -84,17 +98,26 @@ function toMessages(opts: AiProviderChatOptions): Array<{ role: string; content:
  *   5xx / network failure → "temporarily_unavailable" (never leak raw upstream body)
  *   key unset → "unconfigured"
  */
-export async function aiProviderChat(opts: AiProviderChatOptions): Promise<AiProviderResult> {
-  if (!aiProviderConfigured()) {
+export async function aiProviderChat(
+  opts: AiProviderChatOptions,
+  override: AiProviderOverride = {},
+): Promise<AiProviderResult> {
+  // TASK_130 — resolve credentials from the override first (the setup wizard's
+  // not-yet-saved values), falling back to the boot-time env. `.trim()` here
+  // means a whitespace-only override behaves the same as unconfigured.
+  const apiKey = (override.apiKey ?? env.aiProviderApiKey).trim();
+  if (apiKey.length === 0) {
     throw new AiProviderError(
       "unconfigured",
       "AI is not configured — set AI_PROVIDER_API_KEY in setup.",
       0,
     );
   }
+  const baseUrl = (override.baseUrl ?? env.aiProviderBaseUrl).replace(/\/$/, "");
+  const model = override.model ?? env.aiProviderModel;
 
   const payload: Record<string, unknown> = {
-    model: env.aiProviderModel,
+    model,
     messages: toMessages(opts),
   };
   if (opts.tools !== undefined) payload.tools = opts.tools;
@@ -104,11 +127,11 @@ export async function aiProviderChat(opts: AiProviderChatOptions): Promise<AiPro
 
   let res: Response;
   try {
-    res = await fetch(`${env.aiProviderBaseUrl}/chat/completions`, {
+    res = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${env.aiProviderApiKey}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(payload),
     });

@@ -15,6 +15,7 @@
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
+    "test:setup": "tsx --test tests/self-hosted-setup.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",
