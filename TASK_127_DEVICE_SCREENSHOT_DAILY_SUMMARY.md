@@ -139,7 +139,7 @@ Hence: **orchestration in the app, browser in its own process, talking over loop
 2. **Add `SCREENSHOT_CAPTURE_TOKEN=<long random>` to `/opt/spaceworker/.env`.** The app and the capture service must share it. Unset means the service refuses every request, and the sweep records `capture_service_token_not_set` on the row rather than silently doing nothing.
 3. Normal deploy (the tar now includes `browser-capture`), then the usual `prisma migrate deploy` → `prisma generate` → restart. The migration is additive.
 4. `cp deploy/screenshot-capture.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now screenshot-capture.service`, then the sweep units: `screenshot-sweep.service` + `systemctl enable --now screenshot-sweep.timer`.
-5. **Turn it on:** admin **Screenshots** card → enable, cap **1**; then opt ONE device in from its own console. With both switches at their defaults nothing has changed on the box at all.
+5. **Turn it on:** admin panel → **Infrastructure** → *Device screen monitoring* → enable, cap **1**; then opt ONE device in from that device's own **Summary** → *Screen monitoring* card. With both switches at their defaults nothing has changed on the box at all.
 
 **Still owner-run — cannot be proven from this repo**
 The Playwright sequence itself, and the RAM cost of one capture. **Every test here fakes the browser** (it is injected by design), so nothing in CI touches MeshCentral. Tracked as **OWN-9**.
