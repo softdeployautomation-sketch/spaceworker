@@ -34,6 +34,13 @@ interface PendingAction {
   expiresAt: string;
 }
 
+interface WidgetDevice {
+  id: string;
+  name: string;
+  status: string;
+  screenshotOptIn: boolean | null; // null while its own row is still loading
+}
+
 // Route -> a short, human label for the AI's page context. Deliberately a
 // flat prefix-match list (not full page content) — extend this list as more
 // pages are worth naming; a page with no entry just falls back to raw path.
@@ -80,6 +87,12 @@ export function AgentWidget() {
   const pageCtx = useAgentPageContext();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [open, setOpen] = useState(false);
+  const [view, setView] = useState<"chat" | "settings">("chat");
+  const [agentActionsEnabled, setAgentActionsEnabled] = useState<boolean | null>(null);
+  const [devices, setDevices] = useState<WidgetDevice[]>([]);
+  const [devicesLoaded, setDevicesLoaded] = useState(false);
+  const [settingsBusy, setSettingsBusy] = useState("");
+  const [settingsError, setSettingsError] = useState("");
   const [messages, setMessages] = useState<WidgetMessage[]>([]);
   const [pending, setPending] = useState<PendingAction[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -90,7 +103,9 @@ export function AgentWidget() {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Check the mute switch once on mount — cheap, and the widget must not even
-  // flash visible before hiding itself for a user who turned it off.
+  // flash visible before hiding itself for a user who turned it off. Same
+  // response also carries agentActionsEnabled so the settings panel below
+  // never needs a second round trip just to know its own starting state.
   useEffect(() => {
     let cancelled = false;
     fetch("/api/agent")
@@ -98,6 +113,7 @@ export function AgentWidget() {
       .then((data) => {
         if (cancelled || !data) return;
         setEnabled(data.widgetEnabled !== false);
+        setAgentActionsEnabled(data.agentActionsEnabled !== false);
       })
       .catch(() => {
         if (!cancelled) setEnabled(true); // fail open — a failed check shouldn't hide a working feature
@@ -106,6 +122,76 @@ export function AgentWidget() {
       cancelled = true;
     };
   }, []);
+
+  // Lazy, on-demand: only fetched once the settings view is actually opened,
+  // not on every widget mount — same cost discipline as the chat thread's own
+  // lazy load. One /api/devices call, then one /screenshots call per device
+  // in parallel (bounded by however many devices this user actually has).
+  const loadDevicesPanel = useCallback(async () => {
+    try {
+      const res = await fetch("/api/devices");
+      if (!res.ok) return;
+      const data = await res.json();
+      const list: Array<{ id: string; name: string; status: string }> = data.devices ?? [];
+      setDevices(list.map((d) => ({ id: d.id, name: d.name, status: d.status, screenshotOptIn: null })));
+      setDevicesLoaded(true);
+      const withOptIn = await Promise.all(
+        list.map(async (d) => {
+          try {
+            const r = await fetch(`/api/devices/${d.id}/screenshots`);
+            if (!r.ok) return { ...d, screenshotOptIn: null as boolean | null };
+            const j = await r.json();
+            return { ...d, screenshotOptIn: j.device?.optIn === true };
+          } catch {
+            return { ...d, screenshotOptIn: null as boolean | null };
+          }
+        }),
+      );
+      setDevices(withOptIn);
+    } catch {
+      // Best-effort — the panel just shows an empty list until retried.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (view === "settings" && !devicesLoaded) void loadDevicesPanel();
+  }, [view, devicesLoaded, loadDevicesPanel]);
+
+  async function toggleAgentActions(next: boolean) {
+    setSettingsBusy("agentActions");
+    setSettingsError("");
+    try {
+      const res = await fetch("/api/settings/notifications", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentActionsEnabled: next }),
+      });
+      if (!res.ok) throw new Error("Couldn't change that.");
+      setAgentActionsEnabled(next);
+    } catch (e) {
+      setSettingsError(e instanceof Error ? e.message : "Couldn't change that.");
+    } finally {
+      setSettingsBusy("");
+    }
+  }
+
+  async function toggleDeviceScreenshots(deviceId: string, next: boolean) {
+    setSettingsBusy(deviceId);
+    setSettingsError("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!res.ok) throw new Error("Couldn't change that.");
+      setDevices((prev) => prev.map((d) => (d.id === deviceId ? { ...d, screenshotOptIn: next } : d)));
+    } catch (e) {
+      setSettingsError(e instanceof Error ? e.message : "Couldn't change that.");
+    } finally {
+      setSettingsBusy("");
+    }
+  }
 
   const loadThread = useCallback(async () => {
     try {
@@ -204,16 +290,123 @@ export function AgentWidget() {
               <p className="truncate text-sm font-semibold text-fg">Agent</p>
               <p className="truncate text-xs text-fg-muted">{pageLabel(pathname ?? "")}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => setOpen(false)}
-              className="rounded-lg p-1.5 text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5"
-              aria-label="Minimize"
-            >
-              ✕
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setView((v) => (v === "chat" ? "settings" : "chat"))}
+                className={cn(
+                  "rounded-lg p-1.5 text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5",
+                  view === "settings" && "bg-black/5 text-fg dark:bg-white/5",
+                )}
+                aria-label={view === "chat" ? "Agent settings" : "Back to chat"}
+                title="Agent settings"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path
+                    d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                  />
+                  <path
+                    d="M19.4 13.5c.1-.5.1-1 0-1.5l1.6-1.2-1.5-2.6-1.9.5a7.6 7.6 0 0 0-1.3-.75L16 6h-3l-.3 1.95c-.46.19-.9.44-1.3.75l-1.9-.5-1.5 2.6 1.6 1.2c-.1.5-.1 1 0 1.5l-1.6 1.2 1.5 2.6 1.9-.5c.4.31.84.56 1.3.75L13 21h3l.3-1.95c.46-.19.9-.44 1.3-.75l1.9.5 1.5-2.6-1.6-1.2Z"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="rounded-lg p-1.5 text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5"
+                aria-label="Minimize"
+              >
+                ✕
+              </button>
+            </div>
           </div>
 
+          {view === "settings" ? (
+            <div className="flex-1 overflow-y-auto px-4 py-3">
+              <div className="rounded-xl border border-border bg-black/5 p-3 dark:bg-white/5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-fg">Agent actions</p>
+                    <p className="text-xs text-fg-muted">
+                      Let the agent propose jobs, campaigns and device actions for you to approve.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={agentActionsEnabled === true}
+                    disabled={agentActionsEnabled === null || settingsBusy === "agentActions"}
+                    onClick={() => void toggleAgentActions(!agentActionsEnabled)}
+                    className={cn(
+                      "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                      agentActionsEnabled ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
+                        agentActionsEnabled ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                      )}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <p className="mt-4 text-xs font-medium uppercase tracking-wide text-fg-muted">
+                Screen monitoring
+              </p>
+              {!devicesLoaded ? (
+                <div className="mt-2 flex items-center justify-center py-6">
+                  <Spinner />
+                </div>
+              ) : devices.length === 0 ? (
+                <p className="mt-1 text-sm text-fg-muted">No devices yet.</p>
+              ) : (
+                <div className="mt-2 flex flex-col gap-2">
+                  {devices.map((d) => (
+                    <div
+                      key={d.id}
+                      className="flex items-center justify-between gap-3 rounded-xl border border-border bg-black/5 p-3 dark:bg-white/5"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-fg">{d.name}</p>
+                        <p className="text-xs text-fg-muted">{d.status}</p>
+                      </div>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={d.screenshotOptIn === true}
+                        disabled={d.screenshotOptIn === null || settingsBusy === d.id}
+                        onClick={() => void toggleDeviceScreenshots(d.id, !d.screenshotOptIn)}
+                        className={cn(
+                          "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                          d.screenshotOptIn ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
+                            d.screenshotOptIn ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                          )}
+                        />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="mt-3 text-xs text-fg-muted">
+                Editing a device&apos;s own capture schedule (interval, or capturing right now) stays in
+                that device&apos;s own console — this is just on/off.
+              </p>
+              {settingsError && <p className="mt-2 text-xs text-red-500">{settingsError}</p>}
+            </div>
+          ) : (
+          <>
           <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-3">
             {!loaded ? (
               <div className="flex h-full items-center justify-center">
@@ -291,6 +484,8 @@ export function AgentWidget() {
               Send
             </Button>
           </form>
+          </>
+          )}
         </div>
       )}
 

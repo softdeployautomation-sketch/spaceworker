@@ -22,11 +22,13 @@ export async function GET() {
     orderBy: { createdAt: "desc" },
     select: { id: true, kind: true, payload: true, proposal: true, expiresAt: true },
   });
-  // 2026-09-27 — the floating widget's own mute switch (additive field; the
-  // automations page's existing consumer of this route just ignores it).
+  // 2026-09-27 — the floating widget's own mute switch, plus the existing
+  // agent-actions kill switch surfaced here too so the widget's own settings
+  // panel can show/edit it without a second round trip (additive fields; the
+  // automations page's existing consumer of this route just ignores them).
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
-    select: { agentWidgetEnabled: true },
+    select: { agentWidgetEnabled: true, agentActionsEnabled: true },
   });
 
   return NextResponse.json({
@@ -39,6 +41,7 @@ export async function GET() {
       expiresAt: p.expiresAt.toISOString(),
     })),
     widgetEnabled: user?.agentWidgetEnabled ?? true,
+    agentActionsEnabled: user?.agentActionsEnabled ?? true,
   });
 }
 
