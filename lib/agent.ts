@@ -747,14 +747,17 @@ export async function runAgentTurn(opts: {
     return { reply, pendingAction: null, inlineWidget: null, usage: null };
   }
 
+  // 2026-09-27 (live incident) — a SECOND `role: "system"` message was
+  // silently ignored by the Channelry relay (confirmed live: the reply never
+  // changed no matter what page context was sent). Folded into the ONE
+  // system message instead — the relay clearly honors that one, since the
+  // whole rest of AGENT_SYSTEM_PROMPT's behavior already depends on it.
+  const systemContent = opts.pageContext
+    ? `${AGENT_SYSTEM_PROMPT}\n\nCurrent page context: ${opts.pageContext}`
+    : AGENT_SYSTEM_PROMPT;
+
   const result = await channelryAiChat({
-    messages: [
-      { role: "system", content: AGENT_SYSTEM_PROMPT },
-      ...(opts.pageContext
-        ? [{ role: "system" as const, content: `Current page context: ${opts.pageContext}` }]
-        : []),
-      ...dialogue,
-    ],
+    messages: [{ role: "system", content: systemContent }, ...dialogue],
     tools: AGENT_TOOLS,
     max_tokens: 900,
     external_user_id: opts.userId,
