@@ -1,0 +1,548 @@
+import "server-only";
+
+import { mkdir, rm, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve, sep } from "node:path";
+
+import { db } from "./db";
+import { getAdminSettings } from "./admin-settings";
+import { requestSlot, type PressureSnapshot } from "./resource-governor";
+
+// ---------------------------------------------------------------------------
+// TASK_127 Phase 1 — device screenshot monitoring: CAPTURE.
+// ---------------------------------------------------------------------------
+// Phase 1 only. There is deliberately NO AI here: the end-of-day vision summary
+// is Phase 2 and ships as its own change (see the task doc). What this module
+// owns is everything except the browser itself:
+//
+//   - the admin dials (master switch, concurrency cap, per-device interval,
+//     retention) and the per-DEVICE opt-in consent boundary;
+//   - where a frame lives on disk, and how a row references it;
+//   - the capture pass: which devices are DUE, asking the governor (TASK_105)
+//     for a slot, creating the `capturing` row that HOLDS that slot, and
+//     recording the outcome;
+//   - retention: reaping captures whose worker died, and deleting expired
+//     frames from disk as well as from the table.
+//
+// WHY PLAYWRIGHT IS NOT IMPORTED HERE: the actual browser sequence lives in
+// browser-capture/, a SEPARATE process. This module is imported by the admin
+// API and (later) the UI, and importing Playwright into the Next server would
+// drag a browser automation stack into the app process — the exact footprint
+// the repo's own spaceworker-browser.service exists to keep out. The capture
+// function is therefore INJECTED (see runCapturePass), which also makes the
+// whole pass testable without launching a browser.
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+export interface ScreenshotSettings {
+  enabled: boolean;
+  maxConcurrent: number;
+  intervalMinutes: number;
+  retentionDays: number;
+}
+
+/** Structural subset of AdminSetting this module reads. */
+export interface ScreenshotSettingsRow {
+  screenshotMonitoringEnabled?: boolean | null;
+  screenshotCapturesMaxConcurrent?: number | null;
+  screenshotCaptureIntervalMinutes?: number | null;
+  screenshotRetentionDays?: number | null;
+}
+
+function rowInt(value: number | null | undefined, fallback: number, min: number): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= min
+    ? Math.floor(value)
+    : fallback;
+}
+
+/**
+ * Resolve the admin dials, falling back to the schema defaults when a value is
+ * missing/unusable — same discipline as the governor's own resolvers, so a
+ * half-written row can never produce a nonsensical cadence (e.g. an interval of
+ * 0, which would try to capture every device on every tick).
+ *
+ * Defaults mirror the schema exactly: OFF, 2 at a time, hourly, 14 days.
+ */
+export function resolveScreenshotSettings(
+  row: ScreenshotSettingsRow | null | undefined,
+): ScreenshotSettings {
+  return {
+    enabled: typeof row?.screenshotMonitoringEnabled === "boolean"
+      ? row.screenshotMonitoringEnabled
+      : false,
+    // Floor of 1: a cap of 0 would mean "monitoring on, but never capture".
+    maxConcurrent: rowInt(row?.screenshotCapturesMaxConcurrent, 2, 1),
+    // Floor of 1 MINUTE so the owner can compress a test window without code.
+    intervalMinutes: rowInt(row?.screenshotCaptureIntervalMinutes, 60, 1),
+    // Floor of 1 DAY: a retention of 0 would delete each frame as it was taken.
+    retentionDays: rowInt(row?.screenshotRetentionDays, 14, 1),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Where frames live
+// ---------------------------------------------------------------------------
+
+// A frame is a picture of somebody's screen, so these two rules are deliberate:
+//
+//  1. The root is OUTSIDE the application directory. The repo's .gitignore
+//     already documents why (a `next build` dies on the first file it cannot
+//     read; the deploy user and the build user are not the same). Frames are
+//     also 0600-ish sensitive artefacts and must never be reachable as static
+//     assets — nothing under /opt/spaceworker is.
+//  2. Rows store a path RELATIVE to that root, never an absolute one, so the
+//     root can move (or differ between machines) without rewriting every row.
+//
+// Resolved LAZILY (function, not module constant): importing this module must
+// never depend on the env being present, or an unrelated importer would throw
+// at import time the way lib/browser-profiles.ts deliberately does.
+export function screenshotBaseDir(): string {
+  const configured = process.env.SCREENSHOT_BASE_DIR;
+  if (configured && configured.trim().length > 0) return resolve(configured);
+  // Same state root as BROWSER_PROFILE_BASE_DIR's documented sibling usage.
+  return process.env.NODE_ENV === "production"
+    ? "/var/spaceworker/screenshots"
+    : join(tmpdir(), "spaceworker-screenshots");
+}
+
+/** The UTC day a frame belongs to (stamped on the row as `summaryDate`). */
+export function startOfUtcDay(at: Date): Date {
+  const day = new Date(at.getTime());
+  day.setUTCHours(0, 0, 0, 0);
+  return day;
+}
+
+/**
+ * Relative path for a frame: `<deviceId>/<YYYY-MM-DD>/<frameId>.png`.
+ *
+ * Grouping by device and day is what makes both consumers cheap: the retention
+ * purge deletes whole directories per day, and a human looking for "what was on
+ * this device yesterday" finds one folder rather than a flat hash dump.
+ */
+export function frameRelPath(deviceId: string, at: Date, frameId: string): string {
+  const day = startOfUtcDay(at).toISOString().slice(0, 10);
+  return join(deviceId, day, `${frameId}.png`);
+}
+
+/** Absolute path for a stored relative frame path. */
+export function frameAbsPath(relPath: string): string {
+  return resolve(screenshotBaseDir(), relPath);
+}
+
+/**
+ * The inverse of frameAbsPath: turn an absolute frame path back into the
+ * RELATIVE form a row must store, validating it on the way through.
+ *
+ * Needed because the capture service is given an absolute path (it writes the
+ * file) while the database stores only the relative form, so the two must be
+ * converted in exactly one place rather than by string surgery at the call site.
+ */
+export function frameRelPathFromAbs(absPath: string): string {
+  assertSafeFramePath(absPath);
+  return relative(screenshotBaseDir(), absPath);
+}
+
+/**
+ * Guard before any fs write/delete, mirroring lib/browser-profiles.ts's
+ * assertSafePath: a row's stored path is data, and data must never be able to
+ * address a file outside the screenshot root.
+ */
+export function assertSafeFramePath(absPath: string): void {
+  const base = resolve(screenshotBaseDir());
+  const normalized = resolve(absPath);
+  if (normalized !== base && !normalized.startsWith(base + sep)) {
+    throw new Error("Path traversal detected");
+  }
+}
+
+/** Create the frame's directory and return the ABSOLUTE path to write to. */
+export async function prepareFramePath(relPath: string): Promise<string> {
+  const abs = frameAbsPath(relPath);
+  assertSafeFramePath(abs);
+  await mkdir(dirname(abs), { recursive: true });
+  return abs;
+}
+
+// ---------------------------------------------------------------------------
+// The capture pass
+// ---------------------------------------------------------------------------
+
+/**
+ * A device whose owner opted it in AND which is due for a capture.
+ * Deliberately a small, structural shape so a test can build one by hand.
+ */
+export interface CaptureTarget {
+  id: string;
+  userId: string;
+  name: string;
+}
+
+/** What the injected capture function reports back. */
+export interface CaptureOutcome {
+  /** Relative path of the frame it wrote (required for a success). */
+  filePath?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  /** Set instead of filePath when the capture could not produce a frame. */
+  failureReason?: string;
+}
+
+/**
+ * The browser half, injected. `framePath` is the PREPARED absolute path the
+ * implementation should write its PNG to; returning its relative form is the
+ * implementation's job so the row and the disk agree.
+ */
+export type CaptureFn = (device: CaptureTarget, framePath: string) => Promise<CaptureOutcome>;
+
+export interface CapturePassOptions {
+  now?: Date;
+  /** Injected pressure (tests/diagnostics); production omits it. */
+  pressure?: PressureSnapshot;
+}
+
+export interface CapturePassResult {
+  /** Set when the whole pass did nothing: "disabled" or "no_devices". */
+  skipped: string | null;
+  attempted: number;
+  captured: number;
+  failed: number;
+  /** Devices the governor put in line instead of admitting (next tick retries). */
+  queued: number;
+  reaped: number;
+  purged: number;
+  results: Array<{ deviceId: string; status: string; reason?: string }>;
+}
+
+// A capture that has not finished in this long is treated as a dead worker and
+// reaped. The investigation measured the real sequence at tens of seconds, and
+// the implementation enforces its own shorter per-step timeout — this is the
+// backstop for a worker that was SIGKILLed and never wrote anything back, which
+// matters because a stuck `capturing` row would otherwise hold a governor slot
+// forever.
+export const CAPTURE_STUCK_MS = 5 * 60 * 1000;
+
+/**
+ * Mark captures whose worker vanished as failed, releasing their governor slot.
+ * Returns how many rows were reaped.
+ */
+export async function reapStuckCaptures(now: Date, stuckMs = CAPTURE_STUCK_MS): Promise<number> {
+  const cutoff = new Date(now.getTime() - stuckMs);
+  const res = await db.deviceScreenshot.updateMany({
+    where: { status: "capturing", createdAt: { lt: cutoff } },
+    data: { status: "failed", failureReason: "worker_timeout" },
+  });
+  return res.count;
+}
+
+/**
+ * Delete frames older than the retention window — the FILE first, then the row.
+ *
+ * Order matters: unlinking first means a crash between the two steps leaves a
+ * row whose file is gone (harmless — the row is past retention and gets retried
+ * next pass), whereas deleting the row first would strand an unreferenced image
+ * of somebody's screen on disk with nothing left to find it by. An unlink that
+ * fails because the file is already gone is treated as success, not an error.
+ */
+export async function purgeExpiredFrames(now: Date, retentionDays: number): Promise<number> {
+  const cutoff = startOfUtcDay(new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000));
+  const expired = await db.deviceScreenshot.findMany({
+    where: { summaryDate: { lt: cutoff }, status: { not: "capturing" } },
+    select: { id: true, filePath: true },
+  });
+  let purged = 0;
+  for (const row of expired) {
+    if (row.filePath) {
+      try {
+        const abs = frameAbsPath(row.filePath);
+        assertSafeFramePath(abs);
+        await unlink(abs);
+      } catch {
+        // Missing file (or a path that fails the traversal guard) must never
+        // stop the purge — the row still goes.
+      }
+    }
+    await db.deviceScreenshot.delete({ where: { id: row.id } });
+    purged++;
+  }
+  return purged;
+}
+
+/**
+ * Devices that are opted in, online, and past their capture interval.
+ *
+ * OFFLINE DEVICES ARE SKIPPED, NOT FAILED: the console's own Connect button is
+ * disabled when the machine is not online, so a capture attempt there could only
+ * ever produce a confusing failure row and burn a slot. Skipping is also what
+ * satisfies the acceptance rule that one sleeping device never breaks the sweep
+ * for the others.
+ */
+export async function listDueDevices(
+  now: Date,
+  intervalMinutes: number,
+): Promise<CaptureTarget[]> {
+  const candidates = await db.device.findMany({
+    where: { screenshotMonitoringEnabled: true, status: "online" },
+    select: { id: true, userId: true, name: true },
+    orderBy: { id: "asc" },
+  });
+  if (candidates.length === 0) return [];
+
+  // A device with a capture ALREADY IN FLIGHT is never due again. Without this
+  // an overlapping pass (a manual run beside the timer, or a capture still
+  // running when the next tick fires) could ask for the same device twice and
+  // photograph it twice — the governor would grant both, because each request is
+  // individually within the cap. Skipping in-flight devices is what makes "one
+  // capture per device at a time" true rather than merely likely.
+  const inFlight = await db.deviceScreenshot.findMany({
+    where: { status: "capturing" },
+    select: { deviceId: true },
+    distinct: ["deviceId"],
+  });
+  const busy = new Set(inFlight.map((row) => row.deviceId));
+  const eligible = candidates.filter((device) => !busy.has(device.id));
+  if (eligible.length === 0) return [];
+
+  // One grouped read for the last attempt per device (uses the
+  // deviceId+summaryDate index) instead of a query per candidate.
+  const latest = await db.deviceScreenshot.groupBy({
+    by: ["deviceId"],
+    where: { deviceId: { in: eligible.map((d) => d.id) } },
+    _max: { createdAt: true },
+  });
+  const lastAttempt = new Map<string, Date>();
+  for (const row of latest) {
+    const at = row._max.createdAt;
+    if (at) lastAttempt.set(row.deviceId, at);
+  }
+
+  const intervalMs = intervalMinutes * 60 * 1000;
+  return eligible.filter((device) => {
+    const last = lastAttempt.get(device.id);
+    return !last || now.getTime() - last.getTime() >= intervalMs;
+  });
+}
+
+/**
+ * Run one capture pass.
+ *
+ * The browser work is INJECTED (`capture`) so this function is testable without
+ * Chromium, and so the Playwright stack stays in its own process. Everything
+ * else — the master switch, the due list, the governor admission, the slot-holding
+ * row, the outcome record, reaping and retention — is real here.
+ *
+ * HOW THE CONCURRENCY CAP IS ENFORCED: each admitted device gets its `capturing`
+ * row CREATED BEFORE the next device is asked, and the governor's live count for
+ * `deviceScreenshots` is exactly the number of `capturing` rows. So the loop
+ * naturally admits at most `screenshotCapturesMaxConcurrent` captures per pass
+ * even though the captures themselves run in parallel — and, because the count
+ * comes from the database rather than from memory, a pass that overlaps a
+ * previous pass's still-running capture cannot over-admit either.
+ */
+export async function runCapturePass(
+  capture: CaptureFn,
+  opts: CapturePassOptions = {},
+): Promise<CapturePassResult> {
+  const now = opts.now ?? new Date();
+  const settings = resolveScreenshotSettings(await getAdminSettings());
+
+  const result: CapturePassResult = {
+    skipped: null,
+    attempted: 0,
+    captured: 0,
+    failed: 0,
+    queued: 0,
+    reaped: 0,
+    purged: 0,
+    results: [],
+  };
+
+  // Master switch first — with monitoring off nothing is read, nothing is
+  // deleted and no browser is ever considered (today's behaviour exactly).
+  if (!settings.enabled) {
+    result.skipped = "disabled";
+    return result;
+  }
+
+  // Housekeeping runs even on a pass with nothing due, so a dead worker's slot
+  // is released and expired frames do not accumulate while the box is idle.
+  result.reaped = await reapStuckCaptures(now);
+  result.purged = await purgeExpiredFrames(now, settings.retentionDays);
+
+  const due = await listDueDevices(now, settings.intervalMinutes);
+  if (due.length === 0) {
+    result.skipped = "no_devices";
+    return result;
+  }
+
+  const inflight: Array<Promise<void>> = [];
+
+  for (const device of due) {
+    // `ref: device.id` makes a re-ask idempotent: a device that is already in
+    // line keeps ONE governor row and ONE position across ticks rather than
+    // pushing a new entry every minute.
+    const decision = await requestSlot("deviceScreenshots", {
+      userId: device.userId,
+      ref: device.id,
+      pressure: opts.pressure,
+      now,
+    });
+
+    if (decision.status !== "granted") {
+      if (decision.status === "queued") result.queued++;
+      result.results.push({
+        deviceId: device.id,
+        status: decision.status,
+        reason: decision.reason,
+      });
+      continue;
+    }
+
+    // Admitted: create the slot-holding row BEFORE touching the browser, so the
+    // governor's live count reflects reality for the next candidate.
+    const frame = await db.deviceScreenshot.create({
+      data: {
+        deviceId: device.id,
+        userId: device.userId,
+        status: "capturing",
+        summaryDate: startOfUtcDay(now),
+      },
+      select: { id: true },
+    });
+
+    const relPath = frameRelPath(device.id, now, frame.id);
+    const absPath = await prepareFramePath(relPath);
+    result.attempted++;
+
+    // Started immediately, awaited at the end: this is what lets up to `cap`
+    // captures overlap while the loop above still enforces the cap.
+    inflight.push(
+      capture(device, absPath)
+        .then(async (outcome) => {
+          if (outcome.filePath && !outcome.failureReason) {
+            await db.deviceScreenshot.update({
+              where: { id: frame.id },
+              data: {
+                status: "captured",
+                filePath: outcome.filePath,
+                bytes: outcome.bytes ?? null,
+                width: outcome.width ?? null,
+                height: outcome.height ?? null,
+                capturedAt: new Date(),
+              },
+            });
+            result.captured++;
+            result.results.push({ deviceId: device.id, status: "captured" });
+            return;
+          }
+          // A capture that produced nothing is a FAILED row, never a silent
+          // skip: the owner must be able to see that monitoring is not working.
+          await db.deviceScreenshot.update({
+            where: { id: frame.id },
+            data: {
+              status: "failed",
+              failureReason: outcome.failureReason ?? "no_frame",
+            },
+          });
+          result.failed++;
+          result.results.push({
+            deviceId: device.id,
+            status: "failed",
+            reason: outcome.failureReason ?? "no_frame",
+          });
+        })
+        .catch(async (err: unknown) => {
+          // The implementation threw (browser launch failure, navigation
+          // timeout, ...). Same rule: record it, never leave the row in
+          // "capturing" holding a slot.
+          const reason = err instanceof Error ? err.message : "capture_error";
+          try {
+            await db.deviceScreenshot.update({
+              where: { id: frame.id },
+              data: { status: "failed", failureReason: reason.slice(0, 500) },
+            });
+          } catch {
+            // Nothing more we can do; the reaper will clear it.
+          }
+          result.failed++;
+          result.results.push({ deviceId: device.id, status: "failed", reason });
+        }),
+    );
+  }
+
+  await Promise.allSettled(inflight);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Read helpers (the owner-facing views)
+// ---------------------------------------------------------------------------
+
+export interface FrameView {
+  id: string;
+  status: string;
+  failureReason: string | null;
+  bytes: number | null;
+  width: number | null;
+  height: number | null;
+  capturedAt: string | null;
+  createdAt: string;
+}
+
+/** Recent frames for one device, newest first — what the owner's UI lists. */
+export async function listRecentFrames(deviceId: string, limit = 20): Promise<FrameView[]> {
+  const rows = await db.deviceScreenshot.findMany({
+    where: { deviceId },
+    orderBy: { createdAt: "desc" },
+    take: limit,
+    select: {
+      id: true,
+      status: true,
+      failureReason: true,
+      bytes: true,
+      width: true,
+      height: true,
+      capturedAt: true,
+      createdAt: true,
+    },
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    status: row.status,
+    failureReason: row.failureReason,
+    bytes: row.bytes,
+    width: row.width,
+    height: row.height,
+    capturedAt: row.capturedAt ? row.capturedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+  }));
+}
+
+/** In-flight captures right now — the same number the governor's cap counts. */
+export async function countCapturing(): Promise<number> {
+  return db.deviceScreenshot.count({ where: { status: "capturing" } });
+}
+
+/** Remove a stored frame from disk (used when a device or opt-in is removed). */
+export async function deleteFrameFile(relPath: string): Promise<void> {
+  try {
+    const abs = frameAbsPath(relPath);
+    assertSafeFramePath(abs);
+    await unlink(abs);
+  } catch {
+    // Already gone (or unsafe) — nothing to do.
+  }
+}
+
+/** Delete a device's whole frame tree from disk. */
+export async function deleteDeviceFrameTree(deviceId: string): Promise<void> {
+  try {
+    const abs = frameAbsPath(deviceId);
+    assertSafeFramePath(abs);
+    await rm(abs, { recursive: true, force: true });
+  } catch {
+    // Nothing to remove.
+  }
+}

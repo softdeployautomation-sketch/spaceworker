@@ -109,3 +109,48 @@ Non-negotiable safety requirements, decided now so they can't get lost later:
 ## Acceptance (Phase 1/2, once built)
 - A real opted-in test device produces real captured frames across a real day (or a compressed test window) via the automated Connect-and-screenshot flow, one real AI summary is generated and delivered via Telegram, disabling the per-device toggle stops captures with zero errors, and an offline device during a scheduled capture never breaks the sweep for other devices.
 - Phase 3 has NO acceptance criteria yet — it doesn't get scoped until Phase 1/2 ship and the user explicitly asks to proceed.
+
+## Built 2026-09-27 — Phase 1 is IMPLEMENTED (capture only)
+
+Branch `agent/task-127-device-screenshots`. **Phase 2 (vision summary) and Phase 3 (control) are still NOT built.**
+
+**What shipped**
+- `lib/device-screenshots.ts` — the whole pass: the four settings, the per-device due list, governor admission, the slot-holding `capturing` row, outcome recording, reaping and retention. The browser is **injected**, so all of this is testable without Chromium.
+- `browser-capture/capture.ts` + `browser-capture/server.ts` — the proven Playwright sequence of "Live investigation" above (both non-obvious findings kept verbatim) behind a tiny loopback HTTP service on **127.0.0.1:3403**, Bearer `SCREENSHOT_CAPTURE_TOKEN`.
+- `app/api/internal/screenshot-sweep/route.ts` — the sweep (bearer oneshot, exactly like `governor-sweep`). Owns every database touch and mints the owner's console session.
+- `app/api/admin/screenshots/route.ts` — GET/PATCH the four dials plus a live read-out (capturing / captured / failed / opted-in devices / last frame).
+- `app/api/devices/[deviceId]/screenshots/route.ts` (+ `/[frameId]`) — per-device opt-in, recent frames, on-demand delete, and the frame image itself (owner-scoped, `private, no-store`, traversal-guarded).
+- `prisma/migrations/20261008000000_task127_device_screenshots` — `DeviceScreenshot`, one per-device opt-in column, four `AdminSetting` dials.
+- `deploy/screenshot-capture.service` (long-running), `deploy/screenshot-sweep.{service,timer}` (oneshot + 1-minute timer).
+- `tests/device-screenshots.test.ts` — 20 tests, all against the REAL module and the REAL governor through the house require hook.
+
+**The two constraints that dictated this shape — do NOT "simplify" them back out**
+1. `lib/` is **never shipped to the VPS**: the deploy tar is `.next node_modules package.json package-lock.json prisma browser-server worker deploy`. A standalone worker could not import it (this is the same fact recorded under DEPLOY-1 in the pipeline tracker).
+2. Several `lib/*` modules `import "server-only"`, whose default entry **throws** in a plain Node process — so shipping `lib/` would not have helped either.
+
+Hence: **orchestration in the app, browser in its own process, talking over loopback.** Everything the browser needs — the console URL, the minted cookie, the output path — arrives as a request field, so the service holds no database and no secret of its own (only the shared token), and the app holds no browser footprint. `browser-capture` was added to the deploy tar for exactly the reason `browser-server` and `worker` are already in it.
+
+**The cap, and how the owner's "test what 1 does to the RAM" is done**
+`screenshotCapturesMaxConcurrent` (default **2**) is enforced by TASK_105's governor as a new queueable feature `deviceScreenshots`, whose live count **is** the number of `capturing` rows. Consequences that are all tested: the cap binds even with the governor's own master switch off; a worker that dies is reaped (5-minute stuck threshold) which frees the slot; a re-ask reuses one durable queue row per device; and a device already capturing is never asked twice. To measure one capture, set the cap to **1** in the admin panel — no code change.
+
+**Deploy recipe (owner-run)**
+1. **One-time on the box:** `sudo npx playwright install-deps chromium`, then create `/var/spaceworker/ms-playwright` and `/var/spaceworker/screenshots` owned by `trmm`, then `sudo -u trmm PLAYWRIGHT_BROWSERS_PATH=/var/spaceworker/ms-playwright npx --prefix /opt/spaceworker playwright install chromium`. The browser binary (~300MB) is deliberately **not** in the deploy tar — same category as the worker's Python venv.
+2. **Add `SCREENSHOT_CAPTURE_TOKEN=<long random>` to `/opt/spaceworker/.env`.** The app and the capture service must share it. Unset means the service refuses every request, and the sweep records `capture_service_token_not_set` on the row rather than silently doing nothing.
+3. Normal deploy (the tar now includes `browser-capture`), then the usual `prisma migrate deploy` → `prisma generate` → restart. The migration is additive.
+4. `cp deploy/screenshot-capture.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now screenshot-capture.service`, then the sweep units: `screenshot-sweep.service` + `systemctl enable --now screenshot-sweep.timer`.
+5. **Turn it on:** admin **Screenshots** card → enable, cap **1**; then opt ONE device in from its own console. With both switches at their defaults nothing has changed on the box at all.
+
+**Still owner-run — cannot be proven from this repo**
+The Playwright sequence itself, and the RAM cost of one capture. **Every test here fakes the browser** (it is injected by design), so nothing in CI touches MeshCentral. Tracked as **OWN-9**.
+
+**Open questions from the previous revision — status**
+- *Playwright as a real dependency / browser install:* **resolved** — now in `dependencies` (`^1.63.0` when installed); the binary is a one-time VPS step (recipe step 1), not in the tar.
+- *"Mint the sweep's own session cleanly, not a hand-forged token per run":* **resolved** — the route calls the app's own `createSessionToken`, the same call the login route makes. Used once, held in memory, never logged or persisted.
+- *Where raw frames live:* **resolved** — files under `SCREENSHOT_BASE_DIR` (production default `/var/spaceworker/screenshots`); rows store a **relative** path; never base64 in Postgres. `assertSafeFramePath` guards every read, write and delete, so a stored path can never address a file outside the root.
+- *TASK_31's image-storage precedent:* **checked — it does not exist in SpaceWorker.** This is the first frame store in this repo, so it was designed on its own merits (outside the app dir, so `next build` can never choke on it and it can never be served as a static asset).
+- *The "someone is viewing your screen" indicator:* **still open, and it is a product/consent question, not a technical one.** Nothing in this build hides it — every capture is a real session that the device's own agent may surface to whoever is sitting at it. The per-device switch is the consent boundary that exists today; the admin switch alone never captures anything.
+- *Vision model and cost per summary:* **still open — that is Phase 2.** When it lands it must go through `lib/agent.ts`'s metered path (`AiUsageLog` / `aiDailyCapHundredthsCent`), and it must be **one call per device per day over that day's frames**, never one call per frame.
+
+**Acceptance status for Phase 1**
+Built and unit-proven here; the two clauses that need a live box (a real opted-in device producing real frames, and an offline device never breaking the sweep for the others) are **OWN-9**. The offline clause is already covered by a test at the "due list" level — an offline device is skipped, not failed, and gets no row at all.
+

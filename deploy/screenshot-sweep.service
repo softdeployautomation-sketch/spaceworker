@@ -1,0 +1,24 @@
+# Install: sudo cp screenshot-sweep.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion) — never substitute %INTERNAL_BEARER_TOKEN% by hand;
+# that is exactly how four sibling units silently 401'd on 2026-09-24.
+# PORT 3500 — matches spaceworker.service (same convention as clone-sweep.service).
+#
+# This is the standard curl-oneshot sweep, like governor-sweep and digest-sweep.
+# It is NOT the process that runs Chromium: the app route it calls does all the
+# database work and delegates each frame to screenshot-capture.service (port
+# 3403). See app/api/internal/screenshot-sweep/route.ts for why the
+# orchestration has to live in the app.
+[Unit]
+Description=SpaceWorker device screenshot capture sweep — decides who is due and records frames (Task 127 Phase 1)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
+ExecStart=/usr/bin/curl -s -X POST \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
+  http://localhost:3500/api/internal/screenshot-sweep
+# A pass can hold up to screenshotCapturesMaxConcurrent captures, each bounded by
+# the capture service's own 75s watchdog and this route's 90s client timeout, so
+# a pass is bounded well inside this.
+TimeoutStartSec=300
