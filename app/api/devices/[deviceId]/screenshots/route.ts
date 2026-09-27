@@ -12,10 +12,15 @@ import {
 export const dynamic = "force-dynamic";
 
 // TASK_127 Phase 1 — device-side screen monitoring API (the console's panel).
-//   GET   → THIS device's opt-in state, the global policy it is subject to, and
-//           its recent frames (metadata only — the image bytes are served by
-//           ./[frameId]).
-//   PATCH → toggle the per-device opt-in ({ enabled: boolean }).
+//   GET   → THIS device's opt-in state, its own interval override (if set),
+//           the global policy it is subject to, and its recent frames
+//           (metadata only — the image bytes are served by ./[frameId]).
+//   PATCH → toggle the per-device opt-in ({ enabled: boolean }), and/or set
+//           or clear this device's own schedule override
+//           ({ intervalMinutesOverride: number | null }), and/or set or
+//           clear its wake delay ({ wakeDelayMinutes: number | null }) —
+//           "don't start capturing until N minutes after this device comes
+//           back online."
 //   DELETE→ delete every stored frame for this device on demand.
 //
 // Owner-scope rule (same as the clone routes): the device is resolved by id AND
@@ -29,7 +34,14 @@ export const dynamic = "force-dynamic";
 async function ownedDevice(deviceId: string, userId: string) {
   return db.device.findFirst({
     where: { id: deviceId, userId },
-    select: { id: true, name: true, status: true, screenshotMonitoringEnabled: true },
+    select: {
+      id: true,
+      name: true,
+      status: true,
+      screenshotMonitoringEnabled: true,
+      screenshotIntervalMinutesOverride: true,
+      screenshotWakeDelayMinutes: true,
+    },
   });
 }
 
@@ -47,19 +59,27 @@ export async function GET(
   const policy = resolveScreenshotSettings(await getAdminSettings());
   const frames = await listRecentFrames(device.id, 20);
 
+  const hasOverride = typeof device.screenshotIntervalMinutesOverride === "number";
   return NextResponse.json({
     device: {
       id: device.id,
       name: device.name,
       status: device.status,
       optIn: device.screenshotMonitoringEnabled,
+      intervalMinutesOverride: device.screenshotIntervalMinutesOverride,
+      wakeDelayMinutes: device.screenshotWakeDelayMinutes,
     },
     // The owner can see the policy they are subject to, but only an admin can
-    // change it — this is read-only here on purpose.
+    // change the GLOBAL default — this device's own override (above) is
+    // theirs to set. effectiveIntervalMinutes is override ?? global, the
+    // exact same precedence listDueDevices uses.
     policy: {
       enabled: policy.enabled,
       intervalMinutes: policy.intervalMinutes,
       retentionDays: policy.retentionDays,
+      effectiveIntervalMinutes: hasOverride
+        ? device.screenshotIntervalMinutesOverride!
+        : policy.intervalMinutes,
     },
     frames,
   });
@@ -82,26 +102,84 @@ export async function PATCH(
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-  if (typeof body.enabled !== "boolean") {
+
+  const hasEnabled = "enabled" in body;
+  const hasOverride = "intervalMinutesOverride" in body;
+  const hasWakeDelay = "wakeDelayMinutes" in body;
+  if (!hasEnabled && !hasOverride && !hasWakeDelay) {
+    return NextResponse.json(
+      { error: "enabled, intervalMinutesOverride and/or wakeDelayMinutes is required" },
+      { status: 400 },
+    );
+  }
+  if (hasEnabled && typeof body.enabled !== "boolean") {
     return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
   }
+  // null clears the override (back to the global default); a number sets it.
+  // 1..1440 mirrors the admin dial's own bounds (lib/admin-settings.ts).
+  let overrideValue: number | null | undefined;
+  if (hasOverride) {
+    const raw = body.intervalMinutesOverride;
+    if (raw === null) {
+      overrideValue = null;
+    } else if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1 && raw <= 1440) {
+      overrideValue = Math.floor(raw);
+    } else {
+      return NextResponse.json(
+        { error: "intervalMinutesOverride must be null or a whole number between 1 and 1440" },
+        { status: 400 },
+      );
+    }
+  }
+  // null/0 clears the delay (capture starts as soon as online + due); a
+  // positive number sets it. Same 1..1440 bound — a wait longer than a day
+  // makes no practical sense here either.
+  let wakeDelayValue: number | null | undefined;
+  if (hasWakeDelay) {
+    const raw = body.wakeDelayMinutes;
+    if (raw === null || raw === 0) {
+      wakeDelayValue = null;
+    } else if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1 && raw <= 1440) {
+      wakeDelayValue = Math.floor(raw);
+    } else {
+      return NextResponse.json(
+        { error: "wakeDelayMinutes must be null, 0, or a whole number between 1 and 1440" },
+        { status: 400 },
+      );
+    }
+  }
 
-  await db.device.update({
+  const data: Record<string, unknown> = {};
+  if (hasEnabled) data.screenshotMonitoringEnabled = body.enabled;
+  if (hasOverride) data.screenshotIntervalMinutesOverride = overrideValue;
+  if (hasWakeDelay) data.screenshotWakeDelayMinutes = wakeDelayValue;
+
+  const updated = await db.device.update({
     where: { id: device.id },
-    data: { screenshotMonitoringEnabled: body.enabled },
+    data,
+    select: {
+      screenshotMonitoringEnabled: true,
+      screenshotIntervalMinutesOverride: true,
+      screenshotWakeDelayMinutes: true,
+    },
   });
 
   // Turning the opt-in OFF must stop work that is already waiting: a queued
   // governor entry for this device would otherwise be granted on the next tick
   // and capture a device whose owner has just switched monitoring off.
-  if (!body.enabled) {
+  if (hasEnabled && !body.enabled) {
     await db.governorQueueEntry.updateMany({
       where: { feature: "deviceScreenshots", ref: device.id, status: "queued" },
       data: { status: "cancelled", reason: "opt_in_disabled" },
     });
   }
 
-  return NextResponse.json({ ok: true, optIn: body.enabled });
+  return NextResponse.json({
+    ok: true,
+    optIn: updated.screenshotMonitoringEnabled,
+    intervalMinutesOverride: updated.screenshotIntervalMinutesOverride,
+    wakeDelayMinutes: updated.screenshotWakeDelayMinutes,
+  });
 }
 
 export async function DELETE(
