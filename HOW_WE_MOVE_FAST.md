@@ -341,6 +341,37 @@ Added 2026-09-27 (TASK_128 — the onboarding-quarantine window):
   and pick a timestamp **strictly greater** than the newest one on
   `origin/main`. Never trust local `main` for this — it drifts.
 
+Added 2026-09-27 (TASK_128 §15 — verifying a deploy actually took):
+
+- **`/opt/<app>/lib/*.ts` on the VPS is NOT what runs — grepping it can hand you
+  a confident WRONG answer.** Both deploy workflows ship a **prebuilt tarball**
+  (`.next node_modules package.json package-lock.json prisma …`); they never ship
+  `lib/`, `app/` or `components/`. But `/opt/vantra` still has a **stale `lib/`
+  tree from an earlier source-based deploy** (its `lib/device-auto-move.ts` is
+  dated Sep 22, five days before the build that is actually running). Verifying
+  *"is `AUTO_MOVE_DELAY_MINUTES` live at 15?"* by grepping
+  `/opt/vantra/lib/device-auto-move.ts` answers **20** — the value from a file
+  that has been dead on disk since September, and it looked exactly like
+  authoritative evidence. `/opt/spaceworker/lib/` does not exist at all, so there
+  the same grep silently returns nothing. Either way the file is not evidence.
+  The runtime is `next start`, i.e. the **build**, so verify against the build:
+  ```bash
+  stat -c '%y %n' /opt/<app>/.next/BUILD_ID      # is the build from THIS deploy?
+  # server chunks ship .map files whose sourcesContent is the real compiled source
+  F=$(grep -rl 'THE_CONSTANT' /opt/<app>/.next/server | grep '\.map$' | head -1)
+  python3 -c "import json,sys; m=json.load(open(sys.argv[1])); \
+    [print(l.strip()) for i,s in enumerate(m['sources']) if 'the-file' in s \
+     for l in m['sourcesContent'][i].split(chr(10)) if 'THE_CONSTANT' in l]" "$F"
+  ```
+  That prints the source the running build was compiled from. Pair it with the
+  `BUILD_ID` mtime (must be *after* your deploy) or you are reading a previous
+  build. Cheaper still for behaviour: the routes themselves, since a mounted
+  route answers 401/403 where a missing one answers 404 — and a **tenant-guarded
+  destructive route can be tested safely by aiming it at a non-existent id**,
+  where `404 "Device not found."` proves the action name is accepted *and* the
+  guard fires before anything destructive, with `400 "Unknown action."` as the
+  contrast for a name that is not wired at all.
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

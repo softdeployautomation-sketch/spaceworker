@@ -434,3 +434,25 @@ A real `db.device.delete()` is not available to us: every `Device` child foreign
 | 2026-09-27 | §13 — grace (plan ≠ deadline, 35-min ceiling), offline retry never burns an attempt, Public stays usable, `failed` visible in three places, migration renamed to `20261012000000`. |
 | 2026-09-27 | §14 — the sweep syncs linked users itself (+ `synced`/`syncErrors` in the response); the `P2002` race guard from having two sync callers. |
 | 2026-09-27 | §15 — Delete on both tiers (`Device.removedAt` + `20261013000000_task128_device_removal`, Vantra's `delete` action), the bounded queue scroller, and the public PowerShell command (Vantra `install-link` `as: "powershell"`). Declared file list extended below. |
+| 2026-09-27 | §15 **verified and DEPLOYED.** Merged with `origin/main` (one conflict — both sides added `Device` columns; kept both). Vantra `0f6cfdf` and SpaceWorker `f8081e0` on `main`; `20261013000000_task128_device_removal` APPLIED; live evidence below. |
+
+## 17. §15 — the deployed-and-verified record (owner, 2026-09-27)
+
+**Commits on `main`:** Vantra `0f6cfdf`; SpaceWorker `f8081e0` (the merge of §15 with `origin/main`).
+**Migrations, in order, all APPLIED on the VPS:** `…1200000_task128_device_onboarding` (already), `…1300000_task128_device_removal` (**new**).
+
+**The merge.** `origin/main` had moved five commits ahead (TASK_127's per-device wake delay, the manual capture route, the agent-widget settings panel, and an env placeholder guard). Exactly **one** conflict: `prisma/schema.prisma`, because both sides added fields to `Device` at the same spot. Resolved by keeping **both** sets — upstream's three screenshot fields first, then `removedAt`, matching the column-add order. Verified after the merge: `prisma validate` valid; `prisma migrate diff --from-schema-datamodel <main's schema> --to-schema-datamodel <merged>` reproduces **exactly** `ALTER TABLE "Device" ADD COLUMN "removedAt" TIMESTAMP(3)` — so the new migration is still accurate and strictly additive on top of main; `npx tsc --noEmit` clean; whole suite **204/204**.
+
+**Live evidence.** Services `spaceworker`, `spaceworker-browser`, `extraction-worker` all `active`; `device-onboarding-sweep.timer` enabled + active and firing every 5 min (`{"ok":true,"checked":0,"acted":0}`, exit 0); `Device.removedAt` exists as a nullable `timestamp`; **0** devices carry a `removedAt`; `DeviceOnboarding` has no rows (nothing in quarantine). The deployed build contains every new string (`public-powershell`, `more in line`, `Prefer PowerShell`, `Hide from list anyway`, `agent_offline`, `device_removed`), and the mounted routes answer `401`/`403` rather than `404`.
+
+**The public-PowerShell path, proven end to end against a real `sw-` org:**
+- `POST …/install-link` with `{"as":"powershell"}` → `{ok, tier:"public", agentApiHost, command}` (972 chars) and **no** `downloadUrl` — the new branch works live.
+- The **control**: the same org with `{}` → `{ok, tier:"public", agentApiHost, downloadUrl}` (79 chars) and **no** `command` — the byte-compatibility claim holds on the deployed build.
+- The private org is unchanged (`tier:"private"`, `command`, no `downloadUrl`).
+
+**The delete action, proven safe by aiming it at a non-existent agent:** `{"action":"delete"}` → `404 "Device not found."` — which proves the action name is **accepted** *and* that the `sw-` org tenant check fires **before** any TRMM call (nothing was deleted). The contrast, `{"action":"bogus"}` → `400 "Unknown action."`, confirms the 404 is meaningful and not a generic rejection.
+
+**One false alarm, recorded because it nearly inverted the result.** Grepping `/opt/vantra/lib/device-auto-move.ts` reported `AUTO_MOVE_DELAY_MINUTES = 20`, which looked like the §13 change had never actually gone live. It had: the deploy ships a **prebuilt tarball** and never ships `lib/`, so that file is a stale Sep 22 leftover that has been dead on disk for five days — while the **running** build (`.next` rebuilt during this deploy) was compiled from `= 15`, read back out of the server chunk's sourcemap. The lesson is now a scheduled entry in `HOW_WE_MOVE_FAST.md` §6: verify a deploy against the build, never against a source file under `/opt`.
+
+**Not proven, and stated plainly:** the runtime *destructive* paths — an actual `deleteAgent`, an actual hide, an actual 15-minute move — were **not** exercised (that needs a real device, and a live delete would be irreversible). They are covered by code review, tsc, the 204/204 suite and the guard tests above, not by a live run. The UI was not rendered in a browser; the copy is guaranteed by the unit tests, not by eyeballing a dev server.
+
