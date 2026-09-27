@@ -17,7 +17,13 @@ export async function GET() {
 
   const templates = await prisma.emailCampaign.findMany({
     where: { userId: ownerId },
-    include: { variants: { select: { id: true }, orderBy: { createdAt: "asc" } } },
+    // subject/bodyHtml included (not just id) so the campaigns page's template
+    // picker can load the actual content into its editable subject/body fields
+    // — the Automations builder's own picker only reads variants.length, so
+    // this is purely additive from its point of view.
+    include: {
+      variants: { select: { id: true, subject: true, bodyHtml: true }, orderBy: { createdAt: "asc" } },
+    },
     orderBy: { name: "asc" },
   });
 
