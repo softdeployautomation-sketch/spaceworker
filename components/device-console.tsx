@@ -29,6 +29,7 @@ import {
 
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
+import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { formatIdle } from "@/lib/device-idle";
 import { timeAgo } from "@/lib/format-date";
 import {
@@ -376,6 +377,22 @@ export function DeviceConsole({
 }) {
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [loaded, setLoaded] = useState(false);
+
+  // 2026-09-27 — the floating widget's real context for THIS specific device
+  // console (not just "you're on a device page"). Only this page's own
+  // already-fetched state, same pattern as the devices list page.
+  useSetAgentPageContext(
+    loaded && device
+      ? (() => {
+          const online = device.status === "online" || device.status === "asleep";
+          const word = device.status === "asleep" ? "asleep" : online ? "online" : "offline";
+          return (
+            `Device console for "${device.name}" (${osLabel(device.osName)}): ${word}` +
+            (online ? ` · idle ${formatIdle(device.idleSeconds)}` : "")
+          );
+        })()
+      : null,
+  );
   // TASK_103 BUG-A — the tab is URL state (`?tab=`): a new window lands on
   // the same view and refresh preserves it. `history.replaceState` keeps it
   // shallow with no scroll jump (no next/navigation dependency).
