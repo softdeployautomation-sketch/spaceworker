@@ -51,6 +51,9 @@ interface DeviceRow {
   name: string;
   status: string;
   screenshotMonitoringEnabled: boolean;
+  screenshotIntervalMinutesOverride: number | null;
+  screenshotWakeDelayMinutes: number | null;
+  screenshotOnlineSinceAt: Date | null;
 }
 
 interface FrameRow {
@@ -158,6 +161,16 @@ const fakeDb = {
       return devices
         .filter((d) => matches({ ...d }, args.where))
         .map((d) => pick({ ...d }, args.select));
+    },
+    async updateMany(args: { where?: Record<string, unknown>; data: Partial<DeviceRow> }) {
+      let count = 0;
+      for (const d of devices) {
+        if (matches({ ...d }, args.where)) {
+          Object.assign(d, args.data);
+          count++;
+        }
+      }
+      return { count };
     },
   },
   deviceScreenshot: {
@@ -366,7 +379,15 @@ const NORMAL = {
 
 function addDevice(
   id: string,
-  opts: { userId?: string; status?: string; optIn?: boolean; name?: string } = {},
+  opts: {
+    userId?: string;
+    status?: string;
+    optIn?: boolean;
+    name?: string;
+    intervalOverride?: number | null;
+    wakeDelayMinutes?: number | null;
+    onlineSinceAt?: Date | null;
+  } = {},
 ): void {
   devices.push({
     id,
@@ -374,6 +395,9 @@ function addDevice(
     name: opts.name ?? `Device ${id}`,
     status: opts.status ?? "online",
     screenshotMonitoringEnabled: opts.optIn ?? true,
+    screenshotIntervalMinutesOverride: opts.intervalOverride ?? null,
+    screenshotWakeDelayMinutes: opts.wakeDelayMinutes ?? null,
+    screenshotOnlineSinceAt: opts.onlineSinceAt ?? null,
   });
 }
 
@@ -754,6 +778,47 @@ test("a device is only due once its interval has actually elapsed", async () => 
 
   // A device that has NEVER been captured is due immediately.
   frames = [];
+  assert.deepEqual((await listDueDevices(clock, 60)).map((d) => d.id), ["d1"]);
+});
+
+test("a wake delay holds a device back even though it never captured before", async () => {
+  // Just came online this exact tick (no onlineSinceAt stamped yet) and wants
+  // a 10-minute grace period before its first capture.
+  addDevice("d1", { wakeDelayMinutes: 10 });
+  const firstPass = await listDueDevices(clock, 60);
+  assert.deepEqual(firstPass, [], "not due the instant it's first seen online — the anchor just got stamped");
+
+  // 5 minutes later: still inside the 10-minute delay.
+  const soon = new Date(clock.getTime() + 5 * 60_000);
+  assert.deepEqual(await listDueDevices(soon, 60), [], "still inside the wake delay");
+
+  // 11 minutes after the ORIGINAL pass (which is when the anchor was stamped):
+  // past the delay, and no prior capture, so it's due.
+  const later = new Date(clock.getTime() + 11 * 60_000);
+  assert.deepEqual((await listDueDevices(later, 60)).map((d) => d.id), ["d1"]);
+});
+
+test("wake delay is measured from the MOST RECENT wake, not a stale one", async () => {
+  addDevice("d1", { wakeDelayMinutes: 10, onlineSinceAt: new Date(clock.getTime() - 60 * 60_000) });
+  // If the stale anchor (an hour ago) were honoured, this would already be due.
+  // But the device is now OFFLINE, so a pass must clear that anchor first.
+  devices[0].status = "offline";
+  await listDueDevices(clock, 60);
+  assert.equal(devices[0].screenshotOnlineSinceAt, null, "the stale anchor is cleared while offline");
+
+  // Now it comes back online: a fresh pass re-stamps the anchor to NOW, so the
+  // 10-minute delay starts over, not from the hour-old anchor.
+  devices[0].status = "online";
+  assert.deepEqual(await listDueDevices(clock, 60), [], "freshly re-anchored — the delay starts again from now");
+  assert.deepEqual(
+    (await listDueDevices(new Date(clock.getTime() + 11 * 60_000), 60)).map((d) => d.id),
+    ["d1"],
+    "due once the FRESH delay has elapsed",
+  );
+});
+
+test("no wake delay set behaves exactly like today — due as soon as online and past interval", async () => {
+  addDevice("d1"); // wakeDelayMinutes defaults to null
   assert.deepEqual((await listDueDevices(clock, 60)).map((d) => d.id), ["d1"]);
 });
 

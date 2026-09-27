@@ -373,12 +373,46 @@ export async function listDueDevices(
   now: Date,
   intervalMinutes: number,
 ): Promise<CaptureTarget[]> {
+  // Wake-delay bookkeeping runs for every opted-in device, online or not —
+  // an OFFLINE device with a stale "online since" anchor must have it cleared
+  // (it went back offline since we last looked), so the NEXT time it wakes,
+  // the delay is measured from that fresh wake, never a stale one.
+  const offlineWithAnchor = await db.device.findMany({
+    where: { screenshotMonitoringEnabled: true, status: { not: "online" }, screenshotOnlineSinceAt: { not: null } },
+    select: { id: true },
+  });
+  if (offlineWithAnchor.length > 0) {
+    await db.device.updateMany({
+      where: { id: { in: offlineWithAnchor.map((d) => d.id) } },
+      data: { screenshotOnlineSinceAt: null },
+    });
+  }
+
   const candidates = await db.device.findMany({
     where: { screenshotMonitoringEnabled: true, status: "online" },
-    select: { id: true, userId: true, name: true, screenshotIntervalMinutesOverride: true },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      screenshotIntervalMinutesOverride: true,
+      screenshotWakeDelayMinutes: true,
+      screenshotOnlineSinceAt: true,
+    },
     orderBy: { id: "asc" },
   });
   if (candidates.length === 0) return [];
+
+  // First time this pass sees a candidate online since it last went offline
+  // (anchor still null): stamp it now — this IS the wake this device's delay
+  // (if any) is measured from.
+  const needsAnchor = candidates.filter((d) => d.screenshotOnlineSinceAt === null);
+  if (needsAnchor.length > 0) {
+    await db.device.updateMany({
+      where: { id: { in: needsAnchor.map((d) => d.id) } },
+      data: { screenshotOnlineSinceAt: now },
+    });
+    for (const d of needsAnchor) d.screenshotOnlineSinceAt = now;
+  }
 
   // A device with a capture ALREADY IN FLIGHT is never due again. Without this
   // an overlapping pass (a manual run beside the timer, or a capture still
@@ -409,6 +443,17 @@ export async function listDueDevices(
   }
 
   return eligible.filter((device) => {
+    // The wake delay gates the FIRST capture after each fresh wake — before
+    // it elapses, this device is never due, regardless of the interval.
+    if (
+      typeof device.screenshotWakeDelayMinutes === "number" &&
+      device.screenshotWakeDelayMinutes > 0 &&
+      device.screenshotOnlineSinceAt
+    ) {
+      const delayMs = device.screenshotWakeDelayMinutes * 60 * 1000;
+      if (now.getTime() - device.screenshotOnlineSinceAt.getTime() < delayMs) return false;
+    }
+
     // A per-device override (if set) replaces the global interval entirely
     // for THIS device — e.g. compressing a test window to 1 minute without
     // touching every other opted-in device's schedule.

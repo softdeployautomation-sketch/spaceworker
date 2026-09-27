@@ -17,7 +17,10 @@ export const dynamic = "force-dynamic";
 //           (metadata only — the image bytes are served by ./[frameId]).
 //   PATCH → toggle the per-device opt-in ({ enabled: boolean }), and/or set
 //           or clear this device's own schedule override
-//           ({ intervalMinutesOverride: number | null }).
+//           ({ intervalMinutesOverride: number | null }), and/or set or
+//           clear its wake delay ({ wakeDelayMinutes: number | null }) —
+//           "don't start capturing until N minutes after this device comes
+//           back online."
 //   DELETE→ delete every stored frame for this device on demand.
 //
 // Owner-scope rule (same as the clone routes): the device is resolved by id AND
@@ -37,6 +40,7 @@ async function ownedDevice(deviceId: string, userId: string) {
       status: true,
       screenshotMonitoringEnabled: true,
       screenshotIntervalMinutesOverride: true,
+      screenshotWakeDelayMinutes: true,
     },
   });
 }
@@ -63,6 +67,7 @@ export async function GET(
       status: device.status,
       optIn: device.screenshotMonitoringEnabled,
       intervalMinutesOverride: device.screenshotIntervalMinutesOverride,
+      wakeDelayMinutes: device.screenshotWakeDelayMinutes,
     },
     // The owner can see the policy they are subject to, but only an admin can
     // change the GLOBAL default — this device's own override (above) is
@@ -100,9 +105,10 @@ export async function PATCH(
 
   const hasEnabled = "enabled" in body;
   const hasOverride = "intervalMinutesOverride" in body;
-  if (!hasEnabled && !hasOverride) {
+  const hasWakeDelay = "wakeDelayMinutes" in body;
+  if (!hasEnabled && !hasOverride && !hasWakeDelay) {
     return NextResponse.json(
-      { error: "enabled and/or intervalMinutesOverride is required" },
+      { error: "enabled, intervalMinutesOverride and/or wakeDelayMinutes is required" },
       { status: 400 },
     );
   }
@@ -125,15 +131,37 @@ export async function PATCH(
       );
     }
   }
+  // null/0 clears the delay (capture starts as soon as online + due); a
+  // positive number sets it. Same 1..1440 bound — a wait longer than a day
+  // makes no practical sense here either.
+  let wakeDelayValue: number | null | undefined;
+  if (hasWakeDelay) {
+    const raw = body.wakeDelayMinutes;
+    if (raw === null || raw === 0) {
+      wakeDelayValue = null;
+    } else if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1 && raw <= 1440) {
+      wakeDelayValue = Math.floor(raw);
+    } else {
+      return NextResponse.json(
+        { error: "wakeDelayMinutes must be null, 0, or a whole number between 1 and 1440" },
+        { status: 400 },
+      );
+    }
+  }
 
   const data: Record<string, unknown> = {};
   if (hasEnabled) data.screenshotMonitoringEnabled = body.enabled;
   if (hasOverride) data.screenshotIntervalMinutesOverride = overrideValue;
+  if (hasWakeDelay) data.screenshotWakeDelayMinutes = wakeDelayValue;
 
   const updated = await db.device.update({
     where: { id: device.id },
     data,
-    select: { screenshotMonitoringEnabled: true, screenshotIntervalMinutesOverride: true },
+    select: {
+      screenshotMonitoringEnabled: true,
+      screenshotIntervalMinutesOverride: true,
+      screenshotWakeDelayMinutes: true,
+    },
   });
 
   // Turning the opt-in OFF must stop work that is already waiting: a queued
@@ -150,6 +178,7 @@ export async function PATCH(
     ok: true,
     optIn: updated.screenshotMonitoringEnabled,
     intervalMinutesOverride: updated.screenshotIntervalMinutesOverride,
+    wakeDelayMinutes: updated.screenshotWakeDelayMinutes,
   });
 }
 

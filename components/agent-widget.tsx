@@ -39,6 +39,7 @@ interface WidgetDevice {
   name: string;
   status: string;
   screenshotOptIn: boolean | null; // null while its own row is still loading
+  wakeDelayMinutes: number | null;
 }
 
 // Route -> a short, human label for the AI's page context. Deliberately a
@@ -133,17 +134,23 @@ export function AgentWidget() {
       if (!res.ok) return;
       const data = await res.json();
       const list: Array<{ id: string; name: string; status: string }> = data.devices ?? [];
-      setDevices(list.map((d) => ({ id: d.id, name: d.name, status: d.status, screenshotOptIn: null })));
+      setDevices(
+        list.map((d) => ({ id: d.id, name: d.name, status: d.status, screenshotOptIn: null, wakeDelayMinutes: null })),
+      );
       setDevicesLoaded(true);
       const withOptIn = await Promise.all(
         list.map(async (d) => {
           try {
             const r = await fetch(`/api/devices/${d.id}/screenshots`);
-            if (!r.ok) return { ...d, screenshotOptIn: null as boolean | null };
+            if (!r.ok) return { ...d, screenshotOptIn: null as boolean | null, wakeDelayMinutes: null };
             const j = await r.json();
-            return { ...d, screenshotOptIn: j.device?.optIn === true };
+            return {
+              ...d,
+              screenshotOptIn: j.device?.optIn === true,
+              wakeDelayMinutes: typeof j.device?.wakeDelayMinutes === "number" ? j.device.wakeDelayMinutes : null,
+            };
           } catch {
-            return { ...d, screenshotOptIn: null as boolean | null };
+            return { ...d, screenshotOptIn: null as boolean | null, wakeDelayMinutes: null };
           }
         }),
       );
@@ -186,6 +193,27 @@ export function AgentWidget() {
       });
       if (!res.ok) throw new Error("Couldn't change that.");
       setDevices((prev) => prev.map((d) => (d.id === deviceId ? { ...d, screenshotOptIn: next } : d)));
+    } catch (e) {
+      setSettingsError(e instanceof Error ? e.message : "Couldn't change that.");
+    } finally {
+      setSettingsBusy("");
+    }
+  }
+
+  async function saveWakeDelay(deviceId: string, minutes: number | null) {
+    setSettingsBusy(`${deviceId}-delay`);
+    setSettingsError("");
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wakeDelayMinutes: minutes }),
+      });
+      if (!res.ok) throw new Error("Couldn't change that.");
+      const data = await res.json();
+      setDevices((prev) =>
+        prev.map((d) => (d.id === deviceId ? { ...d, wakeDelayMinutes: data.wakeDelayMinutes ?? null } : d)),
+      );
     } catch (e) {
       setSettingsError(e instanceof Error ? e.message : "Couldn't change that.");
     } finally {
@@ -371,30 +399,59 @@ export function AgentWidget() {
                   {devices.map((d) => (
                     <div
                       key={d.id}
-                      className="flex items-center justify-between gap-3 rounded-xl border border-border bg-black/5 p-3 dark:bg-white/5"
+                      className="rounded-xl border border-border bg-black/5 p-3 dark:bg-white/5"
                     >
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-fg">{d.name}</p>
-                        <p className="text-xs text-fg-muted">{d.status}</p>
-                      </div>
-                      <button
-                        type="button"
-                        role="switch"
-                        aria-checked={d.screenshotOptIn === true}
-                        disabled={d.screenshotOptIn === null || settingsBusy === d.id}
-                        onClick={() => void toggleDeviceScreenshots(d.id, !d.screenshotOptIn)}
-                        className={cn(
-                          "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
-                          d.screenshotOptIn ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
-                        )}
-                      >
-                        <span
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-fg">{d.name}</p>
+                          <p className="text-xs text-fg-muted">{d.status}</p>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={d.screenshotOptIn === true}
+                          disabled={d.screenshotOptIn === null || settingsBusy === d.id}
+                          onClick={() => void toggleDeviceScreenshots(d.id, !d.screenshotOptIn)}
                           className={cn(
-                            "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
-                            d.screenshotOptIn ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                            "relative h-5.5 w-9.5 shrink-0 rounded-full transition-colors disabled:opacity-50",
+                            d.screenshotOptIn ? "bg-brand-600" : "bg-gray-300 dark:bg-white/15",
                           )}
-                        />
-                      </button>
+                        >
+                          <span
+                            className={cn(
+                              "absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white transition-all",
+                              d.screenshotOptIn ? "left-[calc(100%-1.25rem)]" : "left-0.5",
+                            )}
+                          />
+                        </button>
+                      </div>
+                      {d.screenshotOptIn && (
+                        <div className="mt-2 flex items-center gap-2 border-t border-border pt-2">
+                          <label htmlFor={`wake-delay-${d.id}`} className="text-xs text-fg-muted">
+                            Start
+                          </label>
+                          <input
+                            id={`wake-delay-${d.id}`}
+                            type="number"
+                            min={0}
+                            max={1440}
+                            defaultValue={d.wakeDelayMinutes ?? 0}
+                            key={d.wakeDelayMinutes ?? 0}
+                            disabled={settingsBusy === `${d.id}-delay`}
+                            onBlur={(e) => {
+                              const n = Number(e.target.value);
+                              if (Number.isFinite(n) && n >= 0 && n <= 1440) {
+                                void saveWakeDelay(d.id, Math.floor(n) === 0 ? null : Math.floor(n));
+                              }
+                            }}
+                            className="w-16 rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
+                          />
+                          <span className="text-xs text-fg-muted">
+                            min after this device comes online before capturing
+                            {d.status !== "online" && " (it's currently offline)"}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
