@@ -197,10 +197,28 @@ finalization with Michael's feedback (M7).
   training runs happen in the LATER plan when the GPU exists.
 
 ### L4 — Customer gating (when lab goes beyond staff)
-- Customers only ever get: no-egress disposable ranges + attestation +
-  allow-listed scenarios + lawyer-reviewed AUP. Staff track keeps broader
-  access. Nothing customer-facing ships from this track until those fences
-  exist (old plan §4 stays the customer-gating contract).
+- Customers only ever get: no-egress disposable ranges + allow-listed
+  scenarios + lawyer-reviewed AUP. Staff track keeps broader access. Nothing
+  customer-facing ships from this track until those fences exist (old plan
+  §4 stays the general customer-gating contract).
+- **Owner refinement (2026-09-27):** a plain self-attestation checkbox is not
+  enough gating for the most explicit/dangerous tool tiers (real exploit
+  primitives, live C2 against a user's own range, anything beyond guided
+  scenario walkthroughs and detection-pack consumption). Those specific
+  tiers require **full registration + real identity verification** before
+  access — the point being accountability: we can't stop a determined bad
+  actor from getting these tools elsewhere, but we CAN make sure that if a
+  SpaceWorker user goes out of line with them, we know exactly who they are.
+  Lighter-touch surfaces (attack-story digests, detection packs, guided
+  narrated walkthroughs, MITRE coverage reports) stay attestation-gated —
+  only the tiers that hand someone a working attack primitive escalate to
+  ID verification.
+- **Sequencing, explicit:** the ID-verification mechanism itself (provider,
+  what "verified" unlocks vs. what stays attestation-gated, retention/
+  privacy handling of ID data, appeals/revocation) is a SEPARATE scoping
+  pass, done once L1–L3 have actually produced a working tool set worth
+  gating — see `TASK_98_CYBER_LAB_STAFF_TRACK.md`'s new "Future: L4 access
+  tiers" section. Do not block L1–L3 staff-track development on this.
 
 ## CROSS-TRACK RULES (updated for the Browser Clone directive)
 

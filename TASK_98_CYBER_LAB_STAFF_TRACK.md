@@ -1,7 +1,50 @@
 # Task 98 — Cyber Lab staff track (L1–L3) + Michael MT-2/MT-3 contracts
 
-**Status: ready to PLAN; build after TASK_93 (Vantra agents exist for victim VMs).**
-**Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §CYBER LAB TRACK (L1–L3), §FINALIZED DECISIONS M5.**
+**Status: READY TO BUILD — TASK_93 (Vantra plugin) is DONE, deployed +
+live-verified 2026-09-22, so victim VMs can run the real Vantra agent now.
+Not started as of 2026-09-27. Tracked separately from the self-hosted
+project (own branch, own priority — see below); does not block or get
+blocked by it.**
+**Plan: `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md` §CYBER LAB TRACK (L1–L3), §FINALIZED DECISIONS M5, §L4 (2026-09-27 ID-verification refinement).**
+
+## Owner re-confirmation (2026-09-27)
+
+Re-affirms this task's existing scope, no redesign needed:
+- SpaceWorker's own servers still can't host isolated attack-lab
+  infrastructure — L1's "personal VMs" constraint (owner's LAN box + spare
+  VPS) is the real, current state, not a placeholder. Users/staff bring
+  their own VMs; SpaceWorker ships the tooling + orchestration, not the
+  hardware.
+- The goal explicitly framed by the owner: attackers already have and will
+  always have these tools regardless of whether we build this — the value
+  SpaceWorker adds is giving defenders (and our own detection pipeline) the
+  SAME real staging knowledge attackers use, so we can defend what we
+  otherwise wouldn't know to look for. This is the "why" to keep front-of-mind
+  when scoping which scenarios/tools are worth building first — breadth of
+  real current attack stages/techniques matters more here than polish.
+- Full tool provisioning is deliberately unrestricted for this dev phase
+  (staff-only, per L2) — the owner explicitly does NOT want the eventual
+  user-facing access gate (ID verification, see plan §L4) designed or built
+  yet. Build the real tools first; scope gating once there's something worth
+  gating.
+
+## Future: L4 access tiers (do not build yet — tracked here for continuity)
+
+When this moves beyond staff-only, the plan's L4 section (updated
+2026-09-27) splits access into two tiers instead of one attestation
+checkbox:
+- **Attestation-gated** (lighter): attack-story digests, detection-pack
+  consumption, guided narrated scenario walkthroughs, MITRE coverage
+  reports.
+- **ID-verification-gated** (stricter): anything that hands the user a
+  working attack primitive — real exploit tooling, live C2 against their
+  own range, free-form Caldera command access. Rationale: accountability,
+  not prevention — a bad actor can get these tools elsewhere regardless, but
+  a verified identity means SpaceWorker can trace and act on misuse.
+- The verification mechanism itself (provider, exact unlock boundary,
+  ID-data retention/privacy handling, appeals/revocation) is intentionally
+  UNSCOPED until L1–L3 produce a real tool set — that's its own future task,
+  not part of this one.
 
 ## Read first (mandatory)
 - **`HOW_WE_MOVE_FAST.md`** §0–§3 (as TASK_92) — lab hosts are personal VMs (`myrat@192.168.0.103` VM + spare VPS), NOT the production VPS.
