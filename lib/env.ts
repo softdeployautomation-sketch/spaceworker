@@ -110,6 +110,7 @@ for (const name of [
   "VANTRA_INTERNAL_TOKEN",
   "WORKER_AUTH_TOKEN",
   "SEED_MAILBOX_PASSWORD",
+  "AI_PROVIDER_API_KEY",
 ]) {
   optionalSecret(name);
 }
@@ -162,6 +163,41 @@ export const env = {
   // alert helper no-ops (fail-soft, same discipline as every other optional
   // notification channel here).
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID ?? "",
+
+  // Self-hosted build, Phase 2 — the internal device-check-in service
+  // (internal codename "sw-rmm-core"; customer-facing name "SpaceWorker RMM
+  // Engine"). On our own hosted SaaS this is Vantra and always resolves to
+  // https://vantra.spaceworker.top, so that literal fallback is preserved
+  // here UNCHANGED for every existing (non-self-hosted) deployment. A
+  // self-hosted build has no such default — the setup wizard (Phase 2 UI)
+  // writes these from whatever connection info the customer's own RMM Engine
+  // instance shows them, and every caller must treat blank as "device
+  // management not configured yet" (already true throughout device-tools.ts /
+  // vantra-link.ts / clone-transport.ts's fail-closed swHeaders()), never
+  // substitute a guessed URL.
+  vantraInternalUrl:
+    (process.env.VANTRA_INTERNAL_URL || "https://vantra.spaceworker.top").replace(/\/$/, ""),
+  vantraInternalToken: optionalSecret("VANTRA_INTERNAL_TOKEN"),
+
+  // Self-hosted build, Phase 2 — bring-your-own AI provider key (lib/ai-provider.ts),
+  // the self-hosted equivalent of channelryAiApiKey above. Talks to any
+  // OpenAI-compatible chat-completions endpoint (OpenAI, Groq, a local Ollama,
+  // etc.) — aiProviderBaseUrl/aiProviderModel let the customer point it
+  // anywhere; blank key = AI features report "not configured" (same fail-soft
+  // discipline as channelryAiApiKey, never a fake/empty key sent upstream).
+  aiProviderApiKey: optionalSecret("AI_PROVIDER_API_KEY"),
+  aiProviderBaseUrl: (process.env.AI_PROVIDER_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, ""),
+  aiProviderModel: process.env.AI_PROVIDER_MODEL || "gpt-4o-mini",
+
+  // Self-hosted build — the hostname pair MeshCentral URLs get rewritten
+  // between (see device-tools.ts's rewriteMeshOrigin history/comment for why
+  // this rewrite exists at all). Our own hosted stack hardcodes
+  // mesh.instaweb.top -> mesh.spaceworker.top; a self-hosted RMM Engine has
+  // its own MeshCentral hostname, filled in by the setup wizard once known.
+  // Blank on either side = the existing hardcoded pair (zero behaviour change
+  // for every current, non-self-hosted deployment).
+  meshOriginRewriteFrom: process.env.MESH_ORIGIN_REWRITE_FROM || "",
+  meshOriginRewriteTo: process.env.MESH_ORIGIN_REWRITE_TO || "",
 
   port: number("PORT", 3400),
 };

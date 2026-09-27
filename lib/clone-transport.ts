@@ -3,6 +3,7 @@ import "server-only";
 import crypto from "node:crypto";
 
 import { db } from "./db";
+import { env } from "./env";
 import { recordAgentActionAudit } from "./devices";
 import { browserRuntime } from "./browser-runtime";
 
@@ -28,11 +29,8 @@ import { browserRuntime } from "./browser-runtime";
 //   values, profile plaintext, job keys or tokens in any row, audit detail,
 //   log line or thrown error.
 
-const VANTRA_URL =
-  process.env.VANTRA_INTERNAL_URL?.replace(/\/$/, "") || "https://vantra.spaceworker.top";
-
 function swHeaders(): Record<string, string> {
-  const token = process.env.VANTRA_INTERNAL_TOKEN;
+  const token = env.vantraInternalToken;
   // Fail closed (TASK_93 posture): no token = throw, never call unauthenticated.
   if (!token || token.trim().length === 0) {
     throw new Error("vantra_not_configured");
@@ -41,7 +39,7 @@ function swHeaders(): Record<string, string> {
 }
 
 async function vantraFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${VANTRA_URL}${path}`, {
+  const res = await fetch(`${env.vantraInternalUrl}${path}`, {
     ...init,
     headers: { ...swHeaders(), ...init?.headers },
     cache: "no-store",

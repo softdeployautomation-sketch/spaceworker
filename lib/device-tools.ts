@@ -25,11 +25,8 @@ import {
 // the request path. The TRMM-keyed executor lives on Vantra; it refuses any
 // agent outside the caller's `sw-<userId>` org.
 
-const VANTRA_URL =
-  process.env.VANTRA_INTERNAL_URL?.replace(/\/$/, "") || "https://vantra.spaceworker.top";
-
 function swHeaders(): Record<string, string> {
-  const token = process.env.VANTRA_INTERNAL_TOKEN;
+  const token = env.vantraInternalToken;
   // Fail closed (TASK_93 posture): no token = throw, never call unauthenticated.
   if (!token || token.trim().length === 0) {
     throw new Error("vantra_not_configured");
@@ -38,7 +35,7 @@ function swHeaders(): Record<string, string> {
 }
 
 async function vantraFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${VANTRA_URL}${path}`, {
+  const res = await fetch(`${env.vantraInternalUrl}${path}`, {
     ...init,
     headers: { ...swHeaders(), ...init?.headers },
     cache: "no-store",
@@ -107,16 +104,29 @@ const MESH_REFETCH_TTL_MS = 10 * 60 * 1000;
 // the page embedding it, which is what actually fixes third-party cookie
 // blocking (no client-side workaround, Storage Access API, or reverse proxy
 // of MeshCentral's own traffic required).
-const MESH_ORIGIN_REWRITE: readonly [string, string] = [
+const MESH_ORIGIN_REWRITE_DEFAULT: readonly [string, string] = [
   "mesh.instaweb.top",
   "mesh.spaceworker.top",
 ];
 
+// Self-hosted build, Phase 2 — MESH_ORIGIN_REWRITE_FROM/TO (env.ts) let a
+// self-hosted RMM Engine deployment rewrite ITS OWN MeshCentral hostname pair
+// instead of ours; blank on either side falls back to the hardcoded hosted
+// pair above, so this is a zero-behaviour-change addition for every existing
+// deployment.
+function meshOriginRewritePair(): readonly [string, string] {
+  if (env.meshOriginRewriteFrom && env.meshOriginRewriteTo) {
+    return [env.meshOriginRewriteFrom, env.meshOriginRewriteTo];
+  }
+  return MESH_ORIGIN_REWRITE_DEFAULT;
+}
+
 function rewriteMeshOrigin(url: string): string {
   try {
+    const [from, to] = meshOriginRewritePair();
     const parsed = new URL(url);
-    if (parsed.hostname === MESH_ORIGIN_REWRITE[0]) {
-      parsed.hostname = MESH_ORIGIN_REWRITE[1];
+    if (parsed.hostname === from) {
+      parsed.hostname = to;
     }
     return parsed.toString();
   } catch {

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { prisma } from "@/lib/prisma";
 import { ChannelryAiError } from "@/lib/channelry-ai";
+import { AiProviderError } from "@/lib/ai-provider";
 import { listThreadMessages, runAgentTurn } from "@/lib/agent";
 
 // /api/agent — the "Ask the agent" chat route.
@@ -69,7 +70,7 @@ export async function POST(req: Request) {
     const messages = await listThreadMessages(session.userId);
     return NextResponse.json({ ...result, messages });
   } catch (err) {
-    if (err instanceof ChannelryAiError) {
+    if (err instanceof ChannelryAiError || err instanceof AiProviderError) {
       return NextResponse.json(
         { error: err.message, code: err.code },
         { status: err.status === 0 ? 503 : (err.status >= 400 ? err.status : 502) }

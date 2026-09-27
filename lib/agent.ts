@@ -3,6 +3,8 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { channelryAiChat } from "@/lib/channelry-ai";
+import { aiProviderChat } from "@/lib/ai-provider";
+import { isSelfHosted } from "@/lib/exe-build-target";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { fetchSelectableData, PickerJob } from "@/lib/lead-selectable";
 import {
@@ -766,12 +768,23 @@ export async function runAgentTurn(opts: {
     ? `${AGENT_SYSTEM_PROMPT}\n\nCurrent page context: ${opts.pageContext}`
     : AGENT_SYSTEM_PROMPT;
 
-  const result = await channelryAiChat({
-    messages: [{ role: "system", content: systemContent }, ...dialogue],
-    tools: AGENT_TOOLS,
-    max_tokens: 900,
-    external_user_id: opts.userId,
-  });
+  // Self-hosted build — no Channelry relay account exists, so the agent
+  // talks to whatever OpenAI-compatible endpoint the owner configured
+  // (lib/ai-provider.ts) instead of our pooled relay. Same call shape, same
+  // result shape — everything below this line is unchanged either way.
+  const result = isSelfHosted()
+    ? await aiProviderChat({
+        messages: [{ role: "system", content: systemContent }, ...dialogue],
+        tools: AGENT_TOOLS,
+        max_tokens: 900,
+        external_user_id: opts.userId,
+      })
+    : await channelryAiChat({
+        messages: [{ role: "system", content: systemContent }, ...dialogue],
+        tools: AGENT_TOOLS,
+        max_tokens: 900,
+        external_user_id: opts.userId,
+      });
 
   // Task 40 — append the REAL cost Channelry reported for this completed call
   // (never estimate one). Log only meaningful, positive spend (a 0 reported cost

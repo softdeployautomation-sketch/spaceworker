@@ -2,6 +2,8 @@ import "server-only";
 
 import { db } from "./db";
 import { channelryAiChat } from "./channelry-ai";
+import { aiProviderChat } from "./ai-provider";
+import { isSelfHosted } from "./exe-build-target";
 import { notifyUser } from "./notify";
 import { recordAgentActionAudit } from "./devices";
 
@@ -94,12 +96,19 @@ export async function buildDailyDigest(userId: string): Promise<DigestResult> {
   let digestText = "No activity worth reporting today.";
   let costHundredthsCent = 0;
   try {
-    const result = await channelryAiChat({
-      system: SYSTEM_PROMPT,
-      user: `Produce today's digest from this activity:\n${activity}`,
-      max_tokens: 400,
-      external_user_id: userId,
-    });
+    const result = isSelfHosted()
+      ? await aiProviderChat({
+          system: SYSTEM_PROMPT,
+          user: `Produce today's digest from this activity:\n${activity}`,
+          max_tokens: 400,
+          external_user_id: userId,
+        })
+      : await channelryAiChat({
+          system: SYSTEM_PROMPT,
+          user: `Produce today's digest from this activity:\n${activity}`,
+          max_tokens: 400,
+          external_user_id: userId,
+        });
     if (result.content.trim().length > 0) digestText = result.content.trim();
     const realCost = result.usage?.cost_hundredths_cent;
     if (typeof realCost === "number" && realCost > 0) {

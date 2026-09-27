@@ -244,7 +244,14 @@ function installRequireHook(): void {
     const from = (parent?.filename ?? "").replace(/\\/g, "/");
     if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
       if (request === "./db") return { db: fakeDb };
-      if (request === "./env") return { env: { appBaseUrl: "https://spaceworker.test" } };
+      if (request === "./env")
+        return {
+          env: {
+            appBaseUrl: "https://spaceworker.test",
+            vantraInternalUrl: "https://vantra.spaceworker.test",
+            vantraInternalToken: "task123-test-vantra-token",
+          },
+        };
       if (request === "./admin-settings") return { getAdminSettings: async () => ({}) };
       if (request === "./devices") {
         return {

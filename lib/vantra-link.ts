@@ -30,11 +30,8 @@ import {
 // (vantraLinks* / deviceActions* — CROSS-TRACK RULE 7), and audited through
 // the shared Task 92 layer (recordAgentActionAudit / DeviceAction).
 
-const VANTRA_URL =
-  process.env.VANTRA_INTERNAL_URL?.replace(/\/$/, "") || "https://vantra.spaceworker.top";
-
 function swHeaders(): Record<string, string> {
-  const token = process.env.VANTRA_INTERNAL_TOKEN;
+  const token = env.vantraInternalToken;
   // Fail closed: a missing token throws here rather than ever calling Vantra
   // unauthenticated (mirrors lib/internal-auth.ts's posture, inverted).
   if (!token || token.trim().length === 0) {
@@ -44,7 +41,7 @@ function swHeaders(): Record<string, string> {
 }
 
 async function vantraFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${VANTRA_URL}${path}`, {
+  const res = await fetch(`${env.vantraInternalUrl}${path}`, {
     ...init,
     headers: { ...swHeaders(), ...(init?.headers ?? {}) },
     cache: "no-store",
