@@ -95,20 +95,42 @@ A full MAIL FROM / RCPT TO probe (no DATA sent, so no mail was transmitted) esta
   EHLO+AUTH -> FAIL: Invalid login: 542 Internal server error
 ```
 
-The relay is a **customer-operated Python `aiosmtpd` server**, and it is unstable: port 25 accepts AUTH while 24610 returned `542 Internal server error` minutes after the same port had answered `auth=true` in the E2E run. Its banner even changed between probes (`220 ABC XYZ` in the E2E, `220 localhost Python SMTP 1.4.6` later), i.e. it is being reconfigured or restarted underneath us.
+The relay is a **customer-operated Python `aiosmtpd` server**, and it is unstable: 24610 returned `542 Internal server error` minutes after the same port had answered `auth=true` in an earlier probe. Its banner even changed between probes (`220 ABC XYZ` in the first E2E, `220 localhost Python SMTP 1.4.6` later), i.e. it is being reconfigured or restarted underneath us.
 
-**Conclusion: no SpaceWorker setting fixes this.** The relay accepts the credentials and then fails the transaction (or refuses the recipient with `550 Not allowed`) on its own side. The campaign never left `pending_test_confirm`, so nothing was ever queued out — consistent with "it didn't deliver".
+### The decisive finding: even port 25 never checks credentials
+
+Running the deployed test route against `blast1`'s real saved config produced this, in 1.7s:
+
+```
+port 25 + None (unencrypted)
+   ok=true
+   banner="220 localhost Python SMTP 1.4.6"  auth=false  starttls=false
+```
+
+**`auth=false`.** The relay advertises no AUTH mechanism on port 25 at all, so `verify()` succeeds while **the password is never checked**. That is exactly the "connected fine, delivered nothing" signature — and it is why the owner got a delivery locally but the campaign delivered nothing. `lib/smtp-diagnostics.ts` already had a `capabilityWarning()` built for precisely this case (it was written after a previous incident where "a 'successful' campaign delivered nothing, not even to spam"), and the route now surfaces it as a first-class warning:
+
+> Heads-up: this server did not ask for a username or password at all (it advertises no AUTH), so your credentials were never actually checked. Messages may be accepted and then silently dropped instead of relayed — if this is a real mail provider, switch to the port that requires authentication.
+
+**Conclusion: no SpaceWorker setting fixes this.** The customer's relay either (a) accepts unauthenticated mail on port 25 and drops it, or (b) refuses the transaction with `550 Not allowed` / `542 Internal server error`. Both are the relay's behaviour, not a configuration the app can reach. The campaign never left `pending_test_confirm`, so nothing was ever queued out — consistent with "it didn't deliver".
+
 
 Two genuine SpaceWorker-side problems surfaced here, both fixed:
 
 1. **A wrong `MAILBOX_ENCRYPTION_KEY` looked like a mail fault.** Campaign *"finall outreach"* failed all 50 items with the bare OpenSSL string `Unsupported state or unable to authenticate data`. That is AES-GCM telling you the row was encrypted under a *different* key (rotated, or written by another deployment) — nothing to do with SMTP. `decryptSecretOrThrow` (`lib/mailbox-crypto.ts`) now names the cause and the fix, and `classifySmtpError` maps it to `auth_failed` so it is never retried per-recipient and is surfaced to the owner instead. A live key check confirmed `blast1` decrypts fine and one **`E2E MB` mailbox (`smtp.e2e.test`) is corrupt — "Invalid initialization vector"** and should be deleted.
 2. **No SPF on the sending domain.** `dig TXT watsonandrade9382.ca.lu` returns nothing, and the VPS egresses over IPv6 (`2a02:c207:2354:8623::1`) with PTR `vmi3548623.contaboserver.net` (Contabo). Mail sent as `fleming@watsonandrade9382.ca.lu` from a Contabo IPv6 address with no SPF, no DKIM and no matching PTR is close to guaranteed to be spam-foldered by Comcast/Gmail regardless of which port works. **This is the "worked locally but not from the server" difference:** locally the sending IP carries residential reputation.
 
+### Answering "i cant see any security test to choose that works with that port"
+
+There IS one, and it now works — it is **None (unencrypted)** on port **25**, and it returns `ok=true` in 1.7s. The reason the owner could not find it before is that the test used to *hang* rather than report, so every option looked broken; port 24610 genuinely cannot work because the relay rejects the login there.
+
+**But read the warning the test now shows before using it for a campaign** — "this server did not ask for a username or password at all". A green test on this relay does not mean mail will be delivered. For a *sound mailbox*, this relay is not usable until the customer fixes it; a real provider (or their own properly-configured MTA with authentication and SPF) is what makes a campaign deliverable.
+
 ### Owner actions for the campaign
 
-1. Open mailbox **blast1** and **save** it on port **25** with **None (unencrypted)** so the stored row matches what actually authenticates (`lastTestedAt` is still null — the earlier edit never persisted). Set **send region to direct**: the us/ca tunnels are currently not carrying SMTP, and per TASK_134 exit nodes never fixed SPF alignment in the first place.
-2. Delete the corrupt **`E2E MB`** mailbox (`smtp.e2e.test`).
-3. Publish `v=spf1 ip6:2a02:c207:2354:8623::1 ip4:164.68.105.96 -all` for `watsonandrade9382.ca.lu`, or stop sending as that domain. Until the relay is stable and the domain authorises our IP, `550`/`542` and spam-folding will recur no matter what SpaceWorker does.
+1. Open mailbox **blast1**, **save** it on port **25** with **None (unencrypted)**, and **read the warning** the test returns (it did not persist before — `lastTestedAt` is still null — so the earlier port-24610 edit was never saved). Set **send region to direct**: the us/ca tunnels are not carrying SMTP, and per TASK_134 exit nodes never fixed SPF alignment in the first place.
+2. Delete the corrupt **`E2E MB`** mailbox (`smtp.e2e.test` — "Invalid initialization vector").
+3. Have the relay fixed on the customer side: it must advertise AUTH and actually check it, and stop returning `542`/`550 Not allowed`. Until then this mailbox cannot be a sound campaign sender.
+4. Publish `v=spf1 ip6:2a02:c207:2354:8623::1 ip4:164.68.105.96 -all` for `watsonandrade9382.ca.lu`, or stop sending as that domain. With no SPF, no DKIM and a PTR of `vmi3548623.contaboserver.net`, mail from this VPS is close to guaranteed to be spam-foldered regardless of which port works.
 
 ---
 
@@ -120,5 +142,8 @@ Two genuine SpaceWorker-side problems surfaced here, both fixed:
 | `npm run test:deliverability` | 6/6 pass |
 | `npx tsc --noEmit -p .` | exit 0 |
 | `npx eslint` on every changed file | clean |
-| Mailbox test E2E (3 port×security combos + assertions) | 10/10 PASS |
-| Worker arena cap + memory bounds | applied in the running systemd unit |
+| Deployed route E2E, 3 port×security combos + 6 assertions | **6/6 PASS** (25+None ok in 1714ms; 25+STARTTLS fails explained in 1859ms; 24610 fails explained in 2362ms) |
+| Worker: RSS after restart with `MALLOC_ARENA_MAX=2` | **62 MB, down from 4,908 MB** (79x); env + `MemoryHigh`/`MemoryMax` confirmed in the live unit |
+| Deploy: `systemctl is-active` + `curl` | active / 200 |
+| Deploy: full-tree checksum parity vs `main` (§2a) | **PARITY OK — 388/388 files, 0 missing, 0 stale, 0 extra** |
+
