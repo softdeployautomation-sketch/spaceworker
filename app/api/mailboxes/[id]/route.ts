@@ -49,13 +49,16 @@ export async function PUT(
     // Empty list -> send as the SMTP username; never store "" elements.
     data.fromAddresses = fromAddresses;
   }
+  // The port this save will leave behind — the new one when the form changed it,
+  // otherwise the stored one. Needed by BOTH the secure/TLS derivation below and
+  // the host guard (the operator's own-relay allowlist is host:PORT specific).
+  const nextPort = body.port !== undefined ? Number(body.port) : existing.port;
   // Task 26, Piece 5a — `secure` is derived from the (possibly new) port, never a
   // checkbox: 465 => implicit TLS, anything else => STARTTLS. allowInsecure is the
   // explicit plaintext opt-out for the "None" mode and is stored independently. A
   // save that changes port/security always recomputes secure from the resolved port.
   if (body.port !== undefined || body.allowInsecure !== undefined) {
-    const resolvedPort = body.port !== undefined ? Number(body.port) : existing.port;
-    data.secure = resolvedPort === 465;
+    data.secure = nextPort === 465;
   }
   if (body.allowInsecure !== undefined) data.allowInsecure = Boolean(body.allowInsecure);
   // TASK_134 (premium) — server-side boundary, same as test-connection: the
@@ -85,7 +88,7 @@ export async function PUT(
   // non-routable addresses at save time (same gate as CREATE and test-connection).
   if (data.host !== undefined && typeof data.host === "string") {
     try {
-      await validatePublicSmtpHost(data.host);
+      await validatePublicSmtpHost(data.host, nextPort);
     } catch (err) {
       return NextResponse.json(
         { error: err instanceof Error ? err.message : "Invalid SMTP host" },

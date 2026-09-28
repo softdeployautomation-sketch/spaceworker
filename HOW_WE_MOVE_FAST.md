@@ -588,6 +588,46 @@ Added 2026-09-28 (TASK_136 — a diagnostic must ask the same question the real 
   → **`RSET`**, and never `DATA`, so nothing can be transmitted) and let the
   server's own reply decide.
 
+Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twice):
+
+- **On this VPS, `systemctl reload postfix` and `systemctl restart postfix` are
+  NO-OPS — `/lib/systemd/system/postfix.service` is a stub** (`ExecStart=/bin/true`,
+  `ExecReload=/bin/true`). It always reports `active`, so the command looks like it
+  worked, while the real `master` keeps its OLD configuration in memory forever.
+  Signing DKIM was wired into `main.cf` and never took effect; nothing logged an
+  error. Use the **binary**: `postfix reload` (or `postfix start`). Verify by
+  ELAPSED TIME on the master process, not by `is-active`:
+  `ps -eo pid,etime,args | grep sbin/master`. If the etime is older than your
+  config change, the change is not live. (OpenDKIM's own unit is a normal unit —
+  `systemctl restart opendkim` does work.)
+- **A milter socket that the smtpd user cannot open is SILENTLY IGNORED.** OpenDKIM
+  bound its socket as `opendkim:opendkim`, but Postfix's smtpd runs as `postfix` —
+  a non-owner with no write bit, so the connect failed. `milter_default_action =
+  accept` (set so DKIM can never block mail — correct) then means the failure is
+  invisible: mail flows, unsigned, and there is no error anywhere. Fix:
+  `UserID opendkim:postfix` so OpenDKIM chgrps the socket to the group Postfix
+  runs as. Probe it as that user before believing it.
+- **Never accept a log line as proof that DKIM is signing.** `grep opendkim
+  /var/log/mail.log` showed only start/stop banners for hours across two
+  "successful" restarts. The only acceptable proof is the header on the delivered
+  message **and** a cryptographic verification of it:
+  `DKIM-Signature: ... d=<domain>; s=<selector>` present, then verify the signature
+  against the public key (dkimpy with a stubbed `dnsfunc`, so the missing DNS
+  record doesn't mask a real key mismatch). A signature that is present but
+  unverifiable is WORSE than none, because it looks like the job is done.
+- **Extracting a message from an mbox: do not use `awk NF`.** It deletes blank
+  lines, which removes the header/body separator and corrupts the message — DKIM
+  then fails with `Unexpected characters in RFC822 header`. And don't round-trip
+  through a parsed Message object either (line endings and header folding change,
+  breaking a `c=relaxed/simple` body hash). Slice the RAW BYTES at the last
+  `^From ` separator and keep everything after that line untouched.
+- **A mailbox host that is internal on purpose now has an explicit, operator-only
+  door** (`SMTP_INTERNAL_RELAY_HOSTS`, see `lib/smtp-host-guard.ts` + TASK_137).
+  It takes `host:PORT` pairs and the port is mandatory: a portless entry would
+  re-open the whole-loopback port scan that Task 51 closed. If you touch that
+  guard, `npm run test:mailguard` pins both halves (loopback stays blocked with
+  no allowlist; only the exact host:PORT opens).
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

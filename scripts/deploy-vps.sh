@@ -157,19 +157,51 @@ STAMP="$(date +%Y%m%d%H%M%S)"
 run_remote "cp -a '$APP_DIR/.env' '/root/$(basename "$APP_DIR").env.bak-$STAMP' && echo '   snapshot: /root/$(basename "$APP_DIR").env.bak-$STAMP'"
 verify_runtime
 
-# --- 3. Build the rsync args -------------------------------------------------
-RSYNC_ARGS=(-avz "--files-from=$FILES_FROM")
+# --- 3. Split the file list: flat files vs. directory trees -----------------
+# 2026-09-28 (live incident, confirmed by direct repro): this machine's system
+# rsync (2.6.9, protocol 29 — macOS's ancient bundled build) silently
+# under-recurses a DIRECTORY entry passed through --files-from, even with
+# explicit -r. First repro: a brand-new subdirectory's file inside an
+# already-listed dir (prisma/migrations/<new>/migration.sql,
+# app/api/settings/extract-region/route.ts) landed as an EMPTY directory —
+# rsync exited 0, "sent N bytes", looked done. This matches the exact failure
+# §2a of the playbook already documents for `app/` as a directory entry
+# (under-recursed after only two levels). The already-established standing
+# rule (never deploy a source tree through --files-from) was written down but
+# this script never actually implemented it — it kept lumping directory
+# entries into one --files-from call anyway. Fixed here for real: flat file
+# entries still go through one --files-from rsync (safe — confirmed fine for
+# single-file entries); every directory entry (a line ending in "/") gets its
+# own dedicated `rsync -azr "$d/" "host:$APP_DIR/$d/"` tree sync instead.
+DIR_ENTRIES=()
+FLAT_LIST="$(mktemp)"
+trap 'rm -f "$FLAT_LIST"' EXIT
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  case "$line" in
+    */) DIR_ENTRIES+=("${line%/}") ;;
+    *)  echo "$line" >> "$FLAT_LIST" ;;
+  esac
+done < "$FILES_FROM"
+# Restore the maintenance-flag EXIT trap (the line above just replaced it).
+trap 'rm -f "$FLAT_LIST"; maint_off_on_exit' EXIT
+
+RSYNC_BASE=(-avzr)
 if [ "$PRUNE" -eq 1 ]; then
   echo "   --prune set: deleting files absent from the list (protected paths excluded)"
-  for p in "${PROTECTED[@]}"; do RSYNC_ARGS+=(--exclude="$p"); done
-  RSYNC_ARGS+=(--delete)   # NOT --delete-excluded: excluded paths must stay
+  for p in "${PROTECTED[@]}"; do RSYNC_BASE+=(--exclude="$p"); done
+  RSYNC_BASE+=(--delete)   # NOT --delete-excluded: excluded paths must stay
 else
   echo "   (no --prune: purely additive sync, nothing is deleted)"
 fi
 
-# --- 4. Sync ----------------------------------------------------------------
+# --- 4. Sync ------------------------------------------------------------
 echo "-- rsync"
-( cd "$LOCAL_ROOT" && rsync "${RSYNC_ARGS[@]}" -e "ssh -i $SSH_KEY -o BatchMode=yes" ./ "$VPS_HOST:$APP_DIR/" )
+( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" "--files-from=$FLAT_LIST" -e "ssh -i $SSH_KEY -o BatchMode=yes" ./ "$VPS_HOST:$APP_DIR/" )
+for d in "${DIR_ENTRIES[@]}"; do
+  echo "-- rsync tree: $d/"
+  ( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" -e "ssh -i $SSH_KEY -o BatchMode=yes" "$d/" "$VPS_HOST:$APP_DIR/$d/" )
+done
 
 # --- 5. Ownership (rsync lands files as the LOCAL uid, not the service user) --
 SERVICE_USER="$(run_remote "systemctl show '$SERVICE' -p User --value" | tr -d '\r')"

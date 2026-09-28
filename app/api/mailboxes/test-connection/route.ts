@@ -110,7 +110,9 @@ export async function POST(req: Request) {
   // too), closing the gap where a user could point it at 127.0.0.1 / the VPS's
   // own internal ranges / a cloud metadata endpoint.
   try {
-    await validatePublicSmtpHost(host);
+    // The port is required so the operator's own-relay allowlist
+    // (SMTP_INTERNAL_RELAY_HOSTS) can match; see lib/smtp-host-guard.ts.
+    await validatePublicSmtpHost(host, port);
   } catch (err) {
     return NextResponse.json(
       { ok: false, error: err instanceof Error ? err.message : "Invalid SMTP host" },

@@ -68,7 +68,9 @@ export async function POST(req: Request) {
   // so a mailbox whose host points at an internal address can never be stored
   // (that also protects the real send path, which only ever reads saved hosts).
   try {
-    await validatePublicSmtpHost(host);
+    // Task 51 — the port is required so the operator's own-relay allowlist
+    // (SMTP_INTERNAL_RELAY_HOSTS) can match; see lib/smtp-host-guard.ts.
+    await validatePublicSmtpHost(host, port);
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Invalid SMTP host" },

@@ -160,7 +160,11 @@ export async function transporterForMailbox(mailbox: TransporterMailbox): Promis
   // being stored, but a mailbox saved before the fix could otherwise drive an
   // outbound connection straight at an internal address. Resolve + validate the
   // host here before building any transport, then connect.
-  await validatePublicSmtpHost(mailbox.host);
+  //
+  // The port is passed so the operator's own-relay allowlist
+  // (SMTP_INTERNAL_RELAY_HOSTS) can match — the local Postfix relay this platform
+  // runs on 127.0.0.1 is the one deliberately-internal SMTP target we allow.
+  await validatePublicSmtpHost(mailbox.host, mailbox.port);
   // decryptSecretOrThrow, not decryptSecret — a key mismatch is otherwise
   // reported to the user as the bare OpenSSL "unable to authenticate data"
   // string, which reads like an SMTP fault (see lib/mailbox-crypto.ts).
