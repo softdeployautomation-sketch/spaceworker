@@ -40,21 +40,67 @@ A whole session's worth of manual rsync+build+restart deploys on 2026-09-28
 never engaged the maintenance page even once, because this script existed and
 wasn't used — see its own header comment for the full incident history.
 
+**Deploy the DIRECTORY TREES, not a `--files-from` list** (2026-09-28 — see the
+incident right below; the list recipe that used to live here was a silent
+file-dropper):
+
 ```bash
-# List directories to get the same "full tree" coverage as a bare rsync -av;
-# --files-from supports directory entries (recurses):
-cat > /tmp/deploy-files.txt <<'EOF'
-app/
-lib/
-components/
-EOF
-scripts/deploy-vps.sh /tmp/deploy-files.txt
-# Schema change: also list prisma/schema.prisma and the new migration dir,
-# same as always (§3) — the script still runs migrate deploy? NO — it does
-# NOT run `prisma migrate deploy` for you; run that by hand first (§3), THEN
-# this script (which does run `prisma generate` for you, right before the
-# build).
+# Sync each tree wholesale. -r is explicit because --files-from does NOT imply
+# it, and a DIRECTORY entry in a files-from list recurses unreliably (proven
+# below). Repeat per directory; each of these is a complete, order-independent
+# sync of that tree.
+for d in app lib components tests prisma; do
+  rsync -azr --exclude='.env' -e "ssh -i ~/.ssh/tacticalrmm_vps" \
+    "$d/" "root@164.68.105.96:/opt/spaceworker/$d/"
+done
+ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+  'chown -R trmm:trmm /opt/spaceworker'
 ```
+
+Then the script for the build half only — it syncs the two root files, which
+have no entry in the list above, and does `prisma generate` → maintenance ON →
+`next build` → restart → verify:
+
+```bash
+printf 'package.json\nHOW_WE_MOVE_FAST.md\n' > /tmp/deploy-root.txt
+scripts/deploy-vps.sh /tmp/deploy-root.txt
+```
+
+Why split it this way: `scripts/deploy-vps.sh` requires a files-from list, but
+`--files-from` is the very mechanism that dropped files in the incident below.
+Passing it only root-level files (which can't recurse, so can't be dropped) and
+letting rsync handle the trees directly gets the script's maintenance page,
+rollback and verify without its one unreliable input. **Whatever you do, §2a is
+not optional** — it is what caught this, and it is the only step that can.
+
+Schema change: `prisma migrate deploy` + the §6b drift check first (§3), THEN
+this (the script runs `prisma generate` for you, right before the build). It
+does NOT run `migrate deploy`.
+
+**2026-09-28 incident — a "full tree" files-from list shipped 6 files short.**
+The recipe above used to say to list `app/`, `lib/`, `components/` as directory
+entries and that this was equivalent to a bare `rsync -av` ("--files-from
+supports directory entries (recurses)"). It is not. With that list, rsync
+transferred only **two levels** under `app/` — `app/dashboard/`, `app/api/` and
+friends landed as empty directories and every file inside them was skipped, so
+six changed files of a ten-file fix were silently left behind:
+
+```
+app/api/mailboxes/test-connection/route.ts     8798 -> 4259 bytes (old version)
+app/api/mailboxes/[id]/test/route.ts
+app/api/campaigns/[id]/{test-send,test-recipient,run-diagnostics}/route.ts
+app/dashboard/campaigns/[id]/page.tsx
+```
+
+The run looked perfect: `sent 90557 bytes`, explicit `-r` passed, exit 0,
+`systemctl is-active` = active, `curl` = 200, maintenance off, `.next` rebuilt.
+Nothing short of §2a could see it — the app was serving an old API route against
+a new UI, which is precisely the "hard-to-diagnose production bug" §2a describes.
+`lib/` and `components/` were fine only because their changed files sit one
+level deep. **Sibling of the two traps already in §7; the fix is to stop
+deploying source trees through `--files-from` at all.** Also note the dry-run
+that would have caught it: `rsync -avzn -i` shows `app/api/` enumerated as a
+directory with no files under it.
 
 The raw manual sequence below is kept for `--no-build`/`--verify-only`-style
 one-offs, or when `scripts/deploy-vps.sh` itself needs debugging — not as the
@@ -582,6 +628,16 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   `app/api/devices/[deviceId]/maintenance/route.ts` silently never landed while two
   single-file entries in the same run transferred fine. (Sibling trap to the source-
   operand one above; both "the deploy looked fine and wasn't".)
+- **`-r` on a DIRECTORY entry is necessary but NOT sufficient — it still
+  under-recurses.** 2026-09-28: with `-azr` passed and `app/` listed as a
+  directory entry, rsync descended only TWO levels under `app/`, so
+  `app/api/` and `app/dashboard/` were created as empty directories and all six
+  changed route/page files inside them never landed — `sent 90557 bytes`, exit 0,
+  service active, 200 OK. **The standing rule is now: never deploy a source tree
+  through `--files-from`. Sync trees with `rsync -azr "$d/" "host:$APP_DIR/$d/"`
+  (§2) and reserve `--files-from` for flat root-level files.** Verify with the
+  §2a parity check, which is the only thing that caught it. Why it under-recursed
+  is not documented here on purpose — the rule doesn't depend on knowing.
 - **2026-10 console lifecycle rules (owner's calls — keep them consistent).**
   • MANUAL tools execute DIRECTLY — Connect, Run now, PIN collect, maintenance
     overlay start/stop, queued commands. NO proposal rail for a user acting on their

@@ -20,6 +20,18 @@ export function classifySmtpError(e: unknown): SmtpErrorCategory {
   if (err.code === "EAUTH") return "auth_failed";
 
   const msg = (err.message ?? "").toLowerCase();
+
+  // 2026-09-28 — a credential that cannot even be READ is an auth problem, and
+  // it is the worst possible one to retry: `transporterForMailbox` throws before
+  // any connection is made, so every remaining recipient in the batch fails
+  // identically. This matches the raw OpenSSL text from decryptSecret AND the
+  // actionable message decryptSecretOrThrow wraps it in, so the category holds
+  // whichever path reports it. 50 items previously landed in "failed" with the
+  // bare crypto string as the reason and no hint of the cause.
+  if (msg.includes("unable to authenticate data") || msg.includes("invalid initialization vector") || msg.includes("cannot be decrypted")) {
+    return "auth_failed";
+  }
+
   const throttled = msg.includes("rate") || msg.includes("throttl") || msg.includes("too many");
 
   const code = err.responseCode;

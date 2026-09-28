@@ -760,6 +760,15 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
     const devices = [...merged.values()];
     for (const entry of devices) {
       const d = entry.row;
+      // 2026-09-28 — never invent a "seen just now" timestamp for a device we
+      // were just told is OFFLINE. Vantra omits `lastSeen` for some agents; the
+      // old unconditional `: now` fallback then stamped those rows as freshly
+      // seen, which (a) fed the UI a false "last seen 0s ago" and (b) kept the
+      // 10-minute freshness window alive for a machine that had been off for
+      // hours. Stamping `now` is only ever honest when the agent is online.
+      // Leaving it undefined on the update path means "don't change" (Prisma),
+      // i.e. keep the real last-known check-in.
+      const lastSeenAt = d.lastSeen ? new Date(d.lastSeen) : d.online ? now : undefined;
       const saved = await db.device.upsert({
         where: { vantraAgentId: d.vantraAgentId },
         update: {
@@ -767,7 +776,7 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           name: d.name,
           osName: d.osName,
           status: d.online ? "online" : "offline",
-          lastSeenAt: d.lastSeen ? new Date(d.lastSeen) : now,
+          lastSeenAt,
           tier: entry.tier,
         },
         create: {
@@ -776,7 +785,7 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           name: d.name,
           osName: d.osName,
           status: d.online ? "online" : "offline",
-          lastSeenAt: d.lastSeen ? new Date(d.lastSeen) : now,
+          lastSeenAt: lastSeenAt ?? null,
           tier: entry.tier,
         },
       });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireInternalBearer } from "@/lib/internal-auth";
-import { isDeviceOnline } from "@/lib/devices";
+import { deviceStatus } from "@/lib/devices";
 import { notifyUser } from "@/lib/notify";
 
 // 2026-09-26 — ported from Vantra's proven pattern
@@ -13,10 +13,20 @@ import { notifyUser } from "@/lib/notify";
 // deliberately skips notifying (a brand-new device's first sweep would
 // otherwise fire a spurious "back online").
 //
-// POST /api/internal/device-status-sweep, gated by INTERNAL_BEARER_TOKEN,
-// hit by deploy/device-status-sweep.timer every 5 minutes (same cadence as
-// Vantra's poller; DEVICE_ONLINE_WINDOW_MS is 10 min, so 5-min sweeps catch a
-// transition within one missed heartbeat window).
+// 2026-09-28 — this used to derive online-ness from `isDeviceOnline(lastSeenAt)`
+// alone, a SECOND definition that disagreed with the one every UI surface
+// renders (`deviceStatus()`): a machine Vantra had already reported offline kept
+// a fresh `lastSeenAt` for up to DEVICE_ONLINE_WINDOW_MS, so the sweep saw it as
+// online and the "went offline" notification was delayed by up to a full window
+// on top of the sweep cadence. Reading `deviceStatus()` means the notification
+// fires on the same verdict the owner sees on screen, as soon as Vantra reports
+// the transition.
+//
+// POST /api/internal/device-status-sweep, gated by INTERNAL_BEARER_TOKEN, hit by
+// deploy/device-status-sweep.timer every 5 minutes (same cadence as Vantra's
+// poller). A device that vanishes WITHOUT a verdict still ages out through
+// deviceStatus()'s DEVICE_ONLINE_WINDOW_MS freshness check, so 5-min sweeps
+// catch even that case within one missed window.
 export async function POST(req: Request) {
   if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -35,6 +45,7 @@ export async function POST(req: Request) {
       id: true,
       name: true,
       userId: true,
+      status: true,
       lastSeenAt: true,
       lastNotifiedOnline: true,
       user: { select: { notifyDeviceOffline: true, notifyDeviceOnline: true } },
@@ -46,7 +57,7 @@ export async function POST(req: Request) {
 
   for (const device of devices) {
     checked++;
-    const isOnline = isDeviceOnline(device.lastSeenAt);
+    const isOnline = deviceStatus(device) === "online";
     const prev = device.lastNotifiedOnline;
     const shouldNotify = isOnline ? device.user.notifyDeviceOnline : device.user.notifyDeviceOffline;
 

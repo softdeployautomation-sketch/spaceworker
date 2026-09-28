@@ -12,5 +12,29 @@ Restart=always
 RestartSec=5
 EnvironmentFile=/path/to/repo/worker/.env
 
+# 2026-09-28 — the 4.7GB idle-RSS fix (see TASK_48_PART_B_WORKER_MEMORY_INVESTIGATION.md).
+#
+# Measured live: idle RSS 4.9GB with zero jobs running, and /proc/<pid>/maps
+# showed 29 mappings of EXACTLY 64MB — glibc's per-thread arenas. This worker
+# runs a 128-thread pool (automation.py `_EXTRACTION_EXECUTOR`) precisely
+# because its work is I/O-bound; glibc's default arena ceiling is
+# 8 x nproc = 64 on this 8-core box, so tens of arenas were created and each
+# one retains freed memory instead of returning it to the OS. That is not a
+# Python object leak — nothing is holding the data — which is why restarting
+# the service reclaims it instantly and why the growth looked job-correlated.
+#
+# MALLOC_ARENA_MAX=2 caps the arena count, so the retained-but-unused heap is
+# bounded by a fixed couple of arenas instead of scaling with thread count.
+# This workload is network-I/O-bound with moderate parsing, so the extra
+# malloc contention from fewer arenas is not a throughput concern; the measured
+# memory profile is worth far more than the theoretical lock win.
+Environment=MALLOC_ARENA_MAX=2
+# Belt and braces — a hard ceiling so this service can never again take the box
+# down on its own (24GB total). MemoryHigh throttles + reclaims without ever
+# killing a job; MemoryMax is the backstop that turns "eats all RAM" into a
+# service restart (Restart=always above brings it straight back).
+MemoryHigh=3G
+MemoryMax=6G
+
 [Install]
 WantedBy=multi-user.target

@@ -1,7 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/prisma";
 import { transporterForMailbox, type TransporterMailbox } from "./mailer-send";
-import { decryptSecret } from "./mailbox-crypto";
+import { decryptSecretOrThrow } from "./mailbox-crypto";
 import { pollSeedMailbox } from "./imap";
 import { resolveSeedMailbox } from "./seed-mailbox";
 import { renderMerge } from "./render-merge";
@@ -98,10 +98,11 @@ export async function runTestSend(opts: {
   let landedIn: "inbox" | "spam" | "unknown" = "unknown";
 
   if (!sendError && !isOverride && opts.seed) {
-    const seedPassword = decryptSecret(
+    const seedPassword = decryptSecretOrThrow(
       opts.seed.encryptedPassword,
       opts.seed.passwordIv,
-      opts.seed.passwordTag
+      opts.seed.passwordTag,
+      "deliverability seed mailbox"
     );
     for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt++) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));

@@ -2,7 +2,7 @@ import "server-only";
 import net from "node:net";
 import nodemailer, { type Transporter } from "nodemailer";
 import { SocksClient } from "socks";
-import { decryptSecret } from "./mailbox-crypto";
+import { decryptSecretOrThrow } from "./mailbox-crypto";
 import { validatePublicSmtpHost } from "./smtp-host-guard";
 import { getExitNode } from "./exit-nodes";
 
@@ -161,7 +161,10 @@ export async function transporterForMailbox(mailbox: TransporterMailbox): Promis
   // outbound connection straight at an internal address. Resolve + validate the
   // host here before building any transport, then connect.
   await validatePublicSmtpHost(mailbox.host);
-  const password = decryptSecret(
+  // decryptSecretOrThrow, not decryptSecret — a key mismatch is otherwise
+  // reported to the user as the bare OpenSSL "unable to authenticate data"
+  // string, which reads like an SMTP fault (see lib/mailbox-crypto.ts).
+  const password = decryptSecretOrThrow(
     mailbox.encryptedPassword,
     mailbox.passwordIv,
     mailbox.passwordTag

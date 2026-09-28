@@ -25,11 +25,27 @@ export function isDeviceOnline(lastSeenAt: Date | null): boolean {
 }
 
 /**
- * Derive the display status from the stored row: a stored "asleep" sticks
- * until a heartbeat proves otherwise; otherwise online/offline by age.
+ * Derive the display status from the stored row.
+ *
+ * 2026-09-28 (owner report: "it takes long for the active to turn off") — the
+ * stored `status` is an AUTHORITATIVE VERDICT, not a hint: `syncDevices()`
+ * writes Vantra's live `online` flag every time the device list loads, and
+ * `recordHeartbeat()` writes "online" on every agent check-in. This function
+ * used to discard that verdict and answer purely from `lastSeenAt` age, so a
+ * machine that had just been switched off kept rendering "online · active now"
+ * for up to DEVICE_ONLINE_WINDOW_MS (10 minutes) after Vantra had already
+ * reported it gone — while Ping, the on-demand truth, correctly said "Agent not
+ * reachable" the whole time. Two sources of truth disagreeing in one screen.
+ *
+ * So: a definite "offline" is honoured immediately; "online"/"asleep"/unknown
+ * still have to prove freshness via the age window, which is what makes a
+ * device that vanished WITHOUT a verdict age out on its own. "asleep" keeps
+ * its old meaning — a deliberate sleep state that survives going stale, but
+ * yields to a live heartbeat.
  */
 export function deviceStatus(device: { status: string; lastSeenAt: Date | null }): string {
-  if (device.status === "asleep" && !isDeviceOnline(device.lastSeenAt)) return "asleep";
+  if (device.status === "asleep") return isDeviceOnline(device.lastSeenAt) ? "online" : "asleep";
+  if (device.status === "offline") return "offline";
   return isDeviceOnline(device.lastSeenAt) ? "online" : "offline";
 }
 

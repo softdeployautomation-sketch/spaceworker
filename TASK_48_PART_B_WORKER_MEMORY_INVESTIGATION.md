@@ -1,6 +1,29 @@
 # Task 48 Part B — Investigate `worker/api.py` idle memory growth
 
-**Status: ready to build, QUEUED BEHIND Task 48 Parts A/C.** Written 2026-09-18, grounded in live measurements taken directly on the production VPS during this session, not assumed.
+**Status: RESOLVED 2026-09-28 — root cause confirmed live, fix deployed.** Not a Python object leak at all: it is glibc arena fragmentation driven by the 128-thread extraction pool. See "CONFIRMED ROOT CAUSE" below. The original investigation brief (written 2026-09-18, before the diagnosis) is kept beneath it for the reasoning trail.
+
+## CONFIRMED ROOT CAUSE (2026-09-28, measured on production)
+
+Hypothesis 4 in the brief below — *"Python's allocator not returning freed memory to the OS, which can look identical to a leak from `ps` alone"* — is the actual answer. Concretely:
+
+- The live service was `extraction-worker.service` (`/opt/spaceworker-worker-venv/bin/python api.py`) at **4.9GB RSS with zero jobs running**, 12.3% CPU, 96 threads, up 23h.
+- `/proc/<pid>/maps` showed **29 mappings of exactly 64MB** — that is glibc's `HEAP_MAX_SIZE` per arena, and it is the signature. 338 anonymous rw-p mappings in total, 5553MB mapped, VmPeak 14.3GB.
+- `MALLOC_ARENA_MAX` was **unset**, so glibc's default ceiling applied: `8 × nproc` = **64 arenas** on this 8-core box.
+- The worker creates threads on purpose — `automation.py`'s `_EXTRACTION_EXECUTOR = ThreadPoolExecutor(max_workers=128, thread_name_prefix="extract")` (see that constant's own comment: the work is I/O-bound, and the 60s-per-result timeout is measured from dispatch, so a small pool starves the timeout budget). 95 live threads had touched enough allocator traffic to create 29 arenas, and **each arena keeps its own free list forever** — freed blocks are reused only by allocations that land in the same arena, so the memory reads as "used" to the OS even though nothing in the process references it.
+
+That is exactly why every prior observation fitted: restart reclaims it instantly (nothing was holding it), growth looked job-correlated (more concurrent jobs → more threads → more arenas), and no Python object ever showed as retained.
+
+### The fix (shipped)
+
+1. `deploy/extraction-worker.service` — `Environment=MALLOC_ARENA_MAX=2`. Caps arenas at 2, so retained-but-unused heap is bounded by a fixed couple of arenas instead of scaling with thread count.
+2. Same unit — `MemoryHigh=3G` (throttle + reclaim, never kills a job) and `MemoryMax=6G` (backstop that trades "eats the box" for a service restart; `Restart=always` already brings it back).
+3. `worker/.env.example` — documents that `MALLOC_ARENA_MAX` must NOT go in `.env`: glibc reads it at the process's first `malloc`, which happens during interpreter boot, long before `api.py`'s `load_dotenv()`. It has to be a real process env var (the systemd `Environment=` line).
+
+### What was deliberately NOT changed
+
+`_EXTRACTION_EXECUTOR`'s 128 workers. It is tuned against a real measured failure (the timeout-budget starvation documented at that constant) and the arena cap removes the memory penalty of the pool size, so shrinking the pool would trade a real throughput fix for nothing.
+
+---
 
 ## The real gap, confirmed live (not assumed)
 
