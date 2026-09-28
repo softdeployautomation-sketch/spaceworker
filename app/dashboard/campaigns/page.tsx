@@ -428,10 +428,18 @@ export default function CampaignsPage() {
     setCampaignTemplateId(id);
     if (!id) return;
     const own = campaigns.find((c) => c.id === id);
-    const variants = own
-      ? (own.variants ?? []).map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml ?? "" }))
+    const rawVariants = own
+      ? (own.variants ?? [])
       : (templates.find((t) => t.id === id)?.variants ?? []);
-    if (variants.length === 0) return;
+    if (rawVariants.length === 0) return;
+    // Coalesce on BOTH fields, for BOTH sources — the "own campaigns" branch
+    // only defaulted bodyHtml, never subject; the "ready-made templates"
+    // branch (the only one with real data today) defaulted neither. A null
+    // subject/bodyHtml flowed straight into state as `undefined`, which
+    // crashed the bodyLinks useMemo's unconditional `.trim()` — confirmed
+    // live via the exact browser stack trace (Cannot read properties of
+    // undefined (reading 'trim'), inside Array.map inside useMemo).
+    const variants = rawVariants.map((v) => ({ subject: v.subject ?? "", bodyHtml: v.bodyHtml ?? "" }));
     setSubjects(variants.map((v) => v.subject));
     setBodies(variants.map((v) => v.bodyHtml));
   }
