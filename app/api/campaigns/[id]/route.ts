@@ -81,3 +81,45 @@ export async function PATCH(
   });
   return NextResponse.json(updated);
 }
+
+// DELETE /api/campaigns/[id] — permanently removes a campaign the user owns,
+// along with its variants/queue items/deliverability checks/link redirects
+// (none of those FKs cascade at the DB level, so children are deleted first
+// in a transaction). Blocked while a send is actively in-flight ("sending" /
+// "paused_deliverability") since the drain loop still holds queue items open
+// against this campaign — the user must stop it first (deliverability-decision
+// route already exposes that "stop" action).
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const session = await getSession();
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  const { id } = await params;
+
+  const campaign = await prisma.emailCampaign.findFirst({
+    where: { id, userId: session.userId },
+    select: { id: true, status: true },
+  });
+  if (!campaign) {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  if (campaign.status === "sending" || campaign.status === "paused_deliverability") {
+    return NextResponse.json(
+      { error: "Stop this campaign's send before deleting it." },
+      { status: 409 }
+    );
+  }
+
+  await prisma.$transaction([
+    prisma.linkRedirect.deleteMany({ where: { campaignId: id } }),
+    prisma.deliverabilityCheck.deleteMany({ where: { campaignId: id } }),
+    prisma.emailQueueItem.deleteMany({ where: { campaignId: id } }),
+    prisma.campaignVariant.deleteMany({ where: { campaignId: id } }),
+    prisma.emailCampaign.delete({ where: { id } }),
+  ]);
+
+  return NextResponse.json({ ok: true });
+}
