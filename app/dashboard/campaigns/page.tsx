@@ -200,7 +200,13 @@ export default function CampaignsPage() {
   }
 
   // Task 26, Piece 4 — "Pick from my leads" recipient source state.
-  const [recipientSource, setRecipientSource] = useState<"csv" | "leads">("csv");
+  const [recipientSource, setRecipientSource] = useState<"csv" | "leads" | "paste">("csv");
+  // Type-or-paste recipients — kept as its own draft string so the raw text
+  // the user typed is never lost/reformatted while they're still editing it;
+  // only converted into the same `csvContent` the CSV-upload path already
+  // produces (a header row + one address per line) once it's applied, so
+  // submit() and the server's existing CSV parser need zero changes.
+  const [pasteText, setPasteText] = useState("");
   const [pickerData, setPickerData] = useState<PickerData | null>(null);
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState("");
@@ -319,6 +325,7 @@ export default function CampaignsPage() {
     setSelectedMailboxIds([]);
     setCsvName("");
     setCsvContent("");
+    setPasteText("");
     setFormError("");
     // Task 26, Piece 4 — reset the picker's transient state on each open (the
     // fetched /api/leads/selectable payload is cached so revisits don't re-fetch).
@@ -351,7 +358,7 @@ export default function CampaignsPage() {
     }
   }
 
-  function chooseSource(src: "csv" | "leads") {
+  function chooseSource(src: "csv" | "leads" | "paste") {
     setRecipientSource(src);
     setFormError("");
     if (src === "leads" && !pickerData && !pickerLoading) void loadPicker();
@@ -438,6 +445,20 @@ export default function CampaignsPage() {
       setCsvContent("");
       setFormError("Could not read that file");
     }
+  }
+
+  // Splits on newlines, commas, semicolons, or runs of whitespace — covers a
+  // one-per-line paste, a comma-separated paste, and copy/paste out of a
+  // spreadsheet cell equally well. Produces the exact same shape readCsv()
+  // does (a header row + one address per line) so it flows through the
+  // existing CSV path unchanged, both here and on the server.
+  function applyPasteText(text: string) {
+    setPasteText(text);
+    const emails = text
+      .split(/[\n,;]+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    setCsvContent(emails.length > 0 ? `email\n${emails.join("\n")}` : "");
   }
 
   function setBodyAt(index: number, value: string) {
@@ -570,7 +591,7 @@ export default function CampaignsPage() {
     } else if (recipientSource === "leads") {
       if (selectedLeadIds.length === 0) { setFormError("Select at least one lead to send to"); return; }
     } else if (!csvContent.trim()) {
-      setFormError("Upload a recipient CSV");
+      setFormError(recipientSource === "paste" ? "Type or paste at least one recipient email" : "Upload a recipient CSV");
       return;
     }
 
@@ -1204,9 +1225,9 @@ export default function CampaignsPage() {
 
               {!fromSearchJobId && (
                 <div className="flex flex-col gap-1 text-sm font-medium">
-                  Recipient source <span className="text-xs text-zinc-400">— a CSV, or leads you have already extracted and validated</span>
-                  <div className="mt-1 inline-flex rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-                    {(["csv", "leads"] as const).map((src) => (
+                  Recipient source <span className="text-xs text-zinc-400">— a CSV, leads you have already extracted and validated, or a pasted/typed list</span>
+                  <div className="mt-1 inline-flex flex-wrap rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
+                    {(["csv", "leads", "paste"] as const).map((src) => (
                       <button
                         key={src}
                         type="button"
@@ -1217,7 +1238,7 @@ export default function CampaignsPage() {
                             : "text-zinc-600 hover:bg-zinc-200 dark:text-zinc-400 dark:hover:bg-zinc-800"
                         }`}
                       >
-                        {src === "leads" ? "Pick from my leads" : "Upload a CSV"}
+                        {src === "leads" ? "Pick from my leads" : src === "paste" ? "Type or paste emails" : "Upload a CSV"}
                       </button>
                     ))}
                   </div>
@@ -1355,6 +1376,26 @@ export default function CampaignsPage() {
                       </div>
                     </>
                   )}
+                </div>
+              ) : recipientSource === "paste" ? (
+                <div className="flex flex-col gap-1 text-sm font-medium">
+                  Type or paste emails <span className="text-xs text-zinc-400">— one per line, or separated by commas/semicolons</span>
+                  <textarea
+                    value={pasteText}
+                    onChange={(e) => applyPasteText(e.target.value)}
+                    rows={6}
+                    placeholder={"ada@example.com\ngrace@example.com\nalan@example.com"}
+                    className="resize-y rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
+                  {(() => {
+                    const count = pasteText
+                      .split(/[\n,;]+/)
+                      .map((s) => s.trim())
+                      .filter((s) => s.length > 0).length;
+                    return count > 0 ? (
+                      <span className="text-xs text-zinc-500">{count} recipient{count === 1 ? "" : "s"} parsed</span>
+                    ) : null;
+                  })()}
                 </div>
               ) : (
                 <div className="flex flex-col gap-1 text-sm font-medium">
