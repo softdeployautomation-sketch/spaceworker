@@ -3,7 +3,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { createSearchJob } from "@/lib/create-search-job";
-import { resolveUserTier } from "@/lib/premium";
+import { canUseExitNodes, resolveUserTier } from "@/lib/premium";
 
 const TEMPLATES = ["lead", "hr", "plain", "upload", "advanced-search"] as const;
 type Template = (typeof TEMPLATES)[number];
@@ -296,8 +296,24 @@ export async function POST(req: Request) {
   // "confirmed-but-no-email domain still saves one blank row" behavior.
   const requireEmail = advancedSearch && rawParams.requireEmail === true;
 
+  // Premium — bake the user's saved extraction-region preference into this
+  // job's own params (worker/automation.py's search_phase reads
+  // params.proxyRegion as the FIRST-attempt route, not just an automatic
+  // last-resort-on-block fallback). Gated the same way every other
+  // node-access surface is; never included at all for a non-premium or
+  // restricted user, regardless of what's saved on their row.
+  const owner = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { extractProxyRegion: true },
+  });
+  const proxyRegion =
+    owner?.extractProxyRegion && (await canUseExitNodes(prisma, session.userId))
+      ? owner.extractProxyRegion
+      : undefined;
+
   const params = {
     engine,
+    ...(proxyRegion ? { proxyRegion } : {}),
     ...(maxResults !== undefined ? { maxResults } : {}),
     ...(emailDomains !== undefined ? { emailDomains } : {}),
     ...(minResults !== undefined ? { minResults } : {}),

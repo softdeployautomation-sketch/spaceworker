@@ -37,6 +37,13 @@ model User {
   // routing) without touching their premium status otherwise, e.g. for abuse.
   // Every node-access gate checks isPremiumTier(tier) && !nodeAccessRestricted.
   nodeAccessRestricted     Boolean                @default(false)
+  // Premium — the user's saved default region for lead-extraction jobs (US/CA/UK,
+  // mirrors Mailbox.sendRegion's exact pattern). null = direct, the default.
+  // Read at job-creation time (app/api/jobs/route.ts) and baked into that job's
+  // own params.proxyRegion, gated by canUseExitNodes() same as every other
+  // node-access surface — never trusted from client input since there isn't any
+  // here, it's purely derived from this saved preference.
+  extractProxyRegion       String?
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links

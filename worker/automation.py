@@ -613,7 +613,7 @@ async def duckduckgo_search_playwright(query: str, max_results: int, job_dir: st
 
 async def duckduckgo_search_paginated(
     query: str, max_results: int, pages_per_query: int, job_dir: str,
-    on_step: Optional[AsyncStepCallable] = None,
+    on_step: Optional[AsyncStepCallable] = None, proxy: Optional[dict] = None,
 ) -> list[SearchResult]:
     """Drive DuckDuckGo's HTML results over up to `pages_per_query` pages via a
     real headless browser, submitting the results page's own "next page" form
@@ -656,7 +656,8 @@ async def duckduckgo_search_paginated(
     # immediately with "Target page, context or browser has been closed."
     # Removed again in the `finally` below so a long job's many queries don't
     # leave hundreds of throwaway Chromium profiles on disk.
-    profile_dir = os.path.join(job_dir, "ddg-multipage-profile-" + uuid.uuid4().hex[:10])
+    suffix = "" if proxy is None else "-" + proxy["label"].lower()
+    profile_dir = os.path.join(job_dir, "ddg-multipage-profile" + suffix + "-" + uuid.uuid4().hex[:10])
     url = _DDG_URL + "?q=" + quote_plus(query)
     all_results: list[SearchResult] = []
     seen_urls: set[str] = set()
@@ -673,7 +674,7 @@ async def duckduckgo_search_paginated(
 
     try:
         async with async_playwright() as p:
-            context = await _launch_persistent_context(p, profile_dir)
+            context = await _launch_persistent_context(p, profile_dir, proxy=proxy)
             try:
                 if on_step is not None:
                     await on_step(f"Visiting page 1 of {pages_per_query} of DuckDuckGo results")
@@ -685,7 +686,7 @@ async def duckduckgo_search_paginated(
                         await context.close()
                     except Exception:
                         pass
-                    context = await _launch_persistent_context(p, profile_dir)
+                    context = await _launch_persistent_context(p, profile_dir, proxy=proxy)
                     page, content = await _load_page_one(context)  # let this raise on a second failure
 
                 for page_index in range(max(1, pages_per_query)):
@@ -920,9 +921,31 @@ async def resilient_ddg_search(query: str, max_results: int, job_dir: str) -> li
             return await _duckduckgo_with_exit_nodes(query, max_results, job_dir)
 
 
+def _resolve_preferred_proxy(params: dict) -> Optional[dict]:
+    """The user's explicitly-chosen default route for this extraction job
+    (SpaceWorker Settings -> "Route my extraction through" -> US/CA/UK),
+    distinct from the EXISTING automatic last-resort fallback chain below
+    (_get_exit_nodes() used only after a direct request is confirmed
+    blocked). When set, this becomes the FIRST attempt, not a last resort —
+    the point of an explicit region choice is presenting as being from that
+    region for relevant results, not just working around a block.
+
+    Returns None (falls through to today's direct-first behavior, unchanged)
+    when no region was chosen, OR when the chosen region isn't currently
+    configured on this box — never a hard error: a stale/unavailable
+    preference degrades to "no preference" rather than failing the job.
+    """
+    region = params.get("proxyRegion")
+    if not isinstance(region, str) or not region.strip():
+        return None
+    region = region.strip().lower()
+    return next((n for n in _get_exit_nodes() if n["label"].lower() == region), None)
+
+
 async def search_phase(query: str, params: dict, job_dir: str,
                        on_step: Optional[AsyncStepCallable] = None) -> list[SearchResult]:
     engine = params.get("engine", "duckduckgo")
+    preferred_proxy = _resolve_preferred_proxy(params)
     # Confirmed against the real caller (app/dashboard/extract/page.tsx sends
     # `params: { engine, maxResults }`, camelCase) — the dispatcher's own
     # `POST /api/jobs` clamps this server-side to 10-200, so this worker-side
@@ -965,6 +988,18 @@ async def search_phase(query: str, params: dict, job_dir: str,
         # Real crawler (Task 13): visit multiple result pages per query, bounded
         # independently the same way max_results is.
         pdf_query = _biased_query(query)
+        if preferred_proxy is not None:
+            # Broad except, not just _BlockedByCaptchaError below — a chosen
+            # node can fail for reasons that have nothing to do with anti-bot
+            # blocking (its relay is down, a SOCKS connection error, a
+            # navigation timeout), and none of those should crash the whole
+            # query. Falls through to the existing direct-first chain exactly
+            # as if no region had been chosen.
+            try:
+                return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step, proxy=preferred_proxy)
+            except Exception:
+                if on_step is not None:
+                    await on_step(f"Preferred route ({preferred_proxy['label']}) unavailable — falling back for: {query}")
         try:
             return await google_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
         except _BlockedByCaptchaError:
@@ -1005,6 +1040,19 @@ async def search_phase(query: str, params: dict, job_dir: str,
     # minResults target. Only take the slower multi-page browser path when the
     # caller actually asked for more than one page; the fast HTTP-first
     # single-page path below is unchanged for everyone who didn't.
+    if preferred_proxy is not None:
+        # Same reasoning as the Google branch above: a chosen node can fail
+        # for reasons unrelated to blocking, so this is a broad except that
+        # falls through to today's unmodified direct-first chain rather than
+        # only catching the block-signaling exception.
+        try:
+            if pages_per_query > 1:
+                return await duckduckgo_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step, proxy=preferred_proxy)
+            return await duckduckgo_search_playwright(pdf_query, max_results, job_dir, proxy=preferred_proxy)
+        except Exception:
+            if on_step is not None:
+                await on_step(f"Preferred route ({preferred_proxy['label']}) unavailable — falling back for: {query}")
+
     if pages_per_query > 1:
         try:
             return await duckduckgo_search_paginated(pdf_query, max_results, pages_per_query, job_dir, on_step)
