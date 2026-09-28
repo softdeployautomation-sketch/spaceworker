@@ -3,7 +3,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
-import { useConfirm } from "@/components/confirm-provider";
 // Task 30, item 1 — renderMerge is a pure string->string function with no
 // server-only dependencies, so it's safe to import into this client component to
 // show the user exactly what a recipient would receive (including the raw gap a
@@ -272,35 +271,6 @@ export default function CampaignsPage() {
     }
   }
 
-  const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
-  const [deleteError, setDeleteError] = useState("");
-  const confirm = useConfirm();
-
-  async function deleteCampaign(id: string, name: string) {
-    const ok = await confirm({
-      title: "Delete campaign",
-      description: `Delete "${name}"? This permanently removes it and its send history — this can't be undone.`,
-      confirmLabel: "Delete",
-      confirmVariant: "danger",
-    });
-    if (!ok) return;
-    setDeleteBusyId(id);
-    setDeleteError("");
-    try {
-      const res = await fetch(`/api/campaigns/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        setCampaigns((prev) => prev.filter((c) => c.id !== id));
-      } else {
-        const body = await res.json().catch(() => ({}));
-        setDeleteError(body.error ?? "Failed to delete campaign.");
-      }
-    } catch {
-      setDeleteError("Failed to delete campaign.");
-    } finally {
-      setDeleteBusyId(null);
-    }
-  }
-
   function openNew() {
     setName("");
     setCampaignTemplateId("");
@@ -458,16 +428,10 @@ export default function CampaignsPage() {
     setCampaignTemplateId(id);
     if (!id) return;
     const own = campaigns.find((c) => c.id === id);
-    const rawVariants = own
-      ? (own.variants ?? [])
+    const variants = own
+      ? (own.variants ?? []).map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml ?? "" }))
       : (templates.find((t) => t.id === id)?.variants ?? []);
-    if (rawVariants.length === 0) return;
-    // Coalesce on BOTH fields, for BOTH sources — a null subject/bodyHtml here
-    // (either a legacy row or a template authored with a gap) used to flow
-    // straight into subjects/bodies state as `undefined`, which crashed the
-    // bodyLinks useMemo's unconditional `.trim()` and white-screened the page
-    // with no error boundary to catch it. Never let a non-string reach state.
-    const variants = rawVariants.map((v) => ({ subject: v.subject ?? "", bodyHtml: v.bodyHtml ?? "" }));
+    if (variants.length === 0) return;
     setSubjects(variants.map((v) => v.subject));
     setBodies(variants.map((v) => v.bodyHtml));
   }
@@ -674,10 +638,6 @@ export default function CampaignsPage() {
         </button>
       </div>
 
-      {deleteError && (
-        <p className="text-sm text-red-600 dark:text-red-400">{deleteError}</p>
-      )}
-
       {loading ? (
         <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
       ) : error ? (
@@ -696,7 +656,6 @@ export default function CampaignsPage() {
                 <th className="px-4 py-3 font-medium">Recipients</th>
                 <th className="px-4 py-3 font-medium">Created</th>
                 <th className="px-4 py-3 font-medium">Template</th>
-                <th className="px-4 py-3 font-medium">Delete</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -747,24 +706,6 @@ export default function CampaignsPage() {
                       }`}
                     >
                       {templateBusyId === c.id ? "…" : c.savedAsTemplate ? "★ Saved" : "☆ Save as template"}
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void deleteCampaign(c.id, c.name);
-                      }}
-                      disabled={deleteBusyId === c.id || c.status === "sending" || c.status === "paused_deliverability"}
-                      title={
-                        c.status === "sending" || c.status === "paused_deliverability"
-                          ? "Stop this campaign's send before deleting it"
-                          : "Delete this campaign permanently"
-                      }
-                      className="rounded-lg border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-red-900 dark:bg-zinc-950 dark:text-red-400 dark:hover:bg-red-950"
-                    >
-                      {deleteBusyId === c.id ? "…" : "Delete"}
                     </button>
                   </td>
                 </tr>
