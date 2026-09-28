@@ -11,6 +11,7 @@ import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
 import { LicensesSection } from "./licenses-section";
+import MailboxesPanel from "@/components/mailboxes-panel";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -113,6 +114,22 @@ export default async function SettingsPage() {
         <h2 className="text-lg font-semibold text-fg">Security</h2>
         <p className="mt-1 text-sm text-fg-muted">Change your password.</p>
         <ChangePasswordForm />
+      </Card>
+
+      {/* Mailbox management (sending mailboxes, deliverability test mailbox,
+          and the premium send-region picker) — the SAME component the
+          Campaigns page's "Mailboxes" tab uses, mounted here too since
+          account-level SMTP config is exactly the kind of thing this page's
+          Licenses/Security sections already cover, and it wasn't
+          discoverable from here before. */}
+      <Card className="max-w-4xl p-6">
+        <h2 className="text-lg font-semibold text-fg">Mailboxes</h2>
+        <p className="mt-1 text-sm text-fg-muted">
+          Sending mailboxes, your deliverability test mailbox, and (premium) regional send routing.
+        </p>
+        <div className="mt-4">
+          <MailboxesPanel />
+        </div>
       </Card>
 
       <Card className="max-w-2xl p-6">

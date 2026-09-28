@@ -234,6 +234,16 @@ export default function CampaignDetailPage() {
     }
   }, [id]);
 
+  // Task 34 — merge a small, targeted update into the already-loaded campaign
+  // state instead of re-fetching the whole campaign (which re-pulls every queued
+  // item and re-renders the whole page). Only the fields that actually changed
+  // are touched; `items`/pagination are left completely alone — no test-time
+  // action ever changes the queue. Declared here (above the live-sending poll
+  // below) since that effect now depends on it.
+  const patchCampaign = useCallback((partial: Partial<CampaignDetail>) => {
+    setCampaign((prev) => (prev ? { ...prev, ...partial } : prev));
+  }, []);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -254,10 +264,21 @@ export default function CampaignDetailPage() {
           items?: RecentSend[];
           counts?: LiveStats["counts"];
           byMailbox?: LiveStats["byMailbox"];
+          status?: string;
         };
         if (cancelled) return;
         if (Array.isArray(data.items)) setLiveFeed(data.items);
         if (data.counts) setLiveStats({ counts: data.counts, byMailbox: data.byMailbox ?? {} });
+        // The poll only ever ran because status WAS "sending" a moment ago
+        // (the effect's own guard below) — if the backend has since moved it
+        // to "done"/paused/stopped, reflect that immediately instead of
+        // leaving the page showing "sending" until the user manually
+        // reloads. This also naturally stops the interval: the effect
+        // re-runs on the next render (campaign?.status is a dependency) and
+        // its own `!== "sending"` guard returns early.
+        if (data.status && data.status !== campaign?.status) {
+          patchCampaign({ status: data.status });
+        }
       } catch {
         // Transient network error — keep the last-good feed rather than clearing it.
       }
@@ -268,16 +289,11 @@ export default function CampaignDetailPage() {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [id, campaign?.status]);
-
-  // Task 34 — merge a small, targeted update into the already-loaded campaign
-  // state instead of re-fetching the whole campaign (which re-pulls every queued
-  // item and re-renders the whole page). Only the fields that actually changed
-  // are touched; `items`/pagination are left completely alone — no test-time
-  // action ever changes the queue.
-  const patchCampaign = useCallback((partial: Partial<CampaignDetail>) => {
-    setCampaign((prev) => (prev ? { ...prev, ...partial } : prev));
-  }, []);
+    // patchCampaign is declared later in this component but has a stable
+    // identity (empty deps array of its own) — safe to depend on here even
+    // though it's a forward reference; it never changes, so it can never
+    // cause this effect to needlessly re-run/restart the interval.
+  }, [id, campaign?.status, patchCampaign]);
 
   // Prepend a freshly-created DeliverabilityCheck (test-send / draft test-send)
   // so the top test-send box's "latest check" line redraws without a refetch.

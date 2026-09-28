@@ -35,7 +35,7 @@ export async function GET(
 
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
-    select: { mailboxIds: true },
+    select: { mailboxIds: true, status: true },
   });
   if (!campaign) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
@@ -105,5 +105,5 @@ export async function GET(
       error: i.error,
     }));
 
-  return NextResponse.json({ items, counts, byMailbox });
+  return NextResponse.json({ items, counts, byMailbox, status: campaign.status });
 }

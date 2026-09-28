@@ -238,8 +238,22 @@ export async function POST(req: Request) {
         // compliance gap. The mailto: arm needs no server round-trip and
         // always works even if this app is down; the https: arm is the real
         // one-click action most modern mail clients actually use.
+        //
+        // The List-Unsubscribe HEADER alone is not enough — confirmed live
+        // 2026-09-28: it's invisible metadata most mail clients only surface
+        // as their OWN button under specific bulk-sender eligibility rules
+        // (Gmail in particular), so a real recipient often sees nothing at
+        // all. A VISIBLE footer link in the actual body is what guarantees a
+        // recipient can always find it, on every client, regardless of that
+        // eligibility logic — the header stays too, for clients that do
+        // support true one-click.
         const unsubscribeToken = generateUnsubscribeToken(item.campaign.userId, item.toEmail);
         const unsubscribeUrl = `${env.appBaseUrl}/api/unsubscribe/${unsubscribeToken}`;
+        const htmlWithFooter =
+          `${html}<p style="margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;` +
+          `font-size:12px;color:#6b7280">If you'd rather not receive these, ` +
+          `<a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline">unsubscribe here</a>.</p>`;
+        const textWithFooter = `${htmlToPlainText(html)}\n\n--\nUnsubscribe: ${unsubscribeUrl}`;
 
         await transport!.sendMail({
           // Task 30, item 4 — multi-From rotation: prefer the per-item resolved
@@ -249,8 +263,8 @@ export async function POST(req: Request) {
           from,
           to: item.toEmail,
           subject,
-          html,
-          text: htmlToPlainText(html),
+          html: htmlWithFooter,
+          text: textWithFooter,
           headers: {
             "List-Unsubscribe": `<mailto:${from}?subject=unsubscribe>, <${unsubscribeUrl}>`,
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

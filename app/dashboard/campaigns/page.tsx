@@ -82,6 +82,36 @@ const STATUS_BADGES: Record<string, string> = {
   stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
+// Remembers this browser's last-used send-pacing bounds (localStorage — per
+// viewer, never synced to the server or other devices, same caveat as every
+// other localStorage use in this app). Deliberately NOT the platform default
+// itself (see the field's own comment on minSendDelay/maxSendDelay below) —
+// a fresh browser/profile with nothing saved yet still gets the safe 5/45
+// default, exactly as before.
+const PACING_STORAGE_KEY = "spaceworker.campaigns.lastPacing";
+function readLastPacing(): { min: string; max: string } {
+  if (typeof window === "undefined") return { min: "5", max: "45" };
+  try {
+    const raw = window.localStorage.getItem(PACING_STORAGE_KEY);
+    if (!raw) return { min: "5", max: "45" };
+    const parsed = JSON.parse(raw) as { min?: unknown; max?: unknown };
+    const min = typeof parsed.min === "string" && parsed.min.trim() ? parsed.min : "5";
+    const max = typeof parsed.max === "string" && parsed.max.trim() ? parsed.max : "45";
+    return { min, max };
+  } catch {
+    return { min: "5", max: "45" };
+  }
+}
+function saveLastPacing(min: string, max: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PACING_STORAGE_KEY, JSON.stringify({ min, max }));
+  } catch {
+    // Best-effort — a private window or blocked storage just means next
+    // time falls back to the safe default, same as today.
+  }
+}
+
 // Matches absolute http(s) URLs — same character class as lib/link-cloak.ts's
 // URL_RE (that module is server-only, so this is a client-side mirror).
 const PREVIEW_URL_RE = /https?:\/\/[^\s"'<>]+/g;
@@ -146,11 +176,17 @@ export default function CampaignsPage() {
   // runs the deliverability probe and re-checks placement (clamped to [1, 1000]).
   const [batchSize, setBatchSize] = useState("50");
   // Task 35 — configurable send pacing bounds (seconds) between individual sends.
-  // Kept ADVANCED on purpose: defaults (5/45) reproduce today's human-like jitter
-  // exactly, and most users (personal-mailbox cold outreach) should never touch
-  // it — only a dedicated/warmed relay benefits from going faster.
-  const [minSendDelay, setMinSendDelay] = useState("5");
-  const [maxSendDelay, setMaxSendDelay] = useState("45");
+  // Kept ADVANCED on purpose: the platform default (5/45) reproduces the
+  // original human-like jitter exactly, and most users (personal-mailbox cold
+  // outreach) should never touch it — only a dedicated/warmed relay benefits
+  // from going faster. The safety guidance in the UI copy below is real, so
+  // this deliberately doesn't change the platform default itself — instead
+  // it remembers the LAST values this browser actually used (localStorage,
+  // per-viewer, never synced anywhere) and pre-fills those next time, so a
+  // user who's already made an informed choice to go faster doesn't have to
+  // re-enter it on every new campaign.
+  const [minSendDelay, setMinSendDelay] = useState(() => readLastPacing().min);
+  const [maxSendDelay, setMaxSendDelay] = useState(() => readLastPacing().max);
   // Task 30, item 1 — collapsed/expanded in-modal Preview panel that renders the
   // CURRENT draft subjects/bodies through renderMerge() so a user sees exactly
   // what will send (including missing {{merge}} gaps like "Hi ,") before creating.
@@ -638,6 +674,7 @@ export default function CampaignsPage() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setModalOpen(false);
+        saveLastPacing(minSendDelay, maxSendDelay);
         const created = data.campaign as { id?: string } | undefined;
         if (created?.id) {
           router.push(`/dashboard/campaigns/${created.id}`);
@@ -976,7 +1013,8 @@ export default function CampaignsPage() {
                   A random delay in this range is applied between each send, per mailbox.
                   The safe default is 5–45s: fast burst sending through personal Gmail/SMTP
                   mailboxes is what gets an account spam-flagged, so only shorten this if
-                  you&apos;re sending through a dedicated, warmed-up relay.
+                  you&apos;re sending through a dedicated, warmed-up relay. Whatever you set
+                  here is remembered on this device and pre-filled next time.
                 </p>
               </details>
 
