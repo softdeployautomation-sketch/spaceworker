@@ -35,9 +35,16 @@ import { SMTP_CONNECTION_TIMEOUT_MS, SOCKS_CONNECT_TIMEOUT_MS } from "./mailer-s
  * caller always trusts `verify()` for the verdict and uses this only to enrich
  * the answer.
  *
- * The ONE deliberate exception is `connected: false` (see below), where the
- * probe's finding is not advisory but arithmetic: the socket never came up, at
- * a budget identical to the transport's own, so `verify()` cannot succeed.
+ * There are exactly TWO deliberate exceptions, both times because the probe's
+ * finding is arithmetic rather than advisory:
+ *
+ *   - `connected: false` (see below): the socket never came up, at a budget
+ *     identical to the transport's own, so `verify()` cannot succeed.
+ *   - `probeEnvelope()` reporting `refused: true`: the server itself answered a
+ *     5xx to `MAIL FROM`/`RCPT TO`. That is not a guess about what it might do —
+ *     it is the server, in its own words, refusing the exact command a real send
+ *     begins with. See the note on that function for the incident it came from.
+ *
  * Everything else — including `reachable: false` with `connected: true`, i.e.
  * a server that accepted the TCP connection and then went quiet — still runs
  * the real check, because nodemailer gives that conversation far more time
@@ -344,6 +351,411 @@ export async function probeSmtpCapabilities(opts: {
   } finally {
     socket?.destroy();
   }
+}
+
+/**
+ * The result of actually OFFERING a message to the server and reading its
+ * answer — the step `verify()` never performs.
+ *
+ * `verify()` stops at EHLO (plus AUTH, when the server advertises it). It
+ * therefore cannot see the failure that costs a customer the most: a relay that
+ * completes the handshake, advertises nothing, and then answers the very first
+ * envelope command with `550 Not allowed`. That mailbox shows a green tick and
+ * delivers nothing, forever — the 2026-09-28 incident, where a "successful"
+ * campaign reached no inbox and no spam folder while `verify()` kept saying OK.
+ */
+export interface SmtpEnvelopeProbe {
+  /** The conversation got far enough to offer a sender. */
+  attempted: boolean;
+  /** Sender and at least one recipient were accepted (2xx) — the transport can send. */
+  accepted: boolean;
+  /** Every recipient we offered was turned down with a 5xx. */
+  refused: boolean;
+  /** Which command produced the refusal. */
+  refusedAt: "MAIL FROM" | "RCPT TO" | null;
+  /** The server's own numeric code for the last envelope answer. */
+  replyCode: number | null;
+  /** The server's own words, verbatim — never paraphrased. */
+  replyText: string | null;
+  /** The sender we offered. */
+  from: string;
+  /** The recipients we offered, in the order tried (de-duplicated). */
+  recipients: string[];
+  /**
+   * The probe upgraded to TLS (implicit on 465, or STARTTLS) before offering the
+   * envelope. Recorded because a refusal read over an UNENCRYPTED session can be
+   * the server demanding encryption rather than refusing the message — see the
+   * guard in `describeEnvelopeRefusal`.
+   */
+  usedTls: boolean;
+  /** The probe authenticated before offering the envelope (server advertised AUTH). */
+  authenticated: boolean;
+  /** Populated when the probe couldn't finish (advisory only). */
+  error?: string;
+}
+
+/**
+ * Say EHLO and return the capability lines, prefix-stripped. Falls back to HELO
+ * for servers too old to answer EHLO, so reachability is still confirmed (with no
+ * capabilities, which is itself the answer).
+ */
+async function ehloForProbe(socket: net.Socket, timeoutMs: number): Promise<string[]> {
+  socket.write("EHLO spaceworker-diagnostics\r\n");
+  const reply = await readReply(socket, timeoutMs);
+  if (reply.code >= 500) {
+    socket.write("HELO spaceworker-diagnostics\r\n");
+    await readReply(socket, timeoutMs);
+    return [];
+  }
+  return reply.lines
+    .slice(1)
+    .map((l) => l.replace(/^\d{3}[- ]/, "").trim())
+    .filter((l) => l.length > 0);
+}
+
+/**
+ * Upgrade a plaintext probe socket to TLS with STARTTLS, exactly as a real send
+ * does. Certificate validation is deliberately left to `verify()` (which uses the
+ * mailbox's real options): a self-signed cert must surface as a cert problem
+ * there, not as a confusingly absent envelope here.
+ */
+async function upgradeProbeToTls(socket: net.Socket, host: string, timeoutMs: number): Promise<tls.TLSSocket> {
+  const secured = tls.connect({ socket, servername: host, rejectUnauthorized: false });
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    const onTimeout = () => {
+      cleanup();
+      secured.destroy();
+      reject(new Error(`TLS handshake did not complete within ${Math.round(timeoutMs / 1000)}s`));
+    };
+    const onSecure = () => {
+      cleanup();
+      resolve();
+    };
+    function cleanup() {
+      secured.off("error", onError);
+      secured.off("timeout", onTimeout);
+      secured.off("secureConnect", onSecure);
+    }
+    secured.once("error", onError);
+    secured.once("timeout", onTimeout);
+    secured.once("secureConnect", onSecure);
+    secured.setTimeout(timeoutMs);
+  });
+  return secured;
+}
+
+/**
+ * Log in the way the transport will, so the envelope that follows is offered by
+ * an AUTHENTICATED session.
+ *
+ * Without this, every provider that requires a login before `MAIL FROM` (the
+ * standard `530 5.7.0 Authentication required`) would be reported as refusing to
+ * send, when in reality a real send — which does authenticate — is fine. Only
+ * PLAIN and LOGIN are implemented; a server offering neither cannot be probed
+ * honestly, and the caller treats that as inconclusive rather than a refusal.
+ */
+async function authenticateForProbe(
+  socket: net.Socket,
+  auth: { user: string; pass: string },
+  mechanisms: string[],
+  timeoutMs: number
+): Promise<{ ok: boolean; reply?: string; error?: string }> {
+  const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
+
+  if (mechanisms.includes("PLAIN")) {
+    // RFC 4616: authorization identity (empty) NUL authcid NUL passwd.
+    socket.write(`AUTH PLAIN ${b64(`\u0000${auth.user}\u0000${auth.pass}`)}\r\n`);
+    const reply = await readReply(socket, timeoutMs);
+    return { ok: reply.code >= 200 && reply.code < 300, reply: `${reply.code} ${reply.text.split("\n")[0]}` };
+  }
+
+  if (mechanisms.includes("LOGIN")) {
+    socket.write("AUTH LOGIN\r\n");
+    const challenge = await readReply(socket, timeoutMs);
+    if (challenge.code !== 334) {
+      return { ok: false, reply: `${challenge.code} ${challenge.text.split("\n")[0]}` };
+    }
+    socket.write(`${b64(auth.user)}\r\n`);
+    const userStep = await readReply(socket, timeoutMs);
+    if (userStep.code !== 334) {
+      return { ok: false, reply: `${userStep.code} ${userStep.text.split("\n")[0]}` };
+    }
+    socket.write(`${b64(auth.pass)}\r\n`);
+    const result = await readReply(socket, timeoutMs);
+    return { ok: result.code >= 200 && result.code < 300, reply: `${result.code} ${result.text.split("\n")[0]}` };
+  }
+
+  return { ok: false, error: `server offers only AUTH ${mechanisms.join("/") || "(none)"}, which this probe cannot perform` };
+}
+
+/**
+ * Offer a real envelope to the server and report what it does with it.
+ *
+ * Sends `MAIL FROM` then up to a few `RCPT TO`, then `RSET`. **DATA is never
+ * issued**, so no message is ever transmitted and nothing can reach a real
+ * inbox — which is what keeps this safe to put behind a Test button, while
+ * still being the only honest answer to "can this mailbox actually send?".
+ *
+ * Recipients are tried in order and the probe passes as soon as ONE is accepted,
+ * because relays legitimately differ in what they will take: a service like
+ * Resend refuses the bare login name (`resend`) but happily accepts the domain
+ * address you send as, and failing that mailbox would be a bug. Only when EVERY
+ * offered recipient is refused does this report `refused: true`.
+ *
+ * Never throws — a failed conversation comes back as `{ error }`, which callers
+ * treat as advisory so a probe hiccup can't condemn a working mailbox.
+ */
+export async function probeEnvelope(opts: {
+  host: string;
+  port: number;
+  implicitTls?: boolean;
+  proxy?: { host: string; port: number };
+  timeoutMs?: number;
+  from: string;
+  recipients: string[];
+  /** Credentials to authenticate with when the server advertises AUTH. */
+  auth?: { user: string; pass: string };
+}): Promise<SmtpEnvelopeProbe> {
+  const timeoutMs = opts.timeoutMs ?? SMTP_CONNECTION_TIMEOUT_MS;
+
+  // Dedupe case-insensitively: `username` and `fromAddresses[0]` are usually the
+  // same address, and a second identical RCPT buys nothing but load on a relay
+  // that may be rate-limiting us.
+  const seen = new Set<string>();
+  const recipients: string[] = [];
+  for (const candidate of opts.recipients) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    recipients.push(trimmed);
+  }
+
+  const base: SmtpEnvelopeProbe = {
+    attempted: false,
+    accepted: false,
+    refused: false,
+    refusedAt: null,
+    replyCode: null,
+    replyText: null,
+    from: opts.from,
+    recipients,
+    usedTls: opts.implicitTls === true,
+    authenticated: false,
+  };
+
+  let socket: net.Socket | undefined;
+  // Tracked as the conversation progresses so every return tells the caller how
+  // honest the answer is: a refusal over an unencrypted, unauthenticated session
+  // may be the server demanding exactly those things.
+  let usedTls = opts.implicitTls === true;
+  let authenticated = false;
+  try {
+    socket = await connectForProbe({
+      host: opts.host,
+      port: opts.port,
+      implicitTls: opts.implicitTls === true,
+      ...(opts.proxy ? { proxy: opts.proxy } : {}),
+      timeoutMs,
+    });
+
+    const greeting = await readReply(socket, timeoutMs);
+    if (greeting.code !== 220) {
+      return { ...base, error: `unexpected greeting ${greeting.code}` };
+    }
+
+    // ── Speak the same conversation a real send speaks, in the same order ──
+    // EHLO → (STARTTLS → EHLO) → (AUTH) → MAIL FROM → RCPT → RSET → QUIT.
+    //
+    // Skipping the encryption or the login would make every refusal we read
+    // meaningless, and would manufacture false failures on perfectly good
+    // providers: a 587 server answers a PLAINTEXT probe with
+    //     530 5.7.0 Must issue a STARTTLS command first
+    // (confirmed live against smtp.gmail.com) and a login-required server answers
+    // `MAIL FROM` with
+    //     530 5.7.0 Authentication required
+    // Both are correct answers to an unencrypted, unauthenticated question — and
+    // both would have been reported as "this mailbox cannot send" by an earlier
+    // draft of this probe. Only after we have encrypted and logged in exactly as
+    // the transport does is a refusal actually about the mailbox.
+    let capabilities = await ehloForProbe(socket, timeoutMs);
+
+    if (!opts.implicitTls && capabilities.some((c) => /^STARTTLS\b/i.test(c))) {
+      socket.write("STARTTLS\r\n");
+      const ready = await readReply(socket, timeoutMs);
+      if (ready.code !== 220) {
+        return { ...base, error: `server refused STARTTLS with ${ready.code} ${ready.text.split("\n")[0]}` };
+      }
+      socket = await upgradeProbeToTls(socket, opts.host, timeoutMs);
+      usedTls = true;
+      capabilities = await ehloForProbe(socket, timeoutMs);
+    }
+
+    // AUTH is optional for the caller: a server that asks for no login offers the
+    // envelope straight away (the customer relay on port 25), and one that asks
+    // for a login must be given it or its 530 would be misread as a refusal.
+    if (opts.auth && capabilities.some((c) => /^AUTH\b/i.test(c))) {
+      const authLine = capabilities.find((c) => /^AUTH\b/i.test(c)) ?? "";
+      const mechanisms = authLine.replace(/^AUTH\s*/i, "").split(/\s+/).filter((m) => m.length > 0).map((m) => m.toUpperCase());
+      const auth = await authenticateForProbe(socket, opts.auth, mechanisms, timeoutMs);
+      if (!auth.ok) {
+        // `verify()` is the authority on credentials and it already passed before
+        // this probe ran. If our own login attempt disagrees with it, the honest
+        // answer is "inconclusive" — never a send-refusal verdict, which would
+        // condemn a mailbox that sends fine.
+        return { ...base, attempted: true, usedTls, error: `authentication probe failed (${auth.reply ?? auth.error})` };
+      }
+      authenticated = true;
+    }
+
+    socket.write(`MAIL FROM:<${opts.from}>\r\n`);
+    const sender = await readReply(socket, timeoutMs);
+    if (sender.code >= 500) {
+      // A server that won't take our sender can never send as this mailbox, so
+      // there is nothing to learn by asking about recipients.
+      return {
+        ...base,
+        attempted: true,
+        refused: true,
+        refusedAt: "MAIL FROM",
+        replyCode: sender.code,
+        replyText: sender.text,
+        usedTls,
+        authenticated,
+      };
+    }
+
+    let last: { code: number; text: string } | null = null;
+    for (const recipient of recipients) {
+      socket.write(`RCPT TO:<${recipient}>\r\n`);
+      const rcpt = await readReply(socket, timeoutMs);
+      last = { code: rcpt.code, text: rcpt.text };
+      if (rcpt.code >= 200 && rcpt.code < 300) break;
+    }
+
+    // RSET, never DATA — this is the line that guarantees the probe cannot
+    // transmit a message body to a real recipient.
+    try {
+      socket.write("RSET\r\n");
+    } catch {
+      /* socket already gone — the answers we read are still valid */
+    }
+
+    if (last && last.code >= 500) {
+      return {
+        ...base,
+        attempted: true,
+        refused: true,
+        refusedAt: "RCPT TO",
+        replyCode: last.code,
+        replyText: last.text,
+        usedTls,
+        authenticated,
+      };
+    }
+    return {
+      ...base,
+      attempted: true,
+      accepted: last !== null && last.code >= 200 && last.code < 300,
+      replyCode: last?.code ?? null,
+      replyText: last?.text ?? null,
+      usedTls,
+      authenticated,
+    };
+  } catch (e) {
+    return { ...base, error: e instanceof Error ? e.message : "probe failed" };
+  } finally {
+    try {
+      socket?.write("QUIT\r\n");
+    } catch {
+      /* nothing left to say to a server that already hung up */
+    }
+    socket?.destroy();
+  }
+}
+
+/**
+ * Render a server reply for a human, without the doubled code that naive
+ * concatenation produces: many servers repeat their status code inside the text
+ * ("550 Not allowed" arriving under code 550), so `${code} ${text}` reads
+ * "550 550 Not allowed".
+ */
+export function formatSmtpReply(code: number, text: string | null): string {
+  const firstLine = (text ?? "").split("\n")[0].replace(/\s+/g, " ").trim();
+  if (!firstLine) return String(code);
+  return new RegExp(`^${code}\\b`).test(firstLine) ? firstLine : `${code} ${firstLine}`;
+}
+
+/**
+ * Turn a refused envelope into the sentence that explains it, in the server's
+ * own words plus the cause. Returns undefined when the server accepted — or
+ * when the probe was inconclusive, in which case nothing here may speak.
+ */
+export function describeEnvelopeRefusal(
+  probe: SmtpEnvelopeProbe,
+  ctx: { host: string; port: number; allowInsecure: boolean }
+): string | undefined {
+  if (!probe.refused || probe.replyCode === null) return undefined;
+  const reply = formatSmtpReply(probe.replyCode, probe.replyText);
+
+  // THE FALSE-POSITIVE GUARD — the most important few lines in this function.
+  //
+  // A server may answer "no" simply because our session is not yet encrypted the
+  // way it requires. That is a correct answer to our question, not a verdict on
+  // the mailbox: the real send path would have issued STARTTLS (or connected on
+  // 465) and been accepted. Confirmed live — plaintext against smtp.gmail.com:587
+  // answers `530 5.7.0 Must issue a STARTTLS command first`, and an unauthenticated
+  // session against a login-required server answers `530 5.7.0 Authentication
+  // required`. Reporting either of those as "this mailbox cannot send" would
+  // wrongly condemn every normal provider, so when we know our session was not
+  // equivalent to a real send, we say nothing at all.
+  const demandsStartTls = /STARTTLS/i.test(reply);
+  if (demandsStartTls && !probe.usedTls) return undefined;
+  // The server wanted a login we never attempted (it advertised none, or it
+  // offers only a mechanism this probe cannot perform). `verify()` owns that
+  // question; this probe may not answer it.
+  const demandsAuth = /authentication required|authenticate first/i.test(reply) || /^530\b/.test(reply);
+  if (demandsAuth && !probe.authenticated) return undefined;
+
+  // 53x is "authenticate first / authentication required": the server wants a
+  // login it gives us no way to perform. (Confirmed live: this customer's relay
+  // answers AUTH with `538 5.7.11 Encryption required for requested
+  // authentication mechanism` while advertising no STARTTLS at all, so there is
+  // no transport on which its AUTH could ever succeed — and because we only ever
+  // get here having encrypted and authenticated as far as the server allowed,
+  // that conclusion is now earned rather than assumed.)
+  if (/^53\d\b/.test(reply) || /authentication required|authenticate first/i.test(reply)) {
+    return (
+      `${ctx.host}:${ctx.port} completed the connection but refused the message: "${reply}". ` +
+      `The server wants an authenticated login it never actually offers — it is set up to require ` +
+      `encryption before AUTH, and it advertises no encryption on this port. No password can ever be ` +
+      `accepted here, so this mailbox cannot send. Ask whoever runs the server to enable an ` +
+      `authenticated submission port (587 with STARTTLS, or 465 with TLS).`
+    );
+  }
+
+  // 550/551/553 are the relay-policy refusals: the server does not recognise us
+  // as allowed to send. Nothing about the mailbox FORM can change that.
+  if (/^55[0-3]\b/.test(reply) || /not allowed|relay access denied|relaying denied/i.test(reply)) {
+    return (
+      `${ctx.host}:${ctx.port} completed the connection but then refused the message with ` +
+      `"${reply}" — so this mailbox cannot send, even though a connection test used to look green. ` +
+      `A relay answers this for reasons that live on ITS side, not in this form: it only accepts ` +
+      `mail from senders or source addresses it trusts, and our sending IP is not on that list ` +
+      `(or the address is not one it hosts). Ask whoever runs the server which senders and ` +
+      `source IPs it accepts from.`
+    );
+  }
+
+  return (
+    `${ctx.host}:${ctx.port} refused the ${probe.refusedAt ?? "message"} step with "${reply}". ` +
+    `Every send through this mailbox will fail the same way.`
+  );
 }
 
 /**

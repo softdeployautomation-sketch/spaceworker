@@ -137,6 +137,18 @@ type TestConnResult = {
     authMechanisms: string[];
     starttlsAdvertised: boolean | null;
   };
+  /**
+   * The server's answer to a real MAIL FROM / RCPT TO (aborted with RSET, never
+   * DATA). This is what separates "the server talks to us" from "the server will
+   * take our mail" — a relay can do the first and refuse the second forever.
+   */
+  envelope?: {
+    attempted: boolean;
+    accepted: boolean;
+    refused: boolean;
+    refusedAt: "MAIL FROM" | "RCPT TO" | null;
+    reply: string | null;
+  };
 };
 
 type MailboxForm = {
@@ -341,12 +353,17 @@ export default function MailboxesPanel() {
         body: JSON.stringify({
           host: form.host.trim(), port, username: form.username.trim(), password: form.password, secure, allowInsecure,
           sendRegion: isPremium && form.sendRegion ? form.sendRegion : null,
+          // Lets the route's envelope probe try the address this mailbox actually
+          // sends as, not just the login name — a relay service (Resend et al)
+          // refuses the bare login but accepts the domain address.
+          fromAddress: form.fromAddresses.find((a) => a.trim().length > 0)?.trim() ?? null,
         }),
         // The route bounds itself (30s handshake deadline + an 8s capability
-        // probe), so this is only a backstop for a stalled proxy — but without
-        // it the button could sit on "Testing…" forever, which is the exact
-        // complaint that started this: a two-minute freeze with no explanation.
-        signal: AbortSignal.timeout(45_000),
+        // probe + an 8s envelope probe), so this is only a backstop for a
+        // stalled proxy — but without it the button could sit on "Testing…"
+        // forever, which is the exact complaint that started this: a
+        // two-minute freeze with no explanation.
+        signal: AbortSignal.timeout(75_000),
       });
       const data = (await res.json().catch(() => ({}))) as TestConnResult;
       setTestConnResult({
@@ -354,13 +371,14 @@ export default function MailboxesPanel() {
         error: typeof data.error === "string" ? data.error : undefined,
         warning: typeof data.warning === "string" ? data.warning : undefined,
         capabilities: data.capabilities,
+        envelope: data.envelope,
       });
     } catch (e) {
       setTestConnResult({
         ok: false,
         error:
           e instanceof DOMException && e.name === "TimeoutError"
-            ? "The test timed out after 45s with no answer — the port is almost certainly blocked by a firewall."
+            ? "The test timed out after 75s with no answer — the port is almost certainly blocked by a firewall."
             : "Network error",
       });
     } finally {
@@ -379,7 +397,7 @@ export default function MailboxesPanel() {
       // about.
       const res = await fetch(`/api/mailboxes/${m.id}/test`, {
         method: "POST",
-        signal: AbortSignal.timeout(45_000),
+        signal: AbortSignal.timeout(75_000),
       });
       const data = (await res.json().catch(() => ({}))) as TestConnResult;
       const ok = Boolean(data.ok);
@@ -390,6 +408,7 @@ export default function MailboxesPanel() {
           error: typeof data.error === "string" ? data.error : undefined,
           warning: typeof data.warning === "string" ? data.warning : undefined,
           capabilities: data.capabilities,
+          envelope: data.envelope,
         },
       }));
       setMailboxes((prev) =>
@@ -1061,6 +1080,25 @@ export default function MailboxesPanel() {
                       {testConnResult.capabilities.connected
                         ? `Connected to the server, but it never sent an SMTP greeting on port ${Number(form.port)}.`
                         : `Nothing answered on ${form.host.trim()}:${Number(form.port)}.`}
+                    </p>
+                  )}
+                  {/* Talking to the server is not the same as being allowed to
+                      send through it. This row is the difference: a real
+                      envelope offered, then aborted with RSET before any DATA,
+                      so it reports what the server would do with an actual
+                      campaign message without sending one. */}
+                  {testConnResult.envelope?.attempted && (
+                    <p className="text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                      Send test (MAIL FROM/RCPT TO, cancelled before any message):{" "}
+                      {testConnResult.envelope.accepted ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">the server accepted it</span>
+                      ) : testConnResult.envelope.refused ? (
+                        <span className="text-red-600 dark:text-red-400">
+                          refused at {testConnResult.envelope.refusedAt} — {testConnResult.envelope.reply}
+                        </span>
+                      ) : (
+                        `inconclusive (${testConnResult.envelope.reply ?? "no answer"})`
+                      )}
                     </p>
                   )}
                 </div>

@@ -553,6 +553,41 @@ Added 2026-09-27 (TASK_128 §16 — a timer is not a failure detector):
   waits forever while offline; SpaceWorker (which only observes) was the one
   inventing a deadline.
 
+Added 2026-09-28 (TASK_136 — a diagnostic must ask the same question the real code asks):
+
+- **When you write a diagnostic that runs a protocol conversation by hand, it must
+  speak the SAME conversation the real client speaks — same encryption, same
+  auth, same command ORDER — or its verdicts are worthless.** TASK_136 added an
+  envelope probe to prove a mailbox can actually send (`verify()` stops at EHLO,
+  so it passed a relay that then refused every recipient). The first draft
+  connected, skipped STARTTLS, skipped AUTH, and offered the envelope. A control
+  run against `smtp.gmail.com:587` returned
+  `530 5.7.0 Must issue a STARTTLS command first` — and the code reported
+  **"this mailbox cannot send"**. That reply is *correct*: it is the server
+  answering the question we actually asked (a plaintext one). Every normal 587
+  provider would have been condemned, and no unit test caught it — **the shared
+  fake server had the same blind spot as the code**, because both were written
+  from the same wrong mental model. What caught it was pointing the probe at a
+  **real, known-good server** and asserting it does NOT fail. So: for any
+  protocol diagnostic, keep a live control against a real provider in your
+  verification list, not just a fake. Two rules generalise:
+  - **A "no" is only a verdict if your session was equivalent to a real one.**
+    Record whether you actually encrypted and authenticated (`usedTls`,
+    `authenticated`), and when the reply blames one of those things you didn't
+    do, return *inconclusive* — never a failure. The component that owns that
+    concern (here `nodemailer.verify()`, which owns credentials and TLS) is the
+    only one allowed to answer it.
+  - **A fake server built from your understanding of the protocol cannot falsify
+    your understanding of the protocol.** It is necessary but not sufficient
+    evidence.
+- **`nodemailer.verify()` is a CONNECT + AUTH check, not a "can send" check.**
+  It returns `true` for a server that accepts the connection, advertises nothing,
+  and then answers `550 Not allowed` to every `RCPT TO` — including its own
+  address. If a feature's promise is "this mailbox will deliver", `verify()`'s
+  green tick is not that promise; offer a real envelope (`MAIL FROM` → `RCPT TO`
+  → **`RSET`**, and never `DATA`, so nothing can be transmitted) and let the
+  server's own reply decide.
+
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
 `prisma migrate deploy` exiting 0 does **not** prove the live DB matches the datamodel.

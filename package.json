@@ -14,6 +14,7 @@
     "test:browser": "tsx --test browser-server/relay-ingress.test.ts",
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
     "test:deliverability": "tsx --test tests/deliverability-probes.test.ts",
+    "test:smtp": "tsx --test tests/smtp-envelope-probe.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
