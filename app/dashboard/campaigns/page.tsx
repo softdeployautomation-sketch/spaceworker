@@ -362,6 +362,18 @@ export default function CampaignsPage() {
     setSelectedLeadIds((prev) => prev.filter((x) => !visibleIds.has(x)));
   }
 
+  // Bug fix (2026-09-27): "Select all valid, every session" is a deliberate
+  // additive union across every job (TASK_29 item 1 — not a bug), but there
+  // was no way back from it: "Clear visible" only clears whatever the CURRENT
+  // job filter shows, so a lead selected while "All jobs" or a different job
+  // was active stays selected (and counted) even after switching to the
+  // session you actually meant to send to — reads as "stuck on the full
+  // verified total, can't select just this session" (reported live). One
+  // explicit full reset, distinct from the filtered "Clear visible".
+  function selectNoneAll() {
+    setSelectedLeadIds([]);
+  }
+
   function selectAllValid() {
     const all = new Set(selectedLeadIds);
     (pickerData?.leads ?? []).forEach((l) => all.add(l.id));
@@ -1228,6 +1240,16 @@ export default function CampaignsPage() {
                         <button type="button" onClick={selectAllValid} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
                           Select all valid, every session ({pickerData.leads.length})
                         </button>
+                        {selectedLeadIds.length > visibleLeads.length && (
+                          <button
+                            type="button"
+                            onClick={selectNoneAll}
+                            title="Reset the whole selection, including leads from other sessions/jobs not currently visible"
+                            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                          >
+                            Clear all ({selectedLeadIds.length})
+                          </button>
+                        )}
                       </div>
                       <p className="text-sm font-semibold">
                         {selectedLeadIds.length} recipient{selectedLeadIds.length === 1 ? "" : "s"} selected
