@@ -78,6 +78,7 @@ const STATUS_BADGES: Record<string, string> = {
   // Task 29, item 6 — batch gate paused this campaign pending a deliverability
   // decision (continue / switch subject / stop).
   paused_deliverability: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  paused_manual: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 

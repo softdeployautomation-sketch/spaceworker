@@ -62,7 +62,7 @@ type ProbeResult = {
 
 // Task 35 — the lightweight live-sending payload. A single recent-sends poll
 // serves the ticker (items only) AND the activity modal (items + aggregates).
-type RecentSend = { id: string; toEmail: string; status: string; sentAt: string | null };
+type RecentSend = { id: string; toEmail: string; status: string; sentAt: string | null; error?: string | null };
 type LiveStats = {
   counts: { recipients: number; sent: number; queued: number; failed: number };
   byMailbox: Record<string, { sent: number; failed: number }>;
@@ -149,6 +149,9 @@ const STATUS_BADGES: Record<string, string> = {
   draft: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
   // Task 29, item 6 — batch gate paused pending a deliverability decision.
   paused_deliverability: "bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400",
+  // A plain manual pause (the owner clicked "Pause") — distinct from the
+  // automated deliverability gate above, and resumable (unlike "stopped").
+  paused_manual: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
   stopped: "bg-zinc-200 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
 };
 
@@ -411,6 +414,45 @@ export default function CampaignDetailPage() {
       setTestResult({ outcome: "failed", error: "Network error while applying your choice." });
     } finally {
       setDebating(false);
+    }
+  }
+
+  // Plain manual pause/resume — distinct from the deliverability gate above.
+  // Pausing while "sending" always succeeds (halting is always safe, same as
+  // "stop"); resuming re-enters the same trial-tier daily-allowance gate every
+  // other "sending" entry point uses, so a 429 here is a real, expected outcome
+  // (not a bug) when the daily mailer cap is already used up.
+  const [pauseResumeBusy, setPauseResumeBusy] = useState(false);
+  async function pauseCampaign() {
+    setPauseResumeBusy(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/pause`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't pause the campaign." });
+      } else if (data.status) {
+        patchCampaign({ status: data.status });
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while pausing." });
+    } finally {
+      setPauseResumeBusy(false);
+    }
+  }
+  async function resumeCampaign() {
+    setPauseResumeBusy(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/resume`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't resume the campaign." });
+      } else if (data.status) {
+        patchCampaign({ status: data.status });
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while resuming." });
+    } finally {
+      setPauseResumeBusy(false);
     }
   }
 
@@ -873,6 +915,26 @@ export default function CampaignDetailPage() {
         >
           {campaign.status.replace("_", " ")}
         </span>
+        {campaign.status === "sending" && (
+          <button
+            type="button"
+            onClick={() => void pauseCampaign()}
+            disabled={pauseResumeBusy}
+            className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
+          >
+            {pauseResumeBusy ? "…" : "Pause"}
+          </button>
+        )}
+        {campaign.status === "paused_manual" && (
+          <button
+            type="button"
+            onClick={() => void resumeCampaign()}
+            disabled={pauseResumeBusy}
+            className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            {pauseResumeBusy ? "…" : "Resume"}
+          </button>
+        )}
         {/* Task 30, item 2 — compact "what's been sent so far" overview instead of
             scrolling the whole (potentially thousands-row) queue table. */}
         {campaign.items.length > 0 && (
@@ -1388,9 +1450,12 @@ export default function CampaignDetailPage() {
         const recent: RecentSend[] = live
           ? liveFeed.slice()
           : items
-              .filter((i) => i.status === "sent")
-              .map((i) => ({ id: i.id, toEmail: i.toEmail, status: i.status, sentAt: i.sentAt }))
-              .sort((a, b) => (b.sentAt ?? "").localeCompare(a.sentAt ?? ""))
+              .filter((i) => i.status === "sent" || i.status === "failed")
+              .map((i) => ({ id: i.id, toEmail: i.toEmail, status: i.status, sentAt: i.sentAt, error: i.error, createdAt: i.createdAt }))
+              // Effective timestamp: sentAt for a success, createdAt for a
+              // failure (sentAt is always null there) — matches the recent-sends
+              // API's own ordering so the fallback path never sorts differently.
+              .sort((a, b) => (b.sentAt ?? b.createdAt).localeCompare(a.sentAt ?? a.createdAt))
               .slice(0, 15);
         const kpi = (label: string, value: number, cls: string) => (
           <div className="flex flex-col rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
@@ -1400,6 +1465,11 @@ export default function CampaignDetailPage() {
         );
         return (
           <Modal open onClose={() => setActivityOpen(false)} title="Sending activity" wide>
+            {/* One scroll region for the whole body — a campaign with many
+                mailboxes or a long recent-sends list (now taller per row since
+                a failed send's error message renders inline) could otherwise
+                push the modal, and its close button, off-screen. */}
+            <div className="max-h-[70vh] overflow-y-auto pr-1">
             <div className="flex flex-wrap gap-3">
               {kpi("Recipients", recipients, "text-zinc-900 dark:text-zinc-100")}
               {kpi("Sent", sentCount, "text-emerald-600 dark:text-emerald-400")}
@@ -1431,23 +1501,25 @@ export default function CampaignDetailPage() {
               {recent.length === 0 ? (
                 <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">No sends yet.</p>
               ) : (
-                /* Task 35 — the list is capped to a fixed height with an internal
-                    scroll so a busy campaign can never push the modal (and its
-                    close ×) off-screen; the KEY fix for Task 30 item 2 regression. */
-                <ul className="mt-1 max-h-64 divide-y divide-zinc-100 overflow-y-auto dark:divide-zinc-800">
+                <ul className="mt-1 divide-y divide-zinc-100 dark:divide-zinc-800">
                   {recent.map((i) => (
-                    <li key={i.id} className="flex items-center justify-between gap-3 px-3 py-1.5 text-sm">
-                      <span className="flex min-w-0 items-center gap-2">
-                        {i.status === "sent" ? (
-                          <span className="shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="sent">✓</span>
-                        ) : (
-                          <span className="shrink-0 text-red-600 dark:text-red-400" aria-label="failed">✗</span>
-                        )}
-                        <span className="truncate">{i.toEmail}</span>
-                      </span>
-                      <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
-                        {i.sentAt ? new Date(i.sentAt).toLocaleString() : ""}
-                      </span>
+                    <li key={i.id} className="px-3 py-1.5 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="flex min-w-0 items-center gap-2">
+                          {i.status === "sent" ? (
+                            <span className="shrink-0 text-emerald-600 dark:text-emerald-400" aria-label="sent">✓</span>
+                          ) : (
+                            <span className="shrink-0 text-red-600 dark:text-red-400" aria-label="failed">✗</span>
+                          )}
+                          <span className="truncate">{i.toEmail}</span>
+                        </span>
+                        <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">
+                          {i.sentAt ? new Date(i.sentAt).toLocaleString() : ""}
+                        </span>
+                      </div>
+                      {i.status === "failed" && i.error && (
+                        <p className="mt-0.5 pl-6 text-xs text-red-600 dark:text-red-400">{i.error}</p>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -1457,10 +1529,11 @@ export default function CampaignDetailPage() {
             {failedCount > 0 && (
               <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/20">
                 <p className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
-                  {failedCount} failed — review the error per row in the queue table
+                  {failedCount} failed — see each row&apos;s error message above
                 </p>
               </div>
             )}
+            </div>
           </Modal>
         );
       })()}

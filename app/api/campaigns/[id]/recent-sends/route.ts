@@ -56,7 +56,7 @@ export async function GET(
       where: { campaignId: id, status: { in: ["sent", "failed"] } },
       orderBy: { createdAt: "desc" },
       take: Math.max(limit * 4, 20),
-      select: { id: true, toEmail: true, status: true, sentAt: true, createdAt: true, mailboxId: true },
+      select: { id: true, toEmail: true, status: true, sentAt: true, createdAt: true, mailboxId: true, error: true },
     }),
     prisma.emailQueueItem.groupBy({
       by: ["status"],
@@ -102,6 +102,7 @@ export async function GET(
       toEmail: i.toEmail,
       status: i.status,
       sentAt: i.sentAt?.toISOString() ?? null,
+      error: i.error,
     }));
 
   return NextResponse.json({ items, counts, byMailbox });
