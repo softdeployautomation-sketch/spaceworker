@@ -713,6 +713,19 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   (§2) and reserve `--files-from` for flat root-level files.** Verify with the
   §2a parity check, which is the only thing that caught it. Why it under-recursed
   is not documented here on purpose — the rule doesn't depend on knowing.
+- **`scripts/deploy-vps.sh` itself never actually implemented the rule above
+  until 2026-09-28.** It kept lumping directory entries into one
+  `--files-from` call the whole time — the very thing the note above says not
+  to do. Caught live: deploying the extractor-routing feature, a brand-new
+  `app/api/settings/extract-region/` route directory and a brand-new
+  `prisma/migrations/2026.../` folder both landed as EMPTY directories (rsync
+  exit 0, "sent N bytes", `prisma migrate deploy` even said "No pending
+  migrations" because the migration file genuinely wasn't there). Fixed for
+  real this time: the script now splits its file list — flat file entries
+  still go through one `--files-from` rsync, but every entry ending in `/` is
+  synced as its own tree via `rsync -azr "$d/" host:$APP_DIR/$d/`, matching
+  the rule instead of just stating it. Confirmed via §2a parity check
+  (341/341 files match) after redeploying with the fix.
 - **2026-10 console lifecycle rules (owner's calls — keep them consistent).**
   • MANUAL tools execute DIRECTLY — Connect, Run now, PIN collect, maintenance
     overlay start/stop, queued commands. NO proposal rail for a user acting on their
