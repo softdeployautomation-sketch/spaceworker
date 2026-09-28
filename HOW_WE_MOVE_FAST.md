@@ -29,6 +29,37 @@ Task 56 lost most of a session to this. Next.js 16 renamed `middleware.ts` to `p
 
 ## 2. Deploy sequence (web changes, no schema change)
 
+**2026-09-28 — use `scripts/deploy-vps.sh`, not the raw rsync below, whenever
+possible.** It wraps everything this section (and §2a, §3) does by hand —
+maintenance-page coverage for the whole restart window (nginx serves
+`static/maintenance.html` while `.next` rebuilds, only clears it once the app
+answers 200), automatic `.next.prev` rollback if a build fails, `.env`
+snapshotting, protected-path safety, and `prisma generate` run before `next
+build` (a stale client used to fail typecheck AFTER `.next` was already wiped).
+A whole session's worth of manual rsync+build+restart deploys on 2026-09-28
+never engaged the maintenance page even once, because this script existed and
+wasn't used — see its own header comment for the full incident history.
+
+```bash
+# List directories to get the same "full tree" coverage as a bare rsync -av;
+# --files-from supports directory entries (recurses):
+cat > /tmp/deploy-files.txt <<'EOF'
+app/
+lib/
+components/
+EOF
+scripts/deploy-vps.sh /tmp/deploy-files.txt
+# Schema change: also list prisma/schema.prisma and the new migration dir,
+# same as always (§3) — the script still runs migrate deploy? NO — it does
+# NOT run `prisma migrate deploy` for you; run that by hand first (§3), THEN
+# this script (which does run `prisma generate` for you, right before the
+# build).
+```
+
+The raw manual sequence below is kept for `--no-build`/`--verify-only`-style
+one-offs, or when `scripts/deploy-vps.sh` itself needs debugging — not as the
+everyday path anymore.
+
 ```bash
 # from your local checkout, after committing:
 cat > /tmp/deploy-files.txt <<'EOF'
