@@ -9,6 +9,7 @@ import { cn } from "@/lib/cn";
 // destinations will only show up here if they already appear in the nav data
 // (useNavItems), so the overview can't drift from the real nav.
 const DESCRIPTIONS: Record<string, string> = {
+  Devices: "Manage enrolled machines — screenshots, wake-on-LAN, remote control.",
   Extract: "Search the web for leads and pull them into your workspace.",
   Mailboxes: "Connect your own SMTP accounts, tested before first use.",
   Campaigns: "Draft outreach and send safely under a daily cap.",
@@ -21,6 +22,7 @@ export default function DashboardPage() {
   const items = useNavItems();
   const overviewItems = items.filter(
     (i) =>
+      i.href === "/dashboard/devices" ||
       i.href === "/dashboard/mailboxes" ||
       i.href === "/dashboard/campaigns" ||
       i.href === "/dashboard/automations" ||
