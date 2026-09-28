@@ -52,6 +52,35 @@ ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
 
 Build runs as the `trmm` user (matches the deployed process's file ownership), not root. Always tail the build output and check `is-active` + a real `curl` status code before considering a deploy done — a build failure mid-restart once left the service stuck in `activating`/`000` for a few minutes; the fix was just running the build again correctly, but don't skip the check.
 
+## 2a. Full-tree parity check — run this whenever you're not 100% sure the VPS is caught up
+
+**2026-09-28 incident**: the `--files-from` pattern in §2 depends entirely on the deployer remembering every file a change touched. Over enough deploys, this silently drifts — one session found **42 files on the VPS with different content than `main`, plus 27 files that didn't exist on the VPS at all**, including a whole feature (the device-onboarding quarantine pipeline) that had simply never shipped. `prisma/schema.prisma` matched exactly the whole time, so this was pure application-code drift, not a data-risk situation — but it silently caused a real, hard-to-diagnose production bug (a template picker returning fields the deployed API route never selected) that took a long, painful debugging session to trace back to "the file just isn't the one in git."
+
+**Checking one file matches what you intended to deploy is not the same as checking the app is caught up.** Before declaring any deploy done — and especially after a period where you're not sure every past deploy was complete — run a full-tree checksum comparison, not just a diff of the files you touched:
+
+```bash
+# From a clean checkout/worktree of origin/main:
+find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) -exec md5 -r {} \; > /tmp/local.txt   # macOS: md5 -r; Linux: md5sum
+md5 -r next.config.ts proxy.ts >> /tmp/local.txt
+awk '{print $2, $1}' /tmp/local.txt | sort > /tmp/local-norm.txt
+
+ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+  "cd /opt/spaceworker && find app lib components -type f \( -name '*.ts' -o -name '*.tsx' \) -exec md5sum {} \; ; md5sum next.config.ts proxy.ts" \
+  > /tmp/remote.txt
+awk '{print $2, $1}' /tmp/remote.txt | sed 's|^/opt/spaceworker/||' | sort > /tmp/remote-norm.txt
+
+python3 -c "
+local = dict(l.split() for l in open('/tmp/local-norm.txt'))
+remote = dict(l.split() for l in open('/tmp/remote-norm.txt'))
+missing = [f for f in local if f not in remote]
+stale = [f for f in local if f in remote and local[f] != remote[f]]
+print('missing on prod:', len(missing), missing)
+print('stale on prod:', len(stale), stale)
+"
+```
+
+Fix anything it finds by rsyncing the real directories over (`app/`, `lib/`, `components/` wholesale, not a hand-picked file list), rebuild, restart, then re-run the same check and confirm zero `missing`/`stale` before moving on. This is cheap (a few seconds) — run it any time you're about to tell the user a deploy is done, not just when something's already gone wrong.
+
 ## 3. Schema changes (Prisma migration)
 
 No local Postgres in this dev environment — `npx prisma migrate dev` won't work locally. Instead:
