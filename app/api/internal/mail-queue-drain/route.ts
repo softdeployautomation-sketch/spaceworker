@@ -4,6 +4,9 @@ import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { transporterForMailbox } from "@/lib/mailer-send";
+import { classifySmtpError, nextRetryAt } from "@/lib/smtp-error-classify";
+import { htmlToPlainText } from "@/lib/html-to-text";
+import { generateUnsubscribeToken } from "@/lib/unsubscribe-token";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
 import { notifyUser } from "@/lib/notify";
@@ -130,6 +133,11 @@ export async function POST(req: Request) {
         mailboxId: mailbox.id,
         status: "queued",
         campaign: { status: "sending" },
+        // A soft_bounce/rate_limited retry reverts an item to "queued" with
+        // nextAttemptAt set in the future (see the catch block below) — must
+        // not be re-picked up before that backoff window elapses. null means
+        // "never failed / no backoff pending", the normal case.
+        OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: new Date() } }],
       },
       take: remaining,
       include: { campaign: true, variant: true },
@@ -224,6 +232,15 @@ export async function POST(req: Request) {
             ? pin.fromAddress
             : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
 
+        // List-Unsubscribe (RFC 8058, one-click) + a plaintext alternative —
+        // an HTML-only single-part message with no unsubscribe mechanism is
+        // both a well-documented spam heuristic and, for cold outreach, a real
+        // compliance gap. The mailto: arm needs no server round-trip and
+        // always works even if this app is down; the https: arm is the real
+        // one-click action most modern mail clients actually use.
+        const unsubscribeToken = generateUnsubscribeToken(item.campaign.userId, item.toEmail);
+        const unsubscribeUrl = `${env.appBaseUrl}/api/unsubscribe/${unsubscribeToken}`;
+
         await transport!.sendMail({
           // Task 30, item 4 — multi-From rotation: prefer the per-item resolved
           // From address (computed at queue-build time), else the mailbox's first
@@ -233,6 +250,11 @@ export async function POST(req: Request) {
           to: item.toEmail,
           subject,
           html,
+          text: htmlToPlainText(html),
+          headers: {
+            "List-Unsubscribe": `<mailto:${from}?subject=unsubscribe>, <${unsubscribeUrl}>`,
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+          },
         });
         await prisma.emailQueueItem.update({
           where: { id: item.id },
@@ -251,10 +273,35 @@ export async function POST(req: Request) {
         }
       } catch (e) {
         const error = e instanceof Error ? e.message : "Unknown error";
+        const errorCategory = classifySmtpError(e);
+        const attempts = item.attempts + 1;
+        // soft_bounce/rate_limited get a backoff window and revert to "queued"
+        // (picked up again once nextAttemptAt elapses, see the SELECT above);
+        // hard_bounce/auth_failed/other are terminal for this item — see
+        // lib/smtp-error-classify.ts's RETRY_DELAY_MINUTES for why each
+        // category is or isn't retried.
+        const retryAt = nextRetryAt(errorCategory, attempts);
         await prisma.emailQueueItem.update({
           where: { id: item.id },
-          data: { status: "failed", error },
+          data: {
+            status: retryAt ? "queued" : "failed",
+            error,
+            errorCategory,
+            attempts,
+            nextAttemptAt: retryAt,
+          },
         });
+        // A hard bounce means the ADDRESS is bad, not this one campaign's
+        // content — suppress it for this user so no future campaign of
+        // theirs queues it again (lib/campaign-recipients.ts's filterSuppressed).
+        if (errorCategory === "hard_bounce") {
+          const email = item.toEmail.trim().toLowerCase();
+          await prisma.suppression.upsert({
+            where: { userId_email: { userId: item.campaign.userId, email } },
+            create: { userId: item.campaign.userId, email, reason: "hard_bounce" },
+            update: {},
+          });
+        }
         // Do NOT increment sentToday on failure.
       }
     }

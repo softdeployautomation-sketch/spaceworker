@@ -1,6 +1,6 @@
 // Task 27, Part B — shared campaign-create helper.
 import { prisma } from "@/lib/prisma";
-import { buildQueueItemRows, resolveFromAddressesByMailbox, type RecipientInput } from "@/lib/campaign-recipients";
+import { buildQueueItemRows, filterSuppressed, resolveFromAddressesByMailbox, type RecipientInput } from "@/lib/campaign-recipients";
 import { env } from "@/lib/env";
 import { assignLinkTokens, hasHttpLinks, rewriteLinks } from "@/lib/link-cloak";
 
@@ -67,10 +67,21 @@ export interface CreateCampaignResult {
   // mailbox by the rotation, surfaced on a CampaignAutomationRun for Task 09's
   // per-mailbox send breakdown without re-scanning the queue on every read.
   byMailbox: Record<string, number>;
+  // How many of input.recipients were dropped for being on this user's
+  // Suppression list (a prior hard bounce/complaint) — surfaced so the create
+  // UI can tell the user "N skipped, previously bounced" instead of silently
+  // sending to fewer people than they uploaded.
+  suppressedCount: number;
 }
 
 export async function createCampaign(input: CreateCampaignInput): Promise<CreateCampaignResult> {
   const mailboxIds = input.mailboxIds;
+  const { recipients, suppressedCount } = await filterSuppressed(input.userId, input.recipients);
+  if (recipients.length === 0 && input.recipients.length > 0) {
+    throw new Error(
+      `All ${input.recipients.length} recipient(s) are on your suppression list (previously bounced/complained) — nothing to send to.`
+    );
+  }
   const rotateEvery = Math.max(1, Math.min(1000, Math.floor(input.rotateEvery ?? 1)));
   const batchSize = Math.max(1, Math.min(1000, Math.floor(input.batchSize ?? 50)));
   // Task 35 — same server-side floor as POST /api/campaigns: min >= 1, max >= min.
@@ -122,7 +133,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
     ...(decoupled
       ? { subjects, bodies }
       : { variantRows: variants.map((_, i) => ({ id: String(i) })) }),
-    recipients: input.recipients,
+    recipients,
     rotateEvery,
     fromAddressesByMailbox,
   });
@@ -187,7 +198,7 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         ...(decoupled
           ? { subjects, bodies }
           : { variantRows }),
-        recipients: input.recipients,
+        recipients,
         rotateEvery,
         fromAddressesByMailbox,
       }),
@@ -196,5 +207,5 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
     return campaign;
   });
 
-  return { campaign: created, recipientCount: rows.length, byMailbox };
+  return { campaign: created, recipientCount: rows.length, byMailbox, suppressedCount };
 }

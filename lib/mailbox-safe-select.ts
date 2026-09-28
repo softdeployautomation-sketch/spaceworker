@@ -5,5 +5,5 @@ import type { Prisma } from "@prisma/client";
 export const MAILBOX_SAFE_SELECT = {
   id: true, label: true, host: true, port: true, username: true,
   fromAddresses: true, secure: true, allowInsecure: true, dailyLimit: true, sentToday: true, sentTodayDate: true,
-  active: true, lastTestedAt: true, lastTestOk: true, createdAt: true,
+  active: true, lastTestedAt: true, lastTestOk: true, createdAt: true, sendRegion: true,
 } as const satisfies Prisma.MailboxSelect;

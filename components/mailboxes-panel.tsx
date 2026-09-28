@@ -23,6 +23,8 @@ type Mailbox = {
   lastTestedAt: string | null;
   lastTestOk: boolean | null;
   createdAt: string;
+  // TASK_134 (premium) — "us" | "ca" | "uk" | null (direct, the default).
+  sendRegion: string | null;
 }
 
 // Task 29, item 5 — a user's OWN deliverability test/seed mailbox (their Gmail or
@@ -73,6 +75,9 @@ type MailboxForm = {
   password: string;
   securityMode: SecurityMode;
   dailyLimit: string;
+  // TASK_134 — "" means direct (no region), matching sendRegion's null on the
+  // server; a <select> can't hold null so this is the one place it's "".
+  sendRegion: string;
 };
 
 const EMPTY_FORM: MailboxForm = {
@@ -84,7 +89,18 @@ const EMPTY_FORM: MailboxForm = {
   password: "",
   securityMode: "starttls",
   dailyLimit: "40",
+  sendRegion: "",
 };
+
+// TASK_134 — matches lib/exit-nodes.ts's METADATA exactly (id/label/flag);
+// kept as a small static list here rather than fetched, since these three
+// are the only regions that will ever exist without a code change on both
+// sides anyway.
+const SEND_REGIONS: { value: string; label: string }[] = [
+  { value: "us", label: "🇺🇸 United States (New York)" },
+  { value: "ca", label: "🇨🇦 Canada (Toronto)" },
+  { value: "uk", label: "🇬🇧 United Kingdom (London)" },
+];
 
 export default function MailboxesPanel() {
   const confirm = useConfirm();
@@ -107,6 +123,12 @@ export default function MailboxesPanel() {
   const [testMbForm, setTestMbForm] = useState({ label: "", host: "", port: "993", username: "", password: "" });
   const [testMbError, setTestMbError] = useState("");
   const [testMbSaving, setTestMbSaving] = useState(false);
+  // TASK_134 (premium) — same /api/entitlements pattern already used for the
+  // private-browser egress picker (components/device-console.tsx). The region
+  // control is always VISIBLE, just disabled with an upsell until this
+  // resolves true — never silently hidden (this app's own convention).
+  const [isPremium, setIsPremium] = useState(false);
+  const [premiumLoaded, setPremiumLoaded] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -125,6 +147,14 @@ export default function MailboxesPanel() {
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/entitlements")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { premium?: boolean } | null) => setIsPremium(data?.premium === true))
+      .catch(() => setIsPremium(false))
+      .finally(() => setPremiumLoaded(true));
   }, []);
 
   useEffect(() => {
@@ -150,6 +180,7 @@ export default function MailboxesPanel() {
       password: "",
       securityMode: modeForMailbox(m),
       dailyLimit: String(m.dailyLimit),
+      sendRegion: m.sendRegion ?? "",
     });
     setFormError("");
     setTestConnResult(null);
@@ -180,6 +211,9 @@ export default function MailboxesPanel() {
       // queue-build time). Empty list / all-blank rows => send as the SMTP username.
       payload.fromAddresses = form.fromAddresses.map((a) => a.trim()).filter((a) => a.length > 0);
       if (form.password.trim()) payload.password = form.password;
+      // TASK_134 (premium) — "" in the form means direct/no region; only ever
+      // sent as a real region string when the picker isn't disabled.
+      payload.sendRegion = isPremium && form.sendRegion ? form.sendRegion : null;
 
       const url = editing ? `/api/mailboxes/${editing.id}` : "/api/mailboxes";
       const res = await fetch(url, {
@@ -220,7 +254,10 @@ export default function MailboxesPanel() {
       const res = await fetch("/api/mailboxes/test-connection", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: form.host.trim(), port, username: form.username.trim(), password: form.password, secure, allowInsecure }),
+        body: JSON.stringify({
+          host: form.host.trim(), port, username: form.username.trim(), password: form.password, secure, allowInsecure,
+          sendRegion: isPremium && form.sendRegion ? form.sendRegion : null,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       setTestConnResult({ ok: Boolean(data.ok), error: typeof data.error === "string" ? data.error : undefined });
@@ -384,7 +421,14 @@ export default function MailboxesPanel() {
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <h2 className="truncate font-semibold">{m.label}</h2>
+                    <h2 className="truncate font-semibold">
+                      {m.label}
+                      {m.sendRegion && (
+                        <span className="ml-2 rounded-full border border-zinc-300 px-1.5 py-0.5 text-[10px] font-medium uppercase text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                          via {m.sendRegion}
+                        </span>
+                      )}
+                    </h2>
                     <p className="mt-0.5 truncate text-sm text-zinc-500 dark:text-zinc-400">
                       {(m.fromAddresses && m.fromAddresses.length > 0 ? m.fromAddresses.join(", ") : m.username)} @ {m.host}:{m.port}
                     </p>
@@ -720,6 +764,36 @@ export default function MailboxesPanel() {
                 ) : (
                   <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
                     The send is always encrypted; this only picks how the connection negotiates it.
+                  </span>
+                )}
+              </label>
+
+              {/* TASK_134 — premium regional send routing, reusing the same exit
+                  nodes the private-browser tool uses. Always VISIBLE (never
+                  hidden for free tier, per this app's own "expose every
+                  setting, gate don't hide" convention) — just disabled with an
+                  upsell until entitlements confirm premium. */}
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Send region
+                <select
+                  value={form.sendRegion}
+                  onChange={(e) => setForm({ ...form, sendRegion: e.target.value })}
+                  disabled={!premiumLoaded || !isPremium}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950"
+                >
+                  <option value="">Direct (this server)</option>
+                  {SEND_REGIONS.map((r) => (
+                    <option key={r.value} value={r.value}>{r.label}</option>
+                  ))}
+                </select>
+                {premiumLoaded && !isPremium ? (
+                  <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
+                    Premium — route this mailbox&apos;s sends through a regional exit instead of this server&apos;s own IP.{" "}
+                    <a href="/dashboard/billing" className="underline underline-offset-2 hover:text-zinc-700 dark:hover:text-zinc-300">Upgrade</a>
+                  </span>
+                ) : (
+                  <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
+                    Doesn&apos;t fix SPF/DKIM for domains you don&apos;t own — it only changes the connecting IP a recipient&apos;s server sees.
                   </span>
                 )}
               </label>

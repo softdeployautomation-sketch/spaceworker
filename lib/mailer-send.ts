@@ -1,7 +1,9 @@
 import "server-only";
 import nodemailer, { type Transporter } from "nodemailer";
+import { SocksClient } from "socks";
 import { decryptSecret } from "./mailbox-crypto";
 import { validatePublicSmtpHost } from "./smtp-host-guard";
+import { getExitNode } from "./exit-nodes";
 
 export interface TransporterMailbox {
   host: string;
@@ -22,6 +24,11 @@ export interface TransporterMailbox {
   // comment on transporterForMailbox below for why a separate flag (not the port)
   // is how "user really wants unencrypted" is represented.
   allowInsecure?: boolean;
+  // TASK_134 (premium) — route the underlying TCP connection through one of
+  // SpaceWorker's regional SOCKS5 exit nodes ("us" | "ca" | "uk", see
+  // lib/exit-nodes.ts) instead of connecting directly from this server's own
+  // (European datacenter) IP. null/undefined = direct, the default.
+  sendRegion?: string | null;
 }
 
 export interface SmtpTransportOptions {
@@ -33,6 +40,11 @@ export interface SmtpTransportOptions {
   // transporterForMailbox comment above; this exists for self-hosted/internal
   // relays that genuinely don't speak any TLS (port 25 "None" mode).
   allowInsecure?: boolean;
+  // TASK_134 — when set, the raw TCP connection to host:port is established
+  // THROUGH this SOCKS5 exit first; TLS/STARTTLS/AUTH negotiation on top of it
+  // is completely unchanged — only the socket's origin moves. See
+  // lib/exit-nodes.ts for the available nodes.
+  proxy?: { host: string; port: number };
 }
 
 /**
@@ -61,14 +73,31 @@ export interface SmtpTransportOptions {
  * The one deliberate exception is allowInsecure (the explicit "None" mode),
  * which relaxes requireTLS for genuinely unencrypted internal relays.
  */
-export function buildSmtpTransport(opts: SmtpTransportOptions): Transporter {
+export async function buildSmtpTransport(opts: SmtpTransportOptions): Promise<Transporter> {
   const implicitTls = opts.port === 465;
+  // TASK_134 — SocksClient.createConnection() does the SOCKS5 handshake and
+  // hands back an already-connected raw net.Socket; nodemailer's `connection`
+  // option accepts exactly that (SMTPConnectionOptions.connection?: net.Socket
+  // in @types/nodemailer) and does its own TLS/STARTTLS/AUTH on top of it
+  // completely unchanged — `host`/`port` are still passed alongside it (used
+  // for the EHLO greeting and TLS SNI, not for opening the socket, once
+  // `connection` is set).
+  const connection = opts.proxy
+    ? (
+        await SocksClient.createConnection({
+          proxy: { host: opts.proxy.host, port: opts.proxy.port, type: 5 },
+          command: "connect",
+          destination: { host: opts.host, port: opts.port },
+        })
+      ).socket
+    : undefined;
   return nodemailer.createTransport({
     host: opts.host,
     port: opts.port,
     secure: implicitTls,
     requireTLS: !implicitTls && !opts.allowInsecure,
     auth: { user: opts.username, pass: opts.password },
+    ...(connection ? { connection } : {}),
   });
 }
 
@@ -84,11 +113,26 @@ export async function transporterForMailbox(mailbox: TransporterMailbox): Promis
     mailbox.passwordIv,
     mailbox.passwordTag
   );
+  // TASK_134 — resolve the mailbox's chosen region to a real, currently-
+  // configured exit node. Fails LOUDLY (never silently falls back to direct)
+  // when the region is set but unavailable: a user who explicitly picked a
+  // region did so for a reason (e.g. a domain that specifically blocks the
+  // direct server IP), so silently sending direct instead could look like
+  // success while quietly defeating the whole point.
+  let proxy: { host: string; port: number } | undefined;
+  if (mailbox.sendRegion) {
+    const exitNode = getExitNode(mailbox.sendRegion);
+    if (!exitNode) {
+      throw new Error(`Send region "${mailbox.sendRegion}" is not available right now.`);
+    }
+    proxy = { host: exitNode.host, port: exitNode.port };
+  }
   return buildSmtpTransport({
     host: mailbox.host,
     port: mailbox.port,
     username: mailbox.username,
     password,
     allowInsecure: mailbox.allowInsecure,
+    proxy,
   });
 }

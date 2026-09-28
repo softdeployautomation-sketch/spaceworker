@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
-import { buildQueueItemRows, leadToRecipient, resolveFromAddressesByMailbox } from "@/lib/campaign-recipients";
+import { buildQueueItemRows, filterSuppressed, leadToRecipient, resolveFromAddressesByMailbox } from "@/lib/campaign-recipients";
 
 // Task 26, Piece 4 — add leads to a campaign's recipient list.
 // POST /api/campaigns/[id]/recipients/from-leads   body: { leadIds: string[] }
@@ -117,14 +117,17 @@ export async function POST(
     select: { toEmail: true },
   });
   const existingEmails = new Set(existingRows.map((e) => e.toEmail.toLowerCase()));
-  const fresh = recipients.filter((r) => !existingEmails.has(r.email.toLowerCase()));
-  const skippedDuplicates = recipients.length - fresh.length;
+  const deduped = recipients.filter((r) => !existingEmails.has(r.email.toLowerCase()));
+  const skippedDuplicates = recipients.length - deduped.length;
+
+  const { recipients: fresh, suppressedCount } = await filterSuppressed(session.userId, deduped);
 
   if (fresh.length === 0) {
     return NextResponse.json({
       added: 0,
       skipped: 0,
       skippedDuplicates,
+      suppressedCount,
       requested: recipients.length,
     });
   }
@@ -153,6 +156,7 @@ export async function POST(
       added: count,
       skipped: fresh.length - count,
       skippedDuplicates,
+      suppressedCount,
       requested: recipients.length,
     },
     { status: 201 },

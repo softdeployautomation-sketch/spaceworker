@@ -162,6 +162,29 @@ export function buildQueueItemRows(opts: {
   });
 }
 
+// Drops any recipient whose address is on this user's Suppression list (a
+// prior hard bounce or complaint) before it's ever queued — otherwise nothing
+// stops a new campaign from re-sending to an address already confirmed
+// undeliverable. Per-user, not global (see Suppression's schema comment): one
+// user's bounce history says nothing about another user's different
+// mailbox/content sending to the same address. Case-insensitive, matching how
+// every other email comparison in this file already normalizes.
+export async function filterSuppressed(
+  userId: string,
+  recipients: RecipientInput[],
+): Promise<{ recipients: RecipientInput[]; suppressedCount: number }> {
+  if (recipients.length === 0) return { recipients, suppressedCount: 0 };
+  const emails = [...new Set(recipients.map((r) => r.email.trim().toLowerCase()))];
+  const suppressed = await prisma.suppression.findMany({
+    where: { userId, email: { in: emails } },
+    select: { email: true },
+  });
+  if (suppressed.length === 0) return { recipients, suppressedCount: 0 };
+  const suppressedSet = new Set(suppressed.map((s) => s.email));
+  const filtered = recipients.filter((r) => !suppressedSet.has(r.email.trim().toLowerCase()));
+  return { recipients: filtered, suppressedCount: recipients.length - filtered.length };
+}
+
 // The merge variables carried across for a Lead-derived recipient — mirrors the
 // per-recipient merge vars the CSV path produces from extra columns, so a
 // template's {{businessName}}/{{contactName}}/{{phone}}/{{website}} fields render

@@ -4,6 +4,8 @@ import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
+import { getExitNode } from "@/lib/exit-nodes";
+import { isPremiumTier } from "@/lib/trial";
 
 export async function GET() {
   const session = await getSession();
@@ -29,6 +31,7 @@ export async function POST(req: Request) {
   let body: {
     label?: string; host?: string; port?: number; username?: string;
     fromAddresses?: unknown; password?: string; secure?: boolean; dailyLimit?: number; allowInsecure?: boolean;
+    sendRegion?: string | null;
   };
   try {
     body = await req.json();
@@ -73,6 +76,18 @@ export async function POST(req: Request) {
     );
   }
 
+  // TASK_134 (premium) — same server-side boundary as PUT/test-connection.
+  const sendRegion = body.sendRegion && body.sendRegion.trim() ? body.sendRegion.trim() : null;
+  if (sendRegion) {
+    const owner = await prisma.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
+    if (!isPremiumTier(owner?.tier ?? 0)) {
+      return NextResponse.json({ error: "Regional send routing is a premium feature." }, { status: 403 });
+    }
+    if (!getExitNode(sendRegion)) {
+      return NextResponse.json({ error: `Send region "${sendRegion}" is not available right now.` }, { status: 400 });
+    }
+  }
+
   const { ciphertext, iv, tag } = encryptSecret(password);
   const mailbox = await prisma.mailbox.create({
     data: {
@@ -88,6 +103,7 @@ export async function POST(req: Request) {
       passwordTag: tag,
       secure,
       allowInsecure,
+      sendRegion,
       dailyLimit,
     },
     select: MAILBOX_SAFE_SELECT,

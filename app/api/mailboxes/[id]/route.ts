@@ -4,6 +4,8 @@ import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
+import { getExitNode } from "@/lib/exit-nodes";
+import { isPremiumTier } from "@/lib/trial";
 import type { Prisma } from "@prisma/client";
 
 export async function PUT(
@@ -26,6 +28,7 @@ export async function PUT(
   let body: {
     label?: string; host?: string; port?: number; username?: string;
     fromAddresses?: unknown; password?: string; secure?: boolean; dailyLimit?: number; active?: boolean; allowInsecure?: boolean;
+    sendRegion?: string | null;
   };
   try {
     body = await req.json();
@@ -55,6 +58,21 @@ export async function PUT(
     data.secure = resolvedPort === 465;
   }
   if (body.allowInsecure !== undefined) data.allowInsecure = Boolean(body.allowInsecure);
+  // TASK_134 (premium) — server-side boundary, same as test-connection: the
+  // UI disables the picker for free tier, but never trust the client alone.
+  if (body.sendRegion !== undefined) {
+    const region = body.sendRegion && body.sendRegion.trim() ? body.sendRegion.trim() : null;
+    if (region) {
+      const owner = await prisma.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
+      if (!isPremiumTier(owner?.tier ?? 0)) {
+        return NextResponse.json({ error: "Regional send routing is a premium feature." }, { status: 403 });
+      }
+      if (!getExitNode(region)) {
+        return NextResponse.json({ error: `Send region "${region}" is not available right now.` }, { status: 400 });
+      }
+    }
+    data.sendRegion = region;
+  }
   if (body.dailyLimit !== undefined) data.dailyLimit = Number(body.dailyLimit);
   if (body.active !== undefined) data.active = Boolean(body.active);
   if (body.password !== undefined && String(body.password).length > 0) {

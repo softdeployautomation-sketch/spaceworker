@@ -3,6 +3,9 @@ import { getSession } from "@/lib/session";
 import { buildSmtpTransport } from "@/lib/mailer-send";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
+import { getExitNode } from "@/lib/exit-nodes";
+import { prisma } from "@/lib/prisma";
+import { isPremiumTier } from "@/lib/trial";
 
 // Task 26, Piece 5a — PRE-SAVE mailbox connection test.
 // POST /api/mailboxes/test-connection   body: { host, port, username, password, allowInsecure }
@@ -35,6 +38,7 @@ export async function POST(req: Request) {
     username?: unknown;
     password?: unknown;
     allowInsecure?: unknown;
+    sendRegion?: unknown;
   };
   try {
     body = await req.json();
@@ -47,6 +51,23 @@ export async function POST(req: Request) {
   const password = typeof body.password === "string" ? body.password : "";
   const port = Number(body.port ?? 0);
   const allowInsecure = Boolean(body.allowInsecure);
+  const sendRegion = typeof body.sendRegion === "string" && body.sendRegion.trim() ? body.sendRegion.trim() : null;
+
+  // TASK_134 (premium) — the picker itself is visible-but-disabled for free
+  // tier in the UI, but this endpoint is the actual boundary: never trust the
+  // client not to send a region anyway.
+  let proxy: { host: string; port: number } | undefined;
+  if (sendRegion) {
+    const owner = await prisma.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
+    if (!isPremiumTier(owner?.tier ?? 0)) {
+      return NextResponse.json({ ok: false, error: "Regional send routing is a premium feature." }, { status: 403 });
+    }
+    const exitNode = getExitNode(sendRegion);
+    if (!exitNode) {
+      return NextResponse.json({ ok: false, error: `Send region "${sendRegion}" is not available right now.` }, { status: 400 });
+    }
+    proxy = { host: exitNode.host, port: exitNode.port };
+  }
 
   if (!host || !username || !password || !Number.isInteger(port) || port <= 0) {
     return NextResponse.json(
@@ -70,7 +91,7 @@ export async function POST(req: Request) {
   }
 
   try {
-    const transport = buildSmtpTransport({ host, port, username, password, allowInsecure });
+    const transport = await buildSmtpTransport({ host, port, username, password, allowInsecure, proxy });
     await transport.verify();
     return NextResponse.json({ ok: true });
   } catch (e) {

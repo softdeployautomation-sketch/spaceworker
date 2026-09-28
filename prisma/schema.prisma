@@ -97,6 +97,7 @@ model User {
   rateLimits               RateLimitEvent[]
   mailboxes                Mailbox[]
   emailCampaigns           EmailCampaign[]
+  suppressions             Suppression[]
   payments                 Payment[]
   browserProfiles          BrowserProfile[]
   browserSessions          BrowserSession[]
@@ -334,6 +335,13 @@ model Mailbox {
   active            Boolean          @default(true)
   lastTestedAt      DateTime?
   lastTestOk        Boolean?
+  // Premium — route this mailbox's outbound SMTP connection through one of
+  // SpaceWorker's regional exit nodes (lib/exit-nodes.ts: "us" | "ca" | "uk")
+  // instead of connecting directly from this server's own (European
+  // datacenter) IP. null = direct, the default and the only option on a
+  // free-tier account. See TASK_134 for what this does and does NOT fix
+  // (it does not affect SPF/DKIM alignment for domains we don't control).
+  sendRegion        String?
   createdAt         DateTime         @default(now())
   queueItems        EmailQueueItem[]
 
@@ -483,11 +491,49 @@ model EmailQueueItem {
   status              String           @default("queued")
   sentAt              DateTime?
   error               String?
+  // Classifies `error` into something the drain can actually act on, instead
+  // of every SMTP failure landing in one undifferentiated bucket:
+  // "hard_bounce" (permanent — SMTP 5xx like 550/551/553, or a bounce-address
+  // pattern) never retries and feeds the Suppression list; "soft_bounce"
+  // (temporary — 4xx like 421/450/452) is eligible for retry via
+  // nextAttemptAt; "rate_limited" (e.g. 421/450 specifically from throttling,
+  // or 550 5.7.1 style provider throttling) retries with backoff like a soft
+  // bounce; "auth_failed" (SMTP 535 etc.) is a mailbox-credential problem, not
+  // a per-recipient one — never retried per-item, surfaced to the owner
+  // instead. null while queued/sent.
+  errorCategory       String?
+  // Retry support — a soft_bounce/rate_limited item becomes eligible for the
+  // drain to re-select it once now() >= nextAttemptAt, up to a capped number
+  // of attempts (see lib/deliverability.ts's retry backoff). A hard_bounce or
+  // auth_failed item is never retried (nextAttemptAt stays null).
+  attempts            Int              @default(0)
+  nextAttemptAt       DateTime?
   createdAt           DateTime         @default(now())
 
   @@index([campaignId, status])
   @@index([mailboxId, status])
   @@index([variantId])
+  @@index([status, nextAttemptAt])
+}
+
+// A per-user suppression list — an address that hard-bounced or was reported
+// as a complaint is never queued into a future campaign of that user's again
+// (see lib/campaign-recipients.ts). Deliberately per-user, not global: one
+// user's bounce history says nothing about whether another user's (different
+// mailbox, different content) send to the same address would also bounce.
+model Suppression {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  // Always lowercased/trimmed before write and lookup — matching how
+  // toEmail/CSV emails are normalized elsewhere in the mailer.
+  email     String
+  // "hard_bounce" | "complaint" | "manual"
+  reason    String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, email])
+  @@index([userId])
 }
 
 model SeedMailbox {
