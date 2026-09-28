@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
+import { useConfirm } from "@/components/confirm-provider";
 // Task 30, item 1 — renderMerge is a pure string->string function with no
 // server-only dependencies, so it's safe to import into this client component to
 // show the user exactly what a recipient would receive (including the raw gap a
@@ -273,10 +274,16 @@ export default function CampaignsPage() {
 
   const [deleteBusyId, setDeleteBusyId] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState("");
+  const confirm = useConfirm();
+
   async function deleteCampaign(id: string, name: string) {
-    if (!window.confirm(`Delete "${name}"? This permanently removes it and its send history — this can't be undone.`)) {
-      return;
-    }
+    const ok = await confirm({
+      title: "Delete campaign",
+      description: `Delete "${name}"? This permanently removes it and its send history — this can't be undone.`,
+      confirmLabel: "Delete",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
     setDeleteBusyId(id);
     setDeleteError("");
     try {
