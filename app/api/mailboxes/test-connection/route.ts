@@ -6,6 +6,19 @@ import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
 import { prisma } from "@/lib/prisma";
 import { canUseExitNodes } from "@/lib/premium";
+import {
+  connectionCannotBeEstablished,
+  connectionFailureAsError,
+  describeSmtpFailure,
+  probeSmtpCapabilities,
+  type SmtpCapabilities,
+} from "@/lib/smtp-diagnostics";
+
+// Overall ceiling for the authoritative nodemailer handshake. The transport's
+// own connection/greeting timeouts (lib/mailer-send.ts) normally fire well
+// before this; this is the belt-and-braces bound so the request can never
+// outlive the user's patience even if a phase stalls in a way those don't cover.
+const TEST_DEADLINE_MS = 30_000;
 
 // Task 26, Piece 5a — PRE-SAVE mailbox connection test.
 // POST /api/mailboxes/test-connection   body: { host, port, username, password, allowInsecure }
@@ -89,11 +102,106 @@ export async function POST(req: Request) {
     );
   }
 
-  try {
-    const transport = await buildSmtpTransport({ host, port, username, password, allowInsecure, proxy });
-    await transport.verify();
-    return NextResponse.json({ ok: true });
-  } catch (e) {
-    return NextResponse.json({ ok: false, error: e instanceof Error ? e.message : "Unknown error" });
+  // Advisory capability probe FIRST — see lib/smtp-diagnostics.ts for the full
+  // reasoning. In one extra second this is what turns "✓ Connection OK" from a
+  // lie into a fact: `verify()` returns true without ever calling login() when
+  // the server advertises no AUTH mechanism, so a mailbox whose server asks for
+  // no password at all (the exact configuration that swallowed a live campaign)
+  // otherwise looks perfectly healthy.
+  const capabilities = await probeSmtpCapabilities({
+    host,
+    port,
+    implicitTls: port === 465,
+    ...(proxy ? { proxy } : {}),
+  });
+
+  // If the socket never came up, the handshake below cannot succeed — and the
+  // probe's connect budget is deliberately the same constant the transport uses
+  // (SMTP_CONNECTION_TIMEOUT_MS), so this is a proof rather than a guess. Report
+  // it now: a blocked port used to cost the user a 120s freeze, then 18s once
+  // the timeouts were bounded, and is now one honest 10s answer. Note this is
+  // only the CONNECT phase — a server that opened the socket and then went quiet
+  // (`connected: true, reachable: false`) still falls through to verify(), which
+  // is the only thing entitled to fail a mailbox it might still be able to send
+  // through.
+  if (connectionCannotBeEstablished(capabilities)) {
+    return NextResponse.json({
+      ok: false,
+      error: describeSmtpFailure(connectionFailureAsError(capabilities, { host, port }), {
+        host,
+        port,
+        allowInsecure,
+        capabilities,
+      }),
+      capabilities: summarizeCapabilities(capabilities),
+    });
   }
+
+  try {
+    await withDeadline(
+      (async () => {
+        const transport = await buildSmtpTransport({ host, port, username, password, allowInsecure, proxy });
+        await transport.verify();
+      })(),
+      TEST_DEADLINE_MS,
+      `Timed out after ${Math.round(TEST_DEADLINE_MS / 1000)}s waiting for ${host}:${port} to finish the SMTP handshake.`
+    );
+    const warning = capabilityWarning(capabilities);
+    return NextResponse.json({
+      ok: true,
+      ...(warning ? { warning } : {}),
+      capabilities: summarizeCapabilities(capabilities),
+    });
+  } catch (e) {
+    return NextResponse.json({
+      ok: false,
+      error: describeSmtpFailure(e, { host, port, allowInsecure, capabilities }),
+      capabilities: summarizeCapabilities(capabilities),
+    });
+  }
+}
+
+/** Resolve `work`, or reject with `message` once `ms` elapses — whichever first. */
+async function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * The one warning worth interrupting a green tick for: the server never asked
+ * for credentials, so the password was never verified AND — far more dangerous
+ * — anything sent through it may be accepted and then dropped on the floor
+ * rather than relayed (confirmed live: that is exactly what port 25 on this
+ * customer's host did, which is why a "successful" campaign delivered nothing,
+ * not even to spam). Returns undefined when there's nothing to say.
+ */
+function capabilityWarning(capabilities: SmtpCapabilities): string | undefined {
+  if (!capabilities.reachable || capabilities.authAdvertised) return undefined;
+  return (
+    "Heads-up: this server did not ask for a username or password at all " +
+    "(it advertises no AUTH), so your credentials were never actually checked. " +
+    "Messages may be accepted and then silently dropped instead of relayed — " +
+    "if this is a real mail provider, switch to the port that requires authentication."
+  );
+}
+
+/** The compact, UI-facing slice of the probe (never the raw socket state). */
+function summarizeCapabilities(capabilities: SmtpCapabilities) {
+  return {
+    connected: capabilities.connected,
+    reachable: capabilities.reachable,
+    banner: capabilities.banner,
+    authAdvertised: capabilities.reachable ? capabilities.authAdvertised : null,
+    authMechanisms: capabilities.authMechanisms,
+    starttlsAdvertised: capabilities.reachable ? capabilities.starttlsAdvertised : null,
+  };
 }

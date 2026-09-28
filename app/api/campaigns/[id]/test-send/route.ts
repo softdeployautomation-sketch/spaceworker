@@ -29,7 +29,7 @@ export async function POST(
   const { id } = await params;
 
   // Task 32 — parse the optional draft override up front (ignored when absent).
-  let reqBody: { subject?: unknown; bodyHtml?: unknown; from?: unknown } = {};
+  let reqBody: { subject?: unknown; bodyHtml?: unknown; from?: unknown; to?: unknown } = {};
   try {
     reqBody = await req.json();
   } catch {
@@ -38,7 +38,20 @@ export async function POST(
   const draftSubject = typeof reqBody.subject === "string" ? reqBody.subject.trim() : undefined;
   const draftBodyHtml = typeof reqBody.bodyHtml === "string" ? reqBody.bodyHtml : undefined;
   // Optional Task 30 item 4 override — send the probe as a specific From address.
-  const draftFrom = typeof reqBody.from === "string" ? reqBody.from.trim() : undefined;
+  // An explicitly-passed `from` wins (an explicit "" means "no override for this
+  // one test"). When the caller passes none at all, the campaign's stored
+  // test-only From (testFromOverride, set in the test-setup panel) is applied
+  // below once the campaign is loaded — that's what makes "test as this From"
+  // cover every test, not just the calls that remember to send it.
+  let draftFrom = typeof reqBody.from === "string" ? reqBody.from.trim() : undefined;
+  // 2026-09-28 — one-shot test recipient: "send THIS test to this address"
+  // without touching the campaign's stored test target. It's how the test-setup
+  // panel switches seats between test sends (Gmail this time, Outlook next) in
+  // one round-trip, and it is deliberately never persisted here.
+  const oneShotTo = typeof reqBody.to === "string" ? reqBody.to.trim() : "";
+  if (oneShotTo && !oneShotTo.includes("@")) {
+    return NextResponse.json({ error: "Enter a valid test email address" }, { status: 400 });
+  }
 
   const campaign = await prisma.emailCampaign.findFirst({
     where: { id, userId: session.userId },
@@ -48,6 +61,11 @@ export async function POST(
   });
   if (!campaign) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  // Now that the campaign is loaded, apply its stored test-only From when the
+  // caller didn't pass one — see the note on `draftFrom` above.
+  if (typeof reqBody.from !== "string") {
+    draftFrom = campaign.testFromOverride?.trim() || undefined;
   }
   if (campaign.status === "sending" || campaign.status === "done") {
     return NextResponse.json(
@@ -98,7 +116,13 @@ export async function POST(
   // and "delivered" there just means the SMTP send succeeded (see
   // lib/deliverability.ts's runTestSend for why: no IMAP account exists to poll,
   // so the human is the one confirming placement, not this route).
-  const overrideRecipient = campaign.testRecipientOverride?.trim() || null;
+  // 2026-09-28 — a one-shot `to` from the caller takes precedence over the
+  // stored target for this single request (switching test seats mid-flow without
+  // a second round-trip); it changes nothing about the campaign. Note that
+  // either way this is the OVERRIDE path, so there is no IMAP poll and the
+  // outcome is "SMTP accepted it", not "it landed in the inbox" — exactly as
+  // before, the human is the one who judges placement.
+  const overrideRecipient = oneShotTo || campaign.testRecipientOverride?.trim() || null;
   const seed = overrideRecipient ? null : await resolveSeedMailbox(session.userId);
   if (!overrideRecipient && !seed) {
     return NextResponse.json(

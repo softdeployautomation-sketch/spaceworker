@@ -663,4 +663,40 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   `engine-dist/` (built by `scripts/engine-dist.mjs`), and `worker/venv/` all
   exist ONLY on the VPS. If nginx starts returning bare 502s during an outage,
   check that `static/maintenance.html` exists before hunting anything else.
+- **A "Test connection" hang was two bugs stacked, and neither was in nodemailer.**
+  Confirmed live 2026-09-28 against a real customer mailbox on a non-standard
+  SMTP port (24610). (1) The Add/Edit mailbox form's Security `<select>`
+  pre-filled the Port field on every change, so picking "STARTTLS (recommended)"
+  silently rewrote a hand-typed `24610` to `587` — a port that host black-holes
+  (SYN accepted, no banner, ever). (2) Nothing in this codebase ever set
+  nodemailer's timeouts, so its defaults applied: `connectionTimeout` **2
+  minutes**, `socketTimeout` **10 minutes**. The result was a "Testing…" button
+  frozen for 120s and then one unhelpful line, `ETIMEDOUT Connection timeout`.
+  Both are fixed (port guard in `components/mailboxes-panel.tsx`, explicit
+  timeouts exported from `lib/mailer-send.ts`), and the same trap applies to a
+  REAL send: a campaign pointed at a dead port used to stall the queue for 10
+  minutes per attempt.
+- **`transport.verify()` returning `true` does NOT mean your credentials were
+  checked.** nodemailer skips `login()` entirely when the server advertises no
+  AUTH mechanism (`if (perCallAuth && (connection.allowsAuth ||
+  options.forceAuth))` in `node_modules/nodemailer/lib/smtp-transport/index.js`).
+  A host that answers `220 ... Python SMTP` on port 25, advertises no AUTH, and
+  accepts every message will therefore show a green "✓ Connection OK" for a
+  completely wrong password — and then silently DROP everything it accepted.
+  That is exactly what happened here: the campaign reported sends and delivered
+  nothing, not even to spam. `lib/smtp-diagnostics.ts` now reads the server's own
+  banner + EHLO capability list so this is visible BEFORE it costs a campaign,
+  and the mailbox test surfaces it as an explicit warning. **Anything that
+  claims "connection OK" must be shown the server's advertised AUTH list, not
+  just a boolean.**
+- **Order matters in the mailbox test: probe with raw sockets FIRST, then
+  `verify()`.** `probeSmtpCapabilities` speaks SMTP directly and bails on its own
+  8s budget, so a black-holed port fails fast instead of waiting out nodemailer.
+  It is deliberately advisory-only (never the pass/fail verdict) because a probe
+  that merely lacks information must not block a mailbox that sends fine.
+- **Prisma `String[]` needs an explicit default in raw SQL.** The hand-written
+  migration for a scalar list must be
+  `ADD COLUMN "x" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]` — a bare `TEXT[]`
+  default will fail on a non-empty table.
+
 

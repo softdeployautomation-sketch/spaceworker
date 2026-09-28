@@ -408,6 +408,26 @@ model EmailCampaign {
   // campaign-create "use this recipient as my test target" option) or
   // reactively after the platform seed mailbox's automated check fails.
   testRecipientOverride String?
+  // 2026-09-28 — the test-send flow's own settings, deliberately SEPARATE from
+  // everything a real send reads. A campaign's owner does a lot of trial and
+  // error before letting it run ("did it land?", "was it the subject?", "was it
+  // the From address?"), and that experimenting must never leak into the live
+  // send.
+  //
+  // testRecipientPool: the addresses the user is willing to test against, so
+  // switching the test target mid-flow is one click instead of retyping. Each
+  // entry is a plain address the user can open themselves — there's no IMAP
+  // access to it, so placement is never auto-verified (same trade-off as
+  // testRecipientOverride above); the active one is still that field, this is
+  // just the shortlist it's chosen from.
+  //
+  // testFromOverride: the From address EVERY test send should use instead of
+  // the mailbox's normal fromAddresses rotation. This is the "is the From
+  // address what's triggering spam?" lever. Structurally incapable of affecting
+  // a real send: nothing on the send path (mail-queue drain / transporterForMailbox)
+  // reads this field — only the test-send and diagnostics routes do.
+  testRecipientPool     String[]              @default([])
+  testFromOverride      String?
   // Task 35 — configurable send pacing. The drain's per-send jitter is
   // `min + random * (max - min)` seconds; defaults (5/45) match the pre-Task-35
   // hardcoded `Math.random() * 40_000 + 5_000` exactly (zero behavior change for

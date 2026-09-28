@@ -53,6 +53,9 @@ async function loadProbeMeta({ id, userId }: { id: string; userId: string }) {
     bodies: campaign.bodies ?? [],
     variants: campaign.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml })),
     fromAddresses: primary ? primary.fromAddresses : [],
+    // Keep the GET's probe definitions consistent with what the POST will run —
+    // both go through buildIsolationProbes with the same test From in play.
+    testFromOverride: campaign.testFromOverride,
   });
   return { campaign, primary, probes, overrideRecipient: campaign.testRecipientOverride?.trim() || null };
 }

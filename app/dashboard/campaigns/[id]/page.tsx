@@ -86,6 +86,12 @@ type CampaignDetail = {
   // Human-assisted deliverability fallback — set, every check targets this
   // plain address instead of the platform seed mailbox (see lib/deliverability.ts).
   testRecipientOverride: string | null;
+  // 2026-09-28 — the test-flow settings: the shortlist of addresses the user is
+  // willing to test against (so switching the test target mid-flow is one click),
+  // and the From address every TEST send uses (the "is the From what's causing
+  // spam?" lever). Neither is ever read by a real send.
+  testRecipientPool: string[];
+  testFromOverride: string | null;
   // Task 33 — a temporary pinned-override window active on this campaign:
   // { subject, bodyHtml, fromAddress, remaining }. While set, the drain sends
   // every recipient this exact content instead of rotating, and decrements
@@ -193,6 +199,16 @@ export default function CampaignDetailPage() {
   // target instead of Gmail from then on.
   const [testRecipientInput, setTestRecipientInput] = useState("");
   const [settingTestRecipient, setSettingTestRecipient] = useState(false);
+  // 2026-09-28 — the test-setup panel, open for the whole testing phase rather
+  // than only appearing reactively after a failure. It owns the two things a
+  // person actually changes while triaging: WHICH inbox the test lands in
+  // (testTarget, switched between sends) and WHAT From it goes out as
+  // (testFromInput, the spam-trigger lever). Both are test-only and can never
+  // affect the real send — see the test-recipient route.
+  const [testSetupOpen, setTestSetupOpen] = useState(false);
+  const [testTargetBusy, setTestTargetBusy] = useState(false);
+  const [newTestTarget, setNewTestTarget] = useState("");
+  const [testFromInput, setTestFromInput] = useState("");
   // Task 32 — "Manually edit and test": a 4th, clearly-secondary path in the
   // decision box. The user drafts a subject/body (and optional From) tweak,
   // live-tests it via the extended test-send route WITHOUT touching stored
@@ -301,11 +317,27 @@ export default function CampaignDetailPage() {
     setCampaign((prev) => (prev ? { ...prev, checks: [check, ...prev.checks] } : prev));
   }, []);
 
-  async function sendTest() {
+  // 2026-09-28 — `overrides` lets the test-setup panel send ONE test to a
+  // specific address/From without a second round-trip and without changing any
+  // stored setting: `to` switches which inbox this single test lands in (so the
+  // user can fire the same content at their Gmail, then their Outlook, then their
+  // work address and compare), and `from` pins the From for this one send (the
+  // quickest way to answer "is it the From address triggering spam?"). Both are
+  // passed straight through to the test-send route, which applies them for this
+  // request only. Omitting them reproduces the previous behaviour exactly.
+  async function sendTest(overrides?: { to?: string; from?: string }) {
     setTestBusy(true);
     setTestResult(null);
     try {
-      const res = await fetch(`/api/campaigns/${id}/test-send`, { method: "POST" });
+      const res = await fetch(`/api/campaigns/${id}/test-send`, {
+        method: "POST",
+        ...(overrides && (overrides.to || overrides.from)
+          ? {
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...(overrides.to ? { to: overrides.to } : {}), ...(overrides.from ? { from: overrides.from } : {}) }),
+            }
+          : {}),
+      });
       const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string; check?: DeliverabilityCheck };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Test-send failed" });
@@ -342,6 +374,9 @@ export default function CampaignDetailPage() {
   // Sets this campaign's human-assisted test-recipient override, then immediately
   // re-runs the test-send against it — the whole point of offering this after a
   // failure is to get a working result without a second manual click.
+  // 2026-09-28 — the route now also returns the (auto-extended) pool and the
+  // test-only From, so both are merged here too; anything it didn't return is
+  // left exactly as it was rather than being clobbered with undefined.
   async function applyTestRecipient(email: string) {
     setSettingTestRecipient(true);
     try {
@@ -350,19 +385,89 @@ export default function CampaignDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; testRecipientOverride?: string | null };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        testRecipientOverride?: string | null;
+        testRecipientPool?: string[];
+        testFromOverride?: string | null;
+      };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't set the test recipient." });
         return;
       }
       setTestRecipientInput("");
       // Task 34 — merge just the override field locally; sendTest() merges its check.
-      patchCampaign({ testRecipientOverride: data.testRecipientOverride ?? null });
+      patchCampaign({
+        testRecipientOverride: data.testRecipientOverride ?? null,
+        ...(data.testRecipientPool ? { testRecipientPool: data.testRecipientPool } : {}),
+      });
       await sendTest();
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while setting the test recipient." });
     } finally {
       setSettingTestRecipient(false);
+    }
+  }
+
+  // 2026-09-28 — one POST that owns all three test-flow settings, then ONE test
+  // against the resulting target. Used by the test-setup panel for every action
+  // it offers: switching which saved address is active, adding a new address,
+  // removing one, switching back to the automated seed mailbox, and pinning or
+  // clearing the test-only From.
+  //
+  // `patch` mirrors the route's body. `sendTo`/`sendFrom` are optional one-shot
+  // values for the test fired afterwards (so "test as this new From, right now"
+  // needs a single call, and the chosen From is also persisted for next time via
+  // `patch.from` when the caller wants that). Anything the route returns is
+  // merged into local state — never a full campaign re-fetch.
+  async function saveTestSetup(patch: {
+    email?: string | null;
+    pool?: string[];
+    from?: string | null;
+    sendTo?: string;
+    sendFrom?: string;
+    thenTest?: boolean;
+  }) {
+    setTestTargetBusy(true);
+    setTestResult(null);
+    try {
+      const body: Record<string, unknown> = {};
+      if ("email" in patch) body.email = patch.email;
+      if ("pool" in patch) body.pool = patch.pool;
+      if ("from" in patch) body.from = patch.from;
+      if (Object.keys(body).length > 0) {
+        const res = await fetch(`/api/campaigns/${id}/test-recipient`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          testRecipientOverride?: string | null;
+          testRecipientPool?: string[];
+          testFromOverride?: string | null;
+        };
+        if (!res.ok) {
+          setTestResult({ outcome: "failed", error: data.error ?? "Couldn't save the test setup." });
+          return;
+        }
+        patchCampaign({
+          ...("testRecipientOverride" in data ? { testRecipientOverride: data.testRecipientOverride ?? null } : {}),
+          ...(data.testRecipientPool ? { testRecipientPool: data.testRecipientPool } : {}),
+          ...("testFromOverride" in data ? { testFromOverride: data.testFromOverride ?? null } : {}),
+        });
+      }
+      setNewTestTarget("");
+      if (patch.thenTest) {
+        await sendTest({
+          ...(patch.sendTo ? { to: patch.sendTo } : {}),
+          ...(patch.sendFrom ? { from: patch.sendFrom } : {}),
+        });
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while saving the test setup." });
+    } finally {
+      setTestTargetBusy(false);
     }
   }
 
@@ -382,12 +487,19 @@ export default function CampaignDetailPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: null }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; testRecipientOverride?: string | null };
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        testRecipientOverride?: string | null;
+        testRecipientPool?: string[];
+      };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Couldn't switch back to automated testing." });
         return;
       }
-      patchCampaign({ testRecipientOverride: data.testRecipientOverride ?? null });
+      patchCampaign({
+        testRecipientOverride: data.testRecipientOverride ?? null,
+        ...(data.testRecipientPool ? { testRecipientPool: data.testRecipientPool } : {}),
+      });
     } catch {
       setTestResult({ outcome: "failed", error: "Network error while switching back to automated testing." });
     } finally {
@@ -699,16 +811,230 @@ export default function CampaignDetailPage() {
   // so clicking can never silently do nothing (the server also rejects it).
   const canSwitchSubject = (campaign.subjects?.length ?? 0) > 1;
 
+  // 2026-09-28 — the test-setup panel's shortlist, normalised once. The column
+  // is a non-null String[] with a [] default, but a campaign row that predates
+  // the 20261017000000 migration (or a response from an older cached client)
+  // would carry undefined here, and every use below indexes straight into it.
+  const testRecipientPool = campaign.testRecipientPool ?? [];
+
   // Task 32 — the From addresses the draft probe can be sent as: every Task 30
   // item 4 configured from address across the campaign's mailboxes, deduped, plus
   // each mailbox's SMTP username as a fallback (an empty list on a mailbox means
   // "send as the SMTP username"). Empty list => hide the select for v1.
+  // 2026-09-28 — a pinned test-only From is added too, otherwise the manual-edit
+  // form could not select the very address the user just chose to test with.
   const fromOptions = Array.from(
-    new Set(
-      campaign.mailboxes.flatMap((m) =>
+    new Set([
+      ...campaign.mailboxes.flatMap((m) =>
         m.fromAddresses && m.fromAddresses.length > 0 ? m.fromAddresses : [m.username]
-      )
-    )
+      ),
+      ...(campaign.testFromOverride ? [campaign.testFromOverride] : []),
+    ])
+  );
+
+  // 2026-09-28 — the test-setup panel. Everything in it is about TESTING ONLY;
+  // the panel says so explicitly, because the two levers it exposes (which inbox
+  // the test lands in, and what From it goes out as) are exactly the things a
+  // person changes repeatedly while triaging, and it would be alarming to think
+  // each click was rewriting the live campaign. It is not: these values are read
+  // exclusively by the test-send and diagnostics routes.
+  //
+  // Deliberately rendered in BOTH decision-boxes (the initial gate and the
+  // batch-pause banner) alongside the existing manual-edit and diagnostics
+  // sections, so wherever the user is stuck they can see and change the setup.
+  const testSetupSection = (
+    <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
+      {!testSetupOpen ? (
+        <button
+          type="button"
+          onClick={() => {
+            setTestSetupOpen(true);
+            setTestFromInput(campaign.testFromOverride ?? "");
+          }}
+          className="text-sm font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+        >
+          Change where tests go / what they&apos;re sent as →
+        </button>
+      ) : (
+        <div className="space-y-3">
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">
+            These affect <span className="font-medium">test sends only</span> — nothing here is used when the campaign
+            actually goes out. Switch the address between tests to check more than one inbox, and change the From to
+            find out whether that&apos;s what&apos;s triggering spam.
+          </p>
+
+          {/* --- where the test lands ------------------------------------- */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Test goes to
+            </p>
+            <p className="mt-1 text-sm">
+              {campaign.testRecipientOverride ? (
+                <>
+                  <span className="font-medium">{campaign.testRecipientOverride}</span>{" "}
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    (your own inbox — we can&apos;t check it automatically, so you confirm delivery by eye)
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="font-medium">The automated test mailbox</span>{" "}
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                    (we send and then check the inbox ourselves via IMAP)
+                  </span>
+                </>
+              )}
+            </p>
+            {campaign.testRecipientOverride && (
+              <button
+                type="button"
+                onClick={() => void saveTestSetup({ email: null })}
+                disabled={testTargetBusy || testBusy}
+                className="mt-1 text-xs font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
+              >
+                Use the automated test mailbox instead
+              </button>
+            )}
+
+            {/* The shortlist: one click switches which of the saved addresses is
+                active AND re-tests immediately, which is the whole point — the
+                question being asked is always "did THIS inbox get it?". */}
+            {testRecipientPool.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {testRecipientPool.map((addr) => {
+                  const isActive = addr === campaign.testRecipientOverride;
+                  return (
+                    <li key={addr} className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void saveTestSetup({ email: addr, thenTest: true, sendTo: addr })}
+                        disabled={testTargetBusy || testBusy}
+                        className={`rounded-lg border px-2 py-1 text-xs font-medium disabled:opacity-50 ${
+                          isActive
+                            ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+                            : "border-zinc-300 text-zinc-600 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                        }`}
+                      >
+                        {isActive ? `✓ ${addr} — test again` : `Test ${addr}`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void saveTestSetup({ pool: testRecipientPool.filter((a) => a !== addr) })}
+                        disabled={testTargetBusy || testBusy}
+                        className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                        aria-label={`Remove ${addr}`}
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="email"
+                value={newTestTarget}
+                onChange={(e) => setNewTestTarget(e.target.value)}
+                placeholder="add another address to test with"
+                className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  void saveTestSetup({ email: newTestTarget.trim(), thenTest: true, sendTo: newTestTarget.trim() })
+                }
+                disabled={testTargetBusy || testBusy || !newTestTarget.trim()}
+                className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                {testTargetBusy ? "Working…" : "Save & test there"}
+              </button>
+            </div>
+          </div>
+
+          {/* --- what the test is sent AS --------------------------------- */}
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Test From address
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              {campaign.testFromOverride ? (
+                <>
+                  Every test is sent as <span className="font-medium">{campaign.testFromOverride}</span>. This does not
+                  change what the campaign sends as.
+                </>
+              ) : (
+                <>Every test is sent as the mailbox&apos;s normal From address (its first configured one).</>
+              )}
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="email"
+                value={testFromInput}
+                onChange={(e) => setTestFromInput(e.target.value)}
+                placeholder={fromOptions[0] ?? "test@yourdomain.com"}
+                className="min-w-0 flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  void saveTestSetup({
+                    from: testFromInput.trim(),
+                    thenTest: true,
+                    sendFrom: testFromInput.trim(),
+                  })
+                }
+                disabled={testTargetBusy || testBusy || !testFromInput.trim()}
+                className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+              >
+                {testTargetBusy ? "Working…" : "Test as this From"}
+              </button>
+              {campaign.testFromOverride && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTestFromInput("");
+                    void saveTestSetup({ from: null });
+                  }}
+                  disabled={testTargetBusy || testBusy}
+                  className="text-xs font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 disabled:opacity-50 dark:text-zinc-400 dark:hover:text-zinc-200"
+                >
+                  Use the normal From again
+                </button>
+              )}
+            </div>
+            {/* Only senders the mailbox could plausibly send AS are offered (the
+                SMTP session is always authenticated as the mailbox's own user,
+                so a From the provider won't accept would simply bounce). Free
+                text is still allowed for what this list can't know about — e.g.
+                a verified alias at a relay provider. */}
+            {fromOptions.length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {fromOptions.map((f) => (
+                  <button
+                    key={f}
+                    type="button"
+                    onClick={() => setTestFromInput(f)}
+                    className="rounded border border-zinc-300 px-1.5 py-0.5 text-xs text-zinc-500 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-white/5"
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setTestSetupOpen(false)}
+            className="text-xs font-medium text-zinc-500 underline underline-offset-4 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+          >
+            Done
+          </button>
+        </div>
+      )}
+    </div>
   );
 
   // Task 32 — the 4th, clearly-secondary path through the decision box, rendered in
@@ -1149,6 +1475,9 @@ export default function CampaignDetailPage() {
             </div>
           )}
 
+          {/* 2026-09-28 — where the test goes and what it's sent as. First,
+              because it's the setting a person changes most while triaging. */}
+          {testSetupSection}
           {/* Task 32 — the 4th, clearly-secondary path through the initial gate:
               manually edit and test a draft without touching stored content. */}
           {manualEditSection}
@@ -1265,6 +1594,7 @@ export default function CampaignDetailPage() {
           </div>
           {/* Task 32 — same 4th, secondary "manually edit and test" path, available
               from a batch pause too (test-send remains callable while paused). */}
+          {testSetupSection}
           {manualEditSection}
           {/* Task 33 — the isolation-diagnostic panel (opt-in, alongside edit). */}
           {diagnosticsSection}

@@ -1,4 +1,5 @@
 import "server-only";
+import net from "node:net";
 import nodemailer, { type Transporter } from "nodemailer";
 import { SocksClient } from "socks";
 import { decryptSecret } from "./mailbox-crypto";
@@ -47,6 +48,39 @@ export interface SmtpTransportOptions {
   proxy?: { host: string; port: number };
 }
 
+// ---------------------------------------------------------------------------
+// Connection timeouts (added 2026-09-28, mailbox-test triage).
+//
+// Confirmed live against a real customer mailbox: `smtp-host:587` on a server
+// that answers on 24610/25 but silently black-holes 587 (SYN accepted, never a
+// RST, never a banner) made "Test connection" sit on "Testing…" for 120.015s
+// before reporting `ETIMEDOUT Connection timeout`. Nothing in this codebase
+// ever set these, so nodemailer's defaults applied — and its default
+// `connectionTimeout` is 2 MINUTES, with `socketTimeout` at 10 MINUTES.
+//
+// That is the wrong failure shape for both callers: the test button looks
+// frozen for two minutes, and a real campaign send pointed at a dead port
+// would stall the queue for ten. A healthy provider answers all three phases
+// in well under a second, so every value here is a CEILING on a phase, not an
+// expected duration.
+//
+//   - connection: max wait for the TCP connect (+ TLS handshake, when implicit).
+//   - greeting:   max wait for the server's 220 banner and its EHLO reply.
+//   - socket:     max INACTIVITY once established. Deliberately far looser than
+//                 the other two (and than any human watching a test) because
+//                 this same transport also drives real campaign sends: a large
+//                 HTML body going out over a slow link must never be cut short
+//                 just to make a test feel snappier. The test route applies its
+//                 own tighter overall deadline on top instead.
+// ---------------------------------------------------------------------------
+export const SMTP_CONNECTION_TIMEOUT_MS = 10_000;
+export const SMTP_GREETING_TIMEOUT_MS = 10_000;
+export const SMTP_SOCKET_TIMEOUT_MS = 60_000;
+// The SOCKS5 handshake + the exit node's own connect to the destination. The
+// `socks` package's default is 30s, measured live as a misleading
+// "Proxy connection timed out" long after the user had given up.
+export const SOCKS_CONNECT_TIMEOUT_MS = 10_000;
+
 /**
  * Build a nodemailer SMTP transport from raw connection options — the shared
  * single source of truth for correct TLS negotiation. Used for BOTH stored
@@ -82,21 +116,40 @@ export async function buildSmtpTransport(opts: SmtpTransportOptions): Promise<Tr
   // completely unchanged — `host`/`port` are still passed alongside it (used
   // for the EHLO greeting and TLS SNI, not for opening the socket, once
   // `connection` is set).
-  const connection = opts.proxy
-    ? (
-        await SocksClient.createConnection({
-          proxy: { host: opts.proxy.host, port: opts.proxy.port, type: 5 },
-          command: "connect",
-          destination: { host: opts.host, port: opts.port },
-        })
-      ).socket
-    : undefined;
+  let connection: net.Socket | undefined;
+  if (opts.proxy) {
+    try {
+      const established = await SocksClient.createConnection({
+        proxy: { host: opts.proxy.host, port: opts.proxy.port, type: 5 },
+        command: "connect",
+        destination: { host: opts.host, port: opts.port },
+        timeout: SOCKS_CONNECT_TIMEOUT_MS,
+      });
+      // `socks` resolves with { socket: null } rather than rejecting in some
+      // failure shapes, so check both — a null socket would otherwise surface
+      // as an opaque "Cannot read properties of null" from deep inside
+      // nodemailer instead of naming the exit node as the problem.
+      if (!established?.socket) throw new Error("the exit node did not return a usable connection");
+      connection = established.socket;
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : "unknown error";
+      throw new Error(
+        `Couldn't reach ${opts.host}:${opts.port} through the send region's exit node ` +
+          `(${opts.proxy.host}:${opts.proxy.port}) — ${detail}`
+      );
+    }
+  }
   return nodemailer.createTransport({
     host: opts.host,
     port: opts.port,
     secure: implicitTls,
     requireTLS: !implicitTls && !opts.allowInsecure,
     auth: { user: opts.username, pass: opts.password },
+    // See the timeout block above the doc comment — these are what turn a
+    // black-holed port from a 2-minute freeze into a fast, clear failure.
+    connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
+    socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
     ...(connection ? { connection } : {}),
   });
 }

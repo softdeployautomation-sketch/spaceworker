@@ -49,10 +49,57 @@ type TestMailbox = {
 type SecurityMode = "starttls" | "implicit" | "none";
 
 const SECURITY_OPTIONS: { value: SecurityMode; label: string; hint: string; port: string }[] = [
-  { value: "starttls", label: "STARTTLS (recommended)", hint: "port 587 — plaintext first, then upgrade", port: "587" },
-  { value: "implicit", label: "Implicit TLS / SSL", hint: "port 465 — TLS from the first byte", port: "465" },
-  { value: "none", label: "None (unencrypted)", hint: "port 25 — self-hosted/internal relays only", port: "25" },
+  { value: "starttls", label: "STARTTLS (recommended)", hint: "usual port 587 — plaintext first, then upgrade", port: "587" },
+  { value: "implicit", label: "Implicit TLS / SSL", hint: "usual port 465 — TLS from the first byte", port: "465" },
+  { value: "none", label: "None (unencrypted)", hint: "any port — no encryption (self-hosted/internal relays)", port: "25" },
 ];
+
+// The `port` above is only a SUGGESTION used to pre-fill the Port field. It must
+// never overwrite a port the user typed: doing exactly that silently rewrote a
+// working 24610 to a black-holed 587 the moment "STARTTLS" was selected, which
+// is why the pre-save test then appeared to hang for two minutes instead of
+// reporting anything. See the select's onChange for the guard.
+
+/**
+ * What the SEND will actually negotiate. Deliberately derived the same way the
+ * server derives it (lib/mailer-send.ts: port 465 => implicit TLS, anything
+ * else => STARTTLS, unless the explicit "None" mode) rather than from the
+ * selected label, because the port is what really decides. Shown to the user so
+ * the picker can never imply a handshake style that a send won't use — on a
+ * non-standard port like 24610 the only honest answer is "STARTTLS, because
+ * 24610 isn't 465", and the user should see that before they save.
+ *
+ * 465 wins outright: the send derives implicit TLS from the port alone, so the
+ * "None" opt-out (allowInsecure) has no effect there and the label must not
+ * claim otherwise.
+ */
+function effectiveMode(mode: SecurityMode, port: number): SecurityMode {
+  if (port === 465) return "implicit";
+  if (mode === "none") return "none";
+  return "starttls";
+}
+
+/** True when the Security label and the port disagree about the handshake. */
+function securityMismatch(mode: SecurityMode, port: number): boolean {
+  return effectiveMode(mode, port) !== mode;
+}
+
+/** One sentence naming the handshake that will actually be used, and why. */
+function describeNegotiation(mode: SecurityMode, port: number): string {
+  const effective = effectiveMode(mode, port);
+  const mismatched = securityMismatch(mode, port);
+  if (effective === "implicit") {
+    return mismatched
+      ? "TLS from the first byte — port 465 always uses implicit TLS, whatever Security is set to."
+      : `TLS from the first byte on port ${port}.`;
+  }
+  if (effective === "none") {
+    return `No encryption — credentials and mail are sent in the clear on port ${port}.`;
+  }
+  return mismatched
+    ? `STARTTLS — implicit TLS is only used on port 465, so port ${port} connects in plaintext and upgrades before logging in.`
+    : `Connects in plaintext on port ${port}, then upgrades to TLS before logging in.`;
+}
 
 // The `secure` (implicit TLS) of the eventual Mailbox row is derived from the port
 // (465 => true) exactly like the send path, so the form and a real send agree.
@@ -65,6 +112,32 @@ function modeForMailbox(m: Mailbox): SecurityMode {
   if (m.port === 465) return "implicit";
   return "starttls";
 }
+
+/**
+ * The pre-save test's answer, plus what the server said about itself. The extra
+ * fields come from the server-side capability probe (lib/smtp-diagnostics.ts):
+ *
+ *  - `warning` — the connection succeeded but with a caveat worth reading. The
+ *    important one: the server advertised no AUTH, so our username/password were
+ *    never checked and outgoing mail may be accepted and then dropped rather
+ *    than relayed. A plain green tick hides that completely.
+ *  - `capabilities.banner` — the server's own greeting line ("220 localhost
+ *    Python SMTP 1.4.6"). Frequently the fastest way to notice you're talking
+ *    to a different service than you assumed on that port.
+ */
+type TestConnResult = {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+  capabilities?: {
+    connected: boolean;
+    reachable: boolean;
+    banner: string | null;
+    authAdvertised: boolean | null;
+    authMechanisms: string[];
+    starttlsAdvertised: boolean | null;
+  };
+};
 
 type MailboxForm = {
   label: string;
@@ -113,10 +186,16 @@ export default function MailboxesPanel() {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [testingId, setTestingId] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; error?: string }>>({});
+  const [testResults, setTestResults] = useState<Record<string, TestConnResult>>({});
   // Task 26, Piece 5a — live pre-save connection test in the Add/Edit modal.
   const [testConnecting, setTestConnecting] = useState(false);
-  const [testConnResult, setTestConnResult] = useState<{ ok: boolean; error?: string } | null>(null);
+  const [testConnResult, setTestConnResult] = useState<TestConnResult | null>(null);
+  // True once the user has typed in the Port field themselves. Choosing a
+  // Security mode pre-fills the conventional port ONLY while this is false —
+  // otherwise picking "STARTTLS (recommended)" would rewrite a hand-typed
+  // non-standard port (e.g. 24610) to 587, which is how a working mailbox got
+  // turned into a two-minute "Testing…" hang.
+  const [portTouched, setPortTouched] = useState(false);
   // Task 29, item 5 — per-user deliverability test/seed mailbox registration.
   const [testMailboxes, setTestMailboxes] = useState<TestMailbox[]>([]);
   const [testMbLoading, setTestMbLoading] = useState(true);
@@ -166,6 +245,7 @@ export default function MailboxesPanel() {
     setForm(EMPTY_FORM);
     setFormError("");
     setTestConnResult(null);
+    setPortTouched(false);
     setModalOpen(true);
   }
 
@@ -184,6 +264,10 @@ export default function MailboxesPanel() {
     });
     setFormError("");
     setTestConnResult(null);
+    // An existing mailbox already HAS a meaningful port — it was loaded from
+    // the saved row, not from a mode preset, so treat it as user-chosen and
+    // never let a mode switch overwrite it.
+    setPortTouched(true);
     setModalOpen(true);
   }
 
@@ -258,11 +342,27 @@ export default function MailboxesPanel() {
           host: form.host.trim(), port, username: form.username.trim(), password: form.password, secure, allowInsecure,
           sendRegion: isPremium && form.sendRegion ? form.sendRegion : null,
         }),
+        // The route bounds itself (30s handshake deadline + an 8s capability
+        // probe), so this is only a backstop for a stalled proxy — but without
+        // it the button could sit on "Testing…" forever, which is the exact
+        // complaint that started this: a two-minute freeze with no explanation.
+        signal: AbortSignal.timeout(45_000),
       });
-      const data = await res.json().catch(() => ({}));
-      setTestConnResult({ ok: Boolean(data.ok), error: typeof data.error === "string" ? data.error : undefined });
-    } catch {
-      setTestConnResult({ ok: false, error: "Network error" });
+      const data = (await res.json().catch(() => ({}))) as TestConnResult;
+      setTestConnResult({
+        ok: Boolean(data.ok),
+        error: typeof data.error === "string" ? data.error : undefined,
+        warning: typeof data.warning === "string" ? data.warning : undefined,
+        capabilities: data.capabilities,
+      });
+    } catch (e) {
+      setTestConnResult({
+        ok: false,
+        error:
+          e instanceof DOMException && e.name === "TimeoutError"
+            ? "The test timed out after 45s with no answer — the port is almost certainly blocked by a firewall."
+            : "Network error",
+      });
     } finally {
       setTestConnecting(false);
     }
@@ -272,12 +372,25 @@ export default function MailboxesPanel() {
     setTestingId(m.id);
     setTestResults((prev) => ({ ...prev, [m.id]: { ok: false, error: "Testing…" } }));
     try {
-      const res = await fetch(`/api/mailboxes/${m.id}/test`, { method: "POST" });
-      const data = await res.json().catch(() => ({}));
+      // Same reasoning as the pre-save test: the route bounds itself (an 8s
+      // capability probe then a 30s handshake deadline), so this is only a
+      // backstop for a stalled proxy. Without it the row could sit on
+      // "Testing…" indefinitely, which is exactly the freeze this triage was
+      // about.
+      const res = await fetch(`/api/mailboxes/${m.id}/test`, {
+        method: "POST",
+        signal: AbortSignal.timeout(45_000),
+      });
+      const data = (await res.json().catch(() => ({}))) as TestConnResult;
       const ok = Boolean(data.ok);
       setTestResults((prev) => ({
         ...prev,
-        [m.id]: { ok, error: data.error as string | undefined },
+        [m.id]: {
+          ok,
+          error: typeof data.error === "string" ? data.error : undefined,
+          warning: typeof data.warning === "string" ? data.warning : undefined,
+          capabilities: data.capabilities,
+        },
       }));
       setMailboxes((prev) =>
         prev.map((x) =>
@@ -286,8 +399,17 @@ export default function MailboxesPanel() {
             : x
         )
       );
-    } catch {
-      setTestResults((prev) => ({ ...prev, [m.id]: { ok: false, error: "Network error" } }));
+    } catch (e) {
+      setTestResults((prev) => ({
+        ...prev,
+        [m.id]: {
+          ok: false,
+          error:
+            e instanceof DOMException && e.name === "TimeoutError"
+              ? "The test timed out after 45s with no answer — the port is almost certainly blocked by a firewall."
+              : "Network error",
+        },
+      }));
     } finally {
       setTestingId(null);
     }
@@ -463,15 +585,51 @@ export default function MailboxesPanel() {
                     <p className="text-zinc-400 dark:text-zinc-500">Not tested yet</p>
                   )}
                   {test && (
-                    <p
-                      className={`mt-1 text-xs ${
-                        test.ok
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : "text-red-600 dark:text-red-400"
-                      }`}
-                    >
-                      {test.ok ? "✓ Connection OK" : `✗ ${test.error ?? "Failed"}`}
-                    </p>
+                    <>
+                      <p
+                        className={`mt-1 text-xs ${
+                          test.ok
+                            ? test.warning
+                              ? "text-amber-600 dark:text-amber-400"
+                              : "text-emerald-600 dark:text-emerald-400"
+                            : "text-red-600 dark:text-red-400"
+                        }`}
+                      >
+                        {test.ok
+                          ? test.warning
+                            ? "⚠ Connected — but read this"
+                            : "✓ Connection OK"
+                          : `✗ ${test.error ?? "Failed"}`}
+                      </p>
+                      {/* Same evidence the pre-save test shows, for the same
+                          reason: a green tick from a server that never asked for
+                          a password is the one failure that looks like success. */}
+                      {test.warning && (
+                        <p className="mt-1 rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs leading-snug text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                          {test.warning}
+                        </p>
+                      )}
+                      {test.capabilities?.reachable && (
+                        <p className="mt-1 break-words text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                          {test.capabilities.banner && (
+                            <>
+                              Server said: <span className="font-mono">{test.capabilities.banner}</span>{" "}
+                            </>
+                          )}
+                          Authentication:{" "}
+                          {test.capabilities.authAdvertised
+                            ? (test.capabilities.authMechanisms.join(", ") || "offered")
+                            : "not requested"}
+                        </p>
+                      )}
+                      {test.capabilities && !test.capabilities.reachable && (
+                        <p className="mt-1 text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                          {test.capabilities.connected
+                            ? `Connected to ${m.host}:${m.port}, but it never completed an SMTP greeting.`
+                            : `Nothing answered on ${m.host}:${m.port}.`}
+                        </p>
+                      )}
+                    </>
                   )}
                 </div>
 
@@ -651,7 +809,12 @@ export default function MailboxesPanel() {
                   <input
                     type="number"
                     value={form.port}
-                    onChange={(e) => setForm({ ...form, port: e.target.value })}
+                    onChange={(e) => {
+                      // Any manual edit marks the port as deliberate, so a later
+                      // Security change can't silently overwrite it.
+                      setPortTouched(true);
+                      setForm({ ...form, port: e.target.value });
+                    }}
                     className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                   />
                 </label>
@@ -747,9 +910,25 @@ export default function MailboxesPanel() {
                   onChange={(e) => {
                     const value = e.target.value as SecurityMode;
                     const option = SECURITY_OPTIONS.find((o) => o.value === value);
-                    // Choosing a security mode pre-fills the conventional port for it
-                    // (still editable after, for nonstandard providers).
-                    setForm({ ...form, securityMode: value, port: option ? option.port : form.port });
+                    // Choosing a security mode pre-fills the conventional port for
+                    // it — but ONLY while the port field is still untouched. A user
+                    // who typed their own port (24610, 2525, anything non-standard)
+                    // keeps it; overwriting it here is what turned a working mailbox
+                    // into a two-minute hang on a port the server never answers.
+                    //
+                    // There is deliberately NO "unless the current port is 465"
+                    // escape clause. An earlier version had one, and it broke the
+                    // Implicit TLS → None switch: 465 is exactly what the previous
+                    // selection leaves behind, so the guard fired and "None
+                    // (unencrypted)" silently kept port 465 — while the send path
+                    // derives implicit TLS from 465 alone, so the label said
+                    // "unencrypted" and the connection was TLS. The port must always
+                    // follow the mode, or follow the user's own fingers.
+                    setForm({
+                      ...form,
+                      securityMode: value,
+                      port: !portTouched && option ? option.port : form.port,
+                    });
                   }}
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 >
@@ -759,13 +938,36 @@ export default function MailboxesPanel() {
                 </select>
                 {form.securityMode === "none" ? (
                   <span className="text-xs font-normal leading-snug text-amber-600 dark:text-amber-400">
-                    ⚠ Unencrypted — real SMTP providers essentially never need this; it exists for self-hosted/internal relays only.
+                    ⚠ Unencrypted — real SMTP providers essentially never need this; it exists for
+                    self-hosted/internal relays. Works on any port (not just 25), and beware: a relay
+                    that asks for no password at all will accept messages and drop them instead of
+                    sending them on.
                   </span>
                 ) : (
                   <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
                     The send is always encrypted; this only picks how the connection negotiates it.
                   </span>
                 )}
+                {/* The port is what ACTUALLY decides the handshake style, so show
+                    the user the outcome rather than letting a label imply one. On a
+                    non-standard port (24610) "Implicit TLS" is still STARTTLS as far
+                    as the send is concerned, and saying so here is the difference
+                    between a debuggable test and a mystery. */}
+                {(() => {
+                  const port = Number(form.port);
+                  if (!Number.isInteger(port) || port <= 0) return null;
+                  const mismatch = securityMismatch(form.securityMode, port);
+                  return (
+                    <span
+                      className={`text-xs font-normal leading-snug ${
+                        mismatch ? "text-amber-600 dark:text-amber-400" : "text-zinc-500 dark:text-zinc-400"
+                      }`}
+                    >
+                      {mismatch && "⚠ "}
+                      Will connect with: {describeNegotiation(form.securityMode, port)}
+                    </span>
+                  );
+                })()}
               </label>
 
               {/* TASK_134 — premium regional send routing, reusing the same exit
@@ -809,12 +1011,60 @@ export default function MailboxesPanel() {
                 </button>
                 {testConnResult && (
                   <span
-                    className={`text-xs ${testConnResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}
+                    className={`text-xs ${
+                      testConnResult.ok
+                        ? testConnResult.warning
+                          ? "text-amber-600 dark:text-amber-400"
+                          : "text-emerald-600 dark:text-emerald-400"
+                        : "text-red-600 dark:text-red-400"
+                    }`}
                   >
-                    {testConnResult.ok ? "✓ Connection OK" : `✗ ${testConnResult.error ?? "Failed"}`}
+                    {testConnResult.ok
+                      ? testConnResult.warning
+                        ? "⚠ Connected — but read this"
+                        : "✓ Connection OK"
+                      : `✗ ${testConnResult.error ?? "Failed"}`}
                   </span>
                 )}
               </div>
+
+              {/* What the server actually said about itself. Shown for successes
+                  AND failures because it's the most useful single line when
+                  something is wrong: the banner identifies the service ("220
+                  localhost Python SMTP 1.4.6" is not the same mail server that
+                  answers authenticated on another port), and the AUTH row is
+                  what explains a green tick that silently sends nothing. */}
+              {testConnResult && (
+                <div className="mt-2 space-y-1.5">
+                  {testConnResult.warning && (
+                    <p className="rounded-lg border border-amber-300 bg-amber-50 p-2 text-xs leading-snug text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300">
+                      {testConnResult.warning}
+                    </p>
+                  )}
+                  {testConnResult.capabilities?.reachable && (
+                    <p className="text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                      {testConnResult.capabilities.banner && (
+                        <>
+                          Server says: <code className="break-all">{testConnResult.capabilities.banner}</code>
+                          <br />
+                        </>
+                      )}
+                      Authentication:{" "}
+                      {testConnResult.capabilities.authAdvertised
+                        ? `offered (${testConnResult.capabilities.authMechanisms.join(", ") || "unknown method"})`
+                        : "NOT offered — your password isn't checked on this port"}{" "}
+                      · STARTTLS: {testConnResult.capabilities.starttlsAdvertised ? "offered" : "not offered"}
+                    </p>
+                  )}
+                  {testConnResult.capabilities && !testConnResult.capabilities.reachable && (
+                    <p className="text-xs leading-snug text-zinc-500 dark:text-zinc-400">
+                      {testConnResult.capabilities.connected
+                        ? `Connected to the server, but it never sent an SMTP greeting on port ${Number(form.port)}.`
+                        : `Nothing answered on ${form.host.trim()}:${Number(form.port)}.`}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
 
             {formError && <p className="mt-2.5 text-sm text-red-600 dark:text-red-400">{formError}</p>}

@@ -278,6 +278,17 @@ export function buildIsolationProbes(opts: {
   // The campaign's PRIMARY sending mailbox's configured From rotation
   // (Task 30, item 4). Used for both the "current From" arm and the from-probe.
   fromAddresses: string[];
+  /**
+   * 2026-09-28 — the campaign's test-only From (EmailCampaign.testFromOverride,
+   * set in the campaign detail page's test-setup panel). When set it becomes the
+   * From EVERY probe is sent as, so the ladder compares subject/body/From against
+   * a fixed, user-chosen baseline instead of the mailbox's rotating one — and the
+   * from-probe's alternative flips to the campaign's REAL first From. The
+   * question it answers therefore becomes "is the address I actually send as
+   * better than the one I'm testing with?", which is the whole point of the
+   * knob. Left unset, every branch below is byte-identical to before.
+   */
+  testFromOverride?: string | null;
 }): IsolationProbe[] {
   const subject = opts.subjects?.[0] ?? opts.variants?.[0]?.subject ?? "";
   const bodyHtml = opts.bodies?.[0] ?? opts.variants?.[0]?.bodyHtml ?? "";
@@ -286,43 +297,64 @@ export function buildIsolationProbes(opts: {
   // unavailable rather than silently testing the identical content twice.
   const nextSubject = opts.subjects && opts.subjects.length > 1 ? opts.subjects[1] : subject;
   const nextBody = opts.bodies && opts.bodies.length > 1 ? opts.bodies[1] : bodyHtml;
-  const nextFrom = opts.fromAddresses && opts.fromAddresses.length > 1 ? opts.fromAddresses[1] : null;
+  const rotationNext = opts.fromAddresses && opts.fromAddresses.length > 1 ? opts.fromAddresses[1] : null;
+
+  const testFrom = opts.testFromOverride?.trim() || null;
+  const realFrom = opts.fromAddresses?.[0] ?? null;
+  // The From every probe is sent as: the user's test-only choice when they made
+  // one (null = the mailbox's own first From, exactly as before).
+  const baselineFrom = testFrom;
+  // What the from-probe changes TO. With a test From in play that's the address
+  // the campaign really sends as (falling back to the next rotation entry if
+  // they're the same); otherwise it stays the rotation's next entry.
+  const fromAlternative = testFrom
+    ? realFrom && realFrom.toLowerCase() !== testFrom.toLowerCase()
+      ? realFrom
+      : rotationNext
+    : rotationNext;
+  // Every probe except the from-probe holds the From constant at the baseline.
+  const sameFrom = (what: string) =>
+    testFrom ? `${what} Testing as ${testFrom} (your test From).` : `${what} Same From.`;
 
   return [
     {
       key: "subject",
       label: "Subject only",
-      description: "Next subject in the rotation; same body and From.",
+      description: sameFrom("Next subject in the rotation; same body."),
       variant: { subject: nextSubject, bodyHtml },
-      from: null,
+      from: baselineFrom,
       available: opts.subjects && opts.subjects.length > 1,
       unavailableReason: opts.subjects && opts.subjects.length > 1 ? undefined : "Only one subject on this campaign — no alternative to test.",
     },
     {
       key: "body",
       label: "Body only",
-      description: "Next body in the rotation; same subject and From.",
+      description: sameFrom("Next body in the rotation; same subject."),
       variant: { subject, bodyHtml: nextBody },
-      from: null,
+      from: baselineFrom,
       available: opts.bodies && opts.bodies.length > 1,
       unavailableReason: opts.bodies && opts.bodies.length > 1 ? undefined : "Only one body on this campaign — no alternative to test.",
     },
     {
       key: "emptyBody",
       label: "Empty-body diagnostic",
-      description: "Same subject and From, body removed. If this still hits spam, body content isn't the trigger.",
+      description: sameFrom("Same subject, body removed. If this still hits spam, body content isn't the trigger."),
       variant: { subject, bodyHtml: "" },
-      from: null,
+      from: baselineFrom,
       available: true,
     },
     {
       key: "from",
       label: "From address only",
-      description: "Next From address in the mailbox rotation; same subject and body.",
+      description: testFrom
+        ? `Your real sending From (${fromAlternative ?? "none configured"}); same subject and body. Compares it against the test From above.`
+        : "Next From address in the mailbox rotation; same subject and body.",
       variant: { subject, bodyHtml },
-      from: nextFrom,
-      available: opts.fromAddresses && opts.fromAddresses.length > 1,
-      unavailableReason: opts.fromAddresses && opts.fromAddresses.length > 1 ? undefined : "Only one From address on the sending mailbox — no alternative to test.",
+      from: fromAlternative,
+      available: !!fromAlternative,
+      unavailableReason: fromAlternative
+        ? undefined
+        : "No alternative From address is available to compare against.",
     },
   ];
 }
@@ -528,6 +560,9 @@ export async function runCampaignDiagnostics(opts: {
     bodies: campaign.bodies ?? [],
     variants: campaign.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml })),
     fromAddresses: primary.fromAddresses,
+    // 2026-09-28 — the campaign's test-only From (if the user set one) is what
+    // every probe goes out as; see buildIsolationProbes.
+    testFromOverride: campaign.testFromOverride,
   });
 
   const selected =
