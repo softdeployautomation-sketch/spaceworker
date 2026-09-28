@@ -5,7 +5,7 @@ import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
 import { prisma } from "@/lib/prisma";
-import { isPremiumTier } from "@/lib/trial";
+import { canUseExitNodes } from "@/lib/premium";
 
 // Task 26, Piece 5a — PRE-SAVE mailbox connection test.
 // POST /api/mailboxes/test-connection   body: { host, port, username, password, allowInsecure }
@@ -58,9 +58,8 @@ export async function POST(req: Request) {
   // client not to send a region anyway.
   let proxy: { host: string; port: number } | undefined;
   if (sendRegion) {
-    const owner = await prisma.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
-    if (!isPremiumTier(owner?.tier ?? 0)) {
-      return NextResponse.json({ ok: false, error: "Regional send routing is a premium feature." }, { status: 403 });
+    if (!(await canUseExitNodes(prisma, session.userId))) {
+      return NextResponse.json({ ok: false, error: "Regional send routing is a premium feature (or has been restricted)." }, { status: 403 });
     }
     const exitNode = getExitNode(sendRegion);
     if (!exitNode) {

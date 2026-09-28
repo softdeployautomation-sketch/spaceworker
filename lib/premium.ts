@@ -99,6 +99,25 @@ export async function resolveUserTier(
 }
 
 /**
+ * The one gate every SpaceWorker exit-node use should check (regional mailbox
+ * send, private-browser proxy, extraction routing): premium tier AND not
+ * admin-restricted. A restricted premium user keeps every other premium
+ * feature — this only ever affects node access specifically.
+ */
+export async function canUseExitNodes(
+  client: Prisma.TransactionClient,
+  userId: string,
+): Promise<boolean> {
+  const tier = await resolveUserTier(client, userId);
+  if (tier === null || tier < PREMIUM_TIER) return false;
+  const user = await client.user.findUnique({
+    where: { id: userId },
+    select: { nodeAccessRestricted: true },
+  });
+  return !user?.nodeAccessRestricted;
+}
+
+/**
  * Like applyPremiumReversion, but takes a client handle (for tx-consistency /
  * singletons) rather than the imported `db` singleton.
  */

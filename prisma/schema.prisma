@@ -32,6 +32,11 @@ model User {
   //   - non-NULL = a real premium term; every NEW grant / web-sub charge sets
   //     this. When it passes, the lazy check-on-read flips tier back to 1.
   premiumExpiresAt         DateTime?
+  // Admin override, independent of tier — an admin can revoke a premium user's
+  // access to SpaceWorker's own exit nodes (regional SMTP/browser/extraction
+  // routing) without touching their premium status otherwise, e.g. for abuse.
+  // Every node-access gate checks isPremiumTier(tier) && !nodeAccessRestricted.
+  nodeAccessRestricted     Boolean                @default(false)
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links

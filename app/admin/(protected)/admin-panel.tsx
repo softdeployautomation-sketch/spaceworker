@@ -51,7 +51,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations";
+type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -73,6 +73,7 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "mailboxes", label: "Mailboxes" },
   { id: "campaigns", label: "Campaigns" },
   { id: "automations", label: "Automations" },
+  { id: "routes", label: "Routes" },
 ];
 
 // Task 42 — human labels for Payment.product in the admin review table.
@@ -193,6 +194,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "mailboxes" && <MailboxesTab />}
         {tab === "campaigns" && <CampaignsTab />}
         {tab === "automations" && <AutomationsTab />}
+        {tab === "routes" && <RoutesTab />}
       </main>
     </div>
   );
@@ -4688,6 +4690,156 @@ return (
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// New — everyone who CAN reach SpaceWorker's own exit nodes (premium tier),
+// whether they're currently restricted, and whether they're actually using a
+// node right now (a mailbox with a region set, or a live browser session
+// routed through one). Restrict/unrestrict is independent of tier — it never
+// touches premium status otherwise.
+type NodeAccessUser = {
+  id: string;
+  email: string;
+  premium: boolean;
+  restricted: boolean;
+  usingMailboxRegions: { label: string; region: string | null }[];
+  usingBrowserNodes: (string | null)[];
+};
+
+function RoutesTab() {
+  const [users, setUsers] = useState<NodeAccessUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [savingId, setSavingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/node-access");
+      if (!res.ok) throw new Error("Failed to load");
+      const data = (await res.json()) as { users: NodeAccessUser[] };
+      setUsers(data.users);
+    } catch {
+      setError("Failed to load node access");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function toggle(userId: string, restricted: boolean) {
+    setSavingId(userId);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/node-access`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ restricted }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(typeof data.error === "string" ? data.error : "Failed to save");
+      setUsers((prev) => prev.map((u) => (u.id === userId ? { ...u, restricted } : u)));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
+  const usingCount = users.filter((u) => u.usingMailboxRegions.length > 0 || u.usingBrowserNodes.length > 0).length;
+  const canAccessCount = users.filter((u) => u.premium && !u.restricted).length;
+
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold tracking-tight">Routes</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        SpaceWorker&apos;s own regional exit nodes (US/CA/UK) — who can reach them, who&apos;s
+        actually using one right now, and an override to restrict a premium user&apos;s node
+        access without touching their premium status otherwise.
+      </p>
+
+      <div className="mt-4 flex flex-wrap gap-3">
+        <div className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+          <span className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">{canAccessCount}</span>
+          <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">can access (premium, unrestricted)</span>
+        </div>
+        <div className="rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
+          <span className="text-xl font-semibold text-emerald-600 dark:text-emerald-400">{usingCount}</span>
+          <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">using a node right now</span>
+        </div>
+      </div>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {loading ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : users.length === 0 ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">No premium users yet.</p>
+      ) : (
+        <div className="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">Access</th>
+                <th className="px-4 py-3 font-medium">Currently using</th>
+                <th className="px-4 py-3 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {users.map((u) => {
+                const using = [
+                  ...u.usingMailboxRegions.map((m) => `${m.label} → ${m.region}`),
+                  ...u.usingBrowserNodes.map((n) => `browser → ${n}`),
+                ];
+                return (
+                  <tr key={u.id}>
+                    <td className="px-4 py-3">{u.email}</td>
+                    <td className="px-4 py-3">
+                      {!u.premium ? (
+                        <span className="text-xs text-zinc-400 dark:text-zinc-500">not premium</span>
+                      ) : u.restricted ? (
+                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                          restricted
+                        </span>
+                      ) : (
+                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
+                          allowed
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400">
+                      {using.length > 0 ? using.join(", ") : "—"}
+                    </td>
+                    <td className="px-4 py-3">
+                      {u.premium && (
+                        <button
+                          type="button"
+                          onClick={() => void toggle(u.id, !u.restricted)}
+                          disabled={savingId === u.id}
+                          className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                            u.restricted
+                              ? "border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950/40"
+                              : "border-red-300 text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                          }`}
+                        >
+                          {savingId === u.id ? "…" : u.restricted ? "Unrestrict" : "Restrict"}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

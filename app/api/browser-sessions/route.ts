@@ -6,7 +6,7 @@ import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { getAdminSettings } from "@/lib/admin-settings";
-import { resolveUserTier } from "@/lib/premium";
+import { canUseExitNodes, resolveUserTier } from "@/lib/premium";
 import {
   proxyServerValue as buildProxyArg,
   checkIpThroughProxy,
@@ -108,6 +108,18 @@ export async function POST(req: Request) {
       { error: "Pro plan required to start a browser session" },
       { status: 403 }
     );
+  }
+  // Admin node restriction only blocks actually PICKING an exit node —
+  // proxyMode "free" with no exitNodeId is a direct connection (see
+  // resolveProxy below), never a node, so a restricted user can still launch
+  // sessions normally; only the location picker is what's revoked.
+  if (proxyMode === "free" && exitNodeId) {
+    if (!(await canUseExitNodes(prisma, session.userId))) {
+      return NextResponse.json(
+        { error: "Your access to SpaceWorker's exit nodes has been restricted." },
+        { status: 403 }
+      );
+    }
   }
 
   // The profile must belong to this user.

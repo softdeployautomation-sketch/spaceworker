@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import { browserRuntime } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { proxyServerValue as buildProxyArg } from "@/lib/browser-proxy";
+import { canUseExitNodes } from "@/lib/premium";
 
 // POST /api/browser-sessions/[id]/switch — switch a FREE-route session to a
 // different exit node mid-session. Requires a process restart (Chrome is already
@@ -27,6 +28,16 @@ export async function POST(
   const exitNodeId = String(body.exitNodeId ?? "");
   if (!exitNodeId) {
     return NextResponse.json({ error: "exitNodeId is required" }, { status: 400 });
+  }
+  // Re-check here, not just at session creation — a session can outlive a
+  // tier downgrade or a later admin restriction (lazy reversion only flips
+  // tier on read), so this is the boundary that actually matters for an
+  // already-running session.
+  if (!(await canUseExitNodes(prisma, session.userId))) {
+    return NextResponse.json(
+      { error: "Your access to SpaceWorker's exit nodes has been restricted." },
+      { status: 403 }
+    );
   }
 
   const row = await prisma.browserSession.findFirst({

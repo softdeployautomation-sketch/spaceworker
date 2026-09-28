@@ -5,7 +5,7 @@ import { encryptSecret } from "@/lib/mailbox-crypto";
 import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
-import { isPremiumTier } from "@/lib/trial";
+import { canUseExitNodes } from "@/lib/premium";
 import type { Prisma } from "@prisma/client";
 
 export async function PUT(
@@ -63,9 +63,8 @@ export async function PUT(
   if (body.sendRegion !== undefined) {
     const region = body.sendRegion && body.sendRegion.trim() ? body.sendRegion.trim() : null;
     if (region) {
-      const owner = await prisma.user.findUnique({ where: { id: session.userId }, select: { tier: true } });
-      if (!isPremiumTier(owner?.tier ?? 0)) {
-        return NextResponse.json({ error: "Regional send routing is a premium feature." }, { status: 403 });
+      if (!(await canUseExitNodes(prisma, session.userId))) {
+        return NextResponse.json({ error: "Regional send routing is a premium feature (or has been restricted)." }, { status: 403 });
       }
       if (!getExitNode(region)) {
         return NextResponse.json({ error: `Send region "${region}" is not available right now.` }, { status: 400 });
