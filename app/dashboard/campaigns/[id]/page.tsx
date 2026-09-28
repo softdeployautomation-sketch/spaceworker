@@ -1077,15 +1077,26 @@ export default function CampaignDetailPage() {
           {/* Task 33 — the isolation-diagnostic panel (opt-in, alongside edit). */}
           {diagnosticsSection}
 
-          {/* Human-assisted fallback, offered after the automated check fails and
-              no override is set yet: use a recipient already in the queue, or
-              type a new one, as this campaign's test target from now on. */}
-          {latestCheck?.status === "failed" && !campaign.testRecipientOverride && (() => {
+          {/* Human-assisted fallback: use a recipient already in the queue, or
+              type a new one, as this campaign's test target from now on.
+              Bug fix (2026-09-28): this used to only appear AFTER the automated
+              seed-mailbox check had already failed once, forcing every user
+              through one mandatory ~2-minute automated attempt (which may itself
+              be broken — see lib/seed-mailbox.ts's single, owner-shared row —
+              before ever offering the manual path. Reported live: "it should
+              just send to the test number I added... instead of trying to check
+              the gmail set for automated test [first]". Now offered up front,
+              any time no override is set yet, so a user who already knows they
+              want manual confirmation never has to wait out a doomed automated
+              check first. */}
+          {!campaign.testRecipientOverride && (() => {
             const existingTestRecipient = campaign.items.find((i) => i.source === "manual_insert")?.toEmail;
             return (
               <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 dark:border-amber-800 dark:bg-amber-950/20">
                 <p className="text-sm font-medium text-amber-800 dark:text-amber-300">
-                  The automated check failed — want to test against a real inbox instead?
+                  {latestCheck?.status === "failed"
+                    ? "The automated check failed — want to test against a real inbox instead?"
+                    : "Prefer to test against your own inbox instead of the automated seed-mailbox check?"}
                 </p>
                 {existingTestRecipient ? (
                   <button
