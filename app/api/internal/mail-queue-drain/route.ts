@@ -305,6 +305,22 @@ export async function POST(req: Request) {
   for (const c of sendingCampaigns) {
     if (!drainedCampaignIds.has(c.id)) continue;
 
+    // A campaign that just drained its LAST queued item was already flipped to
+    // "done" by the loop above, in this same tick. Without this check the probe
+    // below still ran anyway, and — with a human-assisted testRecipientOverride
+    // set (which always reports landedIn:"unknown", by design, since there's no
+    // automated way to verify placement in an arbitrary human inbox) — its
+    // "pause for a decision" branch clobbered "done" back to
+    // "paused_deliverability", even though there was no next batch left to
+    // protect. Confirmed live 2026-09-28: a 4-recipient campaign showed all 4
+    // rows "Sent" yet the campaign sat at "paused_deliverability" regardless.
+    // The batch gate exists to protect a batch that hasn't been sent YET; once
+    // nothing is left queued, there is nothing left for it to gate.
+    const stillQueued = await prisma.emailQueueItem.count({
+      where: { campaignId: c.id, status: "queued" },
+    });
+    if (stillQueued === 0) continue;
+
     const activeMailboxes = mailboxes
       .filter((m) => c.mailboxIds.includes(m.id))
       .sort((a, b) => (a.createdAt ?? new Date(0)).getTime() - (b.createdAt ?? new Date(0)).getTime());
