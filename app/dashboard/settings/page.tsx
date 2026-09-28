@@ -11,7 +11,7 @@ import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
 import { LicensesSection } from "./licenses-section";
-import MailboxesPanel from "@/components/mailboxes-panel";
+import { SendRegionSettings } from "@/components/send-region-settings";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -116,19 +116,18 @@ export default async function SettingsPage() {
         <ChangePasswordForm />
       </Card>
 
-      {/* Mailbox management (sending mailboxes, deliverability test mailbox,
-          and the premium send-region picker) — the SAME component the
-          Campaigns page's "Mailboxes" tab uses, mounted here too since
-          account-level SMTP config is exactly the kind of thing this page's
-          Licenses/Security sections already cover, and it wasn't
-          discoverable from here before. */}
-      <Card className="max-w-4xl p-6">
-        <h2 className="text-lg font-semibold text-fg">Mailboxes</h2>
+      {/* TASK_134 (premium) — deliberately just the region toggle, not the
+          full mailbox management UI (that stays at the Campaigns page's
+          "Mailboxes" tab, components/mailboxes-panel.tsx — adding/editing/
+          testing mailboxes and the test-mailbox section don't belong on the
+          account Settings page). */}
+      <Card className="max-w-2xl p-6">
+        <h2 className="text-lg font-semibold text-fg">Send region</h2>
         <p className="mt-1 text-sm text-fg-muted">
-          Sending mailboxes, your deliverability test mailbox, and (premium) regional send routing.
+          Route a sending mailbox through a regional exit instead of this server&apos;s own IP.
         </p>
         <div className="mt-4">
-          <MailboxesPanel />
+          <SendRegionSettings />
         </div>
       </Card>
 
