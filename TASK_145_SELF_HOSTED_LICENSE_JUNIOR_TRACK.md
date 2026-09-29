@@ -100,6 +100,8 @@ Each task has: the file(s), the exact change, and the acceptance check. T1 must 
 
 **Files:** `prisma/schema.prisma`
 
+> ⛔ **BEFORE YOU RUN ANY PRISMA COMMAND:** print the target database and confirm it is your **local dev DB** — `echo $DATABASE_URL` (or the `DATABASE_URL` in `.env`). This task runs `prisma migrate dev`, which **rewrites the schema of whatever database it points at**. If it points at the VPS / production database, **STOP and log a `⚠️ OBJECTION`** — never migrate the live DB (senior track §6 reject).
+
 1. Add `model ExeLicenseRevocation` **verbatim** as written in the senior track §3 D1.
 2. Add the two back-relations (D1 bullet): `revocation ExeLicenseRevocation?` on `model ExeLicense` (branch `:597`) and `exeLicenseRevocations ExeLicenseRevocation[]` on `model User` (branch `:10`, beside `exeLicenses` `:112`).
 3. Add to `model AdminSetting` (branch `:166`), after `agentExePriceUsd`: `selfhostedOsPriceUsd Float @default(0)` with a comment saying it is never charged through the store (the field exists so `StoreProduct.priceField` stays a real key).
