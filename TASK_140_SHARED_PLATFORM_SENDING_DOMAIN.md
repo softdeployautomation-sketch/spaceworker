@@ -149,13 +149,22 @@ would produce exactly the silent unsigned send this task exists to expose.
 
 ## Verification
 
-- `npm run test:domains` — **16/16** (7 pre-existing + 9 new), local and on the VPS
-- **Two mutations, both caught then restored** (see a/1 and a/2 above)
-- Full suite green: deliverability 6, smtp 11, mailguard 10, devices 6, domains 16
+- `npm run test:domains` — **21/21** (7 pre-existing + 14 new), local and on the VPS
+- **Four mutations, all caught then restored**: dropping `installedOnRelay` fails
+  test 12; case-sensitive domain matching fails test 13; reverting coverage to
+  DB-only fails 3 tests; dropping the parser's `*@`/`@` strip fails the parser test
+- Full suite green: deliverability 6, smtp 11, mailguard 10, devices 6, domains 21
 - `tsc --noEmit` clean; `eslint` exit 0 on all six files
 - `CI=true npm run build` → `EXIT=0`
 - Live relay probes: auth accepted; egress `164.68.105.96`; **message A signed,
   message B unsigned** — the exact behaviour this task makes visible
+- **Live E2E against the DEPLOYED code + REAL database + REAL relay tables: 7/7**
+  — the decisive assertion being that a domain the relay signs with no DB row is
+  reported `unverified`, **not** `unsigned`
+- **Full-tree parity: 434/434 files md5-matched**, 0 missing / stale / extra
+- Deployed with the *fixed* script: reached `-- done`, BUILD_ID changed
+  (`rdjogB189_2PBV8Z4JLO7` → `104ItNqBPdyN-PP1b92xG`), service active,
+  maintenance off, public HTTPS 200
 
 ## What is NOT done here (deliberately)
 
