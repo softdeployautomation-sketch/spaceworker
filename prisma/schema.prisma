@@ -146,6 +146,8 @@ model User {
   deviceScreenshots        DeviceScreenshot[]
   // TASK_128 — the visible public→private onboarding quarantine (one row/device).
   deviceOnboardings        DeviceOnboarding[]
+  // TASK_139 — self-serve DKIM for mail relayed through SpaceWorker's own relay.
+  sendingDomains           SendingDomain[]
 }
 
 model VerificationCode {
@@ -2069,4 +2071,59 @@ model DeviceOnboarding {
   //   a user's onboarding rows      -> userId + status
   @@index([status])
   @@index([userId, status])
+}
+
+// TASK_139 — self-serve DKIM for mail we relay.
+//
+// SpaceWorker's own relay (127.0.0.1:587, OpenDKIM) exists so a customer's
+// broken or unreachable third-party SMTP server cannot stop campaigns going
+// out. Accepting the mail is only half of it: a recipient's server also has to
+// believe the From domain is allowed to send, and that proof lives in the From
+// domain's DNS. That is a one-time DNS edit the customer does themselves
+// (exactly as Resend/SendGrid/Mailgun all require) — NOT a dependency on their
+// mail server, and nothing here needs that server to be reachable or fixed.
+//
+// One row per (user, domain): the keypair we sign with, the exact record the
+// customer must publish, and whether the published value actually matches it.
+model SendingDomain {
+  id               String   @id @default(cuid())
+  userId           String
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Lowercased registrable name ("acme.com"). Unique per user rather than
+  // globally: two tenants can legitimately each send as a domain they
+  // separately control, and the relay's KeyTable is addressed by the full
+  // "<selector>._domainkey.<domain>" key name anyway.
+  domain           String
+  selector         String   @default("sw")
+  // "v=DKIM1; k=rsa; p=..." — the exact value to publish at
+  // <selector>._domainkey.<domain>. Stored so verification can prove the value
+  // that IS published matches the key we actually sign with: a stale or
+  // mismatched record fails DKIM identically to "nothing published", and this
+  // is the only way to tell those two apart.
+  publicKeyTxt     String
+  // The signing key itself, encrypted exactly like a mailbox password
+  // (lib/mailbox-crypto, MAILBOX_ENCRYPTION_KEY). Stored so the key can be
+  // re-installed after a relay rebuild or a failed install: without it, losing
+  // /etc/opendkim would force every customer to publish a brand new DNS record.
+  encryptedPrivateKey String
+  privateKeyIv        String
+  privateKeyTag       String
+  // "pending" | "verified" | "invalid". DNS state only — see installedOnRelay
+  // for the relay side, deliberately tracked separately so a later DNS lapse
+  // cannot hide a key that is still installed (and vice versa).
+  status           String   @default("pending")
+  // True once the private key is on disk for OpenDKIM and listed in
+  // KeyTable/SigningTable. A domain can be installed but not yet verified
+  // (normal while DNS propagates) — signing then simply doesn't authenticate.
+  installedOnRelay Boolean  @default(false)
+  lastCheckedAt    DateTime?
+  // One line per record ("DKIM: found; SPF: missing <ip>; DMARC: not found") so
+  // the panel can say WHY a domain is not verified yet instead of a bare ✗.
+  lastCheckDetail  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@unique([userId, domain])
+  // Verification and the relay writer both look a domain up by name.
+  @@index([domain])
 }

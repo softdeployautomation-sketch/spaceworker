@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
+import { SendingDomainsPanel } from "@/components/sending-domains-panel";
 import { useConfirm } from "@/components/confirm-provider";
 // Task 30, item 1 — renderMerge is a pure string->string function with no
 // server-only dependencies, so it's safe to import into this client component to
@@ -716,7 +717,14 @@ export default function CampaignsPage() {
       </div>
 
       {tab === "mailboxes" ? (
-        <MailboxesPanel />
+        <>
+          <MailboxesPanel />
+          {/* TASK_139 — sending domains sit with the mailboxes because "why did
+              it land in spam" is answered by the two of them together: the
+              mailbox decides how mail leaves, the sending domain decides
+              whether the receiver can verify it. */}
+          <SendingDomainsPanel />
+        </>
       ) : (
         <>
           <div className="flex items-center justify-between gap-3">

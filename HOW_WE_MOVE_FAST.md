@@ -174,6 +174,21 @@ No local Postgres in this dev environment — `npx prisma migrate dev` won't wor
    ```
 7. **Then** `cd /opt/spaceworker/app && sudo -u trmm npm run build && systemctl restart spaceworker.service` — building against a stale-generated client is the one mistake that actually broke the service mid-session (`Property 'exeTrialSession' does not exist on type 'PrismaClient'`) until `prisma generate` was rerun. Migrate → generate → build → restart, in that order, every time.
 
+**How to validate a new migration before trusting it (`scripts/deploy-vps.sh` only runs `prisma generate` — it does NOT run `migrate deploy`, so the VPS will not pick your migration up by itself):**
+
+Do **not** try to replay the history onto an empty database. `prisma migrate deploy` on an
+empty DB fails at `20260914150000_add_license_claim_token` with `relation "ExeLicense"
+does not exist` — pre-existing migrations assume tables created outside the chain. That is
+unrelated to your change and tells you nothing about it.
+
+Production's real situation is "apply the new migration on top of N already-applied ones",
+so clone exactly that: dump production's **schema** plus the `_prisma_migrations`
+**rows** into a scratch DB, then run `migrate deploy` against the scratch DB and assert your
+object exists. `/tmp/validate-migration-139.sh` (TASK_139) is a worked example, and it is
+what caught that the migration had simply never been synced to the server (`69 migrations
+found … No pending migrations to apply` — i.e. the file wasn't there yet, not that the SQL
+was wrong).
+
 ## 4. Real E2E verification against the live server (not just `tsc`)
 
 Typechecking proves the code compiles, not that it works. For anything security- or money-adjacent, write a disposable Node script that exercises the real deployed HTTP routes with real (throwaway, self-cleaning) data, run it ON the VPS against `http://localhost:3500`.
@@ -627,6 +642,27 @@ Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twic
   re-open the whole-loopback port scan that Task 51 closed. If you touch that
   guard, `npm run test:mailguard` pins both halves (loopback stays blocked with
   no allowlist; only the exact host:PORT opens).
+- **In a `require`-hook test stub, return methods at the TOP LEVEL — never nested
+  under `default`.** `lib/sending-domains.ts` does `import dns from
+  "node:dns/promises"`. esbuild's CJS interop sets the wrapper's `.default` to the
+  WHOLE module object, so a stub shaped `{ default: { resolveTxt } }` leaves
+  `dns.resolveTxt` **undefined** — and because `txtRecords()` wraps its lookup in
+  `catch {}` (correctly: ENOTFOUND must read as "nothing published"), the resulting
+  TypeError was swallowed and every lookup silently answered "no record". The suite
+  ran green against a stub that never worked, until two assertions caught it. Both
+  the `{ lookup }` stub in `tests/smtp-host-guard.test.ts` and the `{ resolveTxt }`
+  stub in `tests/sending-domains.test.ts` are top-level for this reason. General
+  rule: a stub whose failure mode is indistinguishable from a legitimate negative
+  answer must be proven to WORK, not just to pass — mutate the code under test and
+  confirm the assertion actually fails.
+- **A merge/overwrite bug in shared relay tables is invisible without a test.**
+  OpenDKIM's KeyTable/SigningTable at `/etc/opendkim/` are shared by EVERY tenant.
+  Regenerating them from only the domain being added would silently stop DKIM
+  signing for every other customer — no error, no log, mail just starts landing in
+  spam. `upsertTableLine`/`removeTableLine` in `lib/sending-domains.ts` therefore
+  take the EXISTING file contents and merge. `npm run test:domains` pins it: mutate
+  `upsertTableLine` to overwrite (return only the new line) and the merge test fails.
+
 
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`
 
