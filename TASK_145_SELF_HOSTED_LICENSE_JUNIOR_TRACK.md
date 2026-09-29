@@ -1222,3 +1222,183 @@ Your `btcWallet='testwallet_T16'` scratch-DB write was correct and confined to `
 
 **Next actor:** junior — **`T3`** (lifetime constants in `lib/exe-license.ts`), one task, then stop.
 
+
+### 2026-09-29 — JUNIOR — **T3 implemented** (lifetime constants in the licence lib). No other task started.
+
+**Scope:** exactly one source file — `lib/exe-license.ts` — per junior §2 T3 / senior §3 D4. Constants-only: **+13 lines** at `lib/exe-license.ts:29-40`, immediately after `EXE_LICENSE_DAYS` (`:27`). Nothing else touched; `lib/exe-license-validator.ts` **untouched** (canary below); **no change to the signed payload key set** (the diff is 13 insertions / 0 deletions). No task `T4+` started.
+
+**What changed (`file:line`)**
+- `lib/exe-license.ts:35` — `export const LIFETIME_EXPIRES_AT_ISO = "2999-12-31T23:59:59.000000";` — the FROZEN LITERAL (Python-isoformat, no `'Z'`), verbatim from D4.
+- `lib/exe-license.ts:36` — `export const LIFETIME_EXPIRES_AT = new Date(Date.UTC(2999, 11, 31, 23, 59, 59));`
+- `lib/exe-license.ts:37-40` — `export function isLifetimeExpiry(d: Date | null | undefined): boolean { return !!d && d.getUTCFullYear() >= 2999; }`
+- `lib/exe-license.ts:29-34` — the D4 comment block, verbatim.
+No computed date, no arithmetic, no `Date.now()`; `isLifetimeExpiry` reads only the `Date` it is given (the decoded `expires_at`).
+
+**Commands run and RAW output**
+
+1) T3 acceptance check — the literal parses to year 2999:
+```
+$ cd /Users/mikeolab/sw-selfhost
+$ node -e "const d=new Date('2999-12-31T23:59:59.000000'+'Z');if(d.getUTCFullYear()!==2999)process.exit(1);console.log('lifetime literal OK',d.toISOString())"
+lifetime literal OK 2999-12-31T23:59:59.000Z
+$ echo "NODE_CHECK_EXIT=$?"
+NODE_CHECK_EXIT=0
+```
+
+2) T3 acceptance check — type gate:
+```
+$ npx tsc --noEmit; echo "TSC_EXIT=$?"
+TSC_EXIT=0
+```
+
+3) Build gate (`CI=1 npx next build`, never plain `npm run build` — senior §3.10.5):
+```
+$ CI=1 npx next build > /tmp/t3_build.log 2>&1; echo "BUILD_EXIT=$?"
+BUILD_EXIT=0
+$ grep -n 'Compiled successfully' /tmp/t3_build.log
+24:✓ Compiled successfully in 25.1s
+$ sed -n '232,237p' /tmp/t3_build.log
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+
+4) The change — raw diff (13 insertions, 0 deletions; the payload types are untouched):
+```
+$ git --no-pager diff --stat -- lib/exe-license.ts
+ lib/exe-license.ts | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+$ git --no-pager diff -- lib/exe-license.ts
+diff --git a/lib/exe-license.ts b/lib/exe-license.ts
+index 29a9819..df3a2ec 100644
+--- a/lib/exe-license.ts
++++ b/lib/exe-license.ts
+@@ -26,6 +26,19 @@ import { createHmac, timingSafeEqual } from "crypto";
+ // disclosed to the buyer on the post-purchase license page/email (item 4/6).
+ export const EXE_LICENSE_DAYS = 180;
+ 
++// TASK_145 (Phase 5) — a "lifetime"/perpetual grant is NOT a new payload shape.
++// It is the exact same signed payload with a far-future `expires_at`, which the
++// untouched offline validator already accepts (lib/exe-license-validator.ts:
++// `now > expiresAt` is false for the year 2999). Frozen as a LITERAL on purpose:
++// the value is signed, so a computed date would risk drift between issue time
++// and re-sign-at-bind time, silently changing a customer's licence bytes.
++export const LIFETIME_EXPIRES_AT_ISO = "2999-12-31T23:59:59.000000"; // Python-isoformat, no 'Z'
++export const LIFETIME_EXPIRES_AT = new Date(Date.UTC(2999, 11, 31, 23, 59, 59));
++/** True when this expiry is the lifetime sentinel (>= year 2999). */
++export function isLifetimeExpiry(d: Date | null | undefined): boolean {
++  return !!d && d.getUTCFullYear() >= 2999;
++}
++
+ const BASE64URL_RE = /^[A-Za-z0-9_-]+=*$/;
+ 
+ /**
+```
+
+
+5) J1/J2 through the REAL code paths (`generateLicenseKey` → `verifyLicenseKey` → `validateLicenseKey`). Temporary harness — created, run, then **deleted**; **not** part of the deliverable. `server-only` throws under plain `tsx`, so the repo's own `scripts/stub-server-only.cjs` was preloaded (same technique the existing harness needs):
+```
+$ cat > .t3-j1j2-check.mts <<'EOF'
+process.env.EXE_LICENSE_SECRET = process.env.EXE_LICENSE_SECRET ?? "t3-verify-secret";
+const lib = await import("./lib/exe-license");
+const { validateLicenseKey } = await import("./lib/exe-license-validator");
+let fail = 0;
+function check(name: string, cond: boolean, detail = "") {
+  console.log(`${cond ? "  ok  " : "FAIL  "}${name}${detail ? `  [${detail}]` : ""}`);
+  if (!cond) fail++;
+}
+const now = new Date("2026-09-29T00:00:00Z");
+const life = lib.generateLicenseKey({ licensee: "life@example.com", plan: "selfhosted", product: "selfhosted_os", expiresAt: lib.LIFETIME_EXPIRES_AT, at: now });
+check("J1 payload.expires_at === LIFETIME_EXPIRES_AT_ISO", life.payload.expires_at === lib.LIFETIME_EXPIRES_AT_ISO, life.payload.expires_at);
+check("J1 verifyLicenseKey(key) === true", lib.verifyLicenseKey(life.licenseKey));
+const lifeV = await validateLicenseKey(life.licenseKey, process.env.EXE_LICENSE_SECRET!, { now });
+check("J1 validateLicenseKey valid:true + no error", lifeV.valid && lifeV.error === "", lifeV.error || "valid");
+check("J1 decoded year 2999", lifeV.expiresAtDate?.getUTCFullYear() === 2999, String(lifeV.expiresAtDate));
+check("J1 isLifetimeExpiry(decoded) === true", lib.isLifetimeExpiry(lifeV.expiresAtDate));
+check("J1 isLifetimeExpiry(null) === false", lib.isLifetimeExpiry(null) === false);
+check("J1 isLifetimeExpiry(30d date) === false", lib.isLifetimeExpiry(new Date("2026-10-29T00:00:00Z")) === false);
+const term = lib.generateLicenseKey({ licensee: "term@example.com", plan: "selfhosted", product: "selfhosted_os", daysValid: 30, at: now });
+const termV = await validateLicenseKey(term.licenseKey, process.env.EXE_LICENSE_SECRET!, { now });
+const expected = now.getTime() + 30 * 24 * 60 * 60 * 1000;
+check("J2 validateLicenseKey valid:true + no error", termV.valid && termV.error === "", termV.error || "valid");
+check("J2 expiry ≈ now+30d", termV.expiresAtDate !== null && Math.abs(termV.expiresAtDate.getTime() - expected) < 5000, termV.expiresAt);
+check("J2 isLifetimeExpiry(decoded) === false", lib.isLifetimeExpiry(termV.expiresAtDate) === false);
+console.log(fail === 0 ? "\nT3 J1/J2 ALL PASSED" : `\n${fail} CHECK(S) FAILED`);
+process.exit(fail === 0 ? 0 : 1);
+EOF
+$ node --require ./scripts/stub-server-only.cjs --import tsx .t3-j1j2-check.mts
+  ok  J1 payload.expires_at === LIFETIME_EXPIRES_AT_ISO  [2999-12-31T23:59:59.000000]
+  ok  J1 verifyLicenseKey(key) === true
+  ok  J1 validateLicenseKey valid:true + no error  [valid]
+  ok  J1 decoded year 2999  [Wed Jan 01 3000 00:59:59 GMT+0100 (West Africa Standard Time)]
+  ok  J1 isLifetimeExpiry(decoded) === true
+  ok  J1 isLifetimeExpiry(null) === false
+  ok  J1 isLifetimeExpiry(30d date) === false
+  ok  J2 validateLicenseKey valid:true + no error  [valid]
+  ok  J2 expiry ≈ now+30d  [2026-10-29T00:00:00.000000]
+  ok  J2 isLifetimeExpiry(decoded) === false
+
+T3 J1/J2 ALL PASSED
+J12_EXIT=0
+$ rm -f .t3-j1j2-check.mts && git status --short
+ M lib/exe-license.ts
+```
+(The `[Wed Jan 01 3000 00:59:59 GMT+0100 ...]` string is Node's *local-time* rendering of the `2999-12-31T23:59:59Z` UTC instant in a UTC+1 zone; the assertion is on `getUTCFullYear() === 2999`, and it passed.)
+
+
+6) Existing licence harness — baseline behaviour unchanged (regression proof):
+```
+$ EXE_LICENSE_SECRET=unit-test-secret SPACEWORKER_LOCAL_DATA_DIR=$(mktemp -d) \
+    node --require ./scripts/stub-server-only.cjs --import tsx scripts/verify-exe-license.mts
+[machine-id]
+  ok  derives a 16-char hex id on real hardware
+  ok  is deterministic across calls
+  ok  validateMachineId matches itself
+  ok  validateMachineId rejects a different id
+
+[validate]
+  ok  valid key validates
+  ok  decode returns licensee
+  ok  expires ~180 days out
+  ok  tampered key fails (signature)
+  ok  wrong secret fails (signature)
+  ok  expired key fails (expired)
+  ok  machine-bound key valid on bound machine
+  ok  machine-bound key rejected on another machine
+
+[state-store]
+  ok  trial starts on first launch
+  ok  trial active at start
+  ok  trial ~19h left at 5h elapsed
+  ok  trial expired after 24h
+  ok  activation persisted
+  ok  activation survives re-read
+
+ALL CHECKS PASSED
+```
+(Doc nit only: `scripts/verify-exe-license.mts`'s header comment says to run `scripts/verify-exe-license.ts`; the file is `.mts`. Not touched — out of scope for T3.)
+
+7) STEP 4 canaries — frozen files and the live app:
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(no output — empty)
+$ cd /Users/mikeolab/sw-selfhost
+$ echo "SELFHOST_VALIDATOR_DIFF_LINES=$(git diff main self-hosted-build -- lib/exe-license-validator.ts | wc -l | tr -d ' ')"
+SELFHOST_VALIDATOR_DIFF_LINES=0
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit; echo "LIVE_TSC_EXIT=$?"
+LIVE_TSC_EXIT=0
+```
+
+**UNVERIFIED:**
+- UNVERIFIED: J1/J2 independent reproduction — evidence was produced by a temporary harness under `tsx` plus the repo's `server-only` stub (the real `server-only` import throws in plain Node). The harness was deleted after the run; re-run it if independent evidence is required.
+- UNVERIFIED: `isLifetimeExpiry` consuming the *decoded* payload inside a route/UI — those call sites are T6/T7/T11/T12/T13; T3 delivers the constants only.
+- UNVERIFIED: J3 — T2/T16 territory, closed separately.
+- UNVERIFIED: J4–J12 — belong to later tasks (T5/T6/T7/T9/T10/T11/T12/T13); untouched here.
+
+READY FOR VERIFICATION - T3
+

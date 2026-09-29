@@ -26,6 +26,19 @@ import { createHmac, timingSafeEqual } from "crypto";
 // disclosed to the buyer on the post-purchase license page/email (item 4/6).
 export const EXE_LICENSE_DAYS = 180;
 
+// TASK_145 (Phase 5) — a "lifetime"/perpetual grant is NOT a new payload shape.
+// It is the exact same signed payload with a far-future `expires_at`, which the
+// untouched offline validator already accepts (lib/exe-license-validator.ts:
+// `now > expiresAt` is false for the year 2999). Frozen as a LITERAL on purpose:
+// the value is signed, so a computed date would risk drift between issue time
+// and re-sign-at-bind time, silently changing a customer's licence bytes.
+export const LIFETIME_EXPIRES_AT_ISO = "2999-12-31T23:59:59.000000"; // Python-isoformat, no 'Z'
+export const LIFETIME_EXPIRES_AT = new Date(Date.UTC(2999, 11, 31, 23, 59, 59));
+/** True when this expiry is the lifetime sentinel (>= year 2999). */
+export function isLifetimeExpiry(d: Date | null | undefined): boolean {
+  return !!d && d.getUTCFullYear() >= 2999;
+}
+
 const BASE64URL_RE = /^[A-Za-z0-9_-]+=*$/;
 
 /**
