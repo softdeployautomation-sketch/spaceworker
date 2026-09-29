@@ -932,5 +932,29 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   migration for a scalar list must be
   `ADD COLUMN "x" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[]` — a bare `TEXT[]`
   default will fail on a non-empty table.
+- **`read ECONNRESET` before the SMTP banner is a REFUSAL, not a network fault.**
+  A recipient MX may accept the TCP connection and then reset it without ever
+  greeting — Google and Yahoo both do this to residential/dynamic source IPs
+  (Gammadyne's own docs call it the Policy Block List: "most IPs that are
+  assigned dynamically or behind a residential gateway"). Measured here: from a
+  residential line `gmail-smtp-in.l.google.com:25` connects then resets, while
+  from our VPS the same host answers `220 mx.google.com ESMTP …` in ~300 ms.
+  An ISP that blocks outbound port 25 can inject the same reset, and the two are
+  not distinguishable from the client — but the conclusion is identical either
+  way, so **never diagnose "the server is down" from a reset before the banner,
+  and never promise direct-to-MX delivery from a customer's own connection.**
+  This is also why a desktop bulk mailer can appear to work "because of an RDP":
+  Direct Delivery needs a datacenter IP that recipient MX servers will talk to,
+  and relay mode needs a working SMTP server — a desktop on a home line has
+  neither.
+- **An SMTP preset must always carry host + port + security TOGETHER, and the
+  port is the source of truth.** The send path picks the handshake from the PORT
+  (`lib/mailer-send.ts`: 465 ⇒ implicit TLS, anything else ⇒ STARTTLS), never
+  from the label, so a preset that fills a host with the wrong port produces a
+  connection the provider never answers — the user experiences it as the
+  "Testing…" hang, and it looks like our bug. The table lives in
+  `lib/smtp-provider-presets.ts` as pure data (not inside the component) so
+  `tests/smtp-provider-presets.test.ts` can pin the coherence rule; mutation-check
+  it by setting a 465 provider to 587 and watching the test fail.
 
 

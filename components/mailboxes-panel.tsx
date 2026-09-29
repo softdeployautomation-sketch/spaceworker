@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 
 import { timeAgo } from "@/lib/format-date";
 import { useConfirm } from "@/components/confirm-provider";
+import { PROVIDER_PRESETS, presetForHost } from "@/lib/smtp-provider-presets";
 
 type Mailbox = {
   id: string;
@@ -59,6 +60,13 @@ const SECURITY_OPTIONS: { value: SecurityMode; label: string; hint: string; port
 // working 24610 to a black-holed 587 the moment "STARTTLS" was selected, which
 // is why the pre-save test then appeared to hang for two minutes instead of
 // reporting anything. See the select's onChange for the guard.
+
+// Provider quick-fill presets live in lib/ as pure data so the host+port+security
+// coherence rule is testable (tests/smtp-provider-presets.test.ts) rather than
+// something a reviewer has to catch by eye — a preset with a host but the wrong
+// port looks authoritative while producing a connection nothing will answer.
+// See lib/smtp-provider-presets.ts for why no preset may use "unencrypted".
+
 
 /**
  * What the SEND will actually negotiate. Deliberately derived the same way the
@@ -251,6 +259,13 @@ export default function MailboxesPanel() {
   // non-standard port (e.g. 24610) to 587, which is how a working mailbox got
   // turned into a two-minute "Testing…" hang.
   const [portTouched, setPortTouched] = useState(false);
+  // Which provider preset was applied, plus its note. Purely cosmetic state for
+  // the picker: it drives the note under the field and lets the select snap back
+  // to "Custom" the moment the user edits the host by hand, so the label can
+  // never keep claiming "Resend" after the host has been changed to something
+  // else (the same "the label must not imply what the send won't do" rule that
+  // governs Security above).
+  const [presetId, setPresetId] = useState("");
   // Task 29, item 5 — per-user deliverability test/seed mailbox registration.
   const [testMailboxes, setTestMailboxes] = useState<TestMailbox[]>([]);
   const [testMbLoading, setTestMbLoading] = useState(true);
@@ -301,6 +316,7 @@ export default function MailboxesPanel() {
     setFormError("");
     setTestConnResult(null);
     setPortTouched(false);
+    setPresetId("");
     setModalOpen(true);
   }
 
@@ -323,6 +339,12 @@ export default function MailboxesPanel() {
     // the saved row, not from a mode preset, so treat it as user-chosen and
     // never let a mode switch overwrite it.
     setPortTouched(true);
+    // Recognise a provider from the SAVED host (not from a guess) so the note
+    // under the field still explains the login convention when editing a mailbox
+    // that was created from a preset. A custom/self-hosted host matches nothing
+    // and correctly shows no provider note. Only the label is set here — an
+    // existing row's own username is never overwritten by a preset.
+    setPresetId(presetForHost(m.host)?.id ?? "");
     setModalOpen(true);
   }
 
@@ -863,12 +885,67 @@ export default function MailboxesPanel() {
                 />
               </label>
 
+              {/* Provider quick-fill. Sits ABOVE Host because it fills Host: the
+                  preset sets host + port + security together, which is the whole
+                  point — a host without the matching port is the most common way
+                  a mailbox quietly fails. */}
+              <label className="flex flex-col gap-1 text-sm font-medium">
+                Provider (optional quick fill)
+                <select
+                  value={presetId}
+                  onChange={(e) => {
+                    const preset = PROVIDER_PRESETS.find((p) => p.id === e.target.value);
+                    if (!preset) {
+                      setPresetId("");
+                      return;
+                    }
+                    setPresetId(preset.id);
+                    // A preset is an explicit "fill the endpoint" action, so it
+                    // DOES set the port — unlike the Security picker, which must
+                    // never clobber a hand-typed one. Mark it touched so a later
+                    // Security change can't silently rewrite the provider's port.
+                    setPortTouched(true);
+                    setForm({
+                      ...form,
+                      host: preset.host,
+                      port: preset.port,
+                      securityMode: preset.securityMode,
+                      // Only fill a login the provider itself mandates, and only
+                      // when the field is still empty — never overwrite the
+                      // user's own address.
+                      username: preset.fixedUser && !form.username.trim() ? preset.fixedUser : form.username,
+                    });
+                  }}
+                  className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                >
+                  <option value="">Custom / self-hosted — fill the fields below yourself</option>
+                  {PROVIDER_PRESETS.map((p) => (
+                    <option key={p.id} value={p.id}>{p.label} — {p.host}:{p.port}</option>
+                  ))}
+                </select>
+                {(() => {
+                  const preset = PROVIDER_PRESETS.find((p) => p.id === presetId);
+                  if (!preset) return null;
+                  return (
+                    <span className="text-xs font-normal leading-snug text-zinc-500 dark:text-zinc-400">
+                      {preset.note}
+                    </span>
+                  );
+                })()}
+              </label>
+
               <label className="flex flex-col gap-1 text-sm font-medium">
                 Host
                 <input
                   type="text"
                   value={form.host}
-                  onChange={(e) => setForm({ ...form, host: e.target.value })}
+                  onChange={(e) => {
+                    // Hand-editing the host means this is no longer the preset's
+                    // endpoint — drop back to Custom so the picker never claims a
+                    // provider whose host is no longer filled in.
+                    if (presetId) setPresetId("");
+                    setForm({ ...form, host: e.target.value });
+                  }}
                   placeholder="smtp.example.com"
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 />
