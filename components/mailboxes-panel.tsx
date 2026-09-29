@@ -65,7 +65,9 @@ const SECURITY_OPTIONS: { value: SecurityMode; label: string; hint: string; port
 // coherence rule is testable (tests/smtp-provider-presets.test.ts) rather than
 // something a reviewer has to catch by eye — a preset with a host but the wrong
 // port looks authoritative while producing a connection nothing will answer.
-// See lib/smtp-provider-presets.ts for why no preset may use "unencrypted".
+// See lib/smtp-provider-presets.ts for why no COMMERCIAL preset may use
+// "unencrypted" — the one exemption is the operator's own loopback relay, which
+// cannot be reached from off the machine.
 
 
 /**
@@ -164,9 +166,16 @@ type TestConnResult = {
    * here and still be useless. Mirrors lib/sending-domains SigningCoverage.
    */
   signing?: {
-    entries: { domain: string; status: "verified" | "unverified" | "unsigned"; detail: string }[];
+    entries: {
+      domain: string;
+      /** "unpublished" = signed, but the public key is provably not in DNS. */
+      status: "verified" | "unverified" | "unpublished" | "unsigned";
+      detail: string;
+    }[];
     unsigned: string[];
     hasUnsigned: boolean;
+    unpublished: string[];
+    hasUnpublished: boolean;
     platformDomain: string | null;
     warning: string | null;
   };
@@ -193,9 +202,20 @@ function SigningNotice({ signing }: { signing?: TestConnResult["signing"] }) {
       </p>
     );
   }
+  // No warning means no DEFINITE failure — but "we could not confirm" is not the
+  // same as "confirmed", and showing a green tick over an unconfirmed signature
+  // would be the same class of lie the warning path exists to prevent. The tick is
+  // therefore reserved for entries a lookup actually proved.
+  const allVerified = signing.entries.every((e) => e.status === "verified");
   return (
-    <p className="mt-1 text-xs leading-snug text-emerald-600 dark:text-emerald-400">
-      ✓ DKIM — {signing.entries.map((e) => e.detail).join("; ")}.
+    <p
+      className={`mt-1 text-xs leading-snug ${
+        allVerified
+          ? "text-emerald-600 dark:text-emerald-400"
+          : "text-amber-600 dark:text-amber-400"
+      }`}
+    >
+      {allVerified ? "✓" : "⚠"} DKIM — {signing.entries.map((e) => e.detail).join("; ")}.
     </p>
   );
 }

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { PROVIDER_PRESETS, presetForHost } from "../lib/smtp-provider-presets";
+import { PROVIDER_PRESETS, presetForHost, type PresetSecurityMode } from "../lib/smtp-provider-presets";
 
 // Regression test for the provider quick-fill presets.
 //
@@ -20,20 +20,33 @@ import { PROVIDER_PRESETS, presetForHost } from "../lib/smtp-provider-presets";
 //      NOT from the label. So a preset labelled "implicit" on 587, or
 //      "STARTTLS" on 465, sends the user into a handshake the provider rejects.
 //
-//   2. An "unencrypted" preset. That mode exists only for self-hosted/internal
-//      relays and is the exact combination behind the original incident: a relay
-//      advertising no AUTH accepts the message and drops it while every
-//      connection test looks green. Every commercial provider offers TLS, so
-//      offering "unencrypted" for one would only invite that bug back.
+//   2. An "unencrypted" preset. That mode is the exact combination behind the
+//      original incident: a relay advertising no AUTH accepts the message and drops
+//      it while every connection test looks green. Every commercial provider offers
+//      TLS, so offering "unencrypted" for one would only invite that bug back. The
+//      single exemption is the `internal` entry for the relay this platform runs on
+//      its own machine — loopback-only, so nothing off-box can reach it — and the
+//      tests below pin that the exemption stays exactly one entry wide.
 //
 //   3. A fabricated username. Only providers that mandate a literal login
 //      (Resend needs "resend", SendGrid needs "apikey") may set fixedUser;
 //      everywhere else the login is the user's own address and inventing one
 //      would guarantee an auth failure.
 
-/** The send path reads the handshake from the port, not the label — mirror it. */
-function handshakeImpliedByPort(port: number): "implicit" | "starttls" {
-  return port === 465 ? "implicit" : "starttls";
+/**
+ * The handshake the SEND actually negotiates for a (mode, port) pair.
+ *
+ * Mirrors the real rule rather than a simplification of it: effectiveMode() in
+ * components/mailboxes-panel.tsx and lib/mailer-send.ts both force implicit TLS on
+ * port 465, and both honour "none" as an explicit opt-out on any other port. A test
+ * that modelled only "465 => implicit, else STARTTLS" would wrongly reject the
+ * loopback relay preset (587 + none), which is a correct combination for a
+ * loopback-only relay — while still catching the case this exists for, a provider
+ * labelled STARTTLS on 465.
+ */
+function handshakeTheSendPathUses(mode: PresetSecurityMode, port: number): PresetSecurityMode {
+  if (port === 465) return "implicit";
+  return mode === "none" ? "none" : "starttls";
 }
 
 test("every preset is complete and internally consistent", () => {
@@ -53,20 +66,42 @@ test("preset ids are unique", () => {
   assert.equal(new Set(ids).size, ids.length, `duplicate preset id in ${ids.join(",")}`);
 });
 
-test("no preset uses the unencrypted mode (the accept-and-drop incident)", () => {
-  // See the file header: "none" is for self-hosted relays only.
-  const insecure = PROVIDER_PRESETS.filter((p) => p.securityMode === "none").map((p) => p.id);
+test("no COMMERCIAL preset uses the unencrypted mode (the accept-and-drop incident)", () => {
+  // See the file header: "none" is for a loopback-only relay, never for a provider.
+  const insecure = PROVIDER_PRESETS.filter((p) => !p.internal && p.securityMode === "none").map(
+    (p) => p.id,
+  );
   assert.deepEqual(insecure, [], `these presets offer unencrypted sending: ${insecure.join(", ")}`);
+});
+
+test("the unencrypted exemption is exactly one entry, and it is loopback-only", () => {
+  // The exemption is a hole in the rule above, so its WIDTH is the thing to pin:
+  // an "internal" commercial endpoint would let the accept-and-drop bug back in
+  // under a name that sounds safe.
+  const internal = PROVIDER_PRESETS.filter((p) => p.internal);
+  assert.deepEqual(
+    internal.map((p) => p.id),
+    ["relay"],
+    "internal presets must stay a single, known entry — add one deliberately, not by accident",
+  );
+  for (const p of internal) {
+    assert.equal(p.securityMode, "none", `${p.id}: an internal relay is the only place "none" is right`);
+    assert.ok(
+      ["127.0.0.1", "::1", "localhost"].includes(p.host),
+      `${p.id}: an internal preset must be loopback-only, got ${p.host}`,
+    );
+  }
 });
 
 test("every preset's port agrees with the handshake it promises", () => {
   // This is the assertion that actually matters — see the file header.
   for (const p of PROVIDER_PRESETS) {
-    const implied = handshakeImpliedByPort(Number(p.port));
+    const port = Number(p.port);
+    const negotiated = handshakeTheSendPathUses(p.securityMode, port);
     assert.equal(
       p.securityMode,
-      implied,
-      `${p.id}: preset says "${p.securityMode}" but port ${p.port} makes the send path negotiate "${implied}"`,
+      negotiated,
+      `${p.id}: preset says "${p.securityMode}" but port ${p.port} makes the send path negotiate "${negotiated}"`,
     );
   }
 });
@@ -95,7 +130,12 @@ test("presetForHost recognises a saved host, and nothing else", () => {
   // ...but a self-hosted/custom endpoint must match NOTHING, or the form would
   // label someone else's server with a provider's login convention.
   assert.equal(presetForHost("watsonandrade9382.ca.lu"), null);
-  assert.equal(presetForHost("127.0.0.1"), null);
+  // The loopback relay IS ours, so it matches its own preset — this is the one host
+  // that was deliberately added to the table...
+  assert.equal(presetForHost("127.0.0.1")?.id, "relay");
+  // ...while an unrelated private address must still match nothing, or the label
+  // would claim some other internal server is this platform's relay.
+  assert.equal(presetForHost("10.0.0.5"), null);
   assert.equal(presetForHost(""), null);
   assert.equal(presetForHost("   "), null);
 });

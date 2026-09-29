@@ -20,11 +20,14 @@
  * MUST set the port that matches its chosen handshake or the form will honestly
  * report a mismatch to the user.
  *
- * NO PRESET MAY USE `none` (unencrypted). That mode exists only for
- * self-hosted/internal relays, and it is the combination that produced the
- * original incident: a relay that advertises no AUTH accepts the message and
- * drops it, while every connection test looks green. Commercial providers always
- * offer TLS, so offering "unencrypted" for one would only invite that bug back.
+ * NO COMMERCIAL PRESET MAY USE `none` (unencrypted). That mode is the combination
+ * behind the original incident: a relay that advertises no AUTH accepts the message
+ * and drops it, while every connection test looks green. Commercial providers
+ * always offer TLS, so offering "unencrypted" for one would only invite that bug
+ * back. The single exception is the `internal: true` entry for the relay this
+ * platform runs on its own machine — that one is loopback-only, so nothing off-box
+ * can reach it, which makes "none" the right answer rather than a mistake.
+ * `internal` exists so that exemption stays exactly one entry wide.
  */
 
 export type PresetSecurityMode = "starttls" | "implicit" | "none";
@@ -43,6 +46,14 @@ export interface ProviderPreset {
    * own address, so we must not invent one.
    */
   fixedUser?: string;
+  /**
+   * Marks a relay that is OURS rather than a third-party provider. Two rules are
+   * relaxed for these, and only these: such an entry may use `none` (it is
+   * loopback-only, so nothing off-box can reach it), and its host is expected to be
+   * a private address rather than a public provider endpoint. Nothing else may set
+   * it, so the exemption stays one entry wide instead of spreading.
+   */
+  internal?: boolean;
   note: string;
 }
 
@@ -128,6 +139,25 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     port: "465",
     securityMode: "implicit",
     note: "Replace with your own domain. Create the mailbox in cPanel → Email Accounts first.",
+  },
+  {
+    id: "relay",
+    label: "This server's relay (local)",
+    host: "127.0.0.1",
+    port: "587",
+    securityMode: "none",
+    internal: true,
+    // No fixedUser on purpose: the relay's login realm is whatever the operator set
+    // when they installed it, so inventing a username here would produce a certain
+    // auth failure on anyone else's deployment. The note tells the user what to ask
+    // for instead, which is the only correct answer.
+    note:
+      "SpaceWorker's own relay on this machine — mail leaves from this server's IP, " +
+      "so no provider account and no third-party server are involved. The username " +
+      "and password are NOT your provider's: whoever installed the relay set them " +
+      "(they are stored hashed in /etc/sasldb2). Port 587 with no encryption is " +
+      "correct here because the relay only listens on loopback. If this host is " +
+      "refused, the operator has not allowlisted it (SMTP_INTERNAL_RELAY_HOSTS).",
   },
 ];
 

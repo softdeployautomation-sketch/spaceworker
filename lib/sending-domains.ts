@@ -160,7 +160,52 @@ export function domainOfAddress(address: string): string {
   return normalizeDomain(address.slice(at + 1));
 }
 
-export type SigningCoverageStatus = "verified" | "unverified" | "unsigned";
+/**
+ * The DNS name a receiver fetches to validate our signature for `domain`.
+ *
+ * Exported and shared with verifySendingDomainDns on purpose: the verdict a user
+ * reads ("no key is published at X") and the name the verifier actually queries
+ * must be the SAME string, or the advice and the check drift apart and the user
+ * publishes exactly what we told them to while the check keeps looking elsewhere.
+ */
+export function dkimRecordName(domain: string, selector: string = DKIM_SELECTOR): string {
+  return `${selector}._domainkey.${normalizeDomain(domain)}`;
+}
+
+export type SigningCoverageStatus =
+  /** The relay signs it AND the published key is confirmed to be the one we sign with. */
+  | "verified"
+  /**
+   * The relay signs it, but we cannot confirm the signature will validate.
+   * Deliberately NOT "unsigned": calling signed mail unsigned is a false alarm,
+   * and the two have different fixes.
+   */
+  | "unverified"
+  /**
+   * The relay signs it, we LOOKED, and no public key is published at
+   * `<selector>._domainkey.<domain>`. This is a definite failure, not an unknown:
+   * the receiver fetches exactly that name, finds nothing, and has no key to check
+   * the signature against. Kept separate from "unverified" because the fix is
+   * different — "publish this record" versus "we could not tell".
+   */
+  | "unpublished"
+  /** The relay holds no key for the domain, so no signature is added at all. */
+  | "unsigned";
+
+/**
+ * What a resolver said about one `<selector>._domainkey.<domain>` name.
+ *
+ * Deliberately 4-valued rather than a boolean, because the four cases have three
+ * different user actions and conflating them is how "unknown" got reported for a
+ * name that provably had no record:
+ *   verified  — a key is published AND it is the one this relay signs with
+ *   mismatch  — a key is published but it is NOT ours; the signature will fail
+ *   missing   — the resolver resolved and there is no such record
+ *   present   — a key is published, but we cannot confirm it is ours (no record of
+ *               the key on file), so this claims nothing either way
+ *   unknown   — we could not ask (SERVFAIL, timeout, no resolver); claim nothing
+ */
+export type DkimRecordState = "verified" | "mismatch" | "missing" | "present" | "unknown";
 
 export interface SigningCoverageEntry {
   domain: string;
@@ -174,6 +219,14 @@ export interface SigningCoverage {
   unsigned: string[];
   /** True when any From domain will be sent unsigned. */
   hasUnsigned: boolean;
+  /**
+   * From domains whose mail IS signed but whose public key is provably not in DNS,
+   * so the signature cannot validate. Separate from `unsigned` because the action
+   * is different (publish a record, not install a key), and because this case used
+   * to be reported as "unknown" when the DNS answer was in fact a hard no.
+   */
+  unpublished: string[];
+  hasUnpublished: boolean;
   /** The platform domain that would remove the DNS requirement, when configured. */
   platformDomain: string | null;
   /** One user-facing sentence, or null when every From domain is signed. */
@@ -248,8 +301,30 @@ export function evaluateSigningCoverage(opts: {
    * state and correct whenever the UI is the only thing that installs keys.
    */
   relaySignedDomains?: Set<string>;
+  /**
+   * Outcome of asking a resolver about each domain's own DKIM record name,
+   * `<selector>._domainkey.<domain>`.
+   *
+   * Only pass this when a lookup actually ran and can tell a real DNS negative from
+   * a resolver that did not answer: hand back "missing" on a transient SERVFAIL and
+   * correctly-configured domains get declared broken — a false accusation worse than
+   * the "unknown" it replaces. Absent from the map, or "unknown", keeps the honest
+   * "we could not tell" wording.
+   */
+  dkimRecordStates?: ReadonlyMap<string, DkimRecordState>;
+  /** Selector named in the advice; defaults to the one we publish under. */
+  selector?: string;
 }): SigningCoverage {
   const platformDomain = opts.platformDomain ? normalizeDomain(opts.platformDomain) : null;
+  const selector = opts.selector ?? DKIM_SELECTOR;
+
+  // Normalised here rather than trusted from the caller: an odd-cased key
+  // ("Acme.com") would otherwise fail to match the lower-cased From domain and
+  // report a correctly published key as missing. Same reasoning as `byDomain`.
+  const dkimStates =
+    opts.dkimRecordStates === undefined
+      ? undefined
+      : new Map([...opts.dkimRecordStates].map(([d, s]) => [normalizeDomain(d), s] as const));
 
   // Case-insensitive: DNS domains are. A row stored as "Acme.com" must still
   // cover a From of "x@acme.com", or we would warn about a domain that IS signed.
@@ -257,6 +332,10 @@ export function evaluateSigningCoverage(opts: {
   for (const row of opts.rows) byDomain.set(normalizeDomain(row.domain), row);
 
   const entries: SigningCoverageEntry[] = [];
+  // Short factual notes for the roll-up warning, collected as we go so the exact
+  // record name reaches the red box. The box REPLACES the per-entry detail line, so
+  // anything actionable left out here is never shown to the user at all.
+  const unpublishedNotes: string[] = [];
   const seen = new Set<string>();
   for (const address of opts.fromAddresses) {
     const domain = domainOfAddress(address);
@@ -264,6 +343,7 @@ export function evaluateSigningCoverage(opts: {
     seen.add(domain);
 
     const row = byDomain.get(domain);
+    const dkim = dkimStates?.get(domain);
     const relaySigns =
       opts.relaySignedDomains !== undefined
         ? opts.relaySignedDomains.has(domain)
@@ -276,6 +356,51 @@ export function evaluateSigningCoverage(opts: {
         detail:
           `Mail from @${domain} leaves the relay with NO DKIM signature: no key is ` +
           `installed for that domain, so the relay has nothing to sign with`,
+      });
+    } else if (dkim === "missing" || dkim === "mismatch") {
+      // We LOOKED and the key is unusable: either nothing is published at the name
+      // the receiver will fetch, or something is published there that is not the key
+      // this relay signs with. Both make the signature fail, and both used to be
+      // reported as "unknown" when the DNS answer was in fact a hard no. The name is
+      // built by the same helper the verifier queries with, so the address we tell
+      // the user to publish is the address we check.
+      const name = dkimRecordName(domain, selector);
+      const why =
+        dkim === "mismatch"
+          ? `the key published at ${name} is not the one this relay signs with`
+          : `no public key is published at ${name}`;
+      unpublishedNotes.push(`@${domain}: ${why}`);
+      entries.push({
+        domain,
+        status: "unpublished",
+        detail:
+          `Mail from @${domain} IS signed by the relay, but ${why} — so the ` +
+          `signature will FAIL verification and receivers will treat the mail as ` +
+          `unsigned. Add @${domain} on the Sending domains tab to get the exact ` +
+          `record to publish`,
+      });
+    } else if (dkim === "verified") {
+      // A LIVE DNS answer, which is stronger than a database row taken on trust:
+      // the relay holds the key and the outside world can fetch it.
+      entries.push({
+        domain,
+        status: "verified",
+        detail: `Mail from @${domain} is signed and its published DKIM key matches`,
+      });
+    } else if (dkim === "present") {
+      // A key IS published, we simply cannot prove it is ours — so this must not
+      // read as a failure. Saying "no record on file" here was the old wording, and
+      // it sent users to re-publish a record that was already correct.
+      entries.push({
+        domain,
+        status: "unverified",
+        detail:
+          `Mail from @${domain} IS signed by the relay and a DKIM key IS published ` +
+          `at ${dkimRecordName(domain, selector)}. This account holds no record of ` +
+          `which key the relay signs with, so the two cannot be confirmed as ` +
+          `matching — if you need that proof, re-add @${domain} on the Sending ` +
+          `domains tab, which issues a fresh key together with the record that ` +
+          `matches it`,
       });
     } else if (row === undefined && opts.relaySignedDomains !== undefined) {
       // The relay signs, but we hold no DNS record for it — so we cannot claim
@@ -309,10 +434,27 @@ export function evaluateSigningCoverage(opts: {
 
   const unsigned = entries.filter((e) => e.status === "unsigned").map((e) => e.domain);
   const hasUnsigned = unsigned.length > 0;
+  const unpublished = entries.filter((e) => e.status === "unpublished").map((e) => e.domain);
+  const hasUnpublished = unpublished.length > 0;
 
-  let warning: string | null = null;
+  // Both states mean a receiver will not authenticate the mail, and both are
+  // invisible at send time, so they are surfaced as one sentence naming EVERY
+  // affected domain. A mailbox can rotate several From addresses, and reporting
+  // only the first problem would leave the rest silently unfixed.
+  const clauses: string[] = [];
   if (hasUnsigned) {
     const list = unsigned.map((d) => `@${d}`).join(", ");
+    clauses.push(`Sending as ${list} will be unauthenticated (no DKIM signature).`);
+  }
+  if (hasUnpublished) {
+    clauses.push(
+      `These domains are signed but their DKIM key cannot validate — ` +
+        `${unpublishedNotes.join("; ")}.`
+    );
+  }
+
+  let warning: string | null = null;
+  if (clauses.length > 0) {
     const remedy = platformDomain
       ? `Publish this domain's DKIM record on the Sending domains tab, or — if you ` +
         `cannot edit that domain's DNS — send as @${platformDomain}, which this ` +
@@ -320,10 +462,18 @@ export function evaluateSigningCoverage(opts: {
       : `Publish this domain's DKIM record on the Sending domains tab. DKIM requires ` +
         `a public key in the From domain's own DNS, and no sending setup on our side ` +
         `can stand in for it.`;
-    warning = `Sending as ${list} will be unauthenticated (no DKIM signature). ${remedy}`;
+    warning = `${clauses.join(" ")} ${remedy}`;
   }
 
-  return { entries, unsigned, hasUnsigned, platformDomain, warning };
+  return {
+    entries,
+    unsigned,
+    hasUnsigned,
+    unpublished,
+    hasUnpublished,
+    platformDomain,
+    warning,
+  };
 }
 
 
@@ -361,7 +511,7 @@ export function buildSendingDomainRecords(opts: {
     {
       purpose: "dkim",
       type: "TXT",
-      name: `${opts.selector}._domainkey.${domain}`,
+      name: dkimRecordName(domain, opts.selector),
       value: opts.publicKeyTxt,
       note:
         "The signature's public key. Some DNS panels split long values into " +
@@ -463,7 +613,9 @@ export async function verifySendingDomainDns(opts: {
   const checks: SendingDomainCheck[] = [];
 
   // --- DKIM: must exist AND carry the same p= we sign with -------------------
-  const dkimName = `${opts.selector}._domainkey.${domain}`;
+  // Built by dkimRecordName so the name we QUERY is the same string we hand the
+  // user to publish, and the same one a coverage verdict names.
+  const dkimName = dkimRecordName(domain, opts.selector);
   const dkimRecords = await txtRecords(dkimName);
   const expectedP = dkimPublicKeyOf(opts.publicKeyTxt);
   if (dkimRecords.some((r) => dkimPublicKeyOf(r) === expectedP)) {

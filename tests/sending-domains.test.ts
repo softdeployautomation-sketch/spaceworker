@@ -27,12 +27,37 @@ type Loader = {
   _load: (request: string, parent: NodeModule | undefined, isMain: boolean) => unknown;
 };
 
-const MODULE_UNDER_TEST = "lib/sending-domains.ts";
+/**
+ * Every module whose `node:dns/promises` import must be replaced by the table
+ * below. Both are listed with their real extension: the parent filename at require
+ * time ends in `.ts`, so a suffix check without it never matches.
+ */
+const DNS_CONSUMERS = ["/lib/sending-domains.ts", "/lib/sending-domain-coverage.ts"];
 
 /** Tiny hermetic TXT table: name -> records (each record as its own string). */
 const txtTable = new Map<string, string[]>();
 function setTxt(name: string, records: string[]): void {
   txtTable.set(name, records);
+}
+
+/**
+ * Failure modes a resolver can produce, which must NOT be conflated.
+ *
+ * "no such record" (ENOTFOUND/ENODATA) is a DEFINITE answer and a real DKIM
+ * failure. Anything else — SERVFAIL, a timeout, a refused query — is the resolver
+ * failing to answer, and must stay "unknown". Modelling both is the only way to
+ * prove the code keeps them apart: a stub that can ONLY say "absent" makes the
+ * two indistinguishable, and every lookup then reads as a hard no.
+ */
+const dnsFailures = new Map<string, string>();
+function setDnsFailure(name: string, code: string): void {
+  dnsFailures.set(name, code);
+}
+
+/** Names whose lookup never settles, so the bounded wait has to fire. */
+const hanging = new Set<string>();
+function setHang(name: string): void {
+  hanging.add(name);
 }
 
 function installRequireHook(): void {
@@ -43,7 +68,14 @@ function installRequireHook(): void {
     const from = (parent?.filename ?? "").replace(/\\/g, "/");
     if (
       request === "node:dns/promises" &&
-      (from.endsWith(`/${MODULE_UNDER_TEST}`) || from.endsWith("/lib/sending-domains"))
+      // The suffix MUST include the real ".ts", because at require time the parent
+      // filename is the compiled path ending in `.ts`. Writing the check without it
+      // made it silently false, so the module under test got the REAL resolver —
+      // and three of the tests below still passed, because a real NXDOMAIN for a
+      // name that does not exist happens to produce the same answer as "missing".
+      // That is the whole hazard: a stub that does not apply is indistinguishable
+      // from a stub that agrees with you.
+      DNS_CONSUMERS.some((suffix) => from.endsWith(suffix))
     ) {
       return {
         // Top level, exactly like the `{ lookup }` stub in
@@ -54,6 +86,15 @@ function installRequireHook(): void {
         // TypeError is swallowed by txtRecords()'s catch, and every lookup
         // silently reads as "no record". That is a stub that cannot fail loudly.
         resolveTxt: async (name: string) => {
+          // A resolver that never answers: the bounded wait must produce
+          // "unknown", NOT "missing".
+          if (hanging.has(name)) return new Promise<never>(() => {});
+          const code = dnsFailures.get(name);
+          if (code) {
+            const err = new Error(`queryTxt ${code} ${name}`) as Error & { code: string };
+            err.code = code;
+            throw err;
+          }
           const rows = txtTable.get(name);
           if (!rows) {
             // resolveTxt throws ENOTFOUND/ENODATA when a name has no TXT
@@ -79,6 +120,9 @@ installRequireHook();
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const sd = require("../lib/sending-domains") as typeof import("../lib/sending-domains");
+// The DNS-facing half. Loaded through the same hook so its `dns` import is the
+// stubbed one — without this, lookupDkimState would query the real resolver.
+const cov = require("../lib/sending-domain-coverage") as typeof import("../lib/sending-domain-coverage");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const SELECTOR = sd.DKIM_SELECTOR;
@@ -471,5 +515,250 @@ test("the relay lookup is case-insensitive too", () => {
   });
   assert.strictEqual(c.entries[0].status, "unverified");
   assert.strictEqual(c.hasUnsigned, false);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_142 — "signed, but the key is not published" must not read as "unknown".
+//
+// The live case that prompted this: a mailbox reported
+//   "✓ DKIM — Mail from @domain IS signed by the relay, but this account has no
+//    DKIM record on file for it, so whether that signature validates is unknown"
+// while the DNS answer was in fact a hard NO — the name a receiver fetches had no
+// record at all. "Unknown" offers the user no action, and a ✓ in front of it reads
+// like success. The states below separate a real DNS negative (definite failure)
+// from a resolver that did not answer (genuinely unknown), because those need
+// opposite treatment: one is a call to action, the other must accuse nobody.
+// ---------------------------------------------------------------------------
+
+test("a signed domain whose key is provably not in DNS is a DEFINITE failure", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["fleming@watsonandrade9382.ca.lu"],
+    rows: [],
+    relaySignedDomains: new Set(["watsonandrade9382.ca.lu"]),
+    dkimRecordStates: new Map([["watsonandrade9382.ca.lu", "missing"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "unpublished");
+  assert.deepStrictEqual(c.unpublished, ["watsonandrade9382.ca.lu"]);
+  assert.strictEqual(c.hasUnpublished, true);
+  // Still NOT "unsigned": the relay does add a signature, and telling the user to
+  // install a key that is already installed is the wrong action.
+  assert.strictEqual(c.hasUnsigned, false);
+  assert.deepStrictEqual(c.unsigned, []);
+  // The red box REPLACES the per-entry detail line, so the exact record to publish
+  // has to be inside the warning or the user never sees it at all.
+  assert.ok(c.warning, "a signature that cannot validate must be surfaced");
+  assert.match(c.warning ?? "", /sw\._domainkey\.watsonandrade9382\.ca\.lu/);
+  assert.match(c.warning ?? "", /no public key is published/);
+});
+
+test("a published key that is NOT ours is also a definite failure, worded differently", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "pending", installedOnRelay: true }],
+    relaySignedDomains: new Set(["acme.com"]),
+    dkimRecordStates: new Map([["acme.com", "mismatch"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "unpublished");
+  assert.strictEqual(c.hasUnpublished, true);
+  // A stale record and no record need different words: "publish this" versus
+  // "what you published is not what we sign with".
+  assert.match(c.warning ?? "", /is not the one this relay signs with/);
+});
+
+test("a resolver that did not answer stays unknown — never a false failure", () => {
+  // SERVFAIL/timeout must NOT be reported as "no record": that would accuse a
+  // domain whose DNS is perfectly correct, and send the user to fix nothing.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "pending", installedOnRelay: true }],
+    relaySignedDomains: new Set(["acme.com"]),
+    dkimRecordStates: new Map([["acme.com", "unknown"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.strictEqual(c.hasUnpublished, false);
+  assert.strictEqual(c.warning, null);
+});
+
+test("a key IS published but cannot be confirmed as ours: no failure claim", () => {
+  // The live case for a domain added OUTSIDE this UI (key installed by a script):
+  // DNS holds a key, the relay signs, but no row ties the two together. Calling
+  // that "no DKIM record on file" was the old wording and it read as a fault.
+  // It must also not instruct a re-add: that rotates the key and would break a
+  // setup that is working, so the advice has to stay conditional.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["fleming@watsonandrade9382.ca.lu"],
+    rows: [],
+    relaySignedDomains: new Set(["watsonandrade9382.ca.lu"]),
+    dkimRecordStates: new Map([["watsonandrade9382.ca.lu", "present"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.strictEqual(c.hasUnpublished, false, "a published key must never be called broken");
+  assert.strictEqual(c.warning, null);
+  assert.doesNotMatch(c.entries[0].detail, /no DKIM record on file/);
+  assert.match(c.entries[0].detail, /a DKIM key IS published/);
+});
+
+test("a live lookup can confirm the whole chain, outranking a stale db row", () => {
+  // Stronger than any row: the relay holds the key AND the outside world can fetch
+  // it. This is what "verified" should ultimately mean, so it must win over a row
+  // still saying "pending" — the opposite direction from the false-negative cases
+  // above, and the reason the lookup is not merely additive.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "pending", installedOnRelay: true }],
+    relaySignedDomains: new Set(["acme.com"]),
+    dkimRecordStates: new Map([["acme.com", "verified"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "verified");
+  assert.strictEqual(c.warning, null);
+});
+
+test("dkimRecordStates matching is case-insensitive, like the domain itself", () => {
+  // Our own lookup supplies this map, but normalising it inside the decision keeps
+  // every caller honest: an odd-cased key must not make a published key look gone.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["X@acme.com"],
+    rows: [],
+    relaySignedDomains: new Set(["acme.com"]),
+    dkimRecordStates: new Map([["ACME.COM", "missing"]]),
+  });
+  assert.strictEqual(c.entries[0].status, "unpublished");
+});
+
+test("the record named in the warning uses the selector the domain was added with", () => {
+  // A non-default selector must reach the advice, or we tell the user to publish a
+  // name nobody will ever query — and the receiver fetches nothing.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [],
+    relaySignedDomains: new Set(["acme.com"]),
+    dkimRecordStates: new Map([["acme.com", "missing"]]),
+    selector: "mail",
+  });
+  assert.match(c.warning ?? "", /mail\._domainkey\.acme\.com/);
+});
+
+test("unsigned and unpublished are BOTH reported, not just whichever came first", () => {
+  // A mailbox rotating several From addresses must not have the second problem
+  // hidden behind the first — the two have different fixes.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["a@broken.com", "b@nosign.com"],
+    rows: [],
+    relaySignedDomains: new Set(["broken.com"]),
+    dkimRecordStates: new Map([["broken.com", "missing"]]),
+  });
+  assert.strictEqual(c.hasUnsigned, true);
+  assert.strictEqual(c.hasUnpublished, true);
+  assert.match(c.warning ?? "", /@nosign\.com/); // unsigned: no key on the relay
+  assert.match(c.warning ?? "", /@broken\.com/); // signed: key not published
+});
+
+test("with no lookup performed, the verdict claims nothing either way", () => {
+  // Absent dkimRecordStates means nobody asked. The wording must stay the
+  // conservative "unknown" rather than inventing a DNS answer we did not get.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["fleming@watsonandrade9382.ca.lu"],
+    rows: [],
+    relaySignedDomains: new Set(["watsonandrade9382.ca.lu"]),
+  });
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.strictEqual(c.hasUnpublished, false);
+  assert.deepStrictEqual(c.unpublished, []);
+  assert.strictEqual(c.warning, null);
+});
+
+// ---------------------------------------------------------------------------
+// The DNS layer itself. Everything above pins the DECISION; this pins the ANSWER
+// the decision is fed. It is the half that turns a resolver error into either
+// "no key is published" (a call to action) or "we could not tell" (silence), and
+// conflating them is how a domain set up perfectly gets told it is broken.
+//
+// These tests are also the canary for the require hook above. The first two and
+// the "no p=" case would still pass if the hook silently stopped applying, because
+// a real resolver answering NXDOMAIN produces the same "missing" verdict — but the
+// chunked-key and record-name cases below assert values that exist ONLY in the
+// table, so they fail loudly if the stub is not in force. That is deliberate: the
+// hook's suffix check was written once without the ".ts" extension and matched
+// nothing, and only those table-only assertions revealed it.
+// ---------------------------------------------------------------------------
+
+test("a name with no TXT record is a DEFINITE missing key", async () => {
+  // ENOTFOUND is the resolver answering "that name does not exist" — which is
+  // exactly what a receiver concludes when it fetches the name and finds nothing.
+  setDnsFailure(`${SELECTOR}._domainkey.nokey.test`, "ENOTFOUND");
+  assert.strictEqual(
+    await cov.lookupDkimState(`${SELECTOR}._domainkey.nokey.test`, null),
+    "missing"
+  );
+});
+
+test("ENODATA — the name exists but carries no TXT — is missing too", async () => {
+  setDnsFailure(`${SELECTOR}._domainkey.emptyname.test`, "ENODATA");
+  assert.strictEqual(
+    await cov.lookupDkimState(`${SELECTOR}._domainkey.emptyname.test`, null),
+    "missing"
+  );
+});
+
+test("a resolver that FAILS (SERVFAIL) must stay unknown, never 'missing'", async () => {
+  // The false-accusation guard, at the DNS layer. SERVFAIL says nothing about
+  // whether the record exists; reporting "no key is published" here would send
+  // the user to publish a record that may already be correct and live.
+  setDnsFailure(`${SELECTOR}._domainkey.flaky.test`, "SERVFAIL");
+  assert.strictEqual(
+    await cov.lookupDkimState(`${SELECTOR}._domainkey.flaky.test`, null),
+    "unknown"
+  );
+});
+
+test("a resolver that never answers is bounded, and still unknown", async () => {
+  // A stalled resolver must not become a stalled Test-connection screen, so the
+  // wait is bounded — and what it yields must be "we could not tell", not a verdict
+  // against the domain. The injected 50 ms timeout keeps this test honest and fast;
+  // with the 2.5 s production default it would still only ever return "unknown".
+  setHang(`${SELECTOR}._domainkey.hangs.test`);
+  const started = Date.now();
+  const state = await cov.lookupDkimState(`${SELECTOR}._domainkey.hangs.test`, null, 50);
+  const elapsed = Date.now() - started;
+  assert.strictEqual(state, "unknown");
+  assert.ok(elapsed < 1_000, `bounded wait must fire promptly, took ${elapsed}ms`);
+});
+
+test("a TXT with no p= is 'missing': there is no key to verify with", async () => {
+  // A policy record, or a paste that lost the p= entirely. Reporting "present"
+  // would promise a check that cannot happen.
+  setTxt(`${SELECTOR}._domainkey.nop.test`, ["v=DKIM1; k=rsa"]);
+  assert.strictEqual(await cov.lookupDkimState(`${SELECTOR}._domainkey.nop.test`, null), "missing");
+});
+
+test("a chunked 2048-bit key is REJOINED, then verified against what we sign with", async () => {
+  // A 2048-bit key's p= is ~372 chars, so the resolver hands it back in >255-byte
+  // chunks. If the chunks are not rejoined the key reads as truncated and every
+  // correctly published record is reported as a mismatch — a false negative on a
+  // perfect setup, and the reason the real chunking shape is modelled here.
+  const pair = sd.generateDkimKeypair(2048);
+  assert.ok(pair.publicKeyTxt.length > 255, "test premise: this key is long enough to chunk");
+  const name = `${SELECTOR}._domainkey.chunked.test`;
+  setTxt(name, [pair.publicKeyTxt]);
+  const expectedP = sd.dkimPublicKeyOf(pair.publicKeyTxt);
+
+  assert.strictEqual(await cov.lookupDkimState(name, expectedP), "verified");
+  // Same record, but this account does not know the key it signs with: a published
+  // key we cannot tie to ourselves is "present", never "verified" and never a fault.
+  assert.strictEqual(await cov.lookupDkimState(name, null), "present");
+  // A DIFFERENT key at the name means our signature will not validate, even though
+  // a DKIM record exists and looks healthy.
+  const other = sd.dkimPublicKeyOf(sd.generateDkimKeypair(2048).publicKeyTxt);
+  assert.strictEqual(await cov.lookupDkimState(name, other), "mismatch");
+});
+
+test("a name is asked about exactly as the verifier publishes it", async () => {
+  // The advice names this record and the lookup queries this record, and they are
+  // built by the same helper — so a non-default selector cannot drift between the
+  // two and leave the user publishing a name nobody queries.
+  const name = sd.dkimRecordName("acme.com", "mail");
+  setTxt(name, ["v=DKIM1; k=rsa; p=Zm9v"]);
+  assert.strictEqual(await cov.lookupDkimState(name, null), "present");
+  assert.strictEqual(name, "mail._domainkey.acme.com");
 });
 

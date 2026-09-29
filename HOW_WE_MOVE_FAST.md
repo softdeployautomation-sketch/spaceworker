@@ -714,6 +714,45 @@ Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twic
   **ON**, and the service never restarted, i.e. users get the maintenance page. If
   that happens, finish it by hand: `systemctl restart spaceworker.service`, check
   `curl localhost:3500/` = 200, then `rm -f /var/www/sw-maintenance.on`.
+- **A DNS check that "could not answer" must NEVER be rendered as "no record
+  published".** These are different verdicts with opposite user actions: an absent
+  record is a genuine DKIM failure the user must fix, while a resolver that
+  SERVFAILed or timed out tells us nothing, and calling it "no key published"
+  sends someone to re-publish a record that may already be correct and live. Only
+  `ENOTFOUND`/`ENODATA` mean the name genuinely does not exist; everything else is
+  `unknown`. The lookup is also raced against a timer (`resolveTxtBounded`), because
+  it feeds a verdict on the Test-connection screen and a stalled resolver must not
+  become a stalled test — and the raced-away promise's rejection is captured as a
+  value, or an unhandled rejection could take the process down after the answer was
+  already given. **Pin this at the DNS layer, not only at the decision layer** —
+  `tests/sending-domains.test.ts` drives `lookupDkimState` through the require hook
+  with a stub that can hang (`setHang`) and fail (`setDnsFailure`), and the timeout
+  is an injectable parameter so the rule costs 50 ms of test time, not 2.5 s.
+- **A require-hook condition that forgets the file extension matches NOTHING, and a
+  stub that does not apply is indistinguishable from a stub that agrees with you.**
+  Every module in this repo is required as `lib/<name>.ts`, so the parent filename
+  ends in `.ts`; a check written as `from.endsWith("/lib/sending-domain-coverage")`
+  is silently false, and the module under test then imports the REAL module. That
+  is worse than a loud failure because three tests still passed — a real resolver
+  answering NXDOMAIN for a nonexistent name produces the same `"missing"` verdict
+  the stub would have. The broken hook was only revealed by assertions whose
+  expected values exist **only in the table** (a chunked 2048-bit key, a
+  non-default selector). **So: list stubbed consumers with their real extension,
+  and make at least one assertion per stubbed module depend on data that cannot
+  come from the real dependency.** Here that is `DNS_CONSUMERS` +
+  `setTxt`/`setHang`/`setDnsFailure`.
+- **DKIM has two halves and only one of them is ours.** The sending server
+  *applies* the signature (that is us, and our relay does it); the RECEIVER
+  *validates* it by fetching `<selector>._domainkey.<FromDomain>` from DNS and
+  checking the maths against the published public key. So a sender can sign
+  perfectly and still fail authentication — and **no sending software can publish
+  that key, because it is not our domain**. Brevo, Resend, SendGrid and Gammadyne
+  are all in the same position, which is why they all hand you the same "add these
+  DNS records" screen. The only zero-DNS-work ways to be authenticated are (a) send
+  as a domain the sender has already authenticated (a provider's shared domain) or
+  (b) have the domain owner publish `sw._domainkey` once. Never present "signed" as
+  "will authenticate": the coverage verdict must say whether the key is PUBLISHED
+  and whether it is OURS.
 
 
 
