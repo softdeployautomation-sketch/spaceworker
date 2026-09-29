@@ -81,13 +81,22 @@ func cmdSyncState(args []string) error {
 	if browserType == "" {
 		return usageErr("sync-state requires --browser")
 	}
-	// Firefox is refused BY NAME rather than silently treated as Chromium: its
-	// profile layout is different, and a Chromium-shaped walk of it would produce
-	// an empty manifest that looks exactly like "nothing changed".
-	if browserType == "firefox" {
-		out := stateSyncOut{OK: false, Browser: browserType, Failed: "state_browser_unsupported"}
+	// Anything the walker cannot read is refused BY NAME rather than silently
+	// treated as Chromium: Firefox's profile layout is different, and a
+	// Chromium-shaped walk of it would produce an empty manifest that looks exactly
+	// like "nothing changed".
+	//
+	// The check is a set membership test, not `== "firefox"`, because the misleading
+	// answer is the general case: ANY name this walker cannot serve (firefox,
+	// chromium, a typo, a browser a newer platform learned about) would otherwise
+	// fall through to the profile locator, find nothing, and be reported as
+	// `state_profile_missing` — true about the search, false about the machine.
+	if !browser.IsStateBrowser(browserType) {
+		reason := fmt.Sprintf("state_browser_unsupported:%s", browserType)
+		out := stateSyncOut{OK: false, Browser: browserType, Failed: reason}
 		printStateSyncOut(out)
-		return fmt.Errorf("state_browser_unsupported: firefox profiles are not supported yet")
+		return fmt.Errorf("%s: %s profiles are not supported yet (supported: %s)",
+			reason, browserType, strings.Join(browser.SupportedStateBrowsers(), ", "))
 	}
 
 	cfg, _, err := loadDeviceCaptureConfig()

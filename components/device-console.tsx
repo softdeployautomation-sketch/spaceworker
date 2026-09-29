@@ -28,6 +28,13 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import {
+  CLONE_BROWSERS,
+  cloneBrowserCarryRefusal,
+  cloneBrowserLabel,
+  isCarriableBrowser,
+  type CloneBrowser,
+} from "@/lib/clone-browsers";
 import { useConfirm } from "@/components/confirm-provider";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { formatIdle } from "@/lib/device-idle";
@@ -261,19 +268,12 @@ const CLONE_STEP_LABELS: Record<string, string> = {
   deleted: "Deleted",
 };
 
-const CLONE_BROWSER_LABELS: Record<string, string> = {
-  chrome: "Chrome",
-  edge: "Edge",
-  firefox: "Firefox",
-};
-
 function cloneStepLabel(status: string): string {
   return CLONE_STEP_LABELS[status] ?? "Working on it";
 }
 
-function cloneBrowserLabel(browser: string): string {
-  return CLONE_BROWSER_LABELS[browser] ?? "Browser";
-}
+// `cloneBrowserLabel` deliberately comes from `@/lib/clone-browsers` — the console's
+// own copy is what let Brave be pickable-looking in one place and refused in another.
 
 function cloneEgressLabel(egressMode: string): string {
   return egressMode === "direct"
@@ -539,7 +539,7 @@ export function DeviceConsole({
   // rather than in CloneTab so a tab switch does not erase what the device just
   // said, which is the one moment the operator is reading it.
   const [stateSyncResult, setStateSyncResult] = useState<{ ok: boolean; text: string } | null>(null);
-  const [cloneBrowser, setCloneBrowser] = useState<"chrome" | "edge" | "firefox">("chrome");
+  const [cloneBrowser, setCloneBrowser] = useState<CloneBrowser>("chrome");
   const [cloneProfile, setCloneProfile] = useState("");
   const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
   // TASK_119A (owner 2026-09-25): the clone flow the owner asked for — one
@@ -2187,7 +2187,7 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   return (
     <div className="space-y-4">
@@ -2259,17 +2259,18 @@ function ProfileStateCard(props: {
   busy: string;
   result: { ok: boolean; text: string } | null;
   onSync: () => Promise<void>;
-  browser: "chrome" | "edge" | "firefox";
+  browser: CloneBrowser;
   profile: string;
   latest: CloneRow | null;
 }) {
   const lastLine = props.latest ? cloneStateLine(props.latest) : "";
   const pending = props.latest?.stateSyncPending ?? 0;
-  // Same rule as the server's run-command path: Firefox's profile layout is not
-  // Chromium's, so the device refuses it by name. Saying so BEFORE the click is
-  // kinder than a refusal afterwards — and the button is disabled, not hidden, so
-  // the reason stays visible.
-  const unsupported = props.browser === "firefox";
+  // Same rule as the server's run-command path, read from the ONE list rather than
+  // by name: a browser nothing can be carried from gets the device's own reason in
+  // the card, BEFORE the click. The button is disabled, not hidden, so the reason
+  // stays visible.
+  const carryRefusal = cloneBrowserCarryRefusal(props.browser);
+  const unsupported = carryRefusal !== null;
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Browser data</p>
@@ -2297,7 +2298,7 @@ function ProfileStateCard(props: {
           disabled={props.busy === "state-sync" || unsupported}
           title={
             unsupported
-              ? "Firefox profiles are not supported yet — its layout is not Chromium's."
+              ? carryRefusal ?? undefined
               : `Copy ${cloneBrowserLabel(props.browser)}${props.profile ? ` · ${props.profile}` : ""} from this PC`
           }
           className="rounded border border-border px-2.5 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:pointer-events-none disabled:opacity-50"
@@ -2311,7 +2312,7 @@ function ProfileStateCard(props: {
         <span className="text-xs text-fg-muted">
           {cloneBrowserLabel(props.browser)}
           {props.latest?.profileName ? ` · ${props.latest.profileName}` : ""}
-          {unsupported ? " · not supported yet" : ""}
+          {unsupported ? " · not supported" : ""}
         </span>
       </div>
       {props.result && (
@@ -2549,8 +2550,7 @@ function CloneSetupCard(props: {
   );
 }
 
-
-function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
   const { browser, setBrowser, profile, setProfile, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
@@ -2564,7 +2564,15 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
   // seen the extension + native host on this PC (`liveCaptureReady` is a
   // presence check, not a guess). Otherwise it is disabled with the reason —
   // never a button that fails after Start.
-  const liveSelectable = setup?.liveCaptureReady === true;
+  //
+  // AND only for a browser whose session can be carried. Carrying means running the
+  // work PC's own browser under CDP to lift its cookies, so a browser with no
+  // implementation (Firefox) gets a second, different reason — stated before the
+  // click rather than as a refusal after it.
+  const carryRefusal = cloneBrowserCarryRefusal(browser);
+  const carryable = isCarriableBrowser(browser);
+  const extensionReady = setup?.liveCaptureReady === true;
+  const liveSelectable = extensionReady && carryable;
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -2574,10 +2582,17 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
         <span className="block text-xs text-fg-muted">
           Browser
           <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
-            {(["chrome", "edge", "firefox"] as const).map((b) => (
+            {CLONE_BROWSERS.map((b) => (
               <button
                 key={b}
-                onClick={() => setBrowser(b)}
+                onClick={() => {
+                  setBrowser(b);
+                  // A browser that carries nothing cannot be paired with "Carry my
+                  // session", so picking one moves the pair back to `fresh` instead of
+                  // leaving the form in a combination the server would refuse. The
+                  // server still refuses it (lib/clone.ts) — this is courtesy, not the gate.
+                  if (!isCarriableBrowser(b) && sessionMode === "live") setSessionMode("fresh");
+                }}
                 className={cn(
                   "flex-1 px-2 py-1.5 text-xs transition-colors",
                   browser === b ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
@@ -2652,22 +2667,34 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
             <button
               onClick={() => liveSelectable && setSessionMode("live")}
               disabled={!liveSelectable}
-              title={liveSelectable ? "Hands this PC's signed-in session to the clone" : "Needs the browser extension on this PC — use “Set up this PC” in Device setup above"}
+              title={
+                !carryable
+                  ? carryRefusal ?? undefined
+                  : extensionReady
+                    ? "Hands this PC's signed-in session to the clone"
+                    : "Needs the browser extension on this PC — use “Set up this PC” in Device setup above"
+              }
               className={cn(
                 "flex-1 px-2 py-1.5 text-xs transition-colors",
                 sessionMode === "live" && liveSelectable ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
                 !liveSelectable && "cursor-not-allowed opacity-60",
               )}
             >
-              Carry my session{!liveSelectable ? " · setup needed" : ""}
+              Carry my session{!carryable ? " · not available" : !extensionReady ? " · setup needed" : ""}
             </button>
           </span>
         </span>
         {!liveSelectable ? (
           <p className="mt-1.5 text-xs text-fg-muted">
-            &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
-            this PC&rdquo; in Device setup above — it installs silently, and this option appears once
-            it is detected.
+            {!carryable ? (
+              carryRefusal
+            ) : (
+              <>
+                &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
+                this PC&rdquo; in Device setup above — it installs silently, and this option appears once
+                it is detected.
+              </>
+            )}
           </p>
         ) : sessionMode === "live" ? (
           <p className="mt-1.5 text-xs text-fg-muted">

@@ -332,3 +332,54 @@ npm run check:clone-contract  # exclusion list + sync vocabulary, both direction
 cd michael/browser-clone/engine
 go test ./pkg/wake/ -count=1 -v   # the device half
 ```
+
+---
+
+## 12. The browser vocabulary, and the check that keeps it true
+
+The state pipe was built for Chromium browsers, and `brave` reached the pipe and the device
+walker while every DOOR into the feature still refused it — the capability was real, tested
+and unreachable, and nothing reported it. That is the drift `npm run check:clone-contract`
+now catches, and `BROWSER-SUPPORT.md` is the human-readable form of what it enforces: both
+halves (`CHROMIUM_BROWSERS`) are one list, because both need the same Chromium profile
+layout.
+
+What the check compares, and the expectation for each:
+
+| Source | Must equal | Why |
+|---|---|---|
+| `lib/clone-state-sync-format.ts` `STATE_SYNC_BROWSERS` | carriable | asking a device for a browser it cannot walk yields an empty manifest — a lie, not an error |
+| `engine/pkg/browser/walkable.go` | carriable | the walker is the other side of the same promise |
+| `CdpCookies.ps1`, `Get-ChromiumUserDataRoot` | carriable **only** | the cookie read and the `User Data` root have no Firefox branch to reach |
+| `Get-BrowserProfileDir`, `Invoke-BrowserClone.ps1` | every requestable browser | refusing a path for a browser the picker offers is a door that opens onto a wall |
+| `CLONE_BROWSERS` | built from both halves | a browser in neither half would be pickable and refused by everything behind it |
+
+The comparison is per **function**, not per file, and that is not a detail: a per-file rule
+cannot be right about both `Get-ChromiumUserDataRoot` (Chromium-only) and
+`Get-BrowserProfileDir` (which legitimately takes Firefox). The first run of the check
+proved it by flagging the Chromium-only root — the check was wrong, the code was right — so
+the rule was moved to the owner of the declaration.
+
+### Evidence that the check can fail (sabotage runs, 2026-09-29)
+
+| Sabotage | Result |
+|---|---|
+| remove `brave` from all four `CdpCookies.ps1` ValidateSets | FAILED, naming all four functions |
+| add `firefox` to the Chromium-only `User Data` root | FAILED: `Get-ChromiumUserDataRoot has "firefox", which it should not` |
+| remove `StateBrowserBrave` from the Go walker | FAILED: `walkable.go walkable browsers is missing "brave"` |
+| restore every file | PASSED, and `diff -q` against the pre-sabotage copies is empty |
+
+A check that cannot fail is not a check, and the third case is the one that matters: it is
+exactly the drift that had already happened once in the other direction.
+
+### Also in this pass
+
+- **Brave is reachable end to end** — the console picker, the clone-request validation, the
+device-facing clone route and the transport's own guard all read the one list, so `brave`
+now gets a job row instead of `bad_browser`.
+- **Firefox is honest rather than silent** — the console refuses "Carry my session" with the
+device's own wording before the click, and picking Firefox moves the form back to `fresh`
+rather than leaving an impossible pair selected. A **fresh** Firefox clone is a legitimate
+product and is still offered; what is refused is the promise that its history came along.
+- **`test:clone` now runs `lib/clone-browsers.test.ts`** — a test file that CI never executed
+is the same class of gap as a capability nothing can reach.

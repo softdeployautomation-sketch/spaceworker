@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { CLONE_BROWSERS } from "@/lib/clone-browsers";
 import { type CloneView, isCloneState, listClones, requestClone } from "@/lib/clone";
 
 export const dynamic = "force-dynamic";
@@ -35,7 +36,9 @@ export const dynamic = "force-dynamic";
 // client must never be able to inject an approval id.
 
 const ROLES = new Set(["source", "destination", "any"]);
-const BROWSERS = new Set(["chrome", "edge", "firefox"]);
+// The door into the feature, kept in step with lib/clone-browsers.ts rather than
+// restated — this list is the outer half of `requestClone`'s own validation.
+const BROWSERS = new Set<string>(CLONE_BROWSERS);
 
 /** Never let a raw upstream body (HTML) reach the client (rule 4). */
 function sanitize(message: string): string {

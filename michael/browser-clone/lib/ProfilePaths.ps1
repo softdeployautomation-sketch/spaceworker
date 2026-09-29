@@ -8,15 +8,50 @@
 
 $script:Magic = [byte[]](0x53,0x57,0x43,0x4C,0x4E,0x31,0x00)  # SWCLN1\0
 
+<#
+  THE ONE PLACE that maps a Chromium browser to its "User Data" directory.
+
+  Every function here and in CdpCookies.ps1 that needs that root reads it from this
+  map. The alternative was already in this file and is the reason the map exists: one
+  function had a `switch` and another had `if ($Browser -eq 'chrome') {…} else {…Edge…}`,
+  so a THIRD Chromium browser would have silently resolved to Edge's directory — the
+  clone would carry another browser's history and every exit code would still be 0.
+
+  Firefox is absent by design: it is not "User Data"/`Default`, it lives under
+  Roaming and it is a list of profile directories (see Get-BrowserProfileDir).
+#>
+$script:ChromiumUserDataSubdirs = @{
+    'chrome' = 'Google\Chrome\User Data'
+    'edge'   = 'Microsoft\Edge\User Data'
+    'brave'  = 'BraveSoftware\Brave-Browser\User Data'
+}
+
+function Get-ChromiumUserDataRoot {
+    <#
+      The LOCALAPPDATA-relative "User Data" root for a Chromium browser, or $null when
+      this environment has no LOCALAPPDATA (off-Windows, or a stripped service
+      environment). Returning $null rather than a relative path is deliberate: the
+      callers all treat "no root" as "cannot answer", never as a path to test.
+    #>
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave')][string]$Browser)
+    $sub = $script:ChromiumUserDataSubdirs[$Browser]
+    if (-not $sub) { return $null }
+    if (-not $env:LOCALAPPDATA) { return $null }
+    return (Join-Path $env:LOCALAPPDATA $sub)
+}
+
 function Get-BrowserProfileDir {
-    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','firefox')][string]$Browser,
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave','firefox')][string]$Browser,
           [string]$ProfileName)
+    # Chromium browsers share one layout and differ only by root, so the root comes
+    # from the shared map; Firefox is its own shape and is handled on its own.
     $base = $null
-    switch ($Browser) {
-        'chrome'  { $base = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data' }
-        'edge'    { $base = Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data' }
-        'firefox' { $base = Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles' }
+    if ($Browser -eq 'firefox') {
+        if ($env:APPDATA) { $base = Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles' }
+    } else {
+        $base = Get-ChromiumUserDataRoot -Browser $Browser
     }
+    if (-not $base) { throw "browser profile base not resolvable for '$Browser' in this environment" }
     if (-not (Test-Path $base)) { throw "browser profile base not found: $base" }
     if ($Browser -eq 'firefox') {
         $dir = if ($ProfileName) { Join-Path $base $ProfileName } else {
@@ -95,7 +130,7 @@ function Get-BrowserMajorVersion {
          versions the file route is refused with a named reason instead of
          silently producing a zero-cookie archive.
     #>
-    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','firefox')][string]$Browser,
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave','firefox')][string]$Browser,
           [string]$ProfileDir)
     $version = $null
 
@@ -118,13 +153,13 @@ function Get-BrowserMajorVersion {
         # it is only joined when it actually exists.
         $dirs = @()
         if ($ProfileDir) { $dirs += (Split-Path $ProfileDir -Parent) }
-        if ($env:LOCALAPPDATA) {
-            $dirs += if ($Browser -eq 'chrome') {
-                Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
-            } else {
-                Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data'
-            }
-        }
+        # The SAME map Get-BrowserProfileDir uses. As a map rather than
+        # `if chrome … else Edge`, because that branch is exactly how Brave would have
+        # read its version out of EDGE's directory — and a wrong major version silently
+        # changes which hosted build a clone is pinned to, which is the one thing the
+        # destination refuses rather than guesses at.
+        $configuredRoot = Get-ChromiumUserDataRoot -Browser $Browser
+        if ($configuredRoot) { $dirs += $configuredRoot }
         foreach ($dir in $dirs) {
             $lv = Join-Path $dir 'Last Version'
             if (Test-Path $lv) {
@@ -381,7 +416,7 @@ function Invoke-Restore {
         $cookieResult = $null
         $cookiePayload = Join-Path $stage '_meta\cookies.json'
         if (Test-Path $cookiePayload) {
-            $browserForCdp = if ($BrowserHint -in @('chrome', 'edge')) { $BrowserHint } else { 'chrome' }
+            $browserForCdp = if ($BrowserHint -in @('chrome', 'edge', 'brave')) { $BrowserHint } else { 'chrome' }
             if (-not (Get-Command Import-CdpCookies -ErrorAction SilentlyContinue)) {
                 $cookieTransfer = 'skipped:cdp-module-not-loaded'
             } else {

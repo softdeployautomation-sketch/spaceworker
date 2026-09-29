@@ -108,7 +108,108 @@ Check 'capture.reports-browser-version' ($vcap.browser_major_version -eq '141')
 Check 'capture.app-bound-refused-by-name' ($vcap.cookie_transfer -eq 'unsupported:app-bound-encryption')
 Check 'capture.app-bound-is-partial' ($vcap.exit_code -eq 1)
 
-# ── 5. exit-code contract constants ─────────────────────────────────────────
+# ── 4e. browser roots: Chrome / Edge / Brave must each read their OWN tree ───
+# This is the test for the two-browser assumption that used to live in this file:
+# version detection had `if ($Browser -eq 'chrome') {…} else {…Edge…}`, so a third
+# Chromium browser (Brave) would have read its version out of EDGE's directory and
+# silently changed which hosted build a clone is pinned to. Each browser below has a
+# DIFFERENT "Last Version", so reading the wrong one cannot pass by accident. The
+# profile directory is deliberately somewhere unrelated: that is the case where the
+# configured root is the only thing that can answer.
+$savedLocal = $env:LOCALAPPDATA
+$savedRoaming = $env:APPDATA
+try {
+    $lad = Join-Path $work 'lad'
+    $roots = @{
+        chrome = Join-Path $lad 'Google\Chrome\User Data'
+        edge   = Join-Path $lad 'Microsoft\Edge\User Data'
+        brave  = Join-Path $lad 'BraveSoftware\Brave-Browser\User Data'
+    }
+    $versions = @{ chrome = '150.0.1.2'; edge = '151.0.2.3'; brave = '152.0.3.4' }
+    foreach ($b in $roots.Keys) {
+        New-Item -ItemType Directory -Path (Join-Path $roots[$b] 'Default') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $roots[$b] 'Last Version'), $versions[$b], $utf8NoBom)
+        [System.IO.File]::WriteAllText((Join-Path $roots[$b] 'Default\Preferences'), '{}', $utf8NoBom)
+    }
+    $env:LOCALAPPDATA = $lad
+
+    $elsewhere = Join-Path $work 'elsewhere\Default'
+    New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+
+    Check 'roots.brave-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'brave') -eq $roots['brave'])
+    Check 'roots.chrome-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'chrome') -eq $roots['chrome'])
+    Check 'roots.edge-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'edge') -eq $roots['edge'])
+
+    Check 'version.brave-reads-brave' ((Get-BrowserMajorVersion -Browser 'brave' -ProfileDir $elsewhere) -eq '152')
+    Check 'version.chrome-reads-chrome' ((Get-BrowserMajorVersion -Browser 'chrome' -ProfileDir $elsewhere) -eq '150')
+    Check 'version.edge-reads-edge' ((Get-BrowserMajorVersion -Browser 'edge' -ProfileDir $elsewhere) -eq '151')
+
+    Check 'profile-dir.brave-resolves-default' ((Get-BrowserProfileDir -Browser 'brave' -ProfileName 'Default') -eq (Join-Path $roots['brave'] 'Default'))
+    Check 'profile-dir.edge-resolves-default' ((Get-BrowserProfileDir -Browser 'edge' -ProfileName 'Default') -eq (Join-Path $roots['edge'] 'Default'))
+
+    # Firefox is not Chromium and must not be folded into that map: its base comes
+    # from Roaming and it is a list of profiles, not a "User Data" root.
+    $ffRoot = Join-Path $work 'roaming\Mozilla\Firefox\Profiles'
+    $ffProfile = Join-Path $ffRoot 'abc123.default-release'
+    New-Item -ItemType Directory -Path $ffProfile -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ffProfile 'prefs.js'), '// x', $utf8NoBom)
+    $env:APPDATA = Join-Path $work 'roaming'
+    Check 'profile-dir.firefox-uses-roaming' ((Get-BrowserProfileDir -Browser 'firefox') -eq $ffProfile)
+} finally {
+    $env:LOCALAPPDATA = $savedLocal
+    $env:APPDATA = $savedRoaming
+}
+
+# ── 4f. Brave is accepted by the CDP cookie module ──────────────────────────
+# The ValidateSet is the contract between the orchestrator's browser list and the
+# module that must run the browser to move cookies. Before Brave was added, a Brave
+# clone failed with a PowerShell parameter-binding error — a message about a script,
+# not about the browser.
+#
+# Each browser gets a PLANTED executable in a synthetic ProgramFiles, because the
+# candidate lists are what actually decide which binary runs: a copy-paste error
+# (Brave's candidates pointing at msedge.exe) would move the wrong browser's cookies
+# and still exit 0. Planting distinct files makes that failure impossible to miss.
+$savedPf = $env:ProgramFiles
+$savedPf86 = ${env:ProgramFiles(x86)}
+$savedLocalApp = $env:LOCALAPPDATA
+$cdpThrew = $false
+$cdpErr = ''
+$cdpFound = @{}
+try {
+    . (Join-Path $root 'lib/CdpCookies.ps1')
+    $pf = Join-Path $work 'pf'
+    $pf86 = Join-Path $work 'pf86'   # non-empty: Join-Path throws on an empty base
+    New-Item -ItemType Directory -Path $pf86 -Force | Out-Null
+    $exes = @{
+        chrome = 'Google\Chrome\Application\chrome.exe'
+        edge   = 'Microsoft\Edge\Application\msedge.exe'
+        brave  = 'BraveSoftware\Brave-Browser\Application\brave.exe'
+    }
+    foreach ($b in $exes.Keys) {
+        $p = Join-Path $pf $exes[$b]
+        New-Item -ItemType Directory -Path (Split-Path $p -Parent) -Force | Out-Null
+        [System.IO.File]::WriteAllText($p, 'stub', $utf8NoBom)
+    }
+    $env:ProgramFiles = $pf
+    ${env:ProgramFiles(x86)} = $pf86
+    $env:LOCALAPPDATA = $pf86
+    foreach ($b in @('chrome', 'edge', 'brave')) {
+        $cdpFound[$b] = Get-CloneBrowserExe -Browser $b
+    }
+} catch { $cdpThrew = $true; $cdpErr = $_.Exception.Message } finally {
+    $env:ProgramFiles = $savedPf
+    ${env:ProgramFiles(x86)} = $savedPf86
+    $env:LOCALAPPDATA = $savedLocalApp
+}
+Check 'cdp.brave-accepted-by-validate-set' (-not $cdpThrew)
+if ($cdpThrew) { Write-Output "       (CDP module error: $cdpErr)" }
+Check 'cdp.chrome-exe-resolves' ($cdpFound['chrome'] -eq (Join-Path $work 'pf\Google\Chrome\Application\chrome.exe'))
+Check 'cdp.edge-exe-resolves' ($cdpFound['edge'] -eq (Join-Path $work 'pf\Microsoft\Edge\Application\msedge.exe'))
+Check 'cdp.brave-exe-resolves' ($cdpFound['brave'] -eq (Join-Path $work 'pf\BraveSoftware\Brave-Browser\Application\brave.exe'))
+Check 'cdp.brave-does-not-run-a-chromium-exe' ($cdpFound['brave'] -notmatch 'chrome\.exe|msedge\.exe')
+
+
 Check 'contract.exit-codes' ($script:Magic.Length -eq 7)
 
 Write-Output ''

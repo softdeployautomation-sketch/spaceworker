@@ -660,3 +660,53 @@ verified; the target's migration-record state is not — see above), and a Windo
 `sync-state` (unit-tested on Linux, cross-compiles for Windows, never executed on Windows in
 this task). Stated again in `michael/browser-clone/STATE-PIPE.md` §10.
 
+
+## 10. Browser support: Brave made reachable, Firefox made honest (2026-09-29)
+
+Asked "can we clone Brave / Edge / Firefox yet?", the honest answer was layer-dependent — and
+that is itself the defect. `brave` was implemented in the state pipe and in the device walker
+while every door into the feature refused it (the console picker, the clone-request
+validation, the device clone route), so the capability was real, tested and unreachable, and
+nothing reported it. Firefox, meanwhile, was **offered** by the console while no layer could
+carry it.
+
+The browser lists now come from ONE module (`lib/clone-browsers.ts`) with two sets —
+**carriable** (chrome, edge, brave: the profile loads and cookies come over CDP) and
+**requestable** (the above + firefox: a legitimate FRESH clone) — and the drift is enforced by
+`npm run check:clone-contract`, which compares the TypeScript lists, the wire vocabulary, the
+Go walker and the PowerShell validate sets, **per function**.
+
+What changed:
+
+- `lib/clone-browsers.ts` — the one vocabulary, imported by the console, `lib/clone.ts`, the
+device clone route and the transport (re-exported from `clone-transport.ts` for compatibility).
+- The console reads `CLONE_BROWSERS` for the picker, so Brave is offered; Firefox's carry
+refusal is the same sentence the server would refuse with, shown **before** the click; picking
+a non-carriable browser moves the form back to `fresh`.
+- `lib/clone.ts` refuses `live` + non-carriable before a job row exists (`browser_not_supported`,
+the same named reason the destination resolver uses), so the console reads one vocabulary.
+- The device walker refuses by set membership, not `== "firefox"`, so a typo or a future
+browser gets the same honest answer.
+- `CdpCookies.ps1`, `ProfilePaths.ps1` and `Invoke-BrowserClone.ps1` accept `brave`
+(and the generic resolvers keep `firefox`).
+
+### Verification (this pass)
+
+`npm run test:clone` **112/112** (0 fail, 0 skipped — `lib/clone-browsers.test.ts` added to the
+suite, so it actually runs in CI) · `npm run test:browser` **PASSED** (relay 13/13 against a real
+Go relay binary, session config 18/18, pinned build 10/10, nothing skipped) ·
+`check:clone-contract` **exit 0** · `check:workflows` **exit 0** · `tsc` **exit 0** ·
+`gofmt` clean · `go vet` / `go build` / `go test ./...` / `go test -race ./pkg/wake` all **0** ·
+`engine-dist` 10 artifacts.
+
+The contract check's own failure modes were verified by sabotage rather than asserted — see
+`michael/browser-clone/STATE-PIPE.md` §12, including the case where the check flagged correct
+code and the check was moved to per-function attribution. The user-facing summary of all of
+this is `michael/browser-clone/BROWSER-SUPPORT.md`.
+
+### Still not verified
+
+Unchanged from §9: no live device has pushed a real profile through the pipe, the three
+migrations are content-verified but not applied to the project's database, and `sync-state`
+has not run on Windows. The Brave path inherits all three — its state half is tested, its
+end-to-end path has not run.

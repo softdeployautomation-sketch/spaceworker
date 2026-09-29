@@ -1,7 +1,7 @@
 # Browser Clone — MT-1 device-side capture/restore
 
 ## What it does (two sentences)
-Captures a user's browser profile (Chrome, Edge, Firefox) into an encrypted archive on the work PC and restores it into a hosted SpaceWorker PC profile, headless under the Vantra agent. Includes the full production clone engine (Go) that powers transfer, validation, injection and egress-relay enforcement.
+Captures a user's browser profile (Chrome, Edge, Brave; Firefox as a fresh session only) into an encrypted archive on the work PC and restores it into a hosted SpaceWorker PC profile, headless under the Vantra agent. Includes the full production clone engine (Go) that powers transfer, validation, injection and egress-relay enforcement.
 
 ## Files
 - `Invoke-BrowserClone.ps1` — contract entry: `-Browser chrome|edge|firefox -Mode capture|restore -Out <path> [-Profile <name>] [-In <archive>] [-PreferEngine]`; exit codes 0/1/2
@@ -11,6 +11,7 @@ Captures a user's browser profile (Chrome, Edge, Firefox) into an encrypted arch
 - `engine/` — full `spaceworker-browser-clone` Go codebase (cmd/hack-browser-clone, cmd/relay, cmd/native-host, pkg/*, extension/, scripts/, docs/, tests/). The PowerShell layer is the MT-1 contract skin; the engine is the production pipeline (RECV CHECKs, MOUNT/INJECT CHECKs, egress relay per §13).
 - `engine/README-ENGINE.md` — engine map and how Invoke-BrowserClone delegates to it with `-PreferEngine`
 - `STATE-PIPE.md` — **the browser state pipe (TASK_135 §6)**: how history, bookmarks, open tabs, extensions and settings reach a clone; the two hard rules (completely silent on the work PC, AV-excluded directories); how a transfer larger than one device command still finishes; every failure name; and an exact statement of what is and is not verified.
+- `BROWSER-SUPPORT.md` — **which browsers a clone can carry, layer by layer** (Chrome/Edge/Brave carriable; Firefox as a fresh session only), why a clone never runs your browser, the App-Bound-Encryption boundary that decides which half travels as files and which over CDP, and the contract check that keeps every layer's browser list from drifting.
 
 ## Usage
 ```

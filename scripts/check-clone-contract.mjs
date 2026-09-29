@@ -140,6 +140,146 @@ for (const [name, value] of goReasons) {
 }
 console.log(`[clone-contract] sync reasons — device: ${goReasons.size}, server: ${tsReasons.size}`);
 
+// ============================================================================
+// THE BROWSER VOCABULARY — several lists, and two of them are ALLOWED to differ.
+// ============================================================================
+//
+// This check exists because the drift already happened once: `brave` was implemented
+// in the state pipe and in the device walker while every door into the feature still
+// refused it. The capability was real, tested and unreachable, and nothing reported
+// it. The lists live on both sides of a trust boundary on purpose, so a comparison is
+// the only thing that can keep them honest.
+//
+// There are two SETS here, not one, and telling them apart is the point:
+//
+//   carriable (chrome, edge, brave)  — a clone can carry this profile AND its cookies
+//   all       (the above + firefox)  — a clone may be REQUESTED for it (a fresh session)
+//
+// So the wire vocabulary and the device walker must equal the CARRIABLE set, while the
+// generic profile plumbing may also accept `firefox`. A check that demanded one list
+// everywhere would either forbid a legitimate fresh Firefox clone, or let the state
+// pipe be asked for a browser that cannot answer — and an answerable-looking request
+// that yields nothing is the failure mode this whole feature exists to eliminate.
+const BROWSERS_TS_FILE = join(root, "lib", "clone-browsers.ts");
+const WIRE_TS_FILE = join(root, "lib", "clone-state-sync-format.ts");
+const WALKABLE_GO_FILE = join(root, "michael", "browser-clone", "engine", "pkg", "browser", "walkable.go");
+
+/** Pulls `export const NAME = ["a", "b"] as const;` out of TypeScript. */
+function extractTsStringArray(source, name, label) {
+  const m = source.match(new RegExp(`export const ${name}\\s*=\\s*\\[([^\\]]*)\\]`));
+  if (!m) throw new Error(`could not find ${name} in ${label}`);
+  const values = [...m[1].matchAll(/"([a-z0-9_]+)"/g)].map((x) => x[1]);
+  if (values.length === 0) throw new Error(`parsed zero values from ${name} in ${label}`);
+  return values;
+}
+
+/** Pulls `Name = "value"` constants out of a Go const block. */
+function extractGoStringConsts(source, prefix, label) {
+  const values = [];
+  const pair = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([a-z0-9_]+)"\s*$/gm;
+  for (const m of source.matchAll(pair)) if (m[1].startsWith(prefix)) values.push(m[2]);
+  if (values.length === 0) throw new Error(`parsed zero ${prefix}* constants from ${label}`);
+  return values;
+}
+
+/**
+ * Pulls browser ValidateSets together with the function that declares them.
+ *
+ * The OWNER is what decides the expectation, and that is not a detail: a function whose
+ * name says Chromium (`Get-ChromiumUserDataRoot`) must take Chromium browsers only,
+ * while a generic resolver (`Get-BrowserProfileDir`) may also take firefox. A per-FILE
+ * expectation would have to be wrong about one of the two — and the first run of this
+ * check proved exactly that by flagging the Chromium-only root, which is correct as
+ * written. A script-level `param()` block (before any function) is owned by "<script>".
+ *
+ * "Is a browser list" = it contains 'chrome': these files also carry non-browser
+ * validate sets (`'capture','restore'`), and a rule keyed on the file instead of the
+ * content would silently skip a real list the day one moved to another file.
+ */
+function extractBrowserSetsByOwner(source, label) {
+  const fnStarts = [...source.matchAll(/^\s*function\s+([A-Za-z][A-Za-z0-9_-]*)/gm)];
+  const found = [];
+  for (const m of source.matchAll(/\[ValidateSet\(([^)]*)\)\]/g)) {
+    const values = [...m[1].matchAll(/'([a-z0-9_]+)'/g)].map((x) => x[1]);
+    if (values.length === 0 || !values.includes("chrome")) continue;
+    const enclosing = fnStarts.filter((f) => f.index < m.index);
+    const owner = enclosing.length > 0 ? enclosing[enclosing.length - 1][1] : "<script>";
+    found.push({ owner, values });
+  }
+  if (found.length === 0) throw new Error(`no browser ValidateSet found in ${label}`);
+  return found;
+}
+
+/** Compares a list against an expected set, reporting drift in both directions. */
+function compareSets(label, actual, expected) {
+  const actualSet = new Set(actual);
+  for (const value of expected) if (!actualSet.has(value)) problems.push(`${label} is missing "${value}"`);
+  for (const value of actualSet) if (!expected.has(value)) problems.push(`${label} has "${value}", which it should not`);
+}
+
+const browsersSource = readFileSync(BROWSERS_TS_FILE, "utf8");
+const carriable = extractTsStringArray(browsersSource, "CHROMIUM_BROWSERS", "clone-browsers.ts");
+const nonCarriable = extractTsStringArray(browsersSource, "NON_CARRIABLE_BROWSERS", "clone-browsers.ts");
+const carriableSet = new Set(carriable);
+
+// CLONE_BROWSERS is written as a spread of the two halves, so no literal list can be
+// parsed out of it — the SOURCE fact (that it is composed of both halves) is what gets
+// checked. A composite that stopped referencing a half would silently drop a browser
+// from every door while `CHROMIUM_BROWSERS` still looked correct.
+const composite = browsersSource.match(/export const CLONE_BROWSERS\s*=\s*\[([^\]]*)\]/);
+if (!composite) {
+  problems.push("could not find CLONE_BROWSERS in clone-browsers.ts");
+} else {
+  if (!composite[1].includes("CHROMIUM_BROWSERS")) {
+    problems.push("CLONE_BROWSERS is not built from CHROMIUM_BROWSERS — the halves would drift from the whole");
+  }
+  if (!composite[1].includes("NON_CARRIABLE_BROWSERS")) {
+    problems.push("CLONE_BROWSERS is not built from NON_CARRIABLE_BROWSERS — the halves would drift from the whole");
+  }
+}
+for (const value of nonCarriable) {
+  if (carriableSet.has(value)) problems.push(`browser "${value}" is listed as both carriable and non-carriable`);
+}
+const allBrowsers = [...carriable, ...nonCarriable];
+const allSet = new Set(allBrowsers);
+if (allSet.size !== allBrowsers.length) problems.push("CLONE_BROWSERS' two halves overlap or repeat a browser");
+
+compareSets(
+  "lib/clone-state-sync-format.ts STATE_SYNC_BROWSERS",
+  extractTsStringArray(readFileSync(WIRE_TS_FILE, "utf8"), "STATE_SYNC_BROWSERS", "clone-state-sync-format.ts"),
+  carriableSet,
+);
+compareSets(
+  "engine/pkg/browser/walkable.go walkable browsers",
+  extractGoStringConsts(readFileSync(WALKABLE_GO_FILE, "utf8"), "StateBrowser", "walkable.go"),
+  carriableSet,
+);
+
+// The cookie half runs the browser itself under CDP, and the User Data root exists
+// only for Chromium; both must equal the CARRIABLE set. The generic resolvers serve any
+// REQUESTABLE browser, so they must equal the FULL set. Both directions matter: asking
+// for a cookie carry from a browser whose cookies cannot be read is a promise the code
+// cannot keep, and refusing a profile path for a browser the picker offers is a door
+// that opens onto a wall.
+for (const [file, what] of [
+  ["michael/browser-clone/lib/CdpCookies.ps1", "CDP cookie carry"],
+  ["michael/browser-clone/lib/ProfilePaths.ps1", "profile paths"],
+  ["michael/browser-clone/Invoke-BrowserClone.ps1", "clone entry point"],
+]) {
+  const source = readFileSync(join(root, file), "utf8");
+  for (const { owner, values } of extractBrowserSetsByOwner(source, file)) {
+    // Chromium-only either by name (`Get-Chromium*`) or by nature (the CDP module): the
+    // cookie read and the User Data root have no Firefox branch to reach.
+    const chromiumOnly = owner.startsWith("Get-Chromium") || file.endsWith("CdpCookies.ps1");
+    compareSets(`${file} ${owner} (${what})`, values, chromiumOnly ? carriableSet : allSet);
+  }
+}
+
+console.log(
+  `[clone-contract] browsers — carriable: ${[...carriableSet].sort().join(",")}, ` +
+    `all: ${[...allSet].sort().join(",")}`,
+);
+
 // A shared count is not enough on its own, but the two lists being non-trivial is
 // worth asserting: a parse that silently returned an empty list would otherwise
 // look like agreement.
@@ -153,4 +293,7 @@ if (problems.length > 0) {
   for (const p of problems) console.log(`  - ${p}`);
   process.exit(1);
 }
-console.log("[clone-contract] PASSED — the device and server exclusion lists agree, and the sync vocabulary matches");
+console.log(
+  "[clone-contract] PASSED — device and server exclusion lists agree, the sync vocabulary matches, " +
+    "and every browser list sits on the right side of carriable/requestable",
+);

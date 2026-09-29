@@ -4,6 +4,7 @@ import type { CloneJob, Prisma } from "@prisma/client";
 
 import { db } from "./db";
 import { cloneTtlDeadlines, getCloneSettings } from "./clone-settings";
+import { cloneBrowserCarryRefusal, isCarriableBrowser, isCloneBrowser } from "./clone-browsers";
 import {
   type CloneBrowser,
   type CloneEgress,
@@ -471,7 +472,7 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
   if (input.egress !== "relay" && input.egress !== "direct") {
     return refuse("bad_egress", "Egress must be relay (same IP) or direct.");
   }
-  if (input.browser && !["chrome", "edge", "firefox"].includes(input.browser)) {
+  if (input.browser && !isCloneBrowser(input.browser)) {
     return refuse("bad_browser", "Unsupported browser for a clone.");
   }
   if (input.profile && !PROFILE_NAME_RE.test(input.profile)) {
@@ -483,6 +484,23 @@ export async function requestClone(input: RequestCloneInput): Promise<RequestClo
   // TASK_119: sessionMode validation (fresh is default).
   if (input.sessionMode && !["fresh", "live"].includes(input.sessionMode)) {
     return refuse("bad_session_mode", "Session mode must be 'fresh' or 'live'.");
+  }
+  // "Carry my session" means: capture the work PC browser's cookies over CDP and
+  // inject them into the clone. Both halves are Chromium-only — the capture runs the
+  // browser itself (`CdpCookies.ps1` resolves a chrome/edge/brave executable), and a
+  // Firefox cookie store is a different format in a different place.
+  //
+  // Refused HERE, before a job row and before any device command, because the
+  // alternative is a clone that is created, launches, and only then reveals that the
+  // session it promised was never coming. `browser_not_supported` is the same named
+  // reason the destination resolver uses, so the console reads one vocabulary; the
+  // way out (a fresh session) is stated rather than implied.
+  if (input.sessionMode === "live" && input.browser && !isCarriableBrowser(input.browser)) {
+    return refuse(
+      "browser_not_supported",
+      cloneBrowserCarryRefusal(input.browser) ??
+        `${input.browser} sessions cannot be carried — use a fresh session instead.`
+    );
   }
 
   // 1. Admin pause blocks NEW clone starts; live sessions are untouched.

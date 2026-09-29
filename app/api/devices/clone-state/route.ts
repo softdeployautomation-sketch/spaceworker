@@ -44,6 +44,7 @@ import {
   validateManifestFiles,
 } from "@/lib/clone-state-ingest";
 import { normalizeProfileName } from "@/lib/clone-state-restore";
+import { CLONE_BROWSERS } from "@/lib/clone-browsers";
 import { sha256Hex } from "@/lib/clone-transport";
 import { SYNC_REASONS, type StateManifest } from "@/lib/clone-sync-plan";
 import { db } from "@/lib/db";
@@ -65,7 +66,15 @@ const FILE_BODY_CAP = 256 * 1024 * 1024;
  * to; it does not decide whether the state may be carried.
  */
 
-const BROWSERS = new Set(["chrome", "edge", "chromium", "brave", "firefox"]);
+// What this route will ACCEPT from a device is deliberately wider than what the
+// platform will ever ASK a device for (`lib/clone-browsers.ts`'s CHROMIUM_BROWSERS):
+// accepting is the safe direction. A device that sends a manifest for a browser this
+// build does not know how to request is a device that is newer than the platform,
+// and refusing its bytes would lose state that a later platform release will read.
+// Requesting, by contrast, must be narrow — a browser whose profile the device
+// cannot walk produces an empty manifest that looks exactly like "nothing changed".
+const BROWSERS = new Set<string>([...CLONE_BROWSERS, "chromium"]);
+
 
 interface AuthedDevice {
   id: string;
