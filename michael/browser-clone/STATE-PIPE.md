@@ -252,7 +252,37 @@ Recorded on the job: `stateSyncMode`, `stateSyncReason`, `stateSyncPending`,
 | `BROWSER_PROFILE_BASE_DIR` | The state cache lives under it, one directory per device+browser+profile. Must be writable and persistent — the whole point is that it survives sessions. |
 | The engine CLI at `C:\ProgramData\TacticalRMM\CloneTool\hack-browser-clone.exe` | One-click setup installs it (`clone-setup.ts`). An engine older than `sync-state` answers with something that is not a result → `state_sync_unreadable_reply`. |
 | Defender/AV exclusion on the install dir **and** the staging root | Hard rule; `preflight` verifies every directory and refuses a partial quarantine. |
-| Migrations `…_task135_clone_browser_version_and_sync_state`, `…_task135_clone_pin_and_state_outcome`, `…_task135_clone_state_sync_pending` | The columns the console reads. |
+| Migrations `…_task135_clone_browser_version_and_sync_state`, `…_task135_clone_pin_and_state_outcome`, `…_task135_clone_state_sync_pending` | The columns the console reads. See the warning below before assuming they will apply. |
+
+### The migration history does not replay from empty — check this before deploying
+
+`deploy.yml` provisions with `npx prisma migrate deploy`, which applies migrations in
+**directory-name order**. Four committed migrations ALTER a table that a **later** migration
+creates, so on any database whose `_prisma_migrations` does not already record them as
+applied, deploy stops at the first one — and **never reaches the three TASK_135 migrations**:
+
+| Migration | Needs | Created by |
+|---|---|---|
+| `20260914150000_add_license_claim_token` | `ExeLicense` | `20260914200000_task42_store_and_licenses` |
+| `20260921000000_device_tools_v2` | `Device` | `20260922000000` |
+| `20260922120000_console_followups` | `VantraLink` | `20260923000000` |
+| `20260925000000_task119_live_session_streaming` | `CloneJob` | `20261002000000` |
+
+This is pre-existing — TASK_135 did not create it — but it is the thing that decides whether
+this feature's columns ever exist, so it belongs in this document. What to do:
+
+1. **An existing database (the normal case):** confirm
+   `select migration_name from "_prisma_migrations" where finished_at is not null` lists the
+   four above. If it does, deploy skips them as already applied and runs only the new three.
+   Nothing else to do.
+2. **An empty database (new staging, disaster recovery, a fresh Supabase project):** the
+   history has to be replayed in dependency order first. **Do not rename committed
+   migrations** — the recorded name *is* the identity, so a rename makes an environment that
+   already applied it see a brand-new migration. Baseline instead: replay into a scratch
+   database with those four directories bumped past their prerequisite, then
+   `prisma migrate resolve --applied <name>` on the target for each.
+
+The migration *content* is sound; only the ordering is not. Evidence in §10.
 
 ---
 
@@ -279,7 +309,15 @@ Recorded on the job: `stateSyncMode`, `stateSyncReason`, `stateSyncPending`,
 1. **No live device has pushed a real profile through this pipe.** Both ends are tested
    and the format is proven against a test server, but the two have never met outside a
    test. This is the remaining gap.
-2. **The migrations have not been applied to a real database.**
+2. **The three migrations have not been applied to the project's real database.** They *have*
+   been applied to a throwaway PostgreSQL 15, with the history replayed in dependency order:
+   all 69 migrations apply cleanly, and `npx prisma migrate diff --from-url <that db>
+   --to-schema-datamodel prisma/schema.prisma --exit-code` answers **"No difference detected"
+   (exit 0)**. That proves the three TASK_135 migrations are correct and that the whole set
+   reproduces `schema.prisma` exactly — including `stateSyncPending`, `stateSyncMode`,
+   `sourceBrowserVersion` and the rest. It does **not** prove the target database's own
+   `_prisma_migrations` contents, and on an empty database the deploy stops before reaching
+   them at all (§9).
 3. **A Windows run of `sync-state`** — the locator, the silent behaviour and the
    locked-file skips are unit-tested on Linux and compile for Windows
    (`GOOS=windows`), but have not executed on a Windows box in this task.

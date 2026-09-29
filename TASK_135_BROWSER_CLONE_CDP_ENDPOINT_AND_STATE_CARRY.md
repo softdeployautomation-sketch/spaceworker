@@ -619,11 +619,44 @@ hashes declared, nothing-to-send is done-not-failed, delta sends only what was a
 refusals, strict `done` parsing, summary wording). 81 Go tests pass across `pkg/browser`
 and `pkg/wake`.
 
+### The migrations, applied for real (throwaway database, 2026-09-29)
+
+The three TASK_135 migrations were **applied**, not just read, on a disposable PostgreSQL 15:
+
+- After replaying all 69 migrations,
+  `npx prisma migrate diff --from-url <that db> --to-schema-datamodel prisma/schema.prisma
+  --exit-code` answers **"No difference detected" (exit 0)**. The migration set and
+  `schema.prisma` agree exactly — so the three new migrations are the right shape and nothing
+  they were supposed to add is missing (`stateSyncPending`, `stateSyncMode`,
+  `sourceBrowserVersion`, …).
+- The replay only worked after **re-ordering the history**, and that is a finding in its own
+  right. `prisma migrate deploy` applies migrations in directory-name order, and four committed
+  migrations ALTER a table that a *later* migration creates:
+
+  | Migration | Needs | Created by |
+  |---|---|---|
+  | `20260914150000_add_license_claim_token` | `ExeLicense` | `20260914200000_task42_store_and_licenses` |
+  | `20260921000000_device_tools_v2` | `Device` | `20260922000000` |
+  | `20260922120000_console_followups` | `VantraLink` | `20260923000000` |
+  | `20260925000000_task119_live_session_streaming` | `CloneJob` | `20261002000000` |
+
+  On an **empty** database, deploy stops at the first of these and **never reaches the TASK_135
+  migrations** — a feature that would look like "the columns just aren't there" in any new
+  environment, with no error that mentions TASK_135. Pre-existing (no commit in this task
+  created it), but it gates this feature, so it is written into the deploy prerequisites
+  (`michael/browser-clone/STATE-PIPE.md` §9) with the safe remedy: **do not rename applied
+  migrations** (`_prisma_migrations` records the name as identity); baseline with
+  `prisma migrate resolve --applied` instead.
+- Still not verified: **the target database's own `_prisma_migrations` contents.** If it
+  already records those four as applied, deploy skips them and runs only the new three — but
+  that is a fact about the environment, and it was not readable from here.
+
 ### Honest remaining gap
 
-**No live device has pushed a real profile through this pipe.** Both ends are tested and
-the wire format is proven against a real `net/http` server, but they have never met outside
-a test. Also outstanding: the three migrations applied to a real database, and a Windows
-run of `sync-state` (unit-tested on Linux, cross-compiles for Windows, never executed on
-Windows in this task). Stated again in `michael/browser-clone/STATE-PIPE.md` §10.
+**No live device has pushed a real profile through this pipe.** Both ends are tested and the
+wire format is proven against a real `net/http` server, but they have never met outside a test.
+Also outstanding: the three migrations applied to *the real* database (their content is
+verified; the target's migration-record state is not — see above), and a Windows run of
+`sync-state` (unit-tested on Linux, cross-compiles for Windows, never executed on Windows in
+this task). Stated again in `michael/browser-clone/STATE-PIPE.md` §10.
 
