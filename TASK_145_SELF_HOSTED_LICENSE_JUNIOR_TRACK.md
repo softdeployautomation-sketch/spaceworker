@@ -2,7 +2,9 @@
 
 ## Owned by the junior engineering agent (writes ALL code) — verify with the senior track
 
-**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18`), the decisions (`D1–D7`), the enforcement points (`E1–E6`), the verification protocol (`S1–S12`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
+**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W7`), the decisions (`D1–D10`), the enforcement points (`E1–E10`), the verification protocol (`S1–S16`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
+
+> ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order below now runs **T1 → T13**, not T1 → T10.
 
 **Status: NOT STARTED.** Do not begin until you have read both files end to end.
 
@@ -11,7 +13,8 @@
 ## 0. THE TWO-TRACK RULE (non-negotiable)
 
 - Both agents append to **both** files. **Append-only, newest at the bottom, one dated entry per session.** Never edit, reorder or delete another agent's entry.
-- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S12`).
+- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S16`).
+- **Stop after each task.** Finish one `T*`, run its acceptance check, append a short entry to **both** files, then **stop and report**. Do not roll into the next `T*` in the same session. The senior reviews and the next agent resumes at the next task — see **§2.0**.
 - Each junior entry must state: what changed (`file:line`), the exact commands run, and their **raw output** (paste, don't summarise). Anything you could not verify must be listed as `UNVERIFIED:` with the reason.
 
 ## 0.1 THE GIT SHIFT — read before you touch a file
@@ -56,12 +59,40 @@ npx tsc --noEmit     # baseline on the untouched branch: EXIT=0 (senior track §
 >
 > Run `npx tsc --noEmit` and `npm run build` before reporting. Append your entry to **both** TASK_145 files with raw command output, then write `READY FOR VERIFICATION`. If anything in the senior track looks wrong, append a `⚠️ OBJECTION` entry instead of silently deviating.
 
+### 1.1 REVISION 2 — this block supersedes the paragraph above (2026-09-29)
+
+The owner reviewed the scope and clarified how the two licence classes must behave:
+
+> *"for a 1 month test, i want the license to be just like we have for the other exe, immediate revocation should kill it. the lifetime license is bound to that email for recovery, in case owner wants to move to another pc, but this must come through the admin — no one should be able to move a lifetime license themself; once it's bound to that device, they need to get a new license for another or reach out to support."*
+
+Two things the first pass got wrong, **both now corrected** — read senior track **§3.9** before you write anything:
+
+1. It treated revocation as **bind-time only** and explicitly rejected a launch-time check. That was wrong. The desktop EXE **already** re-checks the server on every launch (`stillValidLive` → `/api/exe-license/eligibility`), and that route just cannot see a revocation yet. **T11** adds the missing line — it is the single edit that turns "Cancel licence" from cosmetic into real. **T13** gives the self-hosted build its first runtime check, because without it a self-hosted 30-day key never expires at all.
+2. It had nothing stopping a **lifetime** licence from being moved self-service. **T12** closes that: lifetime moves are admin-only; the first bind of an unbound lifetime key is unaffected.
+
+**Revised work order: `T1 → T13`, in numeric order.** T11 is the highest-value task in the whole set, but **T1 still comes first** — everything else reads the generated Prisma client.
+
+**The two rules that govern how you report:**
+
+- **One task per session.** Complete a `T*`, run its check, append a short entry to **both** files with raw output, end with `READY FOR VERIFICATION — T<n>`, then **stop**. Do not roll into `T<n+1>`.
+- **Fail-open is a hard requirement** on T11 and T13. A customer with no internet must never be locked out. That is why the "immediate" in the owner's request means *"caught at the next launch whenever we can reach the server"* — and that is the exact wording any customer-facing copy must use.
+
 
 ---
 
-## 2. WORK ORDER — T1 → T10, in this order. Do not skip ahead.
+## 2. WORK ORDER — T1 → T13, in this order. Do not skip ahead.
 
-Each task has: the file(s), the exact change, and the acceptance check. **Do not proceed to the next task until its check passes.** T1 must be first (everything else reads the generated Prisma client).
+### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
+
+**Do exactly one `T*` per session, then stop.** This is not a style preference — the owner asked for it explicitly:
+
+1. Complete the task's change **and** its acceptance check.
+2. Append a short dated entry to **both** `TASK_145_*` files: what changed (`file:line`), the exact commands you ran, their **raw** output, and anything `UNVERIFIED:`.
+3. End that entry with **`READY FOR VERIFICATION — T<n>`** and **stop**. Do not begin `T<n+1>`.
+
+The senior then verifies that one task and the next agent picks up at `T<n+1>`. If a check **fails**, do not proceed and do not weaken the check — log `⚠️ OBJECTION` and stop.
+
+Each task has: the file(s), the exact change, and the acceptance check. T1 must be first (everything else reads the generated Prisma client).
 
 ### T1 — Schema: the revocation table + the lifetime price column
 
@@ -188,6 +219,53 @@ Implement senior track §3 D6 items 3–4: extend `ApiOk` with `lifetime?: boole
 
 **Check:** `npx tsc --noEmit`; `npm run build` succeeds.
 
+### T11 — THE LIVE KILL: make the existing launch check revocation-aware (senior §3.9 D10 / E7)
+
+**File:** `app/api/exe-license/eligibility/route.ts` — **the single highest-value edit in Revision 2.**
+
+This route is what the desktop EXE already POSTs to on every launch (`stillValidLive`, `app/api/exe-license/status/route.ts:91`). Today it returns `{ eligible: license !== null }` — it only proves the presented key still matches the row, so a **revoked** licence still reads `eligible: true` forever. Without this task, "Cancel licence" is cosmetic.
+
+1. Import `isExeLicenseRevoked` from `@/lib/exe-license-revocation`.
+2. After the `findFirst` (`:56-63`) and before the return:
+   `const revoked = license ? await isExeLicenseRevoked(license.id) : false;`
+3. Return `{ eligible: license !== null && !revoked }`.
+
+**Do not** add fail-open handling here — the *caller* owns that policy (it returns `true` on any network/transport error, and that must stay the only place it is decided). **Do not** change the route's auth posture (unauthenticated + per-IP rate-limited, matching its neighbours).
+
+**Check:** with a real revoked row, POSTing **both** the licence's original `licenseKey` **and** its current `boundLicenseKey` returns `eligible: false`; with the revocation deleted, both return `true`. `npx tsc --noEmit` clean.
+
+### T12 — Lifetime is admin-move-only (senior §3.9 D9 / E9+E10)
+
+**Files:** `lib/exe-license-bind.ts`; `app/api/admin/exe-licenses/route.ts:269`; `app/api/exe-license/auto-bind/route.ts:164`; `password-login/route.ts:108`; `payment-status/route.ts:87`.
+
+Implement senior track §3.9 D9 exactly:
+
+1. In `transferExeLicenseToMachine`, add an actor switch — `actor?: "self_service" | "admin"`, defaulting to `"self_service"`. When the licence is **lifetime** (`isLifetimeExpiry(originalExpiry(license.licenseKey))`, both already available in this file) **and** the caller is self-service, throw a typed `LicenseTransferError(…, "lifetime_locked")` **before any mutation** (before `machineTakenByAnotherAccount` / any DB write). Add `"lifetime_locked"` to the `LicenseTransferError` code union.
+2. `app/api/admin/exe-licenses/route.ts:269` passes `actor: "admin"` — the sanctioned move path, unchanged behaviour.
+3. The three self-service callers surface it with **one** consistent message: *"This is a lifetime licence bound to this device. Contact support to move it to another computer."* Match each route's existing error-mapping style; do not invent a second wording.
+4. **Do NOT touch `bindExeLicenseToMachine`.** A fresh **unbound** lifetime key must still activate normally — only a *move* is restricted.
+
+Refer to the lifetime check using the same `isLifetimeExpiry` helper as everywhere else — never a client flag, never a DB column.
+
+**Check:** self-service transfer of a lifetime licence throws `lifetime_locked` and leaves the `ExeLicense` row **byte-identical** (`boundMachineId`, `boundLicenseKey`) with **no** new `ExeLicenseTransfer` row; admin `action: "transfer"` on the same licence **succeeds**; a first bind of an unbound lifetime key still **succeeds**. `npx tsc --noEmit` clean.
+
+### T13 — Self-hosted install gets its first runtime licence check (senior §3.9 D10 / E8)
+
+**Files:** `lib/self-hosted-setup-gate.ts` (+ its call site in `proxy.ts`).
+
+**Why this is in scope:** a self-hosted install validates its key **once**, at the wizard (`app/api/setup/license/validate/route.ts:62`), and never again — `app/api/setup/complete/route.ts:164` says it outright: `SELF_HOSTED_LICENSE_KEY` is *"written (not read) … no code path consumes it yet."* So today a self-hosted **30-day** key never expires, and a revoked one never dies. Without this task the owner's 1-month test licence cannot be ended at all.
+
+Extend the existing gate (`shouldRedirectToSetup`, `:78`) — it already runs from `proxy.ts:5` on every request, in the Node runtime, and already owns a short-TTL in-memory cache (`:48-70`); mirror that exact shape. Add a `licenceStillValid()` helper, **self-hosted only**, ordered:
+
+1. Read the stored key + validation timestamp from setup state. No key recorded → **valid** (the wizard is the gate that would have demanded one).
+2. **Offline:** `validateLicenseKey(key, exeLicenseSecret(), { currentMachineId })` — catches **expiry** (the 1-month term) and machine-binding. Invalid → **blocked**.
+3. **Online:** POST `/api/exe-license/eligibility` with the key — catches **revocation** (works once T11 lands) and any server-side unbind. `eligible === false` → **blocked**.
+4. **Any error / timeout / unreachable server → valid (fail-open).** This is a hard requirement (senior §6 reject #11) — a genuinely offline customer must never be locked out.
+
+Blocked means: send the install to a licence screen that explains the state and offers a re-activation path (reuse the wizard's licence step rather than inventing a new page if that keeps the diff small — your call, report what you chose).
+
+**Check:** (a) a revoked or expired stored key is blocked with a clear message; (b) with the server unreachable and a still-valid key, the install is **NOT** blocked; (c) a non-self-hosted build is completely unaffected (`isSelfHosted()` early-return still first). `npx tsc --noEmit` clean; `npm run build` succeeds.
+
 ---
 
 ## 3. JUNIOR SELF-VERIFICATION (run all of it, paste raw output, then wait for the senior)
@@ -209,12 +287,18 @@ npx prisma migrate status   # MUST be clean
 | J6 | Bind a revoked licence | fails with code `"revoked"` |
 | J7 | `action: "unrevoke"` then bind again | succeeds |
 | J8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` |
+| J9 | **THE LIVE KILL:** with a revoked row, POST `/api/exe-license/eligibility` with both the original and the bound key | **both** `eligible: false`; delete the revocation → both `true` |
+| J10 | Self-service transfer of a **lifetime** licence, then admin `action: "transfer"` | self-service → `lifetime_locked`, row **byte-identical**, no new transfer row; admin → succeeds |
+| J11 | First bind of an **unbound** lifetime key on a fresh machine | **succeeds** (T12 must not block this) |
+| J12 | Self-hosted build: expired/revoked stored key vs still-valid key with the server unreachable | blocked vs **not** blocked (fail-open preserved) |
 
 If a check fails: fix it, or **stop and log a `⚠️ OBJECTION`** on both files. Never mark a failed check as passing and never work around it by weakening an acceptance rule.
 
 ## 4. DO NOT (these are automatic rejects — senior track §6)
 
-Touch `lib/exe-license-validator.ts` · change the signed payload's key set · add `SELF_HOSTED_OS` to `ALL_PRODUCTS` · use `daysValid` arithmetic for lifetime · check revocation anywhere except E1/E2/E4 · skip E4 · make revoke non-idempotent or skip the ownership check · delete/rename `TASK_134..TASK_144` or any main-only file · run a destructive migration or migrate the live VPS DB · leave `tsc` or `build` failing · edit `app/api/store/prices/route.ts` or `admin/wallets/route.ts`.
+Touch `lib/exe-license-validator.ts` · change the signed payload's key set · add `SELF_HOSTED_OS` to `ALL_PRODUCTS` · use `daysValid` arithmetic for lifetime · **decide "lifetime" from anything other than the decoded `expires_at`** · skip E4 · make revoke non-idempotent or skip the ownership check · **touch `bindExeLicenseToMachine`'s first-bind path when implementing T12** (that bricks every new lifetime sale) · **make the T11/T13 checks fail-closed on a network error** (they must fail OPEN) · **leave any self-service route able to move a lifetime licence** · delete/rename `TASK_134..TASK_144` or any main-only file · run a destructive migration or migrate the live VPS DB · leave `tsc` or `build` failing · edit `app/api/store/prices/route.ts` or `admin/wallets/route.ts`.
+
+> ⚠️ **Corrected 2026-09-29 (Revision 2).** This list used to say *"check revocation anywhere except E1/E2/E4"*. That was **wrong** — the launch-time check **is** the design, and it is how the owner's "immediate revocation should kill it" is actually delivered. Revocation is now checked at **E1/E2/E4/E7/E8**; what remains rejected is putting revocation logic inside `lib/exe-license-validator.ts`, or any check that is not fail-open.
 
 ---
 
@@ -240,5 +324,23 @@ Touch `lib/exe-license-validator.ts` · change the signed payload's key set · a
 2. **This file had a structure defect** (four blocks landed in the wrong place while appending). Repaired and verified — see T7's body (`:158-166`) and the senior track's second log entry. If you spot any other mis-ordered section, report it as a `⚠️ OBJECTION` rather than working around it.
 
 **Also confirmed unchanged:** `lib/exe-license-validator.ts` still has **zero** diff vs `main` (canary green) and `/Users/mikeolab/spaceworker` is untouched. The implementation is still **NOT STARTED** — your first action is **T1**.
+
+### 2026-09-29 — SENIOR (third pass: **REVISION 2** — your assignment changed) — no product code written
+
+**Read senior track §3.9 and §1.1 above before you start.** The owner clarified the product, and the earlier scope did not match it. What changed for **you**:
+
+| Was | Now |
+|---|---|
+| Work order **T1 → T10** | **T1 → T13** (T11, T12, T13 added at the end of §2) |
+| Revocation enforced at **E1/E2/E4** only; a launch-time check was **forbidden** | Also **E7** (the live kill in `/api/exe-license/eligibility` — the desktop EXE already calls it every launch) and **E8** (the self-hosted build's first-ever runtime licence check) |
+| Nothing stopped a lifetime licence being moved self-service | **E9/E10** (T12): lifetime moves are **admin-only**; the first bind of an unbound lifetime key is unaffected |
+| One catch-all report per session | **One task per session**, ending `READY FOR VERIFICATION — T<n>`, then **stop** (§2.0) |
+| Rejects: *"check revocation anywhere except E1/E2/E4"* | ⚠️ **Corrected** — that rejection was wrong and is **withdrawn**. Still rejected: revocation logic inside `lib/exe-license-validator.ts`, and any check that is **not fail-open** |
+
+**Why T11 matters most:** `eligibility/route.ts:65` returns `eligible: license !== null`, so a revoked licence still reads as eligible forever. Until T11 lands, the admin "Cancel licence" button the owner asked for does nothing. T13 is the other half — without it a self-hosted 30-day key never expires at all (`app/api/setup/complete/route.ts:164`).
+
+**Two hard rules for T11 and T13:** they must be **fail-open** (no internet must never lock a paying customer out), and the customer-facing wording is *"caught at the next launch whenever we can reach the server"* — never "instant kill".
+
+**Your next action:** still **T1** (§2), one task, then stop and report. Push only with `git push origin self-hosted-build:self-hosted-build`.
 
 

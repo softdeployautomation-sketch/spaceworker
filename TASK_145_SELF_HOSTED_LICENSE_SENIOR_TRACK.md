@@ -2,7 +2,7 @@
 
 ## SENIOR / VERIFICATION TRACK — owned by the senior engineer (scope + review + live verification)
 
-**Status:** SCOPE COMPLETE, all findings below verified against real code on 2026-09-29. Implementation NOT started.
+**Status:** SCOPE COMPLETE · **REVISION 2 (2026-09-29)** — the owner clarified the two licence classes and the move rule; **§3.9 amends D5 and adds D8–D10**. Read **§3.9 before §3**. All findings verified against real code on 2026-09-29. Implementation **NOT started**.
 **Spec source:** `~/.claude/plans/transient-moseying-tome.md` → `## Phase 5 — Self-hosted product license: flexible term + admin-cancelable (smallest-diff design)`.
 **Branch:** `self-hosted-build` · **Worktree:** `/Users/mikeolab/sw-selfhost` ← do the work HERE.
 **Companion file (the junior's):** `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md` — read it too; the two files are one document.
@@ -234,8 +234,14 @@ export function isLifetimeExpiry(d: Date | null | undefined): boolean {
 | E4 | `app/api/admin/exe-licenses/route.ts:337` | Reuse check becomes `existingRows.find((l) => keyExpiryIsAfter(l.licenseKey, now) && !revokedIds.has(l.id))`, with `revokedIds` loaded in one query for that user. **This is the single most important edit in the task** (V11): without it, "cancel" is cosmetic. |
 | E5 | `app/api/admin/exe-licenses/route.ts` POST dispatch (`:66-104`) | Add `action: "revoke"` (`{ exeLicenseId, reason? }`) and `action: "unrevoke"` (`{ exeLicenseId }`). Model body parsing + ownership gate on the existing `unbind` action (`:101-104, :146-170`). Response: `{ ok: true, revoked: true|false }`. |
 | E6 | `app/api/admin/exe-licenses/route.ts` GET (`:472+`) | Add `revoked: boolean` to each licence row (`:505` block) so the admin UI can render state — in **every** listing the route returns. |
+| E7 | `app/api/exe-license/eligibility/route.ts:56-65` | **THE LIVE KILL — without this, a revoked 1-month licence never dies.** After the `findFirst`, add `const revoked = license ? await isExeLicenseRevoked(license.id) : false;` and return `{ eligible: license !== null && !revoked }`. This is the route the desktop EXE already POSTs to on every launch (`stillValidLive`), so this one edit turns revocation from admin-cosmetic into a real kill on next launch. Fail-open behaviour is unchanged and comes from the caller, not here. |
+| E8 | `lib/self-hosted-setup-gate.ts` (+ its `proxy.ts` call site) | **Self-hosted only — the build has NO runtime licence check at all today.** `app/dashboard/layout.tsx:17` gates `LicenseGate` on `isLocalExeRuntime()` (Tauri EXE), and `app/api/setup/complete/route.ts:164` states `SELF_HOSTED_LICENSE_KEY` is *"written (not read) … no code path consumes it yet"* — so a self-hosted install validates **once, at the wizard, and never again**, and a 30-day key would run forever. Add a best-effort re-check: read the stored key from setup state → offline `validateLicenseKey` (catches expiry **and** machine binding) → then online `eligibility` (catches revocation, once E7 lands). Fail-open on network trouble, cached (~5 min), mirroring `setupCompleteCached`'s existing shape. |
+| E9 | `lib/exe-license-bind.ts` → `transferExeLicenseToMachine` | **Lifetime is admin-move-only.** Add an explicit actor switch (e.g. `actor?: "self_service" \| "admin"`, defaulting to `"self_service"`); when the licence is lifetime (`isLifetimeExpiry(originalExpiry(license.licenseKey))`) and the caller is self-service, throw a typed `"lifetime_locked"` error **before** any mutation. The admin route (`app/api/admin/exe-licenses/route.ts:269`) passes `actor: "admin"` and is allowed through — this is the one sanctioned move path. |
+| E10 | `auto-bind` (`:164`), `password-login` (`:108`), `payment-status` (`:87`) error mappers | Surface `"lifetime_locked"` as one consistent message — *"This is a lifetime licence bound to this device. Contact support to move it to another computer."* Three call sites, one string. These are the three real self-service move paths; all three must refuse a lifetime key. |
 
-**Rejected alternatives (do not use):** checking revocation in `lib/exe-license-validator.ts` (deliberately offline and ships inside the customer's binary — it can never see our DB); checking it on every app launch (breaks the design invariant); storing revocation as a column on `ExeLicense` (loses `reason`, and muddies a table `main` also owns).
+**Rejected alternatives (do not use):** checking revocation in `lib/exe-license-validator.ts` (deliberately offline and ships inside the customer's binary — it can never see our DB); storing revocation as a column on `ExeLicense` (loses `reason`, and muddies a table `main` also owns).
+
+> ⚠️ **WITHDRAWN 2026-09-29 — a third "rejected alternative" was wrong.** This list originally also rejected *"checking it on every app launch (breaks the design invariant)"*. That is **not** the design: the desktop EXE **already** does exactly that today (`app/api/exe-license/status/route.ts:91` → `stillValidLive()` → `POST /api/exe-license/eligibility`, fail-open, on every launch), and the codebase comments call it in as many words (*"This is the one place that can catch it"*). E7 makes that existing seam revocation-aware; E8 gives the self-hosted build its first-ever check. See **§3.9** for the owner's clarification this serves.
 
 ### D6 — Wizard activation (`app/setup/**` — branch files already exist)
 
@@ -249,6 +255,60 @@ export function isLifetimeExpiry(d: Date | null | undefined): boolean {
 - `app/dashboard/settings/licenses-section.tsx:10,79,112`: derive validity from the key, not `EXE_LICENSE_DAYS`. Decode with `decodeLicenseKey(lic.licenseKey)` + the same Python-isoformat parser (`parsePythonIsoformat` in `lib/exe-license-validator.ts`, or `originalExpiry()`/`keyExpiryIsAfter()` already exported from `lib/exe-license-bind.ts`) and render `"No expiry (lifetime)"` when `isLifetimeExpiry(...)`, else the real date and real remaining term. Delete the now-wrong `({EXE_LICENSE_DAYS} days from issue)` suffix.
 - `app/admin/(protected)/admin-panel.tsx` → `ExeLicensesTab` (component starts branch `:3477`): add a **Lifetime (no expiry)** checkbox beside the duration input (when checked, send `{ lifetime: true }`; the existing `durationDays` path is unchanged when unchecked), and a per-row **Cancel license** / **Restore** button driven by the new `revoked` boolean, with a `window.confirm` (destructive) and a visible `Cancelled` badge.
 - Route side (`issueLicense`, `:299+`): parse `lifetime` (boolean); when true pass `expiresAt: LIFETIME_EXPIRES_AT` and **skip** the `durationDays` parse; otherwise behave exactly as today (`daysValid: durationDays`).
+
+---
+
+## 3.9 REVISION 2 — owner clarification (2026-09-29): two licence classes, live kill, lifetime is admin-move-only
+
+This section **amends D5** and **adds D8–D10**. Where it conflicts with the text above, this section wins. The owner's requirement, in their words:
+
+> *"for a 1 month test, i want the license to be just like we have for the other exe, immediate revocation should kill it. the lifetime license is bound to that email for recovery, in case owner wants to move to another pc, but this must come through the admin — no one should be able to move a lifetime license themself; once it's bound to that device, they need to get a new license for another or reach out to support."*
+
+### What was verified before writing this (all in real code, 2026-09-29)
+
+| # | Finding | Evidence |
+|---|---|---|
+| W1 | The desktop EXE **already** re-checks the server on every launch, fail-open. | `app/api/exe-license/status/route.ts:91` `stillValidLive()` POSTs `${HOSTED_APP_URL}/api/exe-license/eligibility` with a 6 s timeout; on `eligible === false` it calls `clearActivation()` and returns *"This license has been revoked."* Any network failure returns `true` (fail-open). |
+| W2 | That check **cannot see a revocation today.** | `app/api/exe-license/eligibility/route.ts:56-65` returns `{ eligible: license !== null }` — it only proves the presented key still matches the row. A revocation row leaves the row intact, so `eligible` stays `true` forever. **This is the single missing link for the owner's requirement.** |
+| W3 | A self-hosted install has **no** runtime licence check whatsoever. | `app/dashboard/layout.tsx:17` `const localExe = isLocalExeRuntime()` and the `LicenseGate` wrap is inside `if (localExe)` — `isLocalExeRuntime()` is `SPACEWORKER_LOCAL_EXE === "true"` (Tauri EXE only). The self-hosted build is the orthogonal `SELF_HOSTED` flag (`lib/exe-build-target.ts:33`). `app/api/setup/complete/route.ts:164` confirms it explicitly: `SELF_HOSTED_LICENSE_KEY` is *"written (not read) here: **no code path consumes it yet**."* |
+| W4 | Consequence: a self-hosted 30-day key **never expires** in practice. | Same as W3 — the only validation is the one-time `/api/setup/license/validate` call at wizard time (`:62`). Nothing re-reads `expires_at` afterwards. This is a pre-existing hole that the 1-month test licence would fall straight into. |
+| W5 | Three self-service move paths exist and would move a lifetime licence today. | `app/api/exe-license/auto-bind/route.ts:164`, `password-login/route.ts:108`, `payment-status/route.ts:87` all call `transferExeLicenseToMachine`, gated by an emailed code to the licensee's inbox (`TRANSFER_CODE_PURPOSE = "exe_transfer"`, `auto-bind:61`). |
+| W6 | A lifetime marker **survives** bind/transfer, so it can be used as the discriminator. | `lib/exe-license-bind.ts:21-23` — *"Re-signs the ORIGINAL unbound key … preserving the ORIGINAL key's exact `expires_at`"* — implemented at `:156/:172` (bind) and `:349/:362` (transfer). `originalExpiry(key)` (`:472`) already exposes the decoded value. |
+| W7 | The self-hosted gate is the right home for E8. | `lib/self-hosted-setup-gate.ts:78` `shouldRedirectToSetup(pathname)` is already called from `proxy.ts:5` on every request, runs in the Node runtime (Next 16 "Proxy"), and already owns a short-TTL in-memory cache (`:48-70`) — the exact shape E8 needs. |
+
+### D8 — Two licence classes of the **same** product, told apart by the key's own `expires_at`
+
+There is no new product id and no new payload field. Both classes are `selfhosted_os` (D3):
+
+| | **Term** (e.g. 1-month test) | **Lifetime** |
+|---|---|---|
+| `expires_at` | real date (issue + N days) | `LIFETIME_EXPIRES_AT` sentinel (D4) |
+| Expiry enforced | offline validator, every check | never (year 2999) |
+| Revocation kills the install | **YES** — E7 + E8 | YES when reachable (same machinery) |
+| Self-service move | **allowed** — exactly like the other EXE (email-code transfer) | **FORBIDDEN** — D9 |
+| Move path | `auto-bind` / `password-login` / `payment-status` | admin only (`action: "transfer"`) |
+| Recovery anchor | licensee email | licensee email (W5, unchanged) |
+
+Implement `isLifetimeExpiry()` **on the decoded payload**, using the existing `originalExpiry()` seam (W6) — never a DB column and never a client-supplied flag.
+
+### D9 — Lifetime licences are admin-move-only (they stay on the device they are bound to)
+
+Enforce with an **explicit actor switch** in `transferExeLicenseToMachine` (E9) rather than by blocking the lib outright — the admin route `app/api/admin/exe-licenses/route.ts:269` calls the *same* function and **must remain able to move a lifetime licence**; that is the owner's sanctioned path.
+
+- **Self-service caller + lifetime licence** → typed `"lifetime_locked"` error, thrown **before** any mutation, surfaced by all three callers with one message (E10): *"This is a lifetime licence bound to this device. Contact support to move it to another computer."*
+- **Admin caller** → allowed (behaviour unchanged).
+- **First bind is unaffected**: a customer activating a fresh, **unbound** lifetime key is not a "move" and must keep working. Only `transferExeLicenseToMachine` is restricted; `bindExeLicenseToMachine` is not.
+- The **email code remains the recovery anchor** for the term class (W5, unchanged) — the lifetime class does not lose it, it simply cannot exercise it self-service.
+- Accepted consequence, per the owner: a lifetime customer who changes PC cannot self-serve. They contact support, or they buy another licence. Do **not** add a self-service unlock "just in case" — that is the exact hole the owner asked to close.
+
+### D10 — The 1-month test licence must be killable while it is running
+
+"Just like the other exe" means the W1 mechanism, on **both** builds:
+
+1. **Desktop EXE class** — **E7 alone** fixes it, because the launch-time path already exists and is proven. After E7, `stillValidLive` returns false → `clearActivation()` runs → the activation gate appears on the next launch. Fail-open is preserved **by design**: a genuinely offline customer is never locked out. "Immediate" therefore means *caught at the next launch whenever we can reach the server*, not a hard network kill — and that exact wording must be used in any customer-facing copy.
+2. **Self-hosted class** — **E8**, which is new work and the larger half of this revision. It is in scope because without it the 1-month test licence cannot be ended **at all** (W4), which defeats the owner's whole purpose in issuing a term licence in the first place.
+
+**Explicit non-goal (do not build):** a persistent socket, watchdog or daemon that kills a running process mid-session. Both builds keep working until the next launch / page-load while unreachable. That is the trade-off the owner accepted by choosing the "like the other exe" model.
 
 ---
 
@@ -280,6 +340,10 @@ Plus the narrow unit assertions listed in the junior track §V.
 | S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
 | S11 | `isSelfHosted()` early-returns at `app/api/admin/exe-licenses/route.ts:50,473` still present | unchanged — revoke endpoints are inert on a customer's box |
 | S12 | Migration sanity | `npx prisma migrate status` clean; migration is **additive only** (one new table, one new column with a default) — no destructive statement |
+| S13 | **THE LIVE KILL (E7)** — with a real revoked row, POST `/api/exe-license/eligibility` with (a) the licence's original key and (b) its current bound key | **both** return `eligible: false`. Before the edit both returned `true` (W2) — this single row is what makes the owner's "immediate revocation" real. |
+| S14 | End-to-end kill on the desktop class: revoke a bound licence, then POST `/api/exe-license/status` against a local runtime holding that activation | `licensed: false`, message *"This license has been revoked…"*, and the local activation is cleared (mirrors the W1 path). |
+| S15 | **Lifetime move control (E9)** — self-service transfer of a lifetime licence, then the same transfer via admin `action: "transfer"` | self-service throws `"lifetime_locked"` **and** the `ExeLicense` row is unchanged (`boundMachineId` / `boundLicenseKey` byte-identical, no new `ExeLicenseTransfer` row); admin transfer **succeeds**. |
+| S16 | **Self-hosted runtime check (E8)** — (a) expired/revoked stored key, (b) still-valid key with the server unreachable (W4) | (a) blocked with a clear message; (b) **NOT** blocked (fail-open preserved). Confirms W4 is closed without breaking offline use. |
 
 ### 4.3 Deployment note (do not deploy as part of this task)
 
@@ -292,22 +356,27 @@ The hosted VPS runs the **live** app from `main`. Phase 5 lands on `self-hosted-
 The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`. That file is the work order; this file is the spec of record. The junior must:
 
 1. Work **only** in `/Users/mikeolab/sw-selfhost` on branch `self-hosted-build`.
-2. Implement §3 D1–D7 in the stated order and stop at the first `⚠️` in the log rather than guessing.
+2. Implement §3 **D1–D10** — including **§3.9 (Revision 2)**, which **amends D5** and adds **D8–D10** — in the stated order, and stop at the first `⚠️` in the log rather than guessing.
 3. Append a dated entry to **both** files when the code is written (what changed, `file:line`, commands run + raw results, anything unverified).
-4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S12). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
+4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S16). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
+5. **Stop after each task.** Report at the end of every `T*` (§2 of the junior track) rather than working through the whole list in one session — see the junior track's **§2.0 stop-after-each-task rule**.
 
 ## 6. Review reject list — the senior will bounce the PR for any of these
 
 1. Any edit to `lib/exe-license-validator.ts`, or to the signed payload's key set (`V4`) — including "helpfully" adding a `revoked` field to the payload.
 2. Putting `SELF_HOSTED_OS` into `ALL_PRODUCTS` (leaks to the public store — S8 fails).
 3. Using `daysValid: 999999` or any arithmetic instead of the frozen `expiresAt: LIFETIME_EXPIRES_AT`.
-4. Revocation checked anywhere other than E1/E2/E4 (e.g. inside the validator, or a launch-time network call).
+4. Revocation checked anywhere other than **E1/E2/E4/E7/E8**. ⚠️ **Corrected 2026-09-29 (§3.9):** this item used to read *"or a launch-time network call"* — that rejection was **wrong** and is withdrawn. The launch-time check **is** the design (E7 extends the existing `stillValidLive`/`eligibility` seam; E8 gives the self-hosted build its first-ever check). Still rejected: putting any revocation logic inside `lib/exe-license-validator.ts`, or any check on a hot path that is **not** fail-open.
 5. Skipping E4 (the reuse filter) — cancel then re-issue must mint a new key, not hand the revoked one back.
 6. A non-idempotent revoke (double-click → 500) or a revoke that does not check licence ownership.
 7. Deleting/renaming anything under `TASK_134..TASK_144` or any other main-only file (§0.2.3).
 8. A destructive migration, or any migration run against the live VPS DB.
 9. `tsc --noEmit` not clean, or `npm run build` failing.
 10. Touching `app/api/store/prices/route.ts` / `admin/wallets/route.ts` "to hide" the product instead of simply not adding it to `ALL_PRODUCTS`.
+11. **A non-fail-open runtime check (E7/E8).** If the server or network is unreachable, the install must stay usable. A legitimately offline customer must never be locked out — that is why `stillValidLive` returns `true` on any error.
+12. **Blocking the *first* bind of a lifetime licence (E9).** Only `transferExeLicenseToMachine` is restricted; a fresh unbound lifetime key must still activate normally. Getting this backwards bricks every new lifetime sale.
+13. **Any self-service path that can move a lifetime licence, or any UI copy promising a self-service PC move for one.** The owner's rule is support-only; a hidden/undocumented unlock is still an unlock (§3.9 D9).
+14. Deciding "lifetime" anywhere other than the decoded `expires_at` (a client flag, a DB column, or `durationDays` overflow).
 
 ## 7. Verified environment baseline (2026-09-29)
 
@@ -374,6 +443,30 @@ Also added `node_modules` (the worktree's symlink to the primary checkout) to th
 - `/Users/mikeolab/spaceworker` (live app, `main`) → working tree clean, untouched by this task.
 - Branch state: `self-hosted-build` ahead 9 / behind 37 vs `origin/main`, now correctly tracking `origin/self-hosted-build`.
 
-**5. Next actor:** the junior agent starts at **T1** in `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`. Every push it makes must use the explicit refspec above. Only the senior closes S1–S12.
+**5. Next actor:** the junior agent starts at **T1** in `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`. Every push it makes must use the explicit refspec above. Only the senior closes S1–S16.
+
+### 2026-09-29 — SENIOR (third pass: **REVISION 2** — owner clarification scoped) — no product code written
+
+**Trigger.** The owner reviewed the Phase 5 scope and clarified the product in their own words:
+
+> *"for a 1 month test, i want the license to be just like we have for the other exe, immediate revocation should kill it. the lifetime license is bound to that email for recovery, in case owner wants to move to another pc, but this must come through the admin — no one should be able to move a lifetime license themself; once it's bound to that device, they need to get a new license for another or reach out to support."*
+
+**Verdict on the first pass: the scope did NOT match this**, in three ways. All three were verified in real code before changing anything; see §3.9's `W1–W7` table for the exact `file:line` evidence.
+
+1. **"Immediate revocation" was not deliverable.** D5 enforced revocation only at bind/transfer, and the reject list explicitly forbade a launch-time check. But the desktop EXE **already** re-checks on every launch (`status/route.ts:91` → `stillValidLive` → `/api/exe-license/eligibility`), and that route only proves the key still matches the row (`eligibility/route.ts:65` `eligible: license !== null`) — so a revocation row left `eligible` permanently `true`. The existing seam was one line away from working, and the first pass had closed the door on it.
+2. **A self-hosted 30-day licence would never expire at all.** `app/dashboard/layout.tsx:17` gates `LicenseGate` on `isLocalExeRuntime()` (Tauri EXE only), while the self-hosted build is the orthogonal `SELF_HOSTED` flag. `app/api/setup/complete/route.ts:164` says it outright: `SELF_HOSTED_LICENSE_KEY` is *"written (not read) … no code path consumes it yet."* The key is validated once by the wizard and never again — so the owner's 1-month test licence would have run forever.
+3. **Nothing stopped a lifetime licence being self-moved.** `auto-bind:164`, `password-login:108` and `payment-status:87` all call `transferExeLicenseToMachine`, gated only by an email code to the licensee's inbox.
+
+**Changes made to this file.**
+
+- **§3.9 added** — Revision 2 of the spec: `W1–W7` (verified evidence), **D8** (two classes of the *same* product, told apart by the key's own `expires_at`; the sentinel survives bind because re-signing preserves expiry — `lib/exe-license-bind.ts:21-23,156,172`), **D9** (lifetime is admin-move-only via an actor switch; first bind unaffected), **D10** (the term licence must be killable on both builds; explicit non-goal: no mid-session watchdog).
+- **E7–E10 added** to D5's enforcement table: E7 the live kill in `eligibility`; E8 the self-hosted runtime check in `lib/self-hosted-setup-gate.ts`; E9 the `actor` switch; E10 the single self-service message across three callers.
+- **S13–S16 added** to §4.2 (live kill, end-to-end kill, lifetime move control, self-hosted fail-open).
+- **§6 reject list corrected and extended.** Item 4 previously rejected *"a launch-time network call"* — **withdrawn**, because the launch-time check is the design. Items 11–14 added: non-fail-open checks, blocking a lifetime *first* bind, any self-service lifetime move, and deciding "lifetime" from anything but the decoded `expires_at`.
+- **§5 updated** to D1–D10 / S1–S16 and to the one-task-per-session rule.
+
+**Verification performed on this revision:** canary `git diff --stat main self-hosted-build -- lib/exe-license-validator.ts` = **empty**; `/Users/mikeolab/spaceworker` = clean and untouched; this revision touched **only** the two `TASK_145_*` docs (no product code). The `localExe`/`SELF_HOSTED` split and the `eligibility` return value were read directly, not inferred.
+
+**State.** Implementation **NOT started** — Revision 2 is a scope change only. **Next actor:** the junior begins at **T1**, one task per session, using the explicit push refspec in §0.2.1.
 
 
