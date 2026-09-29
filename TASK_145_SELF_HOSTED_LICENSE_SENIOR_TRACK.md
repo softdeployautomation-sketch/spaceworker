@@ -204,6 +204,8 @@ This is the highest-risk part of the task (V9 + V16 + store leakage). Implement 
    - **Verification gate (mandatory, junior must paste output):** `curl -s localhost:3000/api/store/prices | grep -c selfhosted_os` → must print `0`.
 6. Note for the record: `app/api/exe-license/activate/route.ts:80-86` already rejects a `selfhosted_os` key in every Windows EXE variant (`expectedProduct = \`${exeBuildTarget()}_exe\``) — so a self-hosted licence can never unlock a store-bought EXE. **No change needed there**; just do not "fix" it.
 
+> ⚠️ **AMENDED 2026-09-29 (§3.11 D11 / task T16).** Item 1 above keeps the product off the **store**, but `ALL_PRODUCTS` is the *display* gate — it is **not** the *purchase* gate. `app/api/billing/checkout/route.ts:38` and `app/api/billing/submit/route.ts:61` resolve products with `getProduct()` and take the id **from the client**, so `selfhosted_os` became purchasable at its `0` default price with no login (W8/W9). A separate guard is now required: **T16 / E11**. The rule: `BY_ID` registration makes a product *resolvable* (bind/transfer require it, V9) — never *sellable*.
+
 ### D4 — Lifetime expiry: a **frozen literal**, not a computed date
 
 Add to `lib/exe-license.ts` (constants only — do not restructure the file):
@@ -421,6 +423,70 @@ Verified present: `ExeLicense`, `ExeLicenseTransfer`, `ExeLicenseRevocation` (wi
 
 ---
 
+## 3.11 REVISION 4 — senior verification of T2, and a purchase-gate hole D3 left open (2026-09-29, third senior pass)
+
+### 3.11.1 T2 — ACCEPTED (every claim re-run by the senior, independently)
+
+| T2 claim | Senior re-ran | Result |
+|---|---|---|
+| additive, one source file | `git show --stat 83fe756` | `lib/products.ts` only (+24/−2), plus the two track files ✅ |
+| `getProduct("selfhosted_os")` resolves | `npx tsx` against the real module | `true` ✅ |
+| **not** in `ALL_PRODUCTS` | same run + `lib/products.ts:207` read directly | `false`; the `ALL_PRODUCTS` line is **unchanged** ✅ |
+| `LICENSABLE_EXE_PRODUCTS` exported, contains it | same run | `true` (6 entries vs 9 in `ALL_PRODUCTS`) ✅ |
+| `priceField` still unique | same run | `true` ✅ |
+| store route cannot see it | `app/api/store/prices/route.ts:11` maps `ALL_PRODUCTS` | statically cannot leak ✅ |
+| validator untouched | `git diff --stat main self-hosted-build -- lib/exe-license-validator.ts` | **empty** ✅ |
+| V17 five frozen files | `git diff --stat` over all five | **empty** ✅ |
+| unit tests | `npx tsx --test tests/module-store.test.ts` | **10 pass / 0 fail** ✅ |
+| `npx tsc --noEmit` | re-run by the senior | **EXIT=0** ✅ |
+| `CI=1 npx next build` | re-run by the senior | **BUILD_EXIT=0** ✅ |
+| hygiene | `lsof -iTCP:3100` / `ps` for leftover servers | nothing left running ✅ |
+
+T2 matches D3 verbatim and is **CLOSED**. Verifying it, however, exposed a hole in **D3 itself** — §3.11.2.
+
+### 3.11.2 W8–W11 — registering in `BY_ID` also opened a **purchase** path
+
+D3 assumed the gate that matters is `ALL_PRODUCTS` (store UI, `/pricing`, `/api/store/prices`, the wallets form). That is the *display* gate. The *purchase* gate is a different code path, and it resolves with `getProduct()`:
+
+| ID | Evidence | File:line |
+|---|---|---|
+| W8 | `getProduct(productId)` → `if (!product) 400 "Unknown product"`; the only kind restriction is `web`/`module` needing a session, so `kind: "exe"` needs **no login** | `app/api/billing/checkout/route.ts:37-51` |
+| W9 | Same lookup on submit; an `exe` product with no session creates a `User` + `Payment` row from a bare email | `app/api/billing/submit/route.ts:60-64, 72-93, 133` |
+| W10 | That row is the admin review queue; approving it calls `handleApprovedPayment` → `getProduct(payment.product)` → mints a real key with `plan: "selfhosted"` | `lib/license-service.ts:33,43`; `app/api/admin/payments/[id]/approve/route.ts:30` |
+| W11 | Price is `settings[product.priceField]`, whose column defaults to `0` (T1: `Float @default(0)`) | `app/api/billing/checkout/route.ts:74-77` |
+
+So `GET /api/billing/checkout?kind=btc&product=selfhosted_os` resolves, and `POST /api/billing/submit {product:"selfhosted_os"}` persists a **$0** pending payment for anyone's email — a self-service path into a product the owner requires to be **admin-issued only**. The queue entry later reads "SpaceWorker OS (Self-Hosted)", and approving it auto-mints the licence.
+
+**Severity is bounded — this is not a free-lunch robot.** `/api/internal/payment-verify` compares on-chain received against expected as `ratio = receivedBtc / expectedBtc` with a ±5% `TOLERANCE` (`lib/crypto-verify.ts:46-53`). An expected amount of `0` makes `ratio` `Infinity`, which fails `ratio > 1 + TOLERANCE`, so a $0 payment can **never** auto-approve. The real exposure is (a) public queue-spam creating `User`/`Payment` rows and (b) an admin approving a row the system can mint from.
+
+### D11 — `BY_ID` registration is not a licence to sell: the purchase gate is `ALL_PRODUCTS` membership
+
+A product that `getProduct()` resolves is **not** automatically purchasable. The invariant, for this phase and every future product:
+
+> **Only a product in `ALL_PRODUCTS` may be bought.** Any route that takes a product id **from the client** and leads to a `Payment` row or a licence must reject an id outside `ALL_PRODUCTS`.
+
+Implementation (task **T16**):
+- Reject in **both** `app/api/billing/checkout/route.ts:38` and `app/api/billing/submit/route.ts:61`.
+- Return the **existing** `{ error: "Unknown product" }` 400 — byte-identical to a typo'd id, so the endpoint never confirms a non-purchasable product exists.
+- **Additive and hosted-safe:** on `main` every resolvable product is already in `ALL_PRODUCTS`, so the check is a strict no-op for the live app. One predicate over an array that already exists — **no** `purchasable` flag, **no** second registry, **no** client-side check.
+- **Defence in depth, not a replacement** for keeping `SELF_HOSTED_OS` out of `ALL_PRODUCTS`. Both gates must hold.
+
+### E11 — the purchase gate
+
+| ID | Where | Rule |
+|---|---|---|
+| E11 | `app/api/billing/checkout/route.ts:38`, `app/api/billing/submit/route.ts:61` | a client-supplied product id must be in `ALL_PRODUCTS`; otherwise the same 400 "Unknown product" as an unknown id. Task **T16**. |
+
+### 3.11.3 Task T16 added — the work order is now T1 → T16
+
+**T16 — close the purchase gate (E11).** Do it **next, before T3**: it is a few lines, it closes a hole this phase opened, and every later task that adds an issuance path inherits the invariant. Spec in the junior track §2.
+
+### 3.11.4 Carried forward — the rest of T2's report was accurate
+
+The junior's `UNVERIFIED:` lines are correct and expected at this stage: J1/J2 and J4–J7/J9–J12 belong to later tasks; the admin surfaces still importing `EXE_PRODUCTS` is **D3 item 4**, scheduled for T6/T7; there is no end-to-end flow yet, by construction. The `grep -n 'ALL_PRODUCTS ='` nit is real — the line carries a type annotation, so that pattern can never match; the work order now uses `grep -n 'ALL_PRODUCTS'`.
+
+---
+
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
 
 ### 4.1 What the junior may run themselves
@@ -454,6 +520,7 @@ Plus the narrow unit assertions listed in the junior track §V.
 | S14 | End-to-end kill on the desktop class: revoke a bound licence, then POST `/api/exe-license/status` against a local runtime holding that activation | `licensed: false`, message *"This license has been revoked…"*, and the local activation is cleared (mirrors the W1 path). |
 | S15 | **Lifetime move control (E9)** — self-service transfer of a lifetime licence, then the same transfer via admin `action: "transfer"` | self-service throws `"lifetime_locked"` **and** the `ExeLicense` row is unchanged (`boundMachineId` / `boundLicenseKey` byte-identical, no new `ExeLicenseTransfer` row); admin transfer **succeeds**. |
 | S16 | **Self-hosted runtime check (E8)** — (a) expired/revoked stored key, (b) still-valid key with the server unreachable (W4) | (a) blocked with a clear message; (b) **NOT** blocked (fail-open preserved). Confirms W4 is closed without breaking offline use. |
+| S17 | **The purchase gate (E11 / T16)** — `GET /api/billing/checkout?kind=btc&product=selfhosted_os` and `POST /api/billing/submit {product:"selfhosted_os"}` | both return **400 `{"error":"Unknown product"}`** — byte-identical to a typo'd id — and **no `Payment`/`User` row is created**. The same calls with `product=extractor_exe` still succeed unchanged (proves the guard is a no-op for sellable products). Before T16 the first two returned 200 and persisted a $0 pending payment (W8/W9). |
 
 ### 4.3 Deployment note (do not deploy as part of this task)
 
@@ -487,12 +554,13 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 12. **Blocking the *first* bind of a lifetime licence (E9).** Only `transferExeLicenseToMachine` is restricted; a fresh unbound lifetime key must still activate normally. Getting this backwards bricks every new lifetime sale.
 13. **Any self-service path that can move a lifetime licence, or any UI copy promising a self-service PC move for one.** The owner's rule is support-only; a hidden/undocumented unlock is still an unlock (§3.9 D9).
 14. Deciding "lifetime" anywhere other than the decoded `expires_at` (a client flag, a DB column, or `durationDays` overflow).
+15. **A purchase path that accepts a product id outside `ALL_PRODUCTS` (§3.11 D11 / E11).** `BY_ID` registration makes a product *resolvable* — bind/transfer require it (V9) — but it must never make it *sellable*. Equally rejected: closing W8 by removing `SELF_HOSTED_OS` from `BY_ID` (that breaks V9), or by adding it to `ALL_PRODUCTS` (that leaks it to the store — item 2). The guard must return the *same* 400 an unknown id gets; a distinct message or 403 confirms the product exists.
 
 ## 7. Verified environment baseline (2026-09-29)
 
 | Fact | Value |
 |---|---|
-| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `70a80dd` at T1 close (senior pass) |
+| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `83fe756` at T2 close (senior pass) |
 | Primary checkout (live app) | `/Users/mikeolab/spaceworker` — branch `main`, HEAD `b7330a1` |
 | Merge base | `1499a9e` (2026-09-27); branch is 37 behind / 8 ahead |
 | `node_modules` | **must be a real APFS clone, never a symlink** (§3.10.2/C1): `cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules` |
@@ -501,7 +569,7 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 | Verification DB | `spaceworker_t145` — built with `prisma db push`; 50 tables incl. `ExeLicenseRevocation` (§3.10.7) |
 | Fresh-DB migration replay | **BROKEN** — P3018 `relation "ExeLicense" does not exist` at `20260914150000` (§3.10.6) → task **T14** |
 | Shared local dev DB | ~27 migrations stale (no `Device` table) + two stuck `device_tools_v2` rows — **not usable for Phase 5** (§3.10.7) |
-| Work order | **T1 → T15** (T14 = fresh-install bootstrap; T15 = optional local drift repair) |
+| Work order | **T1 → T16** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate, do next**) |
 | Node date check | `new Date("2999-12-31T23:59:59.000000Z")` → year 2999, valid (not `NaN`) |
 | Files byte-identical to `main` (must not drift, V17) | `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx` |
 | Task file numbers used | `TASK_145` = this phase; `TASK_146` reserved for Phase 6 |
@@ -1164,4 +1232,73 @@ LIVE_TSC_EXIT=0
 - UNVERIFIED: no end-to-end Phase 5 licence flow has been exercised (J8 is the only store-side check runnable at T2).
 
 READY FOR VERIFICATION - T2
+
+
+---
+
+## 2026-09-29 — SENIOR PASS 3: T2 VERIFIED (accepted + closed), and a purchase-gate hole D3 left open → NEW TASK T16
+
+**Verdict: T2 ACCEPTED and CLOSED** at `83fe756`. All 12 claims re-run by me, independently, on a worktree with a real `node_modules`.
+
+Commits: `83fe756` (junior T2) → this pass (**docs only**: senior §3.11 + S17 + reject item 15 + §7; junior §1.3 + T2 CLOSED + T16).
+
+### Raw evidence (my own runs, not a re-print of the junior's)
+
+```
+$ cd /Users/mikeolab/sw-selfhost && git show --stat --oneline 83fe756 | head -6
+83fe756 TASK_145 T2: register selfhosted_os (getProduct-only, kept out of ALL_PRODUCTS) + LICENSABLE_EXE_PRODUCTS
+ TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md | 110 ++++++++++++++++++++++++++
+ TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md | 112 +++++++++++++++++++++++++++
+ lib/products.ts                              |  26 ++++++-
+ 3 files changed, 246 insertions(+), 2 deletions(-)
+
+$ npx tsx -e '<my own assertions against the real module>'
+getProduct resolves: true
+in ALL_PRODUCTS: false
+in LICENSABLE: true
+ALL_PRODUCTS count: 9 | LICENSABLE count: 6
+priceField unique across LICENSABLE: true
+getProduct(unknown): null
+
+$ npx tsx --test tests/module-store.test.ts | tail -7
+1..10
+# tests 10
+# pass 10
+# fail 0
+
+$ npx tsc --noEmit
+TSC_EXIT=0
+
+$ CI=1 npx next build
+✓ Compiled successfully in 27.3s
+BUILD_EXIT=0
+
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts                                              # (empty)
+$ git diff --stat main self-hosted-build -- lib/exe-license.ts lib/exe-license-bind.ts app/api/exe-license/ lib/exe-license-validator.ts   # (empty — V17 intact)
+$ lsof -nP -iTCP:3100 -sTCP:LISTEN                                                                                    # (empty — no server left running)
+
+$ cd /Users/mikeolab/spaceworker && git rev-parse --abbrev-ref HEAD && git log --oneline -1
+main
+b7330a1 fix(campaigns): make the test send the same message the real send sends
+# working tree clean
+```
+
+### The finding (W8–W11) — a hole in **D3**, not in T2
+
+T2 implemented D3 verbatim and passed everything the spec asked for. **D3 itself was under-specified:** `ALL_PRODUCTS` gates the *store* (a display concern), while the *purchase* gate is a different code path — `app/api/billing/checkout/route.ts:37-51` and `app/api/billing/submit/route.ts:60-64` resolve with `getProduct()` and take the product id **from the client**, and the only kind-based restriction is that `web`/`module` need a session, so `kind: "exe"` needs **no login**. A crafted `product=selfhosted_os` therefore checked out at its `$0` default price and persisted a pending `Payment` row (W8/W9) for any email; approving that row calls `handleApprovedPayment` → `getProduct(payment.product)` → mints a real key with `plan: "selfhosted"` (W10).
+
+**Severity is bounded — this is not a free-lunch robot.** `lib/crypto-verify.ts:46-53` compares on-chain received against expected as `ratio = receivedBtc / expectedBtc`; an expected amount of `0` gives `Infinity`, which fails `ratio > 1 + TOLERANCE`. So auto-approval can **never** fire on a $0 row. The exposure is (a) public queue-spam creating `User`/`Payment` rows from a bare email and (b) an admin mis-approving a row the system can mint from. Both defeat "admin-issued only", so it closes before this ships.
+
+### What this pass changed
+
+- **D11** (new): only a product in `ALL_PRODUCTS` may be bought; any route that takes a client-supplied product id and leads to a `Payment` row or a licence must reject ids outside `ALL_PRODUCTS`. `BY_ID` registration makes a product *resolvable* — never *sellable*.
+- **E11** (new enforcement point): the two billing routes, returning the **same** `{"error":"Unknown product"}` 400 as a typo so the endpoint never confirms a non-purchasable product exists.
+- **T16** (new task, **do next — before T3**): junior §2.
+- **S17** (new verification row): both directions — the self-hosted id 400s with no `Payment` row, and `extractor_exe` is unchanged.
+- Reject list gains **item 15**.
+- Doc nit accepted: `grep -n 'ALL_PRODUCTS ='` can never match (`ALL_PRODUCTS: StoreProduct[] =`). The work order now uses the loose `grep -n 'ALL_PRODUCTS'` and reads the line — robust rather than clever.
+
+**UNVERIFIED (deliberate, not gaps):** nothing in T2 is unverified. J1/J2, J4–J7 and J9–J12 stay open as later-task rows, and the end-to-end phase flow cannot exist until T11–T13.
+
+**Next actor:** junior — task **T16**, one task, then stop.
 

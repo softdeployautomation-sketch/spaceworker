@@ -116,11 +116,25 @@ DATABASE_URL="$S" npx prisma generate                  # safe: real node_modules
 
 Why: the shared local DB is ~27 migrations stale (it has no `Device` table), and **the migration chain cannot build a fresh DB at all** (senior C5 / new task **T14**). `db push` is schema-driven, so it produces a correct database in ~1s. `spaceworker_t145` already exists and contains T1's objects.
 
-**Two new tasks appended to the work order: `T14` (fresh-install schema bootstrap) and `T15` (optional, local drift repair only).** The order is now **T1 → T15**; T2 is unchanged and still your starting point.
+**Two new tasks appended to the work order: `T14` (fresh-install schema bootstrap) and `T15` (optional, local drift repair only).** ~~The order is now **T1 → T15**; T2 is unchanged and still your starting point.~~ **Superseded by §1.3: the order is T1 → T16, T2 is closed, and your next task is T16.**
 
 ---
 
-## 2. WORK ORDER — T1 → T15, in this order. Do not skip ahead.
+## 1.3 REVISION 4 — T2 is VERIFIED; one new task, and it comes next (2026-09-29)
+
+The senior re-ran all of T2's checks (12 of 12) — **T2 is accepted and closed**, and its code matches D3 exactly. Read senior **§3.11** before your next session.
+
+But verifying T2 exposed a hole in **D3 itself**, so the work order gains **T16** — and **T16 is your next task, before T3**:
+
+- Registering `selfhosted_os` in `BY_ID` made `getProduct()` resolve it. That is required (bind/transfer throw without it, V9) — but `app/api/billing/checkout/route.ts:38` and `app/api/billing/submit/route.ts:61` **also** resolve products with `getProduct()`, and for `kind: "exe"` there is **no login required**. So `product=selfhosted_os` would have checked out at its **$0** default price and persisted a pending `Payment` row into the admin review queue — for a product that is **admin-issued only** (senior §3.11.2, W8–W11).
+- It is **not** auto-approvable (the on-chain verifier turns an expected amount of `0` into `ratio = Infinity`, which fails the ±5% test), so the exposure is queue-spam plus the risk that an admin approves a row the system can mint a self-hosted licence from.
+- Fix = **T16**: reject any product id outside `ALL_PRODUCTS` in those two routes, with the **same** `{"error":"Unknown product"}` 400 an unknown id gets. New invariant (**D11**): **`BY_ID` registration makes a product *resolvable*, never *sellable*.**
+
+**The work order is now T1 → T16.** Your next task is **T16**, then T3 onwards.
+
+---
+
+## 2. WORK ORDER — T1 → T16, in this order. Do not skip ahead.
 
 ### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
 
@@ -158,6 +172,8 @@ Accept: `validate` OK, migration created, `migrate status` reports the DB up to 
 
 ### T2 — Register the self-hosted product (admin-only, never on the store)
 
+> ✅ **CLOSED — 2026-09-29, commit `83fe756`.** The senior re-ran all 12 checks (senior §3.11.1). Do not revisit unless the senior reopens it. One correction to the check below: `grep -n 'ALL_PRODUCTS ='` **can never match** (the line carries a type annotation) — use `grep -n 'ALL_PRODUCTS'` and read the line.
+
 **Files:** `lib/products.ts`
 
 Implement senior track §3 D3 items 1 and 2 **exactly**:
@@ -169,7 +185,7 @@ Implement senior track §3 D3 items 1 and 2 **exactly**:
 **Check:**
 ```bash
 cd /Users/mikeolab/sw-selfhost
-grep -n 'ALL_PRODUCTS =' lib/products.ts   # the SELF_HOSTED_OS line must NOT be on it
+grep -n 'ALL_PRODUCTS' lib/products.ts   # the SELF_HOSTED_OS line must NOT be on it (read the line)
 grep -n 'BY_ID' lib/products.ts            # must include SELF_HOSTED_OS
 npx tsc --noEmit                           # still EXIT=0
 ```
@@ -359,6 +375,41 @@ Two acceptable outcomes: **leave it alone** (Phase 5 does not need it — use `s
 **Check:** if you change anything, paste the `pg_dump` proof and before/after `migrate status`. If you change nothing, say so explicitly — that is a valid result.
 
 **Then STOP.**
+
+---
+
+### T16 — Close the purchase gate: `selfhosted_os` must not be buyable (senior §3.11 D11 / E11) — **DO THIS NEXT, before T3**
+
+**Why:** T2 registered `selfhosted_os` in `BY_ID` so `getProduct()` resolves it — required, because bind/transfer throw without it (V9). But two public routes **also** resolve products with `getProduct()` **and take the id from the client**, so the product became purchasable at its `$0` default price with no login (senior §3.11.2, W8–W11).
+
+**Files:** `app/api/billing/checkout/route.ts`, `app/api/billing/submit/route.ts`
+
+1. In **both** files, change the product lookup so a product outside `ALL_PRODUCTS` is rejected exactly like an unknown id:
+   ```ts
+   const product = getProduct(productId);
+   if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id)) {
+     return NextResponse.json({ error: "Unknown product" }, { status: 400 });
+   }
+   ```
+   Add `ALL_PRODUCTS` to the existing `@/lib/products` import in each file (it is exported — `lib/products.ts:207`).
+2. **Keep the response byte-identical** to the existing unknown-product error. No "not for sale", no 403, no extra field — a distinct response would confirm the product exists.
+3. **Additive and hosted-safe:** on `main` every product `getProduct()` can resolve is already in `ALL_PRODUCTS`, so this is a strict no-op there. Do **not** add a `purchasable` flag, a second registry, or any client-side check.
+4. **Do not** touch `/api/store/prices`, `admin/wallets`, `components/store.tsx`, the admin licence routes, or the `ALL_PRODUCTS` / `BY_ID` definitions themselves. Removing `SELF_HOSTED_OS` from `BY_ID` is **not** an acceptable fix (it breaks V9).
+
+**Check:**
+```bash
+cd /Users/mikeolab/sw-selfhost
+npx tsc --noEmit                         # EXIT=0
+CI=1 npx next build                      # BUILD_EXIT=0
+grep -n 'ALL_PRODUCTS' app/api/billing/checkout/route.ts app/api/billing/submit/route.ts   # both must guard
+```
+Then, with a server up against `spaceworker_t145`, prove **both directions** and paste the raw output:
+- `GET /api/billing/checkout?kind=btc&product=selfhosted_os` → **400** `{"error":"Unknown product"}`
+- `POST /api/billing/submit {kind:"btc",product:"selfhosted_os",email:"x@y.com"}` → **400**, and **no** `Payment` row created (check the row count before/after)
+- `GET /api/billing/checkout?kind=btc&product=extractor_exe` → still **200** (proves the guard is a no-op for sellable products)
+- `POST /api/billing/submit` with `product=extractor_exe` → still creates its row exactly as before
+
+**Stop after it:** append the entry to both files ending `READY FOR VERIFICATION - T16`.
 
 ---
 
@@ -932,4 +983,19 @@ LIVE_TSC_EXIT=0
 - UNVERIFIED: no end-to-end Phase 5 licence flow has been exercised (J8 is the only store-side check runnable at T2).
 
 READY FOR VERIFICATION - T2
+
+
+---
+
+## 2026-09-29 — SENIOR VERIFICATION RESULT: T2 ✅ ACCEPTED + CLOSED; your next task is **T16**
+
+**Read senior §3.11 and this file's §1.3 before your next session.**
+
+- **T2 is closed** at `83fe756`. I re-ran all 12 of your checks myself (`git show --stat`, a fresh `npx tsx` assertion script, `tsx --test` → 10/10, `npx tsc --noEmit` → EXIT=0, `CI=1 npx next build` → BUILD_EXIT=0, canary + V17 diffs empty, `main` untouched, no servers left running). Your work order text was followed exactly; **nothing you did was wrong.**
+- **Your three `UNVERIFIED:` lines were accepted as accurate** — J1/J2, J4–J7/J9–J12 belong to later tasks, the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` swap is D3 item 4 (T6/T7), and there is no end-to-end flow yet by construction.
+- **Your doc nit is upheld** and the work order is corrected (T2 check + §2). `grep -n 'ALL_PRODUCTS ='` could never match because the line carries a type annotation. I used the loose `grep -n 'ALL_PRODUCTS'` + reading the line in §2 T16, which is robust.
+- **One new task, and it is yours next: T16** (senior §3.11 D11/E11). Verifying T2 is what found it: registering `selfhosted_os` in `BY_ID` (required for bind/transfer, V9) **also** made it purchasable, because `/api/billing/checkout` and `/api/billing/submit` resolve with `getProduct()` and take the id from the client — `kind: "exe"` needs no session, and the price column defaults to `0`. That is a path into an admin-issued-only product, so it closes now.
+- **Do T16 before T3**, then resume the normal order. One task per session, stop after it, append to both files, end `READY FOR VERIFICATION - T16`.
+
+**State at this entry:** branch `self-hosted-build`, HEAD `83fe756` + this docs-only commit, in sync with `origin/self-hosted-build`; `/Users/mikeolab/spaceworker` (`main`) clean at `b7330a1` and untouched.
 
