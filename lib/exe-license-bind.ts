@@ -5,6 +5,7 @@ import { db } from "./db";
 import { getProduct } from "./products";
 import { notifyAdmin } from "./telegram";
 import { sendEmail, exeTransferCompletedEmailHtml } from "./email";
+import { isExeLicenseRevoked } from "./exe-license-revocation";
 
 // Task 47 — the shared "claim a license to one machine" mechanism.
 //
@@ -36,7 +37,8 @@ export class LicenseBindError extends Error {
       | "invalid_original"
       | "not_configured"
       | "invalid_machine"
-      | "machine_taken",
+      | "machine_taken"
+      | "revoked",
   ) {
     super(message);
     this.name = "LicenseBindError";
@@ -109,6 +111,18 @@ export async function bindExeLicenseToMachine(input: {
   const license = await db.exeLicense.findUnique({ where: { id: input.exeLicenseId } });
   if (!license) {
     throw new LicenseBindError("License not found.", "not_found");
+  }
+
+  // TASK_145 (Phase 5) E1 — a revoked (cancelled) license must never activate.
+  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+  // surface as `machine_taken`. Deliberately FAIL-CLOSED: this path already
+  // writes to the DB, so a revocation-read failure must abort the bind rather
+  // than risk activating a cancelled key (unlike the fail-open launch checks).
+  if (await isExeLicenseRevoked(license.id)) {
+    throw new LicenseBindError(
+      "This license was cancelled by the provider and can no longer be activated. Contact support.",
+      "revoked",
+    );
   }
 
   const existingBound = license.boundMachineId;
@@ -239,7 +253,8 @@ export class LicenseTransferError extends Error {
       | "invalid_original"
       | "not_configured"
       | "invalid_machine"
-      | "machine_taken",
+      | "machine_taken"
+      | "revoked",
   ) {
     super(message);
     this.name = "LicenseTransferError";
@@ -297,6 +312,16 @@ export async function transferExeLicenseToMachine(input: {
   const license = await db.exeLicense.findUnique({ where: { id: input.exeLicenseId } });
   if (!license) {
     throw new LicenseTransferError("License not found.", "not_found");
+  }
+
+  // TASK_145 (Phase 5) E2 — a revoked (cancelled) license must never be moved.
+  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+  // surface as `machine_taken`, and before any mutation. Fail-CLOSED (E1).
+  if (await isExeLicenseRevoked(license.id)) {
+    throw new LicenseTransferError(
+      "This license was cancelled by the provider and can no longer be activated. Contact support.",
+      "revoked",
+    );
   }
 
   const fromMachineId = license.boundMachineId?.trim().toLowerCase() || null;
