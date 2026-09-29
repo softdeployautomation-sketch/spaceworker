@@ -1994,3 +1994,130 @@ Zero product code changed. `tsc` and the two test suites were re-run before this
 
 READY FOR VERIFICATION - T4 VERIFIED, PASS 8 COMPLETE
 
+
+### 2026-09-29 — JUNIOR — **T5 implemented** (revocation now bites at bind + transfer). No other task started.
+
+**Task done:** `T5` only, per the `▶ NEXT TASK` pointer at `:9` and junior §2 (`:290-306`) → senior §3 D5 **E1 / E2 / E3** (senior `:237-239`). `lib/exe-license-bind.ts` is **shared, not frozen** (Revision 7 / §1.6, senior §3.14.1) — this diff is correct and expected, not reverted, no objection logged.
+
+**What changed — `file:line` (ONE file only; nothing else moved):**
+
+| File | Lines | What |
+|---|---|---|
+| `lib/exe-license-bind.ts` | `8` | `import { isExeLicenseRevoked } from "./exe-license-revocation";` |
+| `lib/exe-license-bind.ts` | `41` | `"revoked"` added to **`LicenseBindError`**'s code union (`:31-44`) |
+| `lib/exe-license-bind.ts` | `116-126` | **E1 guard** in `bindExeLicenseToMachine` — after `if (!license)` (`:112`), **before** `machineTakenByAnotherAccount` (`:155`) and `const existingBound` (`:128`) |
+| `lib/exe-license-bind.ts` | `257` | `"revoked"` added to **`LicenseTransferError`**'s code union (`:247-260`) |
+| `lib/exe-license-bind.ts` | `317-325` | **E2 guard** in `transferExeLicenseToMachine` — after `if (!license)` (`:313`), **before** `machineTakenByAnotherAccount` (`:357`) and `const fromMachineId` (`:327`) |
+
+Both guards throw the exact E1/E2 message `"This license was cancelled by the provider and can no longer be activated. Contact support."` with code `"revoked"` — **fail-closed**, no `try/catch`: this path already writes to the DB, so a revocation-read failure aborts the bind/transfer rather than activating a cancelled key. No lifetime logic added (that is T12); a fresh unbound key has no revocation row, so `isExeLicenseRevoked` returns `false` and the first-bind path is unchanged. Revocation is read **only** through `isExeLicenseRevoked` (never from a payload/client flag). On `main` nothing is ever revoked, so the read is a harmless no-op (additive + hosted-safe).
+
+**Commands run** (worktree `/Users/mikeolab/sw-selfhost` unless another dir is named):
+
+```bash
+grep -n 'revoked' lib/exe-license-bind.ts
+grep -n 'machineTakenByAnotherAccount|isExeLicenseRevoked' lib/exe-license-bind.ts
+npx tsc --noEmit
+CI=1 npx next build
+npm run test:license
+npm run test:setup
+cd /Users/mikeolab/spaceworker
+git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+git diff --numstat main self-hosted-build -- lib/exe-license.ts
+git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+npx tsc --noEmit
+cd /Users/mikeolab/sw-selfhost
+git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+git diff main self-hosted-build -- lib/exe-license-bind.ts
+```
+
+**Raw output, verbatim (the numbers I measured, not a summary):**
+
+```
+$ grep -n 'revoked' lib/exe-license-bind.ts
+41:      | "revoked",
+116:  // TASK_145 (Phase 5) E1 — a revoked (cancelled) license must never activate.
+117:  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+124:      "revoked",
+257:      | "revoked",
+317:  // TASK_145 (Phase 5) E2 — a revoked (cancelled) license must never be moved.
+318:  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+323:      "revoked",
+$ grep -n 'machineTakenByAnotherAccount\|isExeLicenseRevoked' lib/exe-license-bind.ts
+8:import { isExeLicenseRevoked } from "./exe-license-revocation";
+60:async function machineTakenByAnotherAccount(machineId: string, licenseUserId: string): Promise<boolean> {
+121:  if (await isExeLicenseRevoked(license.id)) {
+155:  if (await machineTakenByAnotherAccount(machineId, license.userId)) {
+320:  if (await isExeLicenseRevoked(license.id)) {
+357:  if (await machineTakenByAnotherAccount(machineId, license.userId)) {
+```
+
+```
+$ npx tsc --noEmit
+TSC_EXIT=0
+
+$ CI=1 npx next build
+  Creating an optimized production build ...
+✓ Compiled successfully in 19.8s
+...
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+```
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 347.339105
+
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 586.216474
+```
+
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27	2	lib/exe-license-bind.ts
+$ npx tsc --noEmit
+LIVE_TSC_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27	2	lib/exe-license-bind.ts
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+```
+
+The committed T5 diff (commit `e8f1b14`) is exactly the additive import + two union lines + two guards — 27 insertions / 2 deletions (the 2 deletions are the `| "machine_taken",` lines re-terminated so `| "revoked",` can follow). Nothing else in the file moved; the full verbatim diff reproduces with `git diff main self-hosted-build -- lib/exe-license-bind.ts`.
+
+`§4.1c` standing checks: `test:license` → **`# pass 9 / # fail 0`**; `test:setup` → **`# pass 29 / # fail 0`**. No CI job runs these, so this is the run that executes T17's sentinel guard. Neither frozen file was touched, so no mutation proof was needed (and none was attempted).
+
+**UNVERIFIED: runtime behaviour of the two guards against a real DB** — T5's acceptance check is static (`grep` + `tsc` + build + the two test suites) and the task needs no database or server. No `ExeLicenseRevocation` row was created, so `revoke → bind` / `revoke → transfer` throwing `code: "revoked"`, the ordering assertion (a revoked licence never surfacing as `machine_taken`) and the fail-closed claim on a DB read error are **runtime-unproven by me**; senior §4.2 **S5**/**S7** own those proofs (T5/T6).
+
+**UNVERIFIED: the self-service/admin callers' error mapping** — the three call sites that map `LicenseBindError.code` (senior `E10`: `auto-bind`, `password-login`, `payment-status`) are not edited by T5 and were not exercised; a `"revoked"` code reaching one of those mappers is untested here (it compiles because the union is additive, but no UI string is asserted).
+
+READY FOR VERIFICATION - T5
+
+

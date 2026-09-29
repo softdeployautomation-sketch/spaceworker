@@ -2435,3 +2435,87 @@ Junior: §1.6 Revision 7 (new, `:83-107`), `▶ NEXT TASK` → `T5` (`:9`) with 
 
 READY FOR VERIFICATION - T4 VERIFIED, PASS 8 COMPLETE
 
+
+## 2026-09-29 — JUNIOR (T5 implementation) — `lib/exe-license-bind.ts` revocation guards. **Pending senior verification.**
+
+**Task:** `T5` only (junior `▶ NEXT TASK` `:9`; junior §2 `:290-306`; senior §3 D5 **E1 → `:237`**, **E2 → `:238`**, **E3 → `:239`**). `lib/exe-license-bind.ts` is **shared, not frozen** (§3.14.1 / Revision 7) — the diff below is the expected T5 change.
+
+**Diff — `lib/exe-license-bind.ts` (commit `e8f1b14`), `27 2`:**
+
+| Lines | What |
+|---|---|
+| `8` | `import { isExeLicenseRevoked } from "./exe-license-revocation";` |
+| `41` | `"revoked"` added to `LicenseBindError`'s code union |
+| `116-126` | **E1** guard in `bindExeLicenseToMachine`: after `if (!license)` (`:112`), **before** `machineTakenByAnotherAccount` (`:155`) → `throw new LicenseBindError("<exact E1 message>", "revoked")` |
+| `257` | `"revoked"` added to `LicenseTransferError`'s code union |
+| `317-325` | **E2** guard in `transferExeLicenseToMachine`: after `if (!license)` (`:313`), **before** `machineTakenByAnotherAccount` (`:357`) → `throw new LicenseTransferError("<exact E2 message>", "revoked")` |
+
+Ordering evidence (`grep -n`): `121 isExeLicenseRevoked` < `155 machineTakenByAnotherAccount`, and `320 isExeLicenseRevoked` < `357 machineTakenByAnotherAccount`. Both guards are **fail-closed** (no `try/catch`) and read revocation **only** through `isExeLicenseRevoked`; no lifetime logic, and the first-bind path for a fresh unbound key is unchanged (no revocation row → `false` → proceeds).
+
+**Raw output (verbatim, measured):**
+
+```
+$ grep -n 'revoked' lib/exe-license-bind.ts
+41:      | "revoked",
+116:  // TASK_145 (Phase 5) E1 — a revoked (cancelled) license must never activate.
+117:  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+124:      "revoked",
+257:      | "revoked",
+317:  // TASK_145 (Phase 5) E2 — a revoked (cancelled) license must never be moved.
+318:  // Checked BEFORE machineTakenByAnotherAccount so a revoked license can never
+323:      "revoked",
+```
+
+```
+$ npx tsc --noEmit
+TSC_EXIT=0
+$ CI=1 npx next build
+✓ Compiled successfully in 19.8s
+BUILD_EXIT=0
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 347.339105
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 586.216474
+```
+
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27	2	lib/exe-license-bind.ts
+$ npx tsc --noEmit
+LIVE_TSC_EXIT=0
+$ cd /Users/mikeolab/sw-selfhost
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27	2	lib/exe-license-bind.ts
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+```
+
+Canaries for this task (from the `V17`/§3.14.1 table, not from a prompt example): validator **empty** ✅; `lib/exe-license.ts` **`13 0`** ✅; `lib/exe-license-bind.ts` **`27 2`**, and the diff content is exactly the two guards + two unions + the one import ✅.
+
+**UNVERIFIED: runtime behaviour against a real DB** — no DB/server used (T5 needs none). `revoke → bind`/`revoke → transfer` throwing `"revoked"`, the ordering guarantee, and fail-closed on a read error are runtime-unproven here; they are §4.2 **S5**/**S7**, owned by T5/T6.
+
+**UNVERIFIED: caller error mapping** — the `E10` mappers are not edited or exercised; surfacing `"revoked"` in those UIs is untested.
+
+READY FOR VERIFICATION - T5
+
