@@ -1043,3 +1043,122 @@ $ grep -n 'NEXT TASK' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
 
 **Next action:** the junior's — task **T16**, one task, then stop.
 
+
+### 2026-09-29 — JUNIOR — **T16 implemented** (close the purchase gate: `selfhosted_os` is resolvable, never sellable). No other task started.
+
+**Scope:** exactly two source files — `app/api/billing/checkout/route.ts`, `app/api/billing/submit/route.ts` — per junior §2 T16 / senior §3.11 D11 + E11. Nothing else touched. `lib/exe-license-validator.ts` **untouched** (canary below). No task T3+ started.
+
+**What changed (`git --no-pager diff --stat` → 2 files changed, 15 insertions(+), 2 deletions(-)):**
+
+- `app/api/billing/checkout/route.ts:6` — `ALL_PRODUCTS` added to the existing `@/lib/products` import.
+- `app/api/billing/checkout/route.ts:39-48` — lookup guard is now `if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id))`, returning the **pre-existing, byte-identical** `{"error":"Unknown product"}` 400.
+- `app/api/billing/submit/route.ts:11` — same import addition.
+- `app/api/billing/submit/route.ts:62-68` — same guard predicate, same 400.
+
+Only the import + predicate changed. No new response shape/status, no `purchasable` flag, no second registry, no client check. `ALL_PRODUCTS` / `BY_ID` / `SELF_HOSTED_OS` definitions untouched; nothing removed from `BY_ID`.
+
+```
+$ cd /Users/mikeolab/sw-selfhost && git --no-pager diff --stat
+ app/api/billing/checkout/route.ts | 10 +++++++++-
+ app/api/billing/submit/route.ts   |  7 ++++++-
+ 2 files changed, 15 insertions(+), 2 deletions(-)
+
+$ grep -n 'ALL_PRODUCTS' app/api/billing/checkout/route.ts app/api/billing/submit/route.ts
+app/api/billing/checkout/route.ts:6:  ALL_PRODUCTS,
+app/api/billing/checkout/route.ts:39:  // TASK_145 T16 (D11/E11) — the purchase gate is ALL_PRODUCTS membership, not
+app/api/billing/checkout/route.ts:45:  // ALL_PRODUCTS, so this is a strict no-op there.
+app/api/billing/checkout/route.ts:47:  if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id)) {
+app/api/billing/submit/route.ts:11:  ALL_PRODUCTS,
+app/api/billing/submit/route.ts:63:  // ALL_PRODUCTS member is sellable; getProduct() resolving an admin-only
+app/api/billing/submit/route.ts:67:  if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id)) {
+```
+
+```
+$ npx tsc --noEmit; echo TSC_EXIT=$?
+TSC_EXIT=0
+
+$ (CI=1 npx next build > /tmp/t16_build.log 2>&1; echo BUILD_EXIT=$? >> /tmp/t16_build.log); tail -5 /tmp/t16_build.log
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+**Runtime proof (both directions), on `spaceworker_t145`** — server: `CI=1 DATABASE_URL="$S" npx next start -p 3100` where `S` = the `.env` `DATABASE_URL` with its db name replaced by `spaceworker_t145` (127.0.0.1, never the VPS). Schema was already in sync (`prisma db push --skip-generate` → *"The database is already in sync with the Prisma schema."*). The scratch DB's `AdminSetting.btcWallet` was NULL, so I set it to `testwallet_T16` (data in the **scratch verification DB only** — no code change) so the sellable-product GET could reach its real 200 instead of a 400 "Wallet not configured".
+
+```
+=== Payment count BEFORE ===
+0
+
+=== 1) GET checkout selfhosted_os ===
+{"error":"Unknown product"}
+HTTP_STATUS=400
+
+=== 2) POST submit selfhosted_os ===
+{"error":"Unknown product"}
+HTTP_STATUS=400
+
+=== 3) GET checkout extractor_exe ===
+{"product":"extractor_exe","kind":"btc","toAddress":"testwallet_T16","amountUsd":50,"durationDays":180,"note":"Send exact amount ±5% to the address shown. Submit your transaction hash below."}
+HTTP_STATUS=200
+
+=== 4) POST submit extractor_exe ===
+{"paymentId":"cmumq9lqc00039k0x2d35cm4w","status":"pending","note":"Awaiting manual review"}
+HTTP_STATUS=200
+
+=== Payment rows AFTER ===
+cmumq9lqc00039k0x2d35cm4w|extractor_exe|50|pending
+=== Payment count AFTER ===
+1
+```
+
+```
+=== byte-identical proof: non-purchasable vs typo id ===
+-- GET selfhosted_os:
+{"error":"Unknown product"}
+HTTP_STATUS=400
+-- GET typo:
+{"error":"Unknown product"}
+HTTP_STATUS=400
+-- POST submit selfhosted_os:
+{"error":"Unknown product"}
+HTTP_STATUS=400
+-- POST submit typo:
+{"error":"Unknown product"}
+HTTP_STATUS=400
+=== no-row proof for rejected POST (unique email) ===
+-- users before:
+0
+rejected POST HTTP_STATUS=400
+-- users after:
+0
+-- payment count after:
+1
+```
+
+Byte-for-byte the same body and the same 400 as a typo'd id, in both routes; the rejected POST created **no** `User` and **no** `Payment` row, while `extractor_exe` still creates its row exactly as before.
+
+**Hosted-safe (strict no-op on `main`), static proof:**
+```
+$ cd /Users/mikeolab/spaceworker && git show main:lib/products.ts | grep -n 'BY_ID\|ALL_PRODUCTS'
+185:export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
+187:const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
+```
+On `main` `BY_ID` is built **only** from `ALL_PRODUCTS`, and `main` has no `SELF_HOSTED_OS`; therefore `getProduct(x) !== null` ⟹ `x ∈ ALL_PRODUCTS` and the new clause can never reject anything there.
+
+**Regression canaries (STEP 4):**
+```
+$ cd /Users/mikeolab/spaceworker && git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty)
+$ npx tsc --noEmit; echo LIVE_TSC_EXIT=$?
+LIVE_TSC_EXIT=0
+```
+
+Hygiene: the test server on :3100 was killed and `lsof -iTCP:3100 -sTCP:LISTEN` → `PORT_3100_FREE_AFTER_KILL`. No `npx prisma generate`, no `prisma migrate dev`, no `migrate resolve`, no VPS connection.
+
+**UNVERIFIED: the `main` no-op was not executed at runtime** — proven statically from `git show main:lib/products.ts:185-190`; the live app was only typechecked, not run.
+**UNVERIFIED: J1/J2 and J4–J7/J9–J12** — belong to later tasks (T3+, T6/T7, T11/T12/T13), untouched here; T16's own check is the four directions above plus the typo comparison, all pasted.
+**UNVERIFIED: no unit test added** — T16's acceptance text specifies static greps + live HTTP directions, not a test file; I did not invent one.
+
+READY FOR VERIFICATION - T16
+

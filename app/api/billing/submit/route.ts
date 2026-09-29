@@ -8,6 +8,7 @@ import { findOrCreateUser } from "@/lib/find-or-create-user";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import {
   getProduct,
+  ALL_PRODUCTS,
   WEB_SUBSCRIPTION,
   DEFAULT_EXE_DURATION_DAYS,
   isValidExeDurationDays,
@@ -58,8 +59,12 @@ export async function POST(req: Request) {
   const paymentKind = kind as Kind;
 
   const productId = typeof body.product === "string" && body.product ? body.product : WEB_SUBSCRIPTION.id;
+  // TASK_145 T16 (D11/E11) — see app/api/billing/checkout/route.ts: only an
+  // ALL_PRODUCTS member is sellable; getProduct() resolving an admin-only
+  // product (SELF_HOSTED_OS) must not open a $0 Payment row. Identical
+  // "Unknown product" 400 as an unknown id; strict no-op on main.
   const product = getProduct(productId);
-  if (!product) {
+  if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id)) {
     return NextResponse.json({ error: "Unknown product" }, { status: 400 });
   }
 

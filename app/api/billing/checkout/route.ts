@@ -3,6 +3,7 @@ import { getSession } from "@/lib/session";
 import { getAdminSettings } from "@/lib/admin-settings";
 import {
   getProduct,
+  ALL_PRODUCTS,
   WEB_SUBSCRIPTION,
   DEFAULT_EXE_DURATION_DAYS,
   isValidExeDurationDays,
@@ -35,8 +36,15 @@ export async function GET(req: NextRequest) {
   }
 
   const productId = req.nextUrl.searchParams.get("product") ?? WEB_SUBSCRIPTION.id;
+  // TASK_145 T16 (D11/E11) — the purchase gate is ALL_PRODUCTS membership, not
+  // getProduct() resolution. getProduct() also resolves admin-only products
+  // (e.g. SELF_HOSTED_OS) so bind/transfer work, but those must never be
+  // buyable from a client-supplied id. A non-sellable id is rejected with the
+  // identical "Unknown product" 400 an unknown id gets, so the response never
+  // confirms the product exists. On main every resolvable product is already in
+  // ALL_PRODUCTS, so this is a strict no-op there.
   const product = getProduct(productId);
-  if (!product) {
+  if (!product || !ALL_PRODUCTS.some((p) => p.id === product.id)) {
     return NextResponse.json({ error: "Unknown product" }, { status: 400 });
   }
 
