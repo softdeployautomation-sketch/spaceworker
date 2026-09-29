@@ -4,6 +4,8 @@ import { getSession } from "@/lib/session";
 import { transporterForMailbox } from "@/lib/mailer-send";
 import { decryptSecretOrThrow } from "@/lib/mailbox-crypto";
 import { getExitNode } from "@/lib/exit-nodes";
+import type { SigningCoverage } from "@/lib/sending-domains";
+import { signingCoverageFor } from "@/lib/sending-domain-coverage";
 import {
   connectionCannotBeEstablished,
   connectionFailureAsError,
@@ -135,6 +137,24 @@ export async function POST(
     data: { lastTestedAt: new Date(), lastTestOk: ok },
   });
 
+  // TASK_140 — the SMTP conversation above can only prove the SERVER will accept
+  // the message. Whether the mail carries a DKIM signature is decided elsewhere
+  // entirely (which key is installed for the From domain), and a mailbox sending
+  // From a domain with nothing installed relays flawlessly and arrives
+  // unauthenticated. Silent by construction, so it has to be said out loud.
+  // Fail-soft: a lookup problem must never turn a working mailbox into a failure.
+  let signing: SigningCoverage | null = null;
+  if (ok) {
+    try {
+      signing = await signingCoverageFor({
+        userId: session.userId,
+        fromAddresses: mailbox.fromAddresses.length > 0 ? mailbox.fromAddresses : [mailbox.username],
+      });
+    } catch {
+      signing = null;
+    }
+  }
+
   return NextResponse.json({
     ok,
     ...(error ? { error } : {}),
@@ -167,5 +187,6 @@ export async function POST(
           },
         }
       : {}),
+    ...(signing ? { signing } : {}),
   });
 }

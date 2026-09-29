@@ -662,6 +662,32 @@ Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twic
   spam. `upsertTableLine`/`removeTableLine` in `lib/sending-domains.ts` therefore
   take the EXISTING file contents and merge. `npm run test:domains` pins it: mutate
   `upsertTableLine` to overwrite (return only the new line) and the merge test fails.
+- **An unsigned send is INVISIBLE: 250 accepted, no
+  `DKIM-Signature`, spam-folder on arrival.** Proven live (TASK_140) — the same
+  relay accepted two messages identically, one signed `d=…ca.lu`, one with **no
+  signature header at all**, and both returned `250 2.0.0 Ok`. Every check the app
+  had (server talks, server takes the envelope) passes in both cases. So the rule
+  is: *"the server accepted it" is not "the mail will be delivered"* — always say
+  whether it will be SIGNED. `evaluateSigningCoverage()` in `lib/sending-domains.ts`
+  does that, and it keys on **`installedOnRelay`** (the key on disk is what signs),
+  never on `status`: a domain whose DNS is not verified yet is still signed, and
+  conflating the two sends users to redo work they already did.
+- **A VM/RDP/desktop session cannot fix authentication — only DNS can.** DKIM is a
+  DNS lookup keyed on the `d=` domain; SPF is a DNS IP list. The verifier never
+  learns where the message was composed, and a session on the same host has the
+  same egress IP, so nothing about the session changes either axis. If someone
+  proposes "run it from a VM/RDP instead", this is the answer.
+- **The per-customer DNS record can be eliminated by moving it to OUR domain.**
+  You cannot authenticate a domain you do not control, but you do not have to use
+  the customer's domain. `PLATFORM_SENDING_DOMAIN` (TASK_140) points at a domain we
+  own and authenticate once; then **one** DNS edit serves **all** customers, which
+  is exactly the shared-sending-domain model at Resend/SendGrid. Two routes exist
+  here and both are already half-built: our own relay (add the relay IP to our SPF
+  + publish our `sw._domainkey` key) and Resend (we already send from
+  `spaceworker@instaweb.top` with `resend._domainkey.instaweb.top` published).
+  **When editing that SPF, ADD the `ip4:` term — never replace the record**: the
+  existing `include:` carries the platform's own signup/verification mail.
+
 
 
 ## 6b. Post-migration drift check — run this after EVERY `migrate deploy`

@@ -5,6 +5,8 @@ import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
 import { prisma } from "@/lib/prisma";
+import type { SigningCoverage } from "@/lib/sending-domains";
+import { signingCoverageFor } from "@/lib/sending-domain-coverage";
 import { canUseExitNodes } from "@/lib/premium";
 import {
   connectionCannotBeEstablished,
@@ -195,11 +197,29 @@ export async function POST(req: Request) {
       });
     }
 
+    // TASK_140 — everything above proves the SERVER will take the message. This
+    // answers the other half, which no SMTP conversation can: will the mail carry
+    // a DKIM signature once it does? A mailbox configured to send From a domain
+    // with no key installed relays perfectly and arrives unauthenticated, and
+    // returning ok:true with no mention of it is exactly how that stays
+    // invisible. Fail-soft on purpose: a lookup problem must never turn a
+    // working mailbox into a failed test.
+    let signing: SigningCoverage | null = null;
+    try {
+      signing = await signingCoverageFor({
+        userId: session.userId,
+        fromAddresses: fromAddress !== "" ? [fromAddress] : [username],
+      });
+    } catch {
+      signing = null;
+    }
+
     return NextResponse.json({
       ok: true,
       ...(warning ? { warning } : {}),
       capabilities: summarizeCapabilities(capabilities),
       envelope: summarizeEnvelope(envelope),
+      ...(signing ? { signing } : {}),
     });
   } catch (e) {
     return NextResponse.json({

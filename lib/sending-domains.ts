@@ -125,6 +125,150 @@ export function relayAddresses(): { ipv4: string; ipv6: string } {
   };
 }
 
+/**
+ * TASK_140 — the platform's OWN authenticated sending domain.
+ *
+ * WHY THIS EXISTS: a customer's From domain can only be authenticated by a
+ * record in that domain's DNS, so DKIM for THEIR domain is impossible for a
+ * customer who cannot edit their DNS — no sending setup on our side changes
+ * that. The one thing that removes the requirement completely is a domain WE
+ * own and authenticate ourselves: once the operator publishes SPF/DKIM/DMARC
+ * for their own domain (a ONE-TIME, platform-wide edit — not one edit per
+ * customer), any customer can send as that domain and be fully authenticated
+ * with zero DNS work of their own. That is exactly how a shared sending domain
+ * at Resend/SendGrid behaves, and it is the only answer to "our customers
+ * cannot add records" that is not simply "send unauthenticated".
+ *
+ * OPTIONAL and fail-soft: blank means no platform domain is offered and
+ * previous behaviour is unchanged. Never required() — see lib/env.ts.
+ */
+export function platformSendingDomain(): string | null {
+  const raw = (process.env.PLATFORM_SENDING_DOMAIN ?? "").trim();
+  if (raw === "") return null;
+  const domain = normalizeDomain(raw);
+  return isValidSendingDomain(domain) ? domain : null;
+}
+
+/**
+ * The domain part of an address, lowercased, or "" when it isn't an address.
+ * Uses the LAST "@" so a quoted local part still yields the real domain; a
+ * missing or empty domain returns "" rather than a partial.
+ */
+export function domainOfAddress(address: string): string {
+  const at = address.lastIndexOf("@");
+  if (at < 0 || at === address.length - 1) return "";
+  return normalizeDomain(address.slice(at + 1));
+}
+
+export type SigningCoverageStatus = "verified" | "unverified" | "unsigned";
+
+export interface SigningCoverageEntry {
+  domain: string;
+  status: SigningCoverageStatus;
+  detail: string;
+}
+
+export interface SigningCoverage {
+  entries: SigningCoverageEntry[];
+  /** From domains whose mail will leave the relay with NO DKIM signature. */
+  unsigned: string[];
+  /** True when any From domain will be sent unsigned. */
+  hasUnsigned: boolean;
+  /** The platform domain that would remove the DNS requirement, when configured. */
+  platformDomain: string | null;
+  /** One user-facing sentence, or null when every From domain is signed. */
+  warning: string | null;
+}
+
+/**
+ * The row fields coverage needs — structural on purpose so the decision can be
+ * unit-tested without a database, exactly like the relay table writers above.
+ */
+export interface SigningDomainRow {
+  domain: string;
+  status: string;
+  installedOnRelay: boolean;
+}
+/**
+ * PURE. Which of these From addresses will actually carry a DKIM signature, and
+ * which will be relayed bare?
+ *
+ * Keyed on `installedOnRelay`, NOT `status`: what the relay does is SIGN with a
+ * key that is on disk. A domain whose DNS is not verified yet is still signed
+ * (the signature just won't validate), which is a different failure with a
+ * different fix — collapsing the two would tell a user to go and publish a
+ * record they have already published.
+ *
+ * The distinction matters because an unsigned send is INVISIBLE: it succeeds,
+ * returns 250, and is then spam-foldered by the receiver. That silence is how
+ * this exact class of bug survived a whole incident.
+ */
+export function evaluateSigningCoverage(opts: {
+  fromAddresses: string[];
+  rows: SigningDomainRow[];
+  platformDomain?: string | null;
+}): SigningCoverage {
+  const platformDomain = opts.platformDomain ? normalizeDomain(opts.platformDomain) : null;
+
+  // Case-insensitive: DNS domains are. A row stored as "Acme.com" must still
+  // cover a From of "x@acme.com", or we would warn about a domain that IS signed.
+  const byDomain = new Map<string, SigningDomainRow>();
+  for (const row of opts.rows) byDomain.set(normalizeDomain(row.domain), row);
+
+  const entries: SigningCoverageEntry[] = [];
+  const seen = new Set<string>();
+  for (const address of opts.fromAddresses) {
+    const domain = domainOfAddress(address);
+    if (domain === "" || seen.has(domain)) continue;
+    seen.add(domain);
+
+    const row = byDomain.get(domain);
+    if (!row || !row.installedOnRelay) {
+      entries.push({
+        domain,
+        status: "unsigned",
+        detail:
+          `Mail from @${domain} leaves the relay with NO DKIM signature: nothing is ` +
+          `installed for that domain, so the relay has no key to sign with`,
+      });
+    } else if (row.status !== "verified") {
+      entries.push({
+        domain,
+        status: "unverified",
+        detail:
+          `Mail from @${domain} IS signed, but that domain's DKIM record is not ` +
+          `verified yet, so the signature will not validate`,
+      });
+    } else {
+      entries.push({
+        domain,
+        status: "verified",
+        detail: `Mail from @${domain} is signed and its published DKIM key matches`,
+      });
+    }
+  }
+
+  const unsigned = entries.filter((e) => e.status === "unsigned").map((e) => e.domain);
+  const hasUnsigned = unsigned.length > 0;
+
+  let warning: string | null = null;
+  if (hasUnsigned) {
+    const list = unsigned.map((d) => `@${d}`).join(", ");
+    const remedy = platformDomain
+      ? `Publish this domain's DKIM record on the Sending domains tab, or — if you ` +
+        `cannot edit that domain's DNS — send as @${platformDomain}, which this ` +
+        `platform has already authenticated and needs no record from you.`
+      : `Publish this domain's DKIM record on the Sending domains tab. DKIM requires ` +
+        `a public key in the From domain's own DNS, and no sending setup on our side ` +
+        `can stand in for it.`;
+    warning = `Sending as ${list} will be unauthenticated (no DKIM signature). ${remedy}`;
+  }
+
+  return { entries, unsigned, hasUnsigned, platformDomain, warning };
+}
+
+
+
 export type SendingDnsPurpose = "dkim" | "spf" | "dmarc";
 
 export interface SendingDnsRecord {

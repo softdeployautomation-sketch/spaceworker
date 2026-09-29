@@ -149,7 +149,50 @@ type TestConnResult = {
     refusedAt: "MAIL FROM" | "RCPT TO" | null;
     reply: string | null;
   };
+  /**
+   * TASK_140 — will the mail actually be DKIM-SIGNED once it leaves? The SMTP
+   * exchange above cannot answer that: an unsigned message is accepted with 250
+   * and then spam-foldered by the receiver, so a mailbox can pass every check
+   * here and still be useless. Mirrors lib/sending-domains SigningCoverage.
+   */
+  signing?: {
+    entries: { domain: string; status: "verified" | "unverified" | "unsigned"; detail: string }[];
+    unsigned: string[];
+    hasUnsigned: boolean;
+    platformDomain: string | null;
+    warning: string | null;
+  };
 };
+/**
+ * TASK_140 — "will this mail actually be SIGNED?"
+ *
+ * Rendered from both test surfaces (the stored-mailbox Test and the pre-save
+ * Test) so a mailbox can never report a clean green tick while its mail is being
+ * relayed unauthenticated. That combination — server accepts with 250, receiver
+ * spam-folders it — is the one send failure that looks exactly like success, and
+ * it is what made a live campaign show "sent" and deliver nothing.
+ *
+ * Deliberately shows the POSITIVE case too: "signed and its published key
+ * matches" is the whole chain working, and without saying so there is no way to
+ * tell it apart from "we never checked".
+ */
+function SigningNotice({ signing }: { signing?: TestConnResult["signing"] }) {
+  if (!signing || signing.entries.length === 0) return null;
+  if (signing.warning) {
+    return (
+      <p className="mt-1 rounded-lg border border-red-300 bg-red-50 p-2 text-xs leading-snug text-red-800 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300">
+        {signing.warning}
+      </p>
+    );
+  }
+  return (
+    <p className="mt-1 text-xs leading-snug text-emerald-600 dark:text-emerald-400">
+      ✓ DKIM — {signing.entries.map((e) => e.detail).join("; ")}.
+    </p>
+  );
+}
+
+
 
 type MailboxForm = {
   label: string;
@@ -372,6 +415,10 @@ export default function MailboxesPanel() {
         warning: typeof data.warning === "string" ? data.warning : undefined,
         capabilities: data.capabilities,
         envelope: data.envelope,
+        // TASK_140 — the pre-save test is exactly where a user should learn that
+        // the From domain they just typed cannot be signed, BEFORE they save a
+        // mailbox and run a campaign through it.
+        signing: data.signing,
       });
     } catch (e) {
       setTestConnResult({
@@ -409,6 +456,10 @@ export default function MailboxesPanel() {
           warning: typeof data.warning === "string" ? data.warning : undefined,
           capabilities: data.capabilities,
           envelope: data.envelope,
+          // TASK_140 — carried through only when ok, which is when the route
+          // computes it: a failed test already has an error worth reading, and
+          // two warnings at once is noise.
+          signing: data.signing,
         },
       }));
       setMailboxes((prev) =>
@@ -628,6 +679,7 @@ export default function MailboxesPanel() {
                           {test.warning}
                         </p>
                       )}
+                      <SigningNotice signing={test.signing} />
                       {test.capabilities?.reachable && (
                         <p className="mt-1 break-words text-xs leading-snug text-zinc-500 dark:text-zinc-400">
                           {test.capabilities.banner && (
@@ -1101,6 +1153,7 @@ export default function MailboxesPanel() {
                       )}
                     </p>
                   )}
+                  <SigningNotice signing={testConnResult.signing} />
                 </div>
               )}
             </div>

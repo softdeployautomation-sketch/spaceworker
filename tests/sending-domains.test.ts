@@ -243,3 +243,143 @@ test("the printed DNS records name the right hosts and carry the copyable values
   for (const r of records) assert.strictEqual(r.type, "TXT");
 });
 
+
+// ---------------------------------------------------------------------------
+// TASK_140 — signing coverage: "will this mail actually carry a DKIM signature?"
+//
+// WHY THESE EXIST: an unsigned send is INVISIBLE. It is accepted with 250 and
+// then spam-foldered by the receiver, so every check the app already had (does
+// the server talk, does the server take the envelope) passes while the mail is
+// still useless. The only defence is saying it out loud, and saying it out loud
+// correctly depends on two decisions that are easy to get subtly wrong:
+//
+//   1. Coverage follows `installedOnRelay`, NOT `status`. What the relay does is
+//      SIGN with a key that is on disk. A domain whose DNS has not been verified
+//      yet is still signed — telling that user to "publish your DKIM record" is
+//      telling them to redo work they have already done, so the two states must
+//      never collapse into one warning.
+//   2. Domain matching is case-insensitive, because DNS is. A row stored as
+//      "Acme.com" must cover a From of "x@acme.com", or we warn about a domain
+//      that IS signed and send the user on a wild goose chase.
+// ---------------------------------------------------------------------------
+
+test("domainOfAddress extracts the domain, and gives up honestly otherwise", () => {
+  assert.strictEqual(sd.domainOfAddress("fleming@watsonandrade9382.ca.lu"), "watsonandrade9382.ca.lu");
+  // Case and a trailing root dot are both normalisations, not separate domains.
+  assert.strictEqual(sd.domainOfAddress("A@Example.COM."), "example.com");
+  // Last "@" wins, so an @ inside a quoted local part cannot truncate the domain.
+  assert.strictEqual(sd.domainOfAddress('"a@b"@acme.com'), "acme.com");
+  // No domain => "", never a partial guess that would produce a bogus warning.
+  assert.strictEqual(sd.domainOfAddress("not-an-address"), "");
+  assert.strictEqual(sd.domainOfAddress("user@"), "");
+});
+
+test("an uninstalled From domain is reported as UNSIGNED, with a warning", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["fleming@watsonandrade9382.ca.lu"],
+    rows: [],
+  });
+  assert.strictEqual(c.hasUnsigned, true);
+  assert.deepStrictEqual(c.unsigned, ["watsonandrade9382.ca.lu"]);
+  assert.strictEqual(c.entries[0].status, "unsigned");
+  assert.ok(c.warning && c.warning.includes("@watsonandrade9382.ca.lu"), "warning names the domain");
+});
+
+test("installed AND verified reports verified with no warning (the whole chain works)", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "verified", installedOnRelay: true }],
+  });
+  assert.strictEqual(c.hasUnsigned, false);
+  assert.strictEqual(c.warning, null);
+  assert.strictEqual(c.entries[0].status, "verified");
+});
+
+test("installed but DNS-unverified is 'unverified', NOT 'unsigned' (different fix)", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "pending", installedOnRelay: true }],
+  });
+  // It WILL be signed, so it must not be called unsigned...
+  assert.strictEqual(c.hasUnsigned, false);
+  assert.deepStrictEqual(c.unsigned, []);
+  assert.strictEqual(c.warning, null);
+  // ...but it must not claim authentication will pass either.
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.match(c.entries[0].detail, /not\s+verified/);
+});
+
+
+test("status 'verified' WITHOUT installedOnRelay is still UNSIGNED (the key is what signs)", () => {
+  // This is the mutation target: keying coverage on `status` instead of
+  // `installedOnRelay` makes this case report a green tick for mail the relay
+  // has no key to sign with — the exact false-positive this feature exists to
+  // prevent.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "verified", installedOnRelay: false }],
+  });
+  assert.strictEqual(c.hasUnsigned, true);
+  assert.strictEqual(c.entries[0].status, "unsigned");
+  assert.ok(c.warning, "must warn: nothing on disk can sign this");
+});
+
+test("domain matching is case-insensitive in both directions", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["X@ACME.COM"],
+    rows: [{ domain: "Acme.Com", status: "verified", installedOnRelay: true }],
+  });
+  assert.strictEqual(c.hasUnsigned, false);
+  assert.strictEqual(c.entries[0].status, "verified");
+});
+
+test("one address per domain: rotation lists do not repeat the same verdict", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["a@acme.com", "b@acme.com", "c@acme.com"],
+    rows: [{ domain: "acme.com", status: "verified", installedOnRelay: true }],
+  });
+  assert.strictEqual(c.entries.length, 1);
+});
+
+test("a configured platform domain is offered as the no-DNS alternative", () => {
+  const withoutPlatform = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [],
+  });
+  // Without one, the only honest advice is to publish the record.
+  assert.match(withoutPlatform.warning ?? "", /DKIM requires a public key/);
+  assert.ok(!(withoutPlatform.warning ?? "").includes("send as @"));
+
+  const withPlatform = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [],
+    platformDomain: "spaceworker.top",
+  });
+  assert.strictEqual(withPlatform.platformDomain, "spaceworker.top");
+  // With one, the user who cannot edit DNS has a real way forward.
+  assert.match(withPlatform.warning ?? "", /send as @spaceworker\.top/);
+});
+
+test("platformSendingDomain reads env, and rejects anything that is not a domain", () => {
+  const saved = process.env.PLATFORM_SENDING_DOMAIN;
+  try {
+    delete process.env.PLATFORM_SENDING_DOMAIN;
+    assert.strictEqual(sd.platformSendingDomain(), null, "unset => no platform domain");
+
+    process.env.PLATFORM_SENDING_DOMAIN = "   ";
+    assert.strictEqual(sd.platformSendingDomain(), null, "blank => no platform domain");
+
+    process.env.PLATFORM_SENDING_DOMAIN = "spaceworker.top";
+    assert.strictEqual(sd.platformSendingDomain(), "spaceworker.top");
+    process.env.PLATFORM_SENDING_DOMAIN = "SpaceWorker.TOP.";
+    assert.strictEqual(sd.platformSendingDomain(), "spaceworker.top", "normalised");
+
+    // A bare label must never be treated as a sending domain — it would be
+    // offered to users as an authenticated From that cannot exist.
+    process.env.PLATFORM_SENDING_DOMAIN = "localhost";
+    assert.strictEqual(sd.platformSendingDomain(), null);
+  } finally {
+    if (saved === undefined) delete process.env.PLATFORM_SENDING_DOMAIN;
+    else process.env.PLATFORM_SENDING_DOMAIN = saved;
+  }
+});
