@@ -6,13 +6,15 @@
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T4` — the revocation seam: a new `lib/exe-license-revocation.ts` (full spec in §2).** This is the **first substantive task** of the phase and the foundation every later task builds on (`T5`, `T6`, `T9`, `T11`, `T12`, `T13` all import it). Do that one task, run its acceptance check, log it, stop. **`T5` (enforce at bind/transfer) follows immediately after.**
+**▶ NEXT TASK: `T5` — enforcement: block revoked licences at bind and transfer (`lib/exe-license-bind.ts`, full spec in §2).** `T4` shipped the seam (`lib/exe-license-revocation.ts`); **`T5` is the first task that makes revocation actually bite**, by calling it from `bindExeLicenseToMachine` and `transferExeLicenseToMachine`. Do that one task, run its acceptance check, log it, stop. **`T6` (admin API) follows immediately after.**
 
-**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `7b570f6`) · **`T4`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+> ⚠️ **`T5` edits `lib/exe-license-bind.ts`, which `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts` and `app/dashboard/settings/licenses-section.tsx` are **shared**, not frozen — `T5`, `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned `T5`, a diff in `lib/exe-license-bind.ts` is **correct and expected** — do not revert it and do not log an objection about it.
+
+**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `d69b0da`) · **`T5`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
-## 1.5 REVISION 6 (2026-09-29) — `T17` is CLOSED. `T4` is next. **Read this before §2.**
+## 1.5 ~~REVISION 6 (2026-09-29) — `T17` is CLOSED. `T4` is next.~~ **⚠️ SUPERSEDED BY §1.6 — `T4` is now CLOSED and `T5` is next. Revision banners are dated records; the `▶ NEXT TASK` pointer at `:9` is authoritative. **Read this before §2.**
 
 **What just happened.** `T17` landed and the senior verified it in pass 7 — `tests/exe-license-lifetime.test.ts` (9 subtests, `# pass 9 / # fail 0`) now pins the lifetime sentinel's contract, replacing the deleted `/tmp` harness. The senior proved the test **can fail** by mutating `isLifetimeExpiry`'s threshold to `>= 3000` in place: subtest 7 goes red, `# pass 8 / # fail 1` — then restored and proved the restore three ways. So `S2`/`S3` are now backed by evidence the next agent can re-run. **You do not need to redo any of it.**
 
@@ -75,6 +77,34 @@ If that config ever reads `refs/heads/main`, **stop** and re-run `git branch --s
 cd /Users/mikeolab/sw-selfhost
 npx tsc --noEmit     # baseline on the untouched branch: EXIT=0 (senior track §7)
 ```
+
+---
+
+## 1.6 REVISION 7 (2026-09-29) — `T4` is CLOSED. `T5` is next. **Read this before §2.**
+
+**`T4` ACCEPTED** (`d69b0da`): `lib/exe-license-revocation.ts` — new file, **`+109/−0`**, exactly 3 functions + 1 exported error class, matching D2 line-by-line. Re-verified by the senior, not taken on trust. Nothing imports it yet, so the hosted app is provably unaffected.
+
+**1. `⚠️ THE MOST IMPORTANT CORRECTION: "frozen file" never meant what `V17` said.** `V17` declared *five* files byte-identical and said the other four must "stay that way". **That was wrong, and it directly blocked your next task.** `T5` — the task you are about to do — **must edit `lib/exe-license-bind.ts`**, which `V17` called frozen. A junior following `V17` and the reject list would have hit a straight contradiction and either reverted its own correct work, logged a false objection, or skipped the enforcement. Corrected:
+
+| File | Status | Changed by |
+|---|---|---|
+| `lib/exe-license-validator.ts` | **FROZEN — never edit** | nothing, ever |
+| `lib/license-service.ts` | **FROZEN — never edit** | nothing |
+| `lib/exe-license.ts` | shared, **additive only** (`13 0`) | T3 (done) |
+| `lib/exe-license-bind.ts` | **shared — expected to change** | **T5**, then T12 |
+| `app/dashboard/settings/licenses-section.tsx` | **shared — expected to change** | T8 (which legitimately **deletes** a line) |
+
+**The canary is not the same for every file.** Only the validator is "diff must be empty". For a file your task edits, the canary is *"the diff is exactly what my task specifies"*; for any file you did **not** touch, it is still *"empty"*. Full table: senior §2 `V17` and §3.14.1.
+
+**2. Do not hardcode a per-file canary.** An earlier hand-off prompt named `lib/exe-license.ts` → `13 0`, which is right for `T4` and **wrong for `T5`**. Take the expected numbers from the `V17` table, not from a prompt's example.
+
+**3. `unrevokeExeLicense` has no ownership check — that is intentional, and it is a trap to respect.** `revokeExeLicense` verifies `userId` internally; `unrevokeExeLicense(exeLicenseId)` does not, because `E5` makes revoke **and** unrevoke admin-only siblings of `unbind` in the admin route, which carries the gate. There is **no user-facing cancel or restore** in this phase (`licenses-section.tsx` stays read-only). **Never wire `unrevokeExeLicense` to a non-admin surface** — if it ever is, it must gain an ownership parameter first, or any user could restore their own cancelled licence.
+
+**4. `D2` said "exactly three exports" while requiring a typed error class.** The correct count is **4** (3 functions + `LicenseRevocationError`), because `T5`/`T6` must `catch` it — which is why the T4 check says `3–4`. D2's prose is corrected; **do not un-export the class.**
+
+**5. New standing rule (senior §3.14.1):** before this file or the senior track declares any file frozen, it must check the work order for that name and state which tasks legitimately change it.
+
+**`▶ NEXT TASK: T5`** — enforcement at bind/transfer. `T4`'s seam exists; `T5` is what makes revocation actually bite.
 
 ---
 
@@ -244,7 +274,7 @@ node -e "const d=new Date('2999-12-31T23:59:59.000000'+'Z');if(d.getUTCFullYear(
 npx tsc --noEmit
 ```
 
-### T4 — The revocation seam module (new file)
+### T4 — The revocation seam module (new file) — ✅ **CLOSED 2026-09-29** (`d69b0da`; 3 functions + 1 exported error class, `+109/−0`)
 
 **File:** `lib/exe-license-revocation.ts` (new)
 
@@ -1919,4 +1949,48 @@ TSC_EXIT=0
 **UNVERIFIED: the `notifyAdmin` message text** — no test covers it; `notifyAdmin` is a no-op without Telegram env (`lib/telegram.ts:28-35`).
 
 READY FOR VERIFICATION - T4
+
+
+## 2026-09-29 — SENIOR PASS 8: `T4` accepted; `V17`'s frozen-file claim corrected
+
+**`T4` is CLOSED — verified by the senior, not accepted on trust** (commit `d69b0da`; `lib/exe-license-revocation.ts`, `+109/−0`, 3 functions + 1 exported error class; `tsc`/build/lint/tests all green; validator canary empty; live app untouched).
+
+**`▶ NEXT TASK` moved to `T5`.**
+
+### What changed in this file
+
+- **`▶ NEXT TASK` → `T5`** (`:9`) + a ⚠️ warning block (`:11`).
+- **Status line** (`:13`) — `T4` added to the closed list, baseline HEAD → `d69b0da`.
+- **§1.6 REVISION 7** (new, `:83-107`).
+- **`T4` heading marked ✅ CLOSED** (`:277`).
+- This log entry.
+
+### ⚠️ The one thing to carry into `T5`
+
+`V17` used to say five files were byte-identical and that four of them "must stay that way". **That was wrong, and it directly contradicted your next task:** `T5` **must** edit `lib/exe-license-bind.ts`, which `V17` called frozen. Had it stood, the likely outcomes were reverting correct work, logging a false objection, or skipping the guard that makes revocation real.
+
+**Corrected rule — take canaries from the `V17` table, never from a prompt's example:**
+
+| File | Canary |
+|---|---|
+| `lib/exe-license-validator.ts` | **FROZEN** — diff must be **empty**, no task ever edits it |
+| `lib/license-service.ts` | **FROZEN** — diff must be **empty**, not in the work order |
+| `lib/exe-license.ts` | additive only — must read `13 0` (T3, done) |
+| `lib/exe-license-bind.ts` | **expected to change** — T5, then T12 |
+| `app/dashboard/settings/licenses-section.tsx` | **expected to change** — T8 (legitimately deletes a line) |
+
+For a file your task edits the canary is *"the diff is exactly what my task specifies"*. For any file you did **not** touch it is still *"empty"*.
+
+### Two smaller corrections
+
+- **`unrevokeExeLicense` has no ownership check — intentional.** E5 makes revoke **and** unrevoke admin-only siblings of `unbind`, which carries the gate, and there is no user-facing cancel/restore this phase. **Never wire it to a non-admin surface** — it would need an ownership parameter first.
+- **D2 said "exactly three exports" while requiring a typed error class.** Correct count is **4**; do not un-export the class or T5's `catch` mapping breaks.
+
+### Docs-only pass
+
+Zero product code changed. `tsc` and the two test suites were re-run before this entry: **`test:license` 9/9**, **`test:setup` 29/29**, `# fail 0`.
+
+**Next: `T5`.**
+
+READY FOR VERIFICATION - T4 VERIFIED, PASS 8 COMPLETE
 
