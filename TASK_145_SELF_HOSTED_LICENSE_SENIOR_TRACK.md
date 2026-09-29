@@ -520,7 +520,7 @@ Plus the narrow unit assertions listed in the junior track §V.
 | S14 | End-to-end kill on the desktop class: revoke a bound licence, then POST `/api/exe-license/status` against a local runtime holding that activation | `licensed: false`, message *"This license has been revoked…"*, and the local activation is cleared (mirrors the W1 path). |
 | S15 | **Lifetime move control (E9)** — self-service transfer of a lifetime licence, then the same transfer via admin `action: "transfer"` | self-service throws `"lifetime_locked"` **and** the `ExeLicense` row is unchanged (`boundMachineId` / `boundLicenseKey` byte-identical, no new `ExeLicenseTransfer` row); admin transfer **succeeds**. |
 | S16 | **Self-hosted runtime check (E8)** — (a) expired/revoked stored key, (b) still-valid key with the server unreachable (W4) | (a) blocked with a clear message; (b) **NOT** blocked (fail-open preserved). Confirms W4 is closed without breaking offline use. |
-| S17 | **The purchase gate (E11 / T16)** — `GET /api/billing/checkout?kind=btc&product=selfhosted_os` and `POST /api/billing/submit {product:"selfhosted_os"}` | both return **400 `{"error":"Unknown product"}`** — byte-identical to a typo'd id — and **no `Payment`/`User` row is created**. The same calls with `product=extractor_exe` still succeed unchanged (proves the guard is a no-op for sellable products). Before T16 the first two returned 200 and persisted a $0 pending payment (W8/W9). |
+| S17 | **The purchase gate (E11 / T16)** — `GET /api/billing/checkout?kind=btc&product=selfhosted_os` and `POST /api/billing/submit {product:"selfhosted_os"}` | ✅ **VERIFIED 2026-09-29 (pass 5).** both return **400 `{"error":"Unknown product"}`** — byte-identical to a typo'd id — and **no `Payment`/`User` row is created**. The same calls with `product=extractor_exe` still succeed unchanged (proves the guard is a no-op for sellable products). Before T16 the first two returned 200 and persisted a $0 pending payment (W8/W9). |
 
 ### 4.3 Deployment note (do not deploy as part of this task)
 
@@ -570,7 +570,7 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 | Verification DB | `spaceworker_t145` — built with `prisma db push`; 50 tables incl. `ExeLicenseRevocation` (§3.10.7) |
 | Fresh-DB migration replay | **BROKEN** — P3018 `relation "ExeLicense" does not exist` at `20260914150000` (§3.10.6) → task **T14** |
 | Shared local dev DB | ~27 migrations stale (no `Device` table) + two stuck `device_tools_v2` rows — **not usable for Phase 5** (§3.10.7) |
-| Work order | **T1 → T16** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate, do next**) |
+| Work order | **T1 → T16** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate, ✅ closed**). **Closed so far: `T1`, `T2`, `T16`. Next: `T3`.** |
 | Node date check | `new Date("2999-12-31T23:59:59.000000Z")` → year 2999, valid (not `NaN`) |
 | Files byte-identical to `main` (must not drift, V17) | `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx` |
 | Task file numbers used | `TASK_145` = this phase; `TASK_146` reserved for Phase 6 |
@@ -1422,4 +1422,73 @@ Related-surface audit (D11 breadth): the only other `getProduct()` callers with 
 **UNVERIFIED: no unit test added** — T16's acceptance text names static greps + live HTTP, not a test file.
 
 READY FOR VERIFICATION - T16
+
+
+---
+
+## 2026-09-29 — SENIOR PASS 5: **T16 ✅ VERIFIED** (accepted + closed). Next task is **`T3`**.
+
+Commits: `77b2faf` (junior T16) → this pass (**docs only**: junior `:9`, `:11`, `:18`, `:385`; senior `:523`, `:573`, + this entry). **No product code changed in this pass.**
+
+**Verdict: T16 is correct as implemented. S17 passes.** I re-ran every direction myself instead of reading the pasted log. The junior's report was accurate, and its three `UNVERIFIED:` lines were honest and correctly scoped to later tasks.
+
+### 1. Claims re-checked independently
+
+| T16 claim | Senior re-ran | Result |
+|---|---|---|
+| Guard present in both routes, identical shape | read `app/api/billing/checkout/route.ts:46`, `app/api/billing/submit/route.ts:66` | `if (!product \|\| !ALL_PRODUCTS.some((p) => p.id === product.id))` in both; `ALL_PRODUCTS` added to both imports ✅ |
+| `GET checkout?product=selfhosted_os` → 400 | `curl` against a fresh `next start -p 3100` on `spaceworker_t145` | `{"error":"Unknown product"}  HTTP=400` ✅ |
+| …byte-identical to a typo'd id | `A=$(curl …selfhosted_os); B=$(curl …selfhosted_osX); [ "$A" = "$B" ]` | `IDENTICAL: {"error":"Unknown product"}` ✅ |
+| `POST submit {product:"selfhosted_os"}` → 400, no row | `curl` + `psql` before/after | 400; counts unchanged ✅ |
+| **no `selfhosted_os` row anywhere** | `SELECT count(*) … WHERE product='selfhosted_os'` on `Payment`, `ExeLicense` | `Payment 0`, `ExeLicense 0` ✅ |
+| `extractor_exe` unchanged (no-op for sellable) | `GET checkout?product=extractor_exe` | `HTTP=200`, `amountUsd:50`, `durationDays:180` ✅ |
+| types | `npx tsc --noEmit` | **TSC_EXIT=0** (zero `error TS` lines) ✅ |
+| hygiene | `lsof -nP -iTCP:3100 -sTCP:LISTEN` after kill | `PORT_3100_FREE` ✅ |
+| validator canary | `git diff --stat main self-hosted-build -- lib/exe-license-validator.ts` | **empty** ✅ |
+| live app | `/Users/mikeolab/spaceworker` (`main`) | `b7330a1`, clean, `npx tsc --noEmit` → **LIVE_TSC_EXIT=0** ✅ |
+
+### 2. The completeness question the junior did not ask — and the answer
+
+Verifying a guard means proving there is **no third door**, so I enumerated every path that can mint a licence from a client-supplied id:
+
+```
+$ grep -rn 'payment.create|payment.upsert|payment.createMany' --include='*.ts' app lib
+app/api/admin/exe-licenses/route.ts:374:    const payment = await tx.payment.create({
+app/api/billing/submit/route.ts:138:  const payment = await prisma.payment.create({
+```
+
+Exactly **two** Payment creators, both accounted for: `billing/submit` is now guarded, and `admin/exe-licenses` is admin-gated — that is *intentionally* the self-hosted issuance path (T6/T7). Every other route reaches issuance via `handleApprovedPayment(paymentId)`, i.e. from a **stored** row and never a client id; `lib/license-service.ts:111`'s `getProduct(productId)` reads `payment.product`, not a request field. `license-service.ts` is byte-identical to `main` (V17). **The chain is closed — no bypass.**
+
+### 3. Hosted-safe no-op on `main` — confirmed statically
+
+```
+$ git show main:lib/products.ts | grep -n 'BY_ID|ALL_PRODUCTS'
+185:export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
+187:const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
+```
+
+On `main`, `BY_ID` is built **only** from `ALL_PRODUCTS` and `main` has no `SELF_HOSTED_OS`; therefore `getProduct(x) !== null` ⟹ `x ∈ ALL_PRODUCTS`, and the added clause can never reject a request there. Accepted as a **static** proof: no runtime behaviour can differ, so running the live app to demonstrate a no-op is not a proportionate check.
+
+### 4. One thing to carry forward — not a defect in T16
+
+The junior set `AdminSetting.btcWallet='testwallet_T16'` in the **scratch** DB (it was NULL) so the sellable-product GET could reach 200 instead of `400 "Wallet not configured"`. That is correct and confined to `spaceworker_t145`. Recorded because a later task exercising the same route on a fresh scratch DB will hit "Wallet not configured" and **must not mistake it for a regression**.
+
+### 5. State after this pass
+
+```
+$ git --no-pager log --oneline -2
+77b2faf (HEAD -> self-hosted-build, origin/self-hosted-build) TASK_145 T16: purchase gate = ALL_PRODUCTS membership (selfhosted_os resolvable, never sellable)
+2b922df TASK_145: fix order ambiguity (T16 before T3) - install authoritative NEXT TASK pointer, docs only
+
+$ git rev-list --left-right --count HEAD...origin/self-hosted-build
+0	0
+```
+
+- **Closed: `T1`, `T2`, `T16`. Next: `T3`.** The `▶ NEXT TASK` pointer (junior §2, `:9`) has been moved this pass, as the convention requires.
+- Scratch DB `spaceworker_t145`: `Payment` = 1 row (`extractor_exe`), `ExeLicense` = 0 rows, **0** `selfhosted_os` rows of any kind.
+- `lib/exe-license-validator.ts` and the other V17 frozen files: untouched. `main` untouched, live app typechecks clean.
+- Files changed this pass: the two `TASK_145_*` markdown files only. **Zero product code.**
+
+**Next actor:** junior — task **`T3`** (lifetime constants in `lib/exe-license.ts`), one task, then stop.
+
 

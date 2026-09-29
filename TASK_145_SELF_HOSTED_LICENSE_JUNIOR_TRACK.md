@@ -6,16 +6,16 @@
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T16` — close the purchase gate (full spec in §2).** Do that one task, run its acceptance check, log it, stop.
+**▶ NEXT TASK: `T3` — lifetime constants in the licence lib (full spec in §2).** Do that one task, run its acceptance check, log it, stop.
 
-**Status:** `T1` ✅ closed (`70a80dd`) · `T2` ✅ closed (`83fe756`) · **`T3`–`T16` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+**Status:** `T1` ✅ closed (`70a80dd`) · `T2` ✅ closed (`83fe756`) · `T16` ✅ closed (`77b2faf`) · **`T3`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
 ## 0. THE TWO-TRACK RULE (non-negotiable)
 
 - Both agents append to **both** files. **Append-only, newest at the bottom, one dated entry per session.** Never edit, reorder or delete another agent's entry.
-- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S16`).
+- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S17`).
 - **Stop after each task.** Finish one `T*`, run its acceptance check, append a short entry to **both** files, then **stop and report**. Do not roll into the next `T*` in the same session. The senior reviews and the next agent resumes at the next task — see **§2.0**.
 - Each junior entry must state: what changed (`file:line`), the exact commands run, and their **raw output** (paste, don't summarise). Anything you could not verify must be listed as `UNVERIFIED:` with the reason.
 
@@ -381,6 +381,8 @@ Two acceptable outcomes: **leave it alone** (Phase 5 does not need it — use `s
 ---
 
 ### T16 — Close the purchase gate: `selfhosted_os` must not be buyable (senior §3.11 D11 / E11) — **DO THIS NEXT, before T3**
+
+> ✅ **CLOSED — VERIFIED (senior, 2026-09-29), commit `77b2faf`.** The senior re-ran every direction independently (senior §5 log, pass 5 / S17): both routes 400 with a body **byte-identical** to a typo'd id, `extractor_exe` still 200, and **zero** `selfhosted_os` rows in `Payment`/`ExeLicense` in the scratch DB. The implementation below is correct as written — **do not revisit it.** One thing it settles for every later task: **`BY_ID` registration makes a product *resolvable*, never *sellable*.** Only an `ALL_PRODUCTS` member may be bought (D11). Start at **T3**.
 
 **Why:** T2 registered `selfhosted_os` in `BY_ID` so `getProduct()` resolves it — required, because bind/transfer throw without it (V9). But two public routes **also** resolve products with `getProduct()` **and take the id from the client**, so the product became purchasable at its `$0` default price with no login (senior §3.11.2, W8–W11).
 
@@ -1161,4 +1163,62 @@ Hygiene: the test server on :3100 was killed and `lsof -iTCP:3100 -sTCP:LISTEN` 
 **UNVERIFIED: no unit test added** — T16's acceptance text specifies static greps + live HTTP directions, not a test file; I did not invent one.
 
 READY FOR VERIFICATION - T16
+
+
+---
+
+## 2026-09-29 — SENIOR VERIFICATION RESULT: **T16 ✅ ACCEPTED + CLOSED.** Your next task is **`T3`**.
+
+Commits: `77b2faf` (your T16) → this pass (**docs only**: `:9`, `:11`, `:18`, `:385` here). **No product code changed in this pass.**
+
+**Verdict: T16 is correct as written. S17 passes.** I re-ran every direction myself rather than reading your pasted log — your report was accurate and your three `UNVERIFIED:` lines were honest and correctly scoped.
+
+### Claims re-checked independently
+
+| Your claim | Senior re-ran | Result |
+|---|---|---|
+| Guard in both routes, same shape | read `checkout/route.ts:46`, `submit/route.ts:66` | `if (!product \|\| !ALL_PRODUCTS.some((p) => p.id === product.id))` in both ✅ |
+| `GET checkout?product=selfhosted_os` → 400 | fresh `next start -p 3100` on `spaceworker_t145` | `{"error":"Unknown product"}  HTTP=400` ✅ |
+| …byte-identical to a typo'd id | `A=$(curl …selfhosted_os); B=$(curl …selfhosted_osX); [ "$A" = "$B" ]` | `IDENTICAL: {"error":"Unknown product"}` ✅ |
+| `POST submit {product:"selfhosted_os"}` → 400, no row | `curl` + `psql` before/after | 400; counts unchanged ✅ |
+| no `selfhosted_os` row anywhere | `count(*) … WHERE product='selfhosted_os'` on `Payment`, `ExeLicense` | `Payment 0`, `ExeLicense 0` ✅ |
+| `extractor_exe` unchanged | `GET checkout?product=extractor_exe` | `HTTP=200`, `amountUsd:50`, `durationDays:180` ✅ |
+| types | `npx tsc --noEmit` | **TSC_EXIT=0** ✅ |
+| hygiene | `lsof -nP -iTCP:3100 -sTCP:LISTEN` after kill | `PORT_3100_FREE` ✅ |
+| validator canary | `git diff --stat main self-hosted-build -- lib/exe-license-validator.ts` | **empty** ✅ |
+| live app | `/Users/mikeolab/spaceworker` (`main`) | `b7330a1`, clean, `LIVE_TSC_EXIT=0` ✅ |
+
+### The completeness question you did not ask — and the answer
+
+A guard is only verified by proving there is **no third door**, so I enumerated every path that can mint a licence from a client-supplied id:
+
+```
+$ grep -rn 'payment.create|payment.upsert|payment.createMany' --include='*.ts' app lib
+app/api/admin/exe-licenses/route.ts:374:    const payment = await tx.payment.create({
+app/api/billing/submit/route.ts:138:  const payment = await prisma.payment.create({
+```
+
+Exactly **two** Payment creators, both accounted for: `billing/submit` is now guarded, and `admin/exe-licenses` is admin-gated (intentionally the self-hosted issuance path — T6/T7). Every other route mints through `handleApprovedPayment(paymentId)` from a **stored** row, never a client id, and `lib/license-service.ts:111` reads `payment.product`. **No bypass.**
+
+### Hosted-safe no-op on `main` — accepted as a static proof
+
+```
+$ git show main:lib/products.ts | grep -n 'BY_ID|ALL_PRODUCTS'
+185:export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
+187:const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
+```
+
+`main` builds `BY_ID` **only** from `ALL_PRODUCTS`, so `getProduct(x) !== null` ⟹ `x ∈ ALL_PRODUCTS` and the new clause cannot reject anything there. **Your `UNVERIFIED:` on this is closed as "static proof accepted — no runtime difference is possible."**
+
+### Note for later tasks (not a defect)
+
+Your `btcWallet='testwallet_T16'` scratch-DB write was correct and confined to `spaceworker_t145`. A later task on a fresh scratch DB will get `400 "Wallet not configured"` from the same route — **expect it; it is not a regression.**
+
+### State
+
+- **Closed: `T1`, `T2`, `T16`. Next: `T3`.** The `▶ NEXT TASK` pointer has been moved this pass (as the convention requires — the senior owns it).
+- `spaceworker_t145`: `Payment` = 1 (`extractor_exe`), `ExeLicense` = 0, **0** `selfhosted_os` rows.
+- Files changed this pass: the two `TASK_145_*` markdown files only. **Zero product code.**
+
+**Next actor:** junior — **`T3`** (lifetime constants in `lib/exe-license.ts`), one task, then stop.
 
