@@ -1868,3 +1868,146 @@ drwxr-xr-x  394 mikeolab  staff  12608 Sep 29 12:21 node_modules     # real clon
 - Branch `self-hosted-build`; **explicit refspec only** (§0.1). Live app `/Users/mikeolab/spaceworker` (`main`, `b7330a1`) untouched.
 - **`▶ NEXT TASK: T17`** — junior §2, end. **`T4` immediately after.** Closed: **T1, T2, T3, T16**.
 
+
+### 2026-09-29 — JUNIOR — **T17 implemented** (the lifetime sentinel's contract pinned in a permanent test). No other task started.
+
+**Scope:** TEST-ONLY. `lib/exe-license.ts`, `lib/exe-license-validator.ts` and every app file are untouched. One additive line in `package.json`.
+
+**What changed**
+- `tests/exe-license-lifetime.test.ts` — **new, 210 lines** (the permanent home for `S2`/`S3`, senior §3.12.2 / §4.1b):
+  - `:1-28` why-this-file block: the `W12` triple-`2999` coupling, why the deleted `/tmp` harness had to become a checked-in test, and what this file **cannot** prove (the desktop EXE's Python `validator.py` classification — a Python-side check).
+  - `:29-40` hermetic env — `EXE_LICENSE_SECRET` set **before** the module is required; `SPACEWORKER_LOCAL_DATA_DIR` pointed at a throwaway `mkdtempSync` dir. No DB, no network, no `.env.local`.
+  - `:54-64` the house `Module._load` `server-only` stub (same pattern as `tests/self-hosted-setup.test.ts:67-85` and the ready-made `scripts/stub-server-only.cjs`).
+  - `:66-79` the **real** `lib/exe-license` + `lib/exe-license-validator` modules required — no mocks, no hand-built payloads, no HMAC bypass.
+  - `:86-94` arbitrary `licensee`/`plan`/`product` strings — T2's product registry is deliberately **not** consulted.
+  - `:97-99` `mintLifetimeKey()` calls the real `generateLicenseKey({ expiresAt: LIFETIME_EXPIRES_AT })`.
+  - The nine contract assertions: **1** `:101` · **2** `:108` · **3** drift guard `:116` · **4** `:126` · **5** `:137` · **6** `:148` · **7** `:158` · **8** critical negative `:165` · **9** real-HMAC/tamper-resistance `:194`.
+- `package.json:19` — one additive script line: `"test:license": "tsx --test tests/exe-license-lifetime.test.ts"`. `git diff -- package.json` is `+1/-0`; nothing reformatted.
+
+**Commands run, and their raw output**
+
+**1) `npx tsx --test tests/exe-license-lifetime.test.ts`**
+```
+TAP version 13
+# Subtest: 1. LIFETIME_EXPIRES_AT_ISO is the frozen Python-isoformat literal, with no trailing 'Z'
+ok 1 - 1. LIFETIME_EXPIRES_AT_ISO is the frozen Python-isoformat literal, with no trailing 'Z'
+# Subtest: 2. LIFETIME_EXPIRES_AT is the same instant, and its .000000 micros are lossless
+ok 2 - 2. LIFETIME_EXPIRES_AT is the same instant, and its .000000 micros are lossless
+# Subtest: 3. DRIFT GUARD — a key signed at the sentinel emits LIFETIME_EXPIRES_AT_ISO byte-for-byte
+ok 3 - 3. DRIFT GUARD — a key signed at the sentinel emits LIFETIME_EXPIRES_AT_ISO byte-for-byte
+# Subtest: 4. the real offline validator accepts the lifetime key today, decoded year 2999
+ok 4 - 4. the real offline validator accepts the lifetime key today, decoded year 2999
+# Subtest: 5. the sentinel is still valid in 2050, 2099 and 2998 — not an accident of today's clock
+ok 5 - 5. the sentinel is still valid in 2050, 2099 and 2998 — not an accident of today's clock
+# Subtest: 6. the sentinel terminates in 3000 — it is not truly perpetual
+ok 6 - 6. the sentinel terminates in 3000 — it is not truly perpetual
+# Subtest: 7. isLifetimeExpiry is driven only by the expiry year
+ok 7 - 7. isLifetimeExpiry is driven only by the expiry year
+# Subtest: 8. CRITICAL NEGATIVE — a 30-day term key is never classified lifetime, and dies on time
+ok 8 - 8. CRITICAL NEGATIVE — a 30-day term key is never classified lifetime, and dies on time
+# Subtest: 9. every key here goes through the REAL HMAC — tampering and a wrong secret both fail
+ok 9 - 9. every key here goes through the REAL HMAC — tampering and a wrong secret both fail
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 509.939072
+```
+`TEST_EXIT=0` (each `ok N` block also carried the harness's own `duration_ms` — elided here, no count changed).
+
+**2) `npx tsc --noEmit`** → `TSC_EXIT=0`, no output.
+
+**3) the mutation proof — a copy that can fail.** Scratch only, `/tmp/t17-mutation` (deleted afterwards; nothing in the repo was touched):
+```
+$ mkdir -p /tmp/t17-mutation/tests /tmp/t17-mutation/lib
+$ cp tests/exe-license-lifetime.test.ts /tmp/t17-mutation/tests/
+$ cp lib/exe-license.ts lib/exe-license-validator.ts lib/machine-id.ts lib/license-state.ts /tmp/t17-mutation/lib/
+$ sed -i '' 's/d.getUTCFullYear() >= 2999/d.getUTCFullYear() >= 3000/' /tmp/t17-mutation/lib/exe-license.ts
+$ grep -n 'getUTCFullYear() >=' /tmp/t17-mutation/lib/exe-license.ts
+39:  return !!d && d.getUTCFullYear() >= 3000;
+
+$ npx tsx --test /tmp/t17-mutation/tests/exe-license-lifetime.test.ts
+ok 1 - 1. LIFETIME_EXPIRES_AT_ISO is the frozen Python-isoformat literal, with no trailing 'Z'
+ok 2 - 2. LIFETIME_EXPIRES_AT is the same instant, and its .000000 micros are lossless
+ok 3 - 3. DRIFT GUARD — a key signed at the sentinel emits LIFETIME_EXPIRES_AT_ISO byte-for-byte
+ok 4 - 4. the real offline validator accepts the lifetime key today, decoded year 2999
+ok 5 - 5. the sentinel is still valid in 2050, 2099 and 2998 — not an accident of today's clock
+ok 6 - 6. the sentinel terminates in 3000 — it is not truly perpetual
+not ok 7 - 7. isLifetimeExpiry is driven only by the expiry year
+ok 8 - 8. CRITICAL NEGATIVE — a 30-day term key is never classified lifetime, and dies on time
+ok 9 - 9. every key here goes through the REAL HMAC — tampering and a wrong secret both fail
+# tests 9
+# pass 8
+# fail 1
+MUTANT_EXIT=1
+```
+The failing assertion, verbatim:
+```
+not ok 7 - 7. isLifetimeExpiry is driven only by the expiry year
+  location: '/private/tmp/t17-mutation/tests/exe-license-lifetime.test.ts:158:1'
+  failureType: 'testCodeFailure'
+  error: |-
+    Expected values to be strictly equal:
+
+    false !== true
+  code: 'ERR_ASSERTION'
+  name: 'AssertionError'
+  expected: true
+  actual: false
+  operator: 'strictEqual'
+```
+`rm -rf /tmp/t17-mutation` → `ls: /tmp/t17-mutation: No such file or directory`. So the guard is live: mutating the threshold alone turns it red, and the copy left no trace.
+
+**4) `CI=1 npx next build`** → `BUILD_EXIT=0`
+```
+✓ Compiled successfully in 24.4s
+Route (app)
+...
+ƒ Proxy (Middleware)
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+**5) canaries, run from `/Users/mikeolab/spaceworker` (the live app checkout)**
+```
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+                                                      <- empty: the frozen file was not touched
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ npx tsc --noEmit
+LIVE_TSC_EXIT=0
+```
+
+**6) worktree state — exactly two paths touched**
+```
+$ git status --short
+ M package.json
+?? tests/exe-license-lifetime.test.ts
+$ git --no-pager diff --stat -- lib/exe-license.ts
+                                                      <- empty: lib/exe-license.ts not edited in this worktree
+```
+`package.json`'s diff is exactly `+1/-0` — one inserted line, nothing reformatted:
+```
+@@ -16,6 +16,7 @@
+     "test:governor": "tsx --test tests/resource-governor.test.ts",
+     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
+     "test:setup": "tsx --test tests/self-hosted-setup.test.ts",
++    "test:license": "tsx --test tests/exe-license-lifetime.test.ts",
+     "check:workflows": "node scripts/check-workflow-syntax.mjs",
+```
+`npm run test:license` (the new script) → `# pass 9` / `# fail 0`.
+
+**UNVERIFIED: the desktop EXE's Python `validator.py` classification of the 2999 sentinel** — this test exercises the **Node** validator (`lib/exe-license-validator.ts`), the one shipped in the web/self-hosted product. Confirming the portable Python validator accepts the same key needs the `lead-extractor` repo or a built EXE, which is outside this worktree and outside T17's stated scope.
+**UNVERIFIED: the mutation proof is intentionally not a checked-in artefact** — mutating the frozen lib on the branch would itself be a regression. It is reproducible by re-running item 3; what it proves is now permanently owned by `tests/exe-license-lifetime.test.ts:158` (fact 7).
+
+**Not touched:** `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx`, `app/api/store/prices/route.ts`, `admin/wallets/route.ts`. No migration, no prisma command, no database, no network, no server started. No other task begun.
+
+READY FOR VERIFICATION - T17
+
