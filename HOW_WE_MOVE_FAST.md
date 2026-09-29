@@ -687,6 +687,34 @@ Added 2026-09-28 (relay/DKIM bring-up — the fix that "worked" was a no-op twic
   `spaceworker@instaweb.top` with `resend._domainkey.instaweb.top` published).
   **When editing that SPF, ADD the `ip4:` term — never replace the record**: the
   existing `include:` carries the platform's own signup/verification mail.
+- **The relay's SigningTable is the ground truth for "will it be signed" — not our
+  database.** They diverge in both directions and the live server has one today: a
+  key installed out-of-band (a shell script) SIGNS mail while no `SendingDomain`
+  row exists, so a DB-only check reports "UNSIGNED" for mail that is in fact
+  signed — a false alarm on a working mailbox. A row can equally outlive its key on
+  disk. OpenDKIM consults the file, so `parseSigningTableDomains()` reads it and the
+  DB supplies only DNS state; when the file is unreadable the decision falls back to
+  `installedOnRelay` (never to "everything unsigned"). Both directions are
+  mutation-tested in `npm run test:domains`.
+- **`deploy-vps.sh` used to skip the build and still report `EXIT=0`.** Under macOS
+  bash **3.2**, `${DIR_ENTRIES[@]}` on an **empty** array is an unbound-variable
+  abort (fixed only in bash 4.4) — and it is empty exactly when the file list has
+  no directory entries, which is what §2 tells you to pass for the build half. So
+  following the playbook on macOS aborted at the tree-sync step, before
+  `prisma generate`/build/restart, while `is-active`/`curl`/maintenance all looked
+  perfect — describing the PREVIOUS build. Fixed two ways: the expansion is now
+  `${DIR_ENTRIES[@]+"${DIR_ENTRIES[@]}"}`, and an EXIT-trap check FAILS the run if
+  it exits 0 without reaching the `DEPLOY_COMPLETE=1` marker. **Always confirm a
+  deploy by comparing `.next/BUILD_ID`'s mtime against your source mtimes** — on
+  the VPS the script runs under bash 5.1, which is why this only ever bit locally.
+- **Launch the deploy with `nohup … > log 2>&1 </dev/null &` — the `</dev/null` is
+  not optional.** Without it the local `ssh` client gets SIGSTOPped by terminal job
+  control (seen twice: `ps -o stat` shows `TN`). The remote build then COMPLETES
+  while the local script stays frozen — leaving the new build on disk, maintenance
+  **ON**, and the service never restarted, i.e. users get the maintenance page. If
+  that happens, finish it by hand: `systemctl restart spaceworker.service`, check
+  `curl localhost:3500/` = 200, then `rm -f /var/www/sw-maintenance.on`.
+
 
 
 

@@ -189,6 +189,39 @@ export interface SigningDomainRow {
   status: string;
   installedOnRelay: boolean;
 }
+
+/**
+ * PURE. Which domains does the relay's SigningTable actually name?
+ *
+ * This is the GROUND TRUTH for "will this be signed", and it is deliberately not
+ * the same thing as our database. OpenDKIM consults this file, so a line here
+ * means a signature WILL be added; a row in `SendingDomain` only records our
+ * intent. The two can diverge in both directions and both are real:
+ *   - a key installed out-of-band (a shell script, a rebuild, an import) signs
+ *     mail while no DB row exists — the live relay has exactly this today for a
+ *     customer domain, so trusting the DB alone reports "UNSIGNED" for mail that
+ *     is in fact signed, which is a false alarm on a working mailbox;
+ *   - a DB row can survive while its key was removed from disk, in which case the
+ *     DB alone would promise a signature that never arrives.
+ *
+ * Format is one mapping per line: `<pattern> <keyname>`, where pattern is
+ * `*@domain`, `@domain` or a bare `domain`. Comments (#) and blanks are skipped.
+ * Anything that does not parse yields no domain rather than a guessed one.
+ */
+export function parseSigningTableDomains(content: string): Set<string> {
+  const domains = new Set<string>();
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith("#")) continue;
+    const pattern = line.split(/\s+/)[0];
+    if (!pattern) continue;
+    const domain = normalizeDomain(pattern.replace(/^\*?@?/, ""));
+    // Must be a real domain: a bare label would make the lookup match things
+    // like "localhost", and an unparseable pattern must not silently "cover".
+    if (isValidSendingDomain(domain)) domains.add(domain);
+  }
+  return domains;
+}
 /**
  * PURE. Which of these From addresses will actually carry a DKIM signature, and
  * which will be relayed bare?
@@ -207,6 +240,14 @@ export function evaluateSigningCoverage(opts: {
   fromAddresses: string[];
   rows: SigningDomainRow[];
   platformDomain?: string | null;
+  /**
+   * Domains named in the relay's SigningTable, when known. This is the ground
+   * truth for "will a signature be added": pass it and the relay decides, with
+   * the DB row only supplying DNS state. Omit it (dev machines, tests) and the
+   * decision falls back to the DB's `installedOnRelay`, which is the intended
+   * state and correct whenever the UI is the only thing that installs keys.
+   */
+  relaySignedDomains?: Set<string>;
 }): SigningCoverage {
   const platformDomain = opts.platformDomain ? normalizeDomain(opts.platformDomain) : null;
 
@@ -223,15 +264,33 @@ export function evaluateSigningCoverage(opts: {
     seen.add(domain);
 
     const row = byDomain.get(domain);
-    if (!row || !row.installedOnRelay) {
+    const relaySigns =
+      opts.relaySignedDomains !== undefined
+        ? opts.relaySignedDomains.has(domain)
+        : (row?.installedOnRelay ?? false);
+
+    if (!relaySigns) {
       entries.push({
         domain,
         status: "unsigned",
         detail:
-          `Mail from @${domain} leaves the relay with NO DKIM signature: nothing is ` +
-          `installed for that domain, so the relay has no key to sign with`,
+          `Mail from @${domain} leaves the relay with NO DKIM signature: no key is ` +
+          `installed for that domain, so the relay has nothing to sign with`,
       });
-    } else if (row.status !== "verified") {
+    } else if (row === undefined && opts.relaySignedDomains !== undefined) {
+      // The relay signs, but we hold no DNS record for it — so we cannot claim
+      // the signature will VALIDATE. Saying "unsigned" here would be wrong (a
+      // false alarm on mail that is in fact signed); saying "verified" would be
+      // worse.
+      entries.push({
+        domain,
+        status: "unverified",
+        detail:
+          `Mail from @${domain} IS signed by the relay, but this account has no ` +
+          `DKIM record on file for it, so whether that signature validates is ` +
+          `unknown — add the domain on the Sending domains tab to verify it`,
+      });
+    } else if (row === undefined || row.status !== "verified") {
       entries.push({
         domain,
         status: "unverified",

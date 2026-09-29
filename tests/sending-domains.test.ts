@@ -383,3 +383,93 @@ test("platformSendingDomain reads env, and rejects anything that is not a domain
     else process.env.PLATFORM_SENDING_DOMAIN = saved;
   }
 });
+
+// ---------------------------------------------------------------------------
+// TASK_140 (refinement) — the relay's SigningTable is the GROUND TRUTH.
+//
+// WHY: the first cut derived coverage from the `SendingDomain` table alone. That
+// is our INTENT, not what the relay does, and the live server proves they diverge:
+// a key installed out-of-band (a shell script) signs mail while no DB row exists
+// at all — so the DB-only check reported "UNSIGNED" for mail that is in fact
+// signed, a false alarm on a working mailbox. The mirror case is just as real: a
+// DB row can outlive its key on disk and promise a signature that never arrives.
+// OpenDKIM consults the SigningTable, so that file decides. The DB only supplies
+// DNS state.
+// ---------------------------------------------------------------------------
+
+test("parseSigningTableDomains reads all three pattern forms and skips the rest", () => {
+  const domains = sd.parseSigningTableDomains(
+    [
+      "# a comment",
+      "",
+      "*@watsonandrade9382.ca.lu sw._domainkey.watsonandrade9382.ca.lu",
+      "@bare.example.com   sw._domainkey.bare.example.com",
+      "plain.example.org   sw._domainkey.plain.example.org",
+      "   ",
+      "# another comment",
+      "not-a-domain sw._domainkey.not-a-domain",
+      "localhost sw._domainkey.localhost",
+    ].join("\n")
+  );
+  assert.deepStrictEqual(
+    [...domains].sort(),
+    ["bare.example.com", "plain.example.org", "watsonandrade9382.ca.lu"]
+  );
+  // A bare label must never be treated as a signing domain: it would make the
+  // coverage lookup match nonsense patterns the relay would never be given.
+  assert.ok(!domains.has("localhost"));
+  assert.ok(!domains.has("not-a-domain"));
+});
+
+test("relay signs a domain with NO db row => 'unverified', not a false 'unsigned'", () => {
+  // The exact live situation that exposed this: key on the relay, empty
+  // SendingDomain table. Reporting "unsigned" here alarms a user whose mail IS
+  // signed; reporting "verified" would be worse, because we cannot see DNS state.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["fleming@watsonandrade9382.ca.lu"],
+    rows: [],
+    relaySignedDomains: new Set(["watsonandrade9382.ca.lu"]),
+  });
+  assert.strictEqual(c.entries.length, 1);
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.strictEqual(c.hasUnsigned, false, "signed mail must never be called unsigned");
+  assert.strictEqual(c.unsigned.length, 0);
+  // No red warning, and the detail points at the missing record rather than
+  // telling the user to install a key that is already installed.
+  assert.strictEqual(c.warning, null);
+  assert.match(c.entries[0].detail, /IS signed by the relay/);
+});
+
+test("relay does NOT sign while the db claims installed => 'unsigned' (the other direction)", () => {
+  // A row can outlive its key on disk. The relay deciding is the whole point:
+  // trusting the DB here would promise a signature that never arrives.
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "verified", installedOnRelay: true }],
+    relaySignedDomains: new Set(), // relay has no line for acme.com
+  });
+  assert.strictEqual(c.entries[0].status, "unsigned");
+  assert.strictEqual(c.hasUnsigned, true);
+  assert.ok(c.warning, "must warn — the key is not actually on the relay");
+});
+
+test("with the relay known, a verified db row still reports verified", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["sales@acme.com"],
+    rows: [{ domain: "acme.com", status: "verified", installedOnRelay: true }],
+    relaySignedDomains: new Set(["acme.com"]),
+  });
+  assert.strictEqual(c.entries[0].status, "verified");
+  assert.strictEqual(c.warning, null);
+});
+
+test("the relay lookup is case-insensitive too", () => {
+  const c = sd.evaluateSigningCoverage({
+    fromAddresses: ["X@ACME.COM"],
+    rows: [],
+    relaySignedDomains: new Set(["acme.com"]),
+  });
+  assert.strictEqual(c.entries[0].status, "unverified");
+  assert.strictEqual(c.hasUnsigned, false);
+});
+

@@ -62,6 +62,10 @@ DO_MAINT_OFF=0
 # then deliberately LEAVES maintenance on, so users see the update page instead
 # of a raw 502.
 KEEP_MAINT=0
+# 2026-09-29 — set to 1 only immediately before the final "-- done". The EXIT trap
+# fails the run if a build/restart was requested yet this was never reached, so a
+# mid-script abort can no longer report success while skipping the build.
+DEPLOY_COMPLETE=0
 
 for arg in "$@"; do
   case "$arg" in
@@ -83,8 +87,24 @@ run_remote() { ssh -i "$SSH_KEY" -o BatchMode=yes "$VPS_HOST" "$@"; }
 # forever. The one deliberate exception is KEEP_MAINT=1 — set when the app could
 # not be brought back, where leaving the friendly page up is the correct outcome.
 maint_off_on_exit() {
+  local status=$?
   if [ "$KEEP_MAINT" -eq 0 ] && [ "$DO_BUILD" -eq 1 ]; then
     run_remote "rm -f '$MAINT_FLAG'" >/dev/null 2>&1 || true
+  fi
+  # 2026-09-29 — an early exit that still reports 0 is the most dangerous shape a
+  # deploy can fail in: the tree rsync succeeds, the script dies before step 6,
+  # and every check the deployer runs (`is-active`, `curl`, maintenance off) is
+  # looking at the PREVIOUS build. Hit live: `${DIR_ENTRIES[@]}` on an empty array
+  # is an unbound-variable abort under macOS bash 3.2 (fixed only in bash 4.4),
+  # and the playbook's own §2 recipe passes a root-files-only list — i.e. always
+  # empty — so the build was silently skipped while `EXIT=0` was reported.
+  # Require the end-of-run marker: if we never reached it and the status is
+  # "success", say so loudly and fail.
+  if [ "${DEPLOY_COMPLETE:-0}" -ne 1 ] && [ "$status" -eq 0 ]; then
+    echo "!! ABORTED before completion (never reached '-- done'), but exited 0." >&2
+    echo "!! The sync above may have run; ANY BUILD/RESTART DID NOT." >&2
+    echo "!! Compare /opt/spaceworker/.next/BUILD_ID against your source mtimes." >&2
+    exit 1
   fi
 }
 trap maint_off_on_exit EXIT
@@ -198,7 +218,7 @@ fi
 # --- 4. Sync ------------------------------------------------------------
 echo "-- rsync"
 ( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" "--files-from=$FLAT_LIST" -e "ssh -i $SSH_KEY -o BatchMode=yes" ./ "$VPS_HOST:$APP_DIR/" )
-for d in "${DIR_ENTRIES[@]}"; do
+for d in ${DIR_ENTRIES[@]+"${DIR_ENTRIES[@]}"}; do
   echo "-- rsync tree: $d/"
   ( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" -e "ssh -i $SSH_KEY -o BatchMode=yes" "$d/" "$VPS_HOST:$APP_DIR/$d/" )
 done
@@ -290,4 +310,5 @@ if [ "$DO_RESTART" -eq 1 ]; then
   run_remote "rm -f '$MAINT_FLAG'"
 fi
 
+DEPLOY_COMPLETE=1
 echo "-- done"

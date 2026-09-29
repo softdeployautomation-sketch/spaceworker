@@ -163,4 +163,67 @@ The DNS edit above is the operator's call, not a code change — it touches the
 platform's live mail domain. The software side is complete: once
 `PLATFORM_SENDING_DOMAIN` is set and its records are published, every user sending
 from a domain they cannot edit gets a working, authenticated alternative with no
+
+## Refinement — the relay's SigningTable is the ground truth (found while verifying live)
+
+The first cut derived coverage from the `SendingDomain` table. Verifying against
+production showed that is **the wrong source of truth**, and it would have
+produced a false alarm on a mailbox that works:
+
+```
+SendingDomain rows on the live server : (none)
+/etc/opendkim/SigningTable            : *@watsonandrade9382.ca.lu sw._domainkey.…
+relay behaviour                       : SIGNS, d=watsonandrade9382.ca.lu s=sw
+```
+
+The key was installed **out-of-band** by the TASK_137 shell script, so no DB row
+exists — and a DB-only check would have told that user their mail is *unsigned*
+when it is in fact signed. The mirror case is equally real: a DB row can outlive
+its key on disk and promise a signature that never arrives.
+
+OpenDKIM consults the SigningTable, so **that file decides**. `parseSigningTableDomains()`
+(PURE, tested) reads it; the DB row then supplies only DNS state. The resulting
+states are honest about what is and is not known:
+
+| Relay signs? | DB row | Status |
+|---|---|---|
+| no | any | `unsigned` — nothing can sign |
+| yes | verified | `verified` |
+| yes | unverified/pending | `unverified` — signed, will not validate |
+| yes | **absent** | `unverified` — signed, DNS state unknown (never a false "unsigned") |
+
+Fail-soft by design: if the table cannot be read (a dev machine has no
+`/etc/opendkim`), `relaySignedDomains` is left undefined and the decision falls
+back to the DB's `installedOnRelay` — the intended state, correct whenever the UI
+is the only thing that installs keys. Both directions are mutation-tested:
+reverting to DB-only fails 3 tests; dropping the parser's `*@`/`@` strip fails the
+parser test.
+
+## Also found: the deploy script could skip the build and still report success
+
+While deploying this, `scripts/deploy-vps.sh` aborted at `DIR_ENTRIES[@]: unbound
+variable` **before step 6 (build)** and still exited 0:
+
+- `${DIR_ENTRIES[@]}` on an **empty** array is an unbound-variable abort under
+  macOS bash **3.2** (fixed only in bash 4.4). The script runs *locally*; the VPS
+  has bash 5.1, so only the deploying machine is affected.
+- It is empty precisely when the list has no directory entries — which is exactly
+  the shape §2 of `HOW_WE_MOVE_FAST` tells you to pass for the build half. So
+  following the playbook on macOS **silently skipped the build**: tree rsync
+  succeeded, `is-active` was active, `curl` was 200, maintenance was off — and all
+  of it was describing the previous build. Caught only by comparing
+  `.next/BUILD_ID` (04:10:54) against the synced source mtime (05:11:17).
+
+Both halves are fixed: the expansion is now `${DIR_ENTRIES[@]+"${DIR_ENTRIES[@]}"}`
+(bash-3.2-safe), and the EXIT trap now *fails the run* if it exits 0 without
+reaching the end-of-run marker, printing the `.next/BUILD_ID` advice. The
+completion marker (`DEPLOY_COMPLETE=1` before `-- done`) makes this whole class
+impossible to miss.
+
+Related, and still true: the local script must be launched with
+`nohup … > log 2>&1 </dev/null &`. Without the `</dev/null` redirect the local
+`ssh` client gets SIGSTOPped by terminal job control (observed again here: state
+`TN`, frozen *after* a completed remote build), which leaves a finished build with
+maintenance **ON** and no restart.
+
 action of their own.

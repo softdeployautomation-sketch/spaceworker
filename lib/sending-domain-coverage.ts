@@ -1,9 +1,12 @@
 import "server-only";
+import { readFile } from "fs/promises";
 import { prisma } from "@/lib/prisma";
 import {
   domainOfAddress,
   evaluateSigningCoverage,
+  parseSigningTableDomains,
   platformSendingDomain,
+  RELAY_PATHS,
   type SigningCoverage,
 } from "@/lib/sending-domains";
 
@@ -50,9 +53,24 @@ export async function signingCoverageFor(opts: {
           select: { domain: true, status: true, installedOnRelay: true },
         });
 
+  // Ask the relay what it ACTUALLY signs, and prefer that answer over our own
+  // records (see parseSigningTableDomains for why the two diverge). Fail-soft:
+  // if the table cannot be read — a dev machine has no /etc/opendkim — pass
+  // undefined and the decision falls back to the DB's installedOnRelay rather
+  // than reporting every domain as unsigned.
+  let relaySignedDomains: Set<string> | undefined;
+  try {
+    relaySignedDomains = parseSigningTableDomains(
+      await readFile(RELAY_PATHS.signingTable, "utf8")
+    );
+  } catch {
+    relaySignedDomains = undefined;
+  }
+
   return evaluateSigningCoverage({
     fromAddresses: opts.fromAddresses,
     rows,
     platformDomain,
+    ...(relaySignedDomains ? { relaySignedDomains } : {}),
   });
 }
