@@ -2,20 +2,20 @@
 
 ## Owned by the junior engineering agent (writes ALL code) — verify with the senior track
 
-**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W7`), the decisions (`D1–D11`), the enforcement points (`E1–E11`), the verification protocol (`S1–S17`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
+**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W12`), the decisions (`D1–D11`), the enforcement points (`E1–E11`), the verification protocol (`S1–S18`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T3` — lifetime constants in the licence lib (full spec in §2).** Do that one task, run its acceptance check, log it, stop.
+**▶ NEXT TASK: `T17` — pin the lifetime sentinel's contract in a permanent test (full spec in §2, at the end).** This is a *small* task that closes the one weak spot in the task just accepted: T3's proof was a **deleted temporary harness**, so `S2`/`S3` were closed on evidence that cannot be re-run. Do that one task, run its acceptance check, log it, stop. **`T4` (the revocation seam — the real work) follows immediately after.**
 
-**Status:** `T1` ✅ closed (`70a80dd`) · `T2` ✅ closed (`83fe756`) · `T16` ✅ closed (`77b2faf`) · **`T3`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+**Status:** `T1` ✅ · `T2` ✅ · `T16` ✅ · `T3` ✅ closed (`7a9afc9`) · **`T4`–`T15` and `T17` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
 ## 0. THE TWO-TRACK RULE (non-negotiable)
 
 - Both agents append to **both** files. **Append-only, newest at the bottom, one dated entry per session.** Never edit, reorder or delete another agent's entry.
-- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S17`).
+- The junior writes `READY FOR VERIFICATION` — **never** `VERIFIED` or "done". Only the senior closes a verification row (`S1–S18`).
 - **Stop after each task.** Finish one `T*`, run its acceptance check, append a short entry to **both** files, then **stop and report**. Do not roll into the next `T*` in the same session. The senior reviews and the next agent resumes at the next task — see **§2.0**.
 - Each junior entry must state: what changed (`file:line`), the exact commands run, and their **raw output** (paste, don't summarise). Anything you could not verify must be listed as `UNVERIFIED:` with the reason.
 
@@ -80,7 +80,7 @@ Two things the first pass got wrong, **both now corrected** — read senior trac
 1. It treated revocation as **bind-time only** and explicitly rejected a launch-time check. That was wrong. The desktop EXE **already** re-checks the server on every launch (`stillValidLive` → `/api/exe-license/eligibility`), and that route just cannot see a revocation yet. **T11** adds the missing line — it is the single edit that turns "Cancel licence" from cosmetic into real. **T13** gives the self-hosted build its first runtime check, because without it a self-hosted 30-day key never expires at all.
 2. It had nothing stopping a **lifetime** licence from being moved self-service. **T12** closes that: lifetime moves are admin-only; the first bind of an unbound lifetime key is unaffected.
 
-**Revised work order: `T1 → T16`, in the order listed in §2 — which is *not* numeric order** (`T16` runs before `T3`). T11 is the highest-value task in the whole set, but **T1 still comes first** — everything else reads the generated Prisma client.
+**Revised work order: `T1 → T17`, in the order listed in §2 — which is *not* numeric order** (`T16` ran before `T3`; `T17` runs before `T4`). **The `▶ NEXT TASK` pointer at `:9` is authoritative.** T11 is the highest-value task in the whole set, but **T1 still came first** — everything else reads the generated Prisma client.
 
 **The two rules that govern how you report:**
 
@@ -118,7 +118,7 @@ DATABASE_URL="$S" npx prisma generate                  # safe: real node_modules
 
 Why: the shared local DB is ~27 migrations stale (it has no `Device` table), and **the migration chain cannot build a fresh DB at all** (senior C5 / new task **T14**). `db push` is schema-driven, so it produces a correct database in ~1s. `spaceworker_t145` already exists and contains T1's objects.
 
-**Two new tasks appended to the work order: `T14` (fresh-install schema bootstrap) and `T15` (optional, local drift repair only).** ~~The order is now **T1 → T15**; T2 is unchanged and still your starting point.~~ **Superseded by §1.3: the order is T1 → T16, T2 is closed, and your next task is T16.**
+**Two new tasks appended to the work order: `T14` (fresh-install schema bootstrap) and `T15` (optional, local drift repair only).** ~~The order is now **T1 → T15**; T2 is unchanged and still your starting point.~~ ~~**Superseded by §1.3: the order is T1 → T16, T2 is closed, and your next task is T16.**~~ **⚠️ Superseded again (Revision 5): the work order is now `T1 → T17`. Do not trust any order written in a revision banner — follow the `▶ NEXT TASK` pointer at `:9`.**
 
 ---
 
@@ -132,11 +132,27 @@ But verifying T2 exposed a hole in **D3 itself**, so the work order gains **T16*
 - It is **not** auto-approvable (the on-chain verifier turns an expected amount of `0` into `ratio = Infinity`, which fails the ±5% test), so the exposure is queue-spam plus the risk that an admin approves a row the system can mint a self-hosted licence from.
 - Fix = **T16**: reject any product id outside `ALL_PRODUCTS` in those two routes, with the **same** `{"error":"Unknown product"}` 400 an unknown id gets. New invariant (**D11**): **`BY_ID` registration makes a product *resolvable*, never *sellable*.**
 
-**The work order is now T1 → T16.** Your next task is **T16**, then T3 onwards.
+~~**The work order is now T1 → T16.** Your next task is **T16**, then T3 onwards.~~ **⚠️ Superseded (Revision 5): `T16` and `T3` are both closed, the work order is `T1 → T17`, and the authority is the `▶ NEXT TASK` pointer at `:9` — not this line.**
 
 ---
 
-## 2. WORK ORDER — `T1 → T16`, in this order. **Not numeric order** (`T16` comes before `T3`). Do not skip ahead.
+## 1.4 REVISION 5 — T3 is VERIFIED; one small test-only task comes before T4 (2026-09-29)
+
+The senior re-derived all of T3's behaviour with a harness of **its own** (23 assertions — the junior's had been deleted, and a harness written by the author proves less). **T3 is accepted and closed.** Read senior **§3.12** before your next session.
+
+**T3's implementation is correct — do not revisit it.** `lib/exe-license.ts` is now `+13/−0` vs `main`, which is *approved* (V17 is amended: that file's canary is **"zero `-` lines"**, not "empty" — see senior §2 V17 and §7). **If you ever see a deletion in that file, stop and log an objection.**
+
+Three things you must know before T17:
+
+- **Why T17 exists (senior §3.12.2, new rule §4.1b).** T3's only proof was a temporary harness that was deleted after the run. So `S2`/`S3` were closed on evidence **you cannot re-run**. New rule: any check closed on a one-off script must name a **permanent home** — a `tests/*.test.ts`, an existing `scripts/verify-*.mts`, or an explicit `ACCEPTED AS ONE-OFF`. T17 gives the sentinel that permanent home.
+- **`W12` (new finding): `2999` is value-coupled across three lines** of `lib/exe-license.ts` (`:35` signed literal, `:36` `Date`, `:39` threshold). Change the threshold without the literal and **every lifetime licence silently misclassifies as a term licence** — the admin-move lock and the "no expiry" copy both stop applying, with no error anywhere. The lib is **not** being changed (the literal is frozen by the signature). **`T17`'s test is the guard** — that is the entire point of the task. Do not "fix" the constants.
+- **Two properties the senior added that you could not have known to test**, and which T17 must assert: (a) **the drift guard** — a key signed at the sentinel emits `LIFETIME_EXPIRES_AT_ISO` **byte-for-byte**; (b) **the critical negative** — a **30-day term** key must be `isLifetimeExpiry === false`, or the live kill the owner asked for would silently stop applying to term licences.
+
+**The work order is now `T1 → T17`: T17 is your next task, then `T4`.**
+
+---
+
+## 2. WORK ORDER — `T1 → T17`, in the order listed below. **This is NOT numeric order** (`T16` ran before `T3`; **`T17` runs before `T4`**). The single source of truth is the **`▶ NEXT TASK` pointer at `:9`** — if it disagrees with a heading here, the pointer wins. Do not skip ahead.
 
 ### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
 
@@ -193,6 +209,8 @@ npx tsc --noEmit                           # still EXIT=0
 ```
 
 ### T3 — Lifetime constants in the licence lib
+
+> ✅ **CLOSED — VERIFIED (senior, 2026-09-29), commit `7a9afc9`.** Implemented **verbatim** from D4. `git diff --numstat main self-hosted-build -- lib/exe-license.ts` = **`13  0`** — purely additive, one hunk, **zero deletions on a file the hosted app shares**. The senior reproduced the behaviour with a **fresh harness of its own** (23 assertions, `ALL SENIOR CHECKS PASSED`) covering two properties the junior did not know to test: the constant emits the signed literal **byte-for-byte** (no drift), and a **30-day term key is never classified lifetime**. Both logs' T3 entries were accurate. **Do not revisit.** Start at **T17**.
 
 **File:** `lib/exe-license.ts` (constants only — do **not** restructure it, do **not** touch the payload types)
 
@@ -380,7 +398,7 @@ Two acceptable outcomes: **leave it alone** (Phase 5 does not need it — use `s
 
 ---
 
-### T16 — Close the purchase gate: `selfhosted_os` must not be buyable (senior §3.11 D11 / E11) — **DO THIS NEXT, before T3**
+### T16 — Close the purchase gate: `selfhosted_os` must not be buyable (senior §3.11 D11 / E11) — ✅ **CLOSED**
 
 > ✅ **CLOSED — VERIFIED (senior, 2026-09-29), commit `77b2faf`.** The senior re-ran every direction independently (senior §5 log, pass 5 / S17): both routes 400 with a body **byte-identical** to a typo'd id, `extractor_exe` still 200, and **zero** `selfhosted_os` rows in `Payment`/`ExeLicense` in the scratch DB. The implementation below is correct as written — **do not revisit it.** One thing it settles for every later task: **`BY_ID` registration makes a product *resolvable*, never *sellable*.** Only an `ALL_PRODUCTS` member may be bought (D11). Start at **T3**.
 
@@ -417,6 +435,48 @@ Then, with a server up against `spaceworker_t145`, prove **both directions** and
 
 ---
 
+### T17 — Pin the lifetime sentinel's contract in a **permanent test** (senior §3.12; closes the `S2`/`S3` evidence gap)
+
+**Why this exists:** T3 shipped three constants, and the only proof they behave correctly was a **temporary harness that the junior deleted**. The senior re-derived the behaviour with a harness of its own — which is *also* in `/tmp`. So `S2`/`S3` were closed on evidence that **cannot be re-run by the next agent**. This task converts that one-off observation into a checked-in regression test. It also makes the **triplicated `2999`** safe (senior `W12`): if anyone ever changes the threshold in `isLifetimeExpiry` without changing the signed literal, this test fails loudly instead of silently misclassifying every lifetime licence.
+
+**File:** `tests/exe-license-lifetime.test.ts` (new). Plus **one additive line** in `package.json` (`scripts`).
+
+Follow the house conventions exactly — **read `tests/self-hosted-setup.test.ts:1-40` first**:
+
+- `node:test` + `node:assert/strict`.
+- `lib/exe-license.ts:1` is `import "server-only"`, which throws in plain Node — stub it with a `Module._load` hook (same pattern as that file; a ready-made copy is `scripts/stub-server-only.cjs`).
+- Set `process.env.EXE_LICENSE_SECRET` **before** importing the module.
+- **No database, no network, no `.env.local`.** `licensee` / `plan` / `product` are arbitrary strings — the key is not DB-validated here, so this test must not depend on T2's product registry.
+
+Add `"test:license": "tsx --test tests/exe-license-lifetime.test.ts"` to `package.json` (additive — do **not** reformat the file).
+
+**Assert these nine facts — they are the contract, not a smoke test:**
+
+1. `LIFETIME_EXPIRES_AT_ISO === "2999-12-31T23:59:59.000000"`, and it does **not** end in `Z` (Python `fromisoformat` compatibility — `lib/exe-license.ts:76-85`).
+2. `LIFETIME_EXPIRES_AT.toISOString() === "2999-12-31T23:59:59.000Z"` **and** `getUTCMilliseconds() === 0` (so the `.000000` micros are lossless).
+3. **The drift guard:** `generateLicenseKey({ expiresAt: LIFETIME_EXPIRES_AT, … }).payload.expires_at === LIFETIME_EXPIRES_AT_ISO`, byte-for-byte. This is the property the whole design rests on (D4): the signed value must never be recomputed.
+4. `validateLicenseKey(...)` → `valid: true` and `expiresAtDate.getUTCFullYear() === 2999` with `now` = today.
+5. **Still valid in 2050, 2099 and 2998** (pass `{ now }` to the validator). Proves it is not an accident of today's clock.
+6. **Expired in 3000** — the sentinel terminates; it is not truly perpetual.
+7. `isLifetimeExpiry` is `true` for the sentinel and `false` for `null`, `undefined`, and `2998-12-31T23:59:59Z`.
+8. **The critical negative:** a 30-day key built with `at: new Date("2026-01-01T00:00:00Z")` → `payload.expires_at` starts `2026-01-31`, `isLifetimeExpiry(…) === false`, `valid` at day 29, **expired** at day 31. A term licence must **never** be classified lifetime — that is the owner's "immediate revocation" half.
+9. Every key goes through the **real** `generateLicenseKey` / `validateLicenseKey`. No hand-built payloads, no mocks, no bypassing the HMAC.
+
+**Do not** modify `lib/exe-license.ts`, `lib/exe-license-validator.ts`, or any app code. This is a **test-only** task; if you believe the lib is wrong, log an `⚠️ OBJECTION` instead.
+
+**Check:**
+```bash
+cd /Users/mikeolab/sw-selfhost
+npx tsx --test tests/exe-license-lifetime.test.ts   # every test passes
+npx tsc --noEmit                                     # EXIT=0
+CI=1 npx next build                                  # BUILD_EXIT=0
+```
+Paste the raw summary (`# pass N`, `# fail 0`). A test file that passes only because it asserts nothing is a reject (§6).
+
+**Stop after it:** append the entry to both files ending `READY FOR VERIFICATION - T17`.
+
+---
+
 ## 3. JUNIOR SELF-VERIFICATION (run all of it, paste raw output, then wait for the senior)
 
 ```bash
@@ -429,8 +489,8 @@ Do **not** use `npx prisma migrate status` as a pass condition: it can never be 
 
 | ID | Check | Pass |
 |---|---|---|
-| J1 | Lifetime key round-trip using **real** code paths (`generateLicenseKey`→`verifyLicenseKey`→`validateLicenseKey`) | `valid: true`, year 2999, no error |
-| J2 | 30-day key through the same path | `valid: true`, expiry ≈ now+30d |
+| J1 | Lifetime key round-trip using **real** code paths (`generateLicenseKey`→`verifyLicenseKey`→`validateLicenseKey`) | `valid: true`, year 2999, no error. ✅ **Proven 2026-09-29 (senior pass 6).** Permanently owned by `tests/exe-license-lifetime.test.ts` once **T17** lands |
+| J2 | 30-day key through the same path | `valid: true`, expiry ≈ now+30d; **and `isLifetimeExpiry` false**. ✅ **Proven 2026-09-29 (senior pass 6)** — also valid at day 29, expired at day 31. Permanent via **T17** |
 | J3 | `LICENSABLE_EXE_PRODUCTS.includes(SELF_HOSTED_OS)` and `getProduct("selfhosted_os") !== null`, while `ALL_PRODUCTS` does **not** contain it | both true / one false |
 | J4 | Admin POST `action: "revoke"` twice in a row (double-click) | both 200, no 500 (idempotent) |
 | J5 | After a revoke, POST `action: "issue"` for the same email+product | response does **not** have `reused: true` |
@@ -441,6 +501,7 @@ Do **not** use `npx prisma migrate status` as a pass condition: it can never be 
 | J10 | Self-service transfer of a **lifetime** licence, then admin `action: "transfer"` | self-service → `lifetime_locked`, row **byte-identical**, no new transfer row; admin → succeeds |
 | J11 | First bind of an **unbound** lifetime key on a fresh machine | **succeeds** (T12 must not block this) |
 | J12 | Self-hosted build: expired/revoked stored key vs still-valid key with the server unreachable | blocked vs **not** blocked (fail-open preserved) |
+| J13 | **T17:** the sentinel's contract lives in `tests/exe-license-lifetime.test.ts` and the file actually fails on drift | `npx tsx --test tests/exe-license-lifetime.test.ts` → `# fail 0`; **and** mutating the threshold to `>= 3000` in a scratch copy makes it **fail** (a test that cannot fail is not evidence) |
 
 If a check fails: fix it, or **stop and log a `⚠️ OBJECTION`** on both files. Never mark a failed check as passing and never work around it by weakening an acceptance rule.
 
@@ -1401,4 +1462,103 @@ LIVE_TSC_EXIT=0
 - UNVERIFIED: J4–J12 — belong to later tasks (T5/T6/T7/T9/T10/T11/T12/T13); untouched here.
 
 READY FOR VERIFICATION - T3
+
+
+---
+
+## 2026-09-29 — SENIOR VERIFICATION RESULT: **T3 ✅ ACCEPTED + CLOSED.** Your next task is **`T17`**, then **`T4`**.
+
+Verified commit `7a9afc9` (`lib/exe-license.ts`, **+13/−0**). **This pass changed documentation only — zero product code.**
+
+Your T3 entry was accurate — including the honest `UNVERIFIED:` line about the harness. I re-derived the behaviour with a harness of **my own** rather than re-running yours, because a harness written by the author proves less than an independent one:
+
+```
+$ NODE_OPTIONS="--require ./scripts/stub-server-only.cjs" npx tsx /tmp/t3-verify.mts
+[A. sentinel is a frozen literal, and the TWO exports agree]
+  ok   ISO literal is the exact expected string
+  ok   ISO literal has NO 'Z' (Python fromisoformat compat)
+  ok   Date export is the same instant
+  ok   Date export has zero millis (so .000000 is lossless)
+  ok   both constants are stable across reads (no Date.now() drift)
+
+[B. THE COUPLING TEST: a key signed at the sentinel must emit the literal byte-for-byte]
+  ok   issued payload.expires_at === LIFETIME_EXPIRES_AT_ISO (no drift)
+  ok   signature verifies
+  ok   decode round-trips the licensee
+
+[C. isLifetimeExpiry is driven ONLY by the decoded expiry year]
+  ok   true for the sentinel Date
+  ok   true for 3000-01-01
+  ok   false for 2998-12-31 23:59:59
+  ok   false for null
+  ok   false for undefined
+
+[D. offline validator honours the sentinel TODAY...
+  ok   valid:true
+  ok   decoded year is 2999
+  ok   isLifetimeExpiry(validator's decoded date) === true
+
+[E. ...AND STILL in 2050, 2099, and 2998 (not an accident of today's clock)]
+  ok   valid in 2050
+  ok   valid in 2099
+  ok   valid in 2998
+  ok   TERMINATES in 3000 (sentinel is not truly perpetual)
+
+[F. the 1-MONTH term still dies on time (the 'immediate kill' half must NOT regress)]
+  ok   30-day key: expires_at is 2026-01-31
+  ok   isLifetimeExpiry(30-day key) === false  <-- critical: a term key must NEVER be classified lifetime
+  ok   valid at day 29
+  ok   EXPIRED at day 31
+
+ALL SENIOR CHECKS PASSED
+```
+
+```
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+
+$ git diff main self-hosted-build -- lib/exe-license-validator.ts lib/exe-license-bind.ts \
+      app/api/exe-license/status/route.ts app/api/exe-license/eligibility/route.ts lib/machine-id.ts
+(no output — the frozen five are untouched)
+
+$ npx tsc --noEmit                      -> BRANCH_TSC_EXIT=0
+$ CI=1 npx next build                   -> BUILD_EXIT=0
+$ scripts/verify-exe-license.mts        -> ALL CHECKS PASSED
+$ cd ../spaceworker && npx tsc --noEmit -> LIVE_TSC_EXIT=0 ; main @ b7330a1, tree clean
+```
+
+**Why the two extra properties mattered** (you could not have known to test them):
+
+1. **The drift guard** — `generateLicenseKey({ expiresAt: LIFETIME_EXPIRES_AT }).payload.expires_at` must equal `LIFETIME_EXPIRES_AT_ISO` **byte-for-byte**. The sentinel is hashed into the signature, so it can never be recomputed later. This is the property D4 exists to protect.
+2. **The critical negative** — a **30-day term** key must be classified `isLifetimeExpiry === false`. A term licence misread as lifetime would silently lose the live kill the owner asked for.
+
+### Three things you must know before T17
+
+- **`W12` (new):** `2999` appears at `lib/exe-license.ts:35` (signed literal), `:36` (`Date`), `:39` (threshold). Value-coupled — change the threshold without the literal and every lifetime licence silently misclassifies. You implemented D4 **verbatim**, so this is **the senior's spec nit, not your error**, and the lib is **not** being changed (the literal is frozen). **T17's test is what makes it safe** — that is the whole point of the task.
+- **§4.1b (new rule):** any check closed on a one-off script must name a **permanent home** — a `tests/*.test.ts`, an existing `scripts/verify-*.mts`, or an explicit `ACCEPTED AS ONE-OFF`. A deleted `/tmp` harness is **not** evidence. This is why T17 exists.
+- **`▶ NEXT TASK` in §2 is now `T17`**, not `T4`. That pointer is authoritative; the `T17` spec is at the **end of §2**.
+
+**T3 is closed — do not revisit it.** Start at **T17** (small, test-only), then `T4`.
+
+
+## 2026-09-29 — SENIOR PASS 6b (docs only): your next task is **`T17`**. Do **not** re-read old revision banners for the order.
+
+Follow-on to the T3 verification above. **No product code changed** — this is a sweep of the *living* parts of this file, because closing T3 made several of them false.
+
+**If you are a fresh agent, read these three things and nothing else for the order:**
+1. The **`▶ NEXT TASK` pointer at `:9`** — `T17`.
+2. **§1.4** (new) — what `T17` is and why.
+3. **§2, T17's own block** (end of the work order) — the spec you implement.
+
+**Do not trust the order written inside §1.2 or §1.3.** Both were true when written and are now stale; they are struck through and defer to `:9`. Task numbers record *discovery* order, never execution order.
+
+**The trap this sweep removed — read this, it is the one that would have cost you a session:** senior §7 and `V17` used to list `lib/exe-license.ts` under *"byte-identical to `main`, must not drift."* **That is no longer true and it is not a defect.** T3's `+13/−0` is **approved** (the D4 lifetime constants). The canary for that file is now **"zero `-` lines"** — additions are expected for the rest of Phase 5, deletions are the alarm. If you had followed the old text, you would have "fixed" a correct file by reverting the task just accepted.
+
+**Also corrected:** junior `:5` (`W1–W12`, `S1–S18`); `J1`/`J2` now show they were **proven** in pass 6, with `T17` named as their permanent owner; **`J13`** added as T17's acceptance row; T16 and T3 headings now read `✅ CLOSED` instead of "DO THIS NEXT".
+
+**What did *not* change:** every log entry below this one, including its `S1–S17` / `W1–W7` wording. Log entries are append-only history and are never retro-edited.
+
+**Your scope for the next session is unchanged: `T17` only** — a test-only task, `tests/exe-license-lifetime.test.ts`. Do **not** modify `lib/exe-license.ts`; `W12`'s coupling is guarded *by the test*, not by editing the constants. Then stop, log to both files, end with `READY FOR VERIFICATION - T17`.
+
+**`T4` (the revocation seam — the real work of this phase) follows immediately after `T17`.**
 
