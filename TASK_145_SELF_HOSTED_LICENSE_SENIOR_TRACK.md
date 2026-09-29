@@ -63,9 +63,11 @@ Rules for every agent from here on:
 ```bash
 cd /Users/mikeolab/sw-selfhost          # branch self-hosted-build — all Phase 5 work
 npx tsc --noEmit                        # typecheck (baseline recorded in §7)
-npx prisma generate                     # after ANY prisma/schema.prisma edit
-npx prisma migrate dev --name <slug>    # creates the migration file (local DB)
+CI=1 npx next build                     # build check — §3.10.5. Plain `npm run build` trips
+                                        # lib/env.ts's placeholder guard locally, by design.
 ```
+
+**Prisma commands are gated (§3.10.2 / §3.10.3 / §3.10.6):** never run a bare `npx prisma generate` (through the old symlink it overwrote the **live app's** client) and never run `npx prisma migrate dev` (**P3018** — the history cannot build a fresh DB; that is task T14). Point `DATABASE_URL` at the verification DB and use `prisma db push` (§3.10.7).
 
 ---
 
@@ -312,16 +314,124 @@ Enforce with an **explicit actor switch** in `transferExeLicenseToMachine` (E9) 
 
 ---
 
+## 3.10 REVISION 3 — senior verification of T1, + five environment corrections (2026-09-29, second senior pass)
+
+The senior **re-ran every T1 claim independently** instead of trusting the pasted log. Verdict: the **schema deliverable is ACCEPTED and T1 is closed**. But **two of the three "pre-existing blockers" T1 reported do not exist as described**, one of them was caused by our own worktree convention, and T1 came close to breaking the live app. All five corrections are below; the escalations are answered in §3.10.5.
+
+### 3.10.1 T1 — ACCEPTED (evidence re-checked by the senior)
+
+| T1 claim | Senior re-ran | Result |
+|---|---|---|
+| additive, 30 insertions / 0 deletions | `git diff 6e560ba..HEAD --stat -- prisma/` | **confirmed** (`schema.prisma` +30, one new `migration.sql` +51) |
+| `migration.sql` == Prisma's own output | read + `prisma validate` | **accepted** — 1 `CREATE TABLE`, 2 indexes, 2 FKs, 1 `ADD COLUMN … DEFAULT 0`; nothing dropped/altered |
+| the DDL is valid | `prisma db push` onto a **scratch** DB | **confirmed** — table + column + indexes present, `\d` matches D1 exactly |
+| validator untouched (canary) | `git diff --stat main self-hosted-build -- lib/exe-license-validator.ts` | **confirmed empty** |
+| V17 byte-identical set still holds | diff of all five files vs `main` | **confirmed empty** |
+| `main` untouched | `git log -1` + `git status` in `/Users/mikeolab/spaceworker` | **confirmed** `b7330a1`, clean |
+
+**T1 is closed: S1, S2, S12 pass.** Nothing in T1 is re-opened, and T2 may start. The junior did the right thing refusing to `migrate resolve` — see §3.10.4, where that instinct is now a rule backed by new evidence.
+
+### 3.10.2 Correction C1 — the `node_modules` **symlink** was the "Turbopack panic" (§0.1 was wrong)
+
+T1 reported `npm run build` failing with a Turbopack *"Symlink points out of the filesystem root"* panic and called it pre-existing. **It was caused by our own worktree convention** — `node_modules` was a symlink to `/Users/mikeolab/spaceworker/node_modules`, while `next.config.ts:26` pins `turbopack.root = __dirname`. With a **real** directory there:
+
+```
+npx next build   →  ✓ Compiled successfully in 15.5s
+                    Running TypeScript ...
+                    Finished TypeScript in 22.4s ...
+```
+
+**Evidence caveat, stated plainly:** the senior did **not** re-create the symlink to reproduce the panic — doing so would risk re-clobbering the primary checkout's client (C2). The attribution rests on (a) the symptom vanishing with the *only* changed input — the same directory contents, no longer reached through a symlink — and (b) the documented mechanism (`next.config.ts:26` pins `turbopack.root = __dirname`, and the symlink resolves outside it). Treat it as a strong but indirect cause. The rule stands regardless, because a symlinked `node_modules` is also what made C2 possible.
+
+**Rule (replaces the symlink instruction in junior §0.1):** create the worktree's `node_modules` as an APFS **clone**, never a symlink —
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+rm -f node_modules                                    # only if it is a symlink
+cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules   # clone, ~909 MB, seconds
+ls -ld node_modules                                   # must NOT start with 'l'
+```
+
+### 3.10.3 Correction C2 — a symlinked `node_modules` makes `prisma generate` **clobber the live app's client**
+
+Because the symlink pointed into the primary checkout, T1's `npx prisma generate` wrote the **branch's** schema into `/Users/mikeolab/spaceworker/node_modules/.prisma/client` — i.e. it replaced the client of the **live app**. Proven: after that generate, `main`'s own `npx tsc --noEmit` failed with ~14 errors (`Property 'suppression' does not exist on PrismaClient`, `Namespace '…/.prisma/client/index'.Prisma has no exported member 'SendingDomainSelect'`, …). The senior restored it in the primary checkout (`npx prisma generate` → `EXIT=0`) and `main`'s `tsc` is **EXIT=0** again.
+
+**Rule:** never run `npx prisma generate` from the worktree with the primary checkout's DB, and never with a symlinked `node_modules`. If a task needs the generated client, pin the **verification DB** first (C4) and confirm `node_modules` is a real directory (C1). In one sentence: *a schema change on this branch must never be able to alter the live app's build inputs.*
+
+
+
+### 3.10.4 Correction C3 — `WebExtractPage` is **not** a build blocker (claim retracted)
+
+T1 logged the stray named export in `app/dashboard/extract/page.tsx:217` as one of two pre-existing build blockers. **Withdrawn — it blocks nothing.** Evidence:
+
+- With a real `node_modules`, `npx next build` printed `Finished TypeScript in 22.4s` and continued to page-data collection. It never reported `WebExtractPage`.
+- `main` itself is **type-clean**: `npx tsc --noEmit` → `EXIT=0` in `/Users/mikeolab/spaceworker`.
+- `main`'s `.next/types` (built today 10:10) contains **no** `WebExtractPage` entry — so the error the junior saw came from **locally generated dev types**, not from `next build`.
+- The file is byte-identical to `main`, which means it cannot be a branch-specific defect.
+
+**No task is created for this.** Do not edit that file on this branch. (If it ever *does* surface under a plain `tsc`, the fix still belongs on `main` first, per §0.1.)
+
+### 3.10.5 Correction C4 — the local build command is `CI=1 npx next build`
+
+`npm run build` sets `NODE_ENV=production`, which arms `lib/env.ts`'s placeholder guard (`guardAgainstPlaceholder`, `lib/env.ts:52`). The local `.env` holds dev placeholders, so the build dies at *page-data collection* — first on `SESSION_SECRET`, then on `RESEND_API_KEY` once that one is supplied. That is the app working as designed, **not** a code defect. `lib/env.ts:53` short-circuits when `CI` is set — exactly how `.github/workflows/build-exe.yml` builds:
+
+```
+cd /Users/mikeolab/sw-selfhost
+CI=1 npx next build        # → BUILD_EXIT=0  (verified on this branch 2026-09-29)
+```
+
+**Standing rule:** the local build check is `CI=1 npx next build`. Never "fix" it by putting real secrets in `.env`, and never weaken the guard.
+
+### 3.10.6 Correction C5 — the migration history **cannot build a fresh DB** (P3018) → new task T14
+
+T1's "shadow-database P3006" is not a Prisma quirk: it is a **real ordering defect in the repository's migrations**, and it is fatal to the self-hosted installer, which must create a database from scratch. Proven on a scratch DB with the senior's own hands:
+
+```
+$ psql "$DB" -c 'CREATE DATABASE sw_migcheck_t145;'
+$ DATABASE_URL="…/sw_migcheck_t145" npx prisma migrate deploy
+Applying migration `20260914150000_add_license_claim_token`
+Error: P3018
+Database error code: 42P01
+Database error:
+ERROR: relation "ExeLicense" does not exist
+```
+
+**Cause, from the folder names alone:** `prisma/migrations/20260914150000_add_license_claim_token/migration.sql` runs `ALTER TABLE "ExeLicense" ADD COLUMN …`, but `CREATE TABLE "ExeLicense"` only happens in `20260914200000_task42_store_and_licenses` — **five hours later**. The `20260914150000` folder was authored as if `ExeLicense` already existed (on the live DB it did, hand-created), so it never broke *here* — and it silently makes every fresh install impossible. Its claim-token columns are **absent** from the `task42` `CREATE TABLE`, confirming the ALTER was meant to run after it.
+
+**Consequence for Phase 5:** this is not optional polish — a self-hosted customer cannot install at all until it is fixed. It is now **T14**. It also explains the ~27-migration gap and the two stuck `device_tools_v2` rows in the shared local DB (§3.10.7).
+
+### 3.10.7 The verification DB — `spaceworker_t145` (use it for every DB-touching task)
+
+The shared local DB cannot host Phase 5 work: it is ~27 migrations stale (**it has no `Device` table**), and `_prisma_migrations` holds **two** unterminated `20260921000000_device_tools_v2` rows — `2026-09-27 20:35` (rolled back) and `2026-09-29 03:01` (**not** rolled back, started hours before T1). P3009 therefore blocks all application. The senior provisioned a clean DB by schema, which sidesteps both problems:
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-); S="${DB%/*}/spaceworker_t145"
+psql "$DB" -c 'CREATE DATABASE spaceworker_t145;'
+DATABASE_URL="$S" npx prisma db push --skip-generate     # 50 tables, ~1s
+DATABASE_URL="$S" npx prisma generate
+```
+
+Verified present: `ExeLicense`, `ExeLicenseTransfer`, `ExeLicenseRevocation` (with the D1 indexes) and `AdminSetting.selfhostedOsPriceUsd`. **T1's DDL is therefore proven to apply cleanly** — this is the evidence that closed S2.
+
+### 3.10.8 Answers to the two escalations in the T1 log
+
+1. **"Does the `device_tools_v2` P3009 + shadow-DB P3006 belong to a task?"** — The migration-ordering half is **yes, and it is in this phase: T14** (§3.10.6), because it blocks self-hosted installation. The *stale local DB* half is **no** — it is local tooling debris, not product work; it lives as **T15** and must never be "fixed" by touching the VPS. T1 was right not to run `migrate resolve`: marking `device_tools_v2` applied by hand would lie about state, and replaying 24 unrelated migrations against a shared DB risks the live schema.
+2. **"Is the `WebExtractPage` stray export a known `main`-side defect with its own task?"** — **No, and it is not a defect: retracted entirely (§3.10.4).** It never blocked `next build`; that error came from generated dev types. There is nothing to fix and no task.
+
+---
+
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
 
 ### 4.1 What the junior may run themselves
 
 ```bash
 cd /Users/mikeolab/sw-selfhost
-npx prisma generate && npx prisma migrate dev --name add_exe_license_revocation
+CI=1 npx next build     # MUST be BUILD_EXIT=0 (plain `npm run build` trips lib/env.ts's
+                        # placeholder guard locally — see §3.10.5 / C4)
 npx tsc --noEmit        # MUST be clean; the branch baseline is EXIT=0 (§7)
-npm run build           # must succeed
 ```
+Do **not** run `npx prisma migrate dev` (C5: P3018 on a fresh DB) or bare `npx prisma generate` (C2: it clobbers the live client). Create DB fixtures against **`spaceworker_t145`** only (§3.10.7), and recreate it with `prisma db push` rather than by replaying migrations.
 Plus the narrow unit assertions listed in the junior track §V.
 
 ### 4.2 What only the senior verifies (evidence required, pasted into this file's log)
@@ -339,7 +449,7 @@ Plus the narrow unit assertions listed in the junior track §V.
 | S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | both correct, no `180` anywhere in the rendered copy |
 | S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
 | S11 | `isSelfHosted()` early-returns at `app/api/admin/exe-licenses/route.ts:50,473` still present | unchanged — revoke endpoints are inert on a customer's box |
-| S12 | Migration sanity | `npx prisma migrate status` clean; migration is **additive only** (one new table, one new column with a default) — no destructive statement |
+| S12 | Migration sanity | **Amended by §3.10.6. ** `npx prisma migrate status` **cannot** be the pass condition on this machine (stale shared DB + two stuck `device_tools_v2` rows, §3.10.7). Pass condition is now: the migration is **additive only** (one new table, one new column with a default, no destructive statement) **and** it applies cleanly to a scratch database. Verified 2026-09-29 via `prisma db push` onto `spaceworker_t145` (§3.10.7). The fresh-DB history failure (P3018) is **not** T1's — it is tracked as **T14**. |
 | S13 | **THE LIVE KILL (E7)** — with a real revoked row, POST `/api/exe-license/eligibility` with (a) the licence's original key and (b) its current bound key | **both** return `eligible: false`. Before the edit both returned `true` (W2) — this single row is what makes the owner's "immediate revocation" real. |
 | S14 | End-to-end kill on the desktop class: revoke a bound licence, then POST `/api/exe-license/status` against a local runtime holding that activation | `licensed: false`, message *"This license has been revoked…"*, and the local activation is cleared (mirrors the W1 path). |
 | S15 | **Lifetime move control (E9)** — self-service transfer of a lifetime licence, then the same transfer via admin `action: "transfer"` | self-service throws `"lifetime_locked"` **and** the `ExeLicense` row is unchanged (`boundMachineId` / `boundLicenseKey` byte-identical, no new `ExeLicenseTransfer` row); admin transfer **succeeds**. |
@@ -382,11 +492,16 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 
 | Fact | Value |
 |---|---|
-| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `68afc6b` |
+| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `70a80dd` at T1 close (senior pass) |
 | Primary checkout (live app) | `/Users/mikeolab/spaceworker` — branch `main`, HEAD `b7330a1` |
 | Merge base | `1499a9e` (2026-09-27); branch is 37 behind / 8 ahead |
-| `node_modules` | symlink to `/Users/mikeolab/spaceworker/node_modules` (this repo's worktree convention) |
-| `npx tsc --noEmit` on the untouched branch | **EXIT=0 (clean)** — `/tmp/tsc-baseline.txt` |
+| `node_modules` | **must be a real APFS clone, never a symlink** (§3.10.2/C1): `cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules` |
+| `npx tsc --noEmit` | **EXIT=0** on the branch, **and** EXIT=0 in `/Users/mikeolab/spaceworker` (`main`) after the client restore (§3.10.3) |
+| Local build | `CI=1 npx next build` → **BUILD_EXIT=0** (§3.10.5). Plain `npm run build` trips `lib/env.ts`'s placeholder guard, by design |
+| Verification DB | `spaceworker_t145` — built with `prisma db push`; 50 tables incl. `ExeLicenseRevocation` (§3.10.7) |
+| Fresh-DB migration replay | **BROKEN** — P3018 `relation "ExeLicense" does not exist` at `20260914150000` (§3.10.6) → task **T14** |
+| Shared local dev DB | ~27 migrations stale (no `Device` table) + two stuck `device_tools_v2` rows — **not usable for Phase 5** (§3.10.7) |
+| Work order | **T1 → T15** (T14 = fresh-install bootstrap; T15 = optional local drift repair) |
 | Node date check | `new Date("2999-12-31T23:59:59.000000Z")` → year 2999, valid (not `NaN`) |
 | Files byte-identical to `main` (must not drift, V17) | `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx` |
 | Task file numbers used | `TASK_145` = this phase; `TASK_146` reserved for Phase 6 |
@@ -836,4 +951,105 @@ origin
 **Schema/migration deliverable status: COMPLETE.** Blocked only on the environment items above.
 
 READY FOR VERIFICATION - T1
+
+---
+
+### 2026-09-29 — SENIOR (second pass) — **T1 VERIFIED**; two of three claimed blockers retracted, one real blocker found and tasked (T14). No product code written.
+
+**Scope:** independent re-verification of T1, plus a full re-test of its three failed checks. **No product code was written** — `git status --porcelain` in the worktree shows exactly the two `TASK_145_*` files, and the validator canary is still empty.
+
+**1. T1 — VERIFIED.** Schema + migration accepted; full evidence table in §3.10.1. **S1, S2, S12 pass.** S12's pass condition was amended (§4.2) because `migrate status` can never be clean here.
+
+**2. Corrections — T1's report was wrong on two of its three "blockers":**
+
+| T1 logged | Senior re-test | Correction |
+|---|---|---|
+| Turbopack *"Symlink … out of the filesystem root"* panic, called "pre-existing" | vanished with a real `node_modules`; the build then compiles and type-checks | **C1 — caused by our own worktree symlink**, not the branch (§3.10.2) |
+| `WebExtractPage` stray export blocks the build | `next build` finished TypeScript cleanly; `main` `tsc` = EXIT=0; `main`'s `.next/types` has no such entry | **C3 — retracted. No task; do not touch the file.** (§3.10.4) |
+| `npm run build` cannot succeed | `CI=1 npx next build` → **BUILD_EXIT=0** | **C4 — wrong command.** The guard is `lib/env.ts:52-53`, bypassed by `CI` exactly as CI does (§3.10.5) |
+| "shadow-DB P3006" is a Prisma quirk | reproduced as **P3018 / 42P01 on a fresh DB** | **C5 — a real repository defect**: `ALTER` before `CREATE` → **task T14** (§3.10.6) |
+
+**3. Two live-app incidents prevented — this is the part that mattered:**
+
+**(a) T1's `prisma generate` had replaced the live app's Prisma client.** Because `node_modules` was a symlink into the primary checkout, generating the *branch's* client wrote `/Users/mikeolab/spaceworker/node_modules/.prisma/client`. Reproduced:
+
+```
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit
+lib/campaign-recipients.ts(178,35): error TS2339: Property 'suppression' does not exist on type 'PrismaClient<…>'
+lib/sending-domain-select.ts(17,29): error TS2694: Namespace '"/Users/mikeolab/spaceworker/node_modules/.prisma/client/index".Prisma' has no exported member 'SendingDomainSelect'
+… (~14 errors)
+EXIT=2
+```
+
+Restored, then re-verified:
+
+```
+$ cd /Users/mikeolab/spaceworker && npx prisma generate ; echo GEN_EXIT=$?
+GEN_EXIT=0
+$ npx tsc --noEmit ; echo EXIT=$?
+EXIT=0
+```
+
+**(b) The push trap is still fixed** — `branch.self-hosted-build.merge = refs/heads/self-hosted-build` re-confirmed before pushing; explicit refspec only.
+
+**4. The build, honestly stated.** With a real `node_modules`:
+
+```
+$ cd /Users/mikeolab/sw-selfhost && CI=1 npx next build
+✓ Compiled successfully in 20.1s
+  Running TypeScript ...
+  Finished TypeScript in 31.2s ...
+…
+BUILD_EXIT=0
+```
+
+Plain `npm run build` instead dies at page-data collection on the placeholder guard (`SESSION_SECRET`, then `RESEND_API_KEY`) — design, not defect (`lib/env.ts:52-53`). Note: "Finished TypeScript" alone is **not** proof of type-cleanliness; `npx tsc --noEmit` is the separate gate, and it is EXIT=0.
+
+**5. The fresh-DB defect, reproduced (why T14 exists):**
+
+```
+$ psql "$DB" -c 'CREATE DATABASE sw_migcheck_t145;'
+CREATE DATABASE
+$ DATABASE_URL="…/sw_migcheck_t145" npx prisma migrate deploy
+Applying migration `20260914150000_add_license_claim_token`
+Error: P3018
+Database error code: 42P01
+Database error:
+ERROR: relation "ExeLicense" does not exist
+```
+
+Cause: `20260914150000_add_license_claim_token` runs `ALTER TABLE "ExeLicense"` while `CREATE TABLE "ExeLicense"` lives in `20260914200000_task42_store_and_licenses`. A fresh install therefore can never be built from history. Scratch DB dropped after the test.
+
+**6. Verification DB provisioned (shared local DB is unusable):**
+
+```
+migration_name                 | started_at                     | finished_at | rolled_back_at
+20260921000000_device_tools_v2 | 2026-09-27 20:35:50.46599+01   |             | 2026-09-27 20:36:02.44586+01
+20260921000000_device_tools_v2 | 2026-09-29 03:01:47.863761+01  |             |
+```
+
+…and the DB is ~27 migrations stale (no `Device` table). Built a clean one by schema instead:
+
+```
+$ DATABASE_URL="…/spaceworker_t145" npx prisma db push --skip-generate
+🚀  Your database is now in sync with your Prisma schema. Done in 905ms
+$ psql "…/spaceworker_t145" -tAc "SELECT tablename … LIKE 'ExeLicense%'"
+ExeLicense
+ExeLicenseRevocation
+ExeLicenseTransfer
+```
+
+**This is the evidence that closes S2.**
+
+**7. Answers to T1's escalations:** (a) migration ordering → **T14** (in-phase); stale local DB → **T15** (optional, local-only, never the VPS). (b) `WebExtractPage` → **not a defect; retracted, no task.**
+
+**Next actor:** junior engineer starts **T2**. DB work uses `spaceworker_t145`; the build check is `CI=1 npx next build`; `node_modules` must be a real clone.
+
+**UNVERIFIED (this pass):**
+- UNVERIFIED: no Phase 5 product behaviour exists yet, so S3–S16 remain unrun (they need T2+).
+- UNVERIFIED: the live VPS `_prisma_migrations` state was **not** inspected — no VPS connection was made, deliberately.
+- UNVERIFIED: whether the rest of the 66-folder migration chain contains **further** fresh-DB ordering faults — only the first failure is observable because `migrate deploy` stops there. T14 must drive the chain to completion on an empty DB and report whatever else surfaces.
+- UNVERIFIED: the symlink→panic attribution is indirect, per the C1 caveat in §3.10.2 (the senior did not re-create the symlink to reproduce the panic).
+
+**The junior's good judgement is on the record:** it declined to `migrate resolve`, declined to replay 24 unrelated migrations, and declined to edit a live/shared file outside its scope. Those refusals are now rules (§0.1, §6, junior §4).
 

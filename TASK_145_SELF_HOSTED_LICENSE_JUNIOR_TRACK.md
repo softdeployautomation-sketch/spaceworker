@@ -29,7 +29,13 @@
      cd /Users/mikeolab/spaceworker
      git diff --stat main self-hosted-build -- lib/exe-license-validator.ts   # MUST stay empty
      ```
-- `node_modules` in the worktree is a symlink to the primary checkout's — do **not** run `npm install` there.
+- `node_modules` in the worktree must be a **real clone, never a symlink** — the symlink broke `next build` (senior §3.10.2 / C1) and it let `prisma generate` overwrite the **live app's** Prisma client (C2). If `ls -ld node_modules` starts with `l`, rebuild it:
+  ```bash
+  cd /Users/mikeolab/sw-selfhost
+  rm -f node_modules && cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules
+  ls -ld node_modules        # must NOT start with 'l'
+  ```
+  Do **not** run `npm install` here.
 
 #### ⚠️ PUSH TRAP — read before you push anything
 
@@ -82,7 +88,39 @@ Two things the first pass got wrong, **both now corrected** — read senior trac
 
 ---
 
-## 2. WORK ORDER — T1 → T13, in this order. Do not skip ahead.
+## 1.2 REVISION 3 — T1 is VERIFIED; four environment facts changed how you build and test (2026-09-29)
+
+The senior re-ran T1's claims. **T1 is accepted and closed** — start at **T2**. Read senior **§3.10** before you write anything; it is short and it supersedes what §0.1 and your first build attempt told you.
+
+**Four corrections that change your day-to-day commands:**
+
+1. **`node_modules` must be a real clone, not a symlink** (senior C1). The symlink was the cause of the "Turbopack panic" — it was never a branch defect. Fix:
+   ```bash
+   cd /Users/mikeolab/sw-selfhost
+   rm -f node_modules && cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules
+   ls -ld node_modules          # must NOT start with 'l'
+   ```
+2. **`npm run build` DOES work** — the `WebExtractPage` export is **not** a blocker (senior C3). It never blocked `next build`; TypeScript finishes clean. Do not touch that file, and do not log it as a blocker again.
+3. **The local build command is `CI=1 npx next build`** (senior C4). Plain `npm run build` trips `lib/env.ts`'s placeholder-secret guard (`SESSION_SECRET`, then `RESEND_API_KEY`) because a local build runs with `NODE_ENV=production`; `lib/env.ts:53` skips that guard when `CI` is set — exactly how the EXE CI builds. `BUILD_EXIT=0` verified on the branch.
+4. **Never run `npx prisma generate` against the primary DB** (senior C2). Through the old symlink it overwrote the **live app's** Prisma client. For any task that needs the client, pin the verification DB first (below).
+
+**The verification DB (use this for every DB-touching task):**
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-); S="${DB%/*}/spaceworker_t145"
+psql "$DB" -c 'CREATE DATABASE spaceworker_t145;'      # only if missing
+DATABASE_URL="$S" npx prisma db push --skip-generate   # creates the full schema
+DATABASE_URL="$S" npx prisma generate                  # safe: real node_modules + scratch DB
+```
+
+Why: the shared local DB is ~27 migrations stale (it has no `Device` table), and **the migration chain cannot build a fresh DB at all** (senior C5 / new task **T14**). `db push` is schema-driven, so it produces a correct database in ~1s. `spaceworker_t145` already exists and contains T1's objects.
+
+**Two new tasks appended to the work order: `T14` (fresh-install schema bootstrap) and `T15` (optional, local drift repair only).** The order is now **T1 → T15**; T2 is unchanged and still your starting point.
+
+---
+
+## 2. WORK ORDER — T1 → T15, in this order. Do not skip ahead.
 
 ### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
 
@@ -97,6 +135,8 @@ The senior then verifies that one task and the next agent picks up at `T<n+1>`. 
 Each task has: the file(s), the exact change, and the acceptance check. T1 must be first (everything else reads the generated Prisma client).
 
 ### T1 — Schema: the revocation table + the lifetime price column
+
+> ✅ **CLOSED — VERIFIED (senior, 2026-09-29).** Shipped in `70a80dd`. Everything below worked as written **except** the acceptance text, which the senior has since corrected: `prisma migrate dev` and `prisma migrate status` **cannot** run on this machine (senior §3.10.6/§3.10.7), and the migration file was correctly produced with `prisma migrate diff` instead. The section is kept for the record — **do not re-run it, and do not "fix" the migration commands it names.** Start at **T2**.
 
 **Files:** `prisma/schema.prisma`
 
@@ -221,7 +261,7 @@ Implement senior track §3 D6 items 1–2: after a valid validation, reject unle
 
 Implement senior track §3 D6 items 3–4: extend `ApiOk` with `lifetime?: boolean`, store it beside `licenseValidated`, branch the activation success copy (lifetime → `"License accepted for {licensee} — lifetime license, no renewal needed."`; otherwise → `"License accepted for {licensee}. Valid until {date}."`), and make the Review step's Licence row read `"Lifetime"` / `"Activated"` / `"Not activated"`.
 
-**Check:** `npx tsc --noEmit`; `npm run build` succeeds.
+**Check:** `npx tsc --noEmit`; `CI=1 npx next build` → `BUILD_EXIT=0`.
 
 ### T11 — THE LIVE KILL: make the existing launch check revocation-aware (senior §3.9 D10 / E7)
 
@@ -268,7 +308,57 @@ Extend the existing gate (`shouldRedirectToSetup`, `:78`) — it already runs fr
 
 Blocked means: send the install to a licence screen that explains the state and offers a re-activation path (reuse the wizard's licence step rather than inventing a new page if that keeps the diff small — your call, report what you chose).
 
-**Check:** (a) a revoked or expired stored key is blocked with a clear message; (b) with the server unreachable and a still-valid key, the install is **NOT** blocked; (c) a non-self-hosted build is completely unaffected (`isSelfHosted()` early-return still first). `npx tsc --noEmit` clean; `npm run build` succeeds.
+**Check:** (a) a revoked or expired stored key is blocked with a clear message; (b) with the server unreachable and a still-valid key, the install is **NOT** blocked; (c) a non-self-hosted build is completely unaffected (`isSelfHosted()` early-return still first). `npx tsc --noEmit` clean; `CI=1 npx next build` → `BUILD_EXIT=0`.
+
+---
+
+### T14 — The migration history **cannot create a database** (senior §3.10.6 / C5)
+
+**Why this is Phase 5 work, not tidying:** a self-hosted customer's machine must create its own schema from scratch. Today it **cannot**, so nobody can install the product at all.
+
+**The defect (already diagnosed — re-confirm, do not re-derive):**
+`prisma/migrations/20260914150000_add_license_claim_token/migration.sql` runs `ALTER TABLE "ExeLicense" ADD COLUMN …`, but `CREATE TABLE "ExeLicense"` only happens in `20260914200000_task42_store_and_licenses` — **five hours later**. On a fresh database:
+
+```
+Applying migration `20260914150000_add_license_claim_token`
+Error: P3018
+ERROR: relation "ExeLicense" does not exist
+```
+
+The `20260914150000` folder was authored against a live DB where `ExeLicense` already existed, so it never broke here — and it silently blocks every new install.
+
+**Your job:** make a fresh install possible **without corrupting the live DB's migration state.** Report the option you chose and why.
+
+**Hard constraints:**
+- **Never edit or rename a migration the live DB has already applied.** The live `_prisma_migrations` records `20260914150000_add_license_claim_token` and `20260914200000_task42_store_and_licenses` by **name and checksum**; changing either makes the live deploy pipeline re-run or reject them.
+- **Scratch databases only.** No `migrate reset`, no `--force-reset`, no VPS connection, ever.
+- The schema-driven path is already proven on this machine (senior §3.10.7): `prisma db push` builds the full schema in ~1s. Fixing the **installer's bootstrap** to use that path is a legitimate and probably the lowest-risk answer.
+- If you instead add a squashed baseline to the migration chain, it must be **additive** to the existing list and validated on an empty scratch DB.
+
+**Check:**
+```bash
+cd /Users/mikeolab/sw-selfhost
+DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-)
+psql "$DB" -c 'CREATE DATABASE sw_t14_fresh;'
+# then run YOUR chosen bootstrap path against .../sw_t14_fresh and show the result
+```
+Pass: an empty database ends up with the complete schema (`ExeLicense`, `ExeLicenseTransfer`, `ExeLicenseRevocation`, `AdminSetting.selfhostedOsPriceUsd` present) via the chosen path.
+Fail: any rename/edit of an applied migration, or any command touching the VPS.
+
+**Then STOP.**
+
+### T15 — (OPTIONAL, local-only) the stale shared dev DB and two stuck `device_tools_v2` rows
+
+**Not product work — do this only if the owner explicitly asks, and never by touching the VPS.**
+
+Facts (senior, 2026-09-29): the shared local DB is ~27 migrations stale (**no `Device` table**) and `_prisma_migrations` holds **two** unterminated `20260921000000_device_tools_v2` rows — `2026-09-27 20:35` (rolled back) and `2026-09-29 03:01` (**not** rolled back). P3009 therefore blocks all migration application.
+
+Two acceptable outcomes: **leave it alone** (Phase 5 does not need it — use `spaceworker_t145`), or repair it **locally** after a `pg_dump` backup. If you repair it: `prisma migrate resolve --rolled-back 20260921000000_device_tools_v2`, then bring the schema up, against the **local** DB only.
+
+**Hard rules:** never `migrate resolve --applied` (it asserts success that may not be true); never connect to the VPS; never `migrate reset` without a dump.
+**Check:** if you change anything, paste the `pg_dump` proof and before/after `migrate status`. If you change nothing, say so explicitly — that is a valid result.
+
+**Then STOP.**
 
 ---
 
@@ -276,10 +366,11 @@ Blocked means: send the install to a licence screen that explains the state and 
 
 ```bash
 cd /Users/mikeolab/sw-selfhost
-npx tsc --noEmit            # MUST be EXIT=0 (branch baseline was clean)
-npm run build               # MUST succeed
-npx prisma migrate status   # MUST be clean
+npx tsc --noEmit            # MUST be EXIT=0 (branch baseline is clean)
+CI=1 npx next build         # MUST be BUILD_EXIT=0 — never plain `npm run build` (senior §3.10.5)
 ```
+
+Do **not** use `npx prisma migrate status` as a pass condition: it can never be clean on this machine (senior §3.10.7 — stale shared DB plus two stuck `device_tools_v2` rows), and the migration history itself cannot build a fresh DB (that is **T14**). For anything that needs a database, use **`spaceworker_t145`** (senior §3.10.7).
 
 | ID | Check | Pass |
 |---|---|---|
@@ -300,7 +391,7 @@ If a check fails: fix it, or **stop and log a `⚠️ OBJECTION`** on both files
 
 ## 4. DO NOT (these are automatic rejects — senior track §6)
 
-Touch `lib/exe-license-validator.ts` · change the signed payload's key set · add `SELF_HOSTED_OS` to `ALL_PRODUCTS` · use `daysValid` arithmetic for lifetime · **decide "lifetime" from anything other than the decoded `expires_at`** · skip E4 · make revoke non-idempotent or skip the ownership check · **touch `bindExeLicenseToMachine`'s first-bind path when implementing T12** (that bricks every new lifetime sale) · **make the T11/T13 checks fail-closed on a network error** (they must fail OPEN) · **leave any self-service route able to move a lifetime licence** · delete/rename `TASK_134..TASK_144` or any main-only file · run a destructive migration or migrate the live VPS DB · leave `tsc` or `build` failing · edit `app/api/store/prices/route.ts` or `admin/wallets/route.ts`.
+Touch `lib/exe-license-validator.ts` · change the signed payload's key set · add `SELF_HOSTED_OS` to `ALL_PRODUCTS` · use `daysValid` arithmetic for lifetime · **decide "lifetime" from anything other than the decoded `expires_at`** · skip E4 · make revoke non-idempotent or skip the ownership check · **touch `bindExeLicenseToMachine`'s first-bind path when implementing T12** (that bricks every new lifetime sale) · **make the T11/T13 checks fail-closed on a network error** (they must fail OPEN) · **leave any self-service route able to move a lifetime licence** · delete/rename `TASK_134..TASK_144` or any main-only file · run a destructive migration or migrate the live VPS DB · leave `tsc` or `build` failing · edit `app/api/store/prices/route.ts` or `admin/wallets/route.ts`. **Added 2026-09-29 (senior §3.10):** never **edit or rename a migration the live DB has already applied** (it is recorded by name *and checksum* — changing it breaks the live deploy pipeline) · never `prisma migrate resolve --applied` (it asserts success that may not be true) · never run `npx prisma generate` or `prisma migrate dev` from this worktree against the shared/live DB (it will overwrite the **live app's** Prisma client, or die with P3018) · never connect any command to the VPS.
 
 > ⚠️ **Corrected 2026-09-29 (Revision 2).** This list used to say *"check revocation anywhere except E1/E2/E4"*. That was **wrong** — the launch-time check **is** the design, and it is how the owner's "immediate revocation should kill it" is actually delivered. Revocation is now checked at **E1/E2/E4/E7/E8**; what remains rejected is putting revocation logic inside `lib/exe-license-validator.ts`, or any check that is not fail-open.
 
@@ -712,4 +803,23 @@ origin
 **Schema/migration deliverable status: COMPLETE.** Blocked only on the environment items above.
 
 READY FOR VERIFICATION - T1
+
+---
+
+### 2026-09-29 — SENIOR (second pass) — **T1 CLOSED: VERIFIED.** Read §1.2 and senior §3.10 before starting T2.
+
+**Your next action is T2 — not a T1 retry.** T1's schema work is accepted (`70a80dd`). The migration file was correctly produced with `prisma migrate diff` even though `migrate dev` cannot run on this machine; the DDL was independently proven to apply cleanly (senior §3.10.7).
+
+**Four things that changed for you** (full detail: senior §3.10, summary in this file §1.2):
+
+1. **`node_modules` must be a real clone, not a symlink.** The symlink was the "Turbopack panic", and it is what let your `prisma generate` overwrite the **live app's** Prisma client (`main`'s `tsc` then failed with ~14 errors until the senior restored it). §0.1 now carries the `cp -Rc` command.
+2. **`WebExtractPage` is not a build blocker — retracted.** `next build` type-checks cleanly, and `main` is EXIT=0. Do not touch that file and do not log it as a blocker again.
+3. **The build check is `CI=1 npx next build`** → `BUILD_EXIT=0` (verified by the senior). Plain `npm run build` trips `lib/env.ts`'s placeholder-secret guard by design — **never "fix" that by putting real secrets in `.env`.**
+4. **The shared local DB is unusable** (~27 migrations stale, two stuck `device_tools_v2` rows). Use **`spaceworker_t145`**, and never run `npx prisma generate` or `prisma migrate dev` from here against the shared DB.
+
+**Where your report was right, and where it was wrong.** You were right on the essentials: you refused to `migrate resolve`, refused to replay 24 unrelated migrations against a shared DB, and refused to edit a live/shared file outside your scope. Those refusals are now standing rules (this file §4). But two of your three "pre-existing blockers" were misdiagnoses — the Turbopack panic was our own symlink, and `WebExtractPage` never blocked anything. Only the third was real, and it is bigger than you framed it: **a fresh database can never be built from the migration history** (P3018, `relation "ExeLicense" does not exist`). That is now **T14**, and a self-hosted customer cannot install at all until it is fixed.
+
+**Amendments in this file:** T1 marked **CLOSED** (§2); **T14 + T15 added**; T2/T12/T13 build checks now read `CI=1 npx next build`; §3's `migrate status` line removed; §0.1's symlink instruction replaced; §4 gained the migration-safety rejects.
+
+**Next: T2** — register the self-hosted product. One task, then append your entry to **both** files and stop.
 
