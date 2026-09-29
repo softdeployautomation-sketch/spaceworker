@@ -2,11 +2,13 @@
 
 ## Owned by the junior engineering agent (writes ALL code) — verify with the senior track
 
-**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W7`), the decisions (`D1–D10`), the enforcement points (`E1–E10`), the verification protocol (`S1–S16`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
+**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W7`), the decisions (`D1–D11`), the enforcement points (`E1–E11`), the verification protocol (`S1–S17`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
 
-> ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order below now runs **T1 → T13**, not T1 → T10.
+> ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**Status: NOT STARTED.** Do not begin until you have read both files end to end.
+**▶ NEXT TASK: `T16` — close the purchase gate (full spec in §2).** Do that one task, run its acceptance check, log it, stop.
+
+**Status:** `T1` ✅ closed (`70a80dd`) · `T2` ✅ closed (`83fe756`) · **`T3`–`T16` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
@@ -78,11 +80,11 @@ Two things the first pass got wrong, **both now corrected** — read senior trac
 1. It treated revocation as **bind-time only** and explicitly rejected a launch-time check. That was wrong. The desktop EXE **already** re-checks the server on every launch (`stillValidLive` → `/api/exe-license/eligibility`), and that route just cannot see a revocation yet. **T11** adds the missing line — it is the single edit that turns "Cancel licence" from cosmetic into real. **T13** gives the self-hosted build its first runtime check, because without it a self-hosted 30-day key never expires at all.
 2. It had nothing stopping a **lifetime** licence from being moved self-service. **T12** closes that: lifetime moves are admin-only; the first bind of an unbound lifetime key is unaffected.
 
-**Revised work order: `T1 → T13`, in numeric order.** T11 is the highest-value task in the whole set, but **T1 still comes first** — everything else reads the generated Prisma client.
+**Revised work order: `T1 → T16`, in the order listed in §2 — which is *not* numeric order** (`T16` runs before `T3`). T11 is the highest-value task in the whole set, but **T1 still comes first** — everything else reads the generated Prisma client.
 
 **The two rules that govern how you report:**
 
-- **One task per session.** Complete a `T*`, run its check, append a short entry to **both** files with raw output, end with `READY FOR VERIFICATION — T<n>`, then **stop**. Do not roll into `T<n+1>`.
+- **One task per session.** Complete a `T*`, run its check, append a short entry to **both** files with raw output, end with `READY FOR VERIFICATION — T<n>`, then **stop**. Do not roll into the next task.
 - **Fail-open is a hard requirement** on T11 and T13. A customer with no internet must never be locked out. That is why the "immediate" in the owner's request means *"caught at the next launch whenever we can reach the server"* — and that is the exact wording any customer-facing copy must use.
 
 
@@ -134,7 +136,7 @@ But verifying T2 exposed a hole in **D3 itself**, so the work order gains **T16*
 
 ---
 
-## 2. WORK ORDER — T1 → T16, in this order. Do not skip ahead.
+## 2. WORK ORDER — `T1 → T16`, in this order. **Not numeric order** (`T16` comes before `T3`). Do not skip ahead.
 
 ### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
 
@@ -142,11 +144,11 @@ But verifying T2 exposed a hole in **D3 itself**, so the work order gains **T16*
 
 1. Complete the task's change **and** its acceptance check.
 2. Append a short dated entry to **both** `TASK_145_*` files: what changed (`file:line`), the exact commands you ran, their **raw** output, and anything `UNVERIFIED:`.
-3. End that entry with **`READY FOR VERIFICATION — T<n>`** and **stop**. Do not begin `T<n+1>`.
+3. End that entry with **`READY FOR VERIFICATION — T<n>`** and **stop**. Do not begin another task.
 
-The senior then verifies that one task and the next agent picks up at `T<n+1>`. If a check **fails**, do not proceed and do not weaken the check — log `⚠️ OBJECTION` and stop.
+The senior then verifies that one task and the next agent picks up at the task named by the **`▶ NEXT TASK` pointer**. If a check **fails**, do not proceed and do not weaken the check — log `⚠️ OBJECTION` and stop.
 
-Each task has: the file(s), the exact change, and the acceptance check. T1 must be first (everything else reads the generated Prisma client).
+Each task has: the file(s), the exact change, and the acceptance check. **Execution order is §2's listed order plus whatever the `▶ NEXT TASK` pointer inserts — it is deliberately *not* `T1, T2, T3, …` in sequence** (`T16` runs before `T3`: it closes a hole `T2` opened, and it is a few lines). T1 had to be first because everything else reads the generated Prisma client.
 
 ### T1 — Schema: the revocation table + the lifetime price column
 
@@ -998,4 +1000,46 @@ READY FOR VERIFICATION - T2
 - **Do T16 before T3**, then resume the normal order. One task per session, stop after it, append to both files, end `READY FOR VERIFICATION - T16`.
 
 **State at this entry:** branch `self-hosted-build`, HEAD `83fe756` + this docs-only commit, in sync with `origin/self-hosted-build`; `/Users/mikeolab/spaceworker` (`main`) clean at `b7330a1` and untouched.
+
+
+---
+
+## 2026-09-29 — SENIOR PASS 4 (docs only, no code): the ordering bug in *this* file is fixed
+
+**`▶ NEXT TASK` is still `T16`.** No task work happened in this pass and no product code changed.
+
+**What was wrong — and it would have sent the next agent to the wrong task.** This file contradicted itself about the order, and every contradiction favoured **T3**:
+
+| Line | Said | Problem |
+|---|---|---|
+| `:9` | "Status: **NOT STARTED**" | false since T1 and T2 closed |
+| `:83` | "work order: **`T1 → T13`, in numeric order**" | stale count, and it directly contradicted the `T16 — **DO THIS NEXT, before T3**` heading in §2 |
+| §2.0 | "do not begin **`T<n+1>`**" | reads as numeric sequence |
+
+A fresh agent reading top-down would have started **T3** and only met the T16 override ~300 lines later. That was a senior defect, not a junior one: an ordering rule stated in four places is an ordering rule that will eventually disagree with itself.
+
+**Fix — one source of truth.** The `▶ NEXT TASK` pointer now sits at the very top of this file (`:9`), and both files state plainly that **task numbers record *discovery* order, not execution order**. Amended: `:5` (`D1–D11` / `E1–E11` / `S1–S17`), `:7`, `:9–11`, `:83`, `:87`, `:139`, `:147`, `:149`, `:151`.
+
+**Convention, binding on both agents:** the senior moves the `▶ NEXT TASK` pointer at the end of every pass; the junior treats that pointer as **authoritative** over any `T*` heading or later revision banner.
+
+```
+$ git diff --stat
+ ...5_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md | 20 +++++++++-------
+ ...5_SELF_HOSTED_LICENSE_SENIOR_TRACK.md |  5 ++--
+ 2 files changed, 14 insertions(+), 11 deletions(-)
+
+$ grep -c 'in numeric order' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
+0
+$ grep -c 'T<n+1>' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
+0
+$ grep -n 'NEXT TASK' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
+7:  ... always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
+9:  **▶ NEXT TASK: `T16` — close the purchase gate (full spec in §2).** ...
+149: ... the next agent picks up at the task named by the **`▶ NEXT TASK` pointer**. ...
+151: ... Execution order is §2's listed order plus whatever the `▶ NEXT TASK` pointer inserts ...
+```
+
+**State at this entry:** branch `self-hosted-build`, HEAD `2b41ec0` + this docs-only commit; `/Users/mikeolab/spaceworker` (`main`) untouched at `b7330a1`.
+
+**Next action:** the junior's — task **T16**, one task, then stop.
 

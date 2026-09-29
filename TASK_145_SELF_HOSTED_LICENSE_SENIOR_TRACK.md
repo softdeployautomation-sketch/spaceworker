@@ -533,10 +533,11 @@ The hosted VPS runs the **live** app from `main`. Phase 5 lands on `self-hosted-
 The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`. That file is the work order; this file is the spec of record. The junior must:
 
 1. Work **only** in `/Users/mikeolab/sw-selfhost` on branch `self-hosted-build`.
-2. Implement §3 **D1–D10** — including **§3.9 (Revision 2)**, which **amends D5** and adds **D8–D10** — in the stated order, and stop at the first `⚠️` in the log rather than guessing.
+2. Implement §3 **D1–D11** — including **§3.9 (Revision 2)** (amends D5, adds D8–D10) and **§3.11 (Revision 4)** (adds D11) — and stop at the first `⚠️` in the log rather than guessing.
 3. Append a dated entry to **both** files when the code is written (what changed, `file:line`, commands run + raw results, anything unverified).
-4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S16). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
+4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S17). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
 5. **Stop after each task.** Report at the end of every `T*` (§2 of the junior track) rather than working through the whole list in one session — see the junior track's **§2.0 stop-after-each-task rule**.
+6. **Follow the `▶ NEXT TASK` pointer, not the task numbers.** The numbers record *discovery* order, so the execution order is deliberately not numeric: `T1 → T2 → **T16** → T3 → … → T15`. The single source of truth is the pointer at the top of the junior track (junior §2), and **the senior must move it at the end of every pass** so a fresh agent starting from a cold read cannot begin the wrong task.
 
 ## 6. Review reject list — the senior will bounce the PR for any of these
 
@@ -1299,6 +1300,38 @@ T2 implemented D3 verbatim and passed everything the spec asked for. **D3 itself
 - Doc nit accepted: `grep -n 'ALL_PRODUCTS ='` can never match (`ALL_PRODUCTS: StoreProduct[] =`). The work order now uses the loose `grep -n 'ALL_PRODUCTS'` and reads the line — robust rather than clever.
 
 **UNVERIFIED (deliberate, not gaps):** nothing in T2 is unverified. J1/J2, J4–J7 and J9–J12 stay open as later-task rows, and the end-to-end phase flow cannot exist until T11–T13.
+
+**Next actor:** junior — task **T16**, one task, then stop.
+
+
+---
+
+## 2026-09-29 — SENIOR PASS 4 (docs only): ordering made unambiguous; the `▶ NEXT TASK` pointer is installed
+
+**No product code changed. `▶ NEXT TASK` remains `T16` (junior §2).**
+
+Verifying T2 added **T16** out of numeric order. I recorded that correctly here (§3.11.3 `:480`, `:572`, `:1303`) but left the junior file's earliest regions asserting the opposite — `:83` still read *"`T1 → T13`, in numeric order"* and `:9` still read *"Status: NOT STARTED"*. A cold-reading agent would have started **T3**. Root cause: the execution order was asserted in four places at once; the fix is one canonical statement plus pointers.
+
+**Changes in this pass:**
+- Junior `:9` — new **`▶ NEXT TASK: T16`** pointer, plus a true status line (`T1`/`T2` closed). Declared **authoritative** over any `T*` heading or revision banner.
+- Junior `:83`, `:139`, `:151` — order restated as **non-numeric**, with the reason (`T16` before `T3`: it closes a hole T2 opened, for a few lines).
+- Junior `:7` — task numbers are **discovery** order, not execution order.
+- Senior §5 — new item **6**: follow the pointer, and **the senior must move it at the end of every pass**.
+- Senior §5 `:536` `D1–D10` → **`D1–D11`**; `:538` `S1–S16` → **`S1–S17`**.
+
+```
+$ git diff --stat
+ ...5_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md | 20 +++++++++-------
+ ...5_SELF_HOSTED_LICENSE_SENIOR_TRACK.md |  5 ++--
+ 2 files changed, 14 insertions(+), 11 deletions(-)
+
+$ grep -c 'in numeric order' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
+0
+$ grep -c 'T<n+1>' TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md
+0
+```
+
+**Process note for every later pass:** the pointer is now the *only* authoritative statement of order. Whenever a task is inserted out of numeric order, moving that pointer belongs in the **same** commit — otherwise the next agent starts the wrong task.
 
 **Next actor:** junior — task **T16**, one task, then stop.
 
