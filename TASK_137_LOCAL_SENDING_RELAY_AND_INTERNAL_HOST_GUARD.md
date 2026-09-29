@@ -148,3 +148,37 @@ not yet earning anything). The relay itself and the signing are done.
 - full-tree rsync + `scripts/deploy-vps.sh` (**not** a `--files-from` list — see
   HOW_WE_MOVE_FAST §2a for the sibling trap), then a full-tree md5 parity check
   against `/opt/spaceworker`
+
+### Confirmed on the live server (not just locally)
+
+Deploy log: `localhost:3500/ -> 200`, `-- maintenance OFF`, `-- done`; service
+`active`, Postfix `active` (master etime < the reload, so the config is really
+live), OpenDKIM `active`, allowlist present in the deployed `.env`.
+
+The E2E script ran the **deployed** `lib/smtp-host-guard.ts` with production's own
+`SMTP_INTERNAL_RELAY_HOSTS` and then sent through the relay as the app does:
+
+```
+=== 1. guard: the operator's relay ===
+allowlist parsed: [{"host":"127.0.0.1","port":587}]
+  ok   accepts 127.0.0.1:587
+  ok   still REFUSES 127.0.0.1:3306 (not a port scanner)
+  ok   still REFUSES cloud metadata
+=== 2. real send through the relay (the app's own transport config) ===
+  ok   relay accepted the message after authenticating — 250 2.0.0 Ok: queued as 301C413D7C9
+
+ALL CHECKS PASSED
+```
+
+...and that queued message really arrived, signed and verifiable:
+
+```
+301C413D7C9: status=sent (delivered to mailbox)     <-- not "accepted and dropped"
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/simple; d=watsonandrade9382.ca.lu; s=sw
+DKIM VERIFY: PASS
+```
+
+Full-tree parity against `/opt/spaceworker`: **424/424 files, 0 missing, 0 stale,
+0 extra — PARITY OK** (code trees + `next.config.ts`, `proxy.ts`, `package.json`).
+All temporary probe/verify scripts were removed from both the repo and the server.
+
