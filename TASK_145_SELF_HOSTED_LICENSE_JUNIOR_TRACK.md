@@ -51,6 +51,8 @@ npx tsc --noEmit     # baseline on the untouched branch: EXIT=0 (senior track §
 
 ## 1. THE PROMPT YOU WERE GIVEN (implementation assignment)
 
+> ⚠️ **HISTORICAL — DO NOT FOLLOW THE TEXT IN THIS BLOCK.** It is the *first* assignment and it is **superseded by §1.1 (Revision 2)**. In particular the sentence *"Revocation is … deliberately not checked on app launch"* is **wrong** — the launch-time check **is** the design and is delivered by **T11**/**T13**. Read §1.1 and senior **§3.9**, then work from §2. Keep this block only as a record of what was originally asked.
+
 > You are implementing **Phase 5** of the SpaceWorker self-hosted build: a self-hosted product licence that can be issued as **either** a time-bound term (e.g. 30 days) **or** perpetual/lifetime, with an **admin-cancelable** revocation path. Work in `/Users/mikeolab/sw-selfhost` on branch `self-hosted-build`.
 >
 > Read `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` completely before writing anything. Implement **D1–D7** in the order given in §2 below. The signing scheme, the signed payload shape, and `lib/exe-license-validator.ts` **do not change** — a lifetime grant is the same payload with a far-future `expires_at`. Revocation is enforced **only** where the app already talks to our servers (bind, transfer, and the admin issue-reuse check); it is deliberately **not** checked on app launch.
