@@ -92,6 +92,11 @@ type CampaignDetail = {
   // spam?" lever). Neither is ever read by a real send.
   testRecipientPool: string[];
   testFromOverride: string | null;
+  // Task 144 — "html" (default) sends the body as HTML plus a derived plaintext
+  // alternative; "text" sends a plain-text-ONLY message (no HTML part at all).
+  // A CAMPAIGN-level field, not a test-only one: a test that sends a different
+  // shape from the real send cannot predict the real send.
+  bodyFormat: string | null;
   // Task 33 — a temporary pinned-override window active on this campaign:
   // { subject, bodyHtml, fromAddress, remaining }. While set, the drain sends
   // every recipient this exact content instead of rotating, and decrements
@@ -209,6 +214,8 @@ export default function CampaignDetailPage() {
   const [testTargetBusy, setTestTargetBusy] = useState(false);
   const [newTestTarget, setNewTestTarget] = useState("");
   const [testFromInput, setTestFromInput] = useState("");
+  const [bodyFormatBusy, setBodyFormatBusy] = useState(false);
+  const [bodyFormatError, setBodyFormatError] = useState("");
   // Task 32 — "Manually edit and test": a 4th, clearly-secondary path in the
   // decision box. The user drafts a subject/body (and optional From) tweak,
   // live-tests it via the extended test-send route WITHOUT touching stored
@@ -260,6 +267,32 @@ export default function CampaignDetailPage() {
     setCampaign((prev) => (prev ? { ...prev, ...partial } : prev));
   }, []);
 
+  // Task 144 — re-pull ONLY the queue rows (and leave `loading`/`testResult`
+  // untouched, both of which `load()` resets — clearing them here would yank a
+  // test result out from under a user who is still reading it).
+  //
+  // Why this is needed at all: `patchCampaign` above documents that it never
+  // touches `items` — true for the TEST-TIME actions it was written for, none of
+  // which change the queue. But the live-sending poll below also uses it, and
+  // sending is exactly the thing that DOES change every item's status. So the
+  // queue table used to keep showing "queued" for rows the drain had already
+  // sent, until the user manually reloaded the page. Confirmed live 2026-09-29:
+  // campaign "blasting2" sat showing three "Queued" rows while the database had
+  // all three at status "sent" with real sentAt timestamps.
+  const reloadItems = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await fetch(`/api/campaigns/${id}`);
+      if (!res.ok) return;
+      const fresh = (await res.json()) as CampaignDetail;
+      // Replace the whole array rather than merging: the server is the source of
+      // truth for order + pagination, and this runs once, after sending ends.
+      setCampaign((prev) => (prev ? { ...prev, items: fresh.items } : prev));
+    } catch {
+      // Transient network error — the row states are no worse than before.
+    }
+  }, [id]);
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -283,7 +316,32 @@ export default function CampaignDetailPage() {
           status?: string;
         };
         if (cancelled) return;
-        if (Array.isArray(data.items)) setLiveFeed(data.items);
+        if (Array.isArray(data.items)) {
+          setLiveFeed(data.items);
+          // Task 144 — fold these per-item statuses into the queue table. The
+          // poll's payload is {id, toEmail, status, sentAt, error}, which is
+          // exactly what each row renders, so no extra fetch is needed; the
+          // 4s cadence outpaces the drain's 5-45s send jitter, so a row can't
+          // realistically be sent and missed. Merging by id also leaves the
+          // array's order (and therefore pagination) untouched.
+          const updates = data.items;
+          setCampaign((prev) => {
+            if (!prev) return prev;
+            const byId = new Map(updates.map((u) => [u.id, u]));
+            let changed = false;
+            const items = prev.items.map((it) => {
+              const u = byId.get(it.id);
+              if (!u) return it;
+              const status = u.status || it.status;
+              const sentAt = u.sentAt ?? it.sentAt;
+              const error = u.error ?? it.error;
+              if (status === it.status && sentAt === it.sentAt && error === it.error) return it;
+              changed = true;
+              return { ...it, status, sentAt, error };
+            });
+            return changed ? { ...prev, items } : prev;
+          });
+        }
         if (data.counts) setLiveStats({ counts: data.counts, byMailbox: data.byMailbox ?? {} });
         // The poll only ever ran because status WAS "sending" a moment ago
         // (the effect's own guard below) — if the backend has since moved it
@@ -294,6 +352,13 @@ export default function CampaignDetailPage() {
         // its own `!== "sending"` guard returns early.
         if (data.status && data.status !== campaign?.status) {
           patchCampaign({ status: data.status });
+          // Task 144 — this is the LAST tick this poll ever runs, and its
+          // 5-item window cannot cover every row that just changed (a 500-item
+          // batch finishes in one go from this component's point of view).
+          // Without this refresh, any row the window missed would keep its
+          // stale "queued" badge permanently, since nothing re-fetches items
+          // after sending ends.
+          void reloadItems();
         }
       } catch {
         // Transient network error — keep the last-good feed rather than clearing it.
@@ -309,7 +374,9 @@ export default function CampaignDetailPage() {
     // identity (empty deps array of its own) — safe to depend on here even
     // though it's a forward reference; it never changes, so it can never
     // cause this effect to needlessly re-run/restart the interval.
-  }, [id, campaign?.status, patchCampaign]);
+    // `reloadItems` is likewise stable ([id] only) and is what settles the
+    // queue rows when sending finishes — see its note above.
+  }, [id, campaign?.status, patchCampaign, reloadItems]);
 
   // Prepend a freshly-created DeliverabilityCheck (test-send / draft test-send)
   // so the top test-send box's "latest check" line redraws without a refetch.
@@ -368,6 +435,36 @@ export default function CampaignDetailPage() {
       setTestResult({ outcome: "failed", error: "Network error while confirming." });
     } finally {
       setConfirming(false);
+    }
+  }
+
+  // Task 144 — flip this campaign between HTML and plain-text-only.
+  //
+  // Deliberately the ONLY place the format is set on an existing campaign: the
+  // value decides the shape of every future real send, so it is a saved campaign
+  // property (the toast below says which), not a throwaway test switch. The
+  // server rejects anything but "html"/"text" rather than defaulting silently,
+  // so an error here means nothing was written — never a half-applied change.
+  async function saveBodyFormat(next: "html" | "text") {
+    if (!id || bodyFormatBusy) return;
+    setBodyFormatBusy(true);
+    setBodyFormatError("");
+    try {
+      const res = await fetch(`/api/campaigns/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bodyFormat: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; bodyFormat?: string };
+      if (!res.ok) {
+        setBodyFormatError(data.error ?? "Couldn't change the body format.");
+        return;
+      }
+      patchCampaign({ bodyFormat: data.bodyFormat ?? next });
+    } catch {
+      setBodyFormatError("Network error while changing the body format.");
+    } finally {
+      setBodyFormatBusy(false);
     }
   }
 
@@ -1025,6 +1122,45 @@ export default function CampaignDetailPage() {
             )}
           </div>
 
+          {/* Task 144 — HTML vs plain-text-only. Rendered in the test-setup panel
+              because that is where triage happens, but it is explicitly labelled
+              as a SAVED campaign setting: it changes every future real send, which
+              is the point (a test that sends a different shape than the real send
+              predicts nothing). */}
+          <div className="border-t border-zinc-200 pt-3 dark:border-zinc-800">
+            <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Message format
+            </p>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              An HTML-only message is itself a spam signal. Plain text removes all markup — the strongest
+              lever here short of fixing domain authentication. This is saved on the campaign, so test
+              sends and the real send always match.
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {(["html", "text"] as const).map((fmt) => {
+                const active = (campaign.bodyFormat ?? "html") === fmt;
+                return (
+                  <button
+                    key={fmt}
+                    type="button"
+                    onClick={() => void saveBodyFormat(fmt)}
+                    disabled={bodyFormatBusy || testBusy}
+                    className={
+                      active
+                        ? "rounded-lg border border-violet-500 bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700 disabled:opacity-50 dark:bg-violet-950 dark:text-violet-300"
+                        : "rounded-lg border border-zinc-300 px-2.5 py-1 text-xs font-medium text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-white/5"
+                    }
+                  >
+                    {bodyFormatBusy ? "Working…" : fmt === "html" ? "HTML" : "Plain text only"}
+                  </button>
+                );
+              })}
+              {bodyFormatError && (
+                <span className="text-xs text-red-600 dark:text-red-400">{bodyFormatError}</span>
+              )}
+            </div>
+          </div>
+
           <button
             type="button"
             onClick={() => setTestSetupOpen(false)}
@@ -1413,7 +1549,28 @@ export default function CampaignDetailPage() {
 
           {latestCheck && (
             <p className="mt-2 text-sm">
-              Latest check: <span className={`font-medium ${latestCheck.status === "delivered" ? "text-emerald-600" : "text-red-600"}`}>{latestCheck.status}</span>
+              Latest check:{" "}
+              {/* Task 144 — a test sent to a specific inbox (testRecipientOverride)
+                  is never auto-verified: we have no IMAP access to that address, so
+                  the stored status is only ever "the SMTP send succeeded". Printing
+                  the raw status there said "delivered" in green, which reads as a
+                  confirmed-good result and contradicts the "landed in unknown" note
+                  printed right next to it. Confirmed live 2026-09-29 — a user read
+                  that green "delivered" as "the test passed" while nothing had
+                  actually arrived. Say what it really is instead. */}
+              <span
+                className={`font-medium ${
+                  latestCheck.status === "failed"
+                    ? "text-red-600"
+                    : campaign.testRecipientOverride
+                      ? "text-amber-600"
+                      : "text-emerald-600"
+                }`}
+              >
+                {campaign.testRecipientOverride && latestCheck.status !== "failed"
+                  ? "sent — not auto-verified"
+                  : latestCheck.status}
+              </span>
               {latestCheck.landedIn ? (
                 <span className="text-zinc-500">
                   {" — landed in "}

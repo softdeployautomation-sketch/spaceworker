@@ -166,10 +166,13 @@ export default function CampaignsPage() {
   const [miMode, setMiMode] = useState<"top" | "position" | "every">("top");
   const [miPosition, setMiPosition] = useState("1");
   const [miEveryN, setMiEveryN] = useState("10");
-  // Human-assisted deliverability fallback — use this same test recipient for
-  // EVERY deliverability check on this campaign instead of the platform seed
-  // mailbox (useful when it's unreliable, or you'd rather eyeball your own inbox).
-  const [miUseAsTestTarget, setMiUseAsTestTarget] = useState(false);
+  // Task 144 — standalone deliverability test target. This used to live INSIDE
+  // the queue-insert block as a `useAsTestTarget` checkbox, which meant setting a
+  // test address necessarily also queued it as a real recipient — so testing in
+  // your own inbox sent you the campaign too. Now it's its own opt-in address
+  // that is never inserted into the queue.
+  const [dTargetEnabled, setDTargetEnabled] = useState(false);
+  const [dTargetEmail, setDTargetEmail] = useState("");
   // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
   // before the rotation advances (clamped server-side to [1, 1000]; default 1).
   const [rotateEvery, setRotateEvery] = useState("1");
@@ -666,9 +669,13 @@ export default function CampaignsPage() {
                   mode: miMode,
                   position: Number(miPosition) || 0,
                   everyN: Number(miEveryN) || 1,
-                  useAsTestTarget: miUseAsTestTarget,
                 },
               }
+            : {}),
+          // Task 144 — the standalone test target. Sent independently of
+          // manualInsert, so a test address is never a queued recipient.
+          ...(dTargetEnabled && dTargetEmail.trim()
+            ? { testRecipientOverride: dTargetEmail.trim() }
             : {}),
         }),
       });
@@ -1253,18 +1260,40 @@ export default function CampaignsPage() {
                     </div>
                   )}
                   {miEnabled && miEmail.trim() && (
-                    <label className="flex items-start gap-2 text-xs text-zinc-500 dark:text-zinc-400">
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                      This address becomes a real recipient and receives the campaign. If you only want to
+                      eyeball test sends, use the test target below instead — it is never added to the queue.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Task 144 — standalone deliverability test target (was a checkbox
+                  inside the block above, which forced this address into the queue
+                  as a real recipient). */}
+              {!fromSearchJobId && (
+                <div className="flex flex-col gap-2 rounded-lg border border-zinc-200 p-3 dark:border-zinc-700">
+                  <label className="flex items-center gap-2 text-sm font-medium">
+                    <input type="checkbox" checked={dTargetEnabled} onChange={(e) => setDTargetEnabled(e.target.checked)} className="h-4 w-4 accent-zinc-900" />
+                    Send my deliverability tests to a specific inbox
+                  </label>
+                  {dTargetEnabled && (
+                    <>
                       <input
-                        type="checkbox"
-                        checked={miUseAsTestTarget}
-                        onChange={(e) => setMiUseAsTestTarget(e.target.checked)}
-                        className="mt-0.5 h-3.5 w-3.5 accent-zinc-900"
+                        type="email"
+                        value={dTargetEmail}
+                        onChange={(e) => setDTargetEmail(e.target.value)}
+                        placeholder="you@example.com"
+                        className="w-56 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                       />
-                      <span>
-                        Use this recipient as my deliverability test target instead of the platform seed mailbox — every
-                        test-send (including later batch checks) goes straight to it, and you confirm delivery yourself.
-                      </span>
-                    </label>
+                      <p className="text-xs text-zinc-500 dark:text-zinc-400">
+                        Every test-send (and later batch check) goes straight here instead of the platform seed
+                        mailbox, and you confirm delivery yourself. This address is <strong>not</strong> added to
+                        the recipient queue. Use a mailbox you can actually open — the test result can never be
+                        auto-verified for an address we have no IMAP access to, so it will always read as
+                        &ldquo;check your inbox&rdquo;.
+                      </p>
+                    </>
                   )}
                 </div>
               )}

@@ -5,6 +5,7 @@ import { decryptSecretOrThrow } from "./mailbox-crypto";
 import { pollSeedMailbox } from "./imap";
 import { resolveSeedMailbox } from "./seed-mailbox";
 import { renderMerge } from "./render-merge";
+import { buildCampaignMessage, normalizeBodyFormat } from "./campaign-message";
 import { randomBytes } from "crypto";
 import { mayEnterSending } from "./trial";
 
@@ -39,7 +40,17 @@ const POLL_ATTEMPTS = 6; // 6 * 20s = 120s total
  */
 export async function runTestSend(opts: {
   campaignId: string;
+  // Task 144 — owner of the campaign. Required rather than optional on purpose:
+  // it mints each recipient's own unsubscribe token, so an omitted owner would
+  // silently produce a dead unsubscribe link instead of failing loudly.
+  userId: string;
   mailbox: TransporterMailbox;
+  /**
+   * Task 144 — the campaign's body format ("html" | "text"). Passed in rather
+   * than looked up so a test send always matches the real send: a probe that
+   * sends a different message SHAPE from the live send cannot predict it.
+   */
+  bodyFormat?: string | null;
   variant: { subject: string; bodyHtml: string };
   // Exactly one of these is provided. `seed` = a registered, IMAP-pollable
   // SeedMailbox (platform default or a user's own) — placement is verified
@@ -73,18 +84,39 @@ export async function runTestSend(opts: {
 
   try {
     const transport = await transporterForMailbox(opts.mailbox);
-    await transport.sendMail({
-      // Task 30, item 4 — a test send is a one-shot per mailbox (no per-recipient
-      // rotation has run here), so use the mailbox's first configured From
-      // address (empty list => send as the SMTP username). Task 32 — an explicit
-      // probe `from` override (live draft test) wins when provided.
-      from: opts.from ?? (opts.mailbox.fromAddresses?.[0] || opts.mailbox.username),
-      to: toAddress,
+    // Task 30, item 4 — a test send is a one-shot per mailbox (no per-recipient
+    // rotation has run here), so use the mailbox's first configured From address
+    // (empty list => send as the SMTP username). Task 32 — an explicit probe
+    // `from` override (live draft test) wins when provided.
+    const from = opts.from ?? (opts.mailbox.fromAddresses?.[0] || opts.mailbox.username);
+    // Task 144 — the SAME builder the real queue drain uses, so this probe sends
+    // the message a real recipient would actually get: a plaintext alternative
+    // (never HTML-only) and the full List-Unsubscribe mechanism. Assembling the
+    // two paths separately is exactly what let them drift — confirmed live
+    // 2026-09-29, where a hand-built plain-text message through this same mailbox
+    // reached the inbox while the app's HTML-only test send did not. See
+    // lib/campaign-message.ts.
+    const message = buildCampaignMessage({
       subject: isOverride
         ? renderMerge(opts.variant.subject, {})
         : `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
-      html: renderMerge(opts.variant.bodyHtml, {}),
-      headers: isOverride ? {} : { "X-SpaceWorker-Test": token },
+      bodyHtml: renderMerge(opts.variant.bodyHtml, {}),
+      from,
+      toEmail: toAddress,
+      userId: opts.userId,
+      format: normalizeBodyFormat(opts.bodyFormat),
+    });
+    await transport.sendMail({
+      from,
+      to: toAddress,
+      ...message,
+      // Seed-mailbox mode adds a marker header so the IMAP poll can tie a found
+      // message back to exactly this send (the seed mailbox is a single row
+      // shared across all users, so "something arrived" is not proof THIS
+      // campaign delivered). Override mode has no poll at all, and the whole
+      // point of it is to show the REAL message a recipient would get, so it
+      // stays free of test markers.
+      ...(isOverride ? {} : { headers: { ...message.headers, "X-SpaceWorker-Test": token } }),
     });
   } catch (e) {
     sendError = e instanceof Error ? e.message : "Test send failed at SMTP";
@@ -198,6 +230,9 @@ export async function probeCampaignPlacement(opts: {
   // runTestSend. Used during a pinned-override window so the batch probe judges
   // the SAME From address the pinned sends actually use, not mailbox[0]'s.
   from?: string | null;
+  // Task 144 — the campaign's body format, so the batch probe sends the same
+  // message SHAPE the real sends will.
+  bodyFormat?: string | null;
 }): Promise<{ outcome: DeliverabilityOutcome; landedIn: "inbox" | "spam" | "unknown"; checkId: string; error?: string }> {
   const mailbox = opts.mailboxes[0];
   if (!mailbox) return { outcome: "failed", landedIn: "unknown", checkId: "", error: "No sending mailbox available" };
@@ -214,10 +249,12 @@ export async function probeCampaignPlacement(opts: {
   if (opts.overrideRecipient) {
     const r = await runTestSend({
       campaignId: opts.campaignId,
+      userId: opts.userId,
       mailbox,
       variant,
       overrideRecipient: opts.overrideRecipient,
       ...(opts.from ? { from: opts.from } : {}),
+      ...(opts.bodyFormat ? { bodyFormat: opts.bodyFormat } : {}),
     });
     return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
   }
@@ -229,10 +266,12 @@ export async function probeCampaignPlacement(opts: {
 
   const r = await runTestSend({
     campaignId: opts.campaignId,
+    userId: opts.userId,
     mailbox,
     variant,
     seed,
     ...(opts.from ? { from: opts.from } : {}),
+    ...(opts.bodyFormat ? { bodyFormat: opts.bodyFormat } : {}),
   });
   return { outcome: r.outcome, landedIn: r.landedIn, checkId: r.checkId, error: r.error };
 }
@@ -585,8 +624,11 @@ export async function runCampaignDiagnostics(opts: {
     }
     return runTestSend({
       campaignId: campaign.id,
+      userId: opts.userId,
       mailbox: primary,
       variant: probe.variant,
+      // Task 144 — the probe must send the same message SHAPE the real send will.
+      bodyFormat: campaign.bodyFormat,
       ...(overrideRecipient ? { overrideRecipient } : { seed: seed! }),
       ...(probe.from ? { from: probe.from } : {}),
     })

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
 import { leadToRecipient, insertManualRecipients } from "@/lib/campaign-recipients";
+import { resolveTestTarget } from "@/lib/test-target";
 import { createCampaign } from "@/lib/campaign-create";
 
 interface VariantInput {
@@ -45,6 +46,17 @@ export async function POST(req: Request) {
     // Task 29, item 3 — insert an ad-hoc test recipient into the queue at a
     // chosen position ({ email, mode: "top"|"position"|"every", position?, everyN? }).
     manualInsert?: unknown;
+    // Task 144 — a STANDALONE deliverability test target: an address that every
+    // test-send (and later batch check) goes to, WITHOUT being added to the
+    // queue. Before this existed, the only way to set a test target was the
+    // `manualInsert.useAsTestTarget` flag above — which necessarily also
+    // queued that address, so a user who just wanted to eyeball tests in their
+    // own inbox ended up sending them the real campaign too. Confirmed live
+    // 2026-09-29: one Comcast address received 4 tests + 2 queued sends within
+    // four minutes, all with identical subject/body.
+    testRecipientOverride?: unknown;
+    // Task 144 — "html" (default) or "text" (plain-text-only sends).
+    bodyFormat?: unknown;
     csv?: string;
     searchJobId?: string;
     leadIds?: unknown;
@@ -266,6 +278,18 @@ export async function POST(req: Request) {
   // from the very first test-send.
   let testRecipientOverride: string | null = null;
   const miRaw = body.manualInsert;
+  const miForTarget = miRaw && typeof miRaw === "object" ? (miRaw as Record<string, unknown>) : null;
+  // Task 144 — the precedence rule lives in lib/test-target.ts so it is testable
+  // without a route handler; see that module for why the standalone field wins.
+  const target = resolveTestTarget({
+    standalone: typeof body.testRecipientOverride === "string" ? body.testRecipientOverride : null,
+    manualInsertEmail: typeof miForTarget?.email === "string" ? miForTarget.email : null,
+    manualInsertUseAsTestTarget: miForTarget?.useAsTestTarget === true,
+  });
+  if (target.error) {
+    return NextResponse.json({ error: target.error }, { status: 400 });
+  }
+  testRecipientOverride = target.testRecipientOverride;
   if (miRaw && typeof miRaw === "object") {
     const mi = miRaw as Record<string, unknown>;
     const email = typeof mi.email === "string" ? mi.email.trim() : "";
@@ -277,7 +301,9 @@ export async function POST(req: Request) {
         position: Number(mi.position),
         everyN: Number(mi.everyN),
       });
-      if (mi.useAsTestTarget === true) testRecipientOverride = email;
+      // NB: `mi.useAsTestTarget` is NOT handled here — resolveTestTarget above
+      // already read it, so honouring it again here would create a second source
+      // of truth for which address tests go to.
     }
   }
 
@@ -286,6 +312,8 @@ export async function POST(req: Request) {
     name,
     mailboxIds,
     ...(decoupled ? { subjects, bodies } : { variants }),
+    // Task 144 — "html" (default) or "text" (plain-text-only sends).
+    ...(typeof body.bodyFormat === "string" ? { bodyFormat: body.bodyFormat } : {}),
     recipients: sendRecipients,
     rotateEvery,
     batchSize,

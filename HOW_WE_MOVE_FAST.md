@@ -1047,6 +1047,32 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   next command reported as "DIFFERS from backup". Mutate one file in one command,
   assert the failure, restore, and verify with `cmp` — in that order, never in
   parallel with itself.
+- **A test path that builds its own message is not testing the real path.** The
+  campaign queue drain and the deliverability test-send each assembled their OWN
+  MIME payload, and they drifted: the drain sent a plaintext alternative plus the
+  full `List-Unsubscribe` mechanism, the test send went **HTML-only with no
+  unsubscribe** (TASK_144). So the gate that blocks a user from sending was
+  grading a message no recipient would ever get — and an HTML-only
+  no-unsubscribe message is itself a spam heuristic. The tell was already in
+  hand: a hand-built **plain-text** "hello" through the same mailbox reached the
+  Comcast inbox while the app's test send did not. Same SMTP, same credentials,
+  same destination — only the message shape differed. They are now one builder
+  (`lib/campaign-message.ts`). If a test is meant to predict a real send, it must
+  call the same builder the real send calls.
+- **A require-hook stub must not stub the thing under test's collaborator.**
+  Adding that shared builder to `lib/deliverability.ts` made
+  `tests/deliverability-probes.test.ts` die with
+  `Missing required environment variable: APP_BASE_URL`: the new import chain is
+  `deliverability.ts → campaign-message.ts → unsubscribe-token.ts → env`, and
+  `lib/env.ts` calls `required()` at **import** time. Two traps, both real:
+  (a) stub the **env read**, not `./campaign-message` — stubbing the builder
+  would silently satisfy any future probe that *does* build a message, i.e. a
+  green test for a function that never ran; (b) **the same module can be
+  requested under two spellings** — `unsubscribe-token.ts` asks for `@/lib/env`
+  while `campaign-message.ts` asks for `./env`, so matching only one left the
+  suite failing with a byte-identical error and looked like the fix had not
+  applied. The env stub also has to sit **outside** the parent gate, because by
+  the time env is requested the parent is no longer the module under test.
 
 
 

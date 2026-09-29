@@ -19,6 +19,8 @@
     "test:mailguard": "tsx --test tests/smtp-host-guard.test.ts",
     "test:domains": "tsx --test tests/sending-domains.test.ts",
     "test:presets": "tsx --test tests/smtp-provider-presets.test.ts",
+    "test:message": "tsx --test tests/campaign-message.test.ts",
+    "test:target": "tsx --test tests/test-target.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",

@@ -59,14 +59,31 @@ export async function PATCH(
   }
   const { id } = await params;
 
-  let body: { savedAsTemplate?: unknown };
+  // Task 144 — this route now accepts EITHER field, so a campaign's body format
+  // can be flipped from the detail page while triaging ("did plain text land?").
+  // Requiring at least one keeps the old single-field contract intact: a caller
+  // that sends only `savedAsTemplate` behaves exactly as before, and an empty
+  // body is still rejected rather than silently updating nothing.
+  let body: { savedAsTemplate?: unknown; bodyFormat?: unknown };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
-  if (typeof body.savedAsTemplate !== "boolean") {
+  const hasTemplate = body.savedAsTemplate !== undefined;
+  const hasFormat = body.bodyFormat !== undefined;
+  if (!hasTemplate && !hasFormat) {
+    return NextResponse.json({ error: "Provide savedAsTemplate and/or bodyFormat" }, { status: 400 });
+  }
+  if (hasTemplate && typeof body.savedAsTemplate !== "boolean") {
     return NextResponse.json({ error: "savedAsTemplate must be a boolean" }, { status: 400 });
+  }
+  // Reject an unsupported value instead of silently normalising it: this control
+  // decides whether every future send of this campaign carries an HTML part, and
+  // quietly treating a typo as "html" would hide a settings mistake behind a
+  // successful-looking save.
+  if (hasFormat && body.bodyFormat !== "html" && body.bodyFormat !== "text") {
+    return NextResponse.json({ error: 'bodyFormat must be "html" or "text"' }, { status: 400 });
   }
 
   const owned = await prisma.emailCampaign.findFirst({ where: { id, userId: session.userId }, select: { id: true } });
@@ -76,8 +93,11 @@ export async function PATCH(
 
   const updated = await prisma.emailCampaign.update({
     where: { id },
-    data: { savedAsTemplate: body.savedAsTemplate },
-    select: { id: true, savedAsTemplate: true },
+    data: {
+      ...(hasTemplate ? { savedAsTemplate: body.savedAsTemplate as boolean } : {}),
+      ...(hasFormat ? { bodyFormat: body.bodyFormat as string } : {}),
+    },
+    select: { id: true, savedAsTemplate: true, bodyFormat: true },
   });
   return NextResponse.json(updated);
 }

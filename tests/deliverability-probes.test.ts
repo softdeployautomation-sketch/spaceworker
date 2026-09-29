@@ -28,6 +28,29 @@ function installRequireHook(): void {
   loader._load = function patched(request, parent, isMain) {
     if (request === "server-only") return {};
     const from = parent?.filename ?? "";
+    // Task 144 — stubbed OUTSIDE the parent gate below on purpose.
+    //
+    // Why: lib/deliverability.ts now imports the shared message builder
+    // (./campaign-message) so the test send and the real send build identical
+    // MIME. That builder reaches ./env via ./unsubscribe-token, and lib/env.ts
+    // calls required() at import time — it would throw without the whole
+    // production environment. The require chain is
+    // deliverability.ts -> campaign-message.ts -> unsubscribe-token.ts -> env,
+    // so by the time env is requested the parent is unsubscribe-token.ts and no
+    // longer matches the gate below.
+    //
+    // The tempting alternative is to stub ./campaign-message itself, like the
+    // other entries — but that is the wrong fix: the stub would silently satisfy
+    // any FUTURE probe that does build a message, i.e. a green test for a
+    // function that never ran. Stubbing only the env read keeps the real builder
+    // and the real HMAC signing loaded. The fake still carries a real
+    // sessionSecret because unsubscribe-token.ts signs with it.
+    if (
+      (request === "./env" || request === "@/lib/env") &&
+      (from.endsWith("/lib/unsubscribe-token.ts") || from.endsWith("/lib/campaign-message.ts"))
+    ) {
+      return { env: { appBaseUrl: "https://spaceworker.test", sessionSecret: "test-secret-for-unit-tests" } };
+    }
     if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
       // Every one of these is only reachable from a function this test does not
       // call — stubbed purely so the module can be loaded without a live DB,

@@ -379,6 +379,19 @@ model EmailCampaign {
   // still rotates. Additive, so every pre-Task-29 campaign path is untouched.
   subjects              String[]              @default([])
   bodies                String[]              @default([])
+  // Task 144 — how the bodies above are interpreted and sent:
+  //   "html" (default) — sent as HTML with a derived plaintext alternative.
+  //   "text"           — sent as a PLAIN-TEXT-ONLY message (single text/plain
+  //                      part, no HTML body at all).
+  // Why this exists: an HTML-only single-part message is a well-documented spam
+  // heuristic, and "text" is the strongest available lever against it short of
+  // changing domain authentication — it removes the markup heuristics entirely
+  // rather than trying to defeat them. It is a CAMPAIGN-level field on purpose,
+  // not a test-only toggle: a test that sends a different shape from the real
+  // send cannot predict the real send, and this codebase already paid for that
+  // lesson once (see lib/campaign-message.ts — the test send used to go out
+  // HTML-only while the real send included a plaintext part).
+  bodyFormat            String                @default("html")
   searchJobId           String?
   // "draft" | "pending_test_confirm" | "sending" | "done" | ...
   // New campaigns start at "pending_test_confirm": a real send is gated behind the

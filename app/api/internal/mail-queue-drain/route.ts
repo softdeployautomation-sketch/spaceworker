@@ -5,8 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { env } from "@/lib/env";
 import { transporterForMailbox } from "@/lib/mailer-send";
 import { classifySmtpError, nextRetryAt } from "@/lib/smtp-error-classify";
-import { htmlToPlainText } from "@/lib/html-to-text";
-import { generateUnsubscribeToken } from "@/lib/unsubscribe-token";
+import { buildCampaignMessage, normalizeBodyFormat } from "@/lib/campaign-message";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
 import { notifyUser } from "@/lib/notify";
@@ -232,28 +231,28 @@ export async function POST(req: Request) {
             ? pin.fromAddress
             : item.resolvedFromAddress || mailbox.fromAddresses[0] || mailbox.username;
 
-        // List-Unsubscribe (RFC 8058, one-click) + a plaintext alternative —
-        // an HTML-only single-part message with no unsubscribe mechanism is
-        // both a well-documented spam heuristic and, for cold outreach, a real
-        // compliance gap. The mailto: arm needs no server round-trip and
-        // always works even if this app is down; the https: arm is the real
-        // one-click action most modern mail clients actually use.
-        //
-        // The List-Unsubscribe HEADER alone is not enough — confirmed live
-        // 2026-09-28: it's invisible metadata most mail clients only surface
-        // as their OWN button under specific bulk-sender eligibility rules
-        // (Gmail in particular), so a real recipient often sees nothing at
-        // all. A VISIBLE footer link in the actual body is what guarantees a
-        // recipient can always find it, on every client, regardless of that
-        // eligibility logic — the header stays too, for clients that do
-        // support true one-click.
-        const unsubscribeToken = generateUnsubscribeToken(item.campaign.userId, item.toEmail);
-        const unsubscribeUrl = `${env.appBaseUrl}/api/unsubscribe/${unsubscribeToken}`;
-        const htmlWithFooter =
-          `${html}<p style="margin-top:24px;padding-top:12px;border-top:1px solid #e5e7eb;` +
-          `font-size:12px;color:#6b7280">If you'd rather not receive these, ` +
-          `<a href="${unsubscribeUrl}" style="color:#6b7280;text-decoration:underline">unsubscribe here</a>.</p>`;
-        const textWithFooter = `${htmlToPlainText(html)}\n\n--\nUnsubscribe: ${unsubscribeUrl}`;
+        // The unsubscribe mechanism (RFC 8058 headers + a visible footer link)
+        // and the plaintext alternative are built by lib/campaign-message.ts —
+        // see that module for why both matter, and for why they are deliberately
+        // NOT assembled here. Everything above is only what is specific to a
+        // QUEUED send: which variant/pin supplied the content, and which From
+        // address this recipient rotates to.
+        // Task 144 — assembled by the SAME builder the test/preview send uses, so
+        // a test message IS the message a real recipient gets (plaintext
+        // alternative + List-Unsubscribe headers + visible footer). These used to
+        // be built separately here and in lib/deliverability.ts, and they drifted:
+        // the test send went out HTML-only with no unsubscribe, so the
+        // deliverability gate was grading a message nobody would ever receive.
+        // See lib/campaign-message.ts.
+        const message = buildCampaignMessage({
+          subject,
+          bodyHtml: html,
+          from,
+          toEmail: item.toEmail,
+          userId: item.campaign.userId,
+          // Task 144 — a text-only campaign omits the HTML part entirely.
+          format: normalizeBodyFormat(item.campaign.bodyFormat),
+        });
 
         await transport!.sendMail({
           // Task 30, item 4 — multi-From rotation: prefer the per-item resolved
@@ -262,13 +261,7 @@ export async function POST(req: Request) {
           // a pinned override's proven From wins over all of these while set.
           from,
           to: item.toEmail,
-          subject,
-          html: htmlWithFooter,
-          text: textWithFooter,
-          headers: {
-            "List-Unsubscribe": `<mailto:${from}?subject=unsubscribe>, <${unsubscribeUrl}>`,
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-          },
+          ...message,
         });
         await prisma.emailQueueItem.update({
           where: { id: item.id },
@@ -401,6 +394,8 @@ export async function POST(req: Request) {
       bodies: pin ? [pin.bodyHtml] : c.bodies,
       variants: pin ? undefined : c.variants.map((v) => ({ subject: v.subject, bodyHtml: v.bodyHtml })),
       overrideRecipient: c.testRecipientOverride,
+      // Task 144 — probe the same message SHAPE the real sends will use.
+      bodyFormat: c.bodyFormat,
       ...(pin && pin.fromAddress ? { from: pin.fromAddress } : {}),
     });
 

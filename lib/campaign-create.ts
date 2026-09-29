@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { buildQueueItemRows, filterSuppressed, resolveFromAddressesByMailbox, type RecipientInput } from "@/lib/campaign-recipients";
 import { env } from "@/lib/env";
 import { assignLinkTokens, hasHttpLinks, rewriteLinks } from "@/lib/link-cloak";
+import { normalizeBodyFormat } from "@/lib/campaign-message";
 
 // Task 27, Part B — the ONE shared place that creates an EmailCampaign +
 // its CampaignVariant rows + its EmailQueueItem roster in a single transaction.
@@ -30,6 +31,10 @@ export interface CreateCampaignInput {
   // cross-combined per recipient, and no CampaignVariant rows are created.
   subjects?: string[];
   bodies?: string[];
+  // Task 144 — "html" | "text"; how the bodies above are sent. Omitted keeps the
+  // DB default ("html"), i.e. the pre-existing behaviour, so automation template
+  // cloning and every existing caller are unaffected.
+  bodyFormat?: string | null;
   recipients: RecipientInput[];
   rotateEvery?: number;
   // Task 29, item 6 — per-batch deliverability checkpoint size (default 50, waits
@@ -158,6 +163,9 @@ export async function createCampaign(input: CreateCampaignInput): Promise<Create
         maxSendDelaySeconds,
         // Decoupled content: store the independent (cloak-rewritten) lists; legacy keeps [].
         ...(decoupled ? { subjects, bodies } : {}),
+        // Task 144 — only write it when explicitly asked for; omit otherwise so the
+        // schema default applies (no behaviour change for existing callers).
+        ...(input.bodyFormat ? { bodyFormat: normalizeBodyFormat(input.bodyFormat) } : {}),
         searchJobId: input.searchJobId ?? null,
         testRecipientOverride: input.testRecipientOverride?.trim() || null,
       },

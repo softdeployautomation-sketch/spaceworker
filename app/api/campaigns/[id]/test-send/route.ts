@@ -148,12 +148,12 @@ export async function POST(
   if (overrideRecipient) {
     for (const mailbox of mailboxes) {
       if (results.length > 0) await new Promise((r) => setTimeout(r, 3_000 + Math.random() * 4_000));
-      results.push(await runTestSend({ campaignId: campaign.id, mailbox, variant, overrideRecipient, ...(draftFrom ? { from: draftFrom } : {}) }));
+      results.push(await runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox, variant, overrideRecipient, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}) }));
     }
   } else {
     results.push(
       ...(await Promise.all(
-        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, mailbox, variant, seed: seed!, ...(draftFrom ? { from: draftFrom } : {}) })),
+        mailboxes.map((mailbox) => runTestSend({ campaignId: campaign.id, userId: campaign.userId, mailbox, variant, seed: seed!, bodyFormat: campaign.bodyFormat, ...(draftFrom ? { from: draftFrom } : {}) })),
       )),
     );
   }
