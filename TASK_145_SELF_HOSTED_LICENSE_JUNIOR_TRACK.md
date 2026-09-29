@@ -2,19 +2,33 @@
 
 ## Owned by the junior engineering agent (writes ALL code) — verify with the senior track
 
-**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W12`), the decisions (`D1–D11`), the enforcement points (`E1–E11`), the verification protocol (`S1–S18`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
+**Companion (must read first):** `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md` — it holds the verified findings (`V1–V18` + `W1–W15`), the decisions (`D1–D11`), the enforcement points (`E1–E11`), the verification protocol (`S1–S19`) and the **reject list (§6)**. This file is the work order; that file is the spec of record. If the two ever disagree, the senior track wins and you append a `⚠️` entry.
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T5` — enforcement: block revoked licences at bind and transfer (`lib/exe-license-bind.ts`, full spec in §2).** `T4` shipped the seam (`lib/exe-license-revocation.ts`); **`T5` is the first task that makes revocation actually bite**, by calling it from `bindExeLicenseToMachine` and `transferExeLicenseToMachine`. Do that one task, run its acceptance check, log it, stop. **`T6` (admin API) follows immediately after.**
+**▶ NEXT TASK: `T6` — admin API: lifetime issuance, revoke/unrevoke, reuse filter, `revoked` flag (`app/api/admin/exe-licenses/route.ts`, full spec in §2).** `T5` is **CLOSED** — revocation now bites at bind and transfer (`lib/exe-license-bind.ts`, `e8f1b14`), and the senior proved it at runtime (18/18, senior §3.15). **`T6` is the task that lets an admin actually create a revocation** — until it lands, `ExeLicenseRevocation` can only be written by hand, so the guards `T5` added are real but unreachable in production. **Two items in `T6` are not optional:** `E4` (the issue-reuse filter must exclude revoked licences, or "Cancel licence" is cosmetic) and the `revoked` flag on the admin list. Do that one task, run its acceptance check, log it, stop. **`T7` (admin UI) follows.**
 
-> ⚠️ **`T5` edits `lib/exe-license-bind.ts`, which `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts` and `app/dashboard/settings/licenses-section.tsx` are **shared**, not frozen — `T5`, `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned `T5`, a diff in `lib/exe-license-bind.ts` is **correct and expected** — do not revert it and do not log an objection about it.
+> ⚠️ **`T5`, `T8` and `T12` edit files that `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts` and `app/dashboard/settings/licenses-section.tsx` are **shared**, not frozen — `T5` (done), `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned one of those three tasks, a diff in the shared file is **correct and expected** — do not revert it and do not log an objection about it.
 
-**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `d69b0da`) · **`T5`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `01bc495`) · **`T6`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
-## 1.5 ~~REVISION 6 (2026-09-29) — `T17` is CLOSED. `T4` is next.~~ **⚠️ SUPERSEDED BY §1.6 — `T4` is now CLOSED and `T5` is next. Revision banners are dated records; the `▶ NEXT TASK` pointer at `:9` is authoritative. **Read this before §2.**
+## 1.7 — REVISION 8 (2026-09-29): `T5` is CLOSED. `T6` is next.
+
+**What just happened.** `T5` landed (`lib/exe-license-bind.ts`, diff `27 2`) and the senior verified it in pass 9 — **including at runtime**, not just structurally: an 18-assertion harness against real `ExeLicense`/`Payment` rows on `spaceworker_t145` returned `# pass 18 / # fail 0`. Revocation now genuinely bites at bind and transfer. **You do not need to redo any of it.** Four results worth knowing before you touch `T6`:
+
+1. **The guard sits before the `already_bound` branch, not just before the cross-account check.** A licence that was bound *then* revoked returns `"revoked"` — never `already_bound` — so a cancelled licence is never offered a transfer code. This is deliberate: it is what makes "admin-move-only" hold for the lifetime class. Do not reorder these guards.
+2. **Fail-closed was proven, not assumed** (`S19` / `W15`). With the revocation table missing, a bind **throws** and writes nothing. This is the **one** place in Phase 5 where fail-open is wrong — bind/transfer already writes to the DB. Do not add a `try/catch` that swallows it, and do not copy the fail-open rule from `T11`/`T13` into `T5`'s code.
+3. **No caller needed changing** (`E10`). Because `"revoked"` is not `"already_bound"`, all three self-service callers already surface the exact spec message through their generic `400` that carries `err.message`. Do not re-plumb them.
+4. **`W15` — a new standing rule that binds you too:** any invariant stated in a hand-off prompt or in §4 (reject list) **must have a corresponding `S`-row**, or it is decoration. If you are told something is mandatory, it will now be checked.
+
+**Read `T6`'s spec in §2 carefully before you start.** `E4` is the one that matters most: the admin "issue" action currently returns any existing **unexpired** key, so unless the reuse filter excludes **revoked** rows, cancelling a licence and re-issuing one hands the customer back the very key you just cancelled — making the entire feature cosmetic. This is the highest-value edit in the whole work order.
+
+
+---
+
+## 1.5 ~~REVISION 6 (2026-09-29) — `T17` is CLOSED. `T4` is next.~~ **⚠️ SUPERSEDED BY §1.7 — `T5` is CLOSED and `T6` is next. Revision banners are dated records; the `▶ NEXT TASK` pointer at `:9` is authoritative. **Read this before §2.**
 
 **What just happened.** `T17` landed and the senior verified it in pass 7 — `tests/exe-license-lifetime.test.ts` (9 subtests, `# pass 9 / # fail 0`) now pins the lifetime sentinel's contract, replacing the deleted `/tmp` harness. The senior proved the test **can fail** by mutating `isLifetimeExpiry`'s threshold to `>= 3000` in place: subtest 7 goes red, `# pass 8 / # fail 1` — then restored and proved the restore three ways. So `S2`/`S3` are now backed by evidence the next agent can re-run. **You do not need to redo any of it.**
 
@@ -80,7 +94,7 @@ npx tsc --noEmit     # baseline on the untouched branch: EXIT=0 (senior track §
 
 ---
 
-## 1.6 REVISION 7 (2026-09-29) — `T4` is CLOSED. `T5` is next. **Read this before §2.**
+## 1.6 ~~REVISION 7 (2026-09-29) — `T4` is CLOSED. `T5` is next.~~ **⚠️ SUPERSEDED BY §1.7 — `T5` is CLOSED and `T6` is next.** Revision banners are dated records; the `▶ NEXT TASK` pointer at `:9` is authoritative. **Read this before §2.**
 
 **`T4` ACCEPTED** (`d69b0da`): `lib/exe-license-revocation.ts` — new file, **`+109/−0`**, exactly 3 functions + 1 exported error class, matching D2 line-by-line. Re-verified by the senior, not taken on trust. Nothing imports it yet, so the hosted app is provably unaffected.
 
@@ -287,7 +301,7 @@ Match this codebase's conventions — verified imports (`lib/exe-license-bind.ts
 
 **Check:** `npx tsc --noEmit` clean; `grep -c '^export ' lib/exe-license-revocation.ts` → 3–4 (the three functions + at most one error class).
 
-### T5 — Enforcement: block revoked licences at bind and transfer
+### T5 — Enforcement: block revoked licences at bind and transfer ✅ **CLOSED 2026-09-29 (`e8f1b14`, diff `27 2`) — verified at runtime (18/18), senior §3.15. Do not redo.**
 
 **File:** `lib/exe-license-bind.ts`
 
@@ -304,6 +318,8 @@ grep -n 'revoked' lib/exe-license-bind.ts        # 4+ hits: 2 guards, 2 unions
 npx tsc --noEmit
 ```
 Accept: the guard sits **before** the cross-account check in both functions (ordering matters: a revoked licence must never surface as `machine_taken`).
+
+> ✅ **Correction after T5 landed (the spec understated this).** The guard landed at `:121`, which is before **both** the cross-account check (`:155`) *and* the `already_bound` transfer-code branch. Runtime proof: a licence bound to machine A, then revoked, then re-bound to machine B returns **`"revoked"` — never `already_bound`**. That is stricter than this task asked for, and it is what stops a cancelled licence from being offered a transfer code (see senior §3.15.3). **Never reorder these guards.** The corrected acceptance rule for any future guard placement here: *revoked is checked first, before every other outcome.*
 
 ### T6 — Admin API: lifetime issuance, revoke/unrevoke, reuse filter, `revoked` flag
 
@@ -2119,5 +2135,54 @@ The committed T5 diff (commit `e8f1b14`) is exactly the additive import + two un
 **UNVERIFIED: the self-service/admin callers' error mapping** — the three call sites that map `LicenseBindError.code` (senior `E10`: `auto-bind`, `password-login`, `payment-status`) are not edited by T5 and were not exercised; a `"revoked"` code reaching one of those mappers is untested here (it compiles because the union is additive, but no UI string is asserted).
 
 READY FOR VERIFICATION - T5
+
+
+## 2026-09-29 — SENIOR pass 9: **`T5` ✅ VERIFIED** (runtime, 18/18). Next task is **`T6`**. **Documentation only — zero product code.**
+
+**Verdict: `T5` ACCEPTED.** `lib/exe-license-bind.ts` @ `e8f1b14`, diff `27 2`. The junior's log correctly flagged the runtime behaviour as unproven, so the senior proved it instead of accepting a structural tick.
+
+### Canaries + gates (re-run by the senior, not read off the junior's log)
+
+```
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --stat main self-hosted-build -- lib/license-service.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ npx tsc --noEmit                                    → TSC_EXIT=0
+$ CI=1 npx next build                                 → BUILD_EXIT=0
+$ npm run test:license                                → 1..9  # pass 9  / # fail 0
+$ npm run test:setup                                  → 1..29 # pass 29 / # fail 0
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit  → LIVE_TSC_EXIT=0
+```
+
+The junior's `27 2` is attributable to `T5` alone: the 2 deletions are the two `| "machine_taken",` lines re-terminated so `| "revoked",` can follow — the only way to extend a trailing union without reordering it.
+
+### What the senior added that the junior could not (S5, S7, and NEW S19)
+
+An 18-assertion harness against **real** rows on `spaceworker_t145` — `# pass 18 / # fail 0`. Three results matter to you:
+
+1. **The ordering property is stronger than the spec asked for.** A licence bound to machine A, *then* revoked, *then* re-bound to machine B returns **`"revoked"` — never `"already_bound"`** (`:121` precedes both `:155` cross-account and the already-bound transfer branch). That is deliberate and load-bearing: `auto-bind`'s transfer-code path is now unreachable for a cancelled licence, and it is what `T12` will rely on for the lifetime admin-move-only rule.
+2. **Fail-closed is proven, not assumed.** With the revocation table dropped: the read raises, the bind **throws**, **nothing is written**, and the failure is **not** misreported as `"revoked"`. This is the **one** place in Phase 5 where fail-open would be wrong — do **not** copy the `T11`/`T13` fail-open rule into `T5`'s guards, and do not add a `try/catch`.
+3. **No caller change was needed** (`E10`): `"revoked"` is not `"already_bound"`, so all three self-service callers surface the spec message through their generic `400` carrying `err.message`.
+
+### `W15` — a new standing rule that binds you
+
+The T5 prompt made fail-closed a hard invariant and the reject list made violating it an auto-reject — **but no `S`-row checked it**, so it was unverified until the senior invented the proof. **Rule: every invariant asserted in a hand-off prompt or the reject list must have a corresponding `S`-row, or it is decoration.** If you are told something is mandatory, it will now be checked.
+
+### Environment facts for the next DB-backed task (§3.15.2 — recorded so you do not repeat these)
+
+Loose `/tmp/*.ts` fails on top-level `await` (`ERR_REQUIRE_ASYNC_MODULE`) → use `.mts`. `.env` is **not** auto-loaded → `set -a && . ./.env && set +a`, else `lib/env.ts:7` throws `Missing required environment variable: APP_BASE_URL`. `/tmp` scripts must import by absolute path. `server-only` still needs `NODE_OPTIONS="--require .../scripts/stub-server-only.cjs"`.
+
+### Docs moved this pass (your next-task authority)
+
+- ▶ pointer → **`T6`**; status line updated; `§1.7` (Revision 8) added; `§1.5`/`§1.6` struck as superseded; the `T5` heading marked **CLOSED**.
+- The `T5` block's acceptance rule was **corrected**: it said the guard must sit before the cross-account check; the corrected rule is *revoked is checked first, before every other outcome*. If you ever add a guard in this file, that is the rule.
+- Companion summary bumped to `W1–W15` / `S1–S19`.
+
+**UNVERIFIED: admin-created revocations end-to-end** — nothing can create an `ExeLicenseRevocation` through the app yet, so the guards are real but currently unreachable in production. **`T6` is that door.**
+
+**UNVERIFIED: the desktop/Python-side classification of a revoked key** — this pass proved the Node/DB path only; that side belongs to `T13`/`S14`.
 
 

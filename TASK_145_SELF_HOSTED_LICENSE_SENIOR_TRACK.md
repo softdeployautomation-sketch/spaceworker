@@ -660,6 +660,40 @@ The T4 prompt's `STEP 4` named `lib/exe-license.ts` → must read `13 0`. That i
 
 D2's prose required a *typed* error class and then said *"Exactly three exports; nothing else"*. The junior's T4 note resolved it as `3–4`, which is the correct reading (T5/T6 must `catch` it, so it must be exported) — but a spec that contradicts itself invites a future agent to "fix" it by un-exporting the class, silently breaking T5's error mapping. **D2's wording corrected** to "exactly three functions — plus exactly one exported error class".
 
+### 3.15 — REVISION 8 (2026-09-29): T5 accepted — revocation bites at bind and transfer
+
+T5 (`e8f1b14` + logs `01bc495`) is **ACCEPTED**. Diff is exactly `27 2` on `lib/exe-license-bind.ts` — the two deletions are the two `| "machine_taken",` lines re-terminated so `| "revoked",` can follow, which is the only way to extend a trailing-union without reordering it.
+
+| Verified | Evidence |
+|---|---|
+| import + **2** guards + **2** error unions | `:8`, `:41`, `:116-126` (E1), `:257`, `:317-325` (E2) — diff read line-by-line |
+| guard placement | `revoked` at `:121` precedes `machineTakenByAnotherAccount` at `:155`; E2 at `:320` precedes `:357` |
+| message **byte-identical** in both | the spec string, verbatim |
+| fail-closed (no `try/catch`) | confirmed by runtime (S19), not by reading |
+| canaries | validator **empty**; `exe-license.ts` `13 0`; `license-service.ts` **empty** |
+| gates | `tsc` `0`; `CI=1 next build` `BUILD_EXIT=0`; `test:license` **9/9**; `test:setup` **29/29** |
+| caller mapping (E10) | `revoked` is **not** `already_bound`, so it falls to the generic `400` that carries `err.message` in all three self-service callers (`auto-bind:178`, `password-login:122`, `payment-status:101`). No caller needed a change. |
+| hosted-safe | on `main` nothing is ever revoked, so the guard is a no-op |
+
+**18-assertion runtime harness (pass 9), on `spaceworker_t145` with real `ExeLicense`/`Payment` rows — `# pass 18 / # fail 0`:** control bind succeeds (guard is a no-op) · revoke flips `isExeLicenseRevoked` · `reason`/`revokedBy`/`userId` round-trip · double-revoke leaves exactly 1 row · **bound→revoked→rebind returns `revoked`, never `already_bound`** · E2 blocks the transfer · **fail-closed**: table dropped → bind throws, nothing written, not misreported as `revoked` · unrevoke clears the gate, is idempotent, and the transfer then succeeds. Scratch DB left clean (0 rows in `ExeLicense` / `ExeLicenseRevocation` / `ExeLicenseTransfer`; table restored with all 3 constraints).
+
+#### 3.15.1 `W15` — an invariant declared only in a prompt is an unverified assertion
+
+The T5 hand-off prompt made **fail-closed** a hard invariant, and the reject list made violating it an automatic reject. **No `S`-row ever checked it** — so the property that most needed proving (because over-applying the *fail-open* rule from T11/T13 would silently defeat revocation) had no verification at all, and T5's own acceptance check was purely structural (`grep` + `tsc`). It was only caught because the senior invented the proof at verification time. **Rule:** every invariant asserted in a hand-off prompt or the reject list must have a corresponding `S`-row, or it is decoration. S19 is that row for fail-closed; `W15` is the same defect class as `W12` (a contract with no guard).
+
+#### 3.15.2 Environment facts for any DB-backed scratch proof (learned the hard way, pass 9)
+
+Three failures the next agent will otherwise repeat:
+
+1. **A scratch proof must be `.mts`, not `.ts`** — `tsx` compiles a loose `/tmp/*.ts` as CJS and **top-level `await` fails** (`ERR_REQUIRE_ASYNC_MODULE`). The repo's own harnesses are `.mts` for exactly this reason.
+2. **`.env` is not auto-loaded** — a bare `tsx` run dies on `Missing required environment variable: APP_BASE_URL` (`lib/env.ts:7`). Source it: `set -a && . ./.env && set +a`.
+3. **Import the target modules by absolute path** from a `/tmp` script (`/Users/mikeolab/sw-selfhost/lib/...`), or keep it inside the worktree. And `server-only` still needs `NODE_OPTIONS="--require .../scripts/stub-server-only.cjs"`.
+4. Run it with `DATABASE_URL=<scratch>` **and** `EXE_LICENSE_SECRET=<anything>`; `DATABASE_URL` first, then `.env` must not win — export after sourcing.
+
+#### 3.15.3 The revoked-before-`already_bound` property is load-bearing, not incidental
+
+Because E1 sits *before* the already-bound branch, `app/api/exe-license/auto-bind/route.ts:113`'s transfer-code path is unreachable for a revoked licence. That is the difference between "a cancelled customer is told no" and "a cancelled customer is emailed a code, consumes it, and is *then* told no" — and it is what makes D10's admin-move-only rule hold for the **lifetime** class too. Any future reordering of these guards must preserve it; it is now an explicit S5 assertion, not an accident of edit order.
+
 ---
 
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
@@ -719,9 +753,9 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S2 | Round-trip a lifetime key end-to-end with real code paths (script, not mocks): `generateLicenseKey({expiresAt: LIFETIME_EXPIRES_AT})` → `verifyLicenseKey` → `validateLicenseKey` | ✅ **VERIFIED 2026-09-29 (pass 6)** — re-derived by the senior with its own 23-assertion harness, **not** the junior's: `valid: true`, decoded year `2999`, plus the byte-drift guard (`payload.expires_at === LIFETIME_EXPIRES_AT_ISO`) and validity in **2050 / 2099 / 2998**. ⚠️ The evidence was **ephemeral** (both harnesses in `/tmp`, the junior's deleted) — `T17` makes it permanent. |
 | S3 | 30-day key through the same path | ✅ **VERIFIED 2026-09-29 (pass 6)** — `valid: true` at day 29, **`expired` at day 31**, and the critical negative `isLifetimeExpiry(term.expiresAt) === false`. ⚠️ Permanent via `T17`. |
 | S4 | Bind a lifetime key with a real `ExeLicense` row | `boundLicenseKey` decodes to `expires_at` starting `2999-` (verbatim preservation — V8) |
-| S5 | Revoke that licence, then attempt a bind on a fresh machine | throws with code `"revoked"`, and the DB row is unchanged |
+| S5 | Revoke that licence, then attempt a bind on a fresh machine | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime on `spaceworker_t145` with real `ExeLicense`/`Payment` rows (18-assertion senior harness, §3.15.1): `LicenseBindError` with code **`"revoked"`** and the spec message verbatim. **The ordering claim is proven, not inferred:** the licence was bound to `t5-machine-a` *first*, *then* revoked, *then* a bind for `t5-machine-b` attempted — it returned **`revoked`, never `already_bound`**, so E1 precedes *both* the cross-account check (as the spec required) **and** the already-bound/transfer-code path (a stronger position than the spec asked for). **Consequence, now a documented property:** a revoked licence can never be offered a transfer code, so self-service recovery from a cancellation is impossible by construction. The `ExeLicense` row was unchanged. |
 | S6 | Revoke, then POST `action: "issue"` for the same user+product | response is **not** `reused: true` — a NEW key is minted (E4) |
-| S7 | Un-revoke, then bind | succeeds again (reversibility) |
+| S7 | Un-revoke, then bind | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime, same harness. After `unrevokeExeLicense` the gate clears (`isExeLicenseRevoked` → `false`), a **second** `unrevokeExeLicense` call does not throw (idempotent, as D2 requires), and a `transferExeLicenseToMachine` that had been blocking now **succeeds** — `boundMachineId` actually moved to `t5-machine-c`. Revocation is fully reversible end-to-end. Also proven: `revokeExeLicense` called twice leaves **exactly 1** row (the `upsert` idempotency claim in D2). |
 | S8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` — new product not leaked to the public store |
 | S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | both correct, no `180` anywhere in the rendered copy |
 | S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
@@ -733,6 +767,7 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S16 | **Self-hosted runtime check (E8)** — (a) expired/revoked stored key, (b) still-valid key with the server unreachable (W4) | (a) blocked with a clear message; (b) **NOT** blocked (fail-open preserved). Confirms W4 is closed without breaking offline use. |
 | S17 | **The purchase gate (E11 / T16)** — `GET /api/billing/checkout?kind=btc&product=selfhosted_os` and `POST /api/billing/submit {product:"selfhosted_os"}` | ✅ **VERIFIED 2026-09-29 (pass 5).** both return **400 `{"error":"Unknown product"}`** — byte-identical to a typo'd id — and **no `Payment`/`User` row is created**. The same calls with `product=extractor_exe` still succeed unchanged (proves the guard is a no-op for sellable products). Before T16 the first two returned 200 and persisted a $0 pending payment (W8/W9). |
 | S18 | **The lifetime sentinel's contract is permanently pinned (T17 / `W12`)** — `npm run test:license` | ✅ **VERIFIED 2026-09-29 (pass 7).** `tests/exe-license-lifetime.test.ts` exists, **9 subtests, `# pass 9 / # fail 0`**, and asserts the **drift guard** (`generateLicenseKey({expiresAt: LIFETIME_EXPIRES_AT}).payload.expires_at === LIFETIME_EXPIRES_AT_ISO` byte-for-byte) plus the **critical negative** (`isLifetimeExpiry(<30-day term>) === false`, term valid at day 29 / expired at day 31). **Can-fail proven** by mutating `isLifetimeExpiry`'s threshold to `>= 3000` — subtest 7 fails, `# pass 8 / # fail 1`. ⚠️ **Method corrected (§3.13.2):** the mutation must be **in place**, *not* in a scratch copy — a `/tmp` copy fails on module resolution even unmutated and would fake a positive. Restore must be proven three ways (§4.1c). Discharges §3.12.2 for the sentinel. |
+| S19 | **`W15` — the fail-closed invariant is actually enforced (T5)** — with the `ExeLicenseRevocation` table absent, attempt a bind on a *healthy, non-revoked* licence | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime: the revocation read raises (`PrismaClientKnownRequestError`), the bind **throws**, **no `boundMachineId` is written**, and the failure is **not** misreported as `"revoked"`. This is the one place in Phase 5 where fail-open would be **wrong** — bind/transfer already writes to the DB, so a failed revocation read must abort rather than risk activating a cancelled key. Table restored verbatim from T1's migration afterwards (3 constraints verified present, 0 rows). |
 
 ### 4.3 Deployment note (do not deploy as part of this task)
 
@@ -2518,4 +2553,116 @@ Canaries for this task (from the `V17`/§3.14.1 table, not from a prompt example
 **UNVERIFIED: caller error mapping** — the `E10` mappers are not edited or exercised; surfacing `"revoked"` in those UIs is untested.
 
 READY FOR VERIFICATION - T5
+
+## 2026-09-29 — SENIOR pass 9: T5 VERIFIED (runtime, 18/18). `W15` fixed. `T6` is next.
+
+**Verdict: T5 ACCEPTED.** `lib/exe-license-bind.ts` @ `e8f1b14`, diff `27 2`. Verified statically **and at runtime** — the junior's own log correctly flagged the runtime behaviour as unproven, so the senior proved it rather than accepting a structural tick.
+
+### What the junior did (all confirmed, none taken on trust)
+
+```
+$ cd /Users/mikeolab/sw-selfhost
+$ git --no-pager diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27	2	lib/exe-license-bind.ts
+$ grep -n 'revoked' lib/exe-license-bind.ts
+:8   import { isExeLicenseRevoked } from "./exe-license-revocation";
+:41  LicenseBindError union += "revoked"
+:116-126  E1 guard in bindExeLicenseToMachine
+:257 LicenseTransferError union += "revoked"
+:317-325  E2 guard in transferExeLicenseToMachine
+$ grep -n 'machineTakenByAnotherAccount' lib/exe-license-bind.ts
+155:  if (machineTakenByAnotherAccount) {      <-- 121 < 155 ✅
+357:  if (machineTakenByAnotherAccount) {      <-- 320 < 357 ✅
+```
+
+The 2 deletions are the two `| "machine_taken",` lines re-terminated so `| "revoked",` can follow — the only way to extend a trailing union without reordering it. Attributable to T5 only.
+
+### The runtime proof the junior could not make (§4.2 S5, S7, and new S19)
+
+An 18-assertion senior harness (`/tmp/sen-t5-runtime.mts`, deleted after) against **real** `ExeLicense` + `Payment` rows on `spaceworker_t145`, exercising the real `bindExeLicenseToMachine` / `transferExeLicenseToMachine` / `revokeExeLicense` / `unrevokeExeLicense`:
+
+```
+$ cd /Users/mikeolab/sw-selfhost && set -a && . ./.env && set +a
+$ DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-); S="${DB%/*}/spaceworker_t145"
+$ DATABASE_URL="$S" EXE_LICENSE_SECRET="t5-runtime-proof-secret" \
+  NODE_OPTIONS="--require /Users/mikeolab/sw-selfhost/scripts/stub-server-only.cjs" \
+  npx tsx /tmp/sen-t5-runtime.mts
+
+ok   1. fresh licence is NOT revoked
+ok   2. control bind SUCCEEDS (guard is a no-op) -- machine=t5-machine-a
+ok   3a. isExeLicenseRevoked -> true after revoke
+ok   3b. reason round-trips -- reason=T5 runtime proof
+ok   3c. revokedBy round-trips -- revokedBy=senior-verify
+ok   3d. row.userId is the licence owner
+ok   3e. revoke is IDEMPOTENT (1 row after 2 calls) -- rows=1
+ok   4. E1 beats already_bound: bind on a revoked+bound licence -- code=revoked type=LicenseBindError
+ok   4b. message is the spec string -- This license was cancelled by the provider and can no longer be activated. Contact support.
+ok   5. E2 blocks transfer of a revoked licence -- code=revoked type=LicenseTransferError
+ok   6a. revocation-read failure THROWS (fail-closed) -- type=PrismaClientKnownRequestError
+ok   6b. ...and NO binding was written
+ok   6c. ...and it is NOT silently reported as revoked -- code=OTHER:PrismaClientKnownRequestError
+ok   6d. table restored (0 rows) -- rows=0
+ok   7a. isExeLicenseRevoked -> false after unrevoke
+ok   7b. unrevoke is IDEMPOTENT (no throw when absent)
+ok   8. transfer SUCCEEDS after unrevoke -- code=(no throw)
+ok   8b. binding actually moved to t5-machine-c -- machine=t5-machine-c
+cleanup: removed 2 licences / 2 payments
+
+# pass 18
+# fail 0
+```
+
+**The key result is assertion 4.** The licence was bound to `t5-machine-a` **first**, *then* revoked, *then* a bind for `t5-machine-b` attempted. It returned **`revoked`, never `already_bound`** — so E1 precedes not only the cross-account check the spec named, but also the already-bound transfer-code branch. That is **stronger than T5 asked for**, and it is load-bearing: it makes `auto-bind`'s transfer-code path unreachable for a cancelled licence, so a cancelled customer is never emailed a code and then refused. It also happens to be what makes D10's admin-move-only rule hold for the **lifetime** class (`T12` will rely on it). Recorded as §3.15.3 and as an explicit S5 assertion — not left as an accident of edit order.
+
+**Assertion 6 is the fail-closed proof.** With `ExeLicenseRevocation` dropped, the bind **throws** (`PrismaClientKnownRequestError`), **no `boundMachineId` is written**, and the failure is **not** misreported as `"revoked"`. Table restored verbatim from T1's migration afterwards — 3 constraints verified present:
+
+```
+$ psql "$S" -tAc "select conname from pg_constraint where conrelid='\"ExeLicenseRevocation\"'::regclass order by 1"
+ExeLicenseRevocation_exeLicenseId_fkey
+ExeLicenseRevocation_pkey
+ExeLicenseRevocation_userId_fkey
+```
+
+Scratch DB left clean: `ExeLicenseRevocation=0 · ExeLicense=0 · ExeLicenseTransfer=0` (`Payment=1`/`User=1` are the pre-existing T16 rows), worktree clean, `/tmp` harness deleted.
+
+
+### Canaries + gates
+
+```
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --stat main self-hosted-build -- lib/license-service.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ npx tsc --noEmit                                    → TSC_EXIT=0
+$ CI=1 npx next build                                 → BUILD_EXIT=0
+$ npm run test:license                                → 1..9  # pass 9  / # fail 0
+$ npm run test:setup                                  → 1..29 # pass 29 / # fail 0
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit  → LIVE_TSC_EXIT=0
+```
+
+`E10` confirmed needing **no** caller change: `"revoked"` is not `"already_bound"`, so it falls to the generic `400` carrying `err.message` in all three self-service callers — the spec message reaches the customer verbatim.
+
+### `W15` — the finding: an invariant asserted only in a prompt is an unverified assertion
+
+The T5 hand-off prompt made **fail-closed** a hard invariant and the reject list made violating it an automatic reject — **yet no `S`-row checked it.** T5's own acceptance check was purely structural (`grep` + `tsc`), so the property most at risk (a junior over-applying the *fail-open* rule from T11/T13 and swallowing the error, silently defeating revocation) was unverified until the senior invented the proof at verification time. **New rule: every invariant stated in a hand-off prompt or §4 must have a corresponding `S`-row, or it is decoration.** S19 added; same defect class as `W12`.
+
+### Environment facts recorded for the next DB-backed proof (§3.15.2)
+
+Four failures hit while building the harness — all now written down so the next agent does not repeat them: loose `/tmp/*.ts` fails on top-level `await` (`ERR_REQUIRE_ASYNC_MODULE`) → use `.mts`; `.env` is not auto-loaded → `set -a && . ./.env && set +a` (else `lib/env.ts:7` throws `Missing required environment variable: APP_BASE_URL`); `/tmp` scripts must import by absolute path; and `server-only` still needs `NODE_OPTIONS="--require .../scripts/stub-server-only.cjs"`.
+
+### Docs corrected this pass (zero product code)
+
+- `S5`, `S7` closed with evidence; **`S19` added** (fail-closed).
+- **§3.15** (Revision 8) added; §3.15.1 `W15`, §3.15.2 environment facts, §3.15.3 the ordering property.
+- Junior: pointer → **`T6`**, status line, `§1.7` (Revision 8), `§1.5`/`§1.6` struck as superseded, `T5` heading marked **CLOSED**, and the understated ordering acceptance rule corrected in the `T5` block.
+- Companion summary in the junior header bumped to `W1–W15` / `S1–S19`.
+
+**UNVERIFIED: the desktop/Python-side classification of a revoked key** — this pass proved the Node/DB path only. The Python `validator.py` sentinel-format question was closed in pass 7; revocation classification on that side belongs to `T13`/`S14`.
+
+**UNVERIFIED: admin-created revocations end-to-end** — nothing can create an `ExeLicenseRevocation` through the app yet, so the guards are real but currently unreachable in production. `T6` is that door; `S6`/`S13` follow.
+
+READY FOR VERIFICATION - T5 (senior pass 9 closed this row; `T6` handed to the junior)
+
 
