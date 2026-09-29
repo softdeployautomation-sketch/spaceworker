@@ -331,7 +331,23 @@ Implement senior track §3 D5 **E4, E5, E6** + D7's route-side item, in this ord
 3. **E5:** in the POST dispatch (`:66-104`), add `action: "revoke"` (`{ exeLicenseId, reason? }`) and `action: "unrevoke"` (`{ exeLicenseId }`), modelled line-for-line on the `unbind` action (`:101-104` dispatch + its handler `:146-170`, including the ownership gate and error→status mapping). Respond `{ ok: true, revoked: true|false }`. Add `revoked` to the response-shape comment block at the top of the file (`:16-32`).
 4. **E6:** in GET (`:472+`), include `revoked: boolean` on every licence row (`:505` mapper). If the file has a second listing mapper, update it too.
 
-**Check:** `npx tsc --noEmit` clean, and `grep -n 'revoke\|revoked\|lifetime' app/api/admin/exe-licenses/route.ts` shows all four concerns.
+**Check:**
+```bash
+cd /Users/mikeolab/sw-selfhost
+npx tsc --noEmit
+grep -n 'revoke\|revoked\|lifetime' app/api/admin/exe-licenses/route.ts   # all four concerns present
+```
+Accept: all four concerns present, `tsc` clean.
+
+> ⚠️ **AMENDED pass 9 — this task also owes a RUNTIME proof (§4.1d, new).** The static check above cannot show that `E4` works, and `E4` is the whole point of the task: a revoked licence that is still handed back by the reuse lookup makes "Cancel licence" cosmetic. **You must also run senior `S6`** against `spaceworker_t145` and paste the raw output:
+> 1. issue a licence for a user+product, bind it;
+> 2. `action:"revoke"` it;
+> 3. `action:"issue"` again for the **same** user+product;
+> 4. the response must **not** be `reused: true` — a **new** key is minted;
+> 5. and with `action:"unrevoke"` the original key becomes reusable again.
+> If you cannot run it (needs an admin session you cannot obtain), log it as `NOT RUNNABLE BY JUNIOR: S6 — <why>`. **Do not stay silent**: silence is reject item 17. The four `E5`/`E6` concerns above plus this live `S6` proof together are the acceptance bar — a static tick alone will be bounced.
+
+
 
 ### T7 — Admin UI: Lifetime toggle + Cancel/Restore
 
@@ -581,6 +597,10 @@ If a check fails: fix it, or **stop and log a `⚠️ OBJECTION`** on both files
 Touch `lib/exe-license-validator.ts` · change the signed payload's key set · add `SELF_HOSTED_OS` to `ALL_PRODUCTS` · use `daysValid` arithmetic for lifetime · **decide "lifetime" from anything other than the decoded `expires_at`** · skip E4 · make revoke non-idempotent or skip the ownership check · **touch `bindExeLicenseToMachine`'s first-bind path when implementing T12** (that bricks every new lifetime sale) · **make the T11/T13 checks fail-closed on a network error** (they must fail OPEN) · **leave any self-service route able to move a lifetime licence** · delete/rename `TASK_134..TASK_144` or any main-only file · run a destructive migration or migrate the live VPS DB · leave `tsc` or `build` failing · edit `app/api/store/prices/route.ts` or `admin/wallets/route.ts`. **Added 2026-09-29 (senior §3.10):** never **edit or rename a migration the live DB has already applied** (it is recorded by name *and checksum* — changing it breaks the live deploy pipeline) · never `prisma migrate resolve --applied` (it asserts success that may not be true) · never run `npx prisma generate` or `prisma migrate dev` from this worktree against the shared/live DB (it will overwrite the **live app's** Prisma client, or die with P3018) · never connect any command to the VPS.
 
 > ⚠️ **Corrected 2026-09-29 (Revision 2).** This list used to say *"check revocation anywhere except E1/E2/E4"*. That was **wrong** — the launch-time check **is** the design, and it is how the owner's "immediate revocation should kill it" is actually delivered. Revocation is now checked at **E1/E2/E4/E7/E8**; what remains rejected is putting revocation logic inside `lib/exe-license-validator.ts`, or any check that is not fail-open.
+
+**Added 2026-09-29 (pass 7 → item 16, after `W13`):** omitting the standing test checks (`npm run test:license` → 9/9 and `npm run test:setup` → 29/29, senior §4.1c), or reporting them without the raw `# pass / # fail` lines. No CI job runs them, so skipping them silently accepts lifetime-sentinel drift. Same rule for S18's mutation proof: a `/tmp` scratch copy, or an in-place mutation **without** the three-part restore proof, is a reject.
+
+**Added 2026-09-29 (pass 9 → items 16b/17, after `W15`):** ⚠️ **do NOT make the bind/transfer revocation guards fail-open.** Fail-open applies only to checks that gate a *running* install (**T11**, **T13**). `bindExeLicenseToMachine` / `transferExeLicenseToMachine` already write to the DB — if the revocation read fails there, the bind must **throw**, not proceed. Do not wrap either guard in a `try/catch` that swallows the error. **And do NOT leave a runnable `S`-row unrun and unmentioned (item 17):** if a task has a runnable `S`-row and your log neither pastes its output nor states `NOT RUNNABLE BY JUNIOR: <S-id> — <why>`, that is a reject on the log even when the code is perfect. `T5` cost this phase a full extra senior pass for exactly that reason (§4.1d).
 
 ---
 

@@ -745,6 +745,19 @@ diff -q /tmp/t145-pristine.ts lib/exe-license.ts                         # 3c. M
 
 A **scratch copy under `/tmp` cannot be used** — it fails on module resolution *even unmutated* (§3.13.2), which would fake a positive result. Skipping parts 3a–3c leaves a mutated sentinel on the branch.
 
+### 4.1d A task's S-rows are part of its acceptance check, not just the senior's (added pass 9, after `W15`)
+
+`W15`'s root cause was mechanical: `T5`'s file block listed only a **static** check (`grep` + `tsc`) while `S5`/`S7` demanded a **runtime** result — so the highest-risk property of the task (fail-closed) had an `S`-row but no junior ever ran it, and it was only proven because the senior invented the harness at review time. That inverts the two-track design: the junior produces evidence, the senior re-runs it.
+
+**Rule, binding on every remaining task:**
+
+1. **A task's `Check:` block is a floor, not a ceiling.** If any `S`-row in §4.2 names this task and is *runnable* (a route, a DB write, a bind, an HTTP call), the junior must run it and paste the raw output — even when the task block lists only `grep`/`tsc`.
+2. **If a junior cannot run it** (needs an admin session, a real key, a running build the task does not otherwise need), it must say so **explicitly** in the log as `NOT RUNNABLE BY JUNIOR: <S-id> — <why>`, and the senior owns it. Silence is a reject (item 17).
+3. **T6 is the first task this applies to in full force:** its block lists `tsc` + `grep`, but it is the task that makes revocation *reachable in production*, and `S6` (E4's anti-reuse proof) is a live HTTP + DB assertion. The junior runs `S6`.
+
+**Why this is not busywork:** `T5` is the demonstration. Every `S`-row the junior leaves unrun gets re-derived by the senior from scratch, which costs a full pass and risks the senior's own harness being wrong (as `S18`'s scratch-copy method was). Cheaper and safer to have both agents run the same command and compare.
+
+
 ### 4.2 What only the senior verifies (evidence required, pasted into this file's log)
 
 | ID | Check | Pass condition |
@@ -805,6 +818,9 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 14. Deciding "lifetime" anywhere other than the decoded `expires_at` (a client flag, a DB column, or `durationDays` overflow).
 15. **A purchase path that accepts a product id outside `ALL_PRODUCTS` (§3.11 D11 / E11).** `BY_ID` registration makes a product *resolvable* — bind/transfer require it (V9) — but it must never make it *sellable*. Equally rejected: closing W8 by removing `SELF_HOSTED_OS` from `BY_ID` (that breaks V9), or by adding it to `ALL_PRODUCTS` (that leaks it to the store — item 2). The guard must return the *same* 400 an unknown id gets; a distinct message or 403 confirms the product exists.
 16. **Omitting the standing test checks (§4.1c)** — `npm run test:license` (9/9) and `npm run test:setup` (29/29) — or reporting them without the raw `# pass / # fail` lines. Until `W13` is closed by a CI change, these two commands are the **only** thing that runs `T17`'s guard; a pass that skips them silently accepts lifetime-sentinel drift. Same rule for S18's mutation proof: mutating in a `/tmp` scratch copy, or mutating in place **without** the three-part restore proof, is a reject.
+17. **Leaving a runnable `S`-row unrun and unmentioned (§4.1d)** — when a task has a runnable `S`-row (a route, a DB write, a bind, an HTTP call) and the log neither pastes its output nor records `NOT RUNNABLE BY JUNIOR: <S-id> — <why>`. Silence forces the senior to re-derive the proof from scratch, which is what `T5` cost this phase (`W15`). This is a reject on the **log**, independent of whether the code is correct.
+
+
 
 ## 7. Verified environment baseline (2026-09-29)
 
