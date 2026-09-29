@@ -1053,3 +1053,115 @@ ExeLicenseTransfer
 
 **The junior's good judgement is on the record:** it declined to `migrate resolve`, declined to replay 24 unrelated migrations, and declined to edit a live/shared file outside its scope. Those refusals are now rules (§0.1, §6, junior §4).
 
+
+### 2026-09-29 — JUNIOR — **T2 implemented** (self-hosted product registered; admin-only, never on the store). No other task started.
+
+**Deliverable:** `lib/products.ts` only — senior §3 D3 items 1–2. Diff +24 / −2, one file.
+
+| Anchor | Change |
+|---|---|
+| `lib/products.ts:21-22` | `ProductId` union += `\| "selfhosted_os"` |
+| `lib/products.ts:67` | `AdminSettingPriceFields` += `selfhostedOsPriceUsd: number;` |
+| `lib/products.ts:187-200` | `SELF_HOSTED_OS` — D3 **verbatim** (id `selfhosted_os`, `kind: "exe"`, `plan: "selfhosted"`, `priceField: "selfhostedOsPriceUsd"`) |
+| `lib/products.ts:202-205` | `LICENSABLE_EXE_PRODUCTS: StoreProduct[] = [...EXE_PRODUCTS, SELF_HOSTED_OS];` |
+| `lib/products.ts:207` | `ALL_PRODUCTS` **unchanged** — `SELF_HOSTED_OS` deliberately absent |
+| `lib/products.ts:209` | `BY_ID = new Map<string, StoreProduct>([...ALL_PRODUCTS, SELF_HOSTED_OS].map((p) => [p.id, p]))` |
+
+`app/api/store/prices/route.ts` and `app/api/admin/wallets/route.ts` untouched (both still read `ALL_PRODUCTS`). `lib/exe-license-validator.ts` canary empty. Overwhelmingly: S8/§6.2 hold.
+
+**Raw commands and RAW output**
+
+```
+$ git --no-pager diff --stat
+ lib/products.ts | 26 ++++++++++++++++++++++++--
+ 1 file changed, 24 insertions(+), 2 deletions(-)
+```
+
+```
+$ grep -n 'SELF_HOSTED_OS\|LICENSABLE_EXE_PRODUCTS' lib/products.ts
+193:export const SELF_HOSTED_OS: StoreProduct = {
+205:export const LICENSABLE_EXE_PRODUCTS: StoreProduct[] = [...EXE_PRODUCTS, SELF_HOSTED_OS];
+209:const BY_ID = new Map<string, StoreProduct>([...ALL_PRODUCTS, SELF_HOSTED_OS].map((p) => [p.id, p]));
+```
+
+```
+$ grep -n 'ALL_PRODUCTS' lib/products.ts
+191:// deliberately kept OUT of ALL_PRODUCTS so it never appears on /pricing,
+203:// plus the self-hosted product. Deliberately NOT ALL_PRODUCTS: nothing here is
+207:export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
+209:const BY_ID = new Map<string, StoreProduct>([...ALL_PRODUCTS, SELF_HOSTED_OS].map((p) => [p.id, p]));
+```
+
+```
+$ grep -n 'BY_ID' lib/products.ts
+189:// BY_ID so getProduct() resolves it (bind/transfer require it — see
+209:const BY_ID = new Map<string, StoreProduct>([...ALL_PRODUCTS, SELF_HOSTED_OS].map((p) => [p.id, p]));
+212:  const product = BY_ID.get(id);
+244:  const product = BY_ID.get(id);
+```
+
+J3, through the **real** module (`npx tsx -e`, not a paraphrase):
+
+```
+J3a LICENSABLE_EXE_PRODUCTS.includes(SELF_HOSTED_OS): true
+J3b getProduct(selfhosted_os) !== null: true
+J3c ALL_PRODUCTS contains selfhosted_os: false
+meta priceField/kind/plan: selfhostedOsPriceUsd exe selfhosted
+TSX_EXIT=0
+```
+
+```
+$ npx tsc --noEmit; echo "TSC_EXIT=$?"
+TSC_EXIT=0
+```
+
+```
+$ CI=1 npx next build > /tmp/t145_t2_build.log 2>&1; echo "BUILD_EXIT=$?"
+BUILD_EXIT=0
+```
+
+```
+$ npx tsx --test tests/module-store.test.ts
+# tests 10
+# pass 10
+# fail 0
+# cancelled 0
+# skipped 0
+TEST_EXIT=0
+```
+
+
+J8 — the **live** store payload, built app run against the verification DB on port 3100:
+
+```
+$ DATABASE_URL="$S" CI=1 npx next start -p 3100 &
+$ curl -sf localhost:3100/api/store/prices
+{"products":[{"id":"web_subscription","name":"SpaceWorker OS","tagline":"The full web app — private browser, lead extraction, outreach campaigns, the AI agent and automations. Everything, live in your browser.","kind":"web","priceUsd":25},{"id":"extractor_module","name":"Extractor","tagline":"Lead extraction on its own — search the web, verify, and export a clean lead list. Nothing else bundled in.","kind":"module","priceUsd":9},{"id":"mailer_module","name":"Mailer","tagline":"Outreach campaigns on their own — subject/sender rotation, test-send confirmation, per-recipient variables.","kind":"module","priceUsd":9},{"id":"assistant_devices_module","name":"Assistant & Devices","tagline":"The AI agent plus full device control — remote tools, the app launcher, Browser Clone, Wake-on-LAN and keep-awake — with you approving every action.","kind":"module","priceUsd":15},{"id":"extractor_exe","name":"Extractor EXE","tagline":"Lead extraction as a desktop app — run the same Playwright-driven search pipeline locally, no account or subscription required.","kind":"exe","priceUsd":50,"downloadUrl":"https://github.com/softdeployautomation-sketch/spaceworker/releases/download/extractor-v0.1.0/SpaceWorker.OS.-.Lead.Extractor_0.1.0_x64-setup.exe"},{"id":"mailer_exe","name":"Mailer EXE","tagline":"Outreach campaigns on your own machine — build mailboxes and campaigns, with subject and sender rotation, entirely offline.","kind":"exe","priceUsd":50},{"id":"combined_exe","name":"Combined EXE","tagline":"Extractor + Mailer in one app and one local database — leads flow straight from extraction into your campaigns with no export step.","kind":"exe","priceUsd":70},{"id":"automation_exe","name":"Automation-enabled EXE","tagline":"The complete top tier — Combined plus the AI agent and scheduled automations. Everything SpaceWorker OS can do, as a desktop app.","kind":"exe","priceUsd":100},{"id":"agent_exe","name":"SpaceWorker Agent","tagline":"The AI assistant and full device control, as a background desktop app — approve what it proposes, run remote tools, keep machines awake, no browser tab required.","kind":"exe","priceUsd":50}]}
+
+$ grep -c selfhosted_os /tmp/t145_t2_prices.json
+0
+$ lsof -ti :3100 || echo 'port 3100 free'
+port 3100 free
+```
+
+**Branch-drift canary + live-app regression (STEP 4):**
+
+```
+$ cd /Users/mikeolab/spaceworker && git --no-pager diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(no output)
+CANARY_EXIT=0
+
+$ npx tsc --noEmit; echo "LIVE_TSC_EXIT=$?"
+LIVE_TSC_EXIT=0
+```
+
+**Doc nit (not an objection):** the work order's literal `grep -n 'ALL_PRODUCTS =' lib/products.ts` returns nothing **even on unmodified HEAD**, because the definition line carries a type annotation (`ALL_PRODUCTS: StoreProduct[] =`). The junior used `grep -n 'ALL_PRODUCTS'` and read `:207` directly; the invariant D3 asserts (the `SELF_HOSTED_OS` line is not part of the `ALL_PRODUCTS` definition) holds. §2 T2's sample grep pattern should be corrected to `'^export const ALL_PRODUCTS'` in a future revision — the rule itself is right.
+
+**UNVERIFIED:**
+- UNVERIFIED: J1/J2 (lifetime / 30-day key round-trip) — `lib/exe-license.ts` constants are the T3 deliverable; not started.
+- UNVERIFIED: J4–J7 and J9–J12 — bind/transfer/eligibility/revocation behaviour lands in T4/T5/T6/T11/T12/T13; no revocation code exists yet.
+- UNVERIFIED: the admin surfaces still import `EXE_PRODUCTS` (`app/api/admin/exe-licenses/route.ts:5,306,505`; `app/admin/(protected)/admin-panel.tsx:6,3559`). The D3 item 4 swap to `LICENSABLE_EXE_PRODUCTS` is explicitly T6/T7 work; T2 added the constant only, so `selfhosted_os` is not yet selectable in the admin licence form.
+- UNVERIFIED: no end-to-end Phase 5 licence flow has been exercised (J8 is the only store-side check runnable at T2).
+
+READY FOR VERIFICATION - T2
+

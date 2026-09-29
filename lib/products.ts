@@ -18,7 +18,8 @@ export type ProductId =
   | "mailer_exe"
   | "combined_exe"
   | "automation_exe"
-  | "agent_exe";
+  | "agent_exe"
+  | "selfhosted_os";
 
 // TASK_99 / plan §COMMERCIAL C3 — "module" is new: a pick-your-capability web
 // subscription that grants ONE OR MORE entitlements (lib/entitlements.ts)
@@ -63,6 +64,7 @@ export type AdminSettingPriceFields = {
   mailerModulePriceUsd: number;
   assistantDevicesModulePriceUsd: number;
   agentExePriceUsd: number;
+  selfhostedOsPriceUsd: number;
 };
 
 export const WEB_SUBSCRIPTION: StoreProduct = {
@@ -182,9 +184,29 @@ export const EXE_PRODUCTS: StoreProduct[] = [
   AGENT_EXE,
 ];
 
+// TASK_145 (Phase 5) — the self-hosted product line (Tauri Windows-EXE + Linux).
+// NOT sold on the public store — admin-issued only (TASK_145). Registered in
+// BY_ID so getProduct() resolves it (bind/transfer require it — see
+// lib/exe-license-bind.ts's `if (!product) throw invalid_original`), but
+// deliberately kept OUT of ALL_PRODUCTS so it never appears on /pricing,
+// /api/store/prices or the wallets price form.
+export const SELF_HOSTED_OS: StoreProduct = {
+  id: "selfhosted_os",
+  name: "SpaceWorker OS (Self-Hosted)",
+  tagline: "Self-hosted SpaceWorker OS for your own machine or server.",
+  priceField: "selfhostedOsPriceUsd",
+  kind: "exe",
+  plan: "selfhosted",
+};
+
+// Admin licence issuance only — the exe products the admin can mint a key for,
+// plus the self-hosted product. Deliberately NOT ALL_PRODUCTS: nothing here is
+// sold through the public store, so the store/pricing surfaces are unchanged.
+export const LICENSABLE_EXE_PRODUCTS: StoreProduct[] = [...EXE_PRODUCTS, SELF_HOSTED_OS];
+
 export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
 
-const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
+const BY_ID = new Map<string, StoreProduct>([...ALL_PRODUCTS, SELF_HOSTED_OS].map((p) => [p.id, p]));
 
 export function getProduct(id: string): StoreProduct | null {
   const product = BY_ID.get(id);
