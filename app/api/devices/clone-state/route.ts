@@ -45,7 +45,7 @@ import {
 } from "@/lib/clone-state-ingest";
 import { normalizeProfileName } from "@/lib/clone-state-restore";
 import { sha256Hex } from "@/lib/clone-transport";
-import type { StateManifest } from "@/lib/clone-sync-plan";
+import { SYNC_REASONS, type StateManifest } from "@/lib/clone-sync-plan";
 import { db } from "@/lib/db";
 
 /** A manifest is fingerprints only; 8 MiB is ~50k files, far beyond any profile. */
@@ -54,12 +54,16 @@ const PLAN_BODY_CAP = 8 * 1024 * 1024;
 const FILE_BODY_CAP = 256 * 1024 * 1024;
 
 /**
- * Job states in which a state transfer may legitimately arrive: before the hosted
- * session exists. After `launching` the profile is already mounted, so writing into
- * the cache would silently do nothing for the session the user is looking at —
- * those are refused BY NAME rather than accepted and ignored.
+ * NO JOB-STATUS GATE ANYWHERE IN THIS FILE, deliberately.
+ *
+ * The cache this writes into is keyed by device + browser + profile — NOT by job —
+ * so a sync arriving after a clone has already launched is not only legal, it is
+ * the point of the console's manual re-sync: the replica is brought up to date for
+ * the NEXT clone. An earlier version of this route refused a job past "captured",
+ * which would have made the manual button dead on every device whose only job has
+ * finished, i.e. on every device. The job identifies WHICH clone a transfer belongs
+ * to; it does not decide whether the state may be carried.
  */
-const INGESTIBLE_STATUSES = new Set(["pending", "queued", "awaiting_capture", "captured"]);
 
 const BROWSERS = new Set(["chrome", "edge", "chromium", "brave", "firefox"]);
 
@@ -87,13 +91,14 @@ interface LoadedJob {
 }
 
 /**
- * The job must be this device's own, on a job that has not launched yet.
+ * The job must be this device's own.
  *
  * Every refusal is the SAME 401 with no detail, so a token holder cannot use this
  * route to enumerate job ids or learn another user's job state — the same rule
- * clone-capture follows. The one exception is a job that is simply too late: that
- * is reported with its own status because the device can do nothing about it and
- * a silent success would be a lie about whether the state transferred.
+ * clone-capture follows.
+ *
+ * The job identifies WHICH clone a transfer belongs to. It does NOT decide whether
+ * the state may be carried — see the "NO JOB-STATUS GATE" note above.
  */
 async function loadJob(rawId: unknown, device: AuthedDevice): Promise<LoadedJob> {
   const cloneJobId = typeof rawId === "string" ? rawId : "";
@@ -101,19 +106,9 @@ async function loadJob(rawId: unknown, device: AuthedDevice): Promise<LoadedJob>
   if (!cloneJobId) return deny;
   const job = await db.cloneJob.findUnique({
     where: { id: cloneJobId },
-    select: { id: true, userId: true, sourceDeviceId: true, status: true },
+    select: { id: true, userId: true, sourceDeviceId: true },
   });
   if (!job || job.userId !== device.userId || job.sourceDeviceId !== device.id) return deny;
-  if (!INGESTIBLE_STATUSES.has(job.status)) {
-    return {
-      ok: false,
-      cloneJobId,
-      response: NextResponse.json(
-        { error: "Conflict: session already launched", reason: "state_job_already_launched", status: job.status },
-        { status: 409 },
-      ),
-    };
-  }
   return { ok: true, cloneJobId, response: NextResponse.json({ ok: false }) };
 }
 
@@ -189,13 +184,23 @@ export async function POST(request: NextRequest) {
 }
 
 /**
- * The baseline a delta is computed against: the last state manifest STORED for
- * this device + browser + profile.
+ * The baseline a delta is computed against.
  *
- * It is read back from the job record rather than kept in the cache directory,
- * because the cache is the STATE and the manifest is the HISTORY of what was
- * transferred. Conflating them means a partially-applied sync silently becomes the
- * baseline for the next one, and the files it dropped are lost for good.
+ * TWO SOURCES, and the order matters. First the last manifest STORED for this
+ * device + browser + profile (the job record), because a stored manifest is the
+ * server's own record of a transfer it completed. Only when there is none does the
+ * target's CACHE become the baseline — and then `fromCache` says so, so the reason
+ * reported to the operator is `cache_baseline` rather than a claim about a
+ * manifest that does not exist.
+ *
+ * WHY THE CACHE IS A LEGITIMATE BASELINE. The cache holds exactly the bytes the
+ * replica has. Comparing against it can therefore only ever ask for a file the
+ * replica LACKS — which is what "continue the transfer that was cut short" means.
+ * It cannot lose a file: anything already present is left alone, and anything
+ * missing is requested. Its fingerprints carry content hashes
+ * (clone-state-ingest's fingerprintCache), so the comparison is content-based
+ * rather than size+mtime, and a staged copy's own mtime — a server clock value
+ * that can never equal the source's — cannot make every file look changed.
  *
  * A manifest stored by a DIFFERENT browser or profile is not a baseline at all —
  * `planSync` would refuse it, but it is filtered here so the reason names the
@@ -210,7 +215,8 @@ async function loadBaseline(
   browser: string,
   profileName: string,
   excludeJobId: string,
-): Promise<StateManifest | null> {
+  cacheDir: string,
+): Promise<{ manifest: StateManifest | null; fromCache: boolean }> {
   const recent = await db.cloneJob.findMany({
     where: { sourceDeviceId: deviceId, stateManifestAt: { not: null }, id: { not: excludeJobId } },
     orderBy: { stateManifestAt: "desc" },
@@ -222,9 +228,19 @@ async function loadBaseline(
     if (!manifest || typeof manifest !== "object") continue;
     const sameBrowser = String(manifest.browser ?? "").trim().toLowerCase() === browser;
     const sameProfile = profileNameOfManifest(manifest) === profileName;
-    if (sameBrowser && sameProfile) return manifest;
+    if (sameBrowser && sameProfile) return { manifest, fromCache: false };
   }
-  return null;
+
+  // No stored manifest. What has the cache got? A failure here is treated as an
+  // empty cache rather than an error: the next run would then simply be a full
+  // transfer, which is correct-but-slower, and refusing the whole sync because a
+  // fingerprint could not be taken would be worse.
+  const cached = await fingerprintCache(cacheDir).catch(() => []);
+  if (cached.length === 0) return { manifest: null, fromCache: false };
+  return {
+    manifest: { browser, profile: profileName, capturedAt: new Date().toISOString(), files: cached },
+    fromCache: true,
+  };
 }
 
 /**
@@ -257,8 +273,17 @@ async function handlePlan(
     ...(typeof body.version === "string" ? { version: body.version } : {}),
   };
 
-  const baseline = await loadBaseline(deviceId, browser, profileName, cloneJobId);
-  const decision = decideStateSync({ previous: baseline, next });
+  const baseline = await loadBaseline(deviceId, browser, profileName, cloneJobId, cacheDir);
+  const decision = decideStateSync({ previous: baseline.manifest, next });
+
+  // The decision this run actually made. When the baseline came from the CACHE,
+  // a delta is not "a reconnect against a manifest we stored" — it is "continue
+  // against what the replica already holds" — and it is reported under its own
+  // name so nobody has to guess which of the two happened.
+  const reason =
+    baseline.fromCache && decision.reason === SYNC_REASONS.syncOnReconnect
+      ? SYNC_REASONS.cacheBaseline
+      : decision.reason;
 
   // The cache may already hold files from an earlier clone — that is the point of
   // it. Reporting its size lets the device and the console see whether this is a
@@ -269,7 +294,7 @@ async function handlePlan(
     where: { id: cloneJobId },
     data: {
       stateSyncMode: decision.mode,
-      stateSyncReason: decision.reason,
+      stateSyncReason: reason,
       profileName,
     },
   });
@@ -277,7 +302,7 @@ async function handlePlan(
   return NextResponse.json({
     ok: true,
     mode: decision.mode,
-    reason: decision.reason,
+    reason,
     // Empty for a full transfer: the device sends everything it can read.
     requestedPaths: decision.requestedPaths,
     // Echoed back by the device at finalize, so the destructive half of a delta

@@ -552,3 +552,78 @@ library would mean one mistake disabling the check on both sides at once.
   genuinely exercised. Verified both ways: it passes with Go present, and exits 1
   with an explicit message when Go is unavailable.
 - **Silence:** `Test-SilentTrigger.ps1` — **35 checks, `RESULT: PASSED`**.
+
+---
+
+## 9. The device-side pipe, finished (2026-09-29)
+
+§6.1 built the pipe's two ends. This pass **closed it**: the platform now asks for the
+state, the device's transport has a real caller, and both are recorded and rendered.
+
+### What changed
+
+| Piece | Where |
+|---|---|
+| The device command exists and is invoked | `cmd/hack-browser-clone/syncstate.go` + `cmd/native-host` |
+| The **profile locator** — the fix that makes it work on a real work PC | `pkg/browser/source.go` |
+| A **budget**, so a transfer can stop and report instead of being killed | `--budget`, `StateSyncOptions.Budget`, `Pending`/`Done` |
+| The **cache as a baseline**, so a cut-short transfer continues | `fingerprintCache` (real content hashes), `loadBaseline` → `cache_baseline` |
+| The platform **driver** — bounded rounds, honest naming | `lib/clone-state-sync.ts` |
+| The automatic trigger | `lib/clone.ts` → `collectProfileState()` |
+| The manual door | `POST /api/devices/[deviceId]/clone-state-sync` + the console's *Browser data* card |
+| The record | `stateSyncPending` (+ migration), surfaced through `CloneView` |
+| The vocabulary guard | `scripts/check-clone-contract.mjs` now also checks the **sync modes** |
+| The README | `michael/browser-clone/STATE-PIPE.md` |
+
+### The three findings this pass, and why each would have shipped silent
+
+1. **The profile path was the wrong question.** `DefaultProfilePath` answers "where would
+   a browser put its profile here, right now" — which under SYSTEM is the *service's* own
+   empty profile. The sync would have reported `state_profile_missing` on a machine full
+   of history: a failure true about the directory and a lie about the machine. Replaced by
+   a **locator** that picks the most recently used profile that actually has state in it,
+   and reports which one it chose (the name keys the server's cache).
+
+2. **"The sync ran" and "the sync finished" were the same claim.** A whole profile does
+   not fit in one 90-second command, and until now there was nothing to stop at, nothing
+   to report, and no baseline to continue against — so a big profile would either be
+   killed mid-request or restart from zero forever. Now: a device-side **budget**, a
+   **finalize that always runs** (recording what landed), real **content hashes** on the
+   cache so "already landed" is knowable, and `cache_baseline` as the honest name for
+   "continued". `stateSyncPending` is what the console shows.
+
+3. **The contract check could not see the vocabulary that decides behaviour.** The device
+   chooses what to send from the *mode* alone — a delta means "only what you were asked
+   for", anything else means "send the whole profile". A server-side spelling change would
+   have made every reconnect re-send an entire profile, silently, forever. The checker now
+   compares the modes **in both directions**, and its ability to fail is itself verified:
+   flipping the device to `incremental` makes it exit 1 with two specific complaints.
+
+### Verification (this pass, run the way `deploy.yml` runs it)
+
+```
+tsc               exit 0
+test:clone        105/105 pass, 0 fail
+test:browser      18/18 + 10/10 pass, 0 fail, none skipped (REAL relay built and run)
+check:clone-contract  exit 0  — 14=14 exclusions, modes delta+full agree, 6 device reasons ⊆ 8 server
+check:workflow-syntax exit 0
+engine-dist       exit 0
+go build/vet/test/-race   all exit 0 ;  gofmt clean
+```
+
+New tests this pass: `pkg/browser/source_test.go` (10 — the profile choice rule, including
+the SYSTEM trap, the empty-profile refusal and the no-quiet-fallback rule),
+`pkg/wake/state_budget_test.go` (7 — partial send at a file boundary, finalize-on-partial,
+hashes declared, nothing-to-send is done-not-failed, delta sends only what was asked),
+`lib/clone-state-sync-format.test.ts` (10 — the `--budget` invariant, PowerShell injection
+refusals, strict `done` parsing, summary wording). 81 Go tests pass across `pkg/browser`
+and `pkg/wake`.
+
+### Honest remaining gap
+
+**No live device has pushed a real profile through this pipe.** Both ends are tested and
+the wire format is proven against a real `net/http` server, but they have never met outside
+a test. Also outstanding: the three migrations applied to a real database, and a Windows
+run of `sync-state` (unit-tested on Linux, cross-compiles for Windows, never executed on
+Windows in this task). Stated again in `michael/browser-clone/STATE-PIPE.md` §10.
+

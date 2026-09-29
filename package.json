@@ -12,7 +12,7 @@
     "db:push": "prisma db push",
     "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
     "test:browser": "node scripts/test-browser-server.mjs",
-    "test:clone": "tsx --test lib/clone-sync-plan.test.ts lib/clone-browser-pin.test.ts lib/clone-state-restore.test.ts lib/clone-state-ingest.test.ts lib/hosted-browser-version.test.ts lib/cdp.test.ts",
+    "test:clone": "tsx --test lib/clone-sync-plan.test.ts lib/clone-browser-pin.test.ts lib/clone-state-restore.test.ts lib/clone-state-ingest.test.ts lib/clone-state-sync-format.test.ts lib/hosted-browser-version.test.ts lib/cdp.test.ts",
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",

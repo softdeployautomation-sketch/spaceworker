@@ -18,6 +18,7 @@ import {
 import { refreshDeviceLiveness, hostAvailability } from "./clone-hosts";
 import { runHostedLaunch, stopHostedLaunch } from "./clone-hosted-launch";
 import { ensureHostedDestination } from "./clone-destination";
+import { requestDeviceStateSync, stateSyncSummary } from "./clone-state-sync";
 import { deviceStatus, recordAgentActionAudit } from "./devices";
 
 import { hasEntitlement, listEffectiveEntitlements } from "./entitlements";
@@ -849,6 +850,74 @@ async function stampRelayHealth(
 }
 
 /** requested → awaiting_source (admission → online → relay probe; no capture yet). */
+/**
+ * TASK_135 §6.3 — carry the source profile's STATE, as part of starting a clone.
+ *
+ * This is the automatic half of the state pipe; the console's "Sync profile
+ * state" button is the manual half. The device command it runs is the same one,
+ * so there is exactly one way state is carried and one place it is recorded.
+ *
+ * IT NEVER FAILS THE CLONE, and that is a deliberate asymmetry. The session half
+ * (cookies, over CDP) is what makes a clone usable; the state half is what makes
+ * it the user's. A transfer that cannot start — device offline, the engine not
+ * installed, a refusal about the browser — leaves a clone that still opens signed
+ * in, with the reason recorded on the job and rendered by the console as its own
+ * line. Failing the whole clone would trade a partial replica for no replica.
+ *
+ * RETRY BOUNDARY. It runs when the job has no decision recorded, or when files are
+ * still outstanding — so it CONTINUES an interrupted transfer (cheap: a delta over
+ * what the cache already holds) and it retries one that never got started. It is
+ * driven by the advance path, never by a timer, so it cannot spin: each call is
+ * bounded by the helper's own round and wall-clock limits
+ * (lib/clone-state-sync.ts), and a job that is not being advanced is not retried.
+ *
+ * @returns a counts-only line for the audit detail, or null when there was
+ *          nothing to do.
+ */
+async function collectProfileState(job: CloneJob): Promise<string | null> {
+  const outstanding = job.stateSyncPending ?? 0;
+  // A recorded decision with nothing outstanding means this job's replica is as
+  // complete as the source could make it. Re-running would be pure cost.
+  if (job.stateSyncMode !== null && outstanding === 0) return null;
+
+  let reply: Awaited<ReturnType<typeof requestDeviceStateSync>>;
+  try {
+    reply = await requestDeviceStateSync({
+      userId: job.userId,
+      deviceId: job.sourceDeviceId,
+      browser: job.browser,
+      profileName: job.profileName,
+      cloneJobId: job.id,
+    });
+  } catch (err) {
+    // requestDeviceStateSync reports its own named outcomes; reaching here means
+    // something outside that contract (a database error while resolving the
+    // device). Recorded by name, and the clone continues.
+    const note = errMessage(err);
+    await db.cloneJob
+      .update({ where: { id: job.id }, data: { stateSyncReason: "state_sync_failed" } })
+      .catch(() => undefined);
+    return `stateSync: state_sync_failed (${note})`;
+  }
+
+  const pending = reply.failed ? job.stateSyncPending ?? null : reply.pending ?? 0;
+  await db.cloneJob
+    .update({
+      where: { id: job.id },
+      data: {
+        stateSyncPending: pending,
+        // A transport failure is recorded ONLY when the device never got as far as
+        // deciding — the ingest route owns `stateSyncMode`/`stateSyncReason` once a
+        // plan has been made, and overwriting its answer with "it timed out" would
+        // destroy the record of what was actually decided.
+        ...(reply.failed && job.stateSyncMode === null ? { stateSyncReason: reply.failed } : {}),
+      },
+    })
+    .catch(() => undefined);
+
+  return stateSyncSummary(reply);
+}
+
 async function stepRequested(
   job: CloneJobWithRelay,
   settings: Awaited<ReturnType<typeof getCloneSettings>>
@@ -986,23 +1055,39 @@ async function stepRequested(
   }
 
   if (destination?.deviceKind === "hosted" && job.sessionMode === "live") {
+    // TASK_135 §6.3 — the STATE half of the clone, started automatically here.
+    // This is the step that already gates on the source being online and the relay
+    // being healthy, and it is the last point before the profile is materialised
+    // at launch — so it is where a transfer belongs. It is awaited BECAUSE the
+    // launch reads the manifest, and it never fails the clone: a transfer that
+    // could not finish is recorded by name and counted, and the clone still runs
+    // (the cookie half does not depend on it).
+    const stateNote = await collectProfileState(job);
+
     const advanced = await transitionClone(job, "awaiting_capture", {
       detail: {
         slot: "granted",
         egressMode: job.egressMode,
         relayStatus: job.relay?.status ?? null,
         skipped: "capture_transfer_inject (hosted live destination — capture arrives via device POST)",
+        ...(stateNote ? { stateSync: stateNote } : {}),
       },
     });
     return { cloneId: advanced.id, status: "awaiting_capture", advanced: true };
   }
   if (destination?.deviceKind === "hosted") {
+    // Route 3 ("the hosted browser logs in for itself") has no cookie capture, so
+    // the STATE half is the only thing that makes the clone recognisably the
+    // user's — carried here too, for the same reason and under the same rules.
+    const stateNote = await collectProfileState(job);
+
     const advanced = await transitionClone(job, "ready", {
       detail: {
         slot: "granted",
         egressMode: job.egressMode,
         relayStatus: job.relay?.status ?? null,
         skipped: "capture_transfer_inject (hosted destination, route 3 — nothing to copy)",
+        ...(stateNote ? { stateSync: stateNote } : {}),
       },
     });
     return { cloneId: advanced.id, status: "ready", advanced: true };
@@ -1651,6 +1736,24 @@ export interface CloneView {
   queuePosition?: number;
   /** TASK_105 — coarse wait estimate in seconds (pairs with queuePosition). */
   queueEtaSeconds?: number;
+  /**
+   * TASK_135 §6.3 — the state carry, as it stands.
+   *
+   * `stateSyncMode` + `stateSyncReason` are the server's own decision for the last
+   * transfer (`full`/`first_clone`, `delta`/`sync_on_reconnect`, ...), and
+   * `stateSyncPending` is how many files were still outstanding when it stopped.
+   * The console renders ONE line from these, because a replica that is complete
+   * and one that is still arriving look identical on screen otherwise — and the
+   * user's next question is always "did my tabs come over?".
+   */
+  stateSyncMode: string | null;
+  stateSyncReason: string | null;
+  stateSyncPending: number | null;
+  /** When the last manifest was accepted, so "how fresh is my replica?" is answerable. */
+  stateManifestAt: string | null;
+  /** Why the source build could not be delivered, or why staged state was not written. */
+  browserPinError: string | null;
+  stateRestoreNote: string | null;
 }
 
 const cloneViewInclude = {
@@ -1738,6 +1841,12 @@ function toCloneView(row: CloneRowForView, now = new Date()): CloneView {
     error: row.error,
     purgeAfter: row.purgeAfter?.toISOString() ?? null,
     pendingActionId: row.pendingActionId,
+    stateSyncMode: row.stateSyncMode,
+    stateSyncReason: row.stateSyncReason,
+    stateSyncPending: row.stateSyncPending,
+    stateManifestAt: row.stateManifestAt?.toISOString() ?? null,
+    browserPinError: row.browserPinError,
+    stateRestoreNote: row.stateRestoreNote,
   };
 }
 

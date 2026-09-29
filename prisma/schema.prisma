@@ -1773,6 +1773,13 @@ model CloneJob {
   // ever described as synced without a reason a human can read.
   stateSyncMode       String?
   stateSyncReason     String?
+  // TASK_135 §6.3 — files the last transfer did NOT manage to send, because a
+  // single device command cannot carry a whole profile. NON-NULL AND NON-ZERO
+  // means the replica is incomplete and a later run must continue: the cache
+  // already holds what did arrive, so continuing sends only the remainder.
+  // Recorded because "the sync ran" and "the sync finished" are different claims,
+  // and a clone launched on a partial replica must be able to say so.
+  stateSyncPending    Int?
   // TASK_135 §3/§5 — why a clone did not get the source's browser version, or why
   // staged state could not be materialised. Both are NAMED codes recorded on the
   // job, because the fallback is deliberate but must never be invisible: a clone

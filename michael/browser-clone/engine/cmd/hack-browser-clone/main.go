@@ -74,6 +74,8 @@ func main() {
 		err = cmdLaunch(args)
 	case "preflight":
 		err = cmdPreflight(args)
+	case "sync-state":
+		err = cmdSyncState(args)
 	case "status":
 		err = cmdStatus(args)
 	case "status-all":
@@ -134,6 +136,11 @@ commands:
       the relay). Install scripts abort when this fails.
   status --clone-id ID    show one clone's registry entry [--staging-root DIR]
   status-all              list all registry entries
+  sync-state --browser B  carry ONE browser profile's state to the clone
+      (history, bookmarks, tabs, extensions). Reads its platform config from
+      live-capture.json (never a token in argv), spawns nothing, and prints
+      one counts-only JSON line. [--profile NAME] [--profile-dir DIR]
+      [--job ID] [--timeout SECONDS]
   revoke --clone-id ID    tear down a clone (hosted PC)
       [--staging-root DIR]
   expire                  sweep clones past expiry (hosted PC)

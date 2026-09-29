@@ -69,6 +69,16 @@ type StateUploadResult struct {
 	Reason string `json:"reason,omitempty"`
 	// Removed is how many stale paths the server deleted to keep the replica true.
 	Removed int `json:"removed,omitempty"`
+	// Pending is how many selected files were NOT sent because this run's budget
+	// ran out. Non-zero means the replica is incomplete and a LATER run must
+	// continue — which it can, cheaply, because the server already holds what did
+	// land and fingerprints it (see Done).
+	Pending int `json:"pending,omitempty"`
+	// Done is true when every selected file was sent. A caller must treat a
+	// non-done result as "more to come", never as a finished sync: reporting a
+	// partial transfer as complete is how a replica silently loses bookmarks.
+	// Done is also true when there was nothing to send at all.
+	Done bool `json:"done"`
 	// Failed is a named transport failure; the caller records it and moves on.
 	Failed string `json:"failed,omitempty"`
 }
@@ -82,6 +92,10 @@ const (
 	ReasonStateTooLarge       = "state_file_too_large"
 	ReasonStateFileUnreadable = "state_file_unreadable"
 	ReasonStateFinalizeFailed = "state_finalize_failed"
+	// ReasonStateDigestFailed is reported when a collected file could not be
+	// hashed. It is a WARNING, not a refusal: the file is still carried, with the
+	// weaker size+mtime comparison (see fillDigests).
+	ReasonStateDigestFailed = "state_digest_unavailable"
 )
 
 // DefaultStateFileMaxBytes is the per-file ceiling, matching the server's own cap
@@ -236,6 +250,37 @@ func pathKey(p string) string {
 	return strings.ToLower(strings.TrimSpace(strings.ReplaceAll(p, "\\", "/")))
 }
 
+// fillDigests adds the content hash to every collected file, best effort.
+//
+// WHY THIS RUNS AT ALL. Without a hash the only comparison available is size +
+// mtime, and mtime is worthless across the wire: the server writes each staged
+// file at the moment it receives it, so its stored mtime is a server clock value
+// that can never equal the source's. Every file would then look "changed" on the
+// next run, and a transfer interrupted by the run-command timeout would re-send
+// its whole self forever instead of converging. With the hash on both sides,
+// `sameFile` compares content and an already-landed file is skipped — which is
+// what makes a multi-minute first clone resumable at all.
+//
+// A file that cannot be hashed is NOT dropped: it keeps size+mtime and is sent
+// normally. Hashing can fail on a file the browser holds open, and refusing to
+// carry a bookmark over a transient lock would be worse than a weaker
+// comparison. The failure is reported by name so it is visible, not guessed at.
+func fillDigests(files []StateFile) []CloneStateFilter {
+	var failed []CloneStateFilter
+	for i := range files {
+		digest, err := FileDigest(files[i].Abs)
+		if err != nil {
+			failed = append(failed, CloneStateFilter{
+				Path:   files[i].Fingerprint.Path,
+				Reason: ReasonStateDigestFailed,
+			})
+			continue
+		}
+		files[i].Fingerprint.SHA256 = digest
+	}
+	return failed
+}
+
 // FileDigest is the optional authoritative fingerprint. It is computed only when
 // asked for, because hashing a whole profile on every clone costs more than the
 // transfer it would save.
@@ -276,6 +321,17 @@ type StateSyncOptions struct {
 	ProfileDir string
 	// MaxFileBytes overrides DefaultStateFileMaxBytes.
 	MaxFileBytes int64
+	// Budget bounds how long this run spends SENDING files. Zero means no bound.
+	//
+	// WHY A BUDGET EXISTS. The platform runs this over its own run-command path,
+	// which kills a command that outlives its timeout, and a first clone of a real
+	// profile (history, favicons, extensions) takes longer than that. Without a
+	// budget the command is killed mid-request: the transfer stops at an arbitrary
+	// point AND the caller gets no result to record, so a partial replica is
+	// indistinguishable from a failed one. With a budget the run stops at a file
+	// boundary, reports how many files are still outstanding, and lets the caller
+	// ask again — each later run sends only what has not landed.
+	Budget time.Duration
 	// Now is injectable so a manifest's capturedAt is testable.
 	Now func() time.Time
 }
@@ -327,6 +383,11 @@ func SyncState(ctx context.Context, opts StateSyncOptions) StateUploadResult {
 		}
 	}
 
+	// Hashes are added BEFORE the plan is posted, because the server compares
+	// them: a run that resumes an interrupted transfer is only cheap if both
+	// sides describe a file the same way.
+	res.Skipped = append(res.Skipped, fillDigests(collected)...)
+
 	plan, err := postStatePlan(ctx, client, base, opts, profile, collected, now())
 	if err != nil {
 		res.Failed = ReasonStatePlanFailed
@@ -334,10 +395,22 @@ func SyncState(ctx context.Context, opts StateSyncOptions) StateUploadResult {
 	}
 	res.Mode, res.Reason = plan.Mode, plan.Reason
 
+	// Nothing to do is DONE, not "no result": an already-current replica must
+	// report success so the caller has no reason to run again.
+	res.Done = true
+
 	if len(collected) > 0 {
 		selected, missing := SelectStateFiles(collected, plan)
 		res.Skipped = append(res.Skipped, missing...)
-		for _, f := range selected {
+		started := now()
+		for i, f := range selected {
+			// Checked BEFORE each file, never mid-file: a file is either posted
+			// whole or not at all, so stopping on the boundary can never leave a
+			// half-written file in the replica.
+			if opts.Budget > 0 && now().Sub(started) >= opts.Budget {
+				res.Pending = len(selected) - i
+				break
+			}
 			n, err := postStateFile(ctx, client, base, opts, profile, f)
 			if err != nil {
 				res.Skipped = append(res.Skipped, CloneStateFilter{
@@ -349,8 +422,14 @@ func SyncState(ctx context.Context, opts StateSyncOptions) StateUploadResult {
 			res.Sent++
 			res.Bytes += n
 		}
+		res.Done = res.Pending == 0
 	}
 
+	// Finalize runs even when the budget stopped the run, and that is the point:
+	// it stores what the cache ACTUALLY holds as the next baseline, so the next
+	// run's plan is a delta of exactly the files still missing. Skipping it would
+	// leave this run's landed bytes with no record, and the next run would send
+	// them all again.
 	removed, err := postStateFinalize(ctx, client, base, opts, profile, plan.RemovedPaths, now())
 	if err != nil {
 		res.Failed = ReasonStateFinalizeFailed

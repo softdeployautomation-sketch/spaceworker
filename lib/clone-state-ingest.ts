@@ -18,6 +18,7 @@
 // NOTHING HERE TOUCHES THE WORK PC.
 
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { readdir, rm, stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 
@@ -272,6 +273,27 @@ export async function applyStateRemovals(opts: {
  * next baseline. Reading it back rather than trusting the manifest the device sent
  * means a file that failed to stage can never be recorded as transferred — which
  * would make the NEXT clone skip it and lose it for good.
+ *
+ * ============================================================================
+ * WHY EVERY FILE IS HASHED HERE, WHICH IS EXPENSIVE AND STILL RIGHT.
+ * ============================================================================
+ *
+ * The planner compares two fingerprints with the hash when BOTH sides carry one,
+ * and with size+mtime otherwise (lib/clone-sync-plan.ts `sameFile`). A staged file
+ * is written when it arrives, so its mtime is a SERVER clock value that can never
+ * equal the source's — meaning a size+mtime comparison would declare every cached
+ * file "changed" and the device would be asked for the whole profile again. That
+ * is not just wasteful: it is the reason a transfer bigger than one device command
+ * could never finish, because each run would start over instead of continuing.
+ *
+ * With the hash on both sides the comparison is about CONTENT, an already-landed
+ * file is recognised, and a run that was cut short is completed by asking for
+ * exactly the files that are still missing. The cost is one read of the cache,
+ * on the server, at plan time — no work on the work PC.
+ *
+ * A file that cannot be read or hashed keeps its size+mtime entry rather than
+ * being dropped: dropping it would claim the cache does not hold a file it does,
+ * and the device would be asked to send it forever.
  */
 export async function fingerprintCache(cacheDir: string): Promise<FileFingerprint[]> {
   const out: FileFingerprint[] = [];
@@ -287,11 +309,34 @@ export async function fingerprintCache(cacheDir: string): Promise<FileFingerprin
       if (!entry.isFile()) continue;
       const info = await stat(abs).catch(() => null);
       if (!info) continue;
-      out.push({ path: rel, size: info.size, mtime: Math.floor(info.mtimeMs / 1000) });
+      const digest = await hashFile(abs);
+      out.push({
+        path: rel,
+        size: info.size,
+        mtime: Math.floor(info.mtimeMs / 1000),
+        ...(digest ? { sha256: digest } : {}),
+      });
     }
   };
   await walk(resolve(cacheDir), "");
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * The file's SHA-256, or null when it cannot be read. Never throws.
+ *
+ * Streamed, not slurped: a fingerprint pass runs over the whole cache, and the
+ * largest carried files (a History database, an extension bundle) are exactly the
+ * ones that must not be loaded into memory to be compared.
+ */
+async function hashFile(abs: string): Promise<string | null> {
+  try {
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(abs)) hash.update(chunk as Buffer);
+    return hash.digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 export { SYNC_MODE_DELTA, SYNC_MODE_FULL };

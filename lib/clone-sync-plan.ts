@@ -41,6 +41,20 @@ export const SYNC_REASONS = {
   profileChanged: "profile_changed",
   versionChanged: "browser_version_changed",
   deviceChanged: "device_changed",
+  /**
+   * There was no stored manifest, but the target's cache already held files — so
+   * the comparison was made against WHAT THE CACHE HOLDS instead of against
+   * nothing.
+   *
+   * This is the reason a transfer larger than one device command can finish at
+   * all: the run that was cut short still recorded its landed bytes (finalize),
+   * and a run whose finalize never arrived still left its bytes in the cache. In
+   * both cases the next run must send only the remainder, and that is only
+   * possible if the cache is allowed to be the baseline. The alternative —
+   * calling it a first clone and re-sending everything — turns a 200 MB replica
+   * into an unbounded retry loop.
+   */
+  cacheBaseline: "cache_baseline",
 } as const;
 
 export type SyncReason =
