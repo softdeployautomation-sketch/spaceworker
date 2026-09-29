@@ -2206,3 +2206,258 @@ Loose `/tmp/*.ts` fails on top-level `await` (`ERR_REQUIRE_ASYNC_MODULE`) → us
 **UNVERIFIED: the desktop/Python-side classification of a revoked key** — this pass proved the Node/DB path only; that side belongs to `T13`/`S14`.
 
 
+
+
+### 2026-09-29 — JUNIOR — **`T6` implemented** (revocation is now REACHABLE: lifetime issuance, revoke/unrevoke, `E4` reuse filter, `revoked` flag). No other task started.
+
+**Task done:** `T6` only, per the `▶ NEXT TASK` pointer at `:9` and junior §2 (the `T6` block) → senior §3 D5 **E4 / E5 / E6** + D7's route-side item. **One file changed:** `app/api/admin/exe-licenses/route.ts` (working-tree diff `167 19`). `lib/exe-license-validator.ts`, `lib/license-service.ts`, `lib/exe-license.ts` and `lib/exe-license-bind.ts` were **not touched by me this task** (proof below). T5's guards were neither re-added, reordered nor made fail-open.
+
+**What changed — `file:line`:**
+
+| File | Lines | What |
+|---|---|---|
+| `app/api/admin/exe-licenses/route.ts` | `5` | `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` import (**D3 item 4**, the swap senior D3 schedules for T6/T7) |
+| `app/api/admin/exe-licenses/route.ts` | `6-11` | `LIFETIME_EXPIRES_AT` imported from `@/lib/exe-license` (never re-declared); `revokeExeLicense` / `unrevokeExeLicense` / `LicenseRevocationError` imported from `@/lib/exe-license-revocation` (the T4 seam — no direct table access for writes) |
+| `app/api/admin/exe-licenses/route.ts` | `21-52` | Response-shape comment block: `lifetime?` on issue, the two new actions, `revoked?` on GET |
+| `app/api/admin/exe-licenses/route.ts` | `94-97`, `129-134` | **E5 dispatch** — `action: "revoke"` / `action: "unrevoke"`, modelled on the `unbind` arm (`:91-93` / `:126-128`), default still `delete`→`issue` |
+| `app/api/admin/exe-licenses/route.ts` | `206-241` | **E5 `revokeLicense`** — unbound `exeLicenseId` → 400 `"Pick which license to cancel."`; ownership gate `if (!license \|\| license.userId !== userId)` → 400 `No license for <email> matches that selection.` (**line-for-line `unbind`**); then `revokeExeLicense({ exeLicenseId, userId, reason })` in `try/catch` with `LicenseRevocationError` → `not_found ? 404 : 400`; success `{ ok: true, revoked: true, exeLicenseId }` |
+| `app/api/admin/exe-licenses/route.ts` | `243-277` | **E5 `unrevokeLicense`** — same gate, then `unrevokeExeLicense(exeLicenseId)`; success `{ ok: true, revoked: false, exeLicenseId }`. The ownership gate here is what makes the seam's unchecked `unrevokeExeLicense` admin-only |
+| `app/api/admin/exe-licenses/route.ts` | `409`, `651` | **D3 item 4** — validation lookup + GET label lookup now resolve against `LICENSABLE_EXE_PRODUCTS` (so `selfhosted_os` is issuable and labelled) |
+| `app/api/admin/exe-licenses/route.ts` | `417-422`, `491` | **Lifetime issuance (D7 route side / D4)** — `const lifetime = body.lifetime === true;` **skips the `durationDays` parse entirely** when true; the signed payload spreads `expiresAt: LIFETIME_EXPIRES_AT` instead of `daysValid: durationDays` |
+| `app/api/admin/exe-licenses/route.ts` | `447-464` | **E4 (the highest-value edit)** — the reuse lookup loads the buyer's revoked ids in ONE query (`prisma.exeLicenseRevocation.findMany({ where: { userId }, select: { exeLicenseId: true } })`, read-only) and filters `keyExpiryIsAfter(l.licenseKey, now) && !revokedIds.has(l.id)` |
+| `app/api/admin/exe-licenses/route.ts` | `635-659` | **E6** — same one-query revoked-id load, then `revoked: revokedIds.has(l.id)` on **every** row of the single listing mapper; inert on `main` (nothing is ever revoked there, so it is always `false`) |
+
+**Commands run** (worktree `/Users/mikeolab/sw-selfhost` unless another dir is named):
+
+```bash
+npx tsc --noEmit
+grep -n 'revoke\|revoked\|lifetime' app/api/admin/exe-licenses/route.ts
+CI=1 npx next build
+npm run test:license
+npm run test:setup
+DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-); S="${DB%/*}/spaceworker_t145"
+DATABASE_URL="$S" npx prisma db push --skip-generate        # scratch DB, already provisioned for T1/T5
+set -a && . ./.env && set +a && npx tsx t6-s6-token.mts      # throwaway admin-session mint (deleted after)
+DB=$(grep '^DATABASE_URL=' .env | cut -d= -f2-); S="${DB%/*}/spaceworker_t145"; \
+  nohup env DATABASE_URL="$S" SESSION_SECRET="$(cat /tmp/s6-secret.txt)" RESEND_API_KEY="re_<random>" npx next start -p 3010 &
+/tmp/s6-t6-proof.sh                                          # S6 + J6 + E6 live, raw output below
+cd /Users/mikeolab/spaceworker
+git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+git diff --numstat main self-hosted-build -- lib/exe-license.ts
+npx tsc --noEmit
+cd /Users/mikeolab/sw-selfhost
+git diff --numstat -- app/api/admin/exe-licenses/route.ts
+git diff --numstat -- lib/exe-license-bind.ts lib/license-service.ts lib/exe-license-validator.ts
+```
+
+**Environment note (new, cost me two boots — record for the next task):** `next start` runs `NODE_ENV=production`, and `lib/env.ts`'s 2026-09-27 placeholder guard **refuses to boot** on this worktree's checked-in `.env` values (`SESSION_SECRET` starts `local_dev_se…`, `RESEND_API_KEY` starts `re_local_dev…`) — every request returned `500 Internal Server Error` with that throw in `/tmp/t6-server.log`. The `.env` was **not** modified: the server was started with throwaway env overrides (`SESSION_SECRET=$(openssl rand -hex 32)`, `RESEND_API_KEY=re_<random>`) purely for this proof. `CI=1 npx next build` does **not** trip it (`guardAgainstPlaceholder` early-returns on `process.env.CI`).
+
+
+
+**Raw output, verbatim (the numbers I measured, not a summary):**
+
+```
+$ npx tsc --noEmit
+TSC_EXIT=0
+
+$ grep -n 'revoke\|revoked\|lifetime' app/api/admin/exe-licenses/route.ts
+5:import { LICENSABLE_EXE_PRODUCTS } from "@/lib/products";
+6:import { generateLicenseKey, LIFETIME_EXPIRES_AT } from "@/lib/exe-license";
+8:  revokeExeLicense,
+9:  unrevokeExeLicense,
+21://   POST { action: "issue", email, product, durationDays? | lifetime? }  -> issue a
+24://        TASK_145 T6: `lifetime: true` mints the same signed payload with the
+40://   POST { action: "revoke", email, exeLicenseId, reason? } -> CANCEL a licence
+45://   POST { action: "unrevoke", email, exeLicenseId } -> RESTORE a cancelled
+47://        design: unrevokeExeLicense has NO ownership check of its own, so this
+51://        bound machine, revoked?) so the admin can pick which unclaimed key to
+94:          : body.action === "revoke"
+95:            ? "revoke"
+96:            : body.action === "unrevoke"
+97:              ? "unrevoke"
+105:  // create the account too. bind/transfer/unbind/revoke/unrevoke/delete all
+129:  if (action === "revoke") {
+130:    return revokeLicense(user.id, user.email, body);
+132:  if (action === "unrevoke") {
+133:    return unrevokeLicense(user.id, user.email, body);
+205:// ---- revoke (cancel a license — admin-only sibling of unbind) ----------------
+208:// directly. The seam's revokeExeLicense already checks ownership internally;
+213:async function revokeLicense(
+233:    await revokeExeLicense({ exeLicenseId, userId, reason });
+234:    return NextResponse.json({ ok: true, revoked: true, exeLicenseId });
+246:// ---- unrevoke (restore a cancelled license — admin-only sibling of unbind) ---
+248:// unrevokeExeLicense has NO ownership check of its own by design (senior
+252:// the seam) to a customer surface. Idempotent: deleting when nothing is revoked
+255:async function unrevokeLicense(
+273:  await unrevokeExeLicense(exeLicenseId);
+274:  return NextResponse.json({ ok: true, revoked: false, exeLicenseId });
+418:  // TASK_145 T6 — `lifetime: true` on the way IN is a REQUEST for what to issue:
+420:  // Lifetime and `durationDays` are mutually exclusive, so when lifetime is set we
+422:  const lifetime = body.lifetime === true;
+425:  if (!lifetime && body.durationDays !== undefined && body.durationDays !== null && body.durationDays !== "") {
+450:  // because a revoked licence can otherwise still pass `keyExpiryIsAfter`.
+456:  const revokedIds = new Set(
+465:    (l) => keyExpiryIsAfter(l.licenseKey, now) && !revokedIds.has(l.id),
+489:      // TASK_145 T6 — a lifetime grant is the SAME signed payload with the frozen
+492:      ...(lifetime ? { expiresAt: LIFETIME_EXPIRES_AT } : { daysValid: durationDays }),
+601:// buyer's licenses, unchanged, for the claim/transfer/unbind/revoke/unrevoke
+602:// actions below. TASK_145 T6 (E6): every row carries `revoked` so the admin UI
+636:  const revokedIds = new Set(
+658:      // Inert on `main`: nothing is ever revoked there, so this is always false.
+659:      revoked: revokedIds.has(l.id),
+```
+(the first `grep` above was run before the two whitespace-only tidy edits at `:205` and `:278`; the runtime/`tsc`/build results below were produced **after** the rebuild of the final file.)
+
+```
+$ CI=1 npx next build
+BUILD_EXIT=0
+
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 572.356308
+
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 671.941264
+```
+
+**The amended acceptance check — live `S6` (senior §4.2 `S6`, junior §2's amendment). NOT optional; this is the half that proves `E4`.**
+
+Server: `next start -p 3010` backed by `spaceworker_t145` (AdminSetting.btcWallet `testwallet_T16`, so no 400 "Wallet not configured" on this scratch DB). Admin session: `t6-s6-token.mts` (throwaway, deleted) minted a token with the same secret/issuer/audience/`sub` as `lib/admin-auth.ts:createAdminSessionToken`; every request below carried `Cookie: spaceworker_admin_session=<token>` and the route answered `200` (never `403`), so `requireAdminSession()` passed.
+
+```
+### issue #1   POST {"action":"issue","email":"s6-t6@example.test","product":"selfhosted_os","durationDays":30}
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEwLjc2NTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.8a5c6d639a4f44c64c908c5bcf5a9585613b914e8d7ff0b058fa65f53518baee","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:10.765Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","isNewAccount":false,"claimUrl":"http://localhost:3400/api/exe-license/claim?token=vVOc2vHWmQZP2nlSB76iE_YOuVtHJlZuj_YFdqcGuP4.1791308470776"}
+
+### bind L1 -> s6-machine-A
+{"bound":true,"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEyLjQ3OTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAibWFjaGluZV9pZCI6ICJzNi1tYWNoaW5lLWEiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.601d3881bd02ddc5f149e775bde83887944517a405214ac85451c7ec005020d9","boundMachineId":"s6-machine-a","boundMachineLabel":"S6 A","boundAt":"2026-09-29T17:41:12.479Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:10.765Z"}
+
+### issue #2 (pre-revoke sanity — reuse must still bite)
+{"reused":true,"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEwLjc2NTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.8a5c6d639a4f44c64c908c5bcf5a9585613b914e8d7ff0b058fa65f53518baee","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:10.765Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","boundMachineId":"s6-machine-a","mustClaimNote":"This buyer already has a usable license, already bound to a device — nothing new was created."}
+```
+
+```
+### S6 step 2 — action:"revoke" it
+-> POST http://127.0.0.1:3010/api/admin/exe-licenses  body={"action":"revoke","email":"s6-t6@example.test","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","reason":"S6 live proof"}
+{"ok":true,"revoked":true,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}
+HTTP_CODE:200
+
+### revoke again (double-click idempotency — J4)
+-> POST http://127.0.0.1:3010/api/admin/exe-licenses  body={"action":"revoke","email":"s6-t6@example.test","exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}
+{"ok":true,"revoked":true,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}
+HTTP_CODE:200
+
+### J6 — bind of a revoked licence (T5's E1 guard, now reachable)
+-> POST http://127.0.0.1:3010/api/admin/exe-licenses  body={"action":"bind","email":"s6-t6@example.test","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","machineId":"s6-machine-B"}
+{"error":"This license was cancelled by the provider and can no longer be activated. Contact support.","code":"revoked"}
+HTTP_CODE:400
+```
+
+```
+### S6 step 3+4 — action:"issue" AGAIN for the SAME user+product (the headline)
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTIuNjI0MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEyLjYyNDAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.db893d0c284b5294ac8764aefd3c4d97cbc284d11c5446a20b7ec0d6ecd2b4a9","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:12.624Z","exeLicenseId":"cmumyqcs3000d9kkh4mcvynzv","isNewAccount":false,"claimUrl":"http://localhost:3400/api/exe-license/claim?token=rAwo-bRamKmI4T-86HMGDpdfaYGLB5rApIiKloG-SvM.1791308472634"}
+K1=eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEwLjc2NTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.8a5c6d639a4f44c64c908c5bcf5a9585613b914e8d7ff0b058fa65f53518baee
+K2=eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTIuNjI0MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEyLjYyNDAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.db893d0c284b5294ac8764aefd3c4d97cbc284d11c5446a20b7ec0d6ecd2b4a9
+L1=cmumyqbcl00039kkhfjz52tge
+L2=cmumyqcs3000d9kkh4mcvynzv
+K2 != K1 ? YES-NEW-KEY-MINTED
+```
+→ **`reused` is absent from that response** (it was present, `true`, in the pre-revoke sanity call), a **new `exeLicenseId`** was created and a **different key** was signed. `E4` bites.
+
+
+```
+### S6 step 3+4 — E6: GET carries the `revoked` flag per row
+### GET ?email=s6-t6@example.test
+{"licenses":[{"id":"cmumyqcs3000d9kkh4mcvynzv","email":"s6-t6@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-29T17:41:12.627Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false},{"id":"cmumyqbcl00039kkhfjz52tge","email":"s6-t6@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-29T17:41:10.773Z","boundMachineId":"s6-machine-a","boundMachineLabel":"S6 A","boundLicenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEyLjQ3OTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAibWFjaGluZV9pZCI6ICJzNi1tYWNoaW5lLWEiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.601d3881bd02ddc5f149e775bde83887944517a405214ac85451c7ec005020d9","boundAt":"2026-09-29T17:41:12.479Z","revoked":true}]}
+
+### S6 step 5 — action:"unrevoke" restores reusability of the ORIGINAL key
+-> POST http://127.0.0.1:3010/api/admin/exe-licenses  body={"action":"unrevoke","email":"s6-t6@example.test","exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}
+{"ok":true,"revoked":false,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}
+HTTP_CODE:200
+
+### delete L2 (remove the newer minted row so the reuse filter can reach L1)
+{"deleted":true,"exeLicenseId":"cmumyqcs3000d9kkh4mcvynzv"}
+
+### issue #4 (post-unrevoke)
+{"reused":true,"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEwLjc2NTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.8a5c6d639a4f44c64c908c5bcf5a9585613b914e8d7ff0b058fa65f53518baee","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:10.765Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","boundMachineId":"s6-machine-a","mustClaimNote":"This buyer already has a usable license, already bound to a device — nothing new was created."}
+K4 == K1 ? YES-ORIGINAL-KEY-REUSABLE-AGAIN
+```
+
+```
+### L1 — lifetime issuance (D7 route side / D4 sentinel)
+### issue lifetime:true
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjI5OTktMTItMzFUMjM6NTk6NTkuMDAwMDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEzLjYyMTAwMCIsICJsaWNlbnNlZSI6ICJzNi10Ni1saWZlQGV4YW1wbGUudGVzdCIsICJwbGFuIjogInNlbGZob3N0ZWQiLCAicHJvZHVjdCI6ICJzZWxmaG9zdGVkX29zIn0=.560dca7063b42aa8b581d1163dcc4131ea0695ff85481540a8869fdc8a2c3969","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6-life@example.test","expiresAt":"2999-12-31T23:59:59.000Z","exeLicenseId":"cmumyqdjr000k9kkha0h8ant9","isNewAccount":true,"claimUrl":"http://localhost:3400/api/exe-license/claim?token=zwZZPTq5CDQPM5tesBRj-jUTEw6qGXon4G-QA5m0AA4.1791308473625"}
+### decoded payload of that key
+{"expires_at": "2999-12-31T23:59:59.000000", "issued_at": "2026-09-29T17:41:13.621000", "licensee": "s6-t6-life@example.test", "plan": "selfhosted", "product": "selfhosted_os"}
+### lifetime + durationDays together (lifetime wins, no duration parse)
+{"reused":true,...,"expiresAt":"2999-12-31T23:59:59.000Z","exeLicenseId":"cmumyqdjr000k9kkha0h8ant9",...}   # 200, NOT a 400 "Duration must be a whole number" — `lifetime` skipped the parse
+```
+
+**Regression proof (frozen files; `main` → `self-hosted-build`):**
+
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ npx tsc --noEmit
+LIVE_TSC_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ git diff --numstat main self-hosted-build -- lib/license-service.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- app/api/admin/exe-licenses/route.ts
+3       0       app/api/admin/exe-licenses/route.ts        # this is TASK_129's committed self-hosted gate, NOT T6
+$ git diff --numstat -- app/api/admin/exe-licenses/route.ts
+167     19      app/api/admin/exe-licenses/route.ts        # ← MY ENTIRE T6 DIFF, working tree, uncommitted at the time of writing
+$ curl -s localhost:3010/api/store/prices | grep -c selfhosted_os
+0
+$ grep -n 'if (isSelfHosted())' app/api/admin/exe-licenses/route.ts
+69:  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+604:  if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+$ DATABASE_URL=<spaceworker_t145> npx tsx -e '...'
+licenses 0
+revocations 0
+transferRows 0
+```
+(`S11` still holds — both `isSelfHosted()` early-returns are present, so every new action is inert on a customer's own box; and the admin-only product still does **not** leak onto `/api/store/prices`.)
+
+
+**Notes on the four concerns, in the priority order §2 gave them:**
+
+- **E4 (reuse filter) — implemented, and proven live.** Without it, step 3+4 above returns `reused: true` with the *cancelled* key; with it, a brand-new key is minted, and step 5 shows the original key becomes reusable again after `unrevoke`. The revoked-id set is loaded **once per call**, not per row, and is a **read** — the seam's write functions are the only writer of `ExeLicenseRevocation`.
+- **Lifetime issuance** — `lifetime: true` in, `LIFETIME_EXPIRES_AT` out (imported from `lib/exe-license.ts`, never re-declared, never mutated in a copy). The decoded payload above is the D4 literal byte-for-byte (`expires_at: 2999-12-31T23:59:59.000000`), which is the *only* thing that makes a licence lifetime on the way out — no DB column, no client flag. `lifetime: true` + a garbage `durationDays` returns 200, proving the parse is skipped rather than tolerated.
+- **E5 (revoke/unrevoke)** — two new action arms modelled line-for-line on `unbind`: same unbound-id 400, same ownership gate (identical `No license for <email> matches that selection.` text), same `try/catch` → `code`/`not_found ? 404 : 400` mapping, response `{ ok, revoked, exeLicenseId }`. Double-revoke returns `200 {"ok":true,"revoked":true,...}`, not a 500. Unrevoke's ownership gate is what keeps the unchecked seam admin-only; the handler must never be reachable from a user surface.
+- **E6 (`revoked` flag)** — one query, every row, single listing mapper; `false` for the fresh row, `true` for the cancelled one, both shown live above. Inert on `main` by construction.
+
+**UNVERIFIED: the admin UI half of revocation (T7).** `app/admin/(protected)/admin-panel.tsx` still imports `EXE_PRODUCTS` and has no **Cancel licence** / **Restore** button, no `revoked` badge and no **Lifetime** checkbox. `T6` deliberately did not touch it (senior D3 item 4 places the `:6`/`:3559` swap alongside T7's UI work; `:3479`'s `EXE_PRODUCTS[0].id` default stays untouched). The API is now reachable by hand/curl only.
+
+**UNVERIFIED: `S13`/`S14` (the live kill) and `S9`/`S15`/`S16`** — `/api/exe-license/eligibility` was not called with a revoked licence this session, the desktop `validator.py` path was not exercised, and the buyer Settings page was not rendered. With E5 landed a revocation row *can now be created through the app*, so those rows are finally runnable — they are not mine.
+
+**UNVERIFIED: cross-account revoke/unrevoke refusal at runtime** — the ownership gate is modelled on `unbind` and compiles, but I only exercised the happy path plus the unbound-id 400; no test drove a *different* user's `exeLicenseId` through `revoke`/`unrevoke`.
+
+**NOT RUNNABLE BY JUNIOR:** none — `S6` **was** run (raw output above). The only environment obstacle was `lib/env.ts`'s production placeholder guard, worked around without editing `.env` (see the environment note).
+
+**Housekeeping:** throwaway `t6-s6-token.mts` deleted from the worktree; the proof script lived at `/tmp/s6-t6-proof.sh` only; `spaceworker_t145` left at 0 licences / 0 revocations / 0 transfers; the server on `:3010` stopped. No `prisma generate` / `migrate dev` / `migrate resolve` was run against any shared DB, and nothing was connected to the VPS.
+
+READY FOR VERIFICATION - T6
+

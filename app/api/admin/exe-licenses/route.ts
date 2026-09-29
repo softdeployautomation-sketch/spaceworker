@@ -2,8 +2,13 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
-import { EXE_PRODUCTS } from "@/lib/products";
-import { generateLicenseKey } from "@/lib/exe-license";
+import { LICENSABLE_EXE_PRODUCTS } from "@/lib/products";
+import { generateLicenseKey, LIFETIME_EXPIRES_AT } from "@/lib/exe-license";
+import {
+  revokeExeLicense,
+  unrevokeExeLicense,
+  LicenseRevocationError,
+} from "@/lib/exe-license-revocation";
 import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense, keyExpiryIsAfter, originalExpiry } from "@/lib/exe-license-bind";
 import { findOrCreateUser } from "@/lib/find-or-create-user";
 import { generateLicenseClaimToken, hashLicenseClaimToken, LICENSE_CLAIM_TTL_MS } from "@/lib/license-claim";
@@ -13,9 +18,12 @@ import { notifyAdmin } from "@/lib/telegram";
 import { isSelfHosted } from "@/lib/exe-build-target";
 
 // /api/admin/exe-licenses — the admin "EXE licenses" tool.
-//   POST { action: "issue", email, product, durationDays? }  -> issue a NEW EXE
-//        license outside the checkout flow (a comp, an off-platform payment, a
-//        support replacement). Unchanged from before Task 47.
+//   POST { action: "issue", email, product, durationDays? | lifetime? }  -> issue a
+//        NEW EXE license outside the checkout flow (a comp, an off-platform
+//        payment, a support replacement). Unchanged from before Task 47, except
+//        TASK_145 T6: `lifetime: true` mints the same signed payload with the
+//        frozen far-future `LIFETIME_EXPIRES_AT` sentinel instead of `daysValid`.
+//        The reuse filter below never hands back a cancelled licence (E4).
 //   POST { action: "bind", email, exeLicenseId, machineId, machineLabel? } -> CLAIM
 //        an existing (unbound) license to a machine — the admin manual tool for
 //        one-real-machine-per-license. Re-signs the key with the device's
@@ -29,8 +37,19 @@ import { isSelfHosted } from "@/lib/exe-build-target";
 //        a durable ExeLicenseTransfer audit row — atomically, in one transaction.
 //        No buyer-facing equivalent: letting buyers freely re-bind would defeat
 //        the one-device-per-license guarantee.
+//   POST { action: "revoke", email, exeLicenseId, reason? } -> CANCEL a licence
+//        (TASK_145 T4/T6, admin-only sibling of "unbind"): writes the single
+//        ExeLicenseRevocation row via the T4 seam so every revocation gate —
+//        bind (E1), transfer (E2) and the issue-reuse filter (E4) — now bites.
+//        Idempotent: a double-click rewrites the same row, never a 500.
+//   POST { action: "unrevoke", email, exeLicenseId } -> RESTORE a cancelled
+//        licence by deleting its revocation row. Idempotent. Admin-only by
+//        design: unrevokeExeLicense has NO ownership check of its own, so this
+//        handler carries the same ownership gate as "unbind" and must never be
+//        exposed to a user-facing surface.
 //   GET  ?email=... -> list that buyer's licenses (product, issuedAt, claimed?,
-//        bound machine) so the admin can pick which unclaimed key to claim.
+//        bound machine, revoked?) so the admin can pick which unclaimed key to
+//        claim and see which licences are cancelled.
 // All gated by the admin session like every /api/admin/* route.
 //
 // POST runs synchronously: key generation is one HMAC + a small DB write, so
@@ -72,16 +91,20 @@ export async function POST(req: Request) {
         ? "bind"
         : body.action === "unbind"
           ? "unbind"
-          : body.action === "delete"
-            ? "delete"
-            : "issue";
+          : body.action === "revoke"
+            ? "revoke"
+            : body.action === "unrevoke"
+              ? "unrevoke"
+              : body.action === "delete"
+                ? "delete"
+                : "issue";
 
   // Owner-requested 2026-09-20: "any email the admin inputs automatically
   // gets signed up and generate license" — issue is the one action that
   // creates something out of nothing, so it's the one action allowed to
-  // create the account too. bind/transfer/unbind/delete all operate on an
-  // EXISTING license, which can only exist for an existing user — requiring
-  // one there is correct, not a gap.
+  // create the account too. bind/transfer/unbind/revoke/unrevoke/delete all
+  // operate on an EXISTING license, which can only exist for an existing
+  // user — requiring one there is correct, not a gap.
   if (action === "issue") {
     const { userId, created } = await findOrCreateUser(email);
     return issueLicense({ id: userId, email, isNewAccount: created }, body);
@@ -102,6 +125,12 @@ export async function POST(req: Request) {
   }
   if (action === "unbind") {
     return unbindLicense(user.id, user.email, body);
+  }
+  if (action === "revoke") {
+    return revokeLicense(user.id, user.email, body);
+  }
+  if (action === "unrevoke") {
+    return unrevokeLicense(user.id, user.email, body);
   }
   return deleteLicense(user.id, user.email, body);
 }
@@ -172,6 +201,78 @@ async function unbindLicense(
     }
     throw err;
   }
+}
+
+// ---- revoke (cancel a license — admin-only sibling of unbind) ----------------
+// TASK_145 T6 / senior §3 D5 E5. Writes the single ExeLicenseRevocation row
+// through the T4 seam (lib/exe-license-revocation.ts) — NEVER the table
+// directly. The seam's revokeExeLicense already checks ownership internally;
+// the gate below mirrors unbind's so a mismatched email gets the same 400 shape
+// every other admin action returns, and so the seam's typed error is only ever a
+// belt-and-braces backstop. Idempotent by construction (the seam upserts).
+
+async function revokeLicense(
+  userId: string,
+  userEmail: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const exeLicenseId = typeof body.exeLicenseId === "string" ? body.exeLicenseId.trim() : "";
+  if (!exeLicenseId) {
+    return NextResponse.json({ error: "Pick which license to cancel." }, { status: 400 });
+  }
+  const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : null;
+
+  const license = await prisma.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license || license.userId !== userId) {
+    return NextResponse.json(
+      { error: `No license for ${userEmail} matches that selection.` },
+      { status: 400 },
+    );
+  }
+
+  try {
+    await revokeExeLicense({ exeLicenseId, userId, reason });
+    return NextResponse.json({ ok: true, revoked: true, exeLicenseId });
+  } catch (err) {
+    if (err instanceof LicenseRevocationError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: err.code === "not_found" ? 404 : 400 },
+      );
+    }
+    throw err;
+  }
+}
+
+// ---- unrevoke (restore a cancelled license — admin-only sibling of unbind) ---
+// TASK_145 T6 / senior §3 D5 E5. DELETES the revocation row through the T4 seam.
+// unrevokeExeLicense has NO ownership check of its own by design (senior
+// §3.14.2), so the gate here is what makes the action admin-only: without it,
+// any caller could restore a cancelled licence and defeat revocation. There is
+// no user-facing restore anywhere in this phase — never wire this handler (or
+// the seam) to a customer surface. Idempotent: deleting when nothing is revoked
+// is a no-op, never a throw.
+
+async function unrevokeLicense(
+  userId: string,
+  userEmail: string,
+  body: Record<string, unknown>,
+): Promise<NextResponse> {
+  const exeLicenseId = typeof body.exeLicenseId === "string" ? body.exeLicenseId.trim() : "";
+  if (!exeLicenseId) {
+    return NextResponse.json({ error: "Pick which license to restore." }, { status: 400 });
+  }
+
+  const license = await prisma.exeLicense.findUnique({ where: { id: exeLicenseId } });
+  if (!license || license.userId !== userId) {
+    return NextResponse.json(
+      { error: `No license for ${userEmail} matches that selection.` },
+      { status: 400 },
+    );
+  }
+
+  await unrevokeExeLicense(exeLicenseId);
+  return NextResponse.json({ ok: true, revoked: false, exeLicenseId });
 }
 
 // ---- bind (claim an existing license to a machine) --------------------------
@@ -302,8 +403,10 @@ async function issueLicense(
   user: { id: string; email: string; isNewAccount: boolean },
   body: Record<string, unknown>,
 ): Promise<NextResponse> {
+  // D3 item 4 (T6) — the admin licence tool mints anything admin-licensable,
+  // including the self-hosted product (which is deliberately NOT on the store).
   const productId = typeof body.product === "string" ? body.product.trim() : "";
-  const product = EXE_PRODUCTS.find((p) => p.id === productId);
+  const product = LICENSABLE_EXE_PRODUCTS.find((p) => p.id === productId);
   if (!product) {
     return NextResponse.json(
       { error: "Pick a valid SpaceWorker EXE product." },
@@ -311,8 +414,14 @@ async function issueLicense(
     );
   }
 
+  // TASK_145 T6 — `lifetime: true` on the way IN is a REQUEST for what to issue:
+  // the exact same signed payload shape with the frozen far-future sentinel.
+  // Lifetime and `durationDays` are mutually exclusive, so when lifetime is set we
+  // deliberately SKIP the duration parse entirely (never daysValid arithmetic).
+  const lifetime = body.lifetime === true;
+
   let durationDays = undefined as number | undefined;
-  if (body.durationDays !== undefined && body.durationDays !== null && body.durationDays !== "") {
+  if (!lifetime && body.durationDays !== undefined && body.durationDays !== null && body.durationDays !== "") {
     const n = Number(body.durationDays);
     if (!Number.isInteger(n) || n <= 0) {
       return NextResponse.json(
@@ -330,13 +439,30 @@ async function issueLicense(
   // for a user to ever have more than one usable license per product at a
   // time. Reuse an existing non-expired one if there is one, whatever its
   // bind state — only mint a genuinely new row when none exists or the
-  // existing one(s) have actually expired.
+  // existing one(s) have actually expired. (Amended by TASK_145 T6/E4 below:
+  // a cancelled row no longer counts as reusable either.)
+  //
+  // TASK_145 T6 (E4) — the reuse filter must ALSO exclude cancelled licences, or
+  // "Cancel license" is purely cosmetic: cancelling then re-issuing would hand
+  // the customer back the very key that was just killed. Revocation is read
+  // through the T4 seam's table in ONE query here (never inferred from the key),
+  // because a revoked licence can otherwise still pass `keyExpiryIsAfter`.
   const now = new Date();
   const existingRows = await prisma.exeLicense.findMany({
     where: { userId: user.id, product: product.id },
     orderBy: { issuedAt: "desc" },
   });
-  const reusable = existingRows.find((l) => keyExpiryIsAfter(l.licenseKey, now));
+  const revokedIds = new Set(
+    (
+      await prisma.exeLicenseRevocation.findMany({
+        where: { userId: user.id },
+        select: { exeLicenseId: true },
+      })
+    ).map((r) => r.exeLicenseId),
+  );
+  const reusable = existingRows.find(
+    (l) => keyExpiryIsAfter(l.licenseKey, now) && !revokedIds.has(l.id),
+  );
   if (reusable) {
     return NextResponse.json({
       reused: true,
@@ -359,7 +485,10 @@ async function issueLicense(
       licensee: user.email,
       plan: product.plan ?? product.id,
       product: product.id,
-      daysValid: durationDays,
+      // TASK_145 T6 — a lifetime grant is the SAME signed payload with the frozen
+      // far-future `expires_at`; `expiresAt` wins over `daysValid` inside
+      // generateLicenseKey. Never arithmetic from `durationDays`.
+      ...(lifetime ? { expiresAt: LIFETIME_EXPIRES_AT } : { daysValid: durationDays }),
     });
   } catch {
     return NextResponse.json(
@@ -468,7 +597,9 @@ async function issueLicense(
 // EVERY buyer (mirrors Vantra's admin exe-licenses page, same shape), so a
 // freshly issued or bound license always surfaces here immediately, live off
 // the same table every action already writes to. Email still narrows to one
-// buyer's licenses, unchanged, for the claim/transfer/unbind actions below.
+// buyer's licenses, unchanged, for the claim/transfer/unbind/revoke/unrevoke
+// actions below. TASK_145 T6 (E6): every row carries `revoked` so the admin UI
+// can show a cancelled licence without a second request.
 export async function GET(req: Request) {
   if (isSelfHosted()) return NextResponse.json({ error: "Not found" }, { status: 404 });
   const isAdmin = await requireAdminSession();
@@ -497,17 +628,34 @@ export async function GET(req: Request) {
     include: { user: { select: { email: true } } },
   });
 
+  // TASK_145 T6 (E6) — one query resolves which of the listed licences are
+  // cancelled, so the admin UI can render a "Cancelled" state. Read from the T4
+  // seam's table (never a decoded-key guess). Empty list -> no query needed;
+  // `in: []` is safe but this keeps the shape obvious.
+  const revokedIds = new Set(
+    (
+      licenses.length
+        ? await prisma.exeLicenseRevocation.findMany({
+            where: { exeLicenseId: { in: licenses.map((l) => l.id) } },
+            select: { exeLicenseId: true },
+          })
+        : []
+    ).map((r) => r.exeLicenseId),
+  );
+
   return NextResponse.json({
     licenses: licenses.map((l) => ({
       id: l.id,
       email: l.user.email,
       product: l.product,
-      productName: EXE_PRODUCTS.find((p) => p.id === l.product)?.name ?? l.product,
+      productName: LICENSABLE_EXE_PRODUCTS.find((p) => p.id === l.product)?.name ?? l.product,
       issuedAt: l.issuedAt.toISOString(),
       boundMachineId: l.boundMachineId,
       boundMachineLabel: l.boundMachineLabel,
       boundLicenseKey: l.boundLicenseKey,
       boundAt: l.boundAt?.toISOString() ?? null,
+      // Inert on `main`: nothing is ever revoked there, so this is always false.
+      revoked: revokedIds.has(l.id),
     })),
   });
 }

@@ -2682,3 +2682,76 @@ Four failures hit while building the harness — all now written down so the nex
 READY FOR VERIFICATION - T5 (senior pass 9 closed this row; `T6` handed to the junior)
 
 
+
+
+## 2026-09-29 — JUNIOR (T6 implementation) — admin API: lifetime issuance + `revoke`/`unrevoke` + `E4` reuse filter + `revoked` flag. **Pending senior verification.**
+
+**Task done:** `T6` only (pointer at junior `:9`), implementing senior §3 D5 **E4 / E5 / E6** + D7's route-side item in the order §2 gives (E4 first). **One file changed:** `app/api/admin/exe-licenses/route.ts`, working-tree diff **`167 19`** (uncommitted at the time of writing; `git diff --numstat -- app/api/admin/exe-licenses/route.ts`). I did **not** touch `lib/exe-license-validator.ts` (canary empty), `lib/license-service.ts` (canary empty), `lib/exe-license.ts` (still `13 0`) or `lib/exe-license-bind.ts` — T5's two guards are quoted in the route's comments but never re-added, reordered or relaxed, and revoked stays checked first *inside the bind/transfer seam*, untouched.
+
+**`file:line` map (final file):** `:5` `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` (**D3 item 4** — senior D3 explicitly hands this swap to T6/T7; nothing else in D3's list was needed); `:6-11` imports `LIFETIME_EXPIRES_AT` from `@/lib/exe-license` + the three T4 seam functions (no direct `ExeLicenseRevocation` write anywhere); `:21-52` response-shape comment block extended (`lifetime?`, `revoke`, `unrevoke`, `revoked?`); `:94-97` + `:129-134` the **E5** dispatch arms, slotted between `unbind` and `delete`; `:206-241` `revokeLicense`; `:243-277` `unrevokeLicense` (both line-for-line on `unbind` at `:174-204`: same unbound-id 400, same ownership gate text, same `LicenseRevocationError`→`not_found ? 404 : 400`); `:409`/`:651` the D3 lookups; `:417-422` + `:491` lifetime issuance (`lifetime` skips the `durationDays` parse; `expiresAt: LIFETIME_EXPIRES_AT` wins inside `generateLicenseKey`); `:447-464` **E4**; `:635-659` **E6**.
+
+**Verification — both halves.** Static: `npx tsc --noEmit` → `TSC_EXIT=0`; `CI=1 npx next build` → `BUILD_EXIT=0`; `grep -n 'revoke\|revoked\|lifetime' app/api/admin/exe-licenses/route.ts` shows all four concerns; `npm run test:license` → `1..9 / # pass 9 / # fail 0`; `npm run test:setup` → `1..29 / # pass 29 / # fail 0`. Live (`S6`, **the amended acceptance bar**): `next start -p 3010` on `spaceworker_t145`, admin cookie minted the same way `lib/admin-auth.ts:createAdminSessionToken` does (throwaway `t6-s6-token.mts`, deleted). Raw:
+
+
+```
+### issue #1 (30 days, selfhosted_os)
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTAuNzY1MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEwLjc2NTAwMCIsICJsaWNlbnNlZSI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.8a5c6d639a4f44c64c908c5bcf5a9585613b914e8d7ff0b058fa65f53518baee","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:10.765Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","isNewAccount":false,"claimUrl":"..."}
+### bind it -> s6-machine-A
+{"bound":true,"...":"...","boundMachineId":"s6-machine-a","boundMachineLabel":"S6 A","boundAt":"2026-09-29T17:41:12.479Z","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","product":"selfhosted_os","expiresAt":"2026-10-29T17:41:10.765Z"}
+### issue again BEFORE revoke (control — reuse must still work)
+{"reused":true,"licenseKey":"…8a5c6d63…","exeLicenseId":"cmumyqbcl00039kkhfjz52tge","boundMachineId":"s6-machine-a","mustClaimNote":"This buyer already has a usable license, already bound to a device — nothing new was created."}
+
+### action:"revoke" (1st)
+{"ok":true,"revoked":true,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}     HTTP_CODE:200
+### action:"revoke" (2nd — double-click)
+{"ok":true,"revoked":true,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}     HTTP_CODE:200
+### action:"bind" a revoked licence (T5's E1 guard, now REACHABLE)
+{"error":"This license was cancelled by the provider and can no longer be activated. Contact support.","code":"revoked"}   HTTP_CODE:400
+
+### action:"issue" AGAIN for the SAME user+product  ← S6's pass condition
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMjlUMTc6NDE6MTIuNjI0MDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEyLjYyNDAwMCIsICJsaWNlbnNlZCI6ICJzNi10NkBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.db893d0c284b5294ac8764aefd3c4d97cbc284d11c5446a20b7ec0d6ecd2b4a9","product":"selfhosted_os","licensee":"s6-t6@example.test","expiresAt":"2026-10-29T17:41:12.624Z","exeLicenseId":"cmumyqcs3000d9kkh4mcvynzv","isNewAccount":false}
+K2 != K1 ? YES-NEW-KEY-MINTED
+
+### GET ?email=s6-t6@example.test  (E6)
+{"licenses":[{"id":"cmumyqcs3000d9kkh4mcvynzv",…,"boundMachineId":null,"boundAt":null,"revoked":false},{"id":"cmumyqbcl00039kkhfjz52tge",…,"boundMachineId":"s6-machine-a","boundAt":"2026-09-29T17:41:12.479Z","revoked":true}]}
+
+### action:"unrevoke"
+{"ok":true,"revoked":false,"exeLicenseId":"cmumyqbcl00039kkhfjz52tge"}     HTTP_CODE:200
+### (delete the newer row) then action:"issue"
+{"reused":true,"licenseKey":"…8a5c6d63…","exeLicenseId":"cmumyqbcl00039kkhfjz52tge",…}
+K4 == K1 ? YES-ORIGINAL-KEY-REUSABLE-AGAIN
+
+### lifetime:true issuance
+{"licenseKey":"eyJleHBpcmVzX2F0IjogIjI5OTktMTItMzFUMjM6NTk6NTkuMDAwMDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTI5VDE3OjQxOjEzLjYyMTAwMCIsICJsaWNlbnNlZCI6ICJzNi10Ni1saWZlQGV4YW1wbGUudGVzdCIsICJwbGFuIjogInNlbGZob3N0ZWQiLCAicHJvZHVjdCI6ICJzZWxmaG9zdGVkX29zIn0=.560dca70…","expiresAt":"2999-12-31T23:59:59.000Z","exeLicenseId":"cmumyqdjr000k9kkha0h8ant9"}
+decoded payload: {"expires_at": "2999-12-31T23:59:59.000000", "issued_at": "2026-09-29T17:41:13.621000", "licensee": "s6-t6-life@example.test", "plan": "selfhosted", "product": "selfhosted_os"}
+### lifetime:true + durationDays:"not-a-number"
+{"reused":true,…,"expiresAt":"2999-12-31T23:59:59.000Z"}   # 200 — the duration parse was skipped, not tolerated
+```
+(`…` marks a long base64 field elided for legibility only; the full verbatim transcript is in the junior track's T6 entry. Counts are as measured, not estimated: `# pass 9 / # fail 0` and `# pass 29 / # fail 0`, `TSC_EXIT=0`, `BUILD_EXIT=0`.)
+
+
+**Frozen-file canaries (run from `/Users/mikeolab/spaceworker`, branch `main` `b7330a1`):**
+
+```
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/license-service.ts
+(empty)
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ git diff --numstat main self-hosted-build -- app/api/admin/exe-licenses/route.ts
+3       0       app/api/admin/exe-licenses/route.ts      # TASK_129's committed self-hosted gate — not T6
+$ npx tsc --noEmit
+LIVE_TSC_EXIT=0
+$ curl -s localhost:3010/api/store/prices | grep -c selfhosted_os
+0
+```
+
+**Two notes worth carrying forward.** (1) `next start` on this worktree **cannot boot** with the checked-in `.env`: `lib/env.ts`'s placeholder guard (`:22-70`, gated on `!process.env.CI`) throws on `SESSION_SECRET=local_dev_se…` and `RESEND_API_KEY=re_local_dev…`, and every request returned `500 Internal Server Error`. The proof above therefore used throwaway `SESSION_SECRET`/`RESEND_API_KEY` **env overrides on the command line** — `.env` was not edited. `CI=1 npx next build` is unaffected (the guard early-returns on `CI`). (2) `E4` is the load-bearing edit: the live step 3+4 is the only evidence that matters, and it passes — the cancelled key is no longer handed back, and `unrevoke` restores it (`K4 == K1`).
+
+**UNVERIFIED:** the admin UI half (T7 — no Cancel/Restore button, no badge, no Lifetime checkbox yet; `admin-panel.tsx:6,:3559` still on `EXE_PRODUCTS`); `S13`/`S14` (live kill via eligibility + the desktop path), `S9`, `S15`, `S16`; cross-account `revoke`/`unrevoke` refusal at runtime (only the happy path + unbound-id 400 were exercised). Nothing was run against the VPS, no `prisma generate`/`migrate dev`/`migrate resolve`, no migration edited, and `spaceworker_t145` was left at 0 licences / 0 revocations / 0 transfers.
+
+READY FOR VERIFICATION - T6
+
