@@ -28,6 +28,17 @@
      ```
 - `node_modules` in the worktree is a symlink to the primary checkout's — do **not** run `npm install` there.
 
+#### ⚠️ PUSH TRAP — read before you push anything
+
+The branch's upstream was misconfigured as **`refs/heads/main`**, so a bare `git push` from `/Users/mikeolab/sw-selfhost` would have pushed the whole self-hosted product line at the **live app's `main`**. The senior fixed it on 2026-09-29. From now on:
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+git config --get branch.self-hosted-build.merge    # must read refs/heads/self-hosted-build
+git push origin self-hosted-build:self-hosted-build # ALWAYS an explicit refspec — never a bare `git push`
+```
+If that config ever reads `refs/heads/main`, **stop** and re-run `git branch --set-upstream-to=origin/self-hosted-build self-hosted-build` before pushing. **Nothing in this task is ever pushed to `main`.**
+
 ```bash
 cd /Users/mikeolab/sw-selfhost
 npx tsc --noEmit     # baseline on the untouched branch: EXIT=0 (senior track §7)
@@ -147,6 +158,11 @@ Implement senior track §3 D5 **E4, E5, E6** + D7's route-side item, in this ord
 ### T7 — Admin UI: Lifetime toggle + Cancel/Restore
 
 **File:** `app/admin/(protected)/admin-panel.tsx` → `ExeLicensesTab` (starts branch `:3477`)
+Read the tab first (it was not read line-by-line by the senior — report the exact insertion points in your log).
+1. Next to the duration input, add a **Lifetime (no expiry)** checkbox; when ticked, disable the duration input and POST `{ lifetime: true }`; when unticked, the existing `durationDays` payload is unchanged. Update the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` import/select per D3 item 4 (`:6` and `:3559` only; leave the `:3479` default).
+2. Per licence row: a `Cancelled` badge when `revoked` is true, plus a **Cancel license** / **Restore license** button that POSTs `{ action: "revoke"|"unrevoke", exeLicenseId, reason? }` behind a `window.confirm`, then reloads the list. Extend the `AdminLicenseRow` type with `revoked?: boolean`.
+
+**Check:** `npx tsc --noEmit`; `grep -n 'LICENSABLE_EXE_PRODUCTS|lifetime|unrevoke' 'app/admin/(protected)/admin-panel.tsx'`.
 
 ### T8 — Stop showing a hardcoded 180 days to the buyer
 
@@ -210,10 +226,19 @@ Touch `lib/exe-license-validator.ts` · change the signed payload's key set · a
 
 **Junior's next action:** read the senior track in full, then start at **T1**. Report back with raw command output via an appended entry here **and** in the senior track, ending with `READY FOR VERIFICATION`.
 
+### 2026-09-29 — SENIOR (second pass) — no product code written; read before you start
 
-Read the tab first (it was not read line-by-line by the senior — report the exact insertion points in your log).
-1. Next to the duration input, add a **Lifetime (no expiry)** checkbox; when ticked, disable the duration input and POST `{ lifetime: true }`; when unticked, the existing `durationDays` payload is unchanged. Update the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` import/select per D3 item 4 (`:6` and `:3559` only; leave the `:3479` default).
-2. Per licence row: a `Cancelled` badge when `revoked` is true, plus a **Cancel license** / **Restore license** button that POSTs `{ action: "revoke"|"unrevoke", exeLicenseId, reason? }` behind a `window.confirm`, then reloads the list. Extend the `AdminLicenseRow` type with `revoked?: boolean`.
+**Two things changed after the assignment entry above — both affect you:**
 
-**Check:** `npx tsc --noEmit`; `grep -n 'LICENSABLE_EXE_PRODUCTS\|lifetime\|unrevoke' 'app/admin/(protected)/admin-panel.tsx'`.
+1. **The branch was tracking the wrong upstream** (`refs/heads/main`), so a bare `git push` would have hit the **live app**. Fixed by the senior. You must **always** push with an explicit refspec:
+   ```bash
+   cd /Users/mikeolab/sw-selfhost
+   git config --get branch.self-hosted-build.merge      # must read refs/heads/self-hosted-build
+   git push origin self-hosted-build:self-hosted-build  # never a bare `git push`
+   ```
+   See the PUSH TRAP box in §0.1 above.
+2. **This file had a structure defect** (four blocks landed in the wrong place while appending). Repaired and verified — see T7's body (`:158-166`) and the senior track's second log entry. If you spot any other mis-ordered section, report it as a `⚠️ OBJECTION` rather than working around it.
+
+**Also confirmed unchanged:** `lib/exe-license-validator.ts` still has **zero** diff vs `main` (canary green) and `/Users/mikeolab/spaceworker` is untouched. The implementation is still **NOT STARTED** — your first action is **T1**.
+
 
