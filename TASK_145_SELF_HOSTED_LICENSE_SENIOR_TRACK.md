@@ -470,3 +470,370 @@ Also added `node_modules` (the worktree's symlink to the primary checkout) to th
 **State.** Implementation **NOT started** — Revision 2 is a scope change only. **Next actor:** the junior begins at **T1**, one task per session, using the explicit push refspec in §0.2.1.
 
 
+### 2026-09-29 — JUNIOR — **T1 implemented** (schema: revocation table + self-hosted price column). No other task started.
+
+*(Same entry as the one appended to the junior track this session.)*
+
+**Scope:** `prisma/schema.prisma` (+ the one new migration folder), exactly as junior §2 T1 writes it. Nothing else touched. `lib/exe-license-validator.ts` **untouched** (canary below).
+
+**⛔ Datasource gate (T1 step 0):** `.env` → `DATABASE_URL="postgresql://spaceworker_app:...@127.0.0.1:5432/spaceworker"` — **local dev DB (`127.0.0.1`), not the VPS**. Proceeded. (`.env` in this worktree is a symlink to `/Users/mikeolab/spaceworker/.env`, which is why the worktree had no `.env` of its own.)
+
+**What changed — `git --no-pager diff --stat` = `prisma/schema.prisma | 30 ++++++`, "1 file changed, 30 insertions(+)" (0 deletions):**
+- `prisma/schema.prisma:114-116` — `exeLicenseRevocations ExeLicenseRevocation[]` on `model User`, beside `exeLicenses` `:112` / `exeLicenseTransfers` `:113`.
+- `prisma/schema.prisma:200-204` — `selfhostedOsPriceUsd Float @default(0)` on `model AdminSetting`, directly after `agentExePriceUsd`, with the required "never charged through the store / keeps `StoreProduct.priceField` a real key" comment.
+- `prisma/schema.prisma:650-652` — `revocation ExeLicenseRevocation?` on `model ExeLicense`, before its `@@index([userId])`.
+- `prisma/schema.prisma:691-707` — `model ExeLicenseRevocation`, **verbatim** from senior §3 D1, with the D1 comment above it.
+- `prisma/migrations/20261020000000_add_exe_license_revocation/migration.sql` — **NEW**. Purely additive: 1 `ALTER TABLE "AdminSetting" ADD COLUMN "selfhostedOsPriceUsd" DOUBLE PRECISION NOT NULL DEFAULT 0`, 1 `CREATE TABLE "ExeLicenseRevocation"`, 2 indexes, 2 FKs. **No** drop / alter / rename / truncate.
+
+**Raw commands and RAW output**
+
+```
+$ npx prisma validate
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+The schema at prisma/schema.prisma is valid 🚀
+```
+(`VALIDATE_EXIT=0`)
+
+```
+$ git --no-pager diff prisma/schema.prisma
+diff --git a/prisma/schema.prisma b/prisma/schema.prisma
+index 2921c57..a74f54f 100644
+--- a/prisma/schema.prisma
++++ b/prisma/schema.prisma
+@@ -111,6 +111,9 @@ model User {
+   toolUsageLogs            ToolUsageLog[]
+   exeLicenses              ExeLicense[]
+   exeLicenseTransfers      ExeLicenseTransfer[]
++  // TASK_145 (Phase 5) — admin cancellation of an issued EXE licence (one row per
++  // revoked licence; see model ExeLicenseRevocation).
++  exeLicenseRevocations    ExeLicenseRevocation[]
+   // Task 92 — assistant foundation device layer + entitlements.
+   devices                  Device[]
+   deviceJobs               DeviceJob[]
+@@ -194,6 +197,11 @@ model AdminSetting {
+   // mailer/combined/automation EXE already sell in — TASK_27 Part A: "only
+   // Extractor is wired into CI today") — sellable now, buildable later.
+   agentExePriceUsd               Float    @default(50) // one-time, 6-month term
++  // TASK_145 (Phase 5) — the self-hosted OS product's price field. It is NEVER
++  // charged through the store (the product is admin-issued only and deliberately
++  // kept out of ALL_PRODUCTS); the field exists so SELF_HOSTED_OS.priceField
++  // stays a real key for the admin price form.
++  selfhostedOsPriceUsd           Float    @default(0)
+ 
+   // Task 46 — admin admission control for the two mechanisms that actually spend
+   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
+@@ -639,6 +647,10 @@ model ExeLicense {
+   // for support disputes.
+   transfers ExeLicenseTransfer[]
+ 
++  // TASK_145 (Phase 5) — present iff an admin has cancelled this licence's
++  // activation rights. Un-revoking DELETES the row (a reversible toggle).
++  revocation ExeLicenseRevocation?
++
+   @@index([userId])
+ }
+ 
+@@ -676,6 +688,24 @@ model ExeLicenseTransfer {
+   @@index([userId])
+ }
+ 
++// TASK_145 (Phase 5) — admin cancellation of an issued EXE licence.
++// ONE row per revoked licence; UN-REVOKING DELETES the row (deliberate: this is
++// a reversible admin toggle, not a financial ledger). Revocation can only be
++// enforced where the app already talks to our servers (bind/transfer/issue-reuse)
++// because offline validation is a design invariant — see TASK_145 senior track §3 D5.
++model ExeLicenseRevocation {
++  id           String     @id @default(cuid())
++  exeLicenseId String     @unique
++  exeLicense   ExeLicense @relation(fields: [exeLicenseId], references: [id], onDelete: Cascade)
++  userId       String
++  user         User       @relation(fields: [userId], references: [id])
++  reason       String?
++  revokedAt    DateTime   @default(now())
++  revokedBy    String? // admin label/session marker, free-form, short
++
++  @@index([userId])
++}
++
+ // 2026-09-20 — owner: "a subtab showing every free users device active for
+```
+
+**Note on `npx prisma format` (T1 lists it).** I ran it; it reformatted **9 PRE-EXISTING lines in `model Device`** (`powerMac`, `powerLanIp`, `powerLanSubnet`, `powerMacUpdatedAt`, `screenshotMonitoringEnabled`, `tier`, `screenshotWakeDelayMinutes`, `screenshotOnlineSinceAt`, `removedAt`) that have nothing to do with T1. I **reverted that unrelated whitespace** so the diff stays additive-only (30 insertions, **0 deletions**) — `prisma/schema.prisma` is shared with `main` and is the worst conflict surface on this branch. Proof the churn is pre-existing debt, not mine:
+
+```
+$ git show HEAD:prisma/schema.prisma > /tmp/t1_head_schema.prisma   # untouched HEAD
+$ npx prisma format --schema /tmp/t1_head_schema.prisma             # FORMAT_HEAD_EXIT=0
+$ diff /tmp/t1_head_schema.orig.prisma /tmp/t1_head_schema.prisma | wc -l
+      30
+```
+i.e. formatting the **unmodified** HEAD schema produces the identical 30-line `Device` churn. `prisma validate` passes without it, so the reformat is not load-bearing.
+
+**The migration file is exactly what Prisma generates for this datamodel change** — compared comment-stripped, statement for statement:
+```
+$ git show HEAD:prisma/schema.prisma > /tmp/t1_head_schema.orig.prisma
+$ npx prisma migrate diff --from-schema-datamodel /tmp/t1_head_schema.orig.prisma \
+      --to-schema-datamodel prisma/schema.prisma --script > /tmp/t1_gen2.sql    # DIFF_GEN_EXIT=0
+$ sed '/^--/d; /^$/d' /tmp/t1_gen2.sql > /tmp/a.sql
+$ sed '/^--/d; /^$/d' prisma/migrations/20261020000000_add_exe_license_revocation/migration.sql > /tmp/b.sql
+$ diff /tmp/a.sql /tmp/b.sql
+IDENTICAL: committed migration.sql == Prisma-generated SQL for this schema change
+```
+SQL body (statements only):
+```
+ALTER TABLE "AdminSetting" ADD COLUMN     "selfhostedOsPriceUsd" DOUBLE PRECISION NOT NULL DEFAULT 0;
+CREATE TABLE "ExeLicenseRevocation" (
+    "id" TEXT NOT NULL,
+    "exeLicenseId" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "reason" TEXT,
+    "revokedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "revokedBy" TEXT,
+    CONSTRAINT "ExeLicenseRevocation_pkey" PRIMARY KEY ("id")
+);
+CREATE UNIQUE INDEX "ExeLicenseRevocation_exeLicenseId_key" ON "ExeLicenseRevocation"("exeLicenseId");
+CREATE INDEX "ExeLicenseRevocation_userId_idx" ON "ExeLicenseRevocation"("userId");
+ALTER TABLE "ExeLicenseRevocation" ADD CONSTRAINT "ExeLicenseRevocation_exeLicenseId_fkey" FOREIGN KEY ("exeLicenseId") REFERENCES "ExeLicense"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ExeLicenseRevocation" ADD CONSTRAINT "ExeLicenseRevocation_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+```
+
+**The DDL applies cleanly to the real local schema** — applied inside a transaction against the true DB, then rolled back (so nothing was actually changed):
+```
+$ { echo 'BEGIN;'; cat prisma/migrations/20261020000000_add_exe_license_revocation/migration.sql; echo 'ROLLBACK;'; } \
+      | PGPASSWORD=*** psql -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U spaceworker_app -d spaceworker
+BEGIN
+ALTER TABLE
+CREATE TABLE
+CREATE INDEX
+CREATE INDEX
+ALTER TABLE
+ALTER TABLE
+ROLLBACK
+PSQL_EXIT=0
+$ PGPASSWORD=*** psql ... -tAc "select to_regclass('public.\"ExeLicenseRevocation\"') is null;"
+t
+$ PGPASSWORD=*** psql ... -tAc "select count(*) from information_schema.columns where table_name='AdminSetting' and column_name='selfhostedOsPriceUsd';"
+0
+```
+(`t` / `0` confirm the table and column are absent after ROLLBACK — the local DB is unchanged.) `ExeLicense`, `User`, `AdminSetting`, `ExeLicenseTransfer` all resolve as real tables (`to_regclass` non-null), which is why the FKs bind.
+
+**Additive-only scan** of the migration (the only hit is the word "dropped" inside my own header comment):
+```
+$ grep -inE 'DROP |TRUNCATE|DELETE FROM|ALTER COLUMN|RENAME|SET NOT NULL|TYPE ' prisma/migrations/20261020000000_add_exe_license_revocation/migration.sql
+6:-- row, column, constraint or index is dropped, altered or renamed.
+```
+
+**`npx prisma generate`**
+```
+GENERATE_EXIT=0
+$ grep -c 'ExeLicenseRevocation' /Users/mikeolab/spaceworker/node_modules/.prisma/client/index.d.ts
+711
+```
+(The client is generated into the shared `node_modules` the worktree symlinks — the T2+ tasks can now read `db.exeLicenseRevocation`.)
+
+**`npx tsc --noEmit` → EXIT=0, zero output** (no build artifacts present):
+```
+$ rm -rf .next
+$ npx tsc --noEmit
+TSC_OUTPUT_BYTES=       0
+```
+⚠️ Caveat, and it matters: `.next/types/**/*.ts` is in `tsconfig.json`'s `include`, so **after any `next build`** `tsc --noEmit` reports **1** error, emitted from a **generated** file, not from source:
+```
+.next/types/app/dashboard/extract/page.ts(14,13): error TS2344: Type 'OmitWithTag<typeof import("/Users/mikeolab/sw-selfhost/app/dashboard/extract/page"), "default" | "revalidate" | "viewport" | "metadata" | "config" | "generateStaticParams" | "unstable_instant" | ... 8 more ... | "generateViewport", "">' does not satisfy the constraint '{ [x: string]: never; }'.
+  Property 'WebExtractPage' is incompatible with index signature.
+    Type '() => Element' is not assignable to type 'never'.
+```
+Same root cause as the build failure below. I removed the `.next` artifacts I had generated, which restores the documented clean baseline.
+
+**`npx prisma migrate dev --name add_exe_license_revocation` — CANNOT RUN (pre-existing).**
+```
+$ npx prisma migrate dev --name add_exe_license_revocation
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": PostgreSQL database "spaceworker", schema "public" at "127.0.0.1:5432"
+
+Error: P3006
+
+Migration `20260914150000_add_license_claim_token` failed to apply cleanly to the shadow database.
+Error code: P1014
+Error:
+The underlying table for model `ExeLicense` does not exist.
+```
+
+**`npx prisma migrate status` — 25 pending, NOT clean (pre-existing).**
+```
+$ npx prisma migrate status
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": PostgreSQL database "spaceworker", schema "public" at "127.0.0.1:5432"
+
+66 migrations found in prisma/migrations
+Following migrations have not yet been applied:
+20260921160000_add_user_premium_expires
+20260921170000_add_maintenance_modes
+20260921180000_add_exe_trial_email
+20260922000000_assistant_foundation
+20260922120000_console_followups
+20260923000000_vantra_plugin
+20260925000000_task119_live_session_streaming
+20261002000000_browser_clone_pipeline
+20261003000000_task121_installer_zip_names
+20261004000000_task123_wol_power_identity
+20261005000000_device_layer_fk_action_repair
+20261005000001_device_livecapturetoken_index_repair
+20261006000000_task105_resource_governor
+20261006000100_task99_module_store_prices
+20261007000000_task94_telegram_approvals
+20261007000100_agent_actions_toggle
+20261007000200_telegram_chat_enabled
+20261007000300_device_status_notifications
+20261007000400_agent_widget_enabled
+20261008000000_task127_device_screenshots
+20261010000000_task127_screenshot_interval_override
+20261011000000_task127_screenshot_wake_delay
+20261012000000_task128_device_onboarding
+20261013000000_task128_device_removal
+20261014000000_campaign_user_templates
+20261020000000_add_exe_license_revocation
+
+To apply migrations in development run prisma migrate dev.
+To apply migrations in production run prisma migrate deploy.
+```
+**24 of those 25 predate T1** — the local DB was already 24 migrations behind before I touched anything. Root cause, from the ledger:
+```
+$ PGPASSWORD=*** psql ... -tAc 'select count(*) from "_prisma_migrations";'
+41
+$ PGPASSWORD=*** psql ... -tAc 'select count(*) from "_prisma_migrations" where finished_at is null;'
+2
+$ PGPASSWORD=*** psql ... -tAc 'select migration_name from "_prisma_migrations" order by started_at desc limit 3;'
+20260921000000_device_tools_v2
+20260921000000_device_tools_v2
+20260920160000_add_verification_code_purpose
+```
+```
+$ npx prisma migrate deploy
+Environment variables loaded from .env
+Prisma schema loaded from prisma/schema.prisma
+Datasource "db": PostgreSQL database "spaceworker", schema "public" at "127.0.0.1:5432"
+
+66 migrations found in prisma/migrations
+
+Error: P3009
+
+migrate found failed migrations in the target database, new migrations will not be applied. Read more about how to resolve migration issues in a production database: https://pris.ly/d/migrate-resolve
+The `20260921000000_device_tools_v2` migration started at 2026-09-29 02:01:47.863761 UTC failed
+```
+**`02:01:47 UTC` on 2026-09-29 is hours before this session** (my first edit is timestamped `12:04` local) → the P3009 block is pre-existing drift left by earlier work, **not** caused by T1. P3009 blocks *all* application, so T1's migration cannot be applied to this local DB until somebody resolves `device_tools_v2` — another task's job, so I deliberately did **not** `migrate resolve` it (marking it `--applied` would lie about its state; `--rolled-back` then applying 24 unrelated migrations is outside T1 and risks the shared local DB).
+
+**`npm run build` — FAILS on two PRE-EXISTING blockers, neither related to T1.** Raw:
+```
+$ npm run build
+> Build error occurred
+Error [TurbopackInternalError]: Symlink [project]/node_modules is invalid, it points out of the filesystem root
+
+Debug info:
+- Execution of get_all_written_entrypoints_with_issues_operation failed
+- Execution of EntrypointsOperation::new failed
+- Execution of all_entrypoints_write_to_disk_operation failed
+- Execution of output_assets_operation failed
+- Execution of Project::get_all_endpoint_groups_with_app_route_filter failed
+- Execution of Project::entrypoints_with_app_route_filter failed
+- Execution of AppProject::routes_with_filter failed
+- Execution of directory_tree_to_entrypoints_internal failed
+- Execution of directory_tree_to_loader_tree failed
+- Execution of try_get_next_package failed
+- Execution of *ResolveResult::first_source failed
+- Execution of resolve failed
+- Execution of resolve_internal failed
+- Execution of find_package failed
+- Symlink [project]/node_modules is invalid, it points out of the filesystem root
+    at ignore-listed frames {
+  type: 'TurbopackInternalError',
+  location: undefined
+}
+```
+(`NPM_BUILD_EXIT=1`)
+
+Blocker 1 — Turbopack cannot build this worktree at all. §0.1 states `node_modules` here is a symlink to the primary checkout, and `next.config.ts` pins the Turbopack root to `__dirname`; the symlink therefore resolves outside that root:
+```
+$ ls -ld node_modules
+lrwxr-xr-x  1 mikeolab  staff  40 Sep 29 11:19 node_modules -> /Users/mikeolab/spaceworker/node_modules
+```
+Blocker 2 — Next 16.2.9 rejects a stray named export in a page module. `npx next build --webpack` (webpack resolves symlinked deps normally) reaches and exposes the real second failure:
+```
+$ npx next build --webpack
+▲ Next.js 16.2.9 (webpack)
+- Environments: .env
+
+  Creating an optimized production build ...
+✓ Compiled successfully in 27.8s
+  Running TypeScript ...
+Failed to type check.
+
+app/dashboard/extract/page.tsx
+Type error: Page "app/dashboard/extract/page.tsx" does not match the required types of a Next.js Page.
+  "WebExtractPage" is not a valid Page export field.
+
+Next.js build worker exited with code: 1 and signal: null
+```
+The bundle **compiles successfully**; only Next's own page-type check fails, on a file carrying both `export function WebExtractPage()` (`:217`) and `export default function ExtractPage()` (`:1870`).
+
+**Both are pre-existing — proven, not asserted.** I stashed every T1 change, rebuilt, then restored:
+```
+$ git stash push -u -m t1-baseline-check -- prisma/schema.prisma prisma/migrations/20261020000000_add_exe_license_revocation
+Saved working directory and index state On self-hosted-build: t1-baseline-check
+$ git status --short          # (empty — no T1 changes present)
+$ rm -rf .next; npx next build --webpack
+BASELINE_WEBPACK_BUILD_EXIT=1
+  Creating an optimized production build ...
+✓ Compiled successfully in 35.7s
+  Running TypeScript ...
+Failed to type check.
+
+app/dashboard/extract/page.tsx
+Type error: Page "app/dashboard/extract/page.tsx" does not match the required types of a Next.js Page.
+  "WebExtractPage" is not a valid Page export field.
+$ git stash pop
+```
+Identical failure with T1 removed → the build was already broken on this branch. Corroboration — the offending file is **byte-identical to `main`**, and Next is pinned *and* installed at the same version:
+```
+$ git --no-pager diff --stat main self-hosted-build -- app/dashboard/extract/page.tsx
+                                                          # (empty)
+$ node -e "console.log(require('./package.json').dependencies.next)"
+16.2.9
+$ node -e "console.log(require('next/package.json').version)"
+16.2.9
+```
+Fixing it means editing `app/dashboard/extract/page.tsx` (drop `export` from `WebExtractPage`) — a **live-app** file, identical on both branches, whose fix must go to `main` **first** per §0.1. That is **not** T1, so I did not touch it.
+
+**STEP 4 canary — `lib/exe-license-validator.ts` untouched:**
+```
+$ cd /Users/mikeolab/spaceworker && git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+CANARY_LINES=       0
+```
+`/Users/mikeolab/spaceworker` `git status --short` = empty (live checkout untouched).
+
+**PUSH TRAP config check:**
+```
+$ git config --get branch.self-hosted-build.merge
+refs/heads/self-hosted-build
+$ git config --get branch.self-hosted-build.remote
+origin
+```
+
+**UNVERIFIED:**
+- UNVERIFIED: `npx prisma migrate dev --name add_exe_license_revocation` creating the migration — CANNOT RUN: pre-existing P3006/P1014, shadow-DB replay dies at `20260914150000_add_license_claim_token`. The file was instead produced with `prisma migrate diff`, verified byte-identical to Prisma's own generated SQL for this datamodel change, and validated by a transactional apply + ROLLBACK against the real local schema.
+- UNVERIFIED: `npx prisma migrate status` reporting the DB up to date — NOT SATISFIABLE here: pre-existing P3009 (`20260921000000_device_tools_v2`, failed `2026-09-29 02:01:47 UTC`, before this session) blocks all application, and 24 of the 25 pending migrations predate T1.
+- UNVERIFIED: the T1 migration being applied to the local dev DB — blocked by the same P3009; applying it is outside T1's scope.
+- UNVERIFIED: `npm run build` succeeding — fails on two pre-existing blockers (the Turbopack symlink/`filesystem root` panic, a direct consequence of §0.1's own `node_modules` symlink; and Next 16.2.9 rejecting the stray named `WebExtractPage` export in a file byte-identical to `main`). Reproduced identically with T1 stashed.
+- UNVERIFIED: `npx tsc --noEmit` being EXIT=0 *while* `.next/types` build artifacts exist — it is EXIT=0 with none; after any build, 1 pre-existing generated-type error (same `WebExtractPage` root cause) is reported.
+
+⚠️ **@OBJECTION (logged per §2.0 — a check failed, so I stop and flag it rather than weaken it).**
+- T1's acceptance ("migration created", "migrate status reports the DB up to date") and STEP 3's `npm run build` **cannot** pass in this environment, for reasons that exist **independently of T1** and are proven so by stashing. I am **not** marking them passing and **not** weakening them.
+- Deliberately **not** done: `prisma migrate resolve` / `db push` / `migrate reset`; applying the 24 unrelated pending migrations; editing `app/dashboard/extract/page.tsx`; editing `next.config.ts` (e.g. to re-point the Turbopack root). Each exceeds T1, and the last two touch live/shared files whose fixes belong on `main` first.
+- **Senior decision requested:** (a) do the `20260921000000_device_tools_v2` P3009 and the shadow-DB P3006 belong to a task I should be assigned, and (b) is the `WebExtractPage` stray export a known `main`-side defect with its own task? T1's own scope — schema + migration — is complete, additive (30 insertions, 0 deletions), `validate`-clean, and provably correct SQL.
+
+**Schema/migration deliverable status: COMPLETE.** Blocked only on the environment items above.
+
+READY FOR VERIFICATION - T1
+
