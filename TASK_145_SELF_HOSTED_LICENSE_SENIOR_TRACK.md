@@ -456,7 +456,7 @@ D3 assumed the gate that matters is `ALL_PRODUCTS` (store UI, `/pricing`, `/api/
 | W10 | That row is the admin review queue; approving it calls `handleApprovedPayment` → `getProduct(payment.product)` → mints a real key with `plan: "selfhosted"` | `lib/license-service.ts:33,43`; `app/api/admin/payments/[id]/approve/route.ts:30` |
 | W11 | Price is `settings[product.priceField]`, whose column defaults to `0` (T1: `Float @default(0)`) | `app/api/billing/checkout/route.ts:74-77` |
 | W12 | **The sentinel year `2999` exists in three places in one file** — the signed literal, the `Date` constant, and `isLifetimeExpiry`'s threshold. Deliberate (the literal is frozen by the signature; the `Date`/threshold exist for comparisons), but **value-coupled**: if a later edit moves the threshold without the literal, every lifetime licence silently misclassifies as a term licence — the admin-move lock (E9) and the "no expiry" UI copy both stop applying, with no error anywhere. | `lib/exe-license.ts:35,36,39` (added by T3). Fix is **not** a lib edit — the constants are correct and frozen. It is `T17`: a permanent test asserting `isLifetimeExpiry(LIFETIME_EXPIRES_AT) === true` **and** `isLifetimeExpiry(<30-day term>) === false`, so any future drift fails loudly. |
-
+| W13 | **Nothing runs the tests automatically.** No workflow invokes any `test:*` script — `deploy.yml` runs only `npx tsc --noEmit` (`:71`) and `npm run build` (`:74`); `build-exe.yml` runs `npm ci` + `npx prisma generate` + `tauri-action`; the two trial workflows run their own extractors. So `T17`'s "permanent guard" only fires when a human or agent runs it. Repo-wide this is a **convention** (every `test:*` script is manual), not a T17 defect — but it means the guard is only half automatic. | Verified 2026-09-29 (pass 7) by `grep -nE 'run:|uses:' .github/workflows/*.yml`. Mitigation is **protocol, not CI**: §4.1c makes `npm run test:license` + `npm run test:setup` mandatory on every task and every senior pass, and omitting them is reject item **16**. Wiring the suite into `build-exe.yml` is a repo-wide pipeline change to shared files — deliberately **not** done here; recorded as a candidate Phase-6 item. |
 So `GET /api/billing/checkout?kind=btc&product=selfhosted_os` resolves, and `POST /api/billing/submit {product:"selfhosted_os"}` persists a **$0** pending payment for anyone's email — a self-service path into a product the owner requires to be **admin-issued only**. The queue entry later reads "SpaceWorker OS (Self-Hosted)", and approving it auto-mints the licence.
 
 **Severity is bounded — this is not a free-lunch robot.** `/api/internal/payment-verify` compares on-chain received against expected as `ratio = receivedBtc / expectedBtc` with a ±5% `TOLERANCE` (`lib/crypto-verify.ts:46-53`). An expected amount of `0` makes `ratio` `Infinity`, which fails `ratio > 1 + TOLERANCE`, so a $0 payment can **never** auto-approve. The real exposure is (a) public queue-spam creating `User`/`Payment` rows and (b) an admin approving a row the system can mint from.
@@ -528,6 +528,90 @@ It also makes `W12` safe **without touching the frozen lib** — the test is the
 
 ---
 
+## 3.13 REVISION 6 — senior verification of T17, and the sentinel on the Python side (2026-09-29, fifth senior pass)
+
+### 3.13.1 T17 — ACCEPTED, and the guard proven able to fail
+
+Verified `7b570f6`: `tests/exe-license-lifetime.test.ts` (new, 210 lines), `package.json` `+1` line, plus the two log entries. The commit is **`4 files changed, 497 insertions(+)`, zero deletions**.
+
+Re-run independently, not read off the log:
+
+```
+$ npx tsx --test tests/exe-license-lifetime.test.ts
+# tests 9 / # pass 9 / # fail 0
+$ npm run test:license    -> # tests 9 / # pass 9 / # fail 0
+$ npm run test:setup      -> # tests 29 / # pass 29 / # fail 0
+$ npx tsc --noEmit        -> EXIT=0
+$ CI=1 npx next build     -> BUILD_EXIT=0
+canary: validator diff empty | lib/exe-license.ts 13  0 | live app main clean @ b7330a1
+```
+
+Hermeticity confirmed by reading the file, not by trusting its header: no DB, no network, no `.env.local`; `server-only` neutralised through the house `Module._load` hook; `SPACEWORKER_LOCAL_DATA_DIR` redirected to `mkdtempSync`; every key minted and validated through the real HMAC (31 assertions across 9 subtests). It is a genuine regression guard, not a smoke test.
+
+### 3.13.2 The mutation proof — re-derived, and the method in S18 was wrong (corrected)
+
+S18 told the senior to mutate the threshold **"in a scratch copy"**. That **does not work**, and it fails in the most dangerous way: copying the test and lib to `/tmp` breaks module resolution, so the run goes red **for a reason unrelated to the mutation** — *including in the unmutated control*:
+
+```
+/tmp/sen-t17-mut $ npx tsx --test tests/exe-license-lifetime.test.ts
+not ok 1 - /private/tmp/sen-t17-mut/tests/exe-license-lifetime.test.ts
+# tests 1 / # pass 0 / # fail 1        <-- also fails with the threshold UNMUTATED
+```
+
+A scratch-copy "proof" would therefore have confirmed a mutation that was never actually exercised. **The correct method is mutate in place, then prove the restore.** Re-derived that way:
+
+```
+$ sed -i '' 's/getUTCFullYear() >= 2999/getUTCFullYear() >= 3000/' lib/exe-license.ts
+$ grep -n 'getUTCFullYear() >=' lib/exe-license.ts
+39:  return !!d && d.getUTCFullYear() >= 3000;
+
+$ npx tsx --test tests/exe-license-lifetime.test.ts
+ok 1..6   (unchanged — they exercise the validator's expiry, not isLifetimeExpiry)
+not ok 7 - 7. isLifetimeExpiry is driven only by the expiry year
+ok 8      (the 30-day negative holds under either threshold)
+ok 9
+# pass 8 / # fail 1
+
+$ git checkout -- lib/exe-license.ts
+restore-numstat: 13	0	lib/exe-license.ts
+worktree porcelain: []            (empty = clean)
+pristine identical: YES
+```
+
+This establishes the two things a green run cannot: the test **fails when the property it guards is broken**, and the failure lands on **exactly** the assertion that owns that property (subtest 7) rather than somewhere incidental. `W12`'s coupling is genuinely guarded.
+
+**Restore discipline is now mandatory** (S18 + §4.1c): in-place mutation is acceptable **only** with the three-part restore proof — `git checkout --`, then the `13 0` numstat canary, then `diff -q` against a pre-mutation copy. Without it a pass can leave the branch carrying a mutated sentinel, which ships as *"every lifetime licence silently misclassifies"* — precisely the failure `W12` warns about.
+
+### 3.13.3 UNVERIFIED #1 CLOSED — and it validates T3's format choice
+
+The junior flagged that the desktop EXE's Python `validator.py` classification of the sentinel was unproven. I proved the **parse-and-compare semantics** rather than leaving it assumed:
+
+```
+$ python3 -c "..."
+parsed      : 2999-12-31 23:59:59
+year        : 2999
+max year py : 9999
+now > d     : False   <- False means VALID/lifetime
+micros      : 0
+Z-suffix    : REJECTED -> Invalid isoformat string: '2999-12-31T23:59:59.000000Z'
+python      : 3.9.6
+```
+
+Two conclusions:
+
+1. **The sentinel works on the Python side.** Year 2999 is well inside `datetime`'s range (max 9999), `fromisoformat` parses it, and `utcnow() > expires_at` is `False` — so a `validator.py`-style check reads a lifetime key as **valid**. No overflow, no comparison surprise.
+2. **The absence of the `Z` is load-bearing — confirmed on the strictest case.** macOS ships Python **3.9.6**, which *rejects* a `...Z` suffix outright; only Python 3.11+ accepts it. T3 froze `"2999-12-31T23:59:59.000000"` **with no `Z`**, so it parses on 3.9. Had the sentinel been written as an ISO-with-`Z`, **every lifetime licence would have failed on the Python side** on any Python < 3.11. This is Task 42's date-format lesson holding for the new sentinel — and it is now covered by assertion 1 of T17's test.
+
+**Still out of scope, said plainly:** this proves the *format* parses and compares correctly; it does **not** prove the lead-extractor repo's `validator.py` has no additional constraint (e.g. a hard-coded maximum term). That file lives in another repository and belongs to that product's licence flow, not to `TASK_145`. If the owner wants that closed, it needs a task against the other repo.
+
+### 3.13.4 `W13` — T17's guard is not wired to anything automatic (decision: protocol, not CI)
+
+No workflow runs any `test:*` script. `deploy.yml` runs only `npx tsc --noEmit` (`:71`) and `npm run build` (`:74`); `build-exe.yml` runs `npm ci` + `npx prisma generate` + `tauri-action`; the two trial workflows run their own extractors. So a future commit that breaks the sentinel contract would still **typecheck, build, and ship**. Repo-wide this is a **convention** — every `test:*` script is manual — so it is not a T17 defect, but T17's stated purpose is a *permanent* guard and a script nobody runs is only half a guard.
+
+**Decision:** do **not** touch CI in this phase. Wiring tests into `build-exe.yml`/`deploy.yml` changes shared pipeline files that also govern `main` and the live deploy — larger than `TASK_145` and not required to close it. Instead the guard is made to fire on **every remaining task and every senior pass**, via **§4.1c** (new) and reject item **16**. Residual risk recorded for the owner; gating `build-exe.yml` on the suite is a reasonable **Phase 6** candidate, deliberately not scheduled here.
+
+---
+
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
 
 ### 4.1 What the junior may run themselves
@@ -551,6 +635,32 @@ Any `S`-row closed on a **one-off script or temporary harness** must name a **pe
 
 A deleted `/tmp` harness is **not** evidence: the next agent cannot re-run it, so the row is unverifiable. Both agents must state where a check lives, not just that it passed once.
 
+### 4.1c Standing test checks — mandatory on every task and every senior pass (added pass 7, after `W13`)
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+npm run test:license    # MUST print  # pass 9  / # fail 0   (T17: the lifetime sentinel contract)
+npm run test:setup      # MUST print  # pass 29 / # fail 0   (T15-era: the self-hosted setup wizard)
+```
+
+Baseline established 2026-09-29 (pass 7): `test:license` **9/9**, `test:setup` **29/29**.
+
+`W13` matters here: **no CI job runs these.** `deploy.yml` runs `tsc` and `build`; `build-exe.yml` runs `npm ci` + `prisma generate` + `tauri-action`. So until the suite is gated in CI, these two commands are the **only** thing that executes T17's guard. A pass that skips them silently accepts drift in the lifetime sentinel. Paste the raw `# tests / # pass / # fail` lines; a new failure here is a regression in the task under review until proven otherwise.
+
+**Mutating the frozen lib (S18) — the only permitted procedure.** Mutate **in place**, then restore and prove it in three parts:
+
+```bash
+cp lib/exe-license.ts /tmp/t145-pristine.ts                              # 1. keep a copy
+sed -i '' 's/getUTCFullYear() >= 2999/getUTCFullYear() >= 3000/' lib/exe-license.ts
+npx tsx --test tests/exe-license-lifetime.test.ts   # expect: not ok 7, # pass 8 / # fail 1
+git checkout -- lib/exe-license.ts                                       # 2. restore
+git diff --numstat main self-hosted-build -- lib/exe-license.ts          # 3a. MUST read 13  0
+git status --porcelain lib/exe-license.ts                                # 3b. MUST be empty
+diff -q /tmp/t145-pristine.ts lib/exe-license.ts                         # 3c. MUST be identical
+```
+
+A **scratch copy under `/tmp` cannot be used** — it fails on module resolution *even unmutated* (§3.13.2), which would fake a positive result. Skipping parts 3a–3c leaves a mutated sentinel on the branch.
+
 ### 4.2 What only the senior verifies (evidence required, pasted into this file's log)
 
 | ID | Check | Pass condition |
@@ -572,7 +682,7 @@ A deleted `/tmp` harness is **not** evidence: the next agent cannot re-run it, s
 | S15 | **Lifetime move control (E9)** — self-service transfer of a lifetime licence, then the same transfer via admin `action: "transfer"` | self-service throws `"lifetime_locked"` **and** the `ExeLicense` row is unchanged (`boundMachineId` / `boundLicenseKey` byte-identical, no new `ExeLicenseTransfer` row); admin transfer **succeeds**. |
 | S16 | **Self-hosted runtime check (E8)** — (a) expired/revoked stored key, (b) still-valid key with the server unreachable (W4) | (a) blocked with a clear message; (b) **NOT** blocked (fail-open preserved). Confirms W4 is closed without breaking offline use. |
 | S17 | **The purchase gate (E11 / T16)** — `GET /api/billing/checkout?kind=btc&product=selfhosted_os` and `POST /api/billing/submit {product:"selfhosted_os"}` | ✅ **VERIFIED 2026-09-29 (pass 5).** both return **400 `{"error":"Unknown product"}`** — byte-identical to a typo'd id — and **no `Payment`/`User` row is created**. The same calls with `product=extractor_exe` still succeed unchanged (proves the guard is a no-op for sellable products). Before T16 the first two returned 200 and persisted a $0 pending payment (W8/W9). |
-| S18 | **The lifetime sentinel's contract is permanently pinned (T17 / `W12`)** — `npx tsx --test tests/exe-license-lifetime.test.ts` | ✅ pass condition: the file exists, `# fail 0`, and it asserts the **drift guard** (`generateLicenseKey({expiresAt: LIFETIME_EXPIRES_AT}).payload.expires_at === LIFETIME_EXPIRES_AT_ISO` byte-for-byte) **and** the **critical negative** (`isLifetimeExpiry(<30-day term>) === false`, term valid at day 29 / expired at day 31). The senior **mutates** the threshold in a scratch copy to prove the test actually fails on drift — a test that cannot fail is not evidence (§6). Replaces the deleted `/tmp` harness (§3.12.2). |
+| S18 | **The lifetime sentinel's contract is permanently pinned (T17 / `W12`)** — `npm run test:license` | ✅ **VERIFIED 2026-09-29 (pass 7).** `tests/exe-license-lifetime.test.ts` exists, **9 subtests, `# pass 9 / # fail 0`**, and asserts the **drift guard** (`generateLicenseKey({expiresAt: LIFETIME_EXPIRES_AT}).payload.expires_at === LIFETIME_EXPIRES_AT_ISO` byte-for-byte) plus the **critical negative** (`isLifetimeExpiry(<30-day term>) === false`, term valid at day 29 / expired at day 31). **Can-fail proven** by mutating `isLifetimeExpiry`'s threshold to `>= 3000` — subtest 7 fails, `# pass 8 / # fail 1`. ⚠️ **Method corrected (§3.13.2):** the mutation must be **in place**, *not* in a scratch copy — a `/tmp` copy fails on module resolution even unmutated and would fake a positive. Restore must be proven three ways (§4.1c). Discharges §3.12.2 for the sentinel. |
 
 ### 4.3 Deployment note (do not deploy as part of this task)
 
@@ -608,12 +718,13 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 13. **Any self-service path that can move a lifetime licence, or any UI copy promising a self-service PC move for one.** The owner's rule is support-only; a hidden/undocumented unlock is still an unlock (§3.9 D9).
 14. Deciding "lifetime" anywhere other than the decoded `expires_at` (a client flag, a DB column, or `durationDays` overflow).
 15. **A purchase path that accepts a product id outside `ALL_PRODUCTS` (§3.11 D11 / E11).** `BY_ID` registration makes a product *resolvable* — bind/transfer require it (V9) — but it must never make it *sellable*. Equally rejected: closing W8 by removing `SELF_HOSTED_OS` from `BY_ID` (that breaks V9), or by adding it to `ALL_PRODUCTS` (that leaks it to the store — item 2). The guard must return the *same* 400 an unknown id gets; a distinct message or 403 confirms the product exists.
+16. **Omitting the standing test checks (§4.1c)** — `npm run test:license` (9/9) and `npm run test:setup` (29/29) — or reporting them without the raw `# pass / # fail` lines. Until `W13` is closed by a CI change, these two commands are the **only** thing that runs `T17`'s guard; a pass that skips them silently accepts lifetime-sentinel drift. Same rule for S18's mutation proof: mutating in a `/tmp` scratch copy, or mutating in place **without** the three-part restore proof, is a reject.
 
 ## 7. Verified environment baseline (2026-09-29)
 
 | Fact | Value |
 |---|---|
-| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `83fe756` at T2 close (senior pass) |
+| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `7b570f6` at T17 close (verified in pass 7) |
 | Primary checkout (live app) | `/Users/mikeolab/spaceworker` — branch `main`, HEAD `b7330a1` |
 | Merge base | `1499a9e` (2026-09-27); branch is 37 behind / 8 ahead |
 | `node_modules` | **must be a real APFS clone, never a symlink** (§3.10.2/C1): `cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules` |
@@ -622,7 +733,8 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 | Verification DB | `spaceworker_t145` — built with `prisma db push`; 50 tables incl. `ExeLicenseRevocation` (§3.10.7) |
 | Fresh-DB migration replay | **BROKEN** — P3018 `relation "ExeLicense" does not exist` at `20260914150000` (§3.10.6) → task **T14** |
 | Shared local dev DB | ~27 migrations stale (no `Device` table) + two stuck `device_tools_v2` rows — **not usable for Phase 5** (§3.10.7) |
-| Work order | **T1 → T17** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate ✅ closed**; **T17 = pin the sentinel in a permanent test**). **Closed so far: `T1`, `T2`, `T3`, `T16`. Next: `T17`, then `T4`.** |
+| Work order | **T1 → T17** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate ✅ closed**; **T17 = pin the sentinel in a permanent test ✅ closed**). **Closed so far: `T1`, `T2`, `T3`, `T16`, `T17`. Next: `T4`.** |
+| Standing tests (§4.1c) | `npm run test:license` → **9 pass / 0 fail** · `npm run test:setup` → **29 pass / 0 fail** (baseline 2026-09-29, pass 7). **No CI job runs these (`W13`)** — they are mandatory on every task and every pass. |
 | Node date check | `new Date("2999-12-31T23:59:59.000000Z")` → year 2999, valid (not `NaN`) |
 | Files byte-identical to `main` (must not drift, V17) | `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx` |
 | Files that now **intentionally** diff from `main` (V17 amended by T3) | `lib/exe-license.ts` — `+13/−0` only (the D4 lifetime constants, `:29-40`). Canary for this file is **"zero `-` lines"**, not "empty". If a future pass sees **any deletion** here, that is a real regression |
@@ -2010,4 +2122,91 @@ $ git --no-pager diff --stat -- lib/exe-license.ts
 **Not touched:** `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx`, `app/api/store/prices/route.ts`, `admin/wallets/route.ts`. No migration, no prisma command, no database, no network, no server started. No other task begun.
 
 READY FOR VERIFICATION - T17
+
+
+## 2026-09-29 — SENIOR PASS 7: **T17 ✅ VERIFIED** (accepted + closed). Next task is **`T4`**. **Documentation only — zero product code.**
+
+Scope: verified `7b570f6` (`tests/exe-license-lifetime.test.ts` new, `package.json` +1, +143 lines to each track file). Commit stat: **`4 files changed, 497 insertions(+)`** — no deletions.
+
+### Evidence re-derived by the senior
+
+```
+$ npx tsx --test tests/exe-license-lifetime.test.ts
+# tests 9 / # pass 9 / # fail 0
+
+$ npm run test:license      -> # tests 9  / # pass 9  / # fail 0
+$ npm run test:setup        -> # tests 29 / # pass 29 / # fail 0
+$ npx tsc --noEmit          -> EXIT=0
+$ CI=1 npx next build       -> BUILD_EXIT=0
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts   -> (empty)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts          -> 13  0
+$ cd ../spaceworker && git rev-parse --abbrev-ref HEAD                     -> main @ b7330a1, clean
+```
+
+Hermeticity checked by reading `tests/exe-license-lifetime.test.ts`, not by trusting its header: no DB, no network, no `.env.local`; `server-only` neutralised by the house `Module._load` hook; `SPACEWORKER_LOCAL_DATA_DIR` → `mkdtempSync`; all keys minted/validated through the real HMAC. 31 assertions, 9 subtests.
+
+### THE MUTATION PROOF — re-derived, and S18's written method was WRONG (F5)
+
+S18 said "mutate the threshold **in a scratch copy**". My first attempt did exactly that and produced a **false positive risk**: the `/tmp` copy fails on **module resolution**, *including with the threshold unmutated*:
+
+```
+/tmp/sen-t17-mut $ npx tsx --test tests/exe-license-lifetime.test.ts
+not ok 1 - /private/tmp/sen-t17-mut/tests/exe-license-lifetime.test.ts
+# tests 1 / # pass 0 / # fail 1        <-- ALSO fails unmutated
+```
+
+If I had stopped there I would have "confirmed" a mutation that was never exercised. **Correct method — mutate in place, then prove the restore:**
+
+```
+$ sed -i '' 's/getUTCFullYear() >= 2999/getUTCFullYear() >= 3000/' lib/exe-license.ts
+$ grep -n 'getUTCFullYear() >=' lib/exe-license.ts
+39:  return !!d && d.getUTCFullYear() >= 3000;
+
+$ npx tsx --test tests/exe-license-lifetime.test.ts
+ok 1..6 / not ok 7 - 7. isLifetimeExpiry is driven only by the expiry year / ok 8 / ok 9
+# pass 8 / # fail 1
+
+$ git checkout -- lib/exe-license.ts
+restore-numstat: 13	0	lib/exe-license.ts
+worktree porcelain: []            (empty = clean)
+pristine identical: YES
+```
+
+**This is real evidence:** the test *does* fail when the guarded property breaks, and the failure lands on **exactly** subtest 7 (the assertion that owns it) — not incidentally elsewhere. `W12` is genuinely guarded.
+
+**Verdict: T17 ACCEPTED.** `S18` closes; §3.12.2 is discharged for the sentinel. §4.1b now has a live example of the rule.
+
+
+### Findings
+
+**F5 — S18's mutation method was unworkable (senior protocol defect, now fixed).** A `/tmp` scratch copy cannot run this test. Corrected in §3.13.2 and §4.1c: mutate **in place**, then prove the restore **three ways** (`git checkout --` → numstat `13 0` → `diff -q` identical). Without the restore proof a pass can leave a mutated sentinel on the branch — which ships as *"every lifetime licence silently misclassifies"*, precisely `W12`. **Not a T17 defect** — the junior was asked to prove the test can fail and did; it simply chose a different (working) method.
+
+**F6 — UNVERIFIED #1 is now CLOSED, with evidence.** Its honest line was *"the desktop EXE's Python `validator.py` classification is unproven"*. I proved the parse-and-compare semantics directly:
+
+```
+$ python3 -c "..."
+parsed      : 2999-12-31 23:59:59
+year        : 2999
+max year py : 9999
+now > d     : False        <- VALID/lifetime
+micros      : 0
+Z-suffix    : REJECTED -> Invalid isoformat string: '2999-12-31T23:59:59.000000Z'
+python      : 3.9.6
+```
+
+Two things follow. (a) Year 2999 is inside `datetime`'s range and `utcnow() > expires_at` is False, so a `validator.py`-style check reads a lifetime key as valid — the sentinel works on the Python side. (b) **The absence of the `Z` is load-bearing:** macOS ships Python **3.9.6**, which *rejects* `...Z` outright (only 3.11+ accepts it). T3's frozen literal has **no `Z`**, so it parses on 3.9 — had it ended in `Z`, **every lifetime licence would have failed on the Python side on any Python < 3.11**. Task 42's date-format lesson holds for the new sentinel, and assertion 1 of T17's test now pins it. **Residual, stated plainly:** this proves the *format* parses and compares correctly, not that the lead-extractor repo's `validator.py` has no other constraint (e.g. a hard-coded max term) — a different repo, a different product's licence flow.
+
+**F7 — `W13` (new): nothing runs the tests automatically.** No workflow invokes any `test:*` script — `deploy.yml` runs only `npx tsc --noEmit` (`:71`) and `npm run build` (`:74`); `build-exe.yml` runs `npm ci` + `npx prisma generate` + `tauri-action`. So T17's "permanent guard" fires only when someone runs it, and a broken sentinel would still typecheck, build and ship. Repo-wide this is a **convention** (all `test:*` scripts are manual), so **not** a T17 defect. **Decision: protocol, not CI.** Wiring the suite into `build-exe.yml`/`deploy.yml` touches shared pipeline files governing `main` and the live deploy — out of scope for `TASK_145`. Instead **§4.1c** (new) makes `npm run test:license` + `npm run test:setup` **mandatory on every task and every senior pass**, and omitting them is reject item **16**. Residual risk recorded for the owner; a CI gate is a reasonable **Phase 6** candidate, deliberately unscheduled here.
+
+**F8 — the junior's second `UNVERIFIED` (the mutation proof is not a checked-in artefact) is ACCEPTED AS CORRECT.** Checking in a mutated lib is itself a regression; a permanently broken test would be worse than a manually-performed mutation. The procedure is now codified in §4.1c instead. This satisfies §4.1b's `ACCEPTED AS ONE-OFF` clause — with the reason, as the rule requires.
+
+**F9 — the junior's report was otherwise accurate.** `package.json` is `+1/−0` in its own commit (`git show --stat`); the `2 10` seen against `main` is pre-existing branch drift (nine `test:*` scripts `main` has added in the 37 commits the branch is behind) — expected, not a regression. It stayed in scope, touched no lib, left no `/tmp` copy in the repo, and left the senior's `/tmp/t3-verify.mts` in place.
+
+### State at end of pass
+
+- Branch `self-hosted-build` @ `7b570f6` + this docs commit; worktree clean; upstream `origin/self-hosted-build` (**explicit refspec only** — §0.1).
+- **`▶ NEXT TASK: T4`** — junior §2. **T4 is the first substantive task of the phase** (the revocation seam, §3 D2): a new `lib/exe-license-revocation.ts` with exactly three exports.
+- Closed: **T1, T2, T3, T16, T17**. Open: **T4–T15** (T14 = fresh-DB migration bootstrap; T15 = optional local drift repair).
+- Live app `/Users/mikeolab/spaceworker` (`main`, `b7330a1`): clean, untouched.
+- `/tmp/t3-verify.mts` is now **redundant** — `tests/exe-license-lifetime.test.ts` is its permanent replacement. Delete it so it cannot become the de-facto test.
 
