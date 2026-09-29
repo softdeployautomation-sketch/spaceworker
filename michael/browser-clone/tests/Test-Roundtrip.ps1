@@ -48,10 +48,27 @@ $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText((Join-Path $fp 'Bookmarks'), '{"roots":{}}', $utf8NoBom)
 New-Item -ItemType Directory -Path (Join-Path $fp 'Extensions\abc') -Force | Out-Null
 [System.IO.File]::WriteAllText((Join-Path $fp 'Extensions\abc\manifest.json'), '{"name":"t"}', $utf8NoBom)
+# Tabs/window state (the "…down to tabs" file set), and a separate root that
+# carries a `Last Version` marker so the version-match input is exercised on a
+# profile of its own (the happy-path profile above must stay version-free: a
+# marker there would correctly trigger the 127+ refusal asserted in step 4d).
+New-Item -ItemType Directory -Path (Join-Path $fp 'Sessions') -Force | Out-Null
+$sessDir = Join-Path $fp 'Sessions'
+[System.IO.File]::WriteAllText((Join-Path $sessDir 'Session_13370000000000000'), 'tabs', $utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $sessDir 'Tabs_13370000000000000'), 'tabs', $utf8NoBom)
+$vroot = Join-Path $work 'vroot'
+New-Item -ItemType Directory -Path $vroot -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $vroot 'Last Version'), '141.0.7390.55', $utf8NoBom)
+$vprofile = Join-Path $vroot 'Default'
+New-Item -ItemType Directory -Path $vprofile -Force | Out-Null
 
 # capture via the library functions directly against the synthetic dir
 $rel = Get-ProfileFileList -ProfileDir $fp
 Check 'capture.file-list-finds-synthetics' (($rel -contains 'Preferences') -and ($rel -contains 'Bookmarks') -and ($rel -join ' ') -match 'manifest.json')
+# Tabs/window state: the entry must be enumerated, or a restored clone can never
+# bring back the windows it was cloned from. Separator-agnostic so the same check
+# holds on Windows and on pwsh/Linux (`Sessions\Session_…` vs `Sessions/Session_…`).
+Check 'capture.file-list-finds-sessions' (($rel -join '|') -match 'Sessions[\\/](Session|Tabs)_')
 
 $capKey = if ($WithKey -and $env:SPACEWORKER_CLONE_KEY) { [Convert]::FromBase64String($env:SPACEWORKER_CLONE_KEY) } else { $null }
 $archive = Join-Path $work 'test.psa'
@@ -80,6 +97,16 @@ if ($capKey) {
 } else {
     Write-Output 'SKIP restore.tampered-rejected (no SPACEWORKER_CLONE_KEY; DPAPI path is Windows-only)'
 }
+
+# ── 4d. source browser version + the app-bound refusal (Chrome/Edge 127+) ───
+# The version is the input to "deliver a matching browser"; the refusal is the
+# honest answer for a version whose cookies no out-of-process reader can decrypt.
+Check 'version.major-detected' ((Get-BrowserMajorVersion -Browser 'chrome' -ProfileDir $vprofile) -eq '141')
+Check 'version.unknown-is-null' ($null -eq (Get-BrowserMajorVersion -Browser 'firefox' -ProfileDir $vprofile))
+$vcap = Invoke-CaptureFromDir -ProfileDir $vprofile -Out (Join-Path $work 'v.psa') -Browser 'chrome' -Key $capKey
+Check 'capture.reports-browser-version' ($vcap.browser_major_version -eq '141')
+Check 'capture.app-bound-refused-by-name' ($vcap.cookie_transfer -eq 'unsupported:app-bound-encryption')
+Check 'capture.app-bound-is-partial' ($vcap.exit_code -eq 1)
 
 # ── 5. exit-code contract constants ─────────────────────────────────────────
 Check 'contract.exit-codes' ($script:Magic.Length -eq 7)

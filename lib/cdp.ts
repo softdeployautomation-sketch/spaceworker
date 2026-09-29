@@ -211,6 +211,26 @@ class Cdp {
     };
   }
 
+  /**
+   * Sends one command and resolves with its RESULT.
+   *
+   * TWO DEFECTS FIXED HERE (found 2026-09-28 against a real container; both were
+   * silent, which is why they survived):
+   *
+   *   1. A CDP error was returned as a normal resolution. `Storage.setCookies`
+   *      could fail outright and every caller still saw success — the injection
+   *      path reported "2 cookies injected" into a browser that had stored none.
+   *      A protocol error is now a REJECTION, so it cannot be mistaken for work.
+   *   2. The caller was handed the whole message, so reading `result.cookies`
+   *      yielded `undefined` and the cookie readback returned an empty list for
+   *      every browser, always. Only `result` is resolved now, which is what the
+   *      callers were written to expect.
+   *
+   * The error text carries CDP's own code and message. That is deliberate: this
+   * text is what makes a failure diagnosable, and CDP's errors describe the
+   * command, not the payload — see the fixed, value-free error strings the
+   * session-injection callers return to users (lib/clone-live-capture.ts).
+   */
   async call(method: string, params?: Record<string, any>): Promise<any> {
     return new Promise((resolve, reject) => {
       const id = ++this.id;
@@ -218,7 +238,19 @@ class Cdp {
         this.pending.delete(id);
         reject(new Error(`CDP ${method} timeout`));
       }, this.timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
+      this.pending.set(id, {
+        resolve: (msg: any) => {
+          if (msg && msg.error) {
+            const code = msg.error.code ?? "unknown";
+            const text = msg.error.message ?? "no message";
+            reject(new Error(`CDP ${method} failed (${code}): ${text}`));
+            return;
+          }
+          resolve(msg?.result ?? {});
+        },
+        reject,
+        timer,
+      });
       this.ws.sendText(JSON.stringify({ id, method, params: params || {} }));
     });
   }
@@ -255,6 +287,20 @@ async function getBrowserEndpoint(port: number, timeoutMs: number): Promise<{ cd
   });
 }
 
+/**
+ * Injects cookies and then VERIFIES them.
+ *
+ * The verification is not decoration. `Storage.setCookies` resolving is not the
+ * same as the browser holding the cookies, and a clone that reports "signed in"
+ * over an empty jar is worse than one that refuses — the user is shown a
+ * logged-out browser and told it worked. So after setting, the jar is read back
+ * and the injected names are COUNTED, and the returned count is that reading,
+ * never the input length.
+ *
+ * A rejection from `call` propagates: the caller (lib/clone-live-capture.ts)
+ * turns it into its own fixed, value-free failure, which is what makes the
+ * launch refuse instead of continuing into an unauthenticated session.
+ */
 export async function injectCookies(opts: CdpInjectOpts): Promise<{ ok: boolean; count: number }> {
   const timeoutMs = opts.timeoutMs || 10000;
   const { cdp, ws } = await getBrowserEndpoint(opts.port, timeoutMs);
@@ -270,7 +316,17 @@ export async function injectCookies(opts: CdpInjectOpts): Promise<{ ok: boolean;
       expires: c.expirationDate || now + 86400 * 30,
     }));
     await cdp.call("Storage.setCookies", { cookies });
-    return { ok: true, count: cookies.length };
+
+    // Read back and count only what the jar actually contains. Reading the
+    // browser-level jar needs no page, so this works even before any tab exists.
+    const after = await cdp.call("Storage.getCookies");
+    const held = new Set(
+      ((after?.cookies ?? []) as Array<{ name?: string; domain?: string }>).map(
+        (c) => `${String(c.domain ?? "").toLowerCase()}\u0000${String(c.name ?? "")}`,
+      ),
+    );
+    const count = cookies.filter((c) => held.has(`${c.domain.toLowerCase()}\u0000${c.name}`)).length;
+    return { ok: count > 0, count };
   } finally {
     ws.close();
   }
@@ -280,8 +336,11 @@ export async function exportCookies(opts: CdpExportOpts): Promise<CdpCookie[]> {
   const timeoutMs = opts.timeoutMs || 10000;
   const { cdp, ws } = await getBrowserEndpoint(opts.port, timeoutMs);
   try {
+    // `call` resolves the command's RESULT, so the jar is right here. Reading
+    // `result.cookies` off a whole message (the old code) silently produced an
+    // empty list for every browser, every time.
     const result = await cdp.call("Storage.getCookies");
-    let all = (result.cookies || []) as CdpCookie[];
+    let all = ((result?.cookies ?? []) as CdpCookie[]);
     if (opts.domain) {
       const want = opts.domain.replace(/^\./, "").toLowerCase();
       all = all.filter((c) => {

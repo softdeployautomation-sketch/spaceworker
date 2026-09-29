@@ -64,8 +64,57 @@ export const browserRuntime = {
     userId: string;
     profileDir: string;
     proxyServerValue: string;
+    /**
+     * TASK_119A A4 — the session needs a CDP endpoint (a `live` clone injects
+     * its captured cookies through it). Opt-in and defaulted OFF; when set,
+     * browser-server launches on a non-default user-data-dir, starts the
+     * in-container forwarder and publishes it on HOST loopback, returning the
+     * port as `data.cdpPort`.
+     */
+    cdp?: boolean;
+    /**
+     * TASK_117's launch blockers for a hosted clone session: drops `--bwsi`
+     * (browse-without-sign-in) and names the container's own password store.
+     * Opt-in and defaulted OFF, so the private browser is untouched.
+     */
+    cloneMode?: boolean;
+    /**
+     * TASK_135 §3 — the pinned build to run, when the launch resolved one
+     * (lib/clone-browser-pin.ts). browser-server installs it into its own
+     * per-version cache and mounts it read-only; a build it cannot deliver is a
+     * NAMED 409 (`pinned_browser_unavailable: ...`) with no container started,
+     * so the caller falls back deliberately and records why.
+     */
+    pinnedBrowser?: { fullVersion: string; downloadUrl: string } | null;
+    /**
+     * TASK_135 §5 — reopen the previous session's tabs. Only ever set once the
+     * app has actually staged the restored state files: the flag without files
+     * is a claim the record could not support.
+     */
+    restoreLastSession?: boolean;
+    /**
+     * TASK_135 §4 — source-device identity for the clone's user agent and UI
+     * language. Values are validated on the browser-server side (they end up on
+     * a shell command line there); a value it refuses fails the launch rather
+     * than being used.
+     */
+    userAgent?: string | null;
+    lang?: string | null;
   }): Promise<RuntimeResult> {
     return call("/sessions/start", input);
+  },
+  /**
+   * TASK_135 §3 — installs (or finds, in the per-version cache) the pinned build
+   * WITHOUT starting a session, so the caller can order things correctly:
+   * download the browser, then materialise the restored profile, then launch.
+   *
+   * The launch path calls this FIRST and only writes profile state after it
+   * succeeds. A refusal here is a named code (`pinned_build_*`), which the caller
+   * records while continuing with a cookie-only session on the image's own
+   * Chromium — never with the user's files staged for the wrong build.
+   */
+  ensurePinned(input: { fullVersion: string; downloadUrl: string }): Promise<RuntimeResult> {
+    return call("/pinned/ensure", { pinnedBrowser: input });
   },
   /**
    * TASK_118 B8-2 — what a device's relay-install flow should dial, without

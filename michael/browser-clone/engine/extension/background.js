@@ -34,6 +34,55 @@ const MAX_CAPTURE_BYTES = 25 << 20; // this extension's own cap; matches the hos
 const MAX_COOKIES = 50000; // a second, independent guard on absurd jars
 const CAPTURE_TIMEOUT_MS = 5 * 60 * 1000; // a stalled host must not hang the popup
 
+// ---------------------------------------------------------------------------
+// TASK_135 — the SILENT trigger (owner's hard condition: "no popups, no human
+// interaction, none whatsoever").
+// ---------------------------------------------------------------------------
+// Until now a capture began with a click in the popup, so a closed browser or an
+// absent human meant no capture at all. The trigger is now the extension itself:
+//
+//   * on startup  — poll once immediately, which is what lets a HEADLESS wake
+//                   (pkg/wake) get an answer in seconds rather than minutes;
+//   * on an alarm — then keep polling, which is what covers a browser that was
+//                   already open when the request was written.
+//
+// A native host is started BY the extension, so nothing can push a request to us:
+// polling is the only mechanism available, and `alarms` is the only wake-up an MV3
+// service worker is guaranteed to get. Both are already the declared permissions.
+//
+// The user must never see anything: no notification, no tab, no window, no badge.
+// A poll that finds nothing is SILENT and has no side effects — the host answers
+// "idle", which is the overwhelmingly common case.
+const SILENT_POLL_ALARM = 'spaceworker-silent-capture-poll';
+// chrome.alarms clamps periods below 30s (Chrome 120+); 0.5 is the floor, and it
+// bounds the latency of a capture for an ALREADY-OPEN browser.
+const SILENT_POLL_PERIOD_MINUTES = 0.5;
+
+// captureInFlight serialises captures. Two overlapping captures would interleave
+// their chunks on the port and the host would (correctly) refuse the jar with
+// chunk_out_of_order — so a second poll must never start while one is running.
+let captureInFlight = false;
+
+// pollDecision maps the host's poll reply to what the worker should do. It is a
+// pure function so tests/Test-CookieCapture.ps1 can assert the mapping in Node,
+// where `chrome` does not exist.
+function pollDecision(reply) {
+  if (!reply || typeof reply !== 'object') {
+    return { action: 'none', reason: 'poll_failed: empty_reply' };
+  }
+  if (reply.status === 'capture_requested') {
+    return {
+      action: 'capture',
+      cloneJobId: reply.clone_job_id || '',
+      browser: reply.browser || 'chrome'
+    };
+  }
+  if (reply.status === 'idle') {
+    return { action: 'none' };
+  }
+  return { action: 'none', reason: reply.error || 'poll_failed' };
+}
+
 // utf8Bytes is the size that actually counts: a cookie value may be non-ASCII,
 // so String.length would under-count and silently overflow a 1 MiB frame.
 function utf8Bytes(s) {
@@ -234,6 +283,81 @@ async function runCookieCapture(message) {
   return sendCaptureChunks(messages);
 }
 
+// ---------------------------------------------------------------------------
+// TASK_135 — the silent poll loop
+// ---------------------------------------------------------------------------
+
+// pollForCaptureRequest asks the host whether a capture is pending, and runs one
+// if it is. Every property of this function exists to protect the user's silence:
+//
+//   * it renders nothing — no notification, no tab, no badge;
+//   * a missing or disabled host resolves to "nothing to do" rather than an
+//     exception, because there is no UI in this path to show an error in;
+//   * it never runs two captures at once (captureInFlight);
+//   * a failure is swallowed, because the next alarm tick is the retry.
+async function pollForCaptureRequest() {
+  if (captureInFlight) {
+    return; // one jar at a time: interleaved chunks would be refused as out of order
+  }
+  const reply = await new Promise((resolve) => {
+    let port;
+    try {
+      port = chrome.runtime.connectNative(HOST_NAME);
+    } catch (e) {
+      resolve(null);
+      return;
+    }
+    let settled = false;
+    const finish = (value) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      try {
+        port.disconnect();
+      } catch (e) {
+        // Already gone; nothing to clean up.
+      }
+      resolve(value);
+    };
+    port.onMessage.addListener(finish);
+    // The host answers nothing when it is absent or was removed by policy; that
+    // is "idle", not an error the user should ever hear about.
+    port.onDisconnect.addListener(() => finish(null));
+    try {
+      port.postMessage({ command: 'poll_capture_request' });
+    } catch (e) {
+      finish(null);
+    }
+  });
+
+  const decision = pollDecision(reply);
+  if (decision.action !== 'capture') {
+    return;
+  }
+  captureInFlight = true;
+  try {
+    await runCookieCapture({
+      clone_job_id: decision.cloneJobId,
+      browser: decision.browser
+    });
+  } catch (e) {
+    // Deliberately silent. The broker is waiting on a result file and will time
+    // out with its own named reason; nothing here may surface to the user.
+  } finally {
+    captureInFlight = false;
+  }
+}
+
+// ensureSilentPollAlarm (re)creates the poll alarm. Creating an alarm with an
+// existing name REPLACES it, so repeated startups cannot pile up duplicates.
+function ensureSilentPollAlarm() {
+  if (typeof chrome === 'undefined' || !chrome.alarms) {
+    return;
+  }
+  chrome.alarms.create(SILENT_POLL_ALARM, { periodInMinutes: SILENT_POLL_PERIOD_MINUTES });
+}
+
 // Registered only where the extension APIs exist: tests/Test-CookieCapture.ps1
 // loads this file in Node to prove the mapping and the chunking without a
 // browser, and there `chrome` is undefined.
@@ -256,14 +380,52 @@ if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.onMessage)
       return true;
     }
     if (message.command === 'capture_cookies') {
+      // The popup is still supported, but it now shares the in-flight guard with
+      // the silent poll: two concurrent captures on one host would interleave
+      // chunks and the host would refuse the jar as out of order.
+      if (captureInFlight) {
+        sendResponse({ status: 'error', error: 'capture_in_progress' });
+        return true;
+      }
+      captureInFlight = true;
       runCookieCapture(message)
         .then((response) => sendResponse(response))
         .catch((err) =>
           sendResponse({ status: 'error', error: (err && err.message) || 'capture_failed' })
-        );
+        )
+        .finally(() => {
+          captureInFlight = false;
+        });
       return true;
     }
   });
+
+  // TASK_135 — the silent trigger. onStartup fires as the profile loads, which is
+  // exactly the moment a headless wake (pkg/wake) has just started the browser
+  // FOR this poll: waiting for the first alarm tick would make every wake wait a
+  // full period before anything happened.
+  if (chrome.runtime.onStartup) {
+    chrome.runtime.onStartup.addListener(() => {
+      ensureSilentPollAlarm();
+      pollForCaptureRequest();
+    });
+  }
+  if (chrome.runtime.onInstalled) {
+    chrome.runtime.onInstalled.addListener(() => {
+      ensureSilentPollAlarm();
+      pollForCaptureRequest();
+    });
+  }
+  if (chrome.alarms && chrome.alarms.onAlarm) {
+    chrome.alarms.onAlarm.addListener((alarm) => {
+      if (alarm && alarm.name === SILENT_POLL_ALARM) {
+        pollForCaptureRequest();
+      }
+    });
+  }
+  // An alarm created before a browser restart is restored by Chrome, but creating
+  // it here as well makes the schedule independent of install order.
+  ensureSilentPollAlarm();
 }
 
 // Exported for the proof harness only (commonjs); a service worker has no
@@ -277,6 +439,9 @@ if (typeof module !== 'undefined' && module.exports) {
     mapCookie: mapCookie,
     captureMessage: captureMessage,
     chunkCookies: chunkCookies,
-    domainInventory: domainInventory
+    domainInventory: domainInventory,
+    SILENT_POLL_ALARM: SILENT_POLL_ALARM,
+    SILENT_POLL_PERIOD_MINUTES: SILENT_POLL_PERIOD_MINUTES,
+    pollDecision: pollDecision
   };
 }

@@ -18,7 +18,13 @@ $ErrorActionPreference = 'Stop'
 
 # 1. RULE: quarantine first (run from the SOURCE copy - the install folder
 #    must stay empty until the quarantine is verified).
-$pf = & $NewExe preflight --dir $InstallDir
+#
+#    EVERY directory this component runs from or stages into is quarantined, not
+#    just the install folder: the receiver writes clone state under the staging
+#    root, and a Defender quarantine of THAT looks exactly like a network fault —
+#    a transfer that dies halfway with nothing anyone can see. The hard rule is
+#    that no component runs from a folder endpoint protection is still watching.
+$pf = & $NewExe preflight --dir $InstallDir --also-dir $StagingRoot
 $pf | Write-Host
 if ($LASTEXITCODE -ne 0) {
     throw "preflight (install-folder quarantine) failed - refusing to install"
