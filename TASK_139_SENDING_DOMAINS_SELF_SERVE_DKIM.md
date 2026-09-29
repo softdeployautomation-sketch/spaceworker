@@ -85,19 +85,38 @@ the second registration is refused with an explanation (and a subdomain suggeste
 ## Verification
 
 - `npm run test:domains` — 7/7; mutation-checked: existence-only DKIM ⇒ fails; overwrite
-  instead of merge ⇒ fails.
+  instead of merge ⇒ fails. Also re-run **on the VPS against the deployed code**: 7/7.
 - All other suites green: deliverability 6/6, smtp 11/11, mailguard 10/10, devices 6/6,
   vantra 58/58.
 - `npx tsc --noEmit -p .` clean; eslint clean on every file touched.
-- Production build `EXIT=0`.
-- **Migration validated against a scratch clone of the production database**: the
-  `SendingDomain` table, both indexes (`SendingDomain_userId_domain_key`,
-  `SendingDomain_domain_idx`) and the `SendingDomain_userId_fkey` FK all created on top of
-  the 69 already-applied migrations, then the scratch DB dropped. Production
-  (`spaceworker`) was never written to by that check.
-- Post-deploy drift check per `HOW_WE_MOVE_FAST` §6b.
+- Production build `EXIT=0`; deploy `EXIT=0`; service `active`; public HTTPS 200; local 200;
+  maintenance flag absent.
+- **Migration applied to production** (ledger 69 → 70) after being proven against a scratch
+  clone of the production schema. Table + both indexes + FK confirmed,
+  `spaceworker` never written to by the scratch check.
+- **§6b drift check is `-- This is an empty migration.`** — the live DB matches the
+  datamodel exactly, zero drift.
+- **Full-tree parity: 429/429 files md5-matched**, 0 missing, 0 stale, 0 extra.
+- **Live E2E on the VPS against the real deployed routes — 41/41** (`HOW_WE_MOVE_FAST` §4),
+  with a real session cookie and self-cleaning throwaway data. What it proved beyond the
+  unit tests:
+  - the relay install works **from the web process** (sudo + `/etc/opendkim` writes + reload)
+  - **the key we INSTALL is the key we hand the customer to PUBLISH** (compared on disk
+    against the returned `publicKeyTxt`) — the silent failure that makes DKIM fail while
+    every log looks fine
+  - `DELETE` removes the row, the key directory and both table entries; and after an
+    add/delete cycle the **pre-existing customer key (`watsonandrade9382.ca.lu`) was still
+    intact**, which is the merge invariant proven live rather than only in a unit test
+  - unauthenticated `GET` is 401; a duplicate is 409; an invalid domain is 400; and
+    `verify` reports `invalid` (never `verified`) when DNS is unpublished
 
-## What the operator must set for SPF to verify
+## Operator action taken
+
+`SENDING_RELAY_IPV4=164.68.105.96` was appended to `/opt/spaceworker/.env` (measured via
+`curl -4 https://ifconfig.me`), with `SENDING_RELAY_IPV6=` left **empty** because this box
+has no IPv6 egress at all (`curl -6` fails). Publishing an `ip6:` entry for an address a
+receiver never sees would make SPF *fail* for our own mail — the opposite of the point.
+The service was restarted to pick it up.
 
 `SENDING_RELAY_IPV4` / `SENDING_RELAY_IPV6` — the addresses receivers actually see. Left
 blank, DKIM still verifies; the SPF check reports "not configured" rather than guessing,
