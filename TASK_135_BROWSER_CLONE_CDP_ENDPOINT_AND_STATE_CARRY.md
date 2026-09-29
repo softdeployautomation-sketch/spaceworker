@@ -606,7 +606,7 @@ tsc               exit 0
 test:clone        105/105 pass, 0 fail
 test:browser      18/18 + 10/10 pass, 0 fail, none skipped (REAL relay built and run)
 check:clone-contract  exit 0  — 14=14 exclusions, modes delta+full agree, 6 device reasons ⊆ 8 server
-check:workflow-syntax exit 0
+check:workflows exit 0
 engine-dist       exit 0
 go build/vet/test/-race   all exit 0 ;  gofmt clean
 ```
