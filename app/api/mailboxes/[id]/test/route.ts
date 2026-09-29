@@ -7,6 +7,7 @@ import { getExitNode } from "@/lib/exit-nodes";
 import type { SigningCoverage } from "@/lib/sending-domains";
 import { signingCoverageFor } from "@/lib/sending-domain-coverage";
 import {
+  capabilityWarning,
   connectionCannotBeEstablished,
   connectionFailureAsError,
   describeEnvelopeRefusal,
@@ -155,17 +156,17 @@ export async function POST(
     }
   }
 
+  // Shared with the pre-save Test connection route on purpose: two copies of this
+  // warning string is how the two test surfaces drift apart, and they already did
+  // once — the plaintext-only reading accused this WEDOS mailbox of not using its
+  // password while the envelope probe on the same screen said the server accepted
+  // the mail. See capabilityWarning() for the three cases.
+  const warning = ok ? capabilityWarning(capabilities) : undefined;
+
   return NextResponse.json({
     ok,
     ...(error ? { error } : {}),
-    ...(ok && capabilities.reachable && !capabilities.authAdvertised
-      ? {
-          warning:
-            "This server did not ask for a username or password at all (it advertises no AUTH), " +
-            "so your credentials were never checked and messages may be accepted and then dropped " +
-            "instead of relayed. If this is a real mail provider, switch to the port that requires authentication.",
-        }
-      : {}),
+    ...(warning ? { warning } : {}),
     capabilities: {
       connected: capabilities.connected,
       reachable: capabilities.reachable,
@@ -173,6 +174,9 @@ export async function POST(
       authAdvertised: capabilities.reachable ? capabilities.authAdvertised : null,
       authMechanisms: capabilities.authMechanisms,
       starttlsAdvertised: capabilities.reachable ? capabilities.starttlsAdvertised : null,
+      // Distinguishes "AUTH is hidden behind encryption we could not finish" from
+      // "AUTH is genuinely absent on an encrypted session".
+      starttlsUpgraded: capabilities.reachable ? capabilities.starttlsUpgraded : null,
     },
     // `attempted: false` means the connection failed first, so the envelope
     // question was never asked — never present that as "the server said yes".

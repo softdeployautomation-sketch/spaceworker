@@ -141,6 +141,46 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     note: "Replace with your own domain. Create the mailbox in cPanel → Email Accounts first.",
   },
   {
+    // Added for the 2026-09-29 incident: a customer's WEDOS mailbox sent fine
+    // (Gammadyne reached a Comcast inbox; our own transport reached it in 789ms),
+    // yet the app accused the server of ignoring the password. Cause was our
+    // probe, not the mailbox — see lib/smtp-diagnostics.ts. This entry exists so
+    // that exact shape is one click instead of a hand-typed guess.
+    //
+    // NOTE ON THE HOST: WEDOS hands each hosting account its own submission host
+    // (smtp-<id>.m1.wedos.net). That host is account-specific, so naming it here
+    // would be wrong for everyone else — this is the shared cluster host, and it
+    // was verified live to accept the same mailbox login (235 2.7.0 Authentication
+    // successful). When someone HAS been given a per-account host they should keep
+    // it; hand-editing Host correctly drops the picker back to Custom.
+    id: "wedos",
+    label: "WEDOS",
+    host: "wes1-smtp.wedos.net",
+    port: "587",
+    securityMode: "starttls",
+    note:
+      "Username is the FULL mailbox address (e.g. admin@yourdomain.cz). If WEDOS gave you " +
+      "an account-specific host such as smtp-12345.m1.wedos.net, use that instead — both " +
+      "accept the same login. Password is the mailbox password, not the hosting account one.",
+  },
+  {
+    // The generic version of the same shape, for the many providers we do not list
+    // (a hosting company's mail server, a friend's relay, an ISP mailbox). This is
+    // the port Gammadyne-style desktop mailers default to, and the one the WEDOS
+    // case used. It fills 587 + STARTTLS and leaves Host for the user, exactly like
+    // the cPanel entry — so the shared-hosting story is not 465-only, which is what
+    // it was before this entry existed.
+    id: "submission587",
+    label: "Other provider — standard 587 (STARTTLS)",
+    host: "smtp.yourprovider.com",
+    port: "587",
+    securityMode: "starttls",
+    note:
+      "Replace Host with your provider's outgoing server. Port 587 with STARTTLS is the " +
+      "standard submission port and what most providers (and desktop mailers) use; the " +
+      "username is normally your full email address.",
+  },
+  {
     id: "relay",
     label: "This server's relay (local)",
     host: "127.0.0.1",

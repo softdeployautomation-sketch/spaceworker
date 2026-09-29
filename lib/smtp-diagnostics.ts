@@ -76,6 +76,26 @@ export interface SmtpCapabilities {
    */
   authAdvertised: boolean;
   authMechanisms: string[];
+  /**
+   * AUTH was already offered by the PLAINTEXT EHLO, before any TLS upgrade.
+   *
+   * Kept separate from `authAdvertised` purely to explain a mechanism list that
+   * only exists after encryption: nearly every real submission server (verified
+   * live: smtp.gmail.com:587, smtp-184101.m1.wedos.net:587) advertises NO AUTH in
+   * the clear and adds `AUTH PLAIN LOGIN` only after STARTTLS. Reporting the
+   * plaintext list as the whole truth is what produced the false "this server did
+   * not ask for a username or password at all" warning on a mailbox that
+   * authenticates and sends perfectly.
+   */
+  authAdvertisedBeforeTls: boolean;
+  /**
+   * The probe completed a STARTTLS upgrade and re-issued EHLO, so the capability
+   * list (and therefore `authMechanisms`) is the POST-encryption one — the same
+   * list the real transport negotiates. False for implicit-TLS ports (465), where
+   * the first EHLO is already encrypted, and false when the upgrade failed (in
+   * which case the plaintext capabilities are all we honestly have).
+   */
+  starttlsUpgraded: boolean;
   /** Populated when the probe itself couldn't get an answer (advisory only). */
   error?: string;
   /**
@@ -95,6 +115,65 @@ export interface SmtpCapabilities {
  */
 export function connectionCannotBeEstablished(capabilities: SmtpCapabilities): boolean {
   return !capabilities.connected;
+}
+
+/**
+ * The warning worth interrupting a green tick for: the server never asked for
+ * credentials, so the password was never verified AND — far more dangerous —
+ * anything sent through it may be accepted and then dropped on the floor rather
+ * than relayed (confirmed live: that is exactly what port 25 on a customer's host
+ * did, which is why a "successful" campaign delivered nothing, not even to spam).
+ * Returns undefined when there's nothing to say.
+ *
+ * The three cases exist because the original single message was WRONG for the most
+ * common server on earth. A real submission port advertises no AUTH in the clear
+ * and reveals it only after STARTTLS, so a plaintext-only reading accused a
+ * perfectly good provider of ignoring the password — the very false alarm this
+ * warning was written to prevent, just pointing the other way. Measured live:
+ * smtp.gmail.com:587 and smtp-184101.m1.wedos.net:587 (a mailbox that delivers to
+ * Comcast) both answer the clear-text EHLO with no AUTH, then offer `AUTH PLAIN
+ * LOGIN` once encrypted.
+ *
+ * Lives here rather than in a route handler because BOTH test surfaces show it,
+ * and two copies of a warning string is precisely how they drift apart.
+ */
+export function capabilityWarning(capabilities: SmtpCapabilities): string | undefined {
+  if (!capabilities.reachable || capabilities.authAdvertised) return undefined;
+
+  // Case 1 — we encrypted the connection and re-asked; still no way to log in.
+  // Now the "no AUTH" reading is a fact about an encrypted session, so the
+  // warning is earned.
+  if (capabilities.starttlsUpgraded) {
+    return (
+      "Heads-up: this server encrypted the connection but still offered no way to " +
+      "log in (no AUTH, even after STARTTLS), so your username and password were " +
+      "never actually checked. Messages may be accepted and then silently dropped " +
+      "instead of relayed — if this is a real mail provider, switch to the port " +
+      "that requires authentication."
+    );
+  }
+
+  // Case 2 — STARTTLS is offered but we could not complete the upgrade. Providers
+  // are required to withhold AUTH until the channel is encrypted, so we genuinely
+  // do not know whether a password is required. Saying "not offered" here would be
+  // a guess dressed as a finding.
+  if (capabilities.starttlsAdvertised) {
+    return (
+      "Heads-up: this port offers STARTTLS, and mail servers are required to hide " +
+      "their login list until the connection is encrypted — but the encryption " +
+      "handshake did not complete from here, so we could not confirm whether your " +
+      "password is used. Sending may still work normally; treat the encryption " +
+      "result as the reliable part of this test."
+    );
+  }
+
+  // Case 3 — no encryption and no login: the genuine accept-and-drop shape.
+  return (
+    "Heads-up: this server did not ask for a username or password at all " +
+    "(it advertises no AUTH), so your credentials were never actually checked. " +
+    "Messages may be accepted and then silently dropped instead of relayed — " +
+    "if this is a real mail provider, switch to the port that requires authentication."
+  );
 }
 
 /**
@@ -267,6 +346,8 @@ export async function probeSmtpCapabilities(opts: {
     starttlsAdvertised: false,
     authAdvertised: false,
     authMechanisms: [],
+    authAdvertisedBeforeTls: false,
+    starttlsUpgraded: false,
   };
   let socket: net.Socket | undefined;
   let connected = false;
@@ -307,18 +388,62 @@ export async function probeSmtpCapabilities(opts: {
 
     // Strip the "250-" / "250 " prefix from every line after the greeting line,
     // so what's left is the capability itself.
-    const capabilities = reply.lines
+    const authMechanismsOf = (caps: string[]) => {
+      const authLine = caps.find((c) => /^AUTH\b/i.test(c));
+      return authLine
+        ? authLine
+            .replace(/^AUTH\s*/i, "")
+            .split(/\s+/)
+            .filter((m) => m.length > 0)
+        : [];
+    };
+
+    let capabilities = reply.lines
       .slice(1)
       .map((l) => l.replace(/^\d{3}[- ]/, "").trim())
       .filter((l) => l.length > 0);
+    // What the server was willing to say IN THE CLEAR. Almost always empty on a
+    // real submission port, and never the whole truth — see below.
+    const authAdvertisedBeforeTls = authMechanismsOf(capabilities).length > 0;
+    // Observed BEFORE any upgrade, because a server does not re-advertise STARTTLS
+    // once the channel is already encrypted. Reading this after the upgrade would
+    // report "STARTTLS: not offered" for a server we just used STARTTLS on.
+    const starttlsAdvertised = capabilities.some((c) => /^STARTTLS\b/i.test(c));
+    let starttlsUpgraded = false;
 
-    const authLine = capabilities.find((c) => /^AUTH\b/i.test(c));
-    const authMechanisms = authLine
-      ? authLine
-          .replace(/^AUTH\s*/i, "")
-          .split(/\s+/)
-          .filter((m) => m.length > 0)
-      : [];
+    // ── Discover AUTH the way a real send does: AFTER the TLS upgrade ──
+    //
+    // This is the fix for the false "no AUTH — your password isn't checked"
+    // warning. A submission server is REQUIRED to withhold its AUTH list until the
+    // channel is encrypted (RFC 4954 §4 / RFC 3207), so reading only the plaintext
+    // EHLO reports "no AUTH" for the majority of working providers — measured live
+    // on smtp.gmail.com:587 and smtp-184101.m1.wedos.net:587, both of which answer
+    // the clear-text EHLO with no AUTH and then offer `AUTH PLAIN LOGIN` post-TLS.
+    // The envelope probe below has always spoken this order (EHLO → STARTTLS →
+    // EHLO → AUTH); the capability probe did not, which is why one test surface
+    // said "accepted" while the other accused the server of ignoring the password.
+    if (!opts.implicitTls && capabilities.some((c) => /^STARTTLS\b/i.test(c))) {
+      try {
+        socket.write("STARTTLS\r\n");
+        const ready = await readReply(socket, timeoutMs);
+        if (ready.code === 220) {
+          socket = await upgradeProbeToTls(socket, opts.host, timeoutMs);
+          starttlsUpgraded = true;
+          capabilities = await ehloForProbe(socket, timeoutMs);
+        }
+        // A server that refuses STARTTLS is not a failure of this probe: the
+        // plaintext capabilities we already hold are the honest answer, and
+        // verify() owns the verdict. Deliberately not an early return — the
+        // caller needs the banner and reachability it has already earned.
+      } catch {
+        // Upgrade failed (broken STARTTLS, or a TLS layer this probe can't
+        // complete). Fall back to the plaintext list and leave
+        // `starttlsUpgraded: false`, which the UI reads as "we could not see past
+        // the encryption" rather than "this server forgot to ask for a password".
+      }
+    }
+
+    const authMechanisms = authMechanismsOf(capabilities);
 
     // Say goodbye politely; a QUIT that fails is irrelevant to the result.
     try {
@@ -332,9 +457,11 @@ export async function probeSmtpCapabilities(opts: {
       reachable: true,
       banner,
       capabilities,
-      starttlsAdvertised: capabilities.some((c) => /^STARTTLS\b/i.test(c)),
+      starttlsAdvertised,
       authAdvertised: authMechanisms.length > 0,
       authMechanisms,
+      authAdvertisedBeforeTls,
+      starttlsUpgraded,
     };
   } catch (e) {
     // `connected` is what separates "the socket never came up" (provable, and

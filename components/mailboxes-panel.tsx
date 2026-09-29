@@ -146,6 +146,14 @@ type TestConnResult = {
     authAdvertised: boolean | null;
     authMechanisms: string[];
     starttlsAdvertised: boolean | null;
+    /**
+     * The probe completed a STARTTLS upgrade before reading the capability list.
+     * When false while `starttlsAdvertised` is true, the empty AUTH list means
+     * "hidden behind encryption we could not finish", NOT "your password is
+     * ignored" — a distinction that matters because real submission servers are
+     * required to withhold AUTH until the channel is encrypted.
+     */
+    starttlsUpgraded?: boolean | null;
   };
   /**
    * The server's answer to a real MAIL FROM / RCPT TO (aborted with RSET, never
@@ -180,6 +188,32 @@ type TestConnResult = {
     warning: string | null;
   };
 };
+
+/**
+ * How to word the AUTH line from a probe result.
+ *
+ * The tail is the whole point. An empty mechanism list does NOT mean the server
+ * ignores the password: a submission server is REQUIRED to withhold its AUTH list
+ * until the channel is encrypted (RFC 4954 §4 / RFC 3207). Before the capability
+ * probe learned to upgrade first, this line told the operator "your password isn't
+ * checked on this port" about a mailbox that authenticates and delivers fine —
+ * while the envelope result directly beside it said "the server accepted it".
+ *
+ * Shared by both test surfaces so they cannot drift apart again.
+ */
+function describeAuthCapability(caps: {
+  authAdvertised: boolean | null;
+  authMechanisms: string[];
+  starttlsAdvertised: boolean | null;
+  starttlsUpgraded?: boolean | null;
+}): string {
+  if (caps.authAdvertised) return caps.authMechanisms.join(", ") || "offered";
+  if (caps.starttlsAdvertised && !caps.starttlsUpgraded) {
+    return "hidden until the connection is encrypted — the encryption handshake didn't complete here, so this couldn't be checked";
+  }
+  return "not offered — your password isn't checked on this port";
+}
+
 /**
  * TASK_140 — "will this mail actually be SIGNED?"
  *
@@ -730,9 +764,7 @@ export default function MailboxesPanel() {
                             </>
                           )}
                           Authentication:{" "}
-                          {test.capabilities.authAdvertised
-                            ? (test.capabilities.authMechanisms.join(", ") || "offered")
-                            : "not requested"}
+                          {describeAuthCapability(test.capabilities)}
                         </p>
                       )}
                       {test.capabilities && !test.capabilities.reachable && (
@@ -1218,9 +1250,7 @@ export default function MailboxesPanel() {
                         </>
                       )}
                       Authentication:{" "}
-                      {testConnResult.capabilities.authAdvertised
-                        ? `offered (${testConnResult.capabilities.authMechanisms.join(", ") || "unknown method"})`
-                        : "NOT offered — your password isn't checked on this port"}{" "}
+                      {describeAuthCapability(testConnResult.capabilities)}{" "}
                       · STARTTLS: {testConnResult.capabilities.starttlsAdvertised ? "offered" : "not offered"}
                     </p>
                   )}

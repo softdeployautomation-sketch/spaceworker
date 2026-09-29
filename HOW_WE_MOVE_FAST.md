@@ -1026,5 +1026,27 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   `k2._domainkey.mailchimp.com` and `s1._domainkey.github.com` (p=392, 2 chunks).
   When a test's own precondition is the thing in doubt, assert the precondition —
   that is what turned a green-but-empty test into a real one.
+- **An SMTP capability must be read AFTER STARTTLS, or you will accuse a correct
+  server.** A submission server is REQUIRED to withhold its AUTH list until the
+  channel is encrypted (RFC 4954 §4 / RFC 3207). `probeSmtpCapabilities` was reading
+  AUTH from the **plaintext** EHLO, so it reported "no AUTH — your password isn't
+  checked" for nearly every real provider, including a mailbox that demonstrably
+  delivered to Comcast. Measured live: `smtp-184101.m1.wedos.net:587` and
+  `smtp.gmail.com:587` BOTH answer the clear-text EHLO with no AUTH and only add
+  `AUTH PLAIN LOGIN` after the upgrade (TASK_143). Two consequences worth keeping:
+  (a) read `starttlsAdvertised` **before** the upgrade — a server does not
+  re-advertise STARTTLS once encrypted, so reading it later reports "not offered" for
+  a server you just used STARTTLS on; (b) a *failed* upgrade is **not** a verdict —
+  fall back to the plaintext list and say "we could not confirm", because "not
+  offered" there is a guess dressed as a finding. The tell that the probe was wrong
+  was that it contradicted the envelope probe ON THE SAME SCREEN, which had always
+  spoken the correct order. When two detectors disagree, suspect the detector.
+- **A "quick" mutation check is only valid if it is applied serially.** I issued
+  three backup/restore mutation cycles in one batch against the SAME file; they raced,
+  the restores clobbered each other, and the file was left in a mutated state that the
+  next command reported as "DIFFERS from backup". Mutate one file in one command,
+  assert the failure, restore, and verify with `cmp` — in that order, never in
+  parallel with itself.
+
 
 

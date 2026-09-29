@@ -121,6 +121,36 @@ test("only providers that require a literal login set fixedUser", () => {
   }
 });
 
+test("the submission-port story is not 465-only (the 2026-09-29 WEDOS incident)", () => {
+  // WHAT WENT WRONG: a customer's WEDOS mailbox sent fine — Gammadyne reached a
+  // Comcast inbox and our OWN transport reached it in 789ms — yet the app told them
+  // the server "did not ask for a username or password at all". That verdict came
+  // from OUR probe reading AUTH off the PLAINTEXT EHLO (fixed in
+  // lib/smtp-diagnostics.ts). Nothing about the mailbox was wrong.
+  //
+  // The preset gap this pins is smaller but real: the only shared-hosting entry
+  // offered 465 + implicit, so the shape that actually worked — 587 + STARTTLS —
+  // had no preset at all and had to be hand-typed. Both are now present.
+  const wedos = PROVIDER_PRESETS.find((p) => p.id === "wedos");
+  assert.ok(wedos, "the WEDOS entry is the regression for this incident");
+  assert.equal(wedos.port, "587");
+  assert.equal(wedos.securityMode, "starttls");
+  // WEDOS authenticates the mailbox's own address, so a literal login here would
+  // guarantee an auth failure — the exact trap the fixedUser rule exists to stop.
+  assert.equal(wedos.fixedUser, undefined);
+  // The generic entry must not be a second name for the WEDOS host, or the picker
+  // would claim a specific provider for someone else's server.
+  const generic = PROVIDER_PRESETS.find((p) => p.id === "submission587");
+  assert.ok(generic, "a generic 587 + STARTTLS entry must exist for unlisted providers");
+  assert.equal(generic.port, "587");
+  assert.equal(generic.securityMode, "starttls");
+  assert.notEqual(generic.host, wedos.host);
+
+  // And the property that made 465-only a gap: a 587 STARTTLS preset exists.
+  const starttls587 = PROVIDER_PRESETS.filter((p) => p.port === "587" && p.securityMode === "starttls");
+  assert.ok(starttls587.length >= 2, "expected several 587 + STARTTLS entries");
+});
+
 test("presetForHost recognises a saved host, and nothing else", () => {
   for (const p of PROVIDER_PRESETS) {
     assert.equal(presetForHost(p.host)?.id, p.id, `${p.host} should map to ${p.id}`);

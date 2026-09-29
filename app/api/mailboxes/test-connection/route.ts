@@ -9,6 +9,7 @@ import type { SigningCoverage } from "@/lib/sending-domains";
 import { signingCoverageFor } from "@/lib/sending-domain-coverage";
 import { canUseExitNodes } from "@/lib/premium";
 import {
+  capabilityWarning,
   connectionCannotBeEstablished,
   connectionFailureAsError,
   describeEnvelopeRefusal,
@@ -245,24 +246,6 @@ async function withDeadline<T>(work: Promise<T>, ms: number, message: string): P
   }
 }
 
-/**
- * The one warning worth interrupting a green tick for: the server never asked
- * for credentials, so the password was never verified AND — far more dangerous
- * — anything sent through it may be accepted and then dropped on the floor
- * rather than relayed (confirmed live: that is exactly what port 25 on this
- * customer's host did, which is why a "successful" campaign delivered nothing,
- * not even to spam). Returns undefined when there's nothing to say.
- */
-function capabilityWarning(capabilities: SmtpCapabilities): string | undefined {
-  if (!capabilities.reachable || capabilities.authAdvertised) return undefined;
-  return (
-    "Heads-up: this server did not ask for a username or password at all " +
-    "(it advertises no AUTH), so your credentials were never actually checked. " +
-    "Messages may be accepted and then silently dropped instead of relayed — " +
-    "if this is a real mail provider, switch to the port that requires authentication."
-  );
-}
-
 /** The compact, UI-facing slice of the probe (never the raw socket state). */
 function summarizeCapabilities(capabilities: SmtpCapabilities) {
   return {
@@ -272,6 +255,10 @@ function summarizeCapabilities(capabilities: SmtpCapabilities) {
     authAdvertised: capabilities.reachable ? capabilities.authAdvertised : null,
     authMechanisms: capabilities.authMechanisms,
     starttlsAdvertised: capabilities.reachable ? capabilities.starttlsAdvertised : null,
+    // Lets the panel explain WHY the login list is empty instead of asserting the
+    // password is ignored: "hidden behind the encryption we never finished" and
+    // "genuinely absent on an encrypted session" are different findings.
+    starttlsUpgraded: capabilities.reachable ? capabilities.starttlsUpgraded : null,
   };
 }
 
