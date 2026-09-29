@@ -140,3 +140,161 @@ it says nothing about the joiner. Rather than claim coverage it does not have, t
 joiner's behaviour was proven directly against the real relay (section 5) and the
 test kept for what it genuinely pins: the `p=` comparison and the chunked
 round-trip.
+
+---
+
+## 5. Live verification on the deployed box
+
+Run against real DNS, the real relay tables and the real database — not a stub.
+
+### 5a. The lookup, on real names (9/9)
+
+```
+--- live lookup: sw._domainkey.watsonandrade9382.ca.lu
+ok   a domain whose key is provably absent is reported DEFINITE, not unknown
+ok   the published record name is built by the same helper the lookup uses
+--- live chunked key: s1._domainkey.sendgrid.net (p= 392 chars, >255 so chunked)
+ok   a real chunked key at s1._domainkey.sendgrid.net is REJOINED and compares verified
+ok   the same record with no known key is "present", never a fault
+ok   a key that is not ours is "mismatch"
+ok   at least one live published key was long enough to exercise the joiner
+ok   an unresolvable name is definite (missing) or unknown, never a crash
+--- relay SigningTable domains: ["sw._domainkey.watsonandrade9382.ca.lu"]
+ok   the relay signs the customer domain in the conversation
+ok   no customer domain was swapped out for our own (no spaceworker.top signing)
+```
+
+**The first run of this script FAILED**, and that failure is the interesting part:
+it reported `no live chunked key found — the joiner was NOT proven by this run`.
+The candidate names I had picked (`resend._domainkey.*`, `google._domainkey.gmail.com`)
+all publish a **216-char** `p=`, which fits in a single 255-byte chunk — so they
+never exercise the rejoin at all, and the check was honest enough to say so rather
+than pass vacuously. Finding a real chunked key meant scanning published keys for a
+`p=` over 255 bytes:
+
+```
+CHUNKED  p= 392  chunks=2  s1._domainkey.sendgrid.net      <- used
+CHUNKED  p= 392  chunks=2  k2._domainkey.mailchimp.com
+CHUNKED  p= 392  chunks=2  s1._domainkey.github.com
+single   p= 216  chunks=1  resend._domainkey.instaweb.top   <- proves nothing
+single   p= 216  chunks=1  selector2._domainkey.microsoft.com
+```
+
+### 5b. What the user now sees (the point of the task)
+
+`signingCoverageFor()` — the exact function the Test-connection route calls — run
+against the real `blast1` row:
+
+```
+=== mailbox "blast1"
+    From: ["fleming@watsonandrade9382.ca.lu"]
+    [unpublished] Mail from @watsonandrade9382.ca.lu IS signed by the relay, but no
+      public key is published at sw._domainkey.watsonandrade9382.ca.lu — so the
+      signature will FAIL verification and receivers will treat the mail as unsigned.
+      Add @watsonandrade9382.ca.lu on the Sending domains tab to get the exact
+      record to publish
+    warning: These domains are signed but their DKIM key cannot validate —
+      @watsonandrade9382.ca.lu: no public key is published at
+      sw._domainkey.watsonandrade9382.ca.lu. ...
+```
+
+Before this task that same mailbox said *"whether that signature validates is
+**unknown**"*. It is now a definite verdict carrying the exact record to publish.
+
+### 5c. Both features are in the shipped bundle
+
+```
+"This server's relay (local)"  -> .next/static/chunks/3waohonlceoae.js   (client)
+"Sending domains tab"          -> .next/server/chunks/[root-of-the-server]__*.js
+```
+
+---
+
+## 6. A deploy defect this task exposed (fixed here)
+
+The deploy of this task **aborted at preflight** with:
+
+```
+MISSING .next   <- deploy destroyed runtime state
+FAIL: server-only runtime incomplete - recover before restarting.
+```
+
+Nothing had been destroyed — `.next`, `BUILD_ID`, the service and HTTP 200 were all
+intact. The truth was in the line above it:
+
+```
+ssh: connect to host 164.68.105.96 port 22: Operation timed out
+```
+
+Two defects, both about a network blip being reported as a local fact:
+
+1. **`run_remote` had no `ConnectTimeout` and no keepalives.** A single dropped
+   packet left ssh waiting on the OS TCP timeout, so every probe beneath it returned
+   a wrong answer instead of no answer — and `verify_runtime` reads a non-zero probe
+   as "the path is gone". The message then sends the operator to *recover* a server
+   that is perfectly healthy, which is how a blip turns into an outage.
+   Now `-o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3`.
+
+2. **`verify_runtime` probed each path over its own connection.** One blip could
+   therefore produce a partial, nonsensical picture (`ok .env`, `MISSING .next`,
+   `ok node_modules`) that reads as corruption rather than as a flaky link. It now
+   asserts reachability first (a nonce echo, so a half-open connection producing no
+   output cannot pass) and then probes every path over **one** connection, reporting
+   "runtime state is UNKNOWN — re-run with --verify-only" when the host stops
+   answering mid-check.
+
+A third, smaller false alarm was fixed at the same time: the exit sentinel added by
+TASK_140 (`never reached '-- done' but exited 0`) fired on the two legitimate early
+exits, `--verify-only` and `--maintenance-off`, which had no build to run. Both now
+mark `DEPLOY_COMPLETE=1`.
+
+Proof, without touching the real box — `VPS_HOST` is overridable:
+
+```
+$ time VPS_HOST=root@127.0.0.1 bash scripts/deploy-vps.sh /tmp/deploy142.txt
+-- preflight
+REFUSED: root@127.0.0.1 did not answer over ssh (timeout or dropped link).
+NOTHING WAS CHANGED and nothing is broken - this is a network blip, not a
+deploy failure. Re-run the same command. Do NOT 'recover' the server.
+0.042 total
+
+$ bash scripts/deploy-vps.sh /tmp/deploy142.txt --verify-only
+   ok      .env
+   ok      .next
+   ok      node_modules
+   ok      static/maintenance.html
+active
+http:200
+-- verify-only done          <- no false "ABORTED"
+```
+
+Re-running the same deploy against the real host then completed normally:
+
+```
+-- rsync
+-- prisma generate (as trmm)
+… 102 routes …
+-- restart + verify
+active
+   localhost:3500/ -> 200
+-- asserting server-only runtime survived
+   ok      .env / .next / node_modules / static/maintenance.html
+-- maintenance OFF
+-- done
+```
+
+---
+
+## 7. Outcome
+
+- The Postfix relay on the platform box (TASK_137) remains the sending path, **not**
+  the customer's broken third-party relay: nothing off-box is required to send.
+- DKIM status is now a definite, actionable verdict rather than "unknown", and the
+  one thing only a domain owner can supply — the public key in **their** DNS — is
+  named exactly, with the record to publish.
+- Our own relay is selectable as a preset, so an operator no longer has to be told
+  its host, port, security mode or where its password lives.
+- The mail the platform signs for a customer is not, and will not be, sent as our
+  own domain: `PLATFORM_SENDING_DOMAIN` stays unset until there is a reason.
+
+

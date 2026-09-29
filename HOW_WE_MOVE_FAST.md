@@ -995,5 +995,36 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   `lib/smtp-provider-presets.ts` as pure data (not inside the component) so
   `tests/smtp-provider-presets.test.ts` can pin the coherence rule; mutation-check
   it by setting a 465 provider to 587 and watching the test fail.
+- **A dropped ssh link must never be reported as a fact about the deployment.**
+  Live 2026-09-29: a deploy aborted with `MISSING .next <- deploy destroyed runtime
+  state` when the actual line above it was
+  `ssh: connect to host 164.68.105.96 port 22: Operation timed out`. Nothing was
+  destroyed — `.next`, `BUILD_ID`, `is-active` and HTTP 200 were all fine. Two
+  causes, both now fixed in `scripts/deploy-vps.sh`:
+  (a) `run_remote` had **no `ConnectTimeout` and no keepalives**, so one lost packet
+  left ssh parked on the OS TCP timeout and every probe under it answered "no"
+  instead of "unknown" — with `--prune` that same shape of failure is how a blip
+  becomes an outage, because the operator is told to *recover* a healthy box;
+  (b) `verify_runtime` opened **one ssh per path**, so a blip produced a partial,
+  nonsensical reading (`ok .env`, `MISSING .next`, `ok node_modules`) that looks like
+  corruption. It now checks reachability first (nonce echo) and then probes every
+  path over ONE connection, saying "runtime state is UNKNOWN" when the host stops
+  answering. Regression-test without touching the box: `VPS_HOST` is overridable, so
+  `VPS_HOST=root@127.0.0.1 bash scripts/deploy-vps.sh <list>` must **REFUSE in
+  milliseconds** and must not print the word "destroyed".
+- **An "exited 0 without reaching the end" sentinel will fire on every legitimate
+  early exit.** The TASK_140 sentinel guarded against a silent mid-script abort, but
+  `--verify-only` and `--maintenance-off` also never reach `-- done`, so they printed
+  a false "ABORTED / any build did not run". Any new early-exit path must set
+  `DEPLOY_COMPLETE=1` before its `exit`, or the alarm becomes noise nobody reads.
+- **Proving a chunked-DNS rejoin needs a key that is ACTUALLY long enough.** The
+  first live run of the TASK_142 E2E failed with `no live chunked key found` — every
+  name I had guessed (`resend._domainkey.*`, `google._domainkey.gmail.com`) publishes
+  a 216-char `p=`, which fits in ONE 255-byte chunk and so never touches the joiner.
+  A truncated key still compares unequal, so a single-chunk "chunked key" test proves
+  nothing. Real 2048-bit keys were found at `s1._domainkey.sendgrid.net`,
+  `k2._domainkey.mailchimp.com` and `s1._domainkey.github.com` (p=392, 2 chunks).
+  When a test's own precondition is the thing in doubt, assert the precondition —
+  that is what turned a green-but-empty test into a real one.
 
 

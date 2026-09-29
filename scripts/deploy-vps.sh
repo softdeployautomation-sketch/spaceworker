@@ -80,7 +80,32 @@ for arg in "$@"; do
   esac
 done
 
-run_remote() { ssh -i "$SSH_KEY" -o BatchMode=yes "$VPS_HOST" "$@"; }
+# NOTE: ConnectTimeout + keepalives are load-bearing, not politeness. Without
+# them a single dropped packet leaves an ssh call waiting on the OS TCP timeout
+# (minutes), and every probe below then reports a WRONG answer rather than no
+# answer. Hit live 2026-09-29: a transient blip made the `.next` probe return
+# non-zero, verify_runtime announced "deploy destroyed runtime state", and the
+# operator was sent to "recover" a server that was perfectly healthy.
+run_remote() {
+  ssh -i "$SSH_KEY" -o BatchMode=yes \
+    -o ConnectTimeout=15 -o ServerAliveInterval=10 -o ServerAliveCountMax=3 \
+    "$VPS_HOST" "$@"
+}
+
+# --- Reachability gate --------------------------------------------------------
+# Run before anything that interprets a remote failure as a local fact. "The host
+# did not answer" and "the path is not there" are different conclusions with
+# opposite responses, and only one of them means anything is broken. A nonce is
+# echoed so a half-open connection that produces no output cannot pass.
+ensure_reachable() {
+  if run_remote "echo __SW_REACHABLE__" 2>/dev/null | grep -q '__SW_REACHABLE__'; then
+    return 0
+  fi
+  echo "REFUSED: $VPS_HOST did not answer over ssh (timeout or dropped link)." >&2
+  echo "NOTHING WAS CHANGED and nothing is broken - this is a network blip, not a" >&2
+  echo "deploy failure. Re-run the same command. Do NOT 'recover' the server." >&2
+  return 1
+}
 
 # Safety net for the maintenance flag. Without this, a script that dies mid-build
 # (ssh drop, Ctrl-C, set -e abort) would leave the site pinned on the update page
@@ -135,15 +160,34 @@ PROTECTED=(
 
 verify_runtime() {
   echo "-- asserting server-only runtime survived"
-  local missing=0 p
-  for p in "${REQUIRED_PATHS[@]}"; do
-    if run_remote "test -e '$APP_DIR/$p'"; then
-      echo "   ok      $p"
-    else
-      echo "   MISSING $p   <- deploy destroyed runtime state" >&2
-      missing=1
-    fi
-  done
+  # Reachability first: a probe that failed because the LINK dropped says nothing
+  # about the runtime, and reporting it as a missing path sends the operator to
+  # "recover" a healthy server.
+  ensure_reachable || return 1
+  # Then probe every path over ONE connection. Per-path ssh calls let a single
+  # blip produce a partial, nonsensical picture ("ok .env, MISSING .next, ok
+  # node_modules") that reads as corruption rather than as a flaky link.
+  local list="" p out
+  for p in "${REQUIRED_PATHS[@]}"; do list="$list '$p'"; done
+  out="$(run_remote "cd '$APP_DIR' || exit 9
+    for p in $list; do
+      if [ -e \"\$p\" ]; then printf 'ok %s\n' \"\$p\"; else printf 'missing %s\n' \"\$p\"; fi
+    done")" || {
+    echo "FAIL: the host stopped answering mid-check, so runtime state is UNKNOWN." >&2
+    echo "      Re-run with --verify-only before concluding anything is missing." >&2
+    return 1
+  }
+  local missing=0
+  while IFS= read -r p; do
+    case "$p" in
+      "ok "*) echo "   ok      ${p#ok }" ;;
+      "missing "*)
+        echo "   MISSING ${p#missing }   <- deploy destroyed runtime state" >&2
+        missing=1
+        ;;
+      *) ;;
+    esac
+  done <<< "$out"
   [ "$missing" -eq 0 ] || { echo "FAIL: server-only runtime incomplete - recover before restarting." >&2; return 1; }
   return 0
 }
@@ -151,13 +195,21 @@ verify_runtime() {
 if [ "$DO_MAINT_OFF" -eq 1 ]; then
   echo "-- maintenance OFF (manual override)"
   run_remote "rm -f '$MAINT_FLAG'"
+  # Reached its intended end: mark complete so the sentinel below does not cry
+  # "ABORTED" for an operation that had no build to run in the first place.
+  DEPLOY_COMPLETE=1
   echo "-- done"; exit 0
 fi
 
 if [ "$VERIFY_ONLY" -eq 1 ]; then
-  verify_runtime
-  run_remote "systemctl is-active '$SERVICE' && curl -s -o /dev/null -w 'http:%{http_code}\n' -m 15 http://localhost:$PORT/"
-  exit $?
+  verify_runtime || exit 1
+  run_remote "systemctl is-active '$SERVICE' && curl -s -o /dev/null -w 'http:%{http_code}\n' -m 15 http://localhost:$PORT/" || exit 1
+  # A verify-only run REACHED its intended end, so mark it complete: otherwise the
+  # sentinel below cries "ABORTED / any build did not run" for a run that had no
+  # build to do, which is the same false alarm this task set out to remove.
+  DEPLOY_COMPLETE=1
+  echo "-- verify-only done"
+  exit 0
 fi
 
 [ -n "$FILES_FROM" ] || { echo "usage: $0 <files-from-list> [--prune] [--no-build] [--no-restart] [--maintenance-off]" >&2; exit 2; }
@@ -173,6 +225,10 @@ fi
 
 # --- 2. Snapshot .env + confirm protected paths exist BEFORE touching anything -
 echo "-- preflight"
+# Refuse up front if the box is not answering. Everything below interprets remote
+# results as facts about the deployment, which is only valid once we know the link
+# is actually up.
+ensure_reachable || exit 1
 STAMP="$(date +%Y%m%d%H%M%S)"
 run_remote "cp -a '$APP_DIR/.env' '/root/$(basename "$APP_DIR").env.bak-$STAMP' && echo '   snapshot: /root/$(basename "$APP_DIR").env.bak-$STAMP'"
 verify_runtime
