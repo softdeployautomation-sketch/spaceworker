@@ -2210,3 +2210,109 @@ Two things follow. (a) Year 2999 is inside `datetime`'s range and `utcnow() > ex
 - Live app `/Users/mikeolab/spaceworker` (`main`, `b7330a1`): clean, untouched.
 - `/tmp/t3-verify.mts` is now **redundant** — `tests/exe-license-lifetime.test.ts` is its permanent replacement. Delete it so it cannot become the de-facto test.
 
+
+### 2026-09-29 — JUNIOR — **T4 implemented** (the revocation seam module, new file). No other task started.
+
+**What changed (additive only — nothing imports it yet, so no existing behaviour moves):**
+- `lib/exe-license-revocation.ts` — **new, 109 lines**. Implements §3 D2 exactly: three exports + the one allowed error class (`grep -c '^export '` → `4`).
+  - `LicenseRevocationError` `:23-31` — typed-error style mirroring `LicenseBindError` (`lib/exe-license-bind.ts:30-44`), `code: "not_found" | "not_owner"`.
+  - `isExeLicenseRevoked` `:38-44` — `db.exeLicenseRevocation.findUnique({ where: { exeLicenseId }, select: { id: true } })`, returns `row !== null`. The only revocation read path.
+  - `revokeExeLicense` `:52-90` — `findUnique` the licence, throw `not_found` / `not_owner` before any write, then **idempotent** `upsert({ where: { exeLicenseId } })` (double-click cannot raise a unique-constraint 500), then `void notifyAdmin(...)`.
+  - `unrevokeExeLicense` `:98-108` — `deleteMany({ where: { exeLicenseId } })` (no throw when absent) + `void notifyAdmin(...)`.
+- Imports mirror `lib/exe-license-bind.ts:1-6` exactly: `import "server-only";`, `import { db } from "./db";`, `import { notifyAdmin } from "./telegram";`. **No `./prisma`, no `getProduct`.**
+- **No existing file was edited.** `git --no-pager status --porcelain` → `?? lib/exe-license-revocation.ts` (one line, untracked, new). The frozen validator and `lib/exe-license.ts` are untouched (canary below).
+
+**Implementation note (not a spec deviation, logged for the record):** `ExeLicense` has **no `licensee` column** — the name lives on the decoded key and on `Payment`. The alert text therefore names the account via the `user` relation (`select: { user: { select: { email: true } } }`). D2 fixes the three signatures, the idempotency, the ownership check and the `notifyAdmin` call — not the message string — so this is a choice inside the spec, and it mirrors the `userId` ownership gate at `app/api/admin/exe-licenses/route.ts:126-132`.
+
+**Exact commands run** (worktree `/Users/mikeolab/sw-selfhost` unless another dir is named):
+
+```bash
+grep -c '^export ' lib/exe-license-revocation.ts
+grep -n '^export ' lib/exe-license-revocation.ts
+npx tsc --noEmit                        # TSC_EXIT=$?
+npx eslint lib/exe-license-revocation.ts
+CI=1 npx next build                     # BUILD_EXIT=$?   (run in background, log tail pasted)
+npm run test:license                    # raw # tests / # pass / # fail
+npm run test:setup                      # raw # tests / # pass / # fail
+cd /Users/mikeolab/spaceworker
+git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+git diff --numstat main self-hosted-build -- lib/exe-license.ts
+git status --porcelain
+npx tsc --noEmit                        # TSC_EXIT=$?
+```
+
+**Raw output, pasted verbatim:**
+
+```
+$ grep -c '^export ' lib/exe-license-revocation.ts
+4
+$ grep -n '^export ' lib/exe-license-revocation.ts
+23:export class LicenseRevocationError extends Error {
+38:export async function isExeLicenseRevoked(exeLicenseId: string): Promise<boolean> {
+52:export async function revokeExeLicense(input: {
+98:export async function unrevokeExeLicense(exeLicenseId: string): Promise<void> {
+```
+
+```
+$ npx tsc --noEmit
+TSC_EXIT=0
+$ npx eslint lib/exe-license-revocation.ts
+LINT_EXIT=0
+```
+
+```
+$ CI=1 npx next build      # tail of /tmp/t145-t4-build.log
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+```
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 920.874232
+```
+
+```
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1445.466505
+```
+
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ git status --porcelain
+(empty — live-app worktree clean)
+$ npx tsc --noEmit
+TSC_EXIT=0
+```
+
+**Canary verdict:** validator diff **empty** (§4.2 S1 intact); `lib/exe-license.ts` **`13  0`** (zero deletions, V17 amended canary intact); live app `main` clean and its own typecheck `EXIT=0`; the branch's only working-tree change is the one new, unimported file.
+
+**UNVERIFIED: no runtime DB exercise of the three functions this session** — T4's defined acceptance check is static (`tsc` + export count) and the task explicitly needs no database or server. Compilation is against the generated client for T1's real `ExeLicenseRevocation` table, but no row was written or read at runtime here. The DB-touching proofs are §4.2 S5/S7, which belong to T5/T6; `revoke → unrevoke → revoke` idempotency and the `not_owner` branch therefore remain runtime-unproven.
+
+**UNVERIFIED: `reason` / `revokedBy` persist verbatim** — same reason (no DB run). Both are nullable-clean per T1's schema, and the strings are `trim()`-normalised with `"" → null`, but the round-trip is not exercised.
+
+**UNVERIFIED: the `notifyAdmin` message text is not covered by any test** — `notifyAdmin` is a documented no-op when the Telegram bot token / chat id are unset (`lib/telegram.ts:28-35`), so no assertion exists or is possible offline.
+
+READY FOR VERIFICATION - T4
+

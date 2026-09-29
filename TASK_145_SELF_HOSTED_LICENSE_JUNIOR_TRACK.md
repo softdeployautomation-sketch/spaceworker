@@ -1808,3 +1808,115 @@ Not checking in a mutated lib is right: a permanently broken test would be worse
 
 **Two reminders before you start:** run the §4.1c standing tests and paste their raw counts (reject item **16** otherwise); and `package.json`'s `2 10` against `main` is pre-existing branch drift (nine `test:*` scripts `main` added in the commits the branch is behind) — **not** something to "fix".
 
+
+### 2026-09-29 — JUNIOR — **T4 implemented** (the revocation seam module, new file). No other task started.
+
+**Task done:** `T4` only, per the `▶ NEXT TASK` pointer at `:9` and junior §2 (`:247-258`) → senior §3 D2.
+
+**What changed — `file:line` (all new; no existing file touched):**
+
+| File | Lines | What |
+|---|---|---|
+| `lib/exe-license-revocation.ts` | `1-109` (new) | the single enforcement seam |
+| `lib/exe-license-revocation.ts` | `23-31` | `LicenseRevocationError` (`code: "not_found" \| "not_owner"`), mirroring `LicenseBindError` (`lib/exe-license-bind.ts:30-44`) |
+| `lib/exe-license-revocation.ts` | `38-44` | `isExeLicenseRevoked` — `findUnique` on the unique FK, returns `row !== null` |
+| `lib/exe-license-revocation.ts` | `52-90` | `revokeExeLicense` — ownership check → typed throw, then idempotent `upsert`, then `void notifyAdmin(...)` |
+| `lib/exe-license-revocation.ts` | `98-108` | `unrevokeExeLicense` — `deleteMany` (no throw when absent) + `void notifyAdmin(...)` |
+
+- Exactly the conventions §2 named: `import "server-only";` · `import { db } from "./db";` · `import { notifyAdmin } from "./telegram";` (same three as `lib/exe-license-bind.ts:1-6`; **not** `./prisma`).
+- `git --no-pager status --porcelain` → `?? lib/exe-license-revocation.ts` — one untracked new file; nothing else in the worktree moved. Nothing imports it, so the hosted app's runtime is unchanged.
+
+**One in-spec choice, flagged so the senior sees it:** `ExeLicense` has no `licensee` column, so the alert names the account through the `user` relation (`.user.email`) instead of a non-existent field. D2 pins the signature, the idempotency, the ownership check and the `notifyAdmin` call — not the string.
+
+**Commands run** (worktree `/Users/mikeolab/sw-selfhost` unless another dir is named):
+
+```bash
+grep -c '^export ' lib/exe-license-revocation.ts
+grep -n '^export ' lib/exe-license-revocation.ts
+npx tsc --noEmit
+npx eslint lib/exe-license-revocation.ts
+CI=1 npx next build
+npm run test:license
+npm run test:setup
+cd /Users/mikeolab/spaceworker
+git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+git diff --numstat main self-hosted-build -- lib/exe-license.ts
+git status --porcelain
+npx tsc --noEmit
+```
+
+**Raw output, verbatim (the numbers I measured, not a summary):**
+
+```
+$ grep -c '^export ' lib/exe-license-revocation.ts
+4
+$ grep -n '^export ' lib/exe-license-revocation.ts
+23:export class LicenseRevocationError extends Error {
+38:export async function isExeLicenseRevoked(exeLicenseId: string): Promise<boolean> {
+52:export async function revokeExeLicense(input: {
+98:export async function unrevokeExeLicense(exeLicenseId: string): Promise<void> {
+```
+
+```
+$ npx tsc --noEmit
+TSC_EXIT=0
+$ npx eslint lib/exe-license-revocation.ts
+LINT_EXIT=0
+```
+
+```
+$ CI=1 npx next build
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand
+
+BUILD_EXIT=0
+```
+
+```
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 920.874232
+```
+
+```
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1445.466505
+```
+
+```
+$ cd /Users/mikeolab/spaceworker
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty — no output)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13	0	lib/exe-license.ts
+$ git status --porcelain
+(empty)
+$ npx tsc --noEmit
+TSC_EXIT=0
+```
+
+`§4.1c` standing checks: `test:license` → **`# pass 9 / # fail 0`**; `test:setup` → **`# pass 29 / # fail 0`**. Neither `lib/exe-license.ts` nor the validator was touched, so no mutation proof was needed (and none was attempted).
+
+**UNVERIFIED: runtime behaviour of the three functions against a real DB** — T4's acceptance check is static (`tsc` clean + 3–4 exports) and the task needs no database/server; the DB round-trip proofs are §4.2 S5/S7 and belong to T5/T6. Compiles against the generated client for T1's real table; no row written/read this session, so `revoke → unrevoke → revoke` idempotency and the `not_owner` throw are runtime-unproven.
+
+**UNVERIFIED: `reason` / `revokedBy` round-trip** — no DB run (same reason). Strings are trimmed with `"" → null`; not exercised against a row.
+
+**UNVERIFIED: the `notifyAdmin` message text** — no test covers it; `notifyAdmin` is a no-op without Telegram env (`lib/telegram.ts:28-35`).
+
+READY FOR VERIFICATION - T4
+
