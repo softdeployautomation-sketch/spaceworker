@@ -80,11 +80,19 @@ function Get-ProfileFileList {
       capture silently contained zero cookies.
     #>
     param([Parameter(Mandatory=$true)][string]$ProfileDir)
+    # Patterns are written with the PLATFORM separator rather than a hardcoded `\`.
+    # On Windows (the device) this is byte-for-byte the same list as before. On
+    # pwsh/Linux — where this file's tests run — a backslash is an ordinary
+    # filename character, so `'Extensions\*'` matched NOTHING and a check could not
+    # tell "this profile has no extensions" apart from "the separator is wrong".
+    # That is the same class of silent-empty failure this function's own review fix
+    # F1 was about, so it is worth removing the ambiguity.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
     $patterns = @(
         'Preferences', 'Secure Preferences', 'Bookmarks', 'Bookmarks.bak',
         # legacy + current Chromium cookie locations
         'Cookies', 'Cookies-journal',
-        'Network\*',
+        "Network${sep}*",
         'Login Data', 'Login Data-journal', 'Login Data-wal', 'Login Data-shm',
         'Web Data', 'History', 'Favicons',
         # TABS / window state. Chromium keeps the last session in
@@ -94,16 +102,33 @@ function Get-ProfileFileList {
         # Data, a copy survives a machine move — so "…down to tabs" is achievable
         # by copy. They were simply absent from this list, which is why a
         # restored clone came up with an empty window.
-        'Sessions\*',
+        "Sessions${sep}*",
         'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs',
-        'Extensions\*',
-        'Local Storage\leveldb\*',
-        'Session Storage\*',
-        'Extension State\*', 'Sync Extension Settings\*'
+        # NOTE: the Extensions root is walked RECURSIVELY further down, not by a
+        # one-level pattern. `Extensions\*` can only match loose files directly
+        # inside Extensions, and every real extension lives at
+        # `Extensions\<id>\manifest.json` — so that pattern matched nothing, a
+        # capture of a browser full of extensions carried none of them, and the
+        # run still reported success. One level deeper is not enough either: an
+        # extension without its payload is a broken extension, so the whole
+        # subtree goes.
+        "Local Storage${sep}leveldb${sep}*",
+        "Session Storage${sep}*",
+        "Extension State${sep}*", "Sync Extension Settings${sep}*"
     )
     $files = @()
     foreach ($p in $patterns) {
         Get-ChildItem -Path (Join-Path $ProfileDir $p) -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $files += $_.FullName.Substring($ProfileDir.Length + 1) }
+    }
+    # Extensions, recursively (see the NOTE in $patterns). Kept separate from the
+    # pattern loop because a recursive walk is a different operation from a glob, and
+    # folding `-Recurse` into the shared loop would also recurse Network\, Local
+    # Storage\ and Session Storage\ — where the files sit directly in the root and a
+    # deep walk would pull in unrelated megabytes for no gain.
+    $extRoot = Join-Path $ProfileDir 'Extensions'
+    if (Test-Path $extRoot) {
+        Get-ChildItem -Path $extRoot -File -Recurse -ErrorAction SilentlyContinue |
             ForEach-Object { $files += $_.FullName.Substring($ProfileDir.Length + 1) }
     }
     foreach ($p in @('prefs.js','key4.db','logins.json','cookies.sqlite','cookies.sqlite-wal',

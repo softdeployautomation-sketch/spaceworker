@@ -13,8 +13,15 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'lib/GcmCrypto.ps1')
 . (Join-Path $root 'lib/ProfilePaths.ps1')
 
-$failures = @()
-function Check { param($Name, $Cond) if ($Cond) { Write-Output "PASS $Name" } else { $failures += $Name; Write-Output "FAIL $Name" } }
+$script:failures = @()
+# `$script:` on BOTH sides is load-bearing. A bare `$failures += $Name` inside a
+# function assigns a NEW local variable, so the script-level array stayed empty no
+# matter what failed — the suite printed FAIL lines and then "ALL PASSED" and exit 0.
+# It ran that way long enough for the README to record a pass count from it. A test
+# harness that cannot fail is worse than no harness: it reports green for a real bug,
+# and that is exactly what happened (the Extensions pattern below was broken and this
+# check could not say so).
+function Check { param($Name, $Cond) if ($Cond) { Write-Output "PASS $Name" } else { $script:failures += $Name; Write-Output "FAIL $Name" } }
 
 # ── 1. GCM roundtrip ────────────────────────────────────────────────────────
 $key = New-Object byte[] 32
@@ -46,8 +53,10 @@ $fp = Join-Path $work 'fakeprofile'
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText((Join-Path $fp 'Preferences'), '{"test":"mt1"}', $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $fp 'Bookmarks'), '{"roots":{}}', $utf8NoBom)
-New-Item -ItemType Directory -Path (Join-Path $fp 'Extensions\abc') -Force | Out-Null
-[System.IO.File]::WriteAllText((Join-Path $fp 'Extensions\abc\manifest.json'), '{"name":"t"}', $utf8NoBom)
+New-Item -ItemType Directory -Path (Join-Path $fp 'Extensions') -Force | Out-Null
+$extDir = Join-Path (Join-Path $fp 'Extensions') 'abc'
+New-Item -ItemType Directory -Path $extDir -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $extDir 'manifest.json'), '{"name":"t"}', $utf8NoBom)
 # Tabs/window state (the "…down to tabs" file set), and a separate root that
 # carries a `Last Version` marker so the version-match input is exercised on a
 # profile of its own (the happy-path profile above must stay version-free: a
@@ -83,7 +92,7 @@ Check 'restore.restored-count' ($res.files_restored -ge 3)
 $expectedBytes = [System.Text.Encoding]::UTF8.GetBytes('{"test":"mt1"}')
 $actualBytes = [System.IO.File]::ReadAllBytes((Join-Path $dest 'Preferences'))
 Check 'restore.prefs-byte-identical' ([Convert]::ToBase64String($actualBytes) -eq [Convert]::ToBase64String($expectedBytes))
-Check 'restore.manifest-present' (Test-Path (Join-Path $dest 'Extensions\abc\manifest.json'))
+Check 'restore.manifest-present' (Test-Path (Join-Path (Join-Path (Join-Path $dest 'Extensions') 'abc') 'manifest.json'))
 
 # ── 4c. tampered archive fails closed (exit 2 path) ─────────────────────────
 if ($capKey) {

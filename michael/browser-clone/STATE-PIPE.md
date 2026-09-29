@@ -383,3 +383,37 @@ rather than leaving an impossible pair selected. A **fresh** Firefox clone is a 
 product and is still offered; what is refused is the promise that its history came along.
 - **`test:clone` now runs `lib/clone-browsers.test.ts`** — a test file that CI never executed
 is the same class of gap as a capability nothing can reach.
+
+### Two bugs found while validating the device-side suite (2026-09-29)
+
+Both were **silent by construction** — the same shape as `Extensions\*` itself.
+
+**1. The test harness could not fail.** `Check` did `$failures += $Name` inside a
+function, and `+=` on a name that is not already a local creates a *new local* variable —
+so the script-level array tested at the end was always empty. The suite printed
+`FAIL …` lines, then `ALL PASSED`, and exited 0. It ran that way long enough for the
+README to record a pass count from it. Now `$script:failures` on both sides, and the fix
+is proven by sabotage: planting a failing check gives `exit 2` and
+`FAILURES: sabotage.must-fail`. **Any pass count from this suite before this date is
+unreliable** — including the ones that were quoted as evidence in this document's
+earlier sections.
+
+**2. Extensions were never captured, and capture reported success.** The §2 file list
+used `'Extensions\*'`, which a non-recursive `Get-ChildItem -File` can only match against
+files sitting *directly* in `Extensions\` — and every real extension lives at
+`Extensions\<id>\manifest.json`. So a profile full of extensions yielded zero extension
+files, the exit code stayed 0, and the only check that could have noticed was disabled by
+bug 1. The Extensions root is now walked **recursively** (an extension without its payload
+is a broken extension, so one level deeper would not be enough either).
+
+Both bugs share a root cause worth naming: *a one-level glob used as if it were a subtree
+walk, and a harness that could not report the result.* The first is why the second
+mattered.
+
+The same pass also made the pattern list **separator-aware** (`[System.IO.Path]::DirectorySeparatorChar`
+instead of a hardcoded `\`). On Windows this is byte-for-byte the same list; on pwsh/Linux
+a backslash is an ordinary filename character, so every multi-level pattern matched
+nothing, which is why the file-list checks could not be exercised off Windows at all.
+
+**Still not verified for this layer:** whether Chrome *loads* a copied extension from a
+restored profile. The files now travel; the load has not been observed on Windows.
