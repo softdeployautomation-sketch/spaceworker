@@ -41,9 +41,16 @@ interface Lead {
   snippet?: string | null;
   createdAt: string;
   // Task 26, Piece 3 — email deliverability validation.
-  validationStatus?: string | null; // "unchecked" | "valid" | "invalid"
+  // TASK_150 T2 — "unchecked" | "valid" | "invalid" | "duplicate". "duplicate"
+  // is a NEW, deliberately separate state: it means this address was already
+  // present in an EARLIER session of yours, never that the MX check failed.
+  validationStatus?: string | null;
   validationError?: string | null;
   validatedAt?: string | null;
+  // TASK_150 T2 — set only when validationStatus is "duplicate": the id of the
+  // earlier lead this row repeats (across ALL of this user's jobs, matched
+  // case-insensitively on the trimmed address).
+  duplicateOfId?: string | null;
 }
 
 interface JobDetail extends Job {
@@ -336,22 +343,34 @@ export function WebExtractPage() {
     [selectedJob?.id],
   );
 
+  // TASK_150 T2 — "Hide duplicates", DEFAULTING ON. Duplicates are addresses the
+  // user already had from an earlier session; the whole point of the fix is that
+  // a new session comes back clean, so they are hidden by default and the toggle
+  // is the opt-out. One global display preference (not per job) because it is
+  // about how the owner wants to read a session list, not about any one session.
+  const [hideDuplicates, setHideDuplicates] = useState(true);
+
   // TASK_150 T1 — THE single source of truth for which leads render. `resultMode`
   // (a per-job display preference) and the domain picker's selection are applied
   // in exactly one place; the header row count and the exported `?domains=`
   // links are derived from the same inputs, so they cannot disagree. "Emails
   // only" and a domain selection COMPOSE — both must pass — rather than one
   // replacing the other.
+  //
+  // TASK_150 T2 — the hide-duplicates toggle joins the same one place, so the
+  // table, the header row count, and (via the count below) the pill summary can
+  // never disagree about what is hidden.
   const visibleLeads = useMemo(() => {
     if (!selectedJob) return [];
     const mode = (selectedJob.params?.resultMode as string | undefined) ?? "full";
     const domainFilter = new Set(filterDomains);
     return selectedJob.leads.filter((lead) => {
       if (mode === "emailsOnly" && !lead.email) return false;
+      if (hideDuplicates && lead.validationStatus === "duplicate") return false;
       if (domainFilter.size > 0 && !domainFilter.has(leadDomain(lead.email, lead.website))) return false;
       return true;
     });
-  }, [selectedJob, filterDomains]);
+  }, [selectedJob, filterDomains, hideDuplicates]);
 
   // Task 26, Piece 3 — lead upload (import .csv/.txt/.json/.xlsx into a new job)
   // and per-job batch email validation. Both are additive UI on the existing job
@@ -365,6 +384,9 @@ export function WebExtractPage() {
   const [dragging, setDragging] = useState(false);
 
   const [validateBusy, setValidateBusy] = useState(false);
+  // TASK_150 T2 — a separate busy flag for the duplicate cleanup so the two
+  // Actions entries can't both look busy at once.
+  const [deleteDuplicatesBusy, setDeleteDuplicatesBusy] = useState(false);
   // Task 26, Piece 7a — the old `validateMessage` (a one-shot POST-response string)
   // was replaced by a LIVE derived summary computed from the selected job's own leads
   // on every render (see the actions row). This state now carries ONLY validation
@@ -857,6 +879,39 @@ export function WebExtractPage() {
       void fetchJobs();
     } catch {
       setValidateError("Network error while deleting invalid leads.");
+    }
+  }
+
+  // TASK_150 T2 — discard just the duplicates in the selected job (after a
+  // dedupe pass flagged them). Same shape as deleteInvalidLeads above; the route
+  // refuses the whole request if any duplicate is already a campaign recipient,
+  // and that refusal is surfaced verbatim rather than swallowed.
+  async function deleteDuplicateLeads() {
+    if (!selectedJob || deleteDuplicatesBusy) return;
+    const duplicateCount = selectedJob.leads.filter((l) => l.validationStatus === "duplicate").length;
+    if (duplicateCount === 0) return;
+    if (!(await confirm({
+      title: `Delete ${duplicateCount} duplicate lead${duplicateCount === 1 ? "" : "s"}?`,
+      description:
+        "Only rows that repeat an address you already had from an earlier session are removed. " +
+        "Duplicates already used as campaign recipients are refused.",
+      confirmLabel: "Delete",
+    }))) return;
+    setDeleteDuplicatesBusy(true);
+    setValidateError(null);
+    try {
+      const res = await fetch(`/api/jobs/${selectedJob.id}/leads/delete-duplicates`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setValidateError(typeof data.error === "string" ? data.error : "Couldn't delete duplicates.");
+        return;
+      }
+      void fetchJobDetail(selectedJob.id);
+      void fetchJobs();
+    } catch {
+      setValidateError("Network error while deleting duplicates.");
+    } finally {
+      setDeleteDuplicatesBusy(false);
     }
   }
 
@@ -1635,6 +1690,32 @@ export function WebExtractPage() {
                       onChange={setFilterDomains}
                     />
                   )}
+                  {/* TASK_150 T2 — "Hide duplicates", defaulting ON, with the
+                      count alongside so turning it off (or not) is an informed
+                      choice. Duplicates are addresses already present in an
+                      earlier session — flagged per USER across all sessions, not
+                      per job, which is why they can appear in a brand-new run. */}
+                  {selectedJob.leads.length > 0 && (() => {
+                    const duplicateCount = selectedJob.leads.filter(
+                      (l) => l.validationStatus === "duplicate",
+                    ).length;
+                    return (
+                      <label
+                        className="flex items-center gap-1.5 text-xs text-fg-muted"
+                        title="Addresses you already had from an earlier session. Marked, never counted as invalid."
+                      >
+                        <input
+                          type="checkbox"
+                          checked={hideDuplicates}
+                          onChange={(e) => setHideDuplicates(e.target.checked)}
+                          className="h-3.5 w-3.5 cursor-pointer"
+                          data-testid="hide-duplicates"
+                        />
+                        Hide duplicates
+                        <span data-testid="duplicate-count">{duplicateCount}</span>
+                      </label>
+                    );
+                  })()}
                   {selectedJob.leads.length > 0 && (
                     <Dropdown
                       label="Actions"
@@ -1675,6 +1756,19 @@ export function WebExtractPage() {
                                 (!l.validationStatus || l.validationStatus === "unchecked"),
                             ),
                         },
+                        // TASK_150 T2 — the cleanup for the duplicates the pass
+                        // above flags. Disabled at zero so it never offers a
+                        // no-op; the route itself is the authority on refusing a
+                        // duplicate a campaign already uses.
+                        {
+                          label: deleteDuplicatesBusy ? "Deleting…" : "Delete duplicates",
+                          busy: deleteDuplicatesBusy,
+                          tone: "danger",
+                          onSelect: () => void deleteDuplicateLeads(),
+                          disabled:
+                            deleteDuplicatesBusy ||
+                            !selectedJob.leads.some((l) => l.validationStatus === "duplicate"),
+                        },
                       ]}
                     />
                   )}
@@ -1687,6 +1781,10 @@ export function WebExtractPage() {
                   {(() => {
                     const vValid = selectedJob.leads.filter((l) => l.validationStatus === "valid").length;
                     const vInvalid = selectedJob.leads.filter((l) => l.validationStatus === "invalid").length;
+                    // TASK_150 T2 — duplicates are their OWN tally, never folded
+                    // into vInvalid (a duplicate is a deliverable address you
+                    // already had; "invalid" is a failed MX check).
+                    const vDuplicate = selectedJob.leads.filter((l) => l.validationStatus === "duplicate").length;
                     const untested = selectedJob.leads.filter((l) => !l.validationStatus || l.validationStatus === "unchecked");
                     // Bug fix (2026-09-12): "unchecked" was one bucket for two very
                     // different things — a lead with an email genuinely still
@@ -1697,14 +1795,15 @@ export function WebExtractPage() {
                     // email address to validate. Split the label so that's clear.
                     const vNoEmail = untested.filter((l) => !l.email || l.email.trim().length === 0).length;
                     const vPending = untested.length - vNoEmail;
-                    if (vValid + vInvalid === 0) return null;
+                    if (vValid + vInvalid + vDuplicate === 0) return null;
                     return (
                       <>
                         <span
-                          key={`${vValid}-${vInvalid}-${vPending}-${vNoEmail}`}
+                          key={`${vValid}-${vInvalid}-${vDuplicate}-${vPending}-${vNoEmail}`}
                           className="animate-[fadeInUp_0.15s_ease-out] text-xs text-fg-muted"
                         >
                           {vValid} valid · {vInvalid} invalid
+                          {vDuplicate > 0 ? ` · ${vDuplicate} duplicate${vDuplicate === 1 ? "" : "s"}` : ""}
                           {vPending > 0 ? ` · ${vPending} pending validation` : ""}
                           {vNoEmail > 0 ? ` · ${vNoEmail} no email (can't be validated)` : ""}
                         </span>
@@ -1845,12 +1944,23 @@ export function WebExtractPage() {
                             </td>
                           )}
                           {/* Task 26, Piece 3 — validation status pill (green Valid /
-                              red Invalid / grey — for unchecked). */}
+                              red Invalid / grey — for unchecked).
+                              TASK_150 T2 — "Duplicate" gets its OWN neutral pill,
+                              never the red Invalid one: a duplicate is an address
+                              you already had from an earlier session, not a failed
+                              MX check. */}
                           <td className="py-2 pl-2">
                             {lead.validationStatus === "valid" ? (
                               <Badge tone="success">Valid</Badge>
                             ) : lead.validationStatus === "invalid" ? (
                               <Badge tone="danger" title={lead.validationError || undefined}>Invalid</Badge>
+                            ) : lead.validationStatus === "duplicate" ? (
+                              <Badge
+                                tone="neutral"
+                                title="Already in an earlier session of yours (matched case-insensitively across all your sessions)."
+                              >
+                                Duplicate
+                              </Badge>
                             ) : (
                               <span className="text-fg-muted">—</span>
                             )}

@@ -974,9 +974,25 @@ model Lead {
   // means never validated; "valid" means both a syntactically-correct address and
   // an MX-record-bearing domain (see lib/email-validator.ts); "invalid" carries a
   // validationError explaining why. Additive and nullable-safe for existing rows.
-  validationStatus String    @default("unchecked") // "unchecked" | "valid" | "invalid"
+  //
+  // TASK_150 T2 — a FOURTH value, "duplicate", is deliberately its own state and
+  // is NEVER folded into "invalid". "invalid" means the MX lookup failed; a
+  // duplicate is a perfectly deliverable address that this user already has from
+  // an earlier session. Conflating them would silently corrupt the owner's
+  // invalid count (and the "Delete N invalid" action would throw away good
+  // leads). See lib/lead-duplicates.ts for the (per-USER, case-insensitive)
+  // dedupe that writes it.
+  validationStatus String    @default("unchecked") // "unchecked" | "valid" | "invalid" | "duplicate"
   validationError  String?
   validatedAt      DateTime?
+  // TASK_150 T2 — the EARLIER lead this row repeats, set only when
+  // validationStatus is "duplicate". Deliberately a plain nullable column, not a
+  // relation/FK: it is a marker for the UI and for delete-duplicates, and a
+  // self-FK would make deleting the earlier lead (delete-invalid, a job delete)
+  // fail or cascade in ways nothing here wants. Safe to point at a row that has
+  // since been removed — that simply reads as "the original is gone"; the
+  // duplicate itself is still a real, deletable row.
+  duplicateOfId    String?
 
   // Was @@unique([searchJobId, sourceUrl]) -- a REAL, confirmed root-cause bug
   // (Task 25): that constraint means at most ONE lead can ever be saved per
@@ -998,6 +1014,12 @@ model Lead {
   // single rich document legitimately contains.
   @@unique([searchJobId, sourceUrl, email])
   @@index([userId, searchJobId])
+  // TASK_150 T2 — the dedupe's own access path. Uniqueness is PER JOB (the
+  // constraint above), which is exactly the reported bug: two sessions are two
+  // SearchJobs, so the same address is legitimately stored twice and extraction
+  // has no knowledge of previous sessions. Finding "does this user already have
+  // this address" therefore has to be scoped [userId, email], not per job.
+  @@index([userId, email])
 }
 
 // Task 27, Part B — manual automation builder. A saved, re-runnable, gated

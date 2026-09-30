@@ -20,6 +20,10 @@ export async function GET(
           id: true, email: true, phone: true, contactName: true,
           businessName: true, website: true, sourceUrl: true, snippet: true, createdAt: true,
           validationStatus: true, validationError: true, validatedAt: true,
+          // TASK_150 T2 — the earlier lead this row repeats (null unless
+          // validationStatus is "duplicate"), so the extract table can show the
+          // Duplicate pill and the "Hide duplicates" count without a second call.
+          duplicateOfId: true,
         },
         orderBy: { createdAt: "asc" },
       },

@@ -4,6 +4,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { resumeJob } from "@/lib/job-resume";
 import { getAdminSettings } from "@/lib/admin-settings";
+import { markDuplicateLeads } from "@/lib/lead-duplicates";
 import {
   isPremiumTier,
   mayDispatchToolToday,
@@ -65,6 +66,28 @@ function buildLeadRows(job: { userId: string; id: string }, leads: WorkerLead[])
     sourceUrl: l.sourceUrl ?? null,
     snippet: l.snippet ?? null,
   }));
+}
+
+// TASK_150 T2 — right after a batch is persisted, mark any address this user
+// already had from an EARLIER session. Lead's uniqueness is per job, so that
+// repeat is a second, legitimate-looking row the worker had no way to know
+// about; without this the owner sees the same emails come back every session and
+// "Validate emails" can never clear them (it only ever looks at its own job).
+//
+// Best-effort on purpose: the marker is idempotent and /validate re-runs it, so
+// a failure here must NOT abort the tick — createMany above already succeeded,
+// and throwing would skip finalizeJobAndMeter and leave a finished job stuck
+// "running".
+async function markSessionDuplicates(job: { userId: string }, leads: WorkerLead[]): Promise<void> {
+  const emails = leads
+    .map((l) => l.email)
+    .filter((e): e is string => typeof e === "string" && e.trim().length > 0);
+  if (emails.length === 0) return;
+  try {
+    await markDuplicateLeads(prisma, { userId: job.userId, emails });
+  } catch (err) {
+    console.error("[dispatch] cross-session duplicate marking failed", err);
+  }
 }
 
 // Stable integer IDs for PostgreSQL advisory locks — one per lane.
@@ -295,6 +318,10 @@ export async function POST(req: Request) {
             data: buildLeadRows(job, data.leads),
             skipDuplicates: true,
           });
+          // TASK_150 T2 — a new session must come back CLEAN: flag addresses the
+          // user already has from an earlier session here, at persist time, not
+          // only when the owner later clicks Validate.
+          await markSessionDuplicates(job, data.leads);
         }
         await finalizeJobAndMeter(job, { status: "done" });
         completed++;
@@ -308,6 +335,7 @@ export async function POST(req: Request) {
             data: buildLeadRows(job, data.leads),
             skipDuplicates: true,
           });
+          await markSessionDuplicates(job, data.leads);
         }
         await finalizeJobAndMeter(job, {
           status: "paused",
@@ -348,6 +376,10 @@ export async function POST(req: Request) {
             data: buildLeadRows(job, data.leads),
             skipDuplicates: true,
           });
+          // Same mid-run persist as the done/paused branches above — a repeat of
+          // an earlier session's address is marked while the job is still running,
+          // not only once it finishes.
+          await markSessionDuplicates(job, data.leads);
         }
         // Task 14 live activity feed — persist the current step (also on ticks
         // where no lead was added, so a zero-lead-so-far job still shows what
