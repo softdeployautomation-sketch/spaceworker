@@ -9,6 +9,7 @@ import { buildCampaignMessage, normalizeBodyFormat } from "@/lib/campaign-messag
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
 import { decideBatchGate } from "@/lib/batch-gate-decision";
+import { isMailboxStillInCampaign } from "@/lib/campaign-mailboxes";
 import { notifyUser } from "@/lib/notify";
 import { notifyAdmin } from "@/lib/telegram";
 import { finalizeMailerStretch } from "@/lib/trial";
@@ -151,6 +152,17 @@ export async function POST(req: Request) {
     // the whole quota and starve its siblings in the same campaign on this tick.
     const admit: typeof items = [];
     for (const item of items) {
+      // TASK_150 T4 — defensive re-check: this item is pinned to `mailbox`, but
+      // the campaign's LIVE mailboxIds is the authority. If the owner removed
+      // this mailbox mid-send (POST /api/campaigns/[id]/mailboxes reassigns its
+      // queued items in one transaction, but a drain tick already holding this
+      // row — or a manual DB edit — could still race ahead of it), SKIP the item
+      // rather than send from a mailbox that is no longer part of the campaign.
+      // It stays `status:"queued"` and is picked up on a later tick once the
+      // reassignment lands, so nothing is lost. Without this, editing
+      // campaign.mailboxIds was a silent no-op: the drain selected purely by the
+      // pinned id (see the SELECT above) and never consulted the campaign.
+      if (!isMailboxStillInCampaign(mailbox.id, item.campaign.mailboxIds)) continue;
       const used = dispatchedThisTick.get(item.campaignId) ?? 0;
       const cap = batchSizeByCampaign.get(item.campaignId) ?? Number.MAX_SAFE_INTEGER;
       if (used >= cap) continue;

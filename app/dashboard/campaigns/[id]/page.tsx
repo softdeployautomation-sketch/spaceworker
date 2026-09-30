@@ -68,6 +68,18 @@ type LiveStats = {
   byMailbox: Record<string, { sent: number; failed: number }>;
 };
 
+// TASK_150 T4 — what GET /api/campaigns/[id]/mailboxes?remove=<id> returns: how
+// many still-queued items the removal would move, and onto which remaining
+// mailboxes. Deliberately DB-authoritative (not derived from the loaded page's
+// items) so the confirmation the user sees is exactly what the transaction does.
+type MailboxRemovalPreview = {
+  campaignId: string;
+  removeMailboxId: string;
+  removeLabel: string;
+  queuedCount: number;
+  targets: { mailboxId: string; label: string; username: string; count: number }[];
+};
+
 type CampaignDetail = {
   id: string;
   name: string;
@@ -240,6 +252,15 @@ export default function CampaignDetailPage() {
   const [diagBusyKey, setDiagBusyKey] = useState<string | null>(null);
   const [pinCount, setPinCount] = useState(50);
   const [pinning, setPinning] = useState(false);
+  // TASK_150 T4 — "Sending mailboxes": take a mailbox out of a campaign that is
+  // actively sending. Queue items are pinned to a mailbox at creation time, so a
+  // removal has to reassign the removed mailbox's queued items onto the rest —
+  // the preview below is what shows the user the blast radius before it happens.
+  const [mailboxesOpen, setMailboxesOpen] = useState(false);
+  const [mailboxRemoval, setMailboxRemoval] = useState<MailboxRemovalPreview | null>(null);
+  const [mailboxPreviewBusyId, setMailboxPreviewBusyId] = useState<string | null>(null);
+  const [mailboxApplyBusy, setMailboxApplyBusy] = useState(false);
+  const [mailboxError, setMailboxError] = useState("");
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -881,6 +902,63 @@ export default function CampaignDetailPage() {
     }
   }
 
+  // TASK_150 T4 — step 1 of a mailbox removal: ask the server exactly what would
+  // move (count + destination mailboxes). Nothing is written here; the confirm
+  // modal renders whatever this returned, so the user approves the real blast
+  // radius and not a client-side guess.
+  async function previewRemoveMailbox(mailboxId: string) {
+    setMailboxError("");
+    setMailboxPreviewBusyId(mailboxId);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/mailboxes?remove=${encodeURIComponent(mailboxId)}`);
+      const data = (await res.json().catch(() => ({}))) as MailboxRemovalPreview & { error?: string };
+      if (!res.ok) {
+        setMailboxError(data.error ?? "Couldn't work out what this removal would move.");
+        return;
+      }
+      setMailboxRemoval(data);
+    } catch {
+      setMailboxError("Network error while previewing the removal.");
+    } finally {
+      setMailboxPreviewBusyId(null);
+    }
+  }
+
+  // TASK_150 T4 — step 2: apply the confirmed removal. POSTs the remaining
+  // mailbox list; the server reassigns the removed mailbox's queued items in ONE
+  // transaction. We then merge the fresh items + mailbox list back in (without
+  // the full-page `loading` flash) so the moved rows show their new mailbox.
+  async function applyMailboxRemoval() {
+    if (!mailboxRemoval || !campaign) return;
+    const remaining = campaign.mailboxes
+      .map((m) => m.id)
+      .filter((mid) => mid !== mailboxRemoval.removeMailboxId);
+    setMailboxApplyBusy(true);
+    setMailboxError("");
+    try {
+      const res = await fetch(`/api/campaigns/${id}/mailboxes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mailboxIds: remaining }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setMailboxError(data.error ?? "Couldn't remove that mailbox.");
+        return;
+      }
+      setMailboxRemoval(null);
+      const freshRes = await fetch(`/api/campaigns/${id}`);
+      if (freshRes.ok) {
+        const fresh = (await freshRes.json()) as CampaignDetail;
+        setCampaign((prev) => (prev ? { ...prev, items: fresh.items, mailboxes: fresh.mailboxes } : prev));
+      }
+    } catch {
+      setMailboxError("Network error while removing the mailbox.");
+    } finally {
+      setMailboxApplyBusy(false);
+    }
+  }
+
   if (loading) {
     return <p className="text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>;
   }
@@ -1445,6 +1523,135 @@ export default function CampaignDetailPage() {
           </button>
         )}
       </div>
+
+      {/* TASK_150 T4 — Sending mailboxes. Queue items are pinned to a mailbox at
+          creation time, so removing one from a live campaign has to move its
+          not-yet-sent recipients onto the others; this panel is the only place
+          that can do that while `sending` (the all-fields PATCH still 409s by
+          design). The count shown per mailbox is the removal's real blast
+          radius, confirmed via a server-side preview before anything is written. */}
+      {campaign.mailboxes.length > 0 && (
+        <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+              Sending mailboxes <span className="text-zinc-400">({campaign.mailboxes.length})</span>
+            </h2>
+            <button
+              type="button"
+              onClick={() => {
+                setMailboxesOpen((o) => !o);
+                setMailboxError("");
+              }}
+              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium transition-colors hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+            >
+              {mailboxesOpen ? "Done" : "Remove a mailbox…"}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            {campaign.status === "sending" || campaign.status === "paused_deliverability"
+              ? "This campaign is sending. Removing a mailbox moves its not-yet-sent recipients onto the remaining mailboxes — anything already sent is never touched."
+              : "Each recipient is pinned to a mailbox when the campaign is created. Removing one moves its still-queued recipients onto the rest."}
+          </p>
+          {mailboxError && !mailboxRemoval && (
+            <p className="mt-2 text-xs text-red-600 dark:text-red-400">{mailboxError}</p>
+          )}
+          <ul className="mt-3 space-y-2">
+            {campaign.mailboxes.map((m) => {
+              const queuedForMailbox = campaign.items.filter(
+                (i) => i.mailboxId === m.id && i.status === "queued",
+              ).length;
+              const isLast = campaign.mailboxes.length <= 1;
+              return (
+                <li
+                  key={m.id}
+                  className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-800"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium">{m.label || m.username}</p>
+                    <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                      {m.username} · {queuedForMailbox} queued
+                    </p>
+                  </div>
+                  {mailboxesOpen &&
+                    (isLast ? (
+                      <span className="text-xs text-amber-700 dark:text-amber-400">
+                        Last mailbox — a campaign needs at least one.
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => void previewRemoveMailbox(m.id)}
+                        disabled={mailboxPreviewBusyId !== null}
+                        className="rounded-lg border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/50 dark:text-red-400 dark:hover:bg-red-950/40"
+                      >
+                        {mailboxPreviewBusyId === m.id ? "Checking…" : "Remove"}
+                      </button>
+                    ))}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
+      {/* TASK_150 T4 — the confirmation step. Rendered from the server's preview so
+          the user approves the exact number of items that will move and where. */}
+      <Modal
+        open={mailboxRemoval !== null}
+        onClose={() => {
+          if (!mailboxApplyBusy) setMailboxRemoval(null);
+        }}
+        title="Remove this sending mailbox?"
+      >
+        {mailboxRemoval && (
+          <div className="text-sm text-zinc-600 dark:text-zinc-300">
+            <p>
+              <span className="font-medium">{mailboxRemoval.removeLabel}</span> will be removed from{" "}
+              <span className="font-medium">{campaign.name}</span>.
+            </p>
+            {mailboxRemoval.queuedCount === 0 ? (
+              <p className="mt-2">It has no queued recipients — nothing needs to move.</p>
+            ) : (
+              <>
+                <p className="mt-2">
+                  <span className="font-medium">{mailboxRemoval.queuedCount}</span> queued recipient
+                  {mailboxRemoval.queuedCount === 1 ? "" : "s"} will move to:
+                </p>
+                <ul className="mt-2 space-y-1">
+                  {mailboxRemoval.targets.map((t) => (
+                    <li key={t.mailboxId} className="flex items-center justify-between gap-3">
+                      <span className="truncate">{t.label}</span>
+                      <span className="shrink-0 font-medium">{t.count}</span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            <p className="mt-3 text-xs text-zinc-500 dark:text-zinc-400">
+              Already-sent recipients are never changed. The move is applied in one transaction.
+            </p>
+            {mailboxError && <p className="mt-2 text-xs text-red-600 dark:text-red-400">{mailboxError}</p>}
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setMailboxRemoval(null)}
+                disabled={mailboxApplyBusy}
+                className="rounded-lg border border-zinc-300 px-4 py-2 text-sm font-medium transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void applyMailboxRemoval()}
+                disabled={mailboxApplyBusy}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {mailboxApplyBusy ? "Removing…" : "Remove mailbox"}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Task 35 — live, always-visible sending ticker. Only while status is
           "sending": a glanceable pulse of the 5 most recent send attempts fed by
