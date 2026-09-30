@@ -4940,6 +4940,13 @@ type AdminRemoteSession = {
   deviceName: string;
   ownerEmail: string;
   urls: AdminMeshUrls;
+  // TASK_147 — carried into the viewer so it can say whether the machine is
+  // actually reporting. Vantra mints a viewer URL even for a machine that is not
+  // online (minting is not the same rail as run-command, which refuses with
+  // vantra_503), so without this the admin would open a frame that cannot show a
+  // live desktop and have no way to tell that from a working session.
+  status: string;
+  lastSeenAt: string | null;
 };
 
 function DeviceStatusBadge({ status }: { status: string }) {
@@ -5099,6 +5106,8 @@ function DevicesTab({
         deviceName: device.name,
         ownerEmail: device.owner.email,
         urls: data.urls as AdminMeshUrls,
+        status: device.status,
+        lastSeenAt: device.lastSeenAt,
       });
       // The open just landed in this device's admin-only log; refresh it so the
       // history under the row already shows it when the admin returns.
@@ -5463,6 +5472,22 @@ function AdminRemoteViewer({
           Close
         </button>
       </div>
+      {/* Vantra mints a viewer URL even when the machine is not online — minting
+          is NOT gated the way run-command is (which refuses with vantra_503), and
+          this was confirmed against the live box: an offline device returned
+          200 + urls and logged status=ok. Without this line a frame that can
+          never show a desktop looks identical to a working session, which is the
+          one thing this workflow must not do — an admin confirming something
+          about a reported user has to know whether they are actually looking at
+          the machine. Informational only: the frame still opens, so a machine
+          that has just checked back in can still be watched. */}
+      {session.status !== "online" && (
+        <p className="border-x border-zinc-700 bg-amber-950/60 px-4 py-2 text-xs text-amber-300">
+          Not reporting as online — last check-in {formatWhen(session.lastSeenAt)}. Remote control
+          needs the agent connected, so a live desktop may not appear until it checks back in. The
+          frame below opens either way.
+        </p>
+      )}
       <iframe
         src={session.urls.control}
         title={`Remote control — ${session.deviceName}`}
