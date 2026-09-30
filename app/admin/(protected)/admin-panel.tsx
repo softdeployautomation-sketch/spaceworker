@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
 import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
@@ -51,11 +51,14 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
+type Tab = "overview" | "users" | "devices" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "users", label: "Users" },
+  // TASK_146 — sits immediately after Users because that is how it is reached:
+  // pick a user, then look at their machines (or browse the whole fleet here).
+  { id: "devices", label: "Devices" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
@@ -136,6 +139,10 @@ function StatusBadge({ status }: { status: string }) {
 
 export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[] }) {
   const [tab, setTab] = useState<Tab>("overview");
+  // TASK_146 — the Users tab hands the chosen owner over to the Devices tab
+  // ("enter a user → see their machines"), so this lives here rather than in
+  // either tab: it is the one piece of state the two share.
+  const [deviceOwner, setDeviceOwner] = useState<{ id: string; email: string } | null>(null);
 
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
@@ -180,7 +187,16 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
 
       <main className="mx-auto max-w-6xl p-6">
         {tab === "overview" && <OverviewTab onNavigate={setTab} />}
-        {tab === "users" && <UsersTab initialUsers={initialUsers} />}
+        {tab === "users" && (
+          <UsersTab
+            initialUsers={initialUsers}
+            onViewDevices={(owner) => {
+              setDeviceOwner(owner);
+              setTab("devices");
+            }}
+          />
+        )}
+        {tab === "devices" && <DevicesTab owner={deviceOwner} onOwnerChange={setDeviceOwner} />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
@@ -346,7 +362,13 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
   );
 }
 
-function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
+function UsersTab({
+  initialUsers,
+  onViewDevices,
+}: {
+  initialUsers: AdminUser[];
+  onViewDevices: (owner: { id: string; email: string }) => void;
+}) {
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -435,6 +457,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
               <th className="px-4 py-3 font-medium">Grant</th>
               <th className="px-4 py-3 font-medium">Verified</th>
               <th className="px-4 py-3 font-medium">Created</th>
+              <th className="px-4 py-3 font-medium">Devices</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
@@ -504,6 +527,19 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
                 </td>
                 <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
                   {new Date(user.createdAt).toLocaleString()}
+                </td>
+                {/* TASK_146 — "enter a user, see their machines": hands the owner
+                    to the Devices tab, which loads them from
+                    /api/admin/users/[id]/devices. Kept as a jump instead of an
+                    inline expander so the fleet view and the per-user view can
+                    never disagree about status — both read the same endpoint. */}
+                <td className="px-4 py-3">
+                  <button
+                    onClick={() => onViewDevices({ id: user.id, email: user.email })}
+                    className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    View devices →
+                  </button>
                 </td>
               </tr>
             ))}
@@ -4843,3 +4879,613 @@ function RoutesTab() {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// TASK_146 — Devices: every machine (or one owner's), then run a command.
+//
+// Two entry points, ONE read model:
+//   • all devices  → GET /api/admin/devices?q=&status=
+//   • one owner    → GET /api/admin/users/[id]/devices   (only when pinned)
+// Both return the same shape from the same selector, so the status badge here
+// can never contradict what the customer's own console shows.
+// ---------------------------------------------------------------------------
+
+type AdminDevice = {
+  id: string;
+  name: string;
+  deviceKind: string;
+  status: string;
+  osName: string | null;
+  osVersion: string | null;
+  tier: string;
+  lastSeenAt: string | null;
+  createdAt: string;
+  agentId: string | null;
+  idleSeconds: number | null;
+  owner: { id: string; email: string; tier: number };
+};
+
+type AdminCommandTarget = {
+  deviceId: string;
+  name: string | null;
+  ownerEmail: string | null;
+  ok: boolean;
+  output: string | null;
+  error: string | null;
+};
+
+type AdminCommandLogRow = {
+  id: string;
+  batchId: string | null;
+  deviceId: string;
+  shell: string;
+  cmd: string;
+  status: string;
+  error: string | null;
+  output: string | null;
+  createdAt: string;
+};
+
+function DeviceStatusBadge({ status }: { status: string }) {
+  const online = status === "online";
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium ${
+        online
+          ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-zinc-400 dark:bg-zinc-500"}`}
+      />
+      {status}
+    </span>
+  );
+}
+
+/** MeshCentral idle seconds → the shortest honest thing an admin can read. */
+function formatIdle(seconds: number | null): string {
+  if (seconds === null) return "—";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+function formatWhen(iso: string | null): string {
+  if (!iso) return "never";
+  const date = new Date(iso);
+  return Date.now() - date.getTime() < 60_000 ? "just now" : date.toLocaleString();
+}
+
+function DevicesTab({
+  owner,
+  onOwnerChange,
+}: {
+  owner: { id: string; email: string } | null;
+  onOwnerChange: (owner: { id: string; email: string } | null) => void;
+}) {
+  const [devices, setDevices] = useState<AdminDevice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [truncated, setTruncated] = useState(false);
+  const [query, setQuery] = useState("");
+  const [appliedQuery, setAppliedQuery] = useState("");
+  const [status, setStatus] = useState<"all" | "online" | "offline">("all");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [logs, setLogs] = useState<Record<string, AdminCommandLogRow[]>>({});
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    // A selection that outlived the list it was made from could carry a device id
+    // the admin can no longer see into the next bulk run — drop it with the list.
+    setSelected([]);
+    setExpandedId(null);
+    try {
+      const res = owner
+        ? await fetch(`/api/admin/users/${owner.id}/devices`)
+        : await fetch(
+            `/api/admin/devices?${new URLSearchParams({
+              ...(appliedQuery ? { q: appliedQuery } : {}),
+              ...(status !== "all" ? { status } : {}),
+            }).toString()}`,
+          );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to load devices");
+        setDevices([]);
+      } else {
+        setDevices(Array.isArray(data.devices) ? (data.devices as AdminDevice[]) : []);
+        setTruncated(data.truncated === true);
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setLoading(false);
+    }
+  }, [owner, appliedQuery, status]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const loadLog = useCallback(async (deviceId: string) => {
+    try {
+      const res = await fetch(`/api/admin/devices/${deviceId}/run-command`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.commands)) {
+        setLogs((prev) => ({ ...prev, [deviceId]: data.commands as AdminCommandLogRow[] }));
+      }
+    } catch {
+      // History is best-effort — it must never block the command box.
+    }
+  }, []);
+
+  // Expanding a row loads that device's admin-only command log. Done here (in
+  // the click) rather than in an effect that watches `expandedId`: the effect
+  // would also fire a fetch on every unrelated re-render's identity change.
+  function toggleExpanded(deviceId: string) {
+    const next = expandedId === deviceId ? null : deviceId;
+    setExpandedId(next);
+    if (next) void loadLog(next);
+  }
+
+  const visibleIds = devices.map((d) => d.id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.includes(id));
+  const selectedDevices = devices.filter((d) => selected.includes(d.id));
+
+  function toggleAll() {
+    setSelected(allSelected ? [] : visibleIds);
+  }
+
+  function toggleOne(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold tracking-tight">Devices</h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            {owner
+              ? `Every machine owned by ${owner.email}`
+              : loading
+                ? "Loading devices…"
+                : `${devices.length} device${devices.length === 1 ? "" : "s"} across all users`}
+            {truncated ? " (showing the first 500 — narrow the search)" : ""}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          {owner && (
+            <button
+              onClick={() => onOwnerChange(null)}
+              className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              ← All devices
+            </button>
+          )}
+          <button
+            onClick={() => void load()}
+            className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {!owner && (
+        <form
+          className="mt-4 flex flex-wrap items-center gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setAppliedQuery(query.trim());
+          }}
+        >
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search by device name or user email…"
+            className="w-full max-w-md rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          <select
+            value={status}
+            onChange={(e) => setStatus(e.target.value as "all" | "online" | "offline")}
+            className="rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          >
+            <option value="all">All statuses</option>
+            <option value="online">Online only</option>
+            <option value="offline">Offline only</option>
+          </select>
+          <button
+            type="submit"
+            className="rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-700 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+          >
+            Search
+          </button>
+        </form>
+      )}
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {selectedDevices.length > 0 && (
+        <div className="mt-5">
+          <AdminCommandComposer
+            title={
+              selectedDevices.length === 1
+                ? `Run on ${selectedDevices[0].name}`
+                : `Run on ${selectedDevices.length} selected devices`
+            }
+            subtitle={selectedDevices.map((d) => d.owner.email).join(", ")}
+            targets={selectedDevices.map((d) => ({
+              id: d.id,
+              name: d.name,
+              ownerEmail: d.owner.email,
+            }))}
+            onRan={() => {
+              if (expandedId) void loadLog(expandedId);
+            }}
+          />
+        </div>
+      )}
+
+
+      {loading ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : devices.length === 0 ? (
+        <p className="mt-6 text-sm text-zinc-500 dark:text-zinc-400">
+          {owner ? "This user has no devices yet." : "No devices match."}
+        </p>
+      ) : (
+        <div className="mt-6 overflow-x-auto rounded-xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
+                <th className="px-3 py-3">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    aria-label="Select all devices on this list"
+                  />
+                </th>
+                <th className="px-4 py-3 font-medium">Device</th>
+                <th className="px-4 py-3 font-medium">Owner</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">Last seen</th>
+                <th className="px-4 py-3 font-medium">Idle</th>
+                <th className="px-4 py-3 font-medium">Agent</th>
+                <th className="px-4 py-3 font-medium" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+              {devices.map((device) => (
+                <Fragment key={device.id}>
+                  <tr className={expandedId === device.id ? "bg-zinc-50 dark:bg-zinc-800/40" : undefined}>
+                    <td className="px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selected.includes(device.id)}
+                        onChange={() => toggleOne(device.id)}
+                        aria-label={`Select ${device.name}`}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="font-medium">{device.name}</div>
+                      <div className="text-xs text-zinc-400 dark:text-zinc-500">{device.deviceKind}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => onOwnerChange({ id: device.owner.id, email: device.owner.email })}
+                        className="text-left text-zinc-600 underline-offset-4 hover:underline dark:text-zinc-300"
+                        title="Show every device this owner has"
+                      >
+                        {device.owner.email}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      <DeviceStatusBadge status={device.status} />
+                    </td>
+                    <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                      {formatWhen(device.lastSeenAt)}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
+                      {formatIdle(device.idleSeconds)}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-xs text-zinc-400 dark:text-zinc-500">
+                      {device.agentId ?? "not linked"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => toggleExpanded(device.id)}
+                        className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                      >
+                        {expandedId === device.id ? "Close" : "Command"}
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedId === device.id && (
+                    <tr className="bg-zinc-50 dark:bg-zinc-800/40">
+                      <td colSpan={8} className="px-4 py-4">
+                        <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
+                          <div>
+                            <dt className="uppercase tracking-wide text-zinc-400 dark:text-zinc-500">OS</dt>
+                            <dd className="text-zinc-700 dark:text-zinc-200">
+                              {[device.osName, device.osVersion].filter(Boolean).join(" ") || "unknown"}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Visibility</dt>
+                            <dd className="text-zinc-700 dark:text-zinc-200">{device.tier}</dd>
+                          </div>
+                          <div>
+                            <dt className="uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Owner tier</dt>
+                            <dd className="text-zinc-700 dark:text-zinc-200">{device.owner.tier}</dd>
+                          </div>
+                          <div>
+                            <dt className="uppercase tracking-wide text-zinc-400 dark:text-zinc-500">Added</dt>
+                            <dd className="text-zinc-700 dark:text-zinc-200">
+                              {new Date(device.createdAt).toLocaleDateString()}
+                            </dd>
+                          </div>
+                        </dl>
+
+                        <div className="mt-4">
+                          <AdminCommandComposer
+                            title={`Run on ${device.name}`}
+                            subtitle={device.owner.email}
+                            targets={[
+                              { id: device.id, name: device.name, ownerEmail: device.owner.email },
+                            ]}
+                            onRan={() => void loadLog(device.id)}
+                          />
+                        </div>
+
+                        <div className="mt-4">
+                          <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                            Admin command history — not visible to the user
+                          </p>
+                          {(logs[device.id]?.length ?? 0) === 0 ? (
+                            <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+                              No commands run from the admin panel yet.
+                            </p>
+                          ) : (
+                            <ul className="mt-2 space-y-2">
+                              {logs[device.id].map((row) => (
+                                <li
+                                  key={row.id}
+                                  className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs dark:border-zinc-800 dark:bg-zinc-900"
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={
+                                        row.status === "ok"
+                                          ? "font-medium text-emerald-600 dark:text-emerald-400"
+                                          : "font-medium text-red-600 dark:text-red-400"
+                                      }
+                                    >
+                                      {row.status}
+                                    </span>
+                                    <span className="text-zinc-400 dark:text-zinc-500">
+                                      {new Date(row.createdAt).toLocaleString()}
+                                    </span>
+                                    <span className="text-zinc-400 dark:text-zinc-500">{row.shell}</span>
+                                  </div>
+                                  <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-zinc-700 dark:text-zinc-200">
+                                    {row.cmd}
+                                  </pre>
+                                  {row.error && (
+                                    <p className="mt-1 text-red-600 dark:text-red-400">{row.error}</p>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// The single command entry point for the whole tab. The SAME component serves a
+// one-device run (the expanded row → the per-device route) and a multi-device run
+// (the checkbox selection → the bulk route), so the two can never diverge in
+// validation, wording or how a result is rendered.
+function AdminCommandComposer({
+  title,
+  subtitle,
+  targets,
+  onRan,
+}: {
+  title: string;
+  subtitle?: string;
+  targets: Array<{ id: string; name: string; ownerEmail: string }>;
+  onRan?: () => void;
+}) {
+  const [cmd, setCmd] = useState("");
+  const [shell, setShell] = useState<"powershell" | "cmd">("powershell");
+  const [timeoutSeconds, setTimeoutSeconds] = useState(30);
+  const [runAsUser, setRunAsUser] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
+  const [results, setResults] = useState<AdminCommandTarget[] | null>(null);
+
+  const single = targets.length === 1;
+
+  async function run() {
+    const trimmed = cmd.trim();
+    if (!trimmed) {
+      setError("Enter a command first.");
+      return;
+    }
+    setRunning(true);
+    setError("");
+    setResults(null);
+    try {
+      const res = single
+        ? await fetch(`/api/admin/devices/${targets[0].id}/run-command`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cmd: trimmed, shell, timeout: timeoutSeconds, runAsUser }),
+          })
+        : await fetch("/api/admin/devices/run-command", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              deviceIds: targets.map((t) => t.id),
+              cmd: trimmed,
+              shell,
+              timeout: timeoutSeconds,
+              runAsUser,
+            }),
+          });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Command failed");
+      } else if (single) {
+        setResults([
+          {
+            deviceId: targets[0].id,
+            name: targets[0].name,
+            ownerEmail: targets[0].ownerEmail,
+            ok: true,
+            output: typeof data.output === "string" ? data.output : null,
+            error: null,
+          },
+        ]);
+      } else {
+        setResults(Array.isArray(data.targets) ? (data.targets as AdminCommandTarget[]) : []);
+      }
+      // The caller reloads the history, so a run shows up in the device's log
+      // immediately instead of only after a manual refresh.
+      onRan?.();
+    } catch {
+      setError("Network error");
+    } finally {
+      setRunning(false);
+    }
+  }
+
+
+  return (
+    <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-medium">{title}</p>
+        {subtitle && <p className="text-xs text-zinc-500 dark:text-zinc-400">{subtitle}</p>}
+      </div>
+
+      <textarea
+        value={cmd}
+        onChange={(e) => setCmd(e.target.value)}
+        rows={3}
+        spellCheck={false}
+        placeholder={shell === "powershell" ? "Get-Process | Select-Object -First 5" : "whoami"}
+        className="mt-3 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono text-xs outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+      />
+
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+          Shell
+          <select
+            value={shell}
+            onChange={(e) => setShell(e.target.value === "cmd" ? "cmd" : "powershell")}
+            className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          >
+            <option value="powershell">PowerShell</option>
+            <option value="cmd">cmd</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+          Timeout
+          <input
+            type="number"
+            min={1}
+            max={90}
+            value={timeoutSeconds}
+            onChange={(e) => setTimeoutSeconds(Number(e.target.value) || 30)}
+            className="w-16 rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+          />
+          s
+        </label>
+        <label className="flex items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+          <input
+            type="checkbox"
+            checked={runAsUser}
+            onChange={(e) => setRunAsUser(e.target.checked)}
+          />
+          Run as the signed-in user
+        </label>
+        <button
+          onClick={() => void run()}
+          disabled={running}
+          className="ml-auto rounded-lg bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+        >
+          {running ? "Running…" : single ? "Run" : `Run on ${targets.length}`}
+        </button>
+      </div>
+      <p className="mt-2 text-xs text-zinc-400 dark:text-zinc-500">
+        Runs silently — nothing appears in the user&apos;s console, activity or digest. Offline
+        devices fail instead of queuing (a queued command is visible to the user).
+      </p>
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {results && (
+        <ul className="mt-3 space-y-2">
+          {results.map((r) => (
+            <li
+              key={r.deviceId}
+              className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950"
+            >
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span
+                  className={
+                    r.ok
+                      ? "font-medium text-emerald-600 dark:text-emerald-400"
+                      : "font-medium text-red-600 dark:text-red-400"
+                  }
+                >
+                  {r.ok ? "ok" : "failed"}
+                </span>
+                <span className="font-medium">{r.name ?? r.deviceId}</span>
+                {r.ownerEmail && (
+                  <span className="text-zinc-400 dark:text-zinc-500">{r.ownerEmail}</span>
+                )}
+                {r.output && (
+                  <button
+                    onClick={() => void copyToClipboard(r.output ?? "")}
+                    className="ml-auto rounded border border-zinc-300 px-2 py-0.5 text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                  >
+                    Copy output
+                  </button>
+                )}
+              </div>
+              {r.error && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{r.error}</p>}
+              {r.output && (
+                <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-zinc-700 dark:text-zinc-200">
+                  {r.output}
+                </pre>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+

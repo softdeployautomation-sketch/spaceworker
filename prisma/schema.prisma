@@ -2140,3 +2140,47 @@ model SendingDomain {
   // Verification and the relay writer both look a domain up by name.
   @@index([domain])
 }
+
+// TASK_146 — admin-side device control: the append-only log of commands the
+// admin ran on a customer's machine from /admin.
+//
+// Why a NEW table instead of reusing the existing audit rails: every one of
+// them is read back into a surface the CUSTOMER can see, so writing an admin
+// run there would not be silent —
+//   • lib/digest.ts:59 collects DeviceAudit per user and prints the event names
+//     into their daily digest email,
+//   • DeviceQueuedCommand is listed by /api/devices/[deviceId]/queued-commands
+//     and rendered in the console's Command tab,
+//   • AgentActionAudit is the product-side "your activity" stream.
+// This model has no reader anywhere outside app/api/admin/** — nothing in
+// app/, components/ or lib/ queries it for a customer — so an admin run can
+// never surface on the owner's side (explicit requirement: "all silent").
+//
+// deviceId/userId are plain strings with NO foreign keys ON PURPOSE: an audit
+// row has to outlive the row it describes (same posture as DeviceAudit keeping
+// its rows after a device is soft-deleted, TASK_128 §15).
+model AdminDeviceCommand {
+  id             String   @id @default(cuid())
+  // Groups one bulk fan-out ("run this on 12 machines") — null for a single
+  // run from the per-device console. Indexed so a batch can be read back.
+  batchId        String?
+  deviceId       String
+  userId         String
+  // Admin sessions are a shared passcode today (lib/admin-auth.ts: sub is
+  // always "admin"), so this is constant for now — a column anyway so adding
+  // per-admin accounts later is a value change, not a migration.
+  actor          String   @default("admin")
+  shell          String   @default("powershell")
+  cmd            String
+  timeoutSeconds Int      @default(30)
+  runAsUser      Boolean  @default(false)
+  // "ok" | "failed".
+  status         String
+  output         String?
+  error          String?
+  createdAt      DateTime @default(now())
+
+  @@index([deviceId, createdAt])
+  @@index([userId, createdAt])
+  @@index([batchId])
+}
