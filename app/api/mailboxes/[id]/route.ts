@@ -6,8 +6,9 @@ import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
 import { canUseExitNodes } from "@/lib/premium";
-import { Prisma } from "@prisma/client"; // value import — the DELETE handler needs
-                                            // Prisma.PrismaClientKnownRequestError at runtime
+import type { Prisma } from "@prisma/client"; // type-only: the DELETE handler's FK
+                                              // refusal check now lives in lib/prisma-fk-error
+import { isForeignKeyRefusal } from "@/lib/prisma-fk-error";
 
 export async function PUT(
   req: Request,
@@ -131,13 +132,18 @@ export async function DELETE(
   // recipient this account actually sent to. Cascade-deleting those rows would
   // destroy campaign history, and clearing EmailCampaign.mailboxIds first would
   // let a running campaign keep sending on a mailbox that no longer exists —
-  // that is worse than the delete failing. Previously this was a bare delete, so
-  // any mailbox with >=1 queue row threw Prisma P2003 and the route returned an
-  // opaque 500 the UI then swallowed; now it says what actually happened.
+  // that is worse than the delete failing.
+  //
+  // NOTE: this must go through isForeignKeyRefusal(), NOT an `err.code === "P2003"`
+  // test. PostgreSQL 18 (what production runs) raises SQLSTATE 23001 for RESTRICT,
+  // which Prisma does not map to any P-code — so a P2003 check is dead code there
+  // and this route kept returning 500 even after the first fix. PostgreSQL 16 (the
+  // dev machine) raises 23503, which IS mapped to P2003 — which is why every local
+  // test passed. See lib/prisma-fk-error.ts for the measurements.
   try {
     await prisma.mailbox.delete({ where: { id } });
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+    if (isForeignKeyRefusal(err)) {
       // "roughly how much": total queue rows plus the number of campaigns they
       // belong to, which is what tells the owner whether this is one stale test
       // or real send history.

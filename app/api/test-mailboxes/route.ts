@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
-import { Prisma } from "@prisma/client"; // value import — the DELETE handler needs
-                                        // Prisma.PrismaClientKnownRequestError at runtime
+import { isForeignKeyRefusal } from "@/lib/prisma-fk-error";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
@@ -107,15 +106,20 @@ export async function DELETE(req: Request) {
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   // Same defect and same treatment as the sending-mailbox DELETE: a test mailbox
-  // that a DeliverabilityCheck has already polled is history-bearing. That FK is
-  // ON DELETE RESTRICT too (verified in pg_constraint: confdeltype = 'r' for
-  // DeliverabilityCheck_seedMailboxId_fkey), so the bare delete below used to
-  // throw Prisma P2003 and surface as an opaque 500 from a button the UI
-  // swallowed. Refuse with the reason instead of cascading the check rows.
+  // that a DeliverabilityCheck has already polled is history-bearing, so a refused
+  // delete must explain itself instead of surfacing as an opaque 500.
+  //
+  // The FK here is NOT the same as the sending-mailbox one. Measured on the live
+  // database: DeliverabilityCheck_seedMailboxId_fkey is confdeltype = 'n'
+  // (ON DELETE SET NULL) because seedMailboxId is nullable — so a delete normally
+  // SUCCEEDS and the check rows survive with seedMailboxId = NULL, and the 409
+  // below is not reached. It IS reached on a database still carrying the older
+  // RESTRICT constraint. And as in the mailbox route, a P2003 check would be dead
+  // code on PostgreSQL 18 (SQLSTATE 23001 is unmapped) — hence isForeignKeyRefusal.
   try {
     await prisma.seedMailbox.delete({ where: { id } });
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+    if (isForeignKeyRefusal(err)) {
       const checks = await prisma.deliverabilityCheck.count({ where: { seedMailboxId: id } });
       return NextResponse.json(
         {
