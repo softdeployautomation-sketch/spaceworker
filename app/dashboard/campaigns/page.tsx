@@ -1034,7 +1034,7 @@ export default function CampaignsPage() {
               </details>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
-                Bodies <span className="text-xs text-zinc-400">{'— use {{firstName}}, {{company}} etc.; each body rotates on its own index'}</span>
+                Bodies <span className="text-xs text-zinc-400">{'— merge fields: {{name}} always works, or an exact key like {{firstName}}, {{company}}, {{contactName}}. Case is ignored; each body rotates on its own index'}</span>
                 <div className="mt-1 flex flex-col gap-2">
                   {bodies.map((b, i) => (
                     <div key={i} className="flex items-start gap-2">

@@ -5,6 +5,7 @@ import { decryptSecretOrThrow } from "./mailbox-crypto";
 import { pollSeedMailbox } from "./imap";
 import { resolveSeedMailbox } from "./seed-mailbox";
 import { renderMerge } from "./render-merge";
+import { testMergeVarsForCampaign } from "./test-merge-vars";
 import { buildCampaignMessage, normalizeBodyFormat } from "./campaign-message";
 import { randomBytes } from "crypto";
 import { mayEnterSending } from "./trial";
@@ -52,6 +53,15 @@ export async function runTestSend(opts: {
    */
   bodyFormat?: string | null;
   variant: { subject: string; bodyHtml: string };
+  /**
+   * Task 145 — the merge variables this probe renders with. This used to be a
+   * hardcoded `{}` at the renderMerge calls below, which made every token-only
+   * template arrive in the test inbox as a GAP ("Hi ,") even when the template was
+   * correct — confirmed live 2026-09-30. The callers in this module now supply a
+   * real recipient's variables (lib/test-merge-vars.ts); absent = the old empty
+   * behaviour, so a caller with nothing to substitute is unaffected.
+   */
+  mergeVars?: Record<string, string>;
   // Exactly one of these is provided. `seed` = a registered, IMAP-pollable
   // SeedMailbox (platform default or a user's own) — placement is verified
   // automatically. `overrideRecipient` = a plain ad-hoc address with no IMAP
@@ -96,11 +106,15 @@ export async function runTestSend(opts: {
     // 2026-09-29, where a hand-built plain-text message through this same mailbox
     // reached the inbox while the app's HTML-only test send did not. See
     // lib/campaign-message.ts.
+    // Task 145 — substitute the SAME variables a real recipient gets (see
+    // lib/test-merge-vars.ts) instead of the empty set this used to pass, which
+    // rendered every token-only template as a gap ("Hi ,") in the test inbox.
+    const mergeVars = opts.mergeVars ?? {};
     const message = buildCampaignMessage({
       subject: isOverride
-        ? renderMerge(opts.variant.subject, {})
-        : `${renderMerge(opts.variant.subject, {})} [SW test ${token}]`,
-      bodyHtml: renderMerge(opts.variant.bodyHtml, {}),
+        ? renderMerge(opts.variant.subject, mergeVars)
+        : `${renderMerge(opts.variant.subject, mergeVars)} [SW test ${token}]`,
+      bodyHtml: renderMerge(opts.variant.bodyHtml, mergeVars),
       from,
       toEmail: toAddress,
       userId: opts.userId,
@@ -246,12 +260,18 @@ export async function probeCampaignPlacement(opts: {
     return { outcome: "failed", landedIn: "unknown", checkId: "", error: "Campaign has no content to test-send" };
   }
 
+  // Task 145 — render with the same variables a real recipient gets, so the
+  // batch-gate probe judges the message a recipient actually receives rather than
+  // a blank-substituted variant of it (see lib/test-merge-vars.ts).
+  const mergeVars = await testMergeVarsForCampaign(opts.campaignId);
+
   if (opts.overrideRecipient) {
     const r = await runTestSend({
       campaignId: opts.campaignId,
       userId: opts.userId,
       mailbox,
       variant,
+      mergeVars,
       overrideRecipient: opts.overrideRecipient,
       ...(opts.from ? { from: opts.from } : {}),
       ...(opts.bodyFormat ? { bodyFormat: opts.bodyFormat } : {}),
@@ -269,6 +289,7 @@ export async function probeCampaignPlacement(opts: {
     userId: opts.userId,
     mailbox,
     variant,
+    mergeVars,
     seed,
     ...(opts.from ? { from: opts.from } : {}),
     ...(opts.bodyFormat ? { bodyFormat: opts.bodyFormat } : {}),
@@ -618,6 +639,11 @@ export async function runCampaignDiagnostics(opts: {
     );
   }
 
+  // Task 145 — a probe must send the message a recipient would get, variables and
+  // all; see lib/test-merge-vars.ts for why the empty set this used to pass made
+  // every token-only template look broken.
+  const mergeVars = await testMergeVarsForCampaign(campaign.id);
+
   const runProbe = (probe: IsolationProbe): Promise<DiagnosticsProbeOutcome> => {
     if (!probe.available) {
       return Promise.resolve({ ...probe, outcome: null, landedIn: null, error: probe.unavailableReason });
@@ -627,6 +653,7 @@ export async function runCampaignDiagnostics(opts: {
       userId: opts.userId,
       mailbox: primary,
       variant: probe.variant,
+      mergeVars,
       // Task 144 — the probe must send the same message SHAPE the real send will.
       bodyFormat: campaign.bodyFormat,
       ...(overrideRecipient ? { overrideRecipient } : { seed: seed! }),

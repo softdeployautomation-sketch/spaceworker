@@ -20,6 +20,7 @@
     "test:domains": "tsx --test tests/sending-domains.test.ts",
     "test:presets": "tsx --test tests/smtp-provider-presets.test.ts",
     "test:message": "tsx --test tests/campaign-message.test.ts",
+    "test:merge": "tsx --test tests/render-merge.test.ts",
     "test:target": "tsx --test tests/test-target.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
