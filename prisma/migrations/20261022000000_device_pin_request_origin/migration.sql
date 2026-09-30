@@ -1,0 +1,15 @@
+-- TASK_148 — admin tools on the remote-control viewer.
+--
+-- Adds the PROVENANCE of a PIN request, which is what makes an admin PIN
+-- collect silent.
+--
+-- Why a column and not a filter: executePinRequest stores the collected PIN on
+-- the DevicePinRequest row, and the owner's console reads that table by
+-- {deviceId, userId} alone (lib/device-tools.ts listPinRequests). Without this
+-- column, asking a reported user's machine for a PIN would put the request AND
+-- the PIN itself into that user's own console — the exact opposite of the
+-- silent-monitoring requirement. Admin-origin rows are excluded from the
+-- customer list and read only through app/api/admin/**.
+--
+-- ADDITIVE with a default: every row that already exists was customer-asked.
+ALTER TABLE "DevicePinRequest" ADD COLUMN "origin" TEXT NOT NULL DEFAULT 'customer';

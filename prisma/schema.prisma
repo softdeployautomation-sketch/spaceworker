@@ -1663,6 +1663,16 @@ model DevicePinRequest {
   pinLength   Int
   // "pending" | "submitted" | "expired" | "cancelled".
   status      String    @default("pending")
+  // TASK_148 — "customer" | "admin". WHICH side asked for this PIN.
+  //
+  // This column exists for one reason: silence. executePinRequest stores the
+  // COLLECTED PIN on this row, and the owner's console reads the table by
+  // {deviceId, userId} with no other filter — so an admin-collected PIN would
+  // appear in the reported user's own PIN panel, PIN and all. Rows written by
+  // the admin tools are marked "admin" and excluded from that list; the admin
+  // reads them through app/api/admin/**. Default keeps every pre-existing row a
+  // customer row.
+  origin      String    @default("customer")
   tokenHash   String    @unique
   expiresAt   DateTime
   pin         String?
