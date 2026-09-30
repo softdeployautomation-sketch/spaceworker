@@ -257,30 +257,61 @@ Recorded on the job: `stateSyncMode`, `stateSyncReason`, `stateSyncPending`,
 ### The migration history does not replay from empty — check this before deploying
 
 `deploy.yml` provisions with `npx prisma migrate deploy`, which applies migrations in
-**directory-name order**. Four committed migrations ALTER a table that a **later** migration
+**directory-name order**. Five committed migrations touch an object that a **later** migration
 creates, so on any database whose `_prisma_migrations` does not already record them as
 applied, deploy stops at the first one — and **never reaches the three TASK_135 migrations**:
 
-| Migration | Needs | Created by |
-|---|---|---|
-| `20260914150000_add_license_claim_token` | `ExeLicense` | `20260914200000_task42_store_and_licenses` |
-| `20260921000000_device_tools_v2` | `Device` | `20260922000000` |
-| `20260922120000_console_followups` | `VantraLink` | `20260923000000` |
-| `20260925000000_task119_live_session_streaming` | `CloneJob` | `20261002000000` |
+| Migration | Needs | Created by | Error |
+|---|---|---|---|
+| `20260914150000_add_license_claim_token` | `ExeLicense` | `20260914200000_task42_store_and_licenses` | `42P01` |
+| `20260921000000_device_tools_v2` | `Device` | `20260922000000` | `42P01` |
+| `20260922120000_console_followups` | `VantraLink` | `20260923000000` | `42P01` |
+| `20260925000000_task119_live_session_streaming` | `CloneJob` | `20261002000000` | `42P01` |
+| `20261005000001_device_livecapturetoken_index_repair` | `Device_liveCaptureTokenHash_key` | `20260925000000` (the row above) | `42704` |
 
-This is pre-existing — TASK_135 did not create it — but it is the thing that decides whether
-this feature's columns ever exist, so it belongs in this document. What to do:
+The fifth is a **cascade**, not an independent fault: it opens with
+`DROP INDEX "Device_liveCaptureTokenHash_key"`, so it fails *because* the fourth was skipped.
+Baselining the fourth therefore does not by itself get you to a working database.
+
+**Baselining alone is NOT the remedy — measured, not reasoned about (2026-09-30, PostgreSQL 16,
+all 69 migrations applied from empty).** `migrate deploy` died at `20260914150000`
+(`42P01 relation "ExeLicense" does not exist`) after 25 clean migrations, then at each of the
+other four in turn. Marking all five `prisma migrate resolve --applied` *does* let
+`migrate deploy` finish, and `migrate status` then answers **"Database schema is up to date!"**
+— **but the database is missing everything those five migrations contained**, because their DDL
+exists nowhere else. `migrate diff` against `schema.prisma` reported exactly that:
+
+| Missing after a baseline-only repair | Was in |
+|---|---|
+| tables `DeviceQueuedCommand`, `DevicePinRequest` | `20260921000000_device_tools_v2` |
+| `CloneJob.sessionMode` | `20260925000000_task119…` |
+| `HostedBrowserSession` `capturedAt`, `cookieCount`, `domainCount`, `sessionMode`, `sessionTruncated` | `20260925000000_task119…` |
+| `Device.liveCaptureTokenHash` + its unique index | `20260925000000_task119…`, `20261005000001` |
+| `VantraLink` `orgTier`, `privateOrgId`, `privatePsCommand`, `privatePsExpiresAt` | `20260922120000_console_followups` |
+| `ExeLicense` `licenseClaimTokenHash`, `licenseClaimTokenExpiresAt`, `licenseClaimTokenConsumedAt` + unique index | `20260914150000_add_license_claim_token` |
+
+That is the worst shape of failure available: **no error**, a green `migrate status`, and then
+features dying at request time on columns that "should" exist — `DevicePinRequest` backs the PIN
+flow and `HostedBrowserSession.sessionMode` backs live-clone readback, so it lands squarely on
+this feature. What actually produces a correct schema:
 
 1. **An existing database (the normal case):** confirm
-   `select migration_name from "_prisma_migrations" where finished_at is not null` lists the
-   four above. If it does, deploy skips them as already applied and runs only the new three.
+   `select migration_name from "_prisma_migrations" where finished_at is not null` lists all
+   five. If it does, deploy skips them as already applied and runs only the new three.
    Nothing else to do.
-2. **An empty database (new staging, disaster recovery, a fresh Supabase project):** the
-   history has to be replayed in dependency order first. **Do not rename committed
-   migrations** — the recorded name *is* the identity, so a rename makes an environment that
-   already applied it see a brand-new migration. Baseline instead: replay into a scratch
-   database with those four directories bumped past their prerequisite, then
-   `prisma migrate resolve --applied <name>` on the target for each.
+2. **An empty database (new staging, disaster recovery, a fresh Supabase project):** baseline
+   the five **and then apply the DDL they would have contributed** — `resolve --applied` only
+   clears the blocker. So: `prisma migrate deploy` → for each named failure in the table above,
+   `prisma migrate resolve --applied <name>` → then take the remaining drift from
+   `npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --script`
+   and execute it — and finally **assert**
+   `npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma`
+   answers **"No difference detected."** before trusting the database at all.
+   `npm run repair:migrations` (`scripts/repair-migration-chain.mjs`) performs this sequence
+   and fails loudly rather than leaving a green-but-incomplete database (it refuses to baseline
+   any migration that is not one of the five above). **Do not rename committed migrations** —
+   the recorded name *is* the identity, so a rename makes an environment that already applied
+   it see a brand-new migration.
 
 The migration *content* is sound; only the ordering is not. Evidence in §10.
 
@@ -309,15 +340,23 @@ The migration *content* is sound; only the ordering is not. Evidence in §10.
 1. **No live device has pushed a real profile through this pipe.** Both ends are tested
    and the format is proven against a test server, but the two have never met outside a
    test. This is the remaining gap.
-2. **The three migrations have not been applied to the project's real database.** They *have*
-   been applied to a throwaway PostgreSQL 15, with the history replayed in dependency order:
-   all 69 migrations apply cleanly, and `npx prisma migrate diff --from-url <that db>
-   --to-schema-datamodel prisma/schema.prisma --exit-code` answers **"No difference detected"
-   (exit 0)**. That proves the three TASK_135 migrations are correct and that the whole set
-   reproduces `schema.prisma` exactly — including `stateSyncPending`, `stateSyncMode`,
-   `sourceBrowserVersion` and the rest. It does **not** prove the target database's own
-   `_prisma_migrations` contents, and on an empty database the deploy stops before reaching
-   them at all (§9).
+2. **The three migrations have been applied to a real database, twice over, and the resulting
+   schema is asserted equal to `schema.prisma`.** On 2026-09-30 all 69 migrations were applied
+   to PostgreSQL 16 from empty, on **two independent fresh databases**, using
+   `npm run repair:migrations` — the sequence that actually works, after the baseline-only
+   remedy this document used to prescribe turned out to leave the database silently incomplete
+   (§9 is the long version). Each run ended with `npx prisma migrate diff --from-url <db>
+   --to-schema-datamodel prisma/schema.prisma` answering **"No difference detected"** (exit 0),
+   and the freshly-provisioned database carries all 69 recorded migrations plus this feature's
+   own columns — `CloneJob.stateSyncPending`, `CloneJob.stateSyncMode`,
+   `CloneJob.stateSyncReason`, `CloneJob.sourceBrowserVersion`. The script is idempotent:
+   re-run against the same database it reports `deploy: clean after 0 baseline(s)`,
+   `drift: none` and exits 0. That proves the three TASK_135 migrations are correct and that
+   the whole set reproduces `schema.prisma` exactly, on a database built the way a new
+   environment would build it. It does **not** prove the **production** database's own
+   `_prisma_migrations` contents — that is a fact about that environment and was not readable
+   from here. If production already records the five as applied (§9 case 1) there is nothing to
+   do; if it does not, run `npm run repair:migrations` there **before** deploying.
 3. **A Windows run of `sync-state`** — the locator, the silent behaviour and the
    locked-file skips are unit-tested on Linux and compile for Windows
    (`GOOS=windows`), but have not executed on a Windows box in this task.

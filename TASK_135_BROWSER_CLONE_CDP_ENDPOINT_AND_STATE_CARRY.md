@@ -630,8 +630,9 @@ The three TASK_135 migrations were **applied**, not just read, on a disposable P
   they were supposed to add is missing (`stateSyncPending`, `stateSyncMode`,
   `sourceBrowserVersion`, …).
 - The replay only worked after **re-ordering the history**, and that is a finding in its own
-  right. `prisma migrate deploy` applies migrations in directory-name order, and four committed
-  migrations ALTER a table that a *later* migration creates:
+  right. `prisma migrate deploy` applies migrations in directory-name order, and **five**
+  committed migrations touch an object that a *later* migration creates (the fifth is a cascade
+  off the fourth):
 
   | Migration | Needs | Created by |
   |---|---|---|
@@ -639,14 +640,26 @@ The three TASK_135 migrations were **applied**, not just read, on a disposable P
   | `20260921000000_device_tools_v2` | `Device` | `20260922000000` |
   | `20260922120000_console_followups` | `VantraLink` | `20260923000000` |
   | `20260925000000_task119_live_session_streaming` | `CloneJob` | `20261002000000` |
+  | `20261005000001_device_livecapturetoken_index_repair` | `Device_liveCaptureTokenHash_key` | `20260925000000` (the row above) |
 
   On an **empty** database, deploy stops at the first of these and **never reaches the TASK_135
   migrations** — a feature that would look like "the columns just aren't there" in any new
   environment, with no error that mentions TASK_135. Pre-existing (no commit in this task
-  created it), but it gates this feature, so it is written into the deploy prerequisites
-  (`michael/browser-clone/STATE-PIPE.md` §9) with the safe remedy: **do not rename applied
-  migrations** (`_prisma_migrations` records the name as identity); baseline with
-  `prisma migrate resolve --applied` instead.
+  created it), but it gates this feature.
+
+- **Correction, 2026-09-30 — measured on PostgreSQL 16 from empty, and this document previously
+  got it wrong.** It said "four" and prescribed baselining alone
+  (`prisma migrate resolve --applied`). Baselining alone is **not** a fix: it lets
+  `migrate deploy` finish and `migrate status` report success, while leaving the database
+  **missing every object those five migrations contained**, silently, because their DDL exists
+  nowhere else. `migrate diff` after a baseline-only repair reported the missing
+  `DeviceQueuedCommand`/`DevicePinRequest` tables, `CloneJob.sessionMode`, five
+  `HostedBrowserSession` columns, `Device.liveCaptureTokenHash` + its unique index, four
+  `VantraLink` columns and three `ExeLicense` columns. The working sequence — baseline the five
+  **plus** apply the drift-generated DDL, asserted with `migrate diff` answering "No difference
+  detected" — is in `michael/browser-clone/STATE-PIPE.md` §9, and
+  `scripts/repair-migration-chain.mjs` performs it. **Never rename** an applied migration
+  (`_prisma_migrations` records the name as identity).
 - Still not verified: **the target database's own `_prisma_migrations` contents.** If it
   already records those four as applied, deploy skips them and runs only the new three — but
   that is a fact about the environment, and it was not readable from here.

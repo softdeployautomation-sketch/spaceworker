@@ -10,6 +10,7 @@
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
+    "repair:migrations": "node scripts/repair-migration-chain.mjs",
     "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
     "test:browser": "node scripts/test-browser-server.mjs",
     "test:ps": "node scripts/test-device-ps.mjs",
