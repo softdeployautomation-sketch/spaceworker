@@ -908,6 +908,24 @@ export default function CampaignDetailPage() {
   // so clicking can never silently do nothing (the server also rejects it).
   const canSwitchSubject = (campaign.subjects?.length ?? 0) > 1;
 
+  // TASK_150 T3 — a campaign paused at a batch boundary means two different
+  // things depending on which test mode it is in, and the owner must never be
+  // shown the failure framing for a boundary that is really their turn:
+  //
+  //   - manual test mode (testRecipientOverride set): the probe has no IMAP
+  //     access to that inbox, so placement is never auto-verifiable — the drain
+  //     now reports this as "human_confirm", never as a failed check. Confirmed
+  //     live 2026-09-30: the user was told, every batch, that the check "could not
+  //     be verified" after the test send had in fact succeeded.
+  //   - automated (seed-mailbox) mode: spam / unverifiable really IS a failed
+  //     check, and that copy stays exactly as it was.
+  //
+  // The stored status string is untouched ("paused_deliverability") so
+  // /api/campaigns/[id]/deliverability-decision and the initial
+  // pending_test_confirm gate keep working unchanged — only the label and tone
+  // the owner reads change.
+  const manualBoundary = campaign.status === "paused_deliverability" && !!campaign.testRecipientOverride;
+
   // 2026-09-28 — the test-setup panel's shortlist, normalised once. The column
   // is a non-null String[] with a [] default, but a campaign row that predates
   // the 20261017000000 migration (or a response from an older cached client)
@@ -1387,11 +1405,13 @@ export default function CampaignDetailPage() {
       <div className="mt-4 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">{campaign.name}</h1>
         <span
-          className={`rounded-full px-2 py-0.5 text-xs font-medium capitalize ${
-            STATUS_BADGES[campaign.status] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+          className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+            manualBoundary
+              ? "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400"
+              : `capitalize ${STATUS_BADGES[campaign.status] ?? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"}`
           }`}
         >
-          {campaign.status.replace("_", " ")}
+          {manualBoundary ? "your turn — test confirm" : campaign.status.replace("_", " ")}
         </span>
         {campaign.status === "sending" && (
           <button
@@ -1701,17 +1721,47 @@ export default function CampaignDetailPage() {
       )}
 
       {/* Task 29, item 6 — the batch gate (mail-queue drain) paused this campaign
-          after a batch because the probe message's placement couldn't be verified as
-          a clean inbox landing (it landed in spam, or placement was undetectable).
-          Let the owner decide: continue anyway, rotate to the next subject & resume,
-          or stop outright. Wired to deliverabilityDecision()/debating state. */}
+          after a batch. The TWO cases are genuinely different and the copy says
+          which one this is (TASK_150 T3):
+            - manual test mode: the boundary is the owner's TURN. The test message
+              was sent (sent — not auto-verified, matching the earlier check line),
+              nothing failed, and continuing is an explicit human call. Never
+              auto-continued, and never silently re-routed to the seed mailbox.
+            - automated mode: the probe's placement couldn't be verified as a clean
+              inbox landing (spam, or undetectable) — the original copy, unchanged.
+          Either way the owner decides: continue, rotate subject & resume, or stop.
+          Wired to deliverabilityDecision()/debating state. */}
       {campaign.status === "paused_deliverability" && (
-        <div className="mt-4 rounded-xl border border-red-300 bg-red-50 p-4 dark:border-red-900/60 dark:bg-red-900/20">
-          <h2 className="text-sm font-semibold text-red-700 dark:text-red-300">Deliverability check needs your input</h2>
+        <div
+          className={`mt-4 rounded-xl border p-4 ${
+            manualBoundary
+              ? "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20"
+              : "border-red-300 bg-red-50 dark:border-red-900/60 dark:bg-red-900/20"
+          }`}
+        >
+          <h2
+            className={`text-sm font-semibold ${
+              manualBoundary ? "text-amber-800 dark:text-amber-300" : "text-red-700 dark:text-red-300"
+            }`}
+          >
+            {manualBoundary ? "Your turn: confirm the test message" : "Deliverability check needs your input"}
+          </h2>
           <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">
-            This campaign paused after a batch because the probe message could not be confirmed in the inbox
-            — it may have landed in spam, or we could not verify its placement automatically. Check your test
-            mailbox, then decide how to proceed.
+            {manualBoundary ? (
+              <>
+                This campaign reached its next batch boundary and is waiting for you. A test message was sent to
+                your test recipient (<span className="font-medium">{campaign.testRecipientOverride}</span>) —
+                sent, not auto-verified, since there&apos;s no automated way to check that inbox. Check it, then
+                continue the next batch. The next batch gate will use this same mode — manual confirmation, never
+                the seed mailbox.
+              </>
+            ) : (
+              <>
+                This campaign paused after a batch because the probe message could not be confirmed in the inbox
+                — it may have landed in spam, or we could not verify its placement automatically. Check your test
+                mailbox, then decide how to proceed.
+              </>
+            )}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
@@ -1720,8 +1770,13 @@ export default function CampaignDetailPage() {
               disabled={debating}
               className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
             >
-              {debating ? "Applying…" : "Continue anyway"}
+              {debating
+                ? "Applying…"
+                : manualBoundary
+                  ? "It's in the inbox — continue the next batch"
+                  : "Continue anyway"}
             </button>
+
             {canSwitchSubject ? (
               <button
                 type="button"

@@ -8,6 +8,7 @@ import { classifySmtpError, nextRetryAt } from "@/lib/smtp-error-classify";
 import { buildCampaignMessage, normalizeBodyFormat } from "@/lib/campaign-message";
 import { renderMerge } from "@/lib/render-merge";
 import { probeCampaignPlacement } from "@/lib/deliverability";
+import { decideBatchGate } from "@/lib/batch-gate-decision";
 import { notifyUser } from "@/lib/notify";
 import { notifyAdmin } from "@/lib/telegram";
 import { finalizeMailerStretch } from "@/lib/trial";
@@ -399,7 +400,28 @@ export async function POST(req: Request) {
       ...(pin && pin.fromAddress ? { from: pin.fromAddress } : {}),
     });
 
-    const safe = probe.landedIn === "inbox";
+    // TASK_150 T3 — what does this boundary MEAN? In human-assisted mode
+    // (testRecipientOverride) landedIn is structurally "unknown" BY DESIGN: there
+    // is no IMAP account watching an arbitrary human inbox, so the old single
+    // predicate (`landedIn === "inbox"`) was false on EVERY batch and each
+    // boundary was announced to the user as a failed deliverability check —
+    // "could not be verified to have reached the inbox" — after a test send that
+    // actually succeeded. The decision is now named explicitly
+    // (lib/batch-gate-decision.ts): manual mode resolves to human_confirm; only
+    // the automated seed-mailbox path can produce pause_failed. The probe itself
+    // still runs in both modes — in manual mode its send IS the test the owner is
+    // being asked to check, and its DeliverabilityCheck row is what the campaign
+    // page's "sent - not auto-verified" line reads.
+    //
+    // NOTHING about the pause is relaxed: `safe` is still false for manual mode,
+    // so the campaign still stops at "paused_deliverability" (kept deliberately —
+    // app/api/campaigns/[id]/deliverability-decision and the initial
+    // pending_test_confirm gate both key off it) and still never auto-continues.
+    const gate = decideBatchGate({
+      overrideRecipient: c.testRecipientOverride,
+      landedIn: probe.landedIn,
+    });
+    const safe = gate.action === "continue";
 
     // Task 33 — the pin window finished cleanly THIS tick (remaining hit 0 AND the
     // batch probe stayed in the inbox — i.e. no spam hit through the whole pinned
@@ -474,19 +496,62 @@ export async function POST(req: Request) {
           ? "landed in the spam folder"
           : "could not be verified to have reached the inbox";
       const campaignLink = `${env.appBaseUrl}/dashboard/campaigns/${c.id}`;
+      // TASK_150 T3 — frame the boundary as what it actually IS.
+      //
+      // Manual mode (human_confirm) is the owner's turn, not a failure: the test
+      // message was sent, nothing was auto-verified (we have no access to that
+      // inbox), and the campaign is waiting on the human — so the copy is neutral
+      // and matches what TASK_144 already ships in the UI
+      // ("sent - not auto-verified", app/dashboard/campaigns/[id]/page.tsx). It
+      // also states plainly which mode the NEXT gate will use, so a manual test
+      // can never read as an automatic check that just failed, and no silent
+      // fallback to the seed-mailbox path is implied.
+      //
+      // Automated mode keeps its existing wording verbatim: there, "landed in the
+      // spam folder" / "could not be verified" are honest descriptions of a check
+      // that genuinely ran and did not pass.
+      const copy =
+        gate.action === "human_confirm"
+          ? {
+              subject: `SpaceWorker: "${c.name}" is ready for your test confirmation`,
+              emailHtml:
+                `<p>The next batch of campaign <strong>${c.name}</strong> is ready to send. A test message was` +
+                ` sent to your test recipient <strong>${gate.recipient}</strong> — sent, not auto-verified, since` +
+                ` there is no automated way to check that inbox.</p>` +
+                `<p>Open the campaign, check that inbox, and confirm &quot;It&apos;s in the inbox — continue the` +
+                ` next batch&quot; when you are ready. You can also switch subject or stop.</p>` +
+                `<p>The next batch gate will use this same mode: manual confirmation via` +
+                ` <strong>${gate.recipient}</strong>.</p>`,
+              telegramText:
+                `📬 Campaign "${c.name}" is ready for your confirmation — a test message was sent to` +
+                ` ${gate.recipient} (sent, not auto-verified). Check that inbox, then open the campaign to` +
+                ` continue the next batch, switch subject, or stop. The next gate will again wait for your` +
+                ` manual confirmation.`,
+              agentText:
+                `Campaign "${c.name}" reached a batch boundary in manual test mode: the test message was sent to` +
+                ` ${gate.recipient} (sent, not auto-verified). Open the campaign to confirm "it's in the inbox"` +
+                ` and continue the next batch, switch subject, or stop. The next gate will again use manual` +
+                ` confirmation.`,
+            }
+          : {
+              subject: `SpaceWorker: "${c.name}" paused on a deliverability check`,
+              emailHtml:
+                `<p>The batch send for campaign <strong>${c.name}</strong> was paused after its latest` +
+                ` deliverability check ${placement} on your test mailbox.</p>` +
+                `<p>Open the campaign to review and choose Continue, Switch subject, or Stop.</p>`,
+              telegramText:
+                `⚠️ Campaign "${c.name}" was paused — its latest deliverability check ${placement}. ` +
+                `Open the campaign to Continue, Switch subject, or Stop.`,
+              agentText:
+                `Campaign "${c.name}" was paused after its latest deliverability check ${placement}. ` +
+                `Open the campaign to review and choose Continue, Switch subject, or Stop.`,
+            };
       await notifyUser(c.userId, {
         eventType: "batch_deliverability_pause",
-        subject: `SpaceWorker: "${c.name}" paused on a deliverability check`,
-        emailHtml:
-          `<p>The batch send for campaign <strong>${c.name}</strong> was paused after its latest` +
-          ` deliverability check ${placement} on your test mailbox.</p>` +
-          `<p>Open the campaign to review and choose Continue, Switch subject, or Stop.</p>`,
-        telegramText:
-          `⚠️ Campaign "${c.name}" was paused — its latest deliverability check ${placement}. ` +
-          `Open the campaign to Continue, Switch subject, or Stop.`,
-        agentText:
-          `Campaign "${c.name}" was paused after its latest deliverability check ${placement}. ` +
-          `Open the campaign to review and choose Continue, Switch subject, or Stop.`,
+        subject: copy.subject,
+        emailHtml: copy.emailHtml,
+        telegramText: copy.telegramText,
+        agentText: copy.agentText,
         link: campaignLink,
         // Task 38 — attach the exact stuck-campaign widget so the agent chat panel
         // renders the familiar status row for this specific paused campaign.
@@ -514,8 +579,14 @@ export async function POST(req: Request) {
     // own sending reputation at stake, not just the customer's, and the admin
     // previously had no notification hook for it at all. Fire-and-forget like
     // every notifyAdmin call — never able to break the drain.
+    // TASK_150 T3 — the admin alert is corrected the same way, so an internal
+    // reader can't label a manual boundary a failed check either. A pause in
+    // manual mode still matters (a campaign is stopped and someone must act), but
+    // it is the owner's turn, not the platform's sending reputation slipping.
     void notifyAdmin(
-      `⚠️ [ADMIN] Campaign "${c.name}" (${c.userId}) paused on a deliverability check — landedIn=${probe.landedIn ?? "unknown"}. Open ${env.appBaseUrl}/dashboard/campaigns/${c.id}`,
+      gate.action === "human_confirm"
+        ? `📬 [ADMIN] Campaign "${c.name}" (${c.userId}) reached a batch boundary in MANUAL test mode (recipient ${gate.recipient}) — waiting on the owner's confirmation, no failed check. landedIn=${probe.landedIn ?? "unknown"}. Open ${env.appBaseUrl}/dashboard/campaigns/${c.id}`
+        : `⚠️ [ADMIN] Campaign "${c.name}" (${c.userId}) paused on a deliverability check — landedIn=${probe.landedIn ?? "unknown"}. Open ${env.appBaseUrl}/dashboard/campaigns/${c.id}`,
     );
   }
 
