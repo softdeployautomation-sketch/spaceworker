@@ -188,3 +188,76 @@ test("hide and reveal sweep the hives once, plus one read-only verify pass", () 
   assert.equal(reveal.split("$keys = Get-ItemProperty").length - 1, 1);
 });
 
+// TASK_148 — REVEAL IS THE INVERSE OF HIDE, NOT A BROADER SWEEP.
+//
+// Found live on a real device (CSFD-CHECKOUT, 2026-09-30) while exercising the
+// new admin remote-viewer tool menu. Reveal's uninstall sweep read
+//
+//   Where-Object { $_.DisplayName -match 'Tactical|Mesh' -or $_.SystemComponent -ne $null }
+//
+// while Hide's read
+//
+//   Where-Object { $_.DisplayName -match 'Tactical|Mesh' }
+//
+// The `-or $_.SystemComponent -ne $null` tail is not a superset of Hide's
+// targets — it is a different set: every programme that hides itself from
+// Programs and Features. That box had 82 such entries (Office patches, NVIDIA
+// driver components, Adobe, Connection Manager, RDM…) and the run un-hid all 82
+// while matching NONE of the agent's own keys (they reported SKIP:already
+// visible). So Reveal left a visible footprint on the user's machine — the
+// opposite of the silent-monitoring intent — and never touched the agent.
+//
+// These two tests pin the filters together so the tail cannot return. The unit
+// under test is the REAL builder; nothing here touches a device.
+
+/** Every `Where-Object { ... }` clause in a PowerShell string, trimmed. */
+function filtersIn(script: string): string[] {
+  return [...script.matchAll(/Where-Object \{ ([^}]*)\}/g)].map((m) => m[1].trim());
+}
+
+test("neither builder matches uninstall entries by SystemComponent presence (TASK_148)", () => {
+  // Asserted on the BUILT POWERSHELL, not on the TypeScript source: this is the
+  // text that actually runs on the machine.
+  assert.ok(
+    !buildRevealAgentScript().includes("$_.SystemComponent -ne $null"),
+    "reveal must not sweep by SystemComponent presence — that un-hides " +
+      "unrelated programmes and matches no agent key",
+  );
+  assert.ok(
+    !buildHideAgentScript(DEFAULT_AGENT_LABEL).includes("$_.SystemComponent -ne $null"),
+    "hide is the reference filter; it must never grow the catch-all either",
+  );
+});
+
+test("hide and reveal sweep the identical uninstall filter (true inverses)", () => {
+  const agentFilters = (script: string) =>
+    filtersIn(script).filter((f) => f.includes("Tactical|Mesh"));
+
+  const hide = agentFilters(buildHideAgentScript(DEFAULT_AGENT_LABEL));
+  const reveal = agentFilters(buildRevealAgentScript());
+
+  // Two each: the writing sweep and the read-only verify pass.
+  assert.equal(hide.length, 2, "hide: one writing filter + one verify filter");
+  assert.equal(reveal.length, 2, "reveal: one writing filter + one verify filter");
+  assert.deepEqual(
+    reveal,
+    hide,
+    "reveal's uninstall filters must equal hide's, or reveal is not its inverse",
+  );
+});
+
+test("the verify pass reports only agent entries, not every hidden programme (TASK_148)", () => {
+  const verifyLine = buildRevealAgentScript()
+    .split("\n")
+    .find((l) => l.includes("VERIFY:uninstall:"));
+  assert.ok(verifyLine, "the verify pass must report uninstall state");
+  assert.ok(
+    verifyLine!.includes("Where-Object { $_.DisplayName -match 'Tactical|Mesh' }"),
+    "verify must use the same agent filter as the sweeps",
+  );
+  assert.ok(
+    !verifyLine!.includes("-or $_.SystemComponent"),
+    "verify must not list unrelated SystemComponent entries as agent state",
+  );
+});
+

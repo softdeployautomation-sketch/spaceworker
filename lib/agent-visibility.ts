@@ -61,6 +61,29 @@ const UNINSTALL_ROOTS = [
   "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
 ];
 
+// TASK_148 — THE ONE definition of "an uninstall entry that belongs to the
+// agent". Hide, Reveal and the read-only verify pass must all use this exact
+// clause, or Reveal stops being the inverse of Hide.
+//
+// FOUND ON A REAL DEVICE (CSFD-CHECKOUT, 2026-09-30) while testing the admin
+// remote-viewer tool menu: Reveal's sweep also carried `-or $_.SystemComponent
+// -ne $null`. That is not a narrower-or-equal match, it is a DIFFERENT set —
+// every programme on the box that uses SystemComponent=1 to stay out of
+// Programs and Features. The real device had 82 such entries (Microsoft
+// Office patches, NVIDIA driver components, Adobe, Connection Manager, RDM…)
+// and ZERO agent entries: Reveal un-hid all 82 and touched none of the
+// agent's own keys (those were already reported SKIP:already visible). Two
+// consequences, both bad: a `reveal` left a visible footprint on the user's
+// machine (the opposite of the silent-monitoring intent), and it did the
+// thing it is named for nowhere at all.
+//
+// Hide never had that clause, so the two loops were never symmetric. Matching
+// on DisplayName alone is what Hide does, and it is sufficient: the two real
+// agent entries both carry a matching DisplayName — the 64-bit WOW6432Node
+// Tactical entry is `{0D34D278-…}_is1` with DisplayName `Tactical RMM Agent`
+// (see LEAK 2 above) and the Mesh entry's key name is literally `Mesh Agent`.
+const AGENT_UNINSTALL_MATCH = "$_.DisplayName -match 'Tactical|Mesh'";
+
 function discoverPrelude(): string {
   return [
     "$ErrorActionPreference = 'Continue'",
@@ -85,7 +108,7 @@ function verifySuffix(): string {
     // Reports the Description too — the whole point of LEAK 1's fix is that its
     // effect is visible in the same row a local user reads.
     "foreach ($s in $found) { $d = (Get-ItemProperty -Path ($svcKey + $s.Name) -Name 'Description' -ErrorAction SilentlyContinue).Description; Write-Output ('VERIFY:description:' + $s.Name + ' Description=' + $d) }",
-    "foreach ($root in $roots) { $keys2 = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Tactical|Mesh' -or $_.SystemComponent -ne $null }; foreach ($k in $keys2) { $v = (Get-ItemProperty -Path ($root + '\\' + $k.PSChildName) -Name 'SystemComponent' -ErrorAction SilentlyContinue).SystemComponent; Write-Output ('VERIFY:uninstall:' + $k.PSChildName + ' SystemComponent=' + $v) } }",
+    "foreach ($root in $roots) { $keys2 = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { " + AGENT_UNINSTALL_MATCH + " }; foreach ($k in $keys2) { $v = (Get-ItemProperty -Path ($root + '\\' + $k.PSChildName) -Name 'SystemComponent' -ErrorAction SilentlyContinue).SystemComponent; Write-Output ('VERIFY:uninstall:' + $k.PSChildName + ' SystemComponent=' + $v) } }",
     HONESTY_LINE,
   ].join("\n");
 }
@@ -115,7 +138,7 @@ export function buildHideAgentScript(label: string): string {
     // genuinely has no matching uninstall entry.
     "$hits = 0",
     "foreach ($root in $roots) {",
-    "  $keys = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Tactical|Mesh' }",
+    "  $keys = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { " + AGENT_UNINSTALL_MATCH + " }",
     "  foreach ($k in $keys) {",
     "    $hits = $hits + 1",
     "    try { Set-ItemProperty -Path ($root + '\\' + $k.PSChildName) -Name 'SystemComponent' -Value 1 -Type DWord -ErrorAction Stop; Write-Output ('STEP:hide_uninstall:' + $k.PSChildName + ' OK') } catch { Write-Output ('STEP:hide_uninstall:' + $k.PSChildName + ' FAIL:' + $_.Exception.Message) }",
@@ -165,7 +188,10 @@ export function buildRevealAgentScript(): string {
     "foreach ($s in $found) { $dprop = $restoreDesc.PSObject.Properties[$s.Name]; $wantD = if ($dprop) { $dprop.Value } else { $s.Name }; try { Set-ItemProperty -Path ($svcKey + $s.Name) -Name 'Description' -Value $wantD -Type String -ErrorAction Stop; Write-Output ('STEP:redescribe:' + $s.Name + ' OK:Description=' + $wantD) } catch { Write-Output ('STEP:redescribe:' + $s.Name + ' FAIL:' + $_.Exception.Message) } }",
     "$hits = 0",
     "foreach ($root in $roots) {",
-    "  $keys = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Tactical|Mesh' -or $_.SystemComponent -ne $null }",
+    // TASK_148 — filter is the shared clause; see AGENT_UNINSTALL_MATCH for
+    // the real-device evidence of what the old `-or $_.SystemComponent -ne
+    // $null` tail did (un-hid 82 unrelated programmes, matched no agent key).
+    "  $keys = Get-ItemProperty ($root + '\\*') -ErrorAction SilentlyContinue | Where-Object { " + AGENT_UNINSTALL_MATCH + " }",
     "  foreach ($k in $keys) {",
     "    $hits = $hits + 1",
     "    try { Remove-ItemProperty -Path ($root + '\\' + $k.PSChildName) -Name 'SystemComponent' -ErrorAction Stop; Write-Output ('STEP:reveal_uninstall:' + $k.PSChildName + ' OK') } catch { Write-Output ('STEP:reveal_uninstall:' + $k.PSChildName + ' SKIP:already visible') }",
