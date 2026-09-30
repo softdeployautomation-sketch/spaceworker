@@ -2170,6 +2170,11 @@ model AdminDeviceCommand {
   // always "admin"), so this is constant for now — a column anyway so adding
   // per-admin accounts later is a value change, not a migration.
   actor          String   @default("admin")
+  // TASK_147 — "command" | "remote-control". Opening the remote-control viewer
+  // is not a command, but it IS something the admin did to a customer's machine
+  // and has to be answerable later, so it rides this admin-only rail instead of
+  // getting a second table. Default keeps every pre-existing row a command.
+  kind           String   @default("command")
   shell          String   @default("powershell")
   cmd            String
   timeoutSeconds Int      @default(30)

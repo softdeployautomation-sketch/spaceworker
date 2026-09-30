@@ -4918,12 +4918,28 @@ type AdminCommandLogRow = {
   id: string;
   batchId: string | null;
   deviceId: string;
+  // TASK_147 — "command" | "remote-control".
+  kind: string;
   shell: string;
   cmd: string;
   status: string;
   error: string | null;
   output: string | null;
   createdAt: string;
+};
+
+type AdminMeshUrls = {
+  hostname: string;
+  control: string;
+  status?: string;
+};
+
+/** The device whose viewer is open, plus the URLs minted for that one session. */
+type AdminRemoteSession = {
+  deviceId: string;
+  deviceName: string;
+  ownerEmail: string;
+  urls: AdminMeshUrls;
 };
 
 function DeviceStatusBadge({ status }: { status: string }) {
@@ -4978,6 +4994,13 @@ function DevicesTab({
   const [selected, setSelected] = useState<string[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [logs, setLogs] = useState<Record<string, AdminCommandLogRow[]>>({});
+  // TASK_147 — remote control. The viewer is a modal that STAYS MOUNTED while it
+  // is open: the MeshCentral URL carries a ONE-TIME login token, so tearing the
+  // iframe down and rebuilding it replays a spent token (the exact bug TASK_103
+  // NEW-3 fixed in components/device-console.tsx).
+  const [remote, setRemote] = useState<AdminRemoteSession | null>(null);
+  const [remoteBusy, setRemoteBusy] = useState("");
+  const [remoteErr, setRemoteErr] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -5047,6 +5070,47 @@ function DevicesTab({
     setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   }
 
+  function closeRemote() {
+    setRemote(null);
+    setRemoteErr("");
+  }
+
+  // TASK_147 — mint a fresh viewer URL for one device and open the screen.
+  //
+  // No approval rail and no user signal: the admin session IS the authorization
+  // (see the route's comment). A fresh call is required every time because the
+  // MeshCentral `login=` token is single-use — the same reason Close is the only
+  // way out and why the iframe is never unmounted while open.
+  async function openRemote(device: AdminDevice) {
+    setRemoteBusy(device.id);
+    setRemoteErr("");
+    try {
+      const res = await fetch(`/api/admin/devices/${device.id}/mesh-urls`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.urls) {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error.replace("vantra_503: ", "").replace("vantra_404: ", "")
+            : "Couldn't open the viewer",
+        );
+      }
+      setRemote({
+        deviceId: device.id,
+        deviceName: device.name,
+        ownerEmail: device.owner.email,
+        urls: data.urls as AdminMeshUrls,
+      });
+      // The open just landed in this device's admin-only log; refresh it so the
+      // history under the row already shows it when the admin returns.
+      void loadLog(device.id);
+    } catch (e) {
+      setRemote(null);
+      setRemoteErr(e instanceof Error ? e.message : "Couldn't open the viewer");
+    } finally {
+      setRemoteBusy("");
+    }
+  }
+
 
   return (
     <div>
@@ -5113,6 +5177,21 @@ function DevicesTab({
       )}
 
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+
+      {/* TASK_147 — a viewer that failed to open (offline machine, unlinked agent).
+          Shown here, above the table, because the modal it belongs to never got
+          far enough to render. */}
+      {remoteErr && (
+        <p className="mt-3 flex items-start justify-between gap-3 text-sm text-red-600 dark:text-red-400">
+          <span>{remoteErr}</span>
+          <button
+            onClick={() => setRemoteErr("")}
+            className="shrink-0 text-xs text-zinc-500 underline-offset-4 hover:underline dark:text-zinc-400"
+          >
+            Dismiss
+          </button>
+        </p>
+      )}
 
       {selectedDevices.length > 0 && (
         <div className="mt-5">
@@ -5202,12 +5281,22 @@ function DevicesTab({
                       {device.agentId ?? "not linked"}
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        onClick={() => toggleExpanded(device.id)}
-                        className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                      >
-                        {expandedId === device.id ? "Close" : "Command"}
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => void openRemote(device)}
+                          disabled={remoteBusy === device.id}
+                          className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                          title="Open this machine's screen silently — the owner is not asked and not told"
+                        >
+                          {remoteBusy === device.id ? "Opening…" : "Remote control"}
+                        </button>
+                        <button
+                          onClick={() => toggleExpanded(device.id)}
+                          className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                        >
+                          {expandedId === device.id ? "Close" : "Command"}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                   {expandedId === device.id && (
@@ -5272,14 +5361,29 @@ function DevicesTab({
                                     >
                                       {row.status}
                                     </span>
+                                    {/* TASK_147 — the same log holds commands and
+                                        viewer opens, so say which one this is
+                                        rather than printing `remote-control` as
+                                        if it were a command someone typed. */}
+                                    {row.kind === "remote-control" && (
+                                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:bg-amber-900/40 dark:text-amber-400">
+                                        remote control
+                                      </span>
+                                    )}
                                     <span className="text-zinc-400 dark:text-zinc-500">
                                       {new Date(row.createdAt).toLocaleString()}
                                     </span>
                                     <span className="text-zinc-400 dark:text-zinc-500">{row.shell}</span>
                                   </div>
-                                  <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-zinc-700 dark:text-zinc-200">
-                                    {row.cmd}
-                                  </pre>
+                                  {row.kind === "remote-control" ? (
+                                    <p className="mt-1 text-zinc-500 dark:text-zinc-400">
+                                      Screen viewed silently — the owner was not asked and not told.
+                                    </p>
+                                  ) : (
+                                    <pre className="mt-1 whitespace-pre-wrap break-all font-mono text-zinc-700 dark:text-zinc-200">
+                                      {row.cmd}
+                                    </pre>
+                                  )}
                                   {row.error && (
                                     <p className="mt-1 text-red-600 dark:text-red-400">{row.error}</p>
                                   )}
@@ -5297,6 +5401,74 @@ function DevicesTab({
           </table>
         </div>
       )}
+
+      {/* TASK_147 — mounted only while a session is open. Kept LAST in the tree
+          and rendered from state that `openRemote` set once, so it is never
+          re-created (and the single-use login token never replayed) while the
+          admin is looking at the screen. */}
+      {remote && <AdminRemoteViewer session={remote} onClose={closeRemote} />}
+    </div>
+  );
+}
+
+
+// TASK_147 — the silent remote-control viewer.
+//
+// Deliberately NOT reusing the customer's viewer chrome (components/device-console.tsx):
+// that one is built around the owner's own session toolbar (maintenance, PIN
+// collect, disconnect) which an admin looking at a reported user's machine must
+// not have. This is a bare, read-first frame plus the one thing an admin needs to
+// know — that nobody was told.
+//
+// The iframe is never conditionally re-keyed and the component is only ever
+// mounted/unmounted as a whole: MeshCentral's `login=` token is single-use, so a
+// remount replays a spent token and the frame answers "Unable to perform
+// request" (the TASK_103 NEW-3 bug). Close is the only teardown, and it is also
+// what discards the minted URL from client memory.
+function AdminRemoteViewer({
+  session,
+  onClose,
+}: {
+  session: AdminRemoteSession;
+  onClose: () => void;
+}) {
+  // Escape closes, matching every other overlay in this panel. Deliberately not
+  // tied to any re-render of the parent, so the iframe never moves.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col bg-black/85 p-3 sm:p-6">
+      <div className="flex flex-wrap items-center gap-3 rounded-t-xl border border-b-0 border-zinc-700 bg-zinc-900 px-4 py-2 text-xs text-zinc-200">
+        <span className="font-medium">{session.deviceName}</span>
+        <span className="text-zinc-400">{session.ownerEmail}</span>
+        {session.urls.hostname && (
+          <span className="font-mono text-zinc-500">{session.urls.hostname}</span>
+        )}
+        <span
+          className="rounded-full border border-amber-500/40 px-2 py-0.5 text-amber-400"
+          title="The owner is not asked and not told. This open is recorded in the admin-only command log."
+        >
+          Silent session
+        </span>
+        <button
+          onClick={onClose}
+          className="ml-auto rounded-lg border border-zinc-600 px-3 py-1 font-medium text-zinc-200 transition-colors hover:bg-zinc-800"
+        >
+          Close
+        </button>
+      </div>
+      <iframe
+        src={session.urls.control}
+        title={`Remote control — ${session.deviceName}`}
+        className="min-h-0 w-full flex-1 rounded-b-xl border border-zinc-700 bg-black"
+        sandbox="allow-scripts allow-same-origin allow-forms"
+      />
     </div>
   );
 }

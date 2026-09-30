@@ -1120,6 +1120,108 @@ export async function adminRunDeviceCommand(opts: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TASK_147 — SILENT admin remote control.
+//
+// Same Vantra `mesh-urls` call as fetchMeshUrls above (the customer path), minus
+// the two gates that exist to protect the OWNER: the per-device ownership check
+// and the `pendingActionId` approval grant. By the time this runs the route has
+// already asserted getAdminSession(), and the whole point of this path is that
+// it needs no approval FROM the owner and gives the owner no signal — Michael
+// directive, 2026-09-30: "add the remote control for each device and
+// authenticated for view silently".
+//
+// What "authenticated" means here: the viewer URLs are only ever minted inside
+// this function, and this function is only ever reached through
+// app/api/admin/** behind getAdminSession(). The MeshCentral `login=` token is
+// minted per call and never stored (see the log line below).
+//
+// Silent, but NOT unattributable: an open is recorded in AdminDeviceCommand
+// (kind "remote-control") — the same admin-only rail as adminRunDeviceCommand,
+// which nothing customer-facing reads. That is what makes "the admin only looked
+// at the reported user's machines" answerable later.
+//
+// Ownership matches adminRunDeviceCommand exactly: the device is looked up by id
+// alone and its owner read OFF THE ROW, so Vantra still asserts the agent is in
+// that owner's `sw-<userId>` org — the admin never names, and is never trusted
+// with, another user's id.
+// ---------------------------------------------------------------------------
+
+/** The sentinel `cmd` a remote-control open logs, so the log stays readable. */
+export const ADMIN_REMOTE_CONTROL_CMD = "remote-control";
+
+export interface AdminMeshUrlsResult {
+  deviceId: string;
+  userId: string;
+  deviceName: string;
+  ownerEmail: string;
+  urls: MeshUrlsView;
+}
+
+export async function adminFetchMeshUrls(opts: { deviceId: string }): Promise<AdminMeshUrlsResult> {
+  const deviceRow = await db.device.findUnique({
+    where: { id: opts.deviceId },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      vantraAgentId: true,
+      deviceKind: true,
+      user: { select: { email: true } },
+    },
+  });
+  if (!deviceRow) throw new Error("device_not_found");
+  // Same guard as the admin command executor: the "hosted" row is our own
+  // clone-destination browser (TASK_118 B8-1), never a machine. Reusing the
+  // command code keeps one mapping in adminCommandErrorStatus; the row is
+  // filtered out of every admin list anyway, so this is a forged-id guard.
+  if (deviceRow.deviceKind === "hosted") throw new Error("device_not_commandable");
+  if (!deviceRow.vantraAgentId) throw new Error("device_not_linked");
+
+  const logData = {
+    kind: "remote-control",
+    deviceId: deviceRow.id,
+    userId: deviceRow.userId,
+    shell: "powershell",
+    cmd: ADMIN_REMOTE_CONTROL_CMD,
+    // A viewer has no command timeout. 0 says "not applicable" rather than
+    // pretending the default 30 s applied to something that is still open.
+    timeoutSeconds: 0,
+  } as const;
+
+  try {
+    const { urls } = await vantraFetch<{ ok: boolean; urls: MeshUrlsView }>(
+      `/api/internal/sw/devices/${encodeURIComponent(deviceRow.vantraAgentId)}/mesh-urls`,
+    );
+    await db.adminDeviceCommand
+      .create({
+        data: {
+          ...logData,
+          status: "ok",
+          // Evidence without the secret: every URL carries a one-time login
+          // token, so only the hostname the session landed on is kept.
+          output: urls.hostname ? `viewer opened on ${urls.hostname}` : "viewer opened",
+        },
+      })
+      .catch(() => {});
+    return {
+      deviceId: deviceRow.id,
+      userId: deviceRow.userId,
+      deviceName: deviceRow.name,
+      ownerEmail: deviceRow.user.email,
+      urls: rewriteMeshUrls(urls),
+    };
+  } catch (err) {
+    const normalized = normalizeVantraError(err);
+    // A failed open is recorded too: "the admin tried to look and the device was
+    // offline" is exactly as answerable-worthy as a successful one.
+    await db.adminDeviceCommand
+      .create({ data: { ...logData, status: "failed", error: normalized.message.slice(0, 500) } })
+      .catch(() => {});
+    throw normalized;
+  }
+}
+
 function toQueuedView(row: {
   id: string; shell: string; cmd: string; timeoutSeconds: number;
   runAsUser: boolean; status: string; scheduleKind: string; wakeDelayMinutes: number;

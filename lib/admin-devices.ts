@@ -227,6 +227,9 @@ export async function listAdminCommandLog(opts: {
       batchId: true,
       deviceId: true,
       userId: true,
+      // TASK_147 — "command" | "remote-control", so the admin's own history
+      // distinguishes "I ran this" from "I looked at the screen".
+      kind: true,
       shell: true,
       cmd: true,
       timeoutSeconds: true,
