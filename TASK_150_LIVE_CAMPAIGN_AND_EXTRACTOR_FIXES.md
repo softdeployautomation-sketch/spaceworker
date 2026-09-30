@@ -1,9 +1,10 @@
 # TASK_150 — Campaign batch-gate, mid-send edits, and extractor filter + dedupe
 
-**Status:** OPEN — assigned, not started.
-**Phase 1 (extractor, T1–T2)** may start immediately.
-**Phase 2 (campaigns, T3–T6)** is **BLOCKED** until the agent holding uncommitted
-changes in `lib/deliverability.ts` commits them — see §7.
+**Status:** OPEN — Phase 1 **T1 + T2 DONE and committed** (`35ce6bf`, `fb83115`).
+**Phase 2 (campaigns, T3–T6)** is **UNBLOCKED** — the prerequisite merge-vars work
+was landed by the coordinator as `9c0f41c` on 2026-09-30 and the working tree is
+clean. See §7 for what was certified before landing it.
+**Next to assign: T3.**
 
 **Repo:** `/Users/mikeolab/spaceworker`, branch `main` — the LIVE app.
 This is **not** the self-hosted line (`/Users/mikeolab/sw-selfhost`).
@@ -189,6 +190,11 @@ One agent, one item, one session. Acceptance is per item; a static tick alone wi
 bounced (see §5).
 
 ### T1 — Domain filter actually filters, compactly (extractor, UI only)
+
+**DONE `35ce6bf`** — verified by the coordinator: `visibleLeads` (`page.tsx:363-373`)
+now applies `resultMode` **and** the domain selection in one memo, the row count
+reads that same memo, and T2's `hideDuplicates` joined the same place rather than
+becoming a parallel filter. 1 file, +212/−62.
 - Apply the **same** `filterDomains` selection to the rendered list, at the one place
   `resultMode` is applied (`extract/page.tsx:1648`), so the table, the row count and
   select-all all agree. One source of truth — not a parallel filtered array.
@@ -205,6 +211,11 @@ domain renders; clear it and paste the count returning; prove the two filters co
 prove export URLs still carry `?domains=` for the same selection.
 
 ### T2 — Repeated emails are marked, and validation also cleans them (extractor)
+
+**DONE `fb83115`** — verified by the coordinator: migration is **purely additive**
+(`ADD COLUMN "duplicateOfId" TEXT` + `CREATE INDEX`, no rewrite); `validationStatus`
+gained a **fourth** value `"duplicate"` rather than overloading `"invalid"`;
+`tests/lead-duplicates.test.ts` 11/11. 10 files, +667/−7.
 - **Mark, never delete.** A lead row can be referenced by campaigns and exports.
   Additively: `Lead.duplicateOfId String?` (the earlier lead this one repeats) and a
   **new** `validationStatus` value `"duplicate"`. **Never** overload `"invalid"` —
@@ -365,21 +376,39 @@ Do not waste a session rediscovering these:
 | D7 | Reassignment does **no capacity maths** | The drain already caps per tick by remaining `dailyLimit`; a second scheduler would be a bug farm. |
 | D8 | Test-send fan-out stays **serial** with the existing stagger | The file documents why; concurrent recipients read as a blast. |
 
-## 7. BLOCKER — another agent's uncommitted work
+## 7. BLOCKER — RESOLVED 2026-09-30 (landed as `9c0f41c`)
 
-At assignment time, uncommitted in this working tree:
+At assignment time the working tree held uncommitted merge-vars work, including an
+**untracked** module imported by a **tracked** one:
 
 ```
- M app/dashboard/campaigns/page.tsx
  M lib/deliverability.ts          <-- T3 must edit this file
- M lib/render-merge.ts
- M package.json
-?? lib/test-merge-vars.ts         <-- UNTRACKED, but imported by the tracked file above
-?? tests/render-merge.test.ts
+ ?? lib/test-merge-vars.ts        <-- UNTRACKED, imported at lib/deliverability.ts:8
 ```
 
-`lib/deliverability.ts:8` — a **tracked** file — now imports `./test-merge-vars`
-(untracked). A partial commit by that agent would break `main`'s build.
+That was not merely inconvenient, it was a **broken-`main` hazard**: `main` built
+only because the untracked file happened to exist in this one working tree, so any
+clean clone — CI, the deploy pipeline, another agent — would fail to build.
 
-**Therefore: do not begin T3/T4/T5/T6 until the coordinator confirms that work is
-committed.** T1/T2 are unaffected and are the intended starting point.
+**The coordinator landed it**, by explicit path only, after certifying it:
+
+| Check | Result |
+|---|---|
+| Differential old vs new `renderMerge`, 160 template × variable cases | **NON-EMPTY → EMPTY = 0** (no resolved value ever disappears) |
+| `tests/render-merge.test.ts` | 11 pass / 0 fail |
+| All 12 sibling suites | pass (`test:browser`'s 5 are `skipped`, unrelated) |
+| `npx tsc --noEmit` / `CI=1 npx next build` | `EXIT=0` / `BUILD_EXIT=0` |
+| `git status --porcelain` after commit | **empty**; `lib/test-merge-vars.ts` now tracked |
+
+The 49 changed outcomes are blanks becoming real values and literal
+`{{Contact Name}}` tokens now resolving instead of reaching a recipient.
+
+**BLAST RADIUS — recorded deliberately.** `renderMerge` is on the LIVE send path
+(`app/api/internal/mail-queue-drain/route.ts:215-228`), so this commit changes what
+real recipients receive. Committed ≠ deployed: pushes to `main` run build/typecheck
+only, and deploy stays a manual `workflow_dispatch`.
+
+**Therefore T3/T4/T5/T6 may proceed.** Before touching anything, every agent must
+still paste `git status --porcelain` and confirm it is clean — a *new* dirty file
+raises the same hazard class.
+
