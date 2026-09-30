@@ -582,13 +582,24 @@ export default function MailboxesPanel() {
       description: "This cannot be undone.",
       confirmLabel: "Delete",
     }))) return;
+    // A refused delete (409 — the mailbox has send history) is the normal
+    // outcome here, not an edge case, so it must reach the user. Previously
+    // this was `if (res.ok)` with NO else and a bare `catch {}`, so a 409, a
+    // 4xx or a dropped connection produced no message, no state change and no
+    // console output: the button simply looked dead. Same error surface
+    // registerTestMailbox uses (setTestMbError) — here, the panel-level `error`
+    // rendered just under the heading.
+    setError("");
     try {
       const res = await fetch(`/api/mailboxes/${m.id}`, { method: "DELETE" });
-      if (res.ok) {
-        setMailboxes((prev) => prev.filter((x) => x.id !== m.id));
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Could not delete mailbox");
+        return;
       }
-    } catch {
-      // ignore transient delete errors
+      setMailboxes((prev) => prev.filter((x) => x.id !== m.id));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not delete mailbox");
     }
   }
 
@@ -634,15 +645,25 @@ export default function MailboxesPanel() {
       description: "You'll go back to using the platform-default seed mailbox for deliverability checks unless you register another one.",
       confirmLabel: "Delete",
     }))) return;
+    // Same fix as remove() above: the 409 (this test mailbox already polled
+    // checks, so deleting it would erase their record) is a real answer the
+    // user asked for, not something to swallow. testMbError is the error state
+    // registerTestMailbox already writes, rendered in this same card.
+    setTestMbError("");
     try {
       const res = await fetch("/api/test-mailboxes", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: t.id }),
       });
-      if (res.ok) setTestMailboxes((prev) => prev.filter((x) => x.id !== t.id));
-    } catch {
-      // ignore transient delete errors
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setTestMbError(typeof data.error === "string" ? data.error : "Could not delete test mailbox");
+        return;
+      }
+      setTestMailboxes((prev) => prev.filter((x) => x.id !== t.id));
+    } catch (e) {
+      setTestMbError(e instanceof Error ? e.message : "Could not delete test mailbox");
     }
   }
 

@@ -6,7 +6,8 @@ import { MAILBOX_SAFE_SELECT } from "@/lib/mailbox-safe-select";
 import { validatePublicSmtpHost } from "@/lib/smtp-host-guard";
 import { getExitNode } from "@/lib/exit-nodes";
 import { canUseExitNodes } from "@/lib/premium";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client"; // value import — the DELETE handler needs
+                                            // Prisma.PrismaClientKnownRequestError at runtime
 
 export async function PUT(
   req: Request,
@@ -123,7 +124,40 @@ export async function DELETE(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  await prisma.mailbox.delete({ where: { id } });
+  // A mailbox is a HISTORY-BEARING object, so a delete that would sever that
+  // history is REFUSED with an explanation rather than cascaded. EmailQueueItem
+  // .mailboxId references Mailbox with ON DELETE RESTRICT (verified in
+  // pg_constraint: confdeltype = 'r'), because each queue row is the record of a
+  // recipient this account actually sent to. Cascade-deleting those rows would
+  // destroy campaign history, and clearing EmailCampaign.mailboxIds first would
+  // let a running campaign keep sending on a mailbox that no longer exists —
+  // that is worse than the delete failing. Previously this was a bare delete, so
+  // any mailbox with >=1 queue row threw Prisma P2003 and the route returned an
+  // opaque 500 the UI then swallowed; now it says what actually happened.
+  try {
+    await prisma.mailbox.delete({ where: { id } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      // "roughly how much": total queue rows plus the number of campaigns they
+      // belong to, which is what tells the owner whether this is one stale test
+      // or real send history.
+      const [count, campaignRows] = await Promise.all([
+        prisma.emailQueueItem.count({ where: { mailboxId: id } }),
+        prisma.emailQueueItem.findMany({
+          where: { mailboxId: id },
+          select: { campaignId: true },
+          distinct: ["campaignId"],
+        }),
+      ]);
+      return NextResponse.json(
+        {
+          error: `This mailbox has already been used to send (${count} queued message(s) across ${campaignRows.length} campaign(s)), so it can't be deleted without losing that history. Use Pause to stop it being used for new sends.`,
+        },
+        { status: 409 }
+      );
+    }
+    throw err;
+  }
 
   return NextResponse.json({ ok: true });
 }

@@ -1,4 +1,6 @@
 import { NextResponse } from "next/server";
+import { Prisma } from "@prisma/client"; // value import — the DELETE handler needs
+                                        // Prisma.PrismaClientKnownRequestError at runtime
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { encryptSecret } from "@/lib/mailbox-crypto";
@@ -104,6 +106,25 @@ export async function DELETE(req: Request) {
   const owned = await prisma.seedMailbox.findFirst({ where: { id, userId: session.userId } });
   if (!owned) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
-  await prisma.seedMailbox.delete({ where: { id } });
+  // Same defect and same treatment as the sending-mailbox DELETE: a test mailbox
+  // that a DeliverabilityCheck has already polled is history-bearing. That FK is
+  // ON DELETE RESTRICT too (verified in pg_constraint: confdeltype = 'r' for
+  // DeliverabilityCheck_seedMailboxId_fkey), so the bare delete below used to
+  // throw Prisma P2003 and surface as an opaque 500 from a button the UI
+  // swallowed. Refuse with the reason instead of cascading the check rows.
+  try {
+    await prisma.seedMailbox.delete({ where: { id } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      const checks = await prisma.deliverabilityCheck.count({ where: { seedMailboxId: id } });
+      return NextResponse.json(
+        {
+          error: `This test mailbox has already been used for ${checks} deliverability check(s), so it can't be deleted without losing the record of what those checks found. Register another test mailbox for future checks instead.`,
+        },
+        { status: 409 },
+      );
+    }
+    throw err;
+  }
   return NextResponse.json({ ok: true });
 }
