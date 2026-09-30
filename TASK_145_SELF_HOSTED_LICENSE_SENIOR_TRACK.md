@@ -3177,3 +3177,74 @@ Both failures are **time-gated**: a mailbox with 0 queue items deletes fine; one
 
 They already diverge, and the branch is the **stale** side: `mailboxes-panel.tsx` `33 575`, `app/api/mailboxes/[id]/route.ts` `3 23`, `app/api/test-mailboxes/route.ts` identical. `main` has continued to evolve them (~575 lines ahead). **At merge time they take MAIN's version, never the branch's.** No Phase 5 work is involved, so no union resolution and no objection about the drift. This is the same class as `W17`, but the opposite disposition: `admin-panel.tsx` needs a **union** (both sides have real work), these need **main outright**.
 
+
+## 2026-09-30 — JUNIOR — `T8` implemented (buyer-Settings expiry derives from the decoded key); `S9` buyer half now has rendered evidence
+
+**Task done:** `T8` only (pointer at junior `:9`), implementing §3 D7 item 1. **One file changed:** `app/dashboard/settings/licenses-section.tsx`, worktree diff vs `HEAD` **`34 5`** (uncommitted). No API, no `lib/products.ts`, no `lib/exe-license-bind.ts`, no migration, nothing renamed. `lib/exe-license.ts` was not edited (still `13 0`); `isLifetimeExpiry`/`decodeLicenseKey` are **imported** from it, `originalExpiry` from the bind module.
+
+**What changed, as file:line**
+- `:10-11` — `EXE_LICENSE_DAYS` import deleted; `import { decodeLicenseKey, isLifetimeExpiry } from "@/lib/exe-license";` + `import { originalExpiry } from "@/lib/exe-license-bind";`.
+- `:80-100` — decoded-key derive: `decodeLicenseKey(lic.licenseKey)` → `originalExpiry(lic.licenseKey)` when the payload has `expires_at`; `hasExpiry` false for malformed/undecodable (finite, `> 0`); `isLifetime = hasExpiry && isLifetimeExpiry(expiresAt)` (the only classifier); `remainingDays`/`validUntilLabel` null unless a real expiry exists.
+- `:129-141` — render: lifetime → `No expiry (lifetime)` (no date, no `2999`, no count); else real date + `(N days remaining)`, `(Expired)` if `<= 0` (never negative); null label → neutral `Not available`. Old `({EXE_LICENSE_DAYS} days from issue)` suffix removed. Non-lifetime markup shape is unchanged from `main`.
+
+**Commands + raw output (verbatim)**
+
+```bash
+$ grep -c 'EXE_LICENSE_DAYS' app/dashboard/settings/licenses-section.tsx
+0
+$ grep -c '180' app/dashboard/settings/licenses-section.tsx
+0
+$ npx tsc --noEmit
+TSC_EXIT=0
+$ CI=1 npx next build
+✓ Compiled successfully in 22.9s
+BUILD_EXIT=0
+$ npm run test:license     ->  1..9   # tests 9  # pass 9  # fail 0
+$ npm run test:setup       ->  1..29  # tests 29 # pass 29 # fail 0
+```
+
+**`S9` buyer half — RENDERED, raw evidence.** Scratch `spaceworker_t145` seeded through the **real** `generateLicenseKey` (30-day, lifetime, plus one undecodable key); prebuilt app on `:3012` with throwaway command-line overrides (`.env` untouched); `/dashboard/settings` fetched server-rendered with a minted buyer session cookie.
+
+```bash
+$ curl -s -o /tmp/t8_settings2.html -w "HTTP=%{http_code} bytes=%{size_download}\n" \
+    -H "Cookie: spaceworker_session=$TOKEN" http://localhost:3012/dashboard/settings
+HTTP=200 bytes=67295
+
+<dt class="text-fg-muted">Valid until</dt><dd><span class="font-medium">No expiry (lifetime)</span></dd>
+<dt class="text-fg-muted">Valid until</dt><dd><span class="font-medium">October 30, 2026</span><span class="text-fg-muted"> (30 days remaining)</span></dd>
+<dt class="text-fg-muted">Valid until</dt><dd><span class="text-fg-muted">Not available</span></dd>
+
+No expiry (lifetime)     COUNT=2
+October 30, 2026         COUNT=2
+30 days remaining        COUNT=2
+Not available            COUNT=3
+days from issue          COUNT=0
+literal 2999             COUNT=0
+literal 180              COUNT=0
+```
+
+So the lifetime row renders `"No expiry (lifetime)"`, the 30-day row renders its real decoded date + real remaining term, and the undecodable key renders the neutral label with the page still `HTTP 200`. Scratch rows deleted afterwards (`ExeLicense` back to `0`). This is the buyer-Settings half `S9` was waiting on — but I am **not** closing the row (only the senior closes a verification row).
+
+**Proof nothing regressed** (`/Users/mikeolab/spaceworker`, read-only):
+
+```bash
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts   <- EMPTY
+$ git diff --stat main self-hosted-build -- lib/license-service.ts         <- EMPTY
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ git diff --numstat main self-hosted-build -- app/api/admin/exe-licenses/route.ts
+170     19      app/api/admin/exe-licenses/route.ts
+$ git diff --numstat main self-hosted-build -- app/dashboard/settings/licenses-section.tsx   <- EMPTY
+$ git diff --numstat HEAD -- app/dashboard/settings/licenses-section.tsx
+34      5       app/dashboard/settings/licenses-section.tsx     # THIS is T8
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit
+LIVE_TSC_EXIT=0
+```
+
+**UNVERIFIED:** the seed script and `:3012` server are gone — the S9(render) output above is the artefact; no real browser was used (server-rendered page + cookie-bearing `curl` exercises the same render path); no bound/revoked buyer row rendered (that badge lives in the admin panel, T7, already verified).
+**NOT RUNNABLE BY JUNIOR:** none — the rendered `S9` half ran.
+
+READY FOR VERIFICATION - T8
+

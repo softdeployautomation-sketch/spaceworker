@@ -2724,3 +2724,107 @@ Every canary reads exactly the number senior pass 12 said it should. The `31 135
 
 READY FOR VERIFICATION - T7
 
+
+### 2026-09-30 — JUNIOR — `T8` implemented: buyer Settings derives expiry from the decoded key
+
+**Task done:** `T8` only (the pointer at junior `:9`), implementing senior §3 D7 item 1. **One file changed:** `app/dashboard/settings/licenses-section.tsx`, worktree diff vs `HEAD` **`34 5`** (uncommitted at the time of writing). No API, no `lib/products.ts`, no `lib/exe-license-bind.ts`, no migration, nothing renamed.
+
+**What changed, as file:line**
+- `:10` — removed `import { EXE_LICENSE_DAYS } from "@/lib/exe-license"`; now `import { decodeLicenseKey, isLifetimeExpiry } from "@/lib/exe-license";` and `:11` `import { originalExpiry } from "@/lib/exe-license-bind";`. `lib/exe-license.ts` was **not** edited (still `13 0`); `isLifetimeExpiry`/`decodeLicenseKey` come from it and `originalExpiry` from the shared (not frozen) bind module. `2999` is never re-declared here.
+- `:80-100` — replaced the `EXE_LICENSE_DAYS` arithmetic (old `:79`) with the decoded-key derive: `decodeLicenseKey(lic.licenseKey)` → `originalExpiry(lic.licenseKey)` only when the payload carries `expires_at`; `hasExpiry` is false for an undecodable/malformed key (finite, `> 0` guard); `isLifetime = hasExpiry && isLifetimeExpiry(expiresAt)` (the ONLY classifier); `remainingDays`/`validUntilLabel` are `null` unless a real expiry exists.
+- `:129-141` — the `<dd>` render: `isLifetime` → `<span className="font-medium">No expiry (lifetime)</span>` (no date string, no `2999`, no remaining count); otherwise the real date plus `(N days remaining)`, or `(Expired)` when `remainingDays <= 0` (never a negative count); a null label → neutral `<span className="text-fg-muted">Not available</span>`. The old `({EXE_LICENSE_DAYS} days from issue)` suffix (old `:112`) is gone. The non-lifetime branch keeps the exact same markup shape as `main` — no lifetime-specific markup leaks into it.
+
+**Commands + raw output (verbatim)**
+
+```bash
+$ cd /Users/mikeolab/sw-selfhost && ls -ld node_modules
+drwxr-xr-x  394 mikeolab  staff  12608 Sep 29 12:21 node_modules     # real clone, not a symlink
+
+$ grep -c 'EXE_LICENSE_DAYS' app/dashboard/settings/licenses-section.tsx
+0
+$ grep -c '180' app/dashboard/settings/licenses-section.tsx
+0
+
+$ npx tsc --noEmit
+TSC_EXIT=0
+
+$ CI=1 npx next build
+✓ Compiled successfully in 22.9s
+BUILD_EXIT=0
+
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 764.315177
+
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1210.952412
+```
+
+**`S9` (buyer-Settings half) — RUN, raw evidence.** Fixture seeded into scratch `spaceworker_t145` with the **real** `generateLicenseKey` (30-day term, lifetime sentinel, plus one malformed/undecodable key), the prebuilt app started with throwaway command-line overrides (`.env` never edited), and `/dashboard/settings` fetched server-rendered with a session cookie minted for the buyer (JWT signed with the same overridden `SESSION_SECRET`). The seed/verification script was deleted afterwards and the scratch rows (`DELETE 3` licences / `DELETE 3` payments / `DELETE 1` user) removed — `ExeLicense` count is back to `0`.
+
+```bash
+$ curl -s -o /tmp/t8_settings2.html -w "HTTP=%{http_code} bytes=%{size_download}\n" \
+    -H "Cookie: spaceworker_session=$TOKEN" http://localhost:3012/dashboard/settings
+HTTP=200 bytes=67295
+
+# rendered HTML slices (verbatim substrings from the 200 response):
+<dt class="text-fg-muted">Valid until</dt><dd><span class="font-medium">No expiry (lifetime)</span></dd>
+<dt class="text-fg-muted">Valid until</dt><dd><span class="font-medium">October 30, 2026</span><span class="text-fg-muted"> (30 days remaining)</span></dd>
+<dt class="text-fg-muted">Valid until</dt><dd><span class="text-fg-muted">Not available</span></dd>
+
+# substring counts across the 200-response HTML:
+No expiry (lifetime)     COUNT=2
+October 30, 2026         COUNT=2
+30 days remaining        COUNT=2
+Not available            COUNT=3
+days from issue          COUNT=0
+literal 2999             COUNT=0
+literal 180              COUNT=0
+```
+
+Lifetime renders `"No expiry (lifetime)"` with **no** far-future date and **no** negative remaining count; the 30-day key renders its **real** decoded date + remaining term; the undecodable key renders the neutral `Not available` with the page still **HTTP 200** (no render throw). Fixture keys for the record: 30-day `expires_at = 2026-10-30T00:00:00.000000`, lifetime `expires_at = 2999-12-31T23:59:59.000000`.
+
+
+**Proof nothing regressed** (`/Users/mikeolab/spaceworker`, read-only; the branch-vs-branch figures are committed values, my edit is uncommitted in the worktree so it does not appear in them):
+
+```bash
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+                        <- EMPTY (canary intact)
+$ git diff --stat main self-hosted-build -- lib/license-service.ts
+                        <- EMPTY (FROZEN, intact)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ git diff --numstat main self-hosted-build -- app/api/admin/exe-licenses/route.ts
+170     19      app/api/admin/exe-licenses/route.ts
+$ git diff --numstat main self-hosted-build -- app/dashboard/settings/licenses-section.tsx
+                        <- EMPTY (T8 had never touched this file before)
+$ git diff --numstat HEAD -- app/dashboard/settings/licenses-section.tsx
+34      5       app/dashboard/settings/licenses-section.tsx     # THIS is T8, nothing else
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit
+LIVE_TSC_EXIT=0
+```
+
+`git status --short` in the worktree reads exactly **`M app/dashboard/settings/licenses-section.tsx`** — no stray scripts, no other file touched.
+
+**UNVERIFIED:** the seed/verification script and the throwaway `next start` on `:3012` are gone — the S9(render) output above is the artefact. I did not drive a real browser (the page is server-rendered, so a cookie-bearing `curl` exercises the same render path). I did not render a **bound** or **revoked** buyer row (the buyer-Settings section has no revoked badge; that is the admin panel's, T7, already verified). The live hosted app on `main` was not run — I only ran its `tsc`.
+**NOT RUNNABLE BY JUNIOR:** none — the rendered `S9` half ran; nothing in this task's check block was skipped.
+
+READY FOR VERIFICATION - T8
+
