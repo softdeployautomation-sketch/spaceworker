@@ -249,6 +249,15 @@ new address is not flagged; prove the MX valid/invalid counts are unchanged.
 status transitions showing each boundary is a human-confirm step, that no batch is
 reported as a failed check, and that the last batch ends at `done` (not paused).
 
+**Acceptance, adjusted for what is actually runnable here (§5.1):** a real SMTP
+multi-batch send is not reproducible on this workstation. So the required evidence is:
+(1) a unit-level assertion on the gate decision helper proving override mode resolves
+to *human-confirm* rather than *failed*; (2) a **scripted scratch-DB drain
+simulation** proving the campaign is not left in a failed-check state and that the
+per-batch boundary is reached with `stillQueued > 0`; (3) the rendered UI showing the
+new prompt copy. State plainly that an end-to-end live send was not run, and why —
+do **not** claim "verified live" from a simulation.
+
 ### T4 — Remove a mailbox from an ONGOING send (campaigns)
 - Add a **dedicated** route (`app/api/campaigns/[id]/mailboxes`, new) rather than
   loosening the all-fields PATCH guard at `campaigns/[id]/route.ts:129`. The existing
@@ -324,6 +333,24 @@ active send, or a clearly stated "already works" with the evidence that shows it
 - State explicitly what you could **not** verify.
 - Report per item: confirmed root cause (file:line), files + line ranges changed, raw
   evidence, commands run, unverified items, commit SHA.
+
+## 5.1 Environment reality on this workstation (verified 2026-09-30)
+
+Do not waste a session rediscovering these:
+
+- **The local `spaceworker` DB cannot render `/dashboard`.** It is ~74 migrations
+  behind (`Mailbox.sendRegion`, `User.premiumExpiresAt` missing → layout 500). Build a
+  **scratch** database with `prisma db push --skip-generate` from `schema.prisma`, seed
+  a user + the rows your case needs, and run against that. Confirm the target with
+  `grep '^DATABASE_URL' .env` first; drop the scratch DB when done.
+- **`next start` cannot boot with the checked-in `.env`** — `lib/env.ts`'s placeholder
+  guard throws on `SESSION_SECRET` / `RESEND_API_KEY`. Pass throwaway overrides on the
+  command line. **Never edit `.env`.**
+- **No working SMTP is available locally**, so a real end-to-end send cannot be
+  reproduced. Gate/send behaviour must be shown by a scripted scratch-DB simulation
+  plus unit assertions — labelled as such, never as "verified live".
+- **`src-tauri/target/` contains stale copies of app source.** Grep hits inside it are
+  build output, not code.
 
 ## 6. Decision log
 
