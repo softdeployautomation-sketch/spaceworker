@@ -908,7 +908,7 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S6 | Revoke, then POST `action: "issue"` for the same user+product | ✅ **VERIFIED 2026-09-29 (pass 11).** Re-derived by the senior from scratch (own harness, own server, `spaceworker_t145`, real admin cookie). Control first: re-issuing *before* revoke returns `reused:true` with the **same** key. After `revoke`, the same call returns **no `reused` flag and a brand-new key** (`NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED`). After `unrevoke`, reuse resumes. Without E4 the re-issue hands back the **cancelled** key, making the whole cancel feature cosmetic. The senior's run reuses the *newest* eligible row; the junior's (which `delete`d the newer row first to expose the original) is the **stronger** variant — both confirm the contract (§3.16). |
 | S7 | Un-revoke, then bind | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime, same harness. After `unrevokeExeLicense` the gate clears (`isExeLicenseRevoked` → `false`), a **second** `unrevokeExeLicense` call does not throw (idempotent, as D2 requires), and a `transferExeLicenseToMachine` that had been blocking now **succeeds** — `boundMachineId` actually moved to `t5-machine-c`. Revocation is fully reversible end-to-end. Also proven: `revokeExeLicense` called twice leaves **exactly 1** row (the `upsert` idempotency claim in D2). |
 | S8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` — new product not leaked to the public store |
-| S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | both correct, no `180` anywhere in the rendered copy |
+| S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | ⚠️ **PARTIAL — admin half VERIFIED 2026-09-30 (pass 13, T7); buyer-Settings half NOT met.** T7's runtime S9 confirmed `selfhosted_os` in the product `<select>` (6 options, only possible from `LICENSABLE_EXE_PRODUCTS`), the Lifetime toggle disabling the duration input and posting `"lifetime":true` with no `durationDays`, and a revoked row rendering the red `Cancelled` pill with `Restore license`, every transition corroborated by the server's `revoked` flag over HTTP. The **second half is T8** — `app/dashboard/settings/licenses-section.tsx` still hardcodes 180 days. Closing this row before T8 would be a false claim. |
 | S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
 | S11 | `isSelfHosted()` early-returns at `app/api/admin/exe-licenses/route.ts:50,473` still present | unchanged — revoke endpoints are inert on a customer's box |
 | S12 | Migration sanity | **Amended by §3.10.6. ** `npx prisma migrate status` **cannot** be the pass condition on this machine (stale shared DB + two stuck `device_tools_v2` rows, §3.10.7). Pass condition is now: the migration is **additive only** (one new table, one new column with a default, no destructive statement) **and** it applies cleanly to a scratch database. Verified 2026-09-29 via `prisma db push` onto `spaceworker_t145` (§3.10.7). The fresh-DB history failure (P3018) is **not** T1's — it is tracked as **T14**. |
@@ -3136,4 +3136,44 @@ All canaries read exactly the pass-12 figures. The `31 1354` is the **committed*
 **Environment notes for the next agent.** `next start` cannot boot this worktree off the checked-in `.env` (placeholder guard on `SESSION_SECRET`/`RESEND_API_KEY`) — command-line overrides only; `.env` was not edited. `node_modules` needed no repair (real clone). The repo ships no test browser, so S9 drove the system Chrome through `playwright-core`. Trap: a `page.waitForFunction` that matches the buyer's email inside **any** `div.rounded-xl` false-matches the **issue-result panel** above the table, which never carries a badge — match the group card by its `span.text-sm.font-semibold` title span instead.
 
 READY FOR VERIFICATION - T7
+
+
+---
+
+## 2026-09-30 — SENIOR pass 13: `T7` VERIFIED (`S9` PARTIAL) + an out-of-phase live-app bug
+
+**Branch:** `self-hosted-build` @ `0302533` (T7) → this doc pass. `main` @ `0d816b5`. **Nothing pushed to `main`.**
+
+### `T7` — admin UI half of revocation: VERIFIED
+
+Re-derived hunk-by-hunk from `git show 0302533`, not from the junior's summary, and re-ran the gates.
+
+| Gate | Independent run | Result |
+|---|---|---|
+| scope | `git show --stat 0302533` | `admin-panel.tsx` (+124/−12) + the two logs only |
+| product swap | `grep -n 'LICENSABLE_EXE_PRODUCTS'` | import `:6` + `<select>` `:3565`; **`:3479` default correctly left as `EXE_PRODUCTS[0].id`** |
+| Lifetime toggle | diff `:3573-3592` | defaults **unchecked**; `disabled={lifetime}` on the duration input; body sends `{lifetime:true}` **or** `{durationDays}`, never both |
+| badge precedence | `:4268-4273` | `revoked` → `Cancelled` **before** `boundMachineId` → `Bound` → `Unclaimed` |
+| id separation | `:4051` | `cancellingId` distinct from the pre-existing `revokingId` (device-binding) |
+| label source | `:4209-4221` | from `r.revoked` only — nothing inferred client-side |
+| error surface | `:4185-4202` | non-2xx **and** network failure both call `setError` (contrast the live mailbox bug below) |
+| `tsc` / tests | re-run | `TSC_EXIT=0`; `test:license` 9/9; `test:setup` 29/29 |
+| canaries | all six | validator **empty**, `license-service` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`, `products.ts` `24 2` |
+| live app | `main` @ `0d816b5` | `LIVE_TSC_EXIT=0`; worktree clean; **untouched by me** |
+
+**`S9` is recorded PARTIAL, not VERIFIED — deliberately.** `S9` has two halves: the **admin panel** (T7) and the **buyer Settings page** (T8). The admin half is confirmed at runtime, including by the senior. **The buyer half is not met** — `app/dashboard/settings/licenses-section.tsx` still hardcodes 180 days, which is precisely what `T8` exists to fix. Marking the whole row VERIFIED now would have been a false claim, and would have let `T8` be skipped on the strength of a green tick it never earned.
+
+### Out of phase — the live-app mailbox-SMTP delete bug (owner-reported)
+
+Owner: *"deleting an SMTP mailbox does nothing."* Traced to **live-only** files with **zero Phase 5 changes**; the fix belongs on `main`. Recorded here only so no agent mistakes it for Phase 5 work.
+
+- `components/mailboxes-panel.tsx:579-593` — `remove()` is `if (res.ok) { … }` followed by a **bare `catch {}`**. A rejected delete, any non-2xx, or a network error produces **no message, no state change, no console output**: the button looks dead. The `else` branch does not exist.
+- `app/api/mailboxes/[id]/route.ts:126` — bare `prisma.mailbox.delete()`, no FK handling. FK `EmailQueueItem_mailboxId_fkey` is **`ON DELETE RESTRICT`** (`confdeltype = 'r'`, confirmed via `psql` against `pg_constraint`), so **any mailbox that has ever queued a campaign** throws `P2003` → 500 → swallowed by the UI above.
+- `app/api/test-mailboxes/route.ts:107` — the **same defect** on `prisma.seedMailbox.delete()`, guarded by `DeliverabilityCheck_seedMailboxId_fkey` (also `RESTRICT`), swallowed by the same bare `catch {}` at `mailboxes-panel.tsx:644`.
+
+Both failures are **time-gated**: a mailbox with 0 queue items deletes fine; one with ≥1 never will. **Not reproducible locally — the dev DB holds 0 mailboxes** (`DELETE 0` inside a rolled-back transaction; FK constraint itself confirmed directly), which is why it reached production unnoticed. **Nothing was deleted; the probe was `BEGIN; DELETE …; ROLLBACK;`.**
+
+### Merge note — these files are NOT this phase's business
+
+They already diverge, and the branch is the **stale** side: `mailboxes-panel.tsx` `33 575`, `app/api/mailboxes/[id]/route.ts` `3 23`, `app/api/test-mailboxes/route.ts` identical. `main` has continued to evolve them (~575 lines ahead). **At merge time they take MAIN's version, never the branch's.** No Phase 5 work is involved, so no union resolution and no objection about the drift. This is the same class as `W17`, but the opposite disposition: `admin-panel.tsx` needs a **union** (both sides have real work), these need **main outright**.
 
