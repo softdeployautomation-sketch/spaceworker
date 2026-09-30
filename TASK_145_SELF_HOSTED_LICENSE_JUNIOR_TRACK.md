@@ -6,15 +6,35 @@
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T6` — admin API: lifetime issuance, revoke/unrevoke, reuse filter, `revoked` flag (`app/api/admin/exe-licenses/route.ts`, full spec in §2).** `T5` is **CLOSED** — revocation now bites at bind and transfer (`lib/exe-license-bind.ts`, `e8f1b14`), and the senior proved it at runtime (18/18, senior §3.15). **`T6` is the task that lets an admin actually create a revocation** — until it lands, `ExeLicenseRevocation` can only be written by hand, so the guards `T5` added are real but unreachable in production. **Two items in `T6` are not optional:** `E4` (the issue-reuse filter must exclude revoked licences, or "Cancel licence" is cosmetic) and the `revoked` flag on the admin list. Do that one task, run its acceptance check, log it, stop. **`T7` (admin UI) follows.**
+**▶ NEXT TASK: `T7` — admin UI: the Lifetime toggle + Cancel/Restore buttons (`app/admin/(protected)/admin-panel.tsx`, `ExeLicensesTab`, full spec in §2).** `T6` is **CLOSED** — revocation is now **reachable**: an admin can create a revocation through the API (`revoke`/`unrevoke`), issue a lifetime licence (`lifetime: true`), and `E4`'s reuse filter stops a cancelled key being handed back out. The senior re-derived the whole loop from scratch, including at runtime (senior §3.16). **`T7` is the UI half** — today those actions exist but only `curl` can reach them. **Two things in `T7` are not optional:** the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` swap at `:6` and `:3559` (**leave the `:3479` default alone**), and the `revoked` badge + Cancel/Restore button per row. Do that one task, run its acceptance check, log it, stop. **`T8` (the buyer's hardcoded 180 days) follows.**
 
-> ⚠️ **`T5`, `T8` and `T12` edit files that `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts` and `app/dashboard/settings/licenses-section.tsx` are **shared**, not frozen — `T5` (done), `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned one of those three tasks, a diff in the shared file is **correct and expected** — do not revert it and do not log an objection about it.
+> ⚠️ **`T12` and `T8` edit files that `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts`, `app/dashboard/settings/licenses-section.tsx` and `app/api/admin/exe-licenses/route.ts` are **shared**, not frozen — `T5` (done), `T6` (done), `T7`, `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned one of those tasks, a diff in the shared file is **correct and expected** — do not revert it and do not log an objection about it.
 
-**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `01bc495`) · **`T6`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+> ⚠️ **NEVER edit `.env` from this worktree (new in `T7`'s pass — §1.8 / senior §3.16.3 / `W16`).** It is a **symlink to the live app's `.env`** *and* gitignored, so an edit changes the running product with **zero trace in `git status`**. If you need `next start`, pass overrides on the command line (see §1.8).
+
+**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T6` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `745d3e6`) · **`T7`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
 
-## 1.7 — REVISION 8 (2026-09-29): `T5` is CLOSED. `T6` is next.
+## 1.8 — REVISION 9 (2026-09-29): `T6` is CLOSED. `T7` is next.
+
+**What just happened.** `T6` landed (`app/api/admin/exe-licenses/route.ts`, diff `167 19`) and the senior verified it in pass 11 — by re-deriving the whole flow from scratch at **runtime**, not by reading your log. **Revocation is now reachable end-to-end through the API.** Five results worth knowing before you touch `T7`:
+
+1. **`E4` works, proven both ways.** Senior run: control re-issue *before* revoke → `reused:true` with the **same** key; after `revoke` → **no `reused` flag and a brand-new key**. Your own variant (deleting the newer row first so the filter had to reach the *original*) was the **stronger** test and is recorded as such in §3.16 — the difference from the senior's run is test design, not behaviour. Nothing to redo.
+2. **A **bound** lifetime key still reads as lifetime** — new `S20`. Bind re-signs the payload with `machine_id` added and `expires_at` carried through **byte-for-byte** (`2999-12-31T23:59:59.000000`). This matters to you later, not now, but it is why `T12`/`T13` can trust `isLifetimeExpiry` on a bound key.
+3. **`revoke` and the pre-existing `delete` action do not collide.** An admin deleting a *revoked* licence returns `{"deleted":true}` 200 with **no orphan** revocation row — the FK is `ON DELETE CASCADE`. `delete` was already on `main`; you did not invent it.
+4. **Cross-account `revoke`/`unrevoke` is refused** — the ownership gate is real, not decorative: another user's id gets the `No license for <email> matches that selection.` 400 and **no row is written**. Modelled on `unbind`; keep it that way in the UI (the button is per-row, but the server is the authority).
+5. **`W16` — a live-app trap, and the reason there is a new reject item 18.** `.env` here is a **symlink to `/Users/mikeolab/spaceworker/.env`** and is **gitignored**. `next start` refuses to boot on the checked-in placeholder secrets, which pressures an agent to "fix" them — and that silently rewrites the **live app's** `SESSION_SECRET` (killing every live session) and `RESEND_API_KEY`. **Never edit `.env`.** Override on the command line instead:
+
+```bash
+cd /Users/mikeolab/sw-selfhost
+env CI=1 DATABASE_URL=<scratch> SESSION_SECRET="$(openssl rand -hex 48)" \
+    RESEND_API_KEY="re_$(openssl rand -hex 24)" ADMIN_TOKEN=... npx next start -p 3011
+```
+
+**`T7` is a UI task, so the static check is genuinely most of it** — but it still owes the `S9` half you can reach: after wiring the Cancel button, drive one real `revoke` through the **UI** (or, if the page cannot be driven headlessly, state `NOT RUNNABLE BY JUNIOR: S9 — <why>` and show the API calls the button makes). Read §2's T7 block and its amended **Check** before you start.
+
+## 1.7 ~~REVISION 8 (2026-09-29): `T5` is CLOSED. `T6` is next.~~ **⚠️ SUPERSEDED BY §1.8 — `T6` is CLOSED and `T7` is next. Revision banners are dated records; the `▶ NEXT TASK` pointer at `:9` is authoritative.**
 
 **What just happened.** `T5` landed (`lib/exe-license-bind.ts`, diff `27 2`) and the senior verified it in pass 9 — **including at runtime**, not just structurally: an 18-assertion harness against real `ExeLicense`/`Payment` rows on `spaceworker_t145` returned `# pass 18 / # fail 0`. Revocation now genuinely bites at bind and transfer. **You do not need to redo any of it.** Four results worth knowing before you touch `T6`:
 
@@ -217,7 +237,23 @@ Three things you must know before T17:
 
 ---
 
-## 2. WORK ORDER — `T1 → T17`, in the order listed below. **This is NOT numeric order** (`T16` ran before `T3`; **`T17` runs before `T4`**). The single source of truth is the **`▶ NEXT TASK` pointer at `:9`** — if it disagrees with a heading here, the pointer wins. Do not skip ahead.
+## 1.9 — REVISION 10 (2026-09-30): branch identity re-confirmed; **the live app moved**. `T7` is still next, unchanged in substance.
+
+The owner reported fixes landing on the **live app**. I re-checked which branch this worktree is on before continuing — **`self-hosted-build`, HEAD `745d3e6`, upstream `refs/heads/self-hosted-build`** — all correct, and the push trap (C2) is still closed. Two things changed around you, and **neither changes `T7`'s spec**:
+
+1. **`main` advanced to `0d816b5`** (remote-viewer / device-command work: `88ca661`, `f76047f`, `e7a7559`, `7e1f5a4`, `0d816b5`). `main` is now **42 ahead**, the branch **31 ahead**. See senior §3.17.
+2. **Every canary still means what it meant.** `main` touched **none** of the phase's canaried files — validator **empty**, `license-service.ts` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`, `products.ts` `24 2`.
+
+**Two merge hazards were found — read them, but do not act on them in `T7`** (senior §3.17.1/§3.17.2):
+
+- **`W17` — `app/admin/(protected)/admin-panel.tsx` is divergent on both sides, and it is YOUR file.** The branch's own edit there is small (`+27/−6`), but `main` has moved ~1354 lines ahead of the branch in that same file. **Edit only the branch's current file, in the worktree — change nothing else, and never try to "sync it with main".** The union-vs-side rule is a *merge-time* duty, not yours today.
+- **`W18` — a same-timestamp migration.** `main` has `20261020000000_admin_device_commands` where the branch has `20261020000000_add_exe_license_revocation`. **Do not touch any migration in `T7`** — renumbering is a pre-merge task for the senior.
+
+**Also:** the **live checkout has another agent's uncommitted work** in it (§3.17.3). Do not touch `/Users/mikeolab/spaceworker` at all beyond the read-only canaries in Step 4.
+
+---
+
+## 2. WORK ORDER — `T1 → T17`, discovery order. **This is NOT numeric order** (`T16` ran before `T3`; **`T17` ran before `T4`; `T6` ran before `T7` as written**). The single source of truth is the **`▶ NEXT TASK` pointer at `:9`** — if it disagrees with a heading here, the pointer wins. Do not skip ahead.
 
 ### 2.0 STOP-AFTER-EACH-TASK RULE (owner requirement, 2026-09-29)
 
@@ -321,7 +357,7 @@ Accept: the guard sits **before** the cross-account check in both functions (ord
 
 > ✅ **Correction after T5 landed (the spec understated this).** The guard landed at `:121`, which is before **both** the cross-account check (`:155`) *and* the `already_bound` transfer-code branch. Runtime proof: a licence bound to machine A, then revoked, then re-bound to machine B returns **`"revoked"` — never `already_bound`**. That is stricter than this task asked for, and it is what stops a cancelled licence from being offered a transfer code (see senior §3.15.3). **Never reorder these guards.** The corrected acceptance rule for any future guard placement here: *revoked is checked first, before every other outcome.*
 
-### T6 — Admin API: lifetime issuance, revoke/unrevoke, reuse filter, `revoked` flag
+### T6 — Admin API: lifetime issuance, revoke/unrevoke, reuse filter, `revoked` flag ✅ **CLOSED 2026-09-29 (`745d3e6`, diff `167 19`) — verified at runtime by the senior (§3.16). Do not redo.**
 
 **File:** `app/api/admin/exe-licenses/route.ts`
 
@@ -357,6 +393,12 @@ Read the tab first (it was not read line-by-line by the senior — report the ex
 2. Per licence row: a `Cancelled` badge when `revoked` is true, plus a **Cancel license** / **Restore license** button that POSTs `{ action: "revoke"|"unrevoke", exeLicenseId, reason? }` behind a `window.confirm`, then reloads the list. Extend the `AdminLicenseRow` type with `revoked?: boolean`.
 
 **Check:** `npx tsc --noEmit`; `grep -n 'LICENSABLE_EXE_PRODUCTS|lifetime|unrevoke' 'app/admin/(protected)/admin-panel.tsx'`.
+
+> ⚠️ **AMENDED pass 11 — this task owes a RUNTIME proof too (§4.1d), and a `.env` warning.**
+> 1. **Run the applicable `S`-rows.** After wiring the buttons, the `S9` half you can reach is: issue a 30-day licence **and** a lifetime licence, and confirm the admin list renders **30 days** and a **`Cancelled` badge / `No expiry`** state correctly. Drive it through the running app. If the page cannot be driven headlessly, you **must** log `NOT RUNNABLE BY JUNIOR: S9 — <why>` and paste the exact API calls the buttons issue, so the senior can finish it. **Silence is reject item 17.**
+> 2. **If you start a server, never edit `.env`** (§1.8 / `W16`). It is a symlink to the **live app's** `.env` and is gitignored — editing it silently rewrites live `SESSION_SECRET`/`RESEND_API_KEY`. Use command-line overrides (`env CI=1 DATABASE_URL=... SESSION_SECRET=... RESEND_API_KEY=... ADMIN_TOKEN=... npx next start -p 3011`).
+> 3. **Do not touch `app/api/admin/exe-licenses/route.ts`.** `T6` is closed and verified; the API is correct as shipped. If a UI need makes you think the route must change, log an `OBJECTION` instead.
+> 4. **`S1`/`S2` note:** the file is large — read `ExeLicensesTab` (branch `:3477`) **first**, before editing, and report the exact insertion points in your log (the senior has not read this tab line-by-line).
 
 ### T8 — Stop showing a hardcoded 180 days to the buyer
 
@@ -2459,5 +2501,61 @@ transferRows 0
 
 **Housekeeping:** throwaway `t6-s6-token.mts` deleted from the worktree; the proof script lived at `/tmp/s6-t6-proof.sh` only; `spaceworker_t145` left at 0 licences / 0 revocations / 0 transfers; the server on `:3010` stopped. No `prisma generate` / `migrate dev` / `migrate resolve` was run against any shared DB, and nothing was connected to the VPS.
 
-READY FOR VERIFICATION - T6
+---
+
+## 2026-09-29 — SENIOR pass 11: **`T6` ✅ VERIFIED + CLOSED.** Your next task is **`T7`**. **Documentation only — zero product code.**
+
+Your `T6` work is accepted (`745d3e6`). **You did not have to redo anything.** I re-derived the **whole** flow from scratch at runtime — own harness, own server on `:3011`, `spaceworker_t145`, real admin cookie — rather than reading your pasted output:
+
+```
+issue 30d → bind m1
+CONTROL issue (before revoke)  → reusable:true, SAME_KEY=YES
+revoke                          → {"ok":true,"revoked":true} HTTP=200
+revoke again                    → 200 (idempotent)
+bind → m2                       → {"code":"revoked"} HTTP=400   (NOT machine_taken)
+RE-ISSUE (same user+product)    → REUSED=<empty>  NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED   ← E4 PROVEN
+GET list                        → revoked=True on the cancelled row, False on the new   ← E6 PROVEN
+unrevoke → 200 → re-issue → reusable:true
+lifetime                        → expiresAt=2999-12-31T23:59:59.000Z
+```
+
+**One difference from your log, recorded on the senior track:** you showed `K4 == K1 ? YES-ORIGINAL-KEY-REUSABLE-AGAIN`; my run reused the **newer** row. **Yours was the stronger test** — you `delete`d the newer minted row first so the filter had to reach the *original* — and it is recorded as such in §3.16. The contract (`no reuse while revoked`, `reuse resumes after unrevoke`) held in both.
+
+**Your three `UNVERIFIED:` lines were honest, and one was right to flag.** These are now closed or scheduled:
+
+1. **Cross-account `revoke`/`unrevoke` — I proved it.** Two real users; B tries A's `exeLicenseId` → `{"error":"No license for owner-b@example.test matches that selection."}` **400**, revocation count for A stays **0**. Same for unrevoke.
+2. **The admin-UI half (`T7`) — correctly yours, still open.** That is the next task.
+3. **`S13`/`S14` — still open, and now *runnable* because of your work.** They belong to `T11`/`T13`.
+
+**New row `S20` (added because of your `T6`):** a **bound** lifetime key still identifies as lifetime. Bind re-signs with `machine_id` added and carries `expires_at` through **byte-for-byte** — `{"expires_at":"2999-12-31T23:59:59.000000","machine_id":"mlife",...}`, `SENTINEL PRESERVED = True`. This is why `T12`/`T13` can trust `isLifetimeExpiry` on a bound key.
+
+**New reject item 18 / §4.1e — read this before `T7`.** Your environment note about `next start` was **correct and important**, and I traced it further: `.env` in this worktree is a **symlink to `/Users/mikeolab/spaceworker/.env`** — the **live app's** file — **and it is gitignored**, so editing it changes the running product with **zero trace in `git status`**. The tempting fix (rewriting `SESSION_SECRET`/`RESEND_API_KEY` so the server boots) would silently kill every live session and break live email. **Never edit `.env`;** use command-line overrides — exactly what you did. Same class as the `node_modules` symlink incident (C1/C2), but git cannot show it.
+
+Also checked, because your `T6` created the interaction: **`revoke` × the pre-existing `delete` action.** `delete` was already on `main` (`:73`/`:104`) — you did not invent it. Deleting a *revoked* licence returns `{"deleted":true}` 200 with **0 orphan** revocation rows (FK `ON DELETE CASCADE`). No leak, no 500.
+
+**Gates I re-ran:** `tsc` 0 · `CI=1 next build` `BUILD_EXIT=0` · `test:license` 9/9 · `test:setup` 29/29 · store leak **0** · live `main` clean `LIVE_TSC_EXIT=0`. **Canaries:** validator **empty**, `license-service.ts` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`.
+
+**▶ YOUR NEXT TASK IS `T7`** — the admin UI (`admin-panel.tsx`, `ExeLicensesTab`): the Lifetime toggle, the `Cancelled` badge, and the Cancel/Restore buttons, plus the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` swap at `:6` and `:3559` (**leave `:3479`'s default alone**). Its **Check** block has been **amended** — read it before you start. Do that one task, run its acceptance check, log it, and stop.
+
+**SENIOR PASS 11 COMPLETE — `T6` ✅ VERIFIED + CLOSED. `▶ NEXT TASK: T7`.**
+
+---
+
+## 2026-09-30 — SENIOR pass 12: branch confirmed; **the live app moved** (`main` → `0d816b5`). **`T7` is still your next task — unchanged.** **Documentation only — zero product code.**
+
+The owner reported fixes landing on the **live app**, so before continuing I re-checked which branch this worktree is on. **Correct: `self-hosted-build`, HEAD `745d3e6`, upstream `refs/heads/self-hosted-build`** — and the push trap (C2) is still closed.
+
+**What this changes for you: nothing in `T7`'s spec.** But three facts are now in your file (§1.9, senior §3.17) so you do not have to rediscover them:
+
+1. **`main` advanced** `b7330a1 → 0d816b5` (remote-viewer / device-command work). It is **42 ahead**; this branch **31 ahead**. Do not merge anything, and do not "sync" any file.
+2. **Every canary still means exactly what it meant.** `main` touched **none** of the phase's canaried files, so: validator **empty**, `license-service.ts` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`, `products.ts` `24 2`, `package.json` `2 10`. Carry on using those numbers.
+3. **Two hazards were recorded — and both are deliberately NOT your job today:**
+   - **`W17`:** `app/admin/(protected)/admin-panel.tsx` — **your file** — is divergent on both sides (branch `+27/−6` vs merge base; branch vs `main` `+31 / −1354`, because `main` has remote-viewer work the branch lacks). **Edit only the branch's current file in the worktree. Never try to sync it with `main`, and never revert anything in it.** The union-vs-side rule is a merge-time duty for the senior.
+   - **`W18`:** the branch's migration and `main`'s share the timestamp `20261020000000`. **Do not touch any migration, and do not rename anything** — renumbering happens before the merge, by the senior.
+
+**Also: another agent has uncommitted work in the live checkout** (`campaigns/page.tsx`, `deliverability.ts`, `render-merge.ts`, `package.json` + 2 new files). **Do not touch, commit, or stash their work.** Your Step 4 canaries against `/Users/mikeolab/spaceworker` stay **read-only**.
+
+**▶ YOUR NEXT TASK IS STILL `T7`** — the admin UI: Lifetime toggle, `Cancelled` badge, Cancel/Restore, plus the `EXE_PRODUCTS` → `LICENSABLE_EXE_PRODUCTS` swap at `:6` and `:3559` (leave `:3479` alone). Its amended **Check** block (runtime `S9` + the `.env` rule) applies. One task, run the check, log it, stop.
+
+**SENIOR PASS 12 COMPLETE — branch confirmed; divergence audited. `▶ NEXT TASK: T7` (unchanged).**
 

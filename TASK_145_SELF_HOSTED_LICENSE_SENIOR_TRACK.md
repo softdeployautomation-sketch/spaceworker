@@ -694,7 +694,141 @@ Three failures the next agent will otherwise repeat:
 
 Because E1 sits *before* the already-bound branch, `app/api/exe-license/auto-bind/route.ts:113`'s transfer-code path is unreachable for a revoked licence. That is the difference between "a cancelled customer is told no" and "a cancelled customer is emailed a code, consumes it, and is *then* told no" — and it is what makes D10's admin-move-only rule hold for the **lifetime** class too. Any future reordering of these guards must preserve it; it is now an explicit S5 assertion, not an accident of edit order.
 
+### 3.16 — REVISION 9 (2026-09-29): T6 accepted — revocation is now REACHABLE, and one silent live-app trap closed
+
+T6 (`745d3e6`) is **ACCEPTED**. One product file changed: `app/api/admin/exe-licenses/route.ts`, `170 19` vs `main` — T6's own `167 19`, plus TASK_129's pre-existing 3-line self-hosted gate. Every claim below was re-run by the senior, not read off the junior's log.
+
+| Verified | Evidence |
+|---|---|
+| **E4** reuse filter | `:447-464` — one `exeLicenseRevocation.findMany` per call, folded into `!revokedIds.has(l.id)` |
+| lifetime issuance | `:418` reads `lifetime` from the body; `:491` `...(lifetime ? { expiresAt: LIFETIME_EXPIRES_AT } : { daysValid: durationDays })` — **imported**, never re-declared, no arithmetic |
+| **E5** revoke/unrevoke | `:94-97` / `:129-134` dispatch; `:213-241` and `:243-277` handlers; call the T4 seam only — **no direct table writes** |
+| **E6** `revoked` flag | `:635-659` — there is exactly **one** listing mapper (checked), fed by a single `in:` query |
+| D3 item 4 swap | `:5`, `:409`, `:651` → `LICENSABLE_EXE_PRODUCTS` — exactly the three sites D3 named. Line numbers drifted (`:306`/`:505` → `:409`/`:651`); the intent did not. |
+| canaries | validator **empty**; `license-service.ts` **empty**; `exe-license.ts` `13 0`; `bind.ts` `27 2` (T5); admin route `170 19` |
+| gates | `tsc` **0**; `CI=1 next build` **BUILD_EXIT=0**; `test:license` **9/9**; `test:setup` **29/29**; store leak **0**; `isSelfHosted()` early-returns intact |
+
+**S6 re-derived from scratch by the senior** (own harness, own server on `:3011`, `spaceworker_t145`, real admin cookie) — the full loop:
+
+```
+issue 30d → bind m1 → CONTROL issue → reused:true (same key)
+→ revoke → {"ok":true,"revoked":true} → double-revoke 200 (idempotent)
+→ bind m2 → {"error":"...cancelled...","code":"revoked"} HTTP=400   (NOT machine_taken)
+→ RE-ISSUE → REUSED=<empty>   NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED          ← E4 PROVEN
+→ GET listing → revoked=True on the cancelled row, False on the new one   ← E6 PROVEN
+→ unrevoke → {"ok":true,"revoked":false} → re-issue → reused:true
+→ lifetime issue → expiresAt=2999-12-31T23:59:59.000Z
+```
+
+**Discrepancy recorded, not smoothed over.** The junior's log shows `K4 == K1 ? YES-ORIGINAL-KEY-REUSABLE-AGAIN`; the senior's run reuses the **newer** row instead. Both are correct, and the difference is **test design, not behaviour**: the junior deliberately `delete`d the newer minted row first so the filter could reach the *original* — a **stronger** claim than the senior's. The lookup is `orderBy: issuedAt desc` + `.find`, so the newest non-revoked unexpired row wins. E4's contract (no reuse while revoked; reuse resumes after unrevoke) holds in both runs.
+
+#### 3.16.1 S20 — a BOUND lifetime key preserves the sentinel (what `T12`/E9 depends on)
+
+New assertion, run by the senior: issue `lifetime:true` → **bind it** → decode the **bound** key:
+
+```
+bound payload = {"expires_at": "2999-12-31T23:59:59.000000", "issued_at": "...", "licensee": "...", "machine_id": "mlife", "plan": "selfhosted", "product": "selfhosted_os"}
+SENTINEL PRESERVED = True
+```
+
+Bind re-signs the payload with `machine_id` added and `expires_at` carried through **byte-for-byte**. This is load-bearing and was previously unstated: E9's admin-move-only lock and T13's self-hosted check both call `isLifetimeExpiry` on a **bound** key, so the lifetime class is only identifiable if binding preserves the sentinel. Had binding rewritten the expiry to a default term, D9's rule would have evaporated **with no error anywhere**. Now pinned.
+
+#### 3.16.2 Two gaps the junior flagged are now closed — reject item 6 is discharged
+
+1. **Cross-account `revoke`/`unrevoke` (§6 item 6) — runtime-proven.** With **two real users**, B attempts to revoke A's `exeLicenseId`: `{"error":"No license for owner-b@example.test matches that selection."}` **HTTP=400**, and the revocation count for A's licence stays **0**. Same for unrevoke. A nonexistent email is refused even earlier (`No SpaceWorker user exists for ...`), so the refusal is enforced twice. The negative half of **S9** is discharged.
+2. **`revoke` × the pre-existing `delete` action — verified, not assumed.** T6 inserted its two actions *before* `delete` in the dispatch, raising the obvious question of what happens when an admin deletes a **revoked** licence. The FK is `ON DELETE CASCADE` (`20261020000000_add_exe_license_revocation/migration.sql:48`, `schema.prisma:699`), so the revocation row goes with it: `{"deleted":true}` 200, **0 orphans, 0 500s**. `delete` is **pre-existing on `main`** (`:73`/`:104`, checked line-by-line) — T6 did not invent it.
+
+#### 3.16.3 `W16` — `.env` is a symlink into the LIVE APP, and git cannot show it
+
+The junior's environment note ("`next start` cannot boot this worktree with the checked-in `.env`") is **correct**, and it points at a trap:
+
+- `.env` → **`/Users/mikeolab/spaceworker/.env`** — the **live app's** environment file, and the **only** remaining non-`node_modules` symlink in the worktree (audited).
+- The boot failure is `lib/env.ts`'s `guardAgainstPlaceholder` (`:52`) firing in production on `SESSION_SECRET=local_dev_session_secret_not_for_prod_…` (`/local_dev/i`) and `RESEND_API_KEY=re_local_dev_placeholder`.
+- **`.env` is gitignored (`.gitignore:4`) and untracked**, so an edit to it **leaves no trace in `git status` whatsoever**.
+
+The obvious "fix" — editing those two values so the server boots — therefore rewrites the **live app's** `SESSION_SECRET` (invalidating every live session) and `RESEND_API_KEY` (breaking live email), **silently**. Same class as C1/C2 (the `node_modules` symlink clobbering the live Prisma client), but harder to catch because git cannot display it. **The only correct workaround is a command-line override**, which is what the junior chose and the senior repeated:
+
+```bash
+env CI=1 DATABASE_URL=<scratch> SESSION_SECRET="$(openssl rand -hex 48)" \
+    RESEND_API_KEY="re_$(openssl rand -hex 24)" ADMIN_TOKEN=... npx next start -p 3011
+```
+
+**Standing rule:** never edit `.env` from the worktree (§4.1e, reject item 18). Generalised: before trusting `git diff` as proof that "nothing changed", confirm the thing you changed is **tracked**.
+
 ---
+
+### 3.17 — REVISION 10 (2026-09-30): the live app moved again. **Branch identity re-confirmed**, and two **merge hazards** that must not be discovered at merge time.
+
+The owner reported that fixes landed on the **live app**. Before continuing I re-verified which branch this worktree is on and re-ran every canary, because `main` moving can silently invalidate them.
+
+**Branch identity and push safety — all correct, nothing to fix:**
+
+| Check | Result |
+|---|---|
+| `/Users/mikeolab/sw-selfhost` branch | `self-hosted-build` ✅ |
+| HEAD | `745d3e6` (== `origin/self-hosted-build`) ✅ |
+| `branch.self-hosted-build.merge` | `refs/heads/self-hosted-build` ✅ (**not** `main` — the C2 trap is still closed) |
+| `branch.self-hosted-build.remote` | `origin` ✅ |
+| Worktree | only the two `TASK_145_*.md` modified (this pass) — **no product code** ✅ |
+
+**How far the two histories have diverged now:** merge base is still `1499a9e`; `main` is **42 ahead**, the branch **31 ahead**. `main` advanced `b7330a1 → 0d816b5` (5 commits: `88ca661`, `f76047f`, `e7a7559`, `7e1f5a4`, `0d816b5` — the "admin remote viewer / device commands" line of work).
+
+**Canaries re-validated *after* the move — still meaningful.** The risk was that a `main`-side edit to one of our canaried files would make a "clean" diff meaningless. Checked file by file: `main` changed **none** of `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `lib/products.ts`, `app/api/admin/exe-licenses/route.ts`, `app/api/store/prices/route.ts`, `app/dashboard/settings/licenses-section.tsx`, `package.json` in that range. So every figure stands: validator **empty**, `license-service.ts` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`, `products.ts` `24 2`, `package.json` `2 10`.
+
+> **But `main` DID change two files that matter, and both are hazards rather than canary problems.** Recorded below.
+
+#### 3.17.1 — `W17`: `app/admin/(protected)/admin-panel.tsx` is now divergent on **both** sides. The merge must keep **both**.
+
+This is T7's own file, and it is the single most dangerous merge point in the phase.
+
+| Side | Change to `admin-panel.tsx` |
+|---|---|
+| Branch (vs merge base) | **`+27 / −6`** — the self-hosted / EXE-tab additions |
+| Branch (vs `main`) | **`+31 / −1354`** |
+
+That `−1354` is not churn — it is the branch **not having** `main`'s remote-viewer, PIN-collect and hide/reveal work. I confirmed the asymmetry directly: the **branch** version contains **0** occurrences of `remote-viewer` / `agent-visibility` / `pinRequest`, while the **`main`** version contains `ExeLicensesTab` / `EXE_PRODUCTS` (5 hits) because the branch's earlier work is already merged there.
+
+**The hazard:** if the eventual merge of `self-hosted-build → main` resolves this file by taking the branch side — which looks reasonable to anyone reading a 1354-line "deletion" as noise — it **deletes the entire live remote-viewer feature from production**. Git will present this as a routine conflict.
+
+**Rule:** admin-panel.tsx is resolved by **union, never by side**. Both features must survive. Before any merge of this branch, diff `main..branch` for this one file and account for all 1354 lines explicitly.
+
+#### 3.17.2 — `W18`: same-timestamp migrations — the revocation migration must be **renumbered before it ever reaches `main`**.
+
+| Source | Migration |
+|---|---|
+| Branch | `20261020000000_add_exe_license_revocation` (T1) |
+| `main` (already applied to the live DB) | `20261020000000_admin_device_commands` |
+| `main` | `20261021000000_admin_device_command_kind`, `20261022000000_device_pin_request_origin` |
+
+The two collide on the **same 14-digit prefix**. Prisma requires unique **names** (these differ), so nothing errors today — but pending migrations are applied in **lexicographic order of directory name**, and `add_exe_license_revocation` sorts **before** `admin_device_commands`. The live database has **already applied** `20261020000000_admin_device_commands` and both later ones; the revocation migration has applied **only to scratch `spaceworker_t145`**.
+
+So on merge, Prisma is asked to apply a migration that is **older than already-applied ones** — the out-of-order condition, at best a warning and at worst a `migrate deploy` failure on the production box.
+
+**Missed opportunity if not done now:** this is the **last moment** the branch's migration is still safe to rename. It has **never been applied to the live DB**, so renaming it to a timestamp **after** `20261022000000` (e.g. `20261023000000_add_exe_license_revocation`) costs nothing today, and becomes **forbidden** the moment it merges and deploys — from then on it is recorded in production by name *and* checksum. T1's junior could not have known: `main`'s same-timestamp migration was authored **after** our branch forked.
+
+**Rule:** before the merge, renumber the branch's revocation migration to sort after `20261022000000`, rebuild scratch (`spaceworker_t145`), and re-run the fresh-DB check. **Do not** rename it after it has been applied to any shared database.
+
+#### 3.17.3 — the live checkout currently holds **another agent's uncommitted work**. Do not touch it.
+
+While confirming the branch I found uncommitted changes in `/Users/mikeolab/spaceworker` (NOT mine, NOT committed):
+
+```
+ M app/dashboard/campaigns/page.tsx      M lib/deliverability.ts
+ M lib/render-merge.ts                   M package.json
+?? lib/test-merge-vars.ts                ?? tests/render-merge.test.ts
+```
+
+Its `package.json` edit adds `"test:merge": "tsx --test tests/render-merge.test.ts"` — i.e. **another agent is doing exactly what `W13` predicted**: adding another manual `test:*` script that no CI job will ever run. Independent confirmation of `W13`; noted, not acted on.
+
+Consequences for us: (a) **nothing to merge** — it is uncommitted, so it cannot affect the branch; (b) my "live app `tsc`" canary is **partly confounded**, and I checked it anyway — `LIVE_TSC_EXIT=0`, so their WIP is type-clean and my figure is not hiding a fault; (c) **do not touch those files, and do not commit or stash another agent's work.**
+
+#### 3.17.4 — informational: `TASK_146` is now taken.
+
+`main`'s device-command work (`88ca661`) refers to itself as **`TASK_146`** in its migration header — the number my Phase 5 docs reserved for Phase 6. No file collision (0 `TASK_146*` files on either side), so it is a naming note only. **Phase 6 should take `TASK_147`+.**
+
+---
+
+**Decision recorded — the branch stays behind, deliberately.** I considered merging `main` into the branch now and **rejected it**: it would create a large `admin-panel.tsx` conflict in exactly the file T7 must edit, inject `main`'s three already-applied device migrations into the phase branch, and force the `W18` ordering decision mid-phase — all for no benefit to T7, since the phase's nine canaried files are untouched by `main`'s new commits. The divergence is a **merge-time** obligation (`W17`, `W18`), not a mid-phase one. Revisit when the phase work is complete.
 
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
 
@@ -758,6 +892,10 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 **Why this is not busywork:** `T5` is the demonstration. Every `S`-row the junior leaves unrun gets re-derived by the senior from scratch, which costs a full pass and risks the senior's own harness being wrong (as `S18`'s scratch-copy method was). Cheaper and safer to have both agents run the same command and compare.
 
 
+### 4.1e Never edit `.env` from the worktree (added pass 11, after `W16`)
+
+`.env` in this worktree is a **symlink to the live app's `.env`** (`/Users/mikeolab/spaceworker/.env`) **and is gitignored**, so any edit silently changes the running product with **zero trace in `git status`**. `lib/env.ts`'s placeholder guard means `next start` will not boot with the checked-in values — which is precisely the pressure that would push an agent to "fix" it. **Never do that.** Pass overrides on the command line instead (§3.16.3). Any task that needs `next start` must state this, and any log claiming "nothing changed" must be backed by a check on a **tracked** file.
+
 ### 4.2 What only the senior verifies (evidence required, pasted into this file's log)
 
 | ID | Check | Pass condition |
@@ -767,7 +905,7 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S3 | 30-day key through the same path | ✅ **VERIFIED 2026-09-29 (pass 6)** — `valid: true` at day 29, **`expired` at day 31**, and the critical negative `isLifetimeExpiry(term.expiresAt) === false`. ⚠️ Permanent via `T17`. |
 | S4 | Bind a lifetime key with a real `ExeLicense` row | `boundLicenseKey` decodes to `expires_at` starting `2999-` (verbatim preservation — V8) |
 | S5 | Revoke that licence, then attempt a bind on a fresh machine | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime on `spaceworker_t145` with real `ExeLicense`/`Payment` rows (18-assertion senior harness, §3.15.1): `LicenseBindError` with code **`"revoked"`** and the spec message verbatim. **The ordering claim is proven, not inferred:** the licence was bound to `t5-machine-a` *first*, *then* revoked, *then* a bind for `t5-machine-b` attempted — it returned **`revoked`, never `already_bound`**, so E1 precedes *both* the cross-account check (as the spec required) **and** the already-bound/transfer-code path (a stronger position than the spec asked for). **Consequence, now a documented property:** a revoked licence can never be offered a transfer code, so self-service recovery from a cancellation is impossible by construction. The `ExeLicense` row was unchanged. |
-| S6 | Revoke, then POST `action: "issue"` for the same user+product | response is **not** `reused: true` — a NEW key is minted (E4) |
+| S6 | Revoke, then POST `action: "issue"` for the same user+product | ✅ **VERIFIED 2026-09-29 (pass 11).** Re-derived by the senior from scratch (own harness, own server, `spaceworker_t145`, real admin cookie). Control first: re-issuing *before* revoke returns `reused:true` with the **same** key. After `revoke`, the same call returns **no `reused` flag and a brand-new key** (`NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED`). After `unrevoke`, reuse resumes. Without E4 the re-issue hands back the **cancelled** key, making the whole cancel feature cosmetic. The senior's run reuses the *newest* eligible row; the junior's (which `delete`d the newer row first to expose the original) is the **stronger** variant — both confirm the contract (§3.16). |
 | S7 | Un-revoke, then bind | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime, same harness. After `unrevokeExeLicense` the gate clears (`isExeLicenseRevoked` → `false`), a **second** `unrevokeExeLicense` call does not throw (idempotent, as D2 requires), and a `transferExeLicenseToMachine` that had been blocking now **succeeds** — `boundMachineId` actually moved to `t5-machine-c`. Revocation is fully reversible end-to-end. Also proven: `revokeExeLicense` called twice leaves **exactly 1** row (the `upsert` idempotency claim in D2). |
 | S8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` — new product not leaked to the public store |
 | S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | both correct, no `180` anywhere in the rendered copy |
@@ -782,6 +920,8 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S18 | **The lifetime sentinel's contract is permanently pinned (T17 / `W12`)** — `npm run test:license` | ✅ **VERIFIED 2026-09-29 (pass 7).** `tests/exe-license-lifetime.test.ts` exists, **9 subtests, `# pass 9 / # fail 0`**, and asserts the **drift guard** (`generateLicenseKey({expiresAt: LIFETIME_EXPIRES_AT}).payload.expires_at === LIFETIME_EXPIRES_AT_ISO` byte-for-byte) plus the **critical negative** (`isLifetimeExpiry(<30-day term>) === false`, term valid at day 29 / expired at day 31). **Can-fail proven** by mutating `isLifetimeExpiry`'s threshold to `>= 3000` — subtest 7 fails, `# pass 8 / # fail 1`. ⚠️ **Method corrected (§3.13.2):** the mutation must be **in place**, *not* in a scratch copy — a `/tmp` copy fails on module resolution even unmutated and would fake a positive. Restore must be proven three ways (§4.1c). Discharges §3.12.2 for the sentinel. |
 | S19 | **`W15` — the fail-closed invariant is actually enforced (T5)** — with the `ExeLicenseRevocation` table absent, attempt a bind on a *healthy, non-revoked* licence | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime: the revocation read raises (`PrismaClientKnownRequestError`), the bind **throws**, **no `boundMachineId` is written**, and the failure is **not** misreported as `"revoked"`. This is the one place in Phase 5 where fail-open would be **wrong** — bind/transfer already writes to the DB, so a failed revocation read must abort rather than risk activating a cancelled key. Table restored verbatim from T1's migration afterwards (3 constraints verified present, 0 rows). |
 
+| S20 | **A BOUND lifetime key still identifies as lifetime (T6 / E9 / T12 / T13)** — issue `lifetime:true`, **bind** it, decode the **bound** key | ✅ **VERIFIED 2026-09-29 (pass 11).** The bound payload is `{"expires_at": "2999-12-31T23:59:59.000000", "machine_id": "mlife", ...}` — bind re-signs with `machine_id` added and the sentinel **carried through byte-for-byte**, so `isLifetimeExpiry(<bound key>)` is still `true`. Load-bearing: E9's admin-move-only lock and T13's self-hosted check both classify a **bound** key, so if binding had rewritten the expiry the D9 rule would vanish with no error. Closes the previously unstated assumption in T12's spec. |
+
 ### 4.3 Deployment note (do not deploy as part of this task)
 
 The hosted VPS runs the **live** app from `main`. Phase 5 lands on `self-hosted-build` only. When the branch is eventually merged, the schema migration must be applied on the VPS per `HOW_WE_MOVE_FAST.md` §2/§3 — a new table + a column with a default is a safe online migration, but it still needs the maintenance-window script. Do not run a migration against the live DB to "test" this task.
@@ -793,12 +933,13 @@ The hosted VPS runs the **live** app from `main`. Phase 5 lands on `self-hosted-
 The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`. That file is the work order; this file is the spec of record. The junior must:
 
 1. Work **only** in `/Users/mikeolab/sw-selfhost` on branch `self-hosted-build`.
-2. Implement §3 **D1–D11** — including **§3.9 (Revision 2)** (amends D5, adds D8–D10), **§3.11 (Revision 4)** (adds D11), **§3.12 (Revision 5)** (adds `W12`, the §4.1b evidence rule, and **T17**), **§3.13 (Revision 6)** (adds `W13`, the §4.1c mandatory-test rule) and **§3.14 (Revision 7)** (corrects `V17`'s frozen set, records the `unrevokeExeLicense` asymmetry and `W14`) — and stop at the first `⚠️` in the log rather than guessing.
-3. Append a dated entry to **both** files when the code is written (what changed, `file:line`, commands run + raw results, anything unverified).
-4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S18). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
+2. Implement §3 **D1–D11** — including **§3.9 (Revision 2)** (amends D5, adds D8–D10), **§3.11 (Revision 4)** (adds D11), **§3.12 (Revision 5)** (adds `W12`, the §4.1b evidence rule, and **T17**), **§3.13 (Revision 6)** (adds `W13`, the §4.1c mandatory-test rule), **§3.14 (Revision 7)** (corrects `V17`'s frozen set, records the `unrevokeExeLicense` asymmetry and `W14`), **§3.15 (Revision 8)** (records T5's fail-closed `S19`) and **§3.16 (Revision 9)** (T6 accepted; adds `S20`, `W16`, §4.1e and reject item 18) — and stop at the first `⚠️` in the log rather than guessing.
+3. Append a dated entry to **both** files when the code is written (what changed, `file:line`, commands run + raw results, anything unverified). **Run the `S`-rows that name your task (§4.1d) and paste their raw output** — a static tick alone will be bounced, and staying silent is reject item 17.
+4. **Not** mark anything "done" or "verified" — only the senior closes a verification row (S1–S20). The junior writes `READY FOR VERIFICATION`, never `VERIFIED`.
 5. **Stop after each task.** Report at the end of every `T*` (§2 of the junior track) rather than working through the whole list in one session — see the junior track's **§2.0 stop-after-each-task rule**.
-6. **Follow the `▶ NEXT TASK` pointer, not the task numbers.** The numbers record *discovery* order, so the execution order is deliberately not numeric: `T1 → T2 → **T16** → T3 → **T17** → T4 → **T5** → … → T15`. The single source of truth is the pointer at the top of the junior track (junior §2), and **the senior must move it at the end of every pass** so a fresh agent starting from a cold read cannot begin the wrong task.
-7. **Take per-file canaries from the `V17` table, never from a hand-off prompt's example.** Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen (diff **empty**). `lib/exe-license.ts` is additive-only (`13 0`); `lib/exe-license-bind.ts` (**T5**, **T12**) and `app/dashboard/settings/licenses-section.tsx` (**T8**) are **expected to change**, and T8 legitimately deletes a line. See §3.14.1 and §3.14.3.
+6. **Follow the `▶ NEXT TASK` pointer, not the task numbers.** The numbers record *discovery* order, so the execution order is deliberately not numeric: `T1 → T2 → **T16** → T3 → **T17** → T4 → **T5** → **T6** → T7 → T8 → … → T15`. The single source of truth is the pointer at the top of the junior track (junior §2), and **the senior must move it at the end of every pass** so a fresh agent starting from a cold read cannot begin the wrong task.
+7. **Take per-file canaries from the `V17` table, never from a hand-off prompt's example.** Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen (diff **empty**). `lib/exe-license.ts` is additive-only (`13 0`); `lib/exe-license-bind.ts` (**T5** ✅, **T12**), `app/api/admin/exe-licenses/route.ts` (**T6** ✅) and `app/dashboard/settings/licenses-section.tsx` (**T8**) are **expected to change**, and T8 legitimately deletes a line. See §3.14.1 and §3.14.3.
+8. **Never edit `.env` from the worktree** (§4.1e / `W16`). It is a symlink into the live app and is gitignored, so the change is invisible to `git status` while breaking the running product.
 
 ## 6. Review reject list — the senior will bounce the PR for any of these
 
@@ -822,24 +963,27 @@ The implementation is handed to the **junior agent** in `TASK_145_SELF_HOSTED_LI
 
 
 
+18. **Editing `.env` from the worktree (§3.16.3 / `W16` / §4.1e).** It is a **symlink into the live app** and **gitignored**, so an edit changes the running product with **no trace in `git status`**. `next start` refusing to boot on the placeholders is the intended behaviour — use command-line overrides. Equally rejected: claiming "nothing changed" in a log without a check on a **tracked** file.
+
 ## 7. Verified environment baseline (2026-09-29)
 
 | Fact | Value |
 |---|---|
-| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `7b570f6` at T17 close (verified in pass 7) |
-| Primary checkout (live app) | `/Users/mikeolab/spaceworker` — branch `main`, HEAD `b7330a1` |
-| Merge base | `1499a9e` (2026-09-27); branch is 37 behind / 8 ahead |
+| Worktree | `/Users/mikeolab/sw-selfhost` — branch `self-hosted-build`, HEAD `745d3e6` at T6 close (verified in pass 11) |
+| Primary checkout (live app) | `/Users/mikeolab/spaceworker` — branch `main`, HEAD **`0d816b5`** (advanced from `b7330a1` — see §3.17; carries **another agent's uncommitted WIP**, §3.17.3) |
+| Merge base | `1499a9e` (2026-09-27); `main` is **42 ahead** / branch **31 ahead** (§3.17) |
 | `node_modules` | **must be a real APFS clone, never a symlink** (§3.10.2/C1): `cp -Rc /Users/mikeolab/spaceworker/node_modules ./node_modules` |
 | `npx tsc --noEmit` | **EXIT=0** on the branch, **and** EXIT=0 in `/Users/mikeolab/spaceworker` (`main`) after the client restore (§3.10.3) |
 | Local build | `CI=1 npx next build` → **BUILD_EXIT=0** (§3.10.5). Plain `npm run build` trips `lib/env.ts`'s placeholder guard, by design |
 | Verification DB | `spaceworker_t145` — built with `prisma db push`; 50 tables incl. `ExeLicenseRevocation` (§3.10.7) |
 | Fresh-DB migration replay | **BROKEN** — P3018 `relation "ExeLicense" does not exist` at `20260914150000` (§3.10.6) → task **T14** |
 | Shared local dev DB | ~27 migrations stale (no `Device` table) + two stuck `device_tools_v2` rows — **not usable for Phase 5** (§3.10.7) |
-| Work order | **T1 → T17** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate ✅ closed**; **T17 = pin the sentinel in a permanent test ✅ closed**). **Closed so far: `T1`, `T2`, `T3`, `T16`, `T17`. Next: `T4`.** |
-| Standing tests (§4.1c) | `npm run test:license` → **9 pass / 0 fail** · `npm run test:setup` → **29 pass / 0 fail** (baseline 2026-09-29, pass 7). **No CI job runs these (`W13`)** — they are mandatory on every task and every pass. |
+| Work order | **T1 → T17** (T14 = fresh-install bootstrap; T15 = optional local drift repair; **T16 = purchase gate ✅ closed**; **T17 = pin the sentinel in a permanent test ✅ closed**). **Closed so far: `T1`, `T2`, `T3`, `T4`, `T5`, `T6`, `T16`, `T17`. Next: `T7`.** |
+| Standing tests (§4.1c) | `npm run test:license` → **9 pass / 0 fail** · `npm run test:setup` → **29 pass / 0 fail** (re-confirmed 2026-09-29, pass 11). **No CI job runs these (`W13`)** — they are mandatory on every task and every pass. |
 | Node date check | `new Date("2999-12-31T23:59:59.000000Z")` → year 2999, valid (not `NaN`) |
-| Files byte-identical to `main` (must not drift, V17) | `lib/exe-license-validator.ts`, `lib/exe-license-bind.ts`, `lib/license-service.ts`, `app/dashboard/settings/licenses-section.tsx` |
-| Files that now **intentionally** diff from `main` (V17 amended by T3) | `lib/exe-license.ts` — `+13/−0` only (the D4 lifetime constants, `:29-40`). Canary for this file is **"zero `-` lines"**, not "empty". If a future pass sees **any deletion** here, that is a real regression |
+| Files frozen (diff **must** stay empty, V17) | `lib/exe-license-validator.ts`, `lib/license-service.ts` |
+| Files that legitimately diff from `main` | `lib/exe-license.ts` `13 0` (T3, additive-only — canary is **"zero `-` lines"**, not "empty") · `lib/exe-license-bind.ts` `27 2` (T5) · `app/api/admin/exe-licenses/route.ts` `170 19` (TASK_129 `3 0` + T6 `167 19`) · `app/dashboard/settings/licenses-section.tsx` (T8, not yet) |
+| `.env` (⚠️ `W16`) | **a symlink to `/Users/mikeolab/spaceworker/.env`** and **gitignored** — never edit it from the worktree (§4.1e). Use command-line overrides for `next start` |
 | Task file numbers used | `TASK_145` = this phase; `TASK_146` reserved for Phase 6 |
 
 ## 8. LOG — append-only. Newest entry at the bottom. Both agents append; never edit an existing entry.
@@ -2754,4 +2898,100 @@ $ curl -s localhost:3010/api/store/prices | grep -c selfhosted_os
 **UNVERIFIED:** the admin UI half (T7 — no Cancel/Restore button, no badge, no Lifetime checkbox yet; `admin-panel.tsx:6,:3559` still on `EXE_PRODUCTS`); `S13`/`S14` (live kill via eligibility + the desktop path), `S9`, `S15`, `S16`; cross-account `revoke`/`unrevoke` refusal at runtime (only the happy path + unbound-id 400 were exercised). Nothing was run against the VPS, no `prisma generate`/`migrate dev`/`migrate resolve`, no migration edited, and `spaceworker_t145` was left at 0 licences / 0 revocations / 0 transfers.
 
 READY FOR VERIFICATION - T6
+
+---
+
+## 2026-09-29 — SENIOR pass 11: **`T6` ✅ VERIFIED** (full loop re-derived at runtime). Next task is **`T7`**. **Documentation only — zero product code.**
+
+`T6` (`745d3e6`) accepted. I did not read the junior's summary as evidence; I rebuilt the proof end-to-end on my own harness, my own server (`:3011`), `spaceworker_t145`, and a real admin cookie.
+
+**S6 — re-derived from scratch (control included):**
+
+```
+issue 30d → bind m1
+CONTROL issue (before revoke)  → reusable:true, SAME_KEY=YES
+revoke                          → {"ok":true,"revoked":true,"exeLicenseId":"..."} HTTP=200
+revoke again (double-click)     → {"ok":true,"revoked":true} HTTP=200          ← idempotent
+bind → m2                       → {"error":"This license was cancelled by the provider and can no longer be activated. Contact support.","code":"revoked"} HTTP=400
+RE-ISSUE (same user+product)    → REUSED=<empty>  NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED   ← E4 PROVEN
+GET /api/admin/exe-licenses     → id=... revoked=False ; id=... revoked=True          ← E6 PROVEN
+unrevoke                        → {"ok":true,"revoked":false} HTTP=200
+re-issue → reusable:true
+lifetime issue                  → expiresAt=2999-12-31T23:59:59.000Z
+```
+
+**Discrepancy with the junior's log, recorded not smoothed:** junior shows `K4 == K1 ? YES-ORIGINAL-KEY-REUSABLE-AGAIN`; mine reuses the **newer** row. Both correct — the junior `delete`d the newer minted row first so the filter had to reach the *original*, which is the **stronger** test. The lookup is `orderBy: issuedAt desc` + `.find`; the contract holds either way.
+
+**`S20` — new row, added by this pass.** Issued `lifetime:true`, **bound** it, decoded the **bound** key:
+
+```
+bound payload = {"expires_at": "2999-12-31T23:59:59.000000", "issued_at": "...", "licensee": "...", "machine_id": "mlife", "plan": "selfhosted", "product": "selfhosted_os"}
+SENTINEL PRESERVED = True
+```
+
+Binding adds `machine_id` and carries `expires_at` through **byte-for-byte**, so `isLifetimeExpiry` still classifies a **bound** key as lifetime. E9 (`T12`) and E8 (`T13`) both rely on this and it was previously unstated — had bind rewritten the expiry, D9's admin-move-only rule would have evaporated silently.
+
+**Reject item 6 (the junior's own `UNVERIFIED`) — closed at runtime.** With two real users, B attempts `revoke` on A's `exeLicenseId`:
+`{"error":"No license for owner-b@example.test matches that selection."}` **HTTP=400**, revocation count for A's licence **0**; same for `unrevoke`. A nonexistent email is refused earlier still (`No SpaceWorker user exists for ...`).
+
+**`revoke` × the pre-existing `delete` action — checked, not assumed.** `delete` is **pre-existing on `main`** (`:73`/`:104`), so T6 inserted before it. Deleting a **revoked** licence: `{"deleted":true}` 200, **0 orphan** revocation rows, no 500 — FK is `ON DELETE CASCADE` (`20261020000000_add_exe_license_revocation/migration.sql:48`).
+
+**Gates (all re-run by me):** `tsc` `BRANCH_TSC_EXIT=0`; `CI=1 next build` `BUILD_EXIT=0`; `test:license` `# tests 9 # pass 9 # fail 0`; `test:setup` `# tests 29 # pass 29 # fail 0`; store leak `curl .../api/store/prices | grep -c selfhosted_os` → **0**; `isSelfHosted()` early-returns intact; live app `main` @ `b7330a1` clean, `LIVE_TSC_EXIT=0`.
+
+**Canaries:** validator **empty**; `license-service.ts` **empty**; `exe-license.ts` `13 0`; `bind.ts` `27 2` (T5); admin route `170 19`.
+
+**`W16` — new finding, and the most important thing in this pass.** `.env` in the worktree is a **symlink to `/Users/mikeolab/spaceworker/.env`** (the live app's), and it is **gitignored/untracked**. It is the **only** remaining non-`node_modules` symlink (I audited). `next start` refuses to boot on it because `lib/env.ts:52`'s placeholder guard fires on `SESSION_SECRET=local_dev_…` (`/local_dev/i`) and `RESEND_API_KEY=re_local_dev_…` — which creates exactly the pressure to "fix" those values. Doing so silently rewrites the **live** `SESSION_SECRET` (killing every live session) and `RESEND_API_KEY` (breaking live email), **with no trace in `git status`**. Same class as C1/C2, harder to see. Fix is a command-line override only — what the junior did and what I repeated. → §4.1e + reject item 18.
+
+**Docs written this pass:** senior §3.16 (+§3.16.1–3, `W16`), `S6` closed, new `S20`, §4.1e, reject item 18, §5 items 2/3/4/6/7/8, §7 baseline (HEAD `745d3e6`, frozen-set corrected, `.env` row); junior §1.8, pointer → `T7`, status, T6 marked CLOSED, T7's Check amended to owe `S9` + the `.env` warning, §2 heading.
+
+**UNVERIFIED:** `T7`'s UI half; `S13`/`S14` (the live kill — now runnable); `S9`'s rendered-copy half; `S15`/`S16`/`S10`; `T14`'s fresh-DB bootstrap. Nothing ran against the VPS; no `prisma generate`/`migrate dev`/`migrate resolve`; no migration edited; `spaceworker_t145` returned to **0 licences / 0 revocations / 0 transfers**; server `:3011` stopped and `/tmp` harness deleted.
+
+**SENIOR PASS 11 COMPLETE — `T6` ✅ VERIFIED + CLOSED. `▶ NEXT TASK: T7`.**
+
+---
+
+## 2026-09-30 — SENIOR pass 12: branch identity re-confirmed; **the live app moved**; two merge hazards found (`W17`, `W18`). Next task is **STILL `T7`**. **Documentation only — zero product code.**
+
+The owner reported fixes on the live app, and asked me to confirm I am on the right branch before continuing. I checked **before** doing anything else, then re-ran the canaries, because a `main`-side edit to a canaried file would silently make a "clean" diff meaningless.
+
+**Branch identity — correct, nothing to fix:**
+
+```
+branch                     : self-hosted-build
+HEAD                       : 745d3e6  ( == origin/self-hosted-build )
+branch.self-hosted-build.merge  : refs/heads/self-hosted-build     ← NOT main; C2 trap still closed
+branch.self-hosted-build.remote : origin
+worktree                   : only the two TASK_145_*.md modified — no product code
+```
+
+**Divergence now:** merge base still `1499a9e`; `git rev-list --left-right --count main...self-hosted-build` → **42  31** (main 42 ahead, branch 31 ahead). `main` advanced `b7330a1 → 0d816b5` (5 commits: `88ca661`, `f76047f`, `e7a7559`, `7e1f5a4`, `0d816b5` — the admin remote-viewer / device-command line).
+
+**Canary validity re-checked file by file against `b7330a1..main`:**
+
+```
+lib/exe-license.ts -> main-changed=0        lib/exe-license-validator.ts -> 0
+lib/exe-license-bind.ts -> 0                lib/license-service.ts -> 0
+lib/products.ts -> 0                        app/api/admin/exe-licenses/route.ts -> 0
+app/api/store/prices/route.ts -> 0          app/dashboard/settings/licenses-section.tsx -> 0
+package.json -> 0
+app/admin/(protected)/admin-panel.tsx -> 1   prisma/schema.prisma -> 1
+```
+
+So every figure still means exactly what it meant — validator **empty**, `license-service.ts` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19`, `products.ts` `24 2`, `package.json` `2 10`. **But two files DO matter and both are hazards:**
+
+**`W17` — `admin-panel.tsx` is divergent on both sides.** Branch's own edit: `+27/−6` vs merge base. Branch vs `main`: **`+31 / −1354`**. The 1354 is the branch *lacking* main's remote-viewer/PIN-collect/hide-reveal work; confirmed by content (branch has **0** hits for `remote-viewer|agent-visibility|pinRequest`; `main`'s version has 5 hits of `ExeLicensesTab|EXE_PRODUCTS`). **This is T7's file.** A merge that resolves it "by side" would delete the live feature set from production. Rule: union, never side.
+
+**`W18` — same-timestamp migration.** Branch `20261020000000_add_exe_license_revocation`; `main` `20261020000000_admin_device_commands` (+ `20261021000000_`, `20261022000000_`), the latter three **already applied to the live DB**. Lexicographic order puts ours first, so on merge Prisma is asked to apply a migration *older* than applied ones. **This is the last safe moment to renumber it** — it has never been applied to the live DB, only to scratch `spaceworker_t145`; once it deploys it is fixed by name *and* checksum.
+
+**§3.17.3 — the live checkout holds another agent's UNCOMMITTED work** (`campaigns/page.tsx`, `deliverability.ts`, `render-merge.ts`, `package.json`, + `lib/test-merge-vars.ts`, `tests/render-merge.test.ts`). Its `package.json` hunk adds `"test:merge": "tsx --test tests/render-merge.test.ts"` — an independent confirmation of `W13` (another manual `test:*` script no CI will run). Nothing to merge (uncommitted). I ran the live `tsc` anyway and got **`LIVE_TSC_EXIT=0`**, so their WIP is type-clean and my canary is not hiding a fault. **Do not touch, commit, or stash another agent's work.**
+
+**§3.17.4 — `TASK_146` is taken.** `main`'s device-command migration header calls itself `TASK_146`, the number Phase 5 reserved for Phase 6. No file collision (0 `TASK_146*` files either side). **Phase 6 → `TASK_147`+.**
+
+**Decision: I did NOT merge `main` into the branch, and recorded why.** It would have produced a large `admin-panel.tsx` conflict in exactly the file T7 must edit, pulled `main`'s three already-applied migrations into the phase branch, and forced the `W18` decision mid-phase — for zero benefit, since none of the phase's canaried files were touched by `main`'s new commits. Divergence is a **merge-time** obligation here.
+
+**Docs written this pass:** senior §3.17 (+3.17.1–4) and §7 baseline (live HEAD `0d816b5`, merge base 42/31, `.env` row); junior §1.9.
+
+**UNVERIFIED:** `T7`'s UI half; `S13`/`S14`; `S9`'s rendered half; `S15`/`S16`. Nothing ran against the VPS; no `prisma generate`/`migrate dev`/`migrate resolve`; no migration renamed **yet** (`W18` is a pre-merge task); no file in the live checkout was touched.
+
+**SENIOR PASS 12 COMPLETE — branch confirmed `self-hosted-build`; `main` divergence audited (`W17`/`W18` recorded). `▶ NEXT TASK: T7` (unchanged).**
 
