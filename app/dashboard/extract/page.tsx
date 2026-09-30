@@ -50,6 +50,10 @@ interface JobDetail extends Job {
   leads: Lead[];
 }
 
+// TASK_150 T1 — one stable empty array, so the "no filter" case keeps a constant
+// identity and the `visibleLeads` memo does not recompute on every render.
+const NO_DOMAINS: string[] = [];
+
 // Task 54 — mirrors the export route's leadDomain(): normalizes a lead's email
 // or website into its comparable domain for the export filter. Handles BOTH a
 // bare email ("foo@gmail.com") and a website URL, stripping "www." + lowercasing.
@@ -64,17 +68,38 @@ function leadDomain(email?: string | null, website?: string | null): string {
   }
 }
 
-// Task 54 — builds the ?domains= query-suffix for the export links. Empty
-// selection → no suffix (unfiltered export), preserving the old URL exactly.
-function domainSuffix(domains: string[]): string {
-  if (!domains.length) return "";
-  return `&domains=${encodeURIComponent(domains.join(","))}`;
+// Task 54 — builds the ?domains= query for the export links. Empty selection →
+// the base URL unchanged (unfiltered export), preserving the old URL exactly.
+//
+// TASK_150 T1 — this used to always return `&domains=…`, which is only correct
+// when the base already carries a query string. The plain "Export CSV" link
+// (`/api/jobs/<id>/export.csv`) does not, so selecting a domain produced
+// `/export.csv&domains=beta.io` — a *path*, not a query, which 404s. Proved
+// against the scratch server: `export.csv&domains=beta.io` → HTTP 404 while
+// `export.csv?domains=beta.io` → HTTP 200. Taking the base URL lets the
+// separator come from what is actually there, so view and export agree on the
+// same selection AND the link still resolves.
+function withDomainFilter(base: string, domains: string[]): string {
+  if (!domains.length) return base;
+  const separator = base.includes("?") ? "&" : "?";
+  return `${base}${separator}domains=${encodeURIComponent(domains.join(","))}`;
 }
 
-// Task 54 — a compact chip multi-select of the distinct domains present in the
-// selected job's leads. Pure presentational + local state via the parent, so the
-// parent (extract page) owns the selection used to build the export URLs.
-function DomainsFilterChips({
+// TASK_150 T1 — the domain control. Task 54 built it as an EXPORT-ONLY filter
+// (`?domains=` via the suffix helper) that rendered one chip per distinct domain,
+// uncapped and un-collapsible. On a real session that wrapped into a block that
+// dominated the pane ("covers the whole screen"), and selecting a domain never
+// touched the table at all — `visibleLeads` consulted only `resultMode`.
+//
+// It is now a VIEW + EXPORT filter with ONE source of truth: the parent owns
+// `selected`, and that same array drives `visibleLeads` (the results table) and
+// `withDomainFilter()` on the export links, so the two cannot disagree.
+//
+// Compact by construction: collapsed it shows the active selection as removable
+// chips plus a few domain previews and a "+N more" count; expanding reveals the
+// full list INSIDE a height-bounded, in-flow panel (never position:absolute), so
+// the lead rows can never be overlaid at any width.
+function DomainsFilterPicker({
   leads,
   selected,
   onChange,
@@ -92,43 +117,100 @@ function DomainsFilterChips({
     return [...set].sort();
   }, [leads]);
 
+  // Collapsed by default — that alone is the fix for "it covers the screen".
+  const [expanded, setExpanded] = useState(false);
+
   if (!domains.length) return null;
 
+  const selectedSet = new Set(selected);
+  // Active filters always render first (and stay visible however long the
+  // selection is), topped up with a few unselected previews.
+  const active = selected.filter((d) => domains.includes(d));
+  const rest = domains.filter((d) => !selectedSet.has(d));
+  const PREVIEW = 6;
+  const collapsed = [...active, ...rest].slice(0, Math.max(PREVIEW, active.length));
+  const hiddenCount = domains.length - collapsed.length;
+  const shown = expanded ? domains : collapsed;
+
   const toggle = (d: string) => {
-    onChange(
-      selected.includes(d) ? selected.filter((x) => x !== d) : [...selected, d],
-    );
+    onChange(selectedSet.has(d) ? selected.filter((x) => x !== d) : [...selected, d]);
   };
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 py-0.5">
+    <div
+      className="flex w-full flex-wrap items-center gap-1.5 py-0.5"
+      data-testid="domains-picker"
+    >
       <span className="text-[10px] uppercase tracking-wide text-fg-muted">Filter by domain:</span>
-      {selected.length > 0 && (
+      {selected.length > 1 && (
         <button
           type="button"
           onClick={() => onChange([])}
           className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted hover:text-fg"
         >
-          Clear
+          Clear all
         </button>
       )}
-      {domains.map((d) => {
-        const on = selected.includes(d);
-        return (
-          <button
-            key={d}
-            type="button"
-            onClick={() => toggle(d)}
-            className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors ${
-              on
-                ? "border-brand-500 bg-brand-500 text-white"
-                : "border-border text-fg-muted hover:text-fg"
-            }`}
-          >
-            {d}
-          </button>
-        );
-      })}
+      {/* display:contents keeps the collapsed chips inline in the row above the
+          table; when expanded this becomes a bounded, scrollable panel in normal
+          document flow (it pushes the table down, it never sits over it). */}
+      <div
+        className={
+          expanded
+            ? "flex max-h-28 w-full flex-wrap items-start gap-1.5 overflow-y-auto rounded-lg border border-border bg-card p-2"
+            : "contents"
+        }
+      >
+        {shown.map((d) => {
+          const on = selectedSet.has(d);
+          return (
+            <span
+              key={d}
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+                on ? "border-brand-500 bg-brand-500 text-white" : "border-border text-fg-muted"
+              }`}
+            >
+              <button type="button" onClick={() => toggle(d)} className="hover:opacity-80">
+                {d}
+              </button>
+              {on && (
+                <button
+                  type="button"
+                  onClick={() => toggle(d)}
+                  aria-label={`Remove ${d} filter`}
+                  title={`Remove ${d} filter`}
+                  className="leading-none hover:opacity-75"
+                >
+                  ×
+                </button>
+              )}
+            </span>
+          );
+        })}
+      </div>
+      {!expanded && hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="rounded-full border border-dashed border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted hover:text-fg"
+        >
+          +{hiddenCount} more
+        </button>
+      )}
+      {expanded && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted hover:text-fg"
+        >
+          Show less
+        </button>
+      )}
+      {expanded && (
+        <span className="w-full text-[10px] text-fg-muted">
+          {domains.length} domain{domains.length === 1 ? "" : "s"} in this session — the selection filters the table and the export.
+        </span>
+      )}
     </div>
   );
 }
@@ -232,12 +314,44 @@ export function WebExtractPage() {
   const [sessionMergeBusy, setSessionMergeBusy] = useState(false);
   const [sessionMergeError, setSessionMergeError] = useState("");
 
-  // Task 54 — export-time-only domain filter. When domains are chosen, the
-  // Export CSV / Emails only links append ?domains=. Selection is NOT a DB
-  // mutation — it only narrows the downloaded file (the owner's replace/fork
-  // decision is deliberately left untouched; this is the safe, export-only
-  // variant the batch guardrail asks for).
-  const [filterDomains, setFilterDomains] = useState<string[]>([]);
+  // Task 54 built this selection as export-time-only; TASK_150 T1 makes the SAME
+  // selection the view filter as well (see visibleLeads below). It is still never
+  // a DB mutation — it narrows what the table renders and what the Export CSV /
+  // Emails only links append via `?domains=`, both derived from this one array so
+  // the view and the export can never disagree.
+  //
+  // It belongs to ONE session, so it is stored keyed by job id rather than reset
+  // from an effect: when the detail pane switches jobs the stored id no longer
+  // matches and the effective selection is empty, so a domain picked in one
+  // session can never silently hide every row of another. Deriving it this way
+  // also avoids the cascading re-render a setState-in-effect would cause.
+  const [domainSelection, setDomainSelection] = useState<{ jobId: string; domains: string[] }>({
+    jobId: "",
+    domains: NO_DOMAINS,
+  });
+  const filterDomains =
+    domainSelection.jobId === (selectedJob?.id ?? "") ? domainSelection.domains : NO_DOMAINS;
+  const setFilterDomains = useCallback(
+    (domains: string[]) => setDomainSelection({ jobId: selectedJob?.id ?? "", domains }),
+    [selectedJob?.id],
+  );
+
+  // TASK_150 T1 — THE single source of truth for which leads render. `resultMode`
+  // (a per-job display preference) and the domain picker's selection are applied
+  // in exactly one place; the header row count and the exported `?domains=`
+  // links are derived from the same inputs, so they cannot disagree. "Emails
+  // only" and a domain selection COMPOSE — both must pass — rather than one
+  // replacing the other.
+  const visibleLeads = useMemo(() => {
+    if (!selectedJob) return [];
+    const mode = (selectedJob.params?.resultMode as string | undefined) ?? "full";
+    const domainFilter = new Set(filterDomains);
+    return selectedJob.leads.filter((lead) => {
+      if (mode === "emailsOnly" && !lead.email) return false;
+      if (domainFilter.size > 0 && !domainFilter.has(leadDomain(lead.email, lead.website))) return false;
+      return true;
+    });
+  }, [selectedJob, filterDomains]);
 
   // Task 26, Piece 3 — lead upload (import .csv/.txt/.json/.xlsx into a new job)
   // and per-job batch email validation. Both are additive UI on the existing job
@@ -1457,7 +1571,16 @@ export function WebExtractPage() {
                 <div>
                   <h2 className="font-semibold" title={selectedJob.query}>{summarizeQuery(selectedJob)}</h2>
                   <p className="mt-0.5 text-xs text-fg-muted">
-                    {selectedJob.template} template · {selectedJob.lane} lane · {selectedJob.leads.length} leads · {timeAgo(selectedJob.createdAt)}
+                    {selectedJob.template} template · {selectedJob.lane} lane ·{" "}
+                    {/* TASK_150 T1 — the row count reflects the SAME visibleLeads the
+                        table renders (resultMode + domain picker), so a filtered view
+                        never sits under an unchanging session total. */}
+                    <span data-testid="leads-count">
+                      {visibleLeads.length === selectedJob.leads.length
+                        ? `${selectedJob.leads.length} leads`
+                        : `${visibleLeads.length} of ${selectedJob.leads.length} leads shown`}
+                    </span>{" "}
+                    · {timeAgo(selectedJob.createdAt)}
                     {Array.isArray(selectedJob.params?.queries) && selectedJob.params.queries.length > 1 &&
                       <span> · {selectedJob.params.queries.length} terms</span>}
                   </p>
@@ -1498,12 +1621,15 @@ export function WebExtractPage() {
                       Create email campaign
                     </Link>
                   )}
-                  {/* Task 54 — export-time domain filter. Distinct domains present
-                      in THIS job's leads, as toggleable chips. Selecting some
-                      narrows the export links below via ?domains=. Never mutates
-                      rows — the owner's replace/fork decision is out of scope. */}
+                  {/* TASK_150 T1 — the domain picker now filters the VIEW as well as
+                      the exports, off the single `filterDomains` selection that also
+                      backs visibleLeads below and ?domains= on the export links. Compact
+                      and collapsed by default so it cannot dominate the pane; keyed on
+                      the job id so its expanded/preview state resets when the pane
+                      switches sessions. */}
                   {selectedJob.leads.length > 0 && (
-                    <DomainsFilterChips
+                    <DomainsFilterPicker
+                      key={selectedJob.id}
                       leads={selectedJob.leads}
                       selected={filterDomains}
                       onChange={setFilterDomains}
@@ -1517,12 +1643,15 @@ export function WebExtractPage() {
                       items={[
                         {
                           label: "Export CSV",
-                          href: `/api/jobs/${selectedJob.id}/export.csv${domainSuffix(filterDomains)}`,
+                          href: withDomainFilter(`/api/jobs/${selectedJob.id}/export.csv`, filterDomains),
                           download: true,
                         },
                         {
                           label: "Emails only",
-                          href: `/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1${domainSuffix(filterDomains)}`,
+                          href: withDomainFilter(
+                            `/api/jobs/${selectedJob.id}/export.csv?emailsOnly=1`,
+                            filterDomains,
+                          ),
                           download: true,
                         },
                         {
@@ -1639,20 +1768,28 @@ export function WebExtractPage() {
                 const showPhone = mode === "full";
                 const showWebsite = mode === "full";
                 const showContact = mode !== "emailsOnly";
-                // "Emails only" is a promise about the RESULT SET, not just which
-                // columns are visible — a lead with no email is useless in this
-                // mode (every other field is already hidden) and previously still
-                // rendered as a row of bare "—" placeholders. Filter it out of
-                // what's actually displayed/scrolled/merge-selectable rather than
-                // just hiding its columns.
-                const visibleLeads = mode === "emailsOnly"
-                  ? selectedJob.leads.filter((lead) => lead.email)
-                  : selectedJob.leads;
-                // Task 26, Piece 7b — select-all header checkbox. "All" means all the
-                // leads currently RENDERED (respecting Piece 1's visibleLeads filter,
-                // so Emails-only mode only selects the emails actually shown, never
-                // leads hidden by the filter). Indeterminate when only some visible
-                // ones are checked.
+                // Column count for the empty-state row (Business, Name, Email,
+                // Phone, Website, Status — Email and Status are always present).
+                const colCount =
+                  (showBusiness ? 1 : 0) +
+                  (showContact ? 1 : 0) +
+                  1 +
+                  (showPhone ? 1 : 0) +
+                  (showWebsite ? 1 : 0) +
+                  1;
+                // TASK_150 T1 — the filtered array is NO LONGER computed here. It
+                // used to be a local `visibleLeads` that branched only on
+                // `resultMode`, which is exactly why picking a domain changed the
+                // export but never the table. The one and only filtered array is
+                // the hoisted `visibleLeads` useMemo above (resultMode + the domain
+                // picker's selection, composed); this table, the header row count
+                // and the export links all read that same source of truth.
+                // TASK_150 T1 — the "Task 26, Piece 7b select-all header checkbox"
+                // this comment used to describe does not exist in this table: there
+                // is no lead-level selection state and no <thead> checkbox, at HEAD
+                // or here. So there is no third consumer to keep in sync — the two
+                // that DO exist (this table's rows and the header row count) both
+                // read `visibleLeads` above and therefore always agree.
                 return (
                 <div
                   ref={leadsScrollRef}
@@ -1672,7 +1809,19 @@ export function WebExtractPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {visibleLeads.map((lead) => (
+                      {/* TASK_150 T1 — with a domain selected (and/or Emails-only
+                          on) the render set can legitimately be empty. Show why and
+                          how to get back, instead of a bare table with no rows. */}
+                      {visibleLeads.length === 0 ? (
+                        <tr>
+                          <td colSpan={colCount} className="py-3 text-sm text-fg-muted" data-testid="leads-empty-filtered">
+                            No leads match the current filters. Clear the domain filter above
+                            {mode === "emailsOnly" ? " or turn off “Emails only”" : ""} to see all{" "}
+                            {selectedJob.leads.length} leads.
+                          </td>
+                        </tr>
+                      ) : (
+                      visibleLeads.map((lead) => (
                         <tr
                           key={lead.id}
                           className="animate-[fadeInUp_0.15s_ease-out] border-b border-border last:border-0"
@@ -1707,7 +1856,8 @@ export function WebExtractPage() {
                             )}
                           </td>
                         </tr>
-                      ))}
+                      ))
+                      )}
                     </tbody>
                   </table>
                 </div>
