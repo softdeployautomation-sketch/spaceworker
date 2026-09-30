@@ -6,15 +6,26 @@
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T8` — stop showing a hardcoded 180 days to the buyer (`app/dashboard/settings/licenses-section.tsx`, full spec in §2).** `T7` is **CLOSED** — the admin UI half of revocation is done: an admin can tick **Lifetime (no expiry)**, and **Cancel**/**Restore** a licence from the row, with the badge driven by the server's own `revoked` flag. The senior verified it in pass 13 by re-deriving the diff hunk-by-hunk and re-running the runtime `S9` (senior §3.18). **`T8` is small and mechanical** — the buyer's Settings page still hardcodes 180 days at `:10`, `:79` and `:112`; you replace that with the **real** expiry decoded from the key and render `"No expiry (lifetime)"` for the sentinel. Do that one task, run its acceptance check, log it, stop. **`T9` (wizard API) follows.**
+**▶ NEXT TASK: `T9` — the setup wizard API must offer the self-hosted product and accept a lifetime key (`app/api/setup/license/validate/route.ts`, full spec in §2).** `T8` is **CLOSED** — the buyer's Settings page no longer hardcodes 180 days; it derives the expiry from the **decoded key** and renders `"No expiry (lifetime)"` for the sentinel. The senior verified it in pass 14 (`tsc` clean, both suites green, all six canaries unchanged, and the rendered buyer half of `S9` produced against a real session — `S9` is now **COMPLETE**). `T9` is the **wizard API** half: it must accept the self-hosted product and a `lifetime` key rather than assuming a 30-day term. Do that one task, run its acceptance check, log it, stop. **`T10` (wizard UI) follows.**
 
 > ⚠️ **`T12` and `T8` edit files that `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts`, `app/dashboard/settings/licenses-section.tsx` and `app/api/admin/exe-licenses/route.ts` are **shared**, not frozen — `T5` (done), `T6` (done), `T7`, `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned one of those tasks, a diff in the shared file is **correct and expected** — do not revert it and do not log an objection about it.
 
 > ⚠️ **NEVER edit `.env` from this worktree (new in `T7`'s pass — §1.8 / senior §3.16.3 / `W16`).** It is a **symlink to the live app's `.env`** *and* gitignored, so an edit changes the running product with **zero trace in `git status`**. If you need `next start`, pass overrides on the command line (see §1.8).
 
-**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T6` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `0302533`) · **`T8`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T6` ✅ · `T7` ✅ · `T8` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `d61969f`) · **`T9`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
+
+## 1.10 — REVISION 12 (2026-09-30): `T8` is CLOSED. `S9` is COMPLETE. `T9` is next.
+
+**What just happened.** `T8` landed (`app/dashboard/settings/licenses-section.tsx`, `+39/−5`, commit `d61969f`) and the senior verified it in pass 14. The buyer's Settings page **no longer hardcodes 180 days** — it decodes the licence's own `expires_at` and classifies with `isLifetimeExpiry`. Four results worth knowing before you touch `T9`:
+
+1. **`S9` is now COMPLETE.** It was deliberately recorded **PARTIAL** after pass 13 so the buyer half could not be skipped on a tick it had not earned. Both halves are now evidenced: the admin panel (T7) and the buyer Settings page rendered against a real session (T8).
+2. **The expiry is a property of the signed key, never a constant.** `decodeLicenseKey` → `originalExpiry` (`bind.ts:497`) is the sanctioned route. A malformed/undecodable key renders the neutral `Not available` and **does not throw during render** — keep that property in anything you add.
+3. **`W19` — a customer-facing revoked message ALREADY EXISTS and `T11` is what makes it live.** `app/api/exe-license/status/route.ts:156` already emits `"This license has been revoked. Contact support if this wasn't expected."` and already clears the activation, whenever `stillValidLive()` returns `false`. But `stillValidLive` returns `data.eligible !== false`, and `eligibility` returns `eligible: license !== null` — so today a revoked licence still reads eligible and **that message is unreachable, on `main` as well**. `T11`'s three lines are the only missing link; it needs **no new copy and no new UI**. The `T13` spec now requires reusing that exact string for the revoked case.
+4. **The buyer's `Cancelled` state is an accepted trade-off, not an oversight.** T8 renders the key's own expiry, so a cancelled licence on the **web** Settings page can still read "30 days remaining". The app is the surface that refuses, so this was accepted knowingly (senior §3.19). Do not "fix" it as part of another task.
+
+> ⚠️ **A live-app fix landed on `main` this pass — `06b68fd`, the SMTP mailbox delete.** It touches `components/mailboxes-panel.tsx`, `app/api/mailboxes/[id]/route.ts` and `app/api/test-mailboxes/route.ts` — **none of which carry Phase 5 changes and none of which are in this phase's canary set**, so it cannot contradict you. At merge time those files take **`main`'s** version (the branch is ~575 lines behind there), while `admin-panel.tsx` needs a **union**. Neither is your business mid-task; do not sync them.
 
 ## 1.9 — REVISION 11 (2026-09-30): `T7` is CLOSED. `T8` is next.
 
@@ -411,7 +422,7 @@ Read the tab first (it was not read line-by-line by the senior — report the ex
 > 3. **Do not touch `app/api/admin/exe-licenses/route.ts`.** `T6` is closed and verified; the API is correct as shipped. If a UI need makes you think the route must change, log an `OBJECTION` instead.
 > 4. **`S1`/`S2` note:** the file is large — read `ExeLicensesTab` (branch `:3477`) **first**, before editing, and report the exact insertion points in your log (the senior has not read this tab line-by-line).
 
-### T8 — Stop showing a hardcoded 180 days to the buyer
+### T8 — Stop showing a hardcoded 180 days to the buyer — ✅ CLOSED 2026-09-30 (pass 14)
 
 **File:** `app/dashboard/settings/licenses-section.tsx`
 
@@ -479,6 +490,8 @@ Extend the existing gate (`shouldRedirectToSetup`, `:78`) — it already runs fr
 4. **Any error / timeout / unreachable server → valid (fail-open).** This is a hard requirement (senior §6 reject #11) — a genuinely offline customer must never be locked out.
 
 Blocked means: send the install to a licence screen that explains the state and offers a re-activation path (reuse the wizard's licence step rather than inventing a new page if that keeps the diff small — your call, report what you chose).
+
+> ⚠️ **ADDED in pass 14 (`W19`) — reuse the string that already exists, do not write a new one.** The Tauri EXE's gate has emitted this exact message since 2026-09-21: `"This license has been revoked. Contact support if this wasn't expected."` (`app/api/exe-license/status/route.ts:156`, on `main` and here). It fires whenever `stillValidLive()` returns `false`, and it **also clears the stored activation** first. Your self-hosted gate needs the same user-visible outcome, so **for the revoked case, use that string verbatim** — two builds must not have the same revocation read differently. An **expired** (1-month term) key is a different state and should say so plainly (it is not a cancellation); "expired" copy is yours to write.
 
 **Check:** (a) a revoked or expired stored key is blocked with a clear message; (b) with the server unreachable and a still-valid key, the install is **NOT** blocked; (c) a non-self-hosted build is completely unaffected (`isSelfHosted()` early-return still first). `npx tsc --noEmit` clean; `CI=1 npx next build` → `BUILD_EXIT=0`.
 
@@ -2827,4 +2840,26 @@ LIVE_TSC_EXIT=0
 **NOT RUNNABLE BY JUNIOR:** none — the rendered `S9` half ran; nothing in this task's check block was skipped.
 
 READY FOR VERIFICATION - T8
+
+
+---
+
+## 2026-09-30 — SENIOR pass 14 (verification record): `T8` VERIFIED + CLOSED, `S9` COMPLETE
+
+**This entry is the senior's verification of `T8`, recorded in the junior log for continuity.** Full reasoning is in the senior track §3.19. Do not edit this entry; append below it.
+
+| Gate | Senior's independent run | Result |
+|---|---|---|
+| scope | `git show --stat d61969f` | `licenses-section.tsx` `+39/−5` + the two logs only |
+| constant gone | `grep -c 'EXE_LICENSE_DAYS'` / `grep -c '180'` | **0** / **0** |
+| derived from the key | read the diff | `decodeLicenseKey` → `originalExpiry` (`bind.ts:497`); `isLifetimeExpiry` the only classifier |
+| lifetime copy | `:129-141` | `No expiry (lifetime)`; no date, no `2999`, no day count |
+| malformed key | diff | `Not available`, no throw during render |
+| never negative | diff | `(N days remaining)` or `Expired`, never a negative count |
+| `tsc` / tests | re-run | `TSC_EXIT=0`; `test:license` **9/9**; `test:setup` **29/29** |
+| canaries | all six | validator **empty** · `license-service` **empty** · `exe-license.ts` `13 0` · `bind.ts` `27 2` · admin route `170 19` |
+
+**`S9` is now COMPLETE** — both halves evidenced. **`W19`** recorded: the revoked-customer message at `status/route.ts:156` already exists and is unreachable until `T11` lands; `T11` needs no new copy or UI, and `T13` must reuse that exact string.
+
+**Next: `T9` — the wizard API.** See the `▶ NEXT TASK` pointer at the top of this file; it is the only authority on order.
 

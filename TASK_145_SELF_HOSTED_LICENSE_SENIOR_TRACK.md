@@ -830,6 +830,32 @@ Consequences for us: (a) **nothing to merge** — it is uncommitted, so it canno
 
 **Decision recorded — the branch stays behind, deliberately.** I considered merging `main` into the branch now and **rejected it**: it would create a large `admin-panel.tsx` conflict in exactly the file T7 must edit, inject `main`'s three already-applied device migrations into the phase branch, and force the `W18` ordering decision mid-phase — all for no benefit to T7, since the phase's nine canaried files are untouched by `main`'s new commits. The divergence is a **merge-time** obligation (`W17`, `W18`), not a mid-phase one. Revisit when the phase work is complete.
 
+### 3.18 — REVISION 11 (2026-09-30): `T7` accepted; `S9` **PARTIAL** on purpose, and an out-of-phase live-app bug
+
+**`T7` VERIFIED** — `app/admin/(protected)/admin-panel.tsx`, worktree diff `112 12`, commit `0302533`. The admin UI half of revocation exists: an admin can tick **Lifetime (no expiry)** when issuing, and **Cancel**/**Restore** a licence from its row, with the badge driven by the server's own `revoked` flag. Verified by re-deriving the diff hunk-by-hunk and re-running the runtime `S9`, not by reading the log.
+
+1. **`S9` recorded PARTIAL, deliberately.** The row has **two** halves — the admin panel (T7) and the buyer Settings page (T8). The buyer half did not exist, so a green tick here would have let `T8` be skipped on a tick it had never earned. This is the point of splitting a row rather than rounding it up.
+2. **Badge precedence is `revoked` FIRST** (`:4268-4273`), ahead of `boundMachineId`, so a bound-then-revoked row still renders `Cancelled`. Load-bearing for `T11`/`T13` — do not reorder.
+3. **Two similar ids must stay distinct.** `cancellingId` (Cancel/Restore in flight, `:4051`) is separate from the pre-existing `revokingId` (clears a *device binding*). Different actions; do not merge.
+4. **The `:3479` default was correctly left alone** as `EXE_PRODUCTS[0].id` — that default is an EXE product, not the self-hosted one. Only `:6` and `:3565` changed.
+
+**Out-of-phase live-app bug, disposition recorded.** The owner reported that deleting an SMTP mailbox does nothing. Fixed on **`main`**, in `components/mailboxes-panel.tsx`, `app/api/mailboxes/[id]/route.ts` and `app/api/test-mailboxes/route.ts`. Those three files carry **zero Phase 5 changes** and are **not in this phase's canary set**, so the fix cannot contradict this work. **Merge disposition:** `admin-panel.tsx` needs a **union** of both sides (`W17`); these mailbox files take **`main`'s** version outright — the branch is `33 575`, i.e. ~575 lines **behind** there. Two opposite rules on one merge; do not apply "resolve conflicts carefully" generically.
+
+### 3.19 — REVISION 12 (2026-09-30): `T8` accepted; `S9` **COMPLETE**; `T11` is what unlocks an already-written message
+
+**`T8` VERIFIED** — `app/dashboard/settings/licenses-section.tsx`, `+39/−5`, commit `d61969f`. The buyer's Settings page no longer hardcodes 180 days; it derives the expiry from the **decoded key** (`decodeLicenseKey` → `originalExpiry`, `bind.ts:497`) and classifies with `isLifetimeExpiry`. A lifetime key renders `No expiry (lifetime)`; a 30-day key renders the real date plus `(N days remaining)`; a malformed key renders `Not available` without throwing during render. `S9` is now **COMPLETE** — both halves evidenced.
+
+**`W19` — a customer-facing revoked message already exists, and `T11` is the missing link.** `app/api/exe-license/status/route.ts:156` already emits `"This license has been revoked. Contact support if this wasn't expected."` and already calls `clearActivation()` before refusing, whenever `stillValidLive()` returns `false`. But `stillValidLive` returns `data.eligible !== false` (`:101`) and `eligibility` returns `eligible: license !== null` — so a revoked licence still reads eligible and **the message is unreachable today, on `main` too** (`git diff main <branch> -- app/api/exe-license/eligibility/route.ts` is EMPTY). Consequences:
+
+  - **`T11` needs no new copy and no new UI** — the message, the activation wipe and the refusal path are all pre-existing. Its three lines are the only gap between "the row exists" and "the customer's app stops and explains why". Smallest change in the phase, largest customer-visible effect.
+  - **This phase finally makes an existing `main` code path live.** The comment at `:79-89` describes the 2026-09-21 fix as catching "an admin has since unbound/deleted/transferred it" — which works via the row lookup, *not* via revocation, which did not exist then. The message was written for a capability the server did not have.
+  - **`T13` must reuse that exact string** (added to its spec). Two gates, two builds, one string — otherwise the same revocation reads differently depending on which product the customer bought, the same principle as `E10`.
+
+**`W19` accepted limitation — the buyer's web page will still read "30 days remaining" for a cancelled licence.** T8 renders the key's own `expires_at`, and revocation does not change it. **Accepted knowingly:** the surface the customer is looking at when they hit the wall is the **app**, and once `T11` lands that one says "revoked". If support sees tickets this would have avoided, it is a ~10-line addition to the file T8 just touched (a revocation lookup beside the existing query). Recorded as a trade-off, not an oversight.
+
+**`W20` — a constraint read from a drifted database is not evidence of the schema.** In the mailbox fix, my brief told the agent `DeliverabilityCheck_seedMailboxId_fkey` was `ON DELETE RESTRICT`. It is **`SET NULL`** (`20261005000000_device_layer_fk_action_repair:83`; `schema.prisma:619` declares `seedMailboxId String?` with no `onDelete`, and Prisma's default for an optional relation is `SetNull`). The `r` I measured came from the **stale local dev DB**, which still carries the pre-repair constraint. The agent implemented both modes and said so instead of following the brief silently — the correct call. **Rule: confirm a constraint against `schema.prisma` and the migration history, and state which of the two you actually measured.**
+
+
 ## 4. Verification protocol (senior-owned — the junior must not self-approve)
 
 ### 4.1 What the junior may run themselves
@@ -908,7 +934,7 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S6 | Revoke, then POST `action: "issue"` for the same user+product | ✅ **VERIFIED 2026-09-29 (pass 11).** Re-derived by the senior from scratch (own harness, own server, `spaceworker_t145`, real admin cookie). Control first: re-issuing *before* revoke returns `reused:true` with the **same** key. After `revoke`, the same call returns **no `reused` flag and a brand-new key** (`NEW_KEY_DIFFERS=YES-NEW-KEY-MINTED`). After `unrevoke`, reuse resumes. Without E4 the re-issue hands back the **cancelled** key, making the whole cancel feature cosmetic. The senior's run reuses the *newest* eligible row; the junior's (which `delete`d the newer row first to expose the original) is the **stronger** variant — both confirm the contract (§3.16). |
 | S7 | Un-revoke, then bind | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime, same harness. After `unrevokeExeLicense` the gate clears (`isExeLicenseRevoked` → `false`), a **second** `unrevokeExeLicense` call does not throw (idempotent, as D2 requires), and a `transferExeLicenseToMachine` that had been blocking now **succeeds** — `boundMachineId` actually moved to `t5-machine-c`. Revocation is fully reversible end-to-end. Also proven: `revokeExeLicense` called twice leaves **exactly 1** row (the `upsert` idempotency claim in D2). |
 | S8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` — new product not leaked to the public store |
-| S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | ⚠️ **PARTIAL — admin half VERIFIED 2026-09-30 (pass 13, T7); buyer-Settings half NOT met.** T7's runtime S9 confirmed `selfhosted_os` in the product `<select>` (6 options, only possible from `LICENSABLE_EXE_PRODUCTS`), the Lifetime toggle disabling the duration input and posting `"lifetime":true` with no `durationDays`, and a revoked row rendering the red `Cancelled` pill with `Restore license`, every transition corroborated by the server's `revoked` flag over HTTP. The **second half is T8** — `app/dashboard/settings/licenses-section.tsx` still hardcodes 180 days. Closing this row before T8 would be a false claim. |
+| S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | ✅ **VERIFIED 2026-09-30 (pass 14).** **Admin half (T7):** `selfhosted_os` offered in the product `<select>` (6 options — only reachable from `LICENSABLE_EXE_PRODUCTS`), the Lifetime toggle disabling the duration input and posting `"lifetime":true` with no `durationDays`, and a revoked row rendering the red `Cancelled` pill with `Restore license`; every transition corroborated by the server's own `revoked` flag over HTTP. **Buyer half (T8):** rendered with a real buyer session against scratch `spaceworker_t145` — a lifetime key renders `No expiry (lifetime)`, a 30-day key renders the real date plus `(30 days remaining)`, a malformed key renders `Not available`, and `180` / `days from issue` / `2999` appear **0** times in the HTML. Was recorded **PARTIAL** after pass 13 precisely so the buyer half could not be skipped on a tick it had not earned. |
 | S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
 | S11 | `isSelfHosted()` early-returns at `app/api/admin/exe-licenses/route.ts:50,473` still present | unchanged — revoke endpoints are inert on a customer's box |
 | S12 | Migration sanity | **Amended by §3.10.6. ** `npx prisma migrate status` **cannot** be the pass condition on this machine (stale shared DB + two stuck `device_tools_v2` rows, §3.10.7). Pass condition is now: the migration is **additive only** (one new table, one new column with a default, no destructive statement) **and** it applies cleanly to a scratch database. Verified 2026-09-29 via `prisma db push` onto `spaceworker_t145` (§3.10.7). The fresh-DB history failure (P3018) is **not** T1's — it is tracked as **T14**. |
@@ -3169,7 +3195,7 @@ Owner: *"deleting an SMTP mailbox does nothing."* Traced to **live-only** files 
 
 - `components/mailboxes-panel.tsx:579-593` — `remove()` is `if (res.ok) { … }` followed by a **bare `catch {}`**. A rejected delete, any non-2xx, or a network error produces **no message, no state change, no console output**: the button looks dead. The `else` branch does not exist.
 - `app/api/mailboxes/[id]/route.ts:126` — bare `prisma.mailbox.delete()`, no FK handling. FK `EmailQueueItem_mailboxId_fkey` is **`ON DELETE RESTRICT`** (`confdeltype = 'r'`, confirmed via `psql` against `pg_constraint`), so **any mailbox that has ever queued a campaign** throws `P2003` → 500 → swallowed by the UI above.
-- `app/api/test-mailboxes/route.ts:107` — the **same defect** on `prisma.seedMailbox.delete()`, guarded by `DeliverabilityCheck_seedMailboxId_fkey` (also `RESTRICT`), swallowed by the same bare `catch {}` at `mailboxes-panel.tsx:644`.
+- ~~`app/api/test-mailboxes/route.ts:107` — the **same defect** on `prisma.seedMailbox.delete()`, guarded by `DeliverabilityCheck_seedMailboxId_fkey` (also `RESTRICT`), swallowed by the same bare `catch {}` at `mailboxes-panel.tsx:644`.~~ ⚠️ **CORRECTED in pass 14 — this claim was WRONG and the implementing agent caught it.** `DeliverabilityCheck_seedMailboxId_fkey` is **`ON DELETE SET NULL`**, not RESTRICT: migration `20261005000000_device_layer_fk_action_repair:83` deliberately re-creates it as `SET NULL`, and `schema.prisma:619` declares `seedMailboxId String?` with no `onDelete` (Prisma's default for an optional relation is `SetNull`). So on a correctly-migrated DB the seed-mailbox delete **succeeds** and the check rows survive with `seedMailboxId = NULL`. The `r` I measured came from the **stale local dev DB**, which still carries the pre-repair constraint — I read a drifted database and treated it as authoritative. The swept `catch {}` at `mailboxes-panel.tsx:644` is **real and still worth fixing** (it hides *any* failure, including the 200-with-no-effect case), but the FK half of this claim was false. **Lesson (`W20`): a constraint read from a drifted DB is not evidence of the schema — confirm against `schema.prisma` and the migration history, then mark which of the two you actually measured.**
 
 Both failures are **time-gated**: a mailbox with 0 queue items deletes fine; one with ≥1 never will. **Not reproducible locally — the dev DB holds 0 mailboxes** (`DELETE 0` inside a rolled-back transaction; FK constraint itself confirmed directly), which is why it reached production unnoticed. **Nothing was deleted; the probe was `BEGIN; DELETE …; ROLLBACK;`.**
 
@@ -3247,4 +3273,75 @@ LIVE_TSC_EXIT=0
 **NOT RUNNABLE BY JUNIOR:** none — the rendered `S9` half ran.
 
 READY FOR VERIFICATION - T8
+
+
+---
+
+## 2026-09-30 — SENIOR pass 14: `T8` VERIFIED (S9 now COMPLETE) + the mailbox fix verified on `main`
+
+**Two independent deliveries this pass, in two repos.** Branch `self-hosted-build` @ `d61969f` (T8) → this doc pass. `main` @ `06b68fd` (mailbox fix) — **verified but not authored by this phase, and not deployable by me.**
+
+### A. `T8` — buyer-Settings expiry: VERIFIED, and `S9` is now COMPLETE
+
+| Gate | Independent run | Result |
+|---|---|---|
+| scope | `git show --stat d61969f` | `licenses-section.tsx` (+39/−5) + the two logs only |
+| constant gone | `grep -c 'EXE_LICENSE_DAYS'` / `grep -c '180'` | **0** / **0** ✅ |
+| derives from the key | read the diff | `decodeLicenseKey` → `originalExpiry` (exists, `bind.ts:497`); `isLifetimeExpiry` is the only classifier ✅ |
+| lifetime copy | diff `:129-141` | `No expiry (lifetime)` — no far-future date, no `2999`, no day count ✅ |
+| malformed key | diff | `Not available`; `remainingDays`/`validUntilLabel` are `null` — no throw during render ✅ |
+| never negative | diff | `remainingDays > 0 ? "N days remaining" : "Expired"` ✅ |
+| `tsc` / tests | re-run | `TSC_EXIT=0`; `test:license` 9/9; `test:setup` 29/29 ✅ |
+| canaries | all six | validator **empty**, `license-service` **empty**, `exe-license.ts` `13 0`, `bind.ts` `27 2`, admin route `170 19` ✅ |
+
+**`S9` closed COMPLETE.** Recorded PARTIAL after pass 13 on purpose: the row has two halves and only the admin half existed, so a green tick then would have let T8 be skipped. Both halves are now evidenced, the buyer half by rendering against a real session.
+
+
+### B. `W19` — T11 makes an ALREADY-WRITTEN customer message reachable
+
+While checking whether a revoked buyer sees any explanation, I found the copy **already exists on `main`** and is already wired:
+
+```
+app/api/exe-license/status/route.ts:156
+  message: "This license has been revoked. Contact support if this wasn't expected."
+```
+
+It is emitted when `stillValidLive()` returns `false` (`:152-158`), **after `clearActivation()`** — so the EXE's stored activation is wiped and the gate refuses. And `stillValidLive` returns `data.eligible !== false` (`:101`), which today is **always `true` for a revoked licence** because `eligibility` returns `eligible: license !== null` and **`git diff main self-hosted-build -- app/api/exe-license/eligibility/route.ts` is EMPTY**.
+
+Three consequences, all wanting:
+
+1. **T11 needs no new copy and no new UI.** The customer-facing message, the activation wipe and the refusal path are all pre-existing and already correct. T11's three lines are the *only* missing link between "the row exists" and "the customer's app stops and says why". That materially raises the cost of deferring T11 and lowers its risk — it is now the smallest change in the phase with the largest customer-visible effect.
+2. **`main` has a latent dead message today.** `status/route.ts:156` is unreachable for its stated purpose on `main` as well, since `eligibility` is identical there. The comment at `:79-89` describes the 2026-09-21 fix as catching "an admin has since unbound/deleted/transferred it" — which works via the row lookup, **not** via revocation, which did not exist then. So the message was written for a capability that was never on the server side until Phase 5. Worth stating plainly: **this phase is what finally makes an existing `main` code path live.**
+3. **`T13` should reuse this exact string** (added to its spec). E8/T13 gives the **self-hosted** build its first runtime check, and that gate needs a message too. Two gates, two builds, one string — otherwise the same revocation reads differently depending on which product the customer bought, the same "one consistent message" principle as E10.
+
+**Deliberately NOT raised as a task (`W19` accepted limitation).** The buyer's **web** Settings page will still show "30 days remaining" for a cancelled licence, since T8 renders the key's own `expires_at` and revocation does not change it. Accepted, because the surface the customer is looking at when they hit the wall is the **app**, and that one will say "revoked". If support sees tickets this would have avoided, it is a ~10-line addition to the file T8 just touched — a recorded trade-off, not an oversight.
+
+
+### C. The live-app mailbox fix on `main` — verified, and it corrected me
+
+`main` @ `06b68fd` (`0d816b5..06b68fd`), `3 files changed, 86 insertions(+), 10 deletions(-)`.
+
+| Gate | Independent run | Result |
+|---|---|---|
+| scope | `git show --stat 06b68fd` | **exactly** the 3 mailbox files ✅ |
+| other agent's WIP untouched | `git status --porcelain` | `campaigns/page.tsx`, `deliverability.ts`, `render-merge.ts`, `package.json` still `M`; `lib/test-merge-vars.ts`, `tests/render-merge.test.ts` still `??` ✅ |
+| route fix | read the diff | `try/catch` on `P2003` → **409** with queue + distinct-campaign counts and a Pause pointer; cascade deliberately **not** used ✅ |
+| UI fix | read the diff | `setError("")`, reads the body, renders `data.error`, real `return` on `!res.ok`; the bare `catch {}` is gone ✅ |
+| `tsc` / eslint | re-run | `LIVE_TSC_EXIT=0`, `ESLINT_EXIT=0` ✅ |
+| hygiene | reported + re-checked | scratch DB dropped, stale `sendRegion` column dropped, no SSH tunnel (`inet_server_addr=127.0.0.1`), servers stopped ✅ |
+
+**The agent was right and my brief was wrong.** I told it `DeliverabilityCheck_seedMailboxId_fkey` was "also `RESTRICT`". It is **`ON DELETE SET NULL`** (`20261005000000_device_layer_fk_action_repair:83`; `schema.prisma:619` declares `seedMailboxId String?` with no `onDelete`, and Prisma's default for an optional relation is `SetNull`). The `r` I measured came from the **stale local dev DB**, which still carries the pre-repair constraint. It implemented for both modes and said so rather than silently following the brief — the correct call, and the reason `W20` now exists. **A constraint read from a drifted database is not evidence of the schema.** My error, not the agent's; corrected in place rather than quietly deleted.
+
+**Not verified by me and not verifiable from here:** the live deployment (whether the pipeline ships `06b68fd`), and which FK mode the **live** DB is in. The code is correct in both directions — it refuses exactly when the FK refuses, and the UI now surfaces whichever answer comes back.
+
+### Standing state after pass 14
+
+| | |
+|---|---|
+| Branch | `self-hosted-build` @ `d61969f` (+ this docs pass) |
+| Live app | `main` @ `06b68fd` — **this phase's changes there: 0** |
+| Closed | **T1, T2, T3, T4, T5, T6, T7, T8, T16, T17** |
+| `S`-rows | `S9` now **COMPLETE** (was PARTIAL); everything else unchanged |
+| Next | **T9** → T10 → T11 → T12 → T13 → T14 → T15 |
+| New lessons | `W19` (pre-existing message now reachable), `W20` (drifted-DB constraint ≠ schema) |
 
