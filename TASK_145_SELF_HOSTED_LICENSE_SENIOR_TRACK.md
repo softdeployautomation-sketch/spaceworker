@@ -3345,3 +3345,121 @@ Three consequences, all wanting:
 | Next | **T9** → T10 → T11 → T12 → T13 → T14 → T15 |
 | New lessons | `W19` (pre-existing message now reachable), `W20` (drifted-DB constraint ≠ schema) |
 
+
+---
+
+## 2026-09-30 — JUNIOR — **T9 implemented** (wizard API: the product assertion + `lifetime`). No other task started.
+
+*(Junior log entry, appended here in full per STEP 5. Append-only; the junior never writes “VERIFIED”.)*
+
+**Scope:** `app/api/setup/license/validate/route.ts` (this track §3 D6.1–D6.2 / junior §2 T9), plus **one declared deviation**: the stale fixture in `tests/self-hosted-setup.test.ts` case C3 — see “⚠️ Declared scope deviation”. No other file touched; **no UI change** (that is T10).
+
+### What changed
+
+`app/api/setup/license/validate/route.ts`
+- `:4` — `import { exeLicenseSecret, isLifetimeExpiry } from "@/lib/exe-license";` — the sentinel helper is **imported**, never re-declared, and `lib/exe-license.ts` was not edited.
+- `:8` — `import { getProduct, SELF_HOSTED_OS } from "@/lib/products";` (registry symbol, not a second `"selfhosted_os"` literal).
+- `:24-27` — header guard list documents the new mismatch result (same `{ valid:false, error }` shape as a validator rejection).
+- `:72-85` — **after** `if (!validation.valid)` and **before** `updateSetupState`: `if (validation.product !== SELF_HOSTED_OS.id)` → `200 { valid:false, error: "This license is for ${getProduct(validation.product)?.name ?? "another SpaceWorker tool"}, not ${SELF_HOSTED_OS.name}. …" }`. The key is **not** written to setup state. Fail-closed: a legacy key with no `product` field (`""`) → `getProduct("")` is `null` → the generic name.
+- `:98-101` — `lifetime: isLifetimeExpiry(validation.expiresAtDate)` added to the **existing** success body (extended, not replaced). No new response shape.
+- Pre-existing guards untouched: `isSelfHosted()` 404 `:33`, completed-state 403 `:37`, 400 empty key `:48`, 500 unset secret `:55`, validator-error passthrough `:70`.
+
+### ⚠️ Declared scope deviation — `tests/self-hosted-setup.test.ts:344-392` (case C3, rewritten in place; still **29 tests**)
+
+T9's spec says “only the route changes”, but D6.1 is **incompatible with the C3 fixture as it stood**: C3 generated a key with `product: "automation_exe"` and asserted the route accepts it — and `S10` requires exactly that key to be **rejected**. Left alone, the mandatory `test:setup` check would go red (a regression §4.1c attributes to this task). I corrected the fixture rather than weaken the check:
+
+- the foreign-product key is now `product: "extractor_exe"` (S10's literal product) and C3 asserts `valid:false`, the error names **`Extractor EXE`**, and **nothing is recorded** in setup state;
+- the accepted key is now `product: "selfhosted_os"` / `plan: "selfhosted"` (matching `SELF_HOSTED_OS.plan`, which is what `app/api/admin/exe-licenses/route.ts:486` signs) and C3 asserts `valid:true` + `lifetime:false`;
+- a third leg proves D6.2 through the real route: a sentinel key → `lifetime:true`.
+
+This is a **strengthening** (C3 now covers the D6.1 rejection, the D6.2 flag, and non-recording of a rejected key) and keeps the suite at the mandated 29. It is the durable, re-runnable form of `S10`. **Senior: please confirm this fixture correction is acceptable; it is the only way D6.1 and §4.1c can both hold.**
+
+
+### Commands run and RAW output (verbatim)
+
+```console
+$ cd /Users/mikeolab/sw-selfhost && npx tsc --noEmit; echo TSC_EXIT=$?
+TSC_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost && CI=1 npx next build; echo BUILD_EXIT=$?
+✓ Compiled successfully in 27.6s
+BUILD_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost && npm run test:license 2>&1 | tail -8
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 470.036374
+
+$ cd /Users/mikeolab/sw-selfhost && npm run test:setup 2>&1 | tail -8
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 685.791705
+
+$ cd /Users/mikeolab/sw-selfhost && npm run test:setup 2>&1 | grep 'C3:'
+ok 14 - C3: license/validate accepts a self-hosted key, rejects a foreign product, and records only the accepted one
+
+$ cd /Users/mikeolab/sw-selfhost && grep -n 'selfhosted_os\|lifetime' app/api/setup/license/validate/route.ts
+27://     only a `selfhosted_os` key may activate a self-hosted install.
+100:    // TASK_145 (T9) — "lifetime" is decided ONLY from the decoded `expires_at`
+103:    lifetime: isLifetimeExpiry(validation.expiresAtDate),
+
+$ cd /Users/mikeolab/sw-selfhost && git --no-pager diff --stat
+ app/api/setup/license/validate/route.ts | 28 +++++++++++-
+ tests/self-hosted-setup.test.ts         | 39 +++++++++++++++--
+ 2 files changed, 61 insertions(+), 6 deletions(-)
+```
+
+**`S10` — RUN (runnable, and run).** Raw output of a temporary probe (`t9-s10-probe.mts`, run then deleted — the **durable** proof is C3 above, so nothing depends on a deleted harness) loading the **real** route module with the house `Module._load` hook, on the real offline validator + real HMAC:
+
+```console
+S10 extractor_exe -> 200 {"valid":false,"error":"This license is for Extractor EXE, not SpaceWorker OS (Self-Hosted). Enter a self-hosted license key, or contact us if you made a mistake."}
+T9 selfhosted_os (term) -> 200 {"valid":true,"licensee":"buyer@example.test","plan":"selfhosted","product":"selfhosted_os","issuedAt":"2026-09-30T10:27:20.008000","expiresAt":"2027-03-29T10:27:20.008000","lifetime":false}
+T9 selfhosted_os (lifetime) -> 200 {"valid":true,"licensee":"buyer@example.test","plan":"selfhosted","product":"selfhosted_os","issuedAt":"2026-09-30T10:27:20.012000","expiresAt":"2999-12-31T23:59:59.000000","lifetime":true}
+```
+
+### STEP 4 — canaries (raw)
+
+```console
+$ cd /Users/mikeolab/spaceworker && git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty)
+$ ... -- lib/license-service.ts
+(empty)
+$ ... -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ ... -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ ... -- app/api/admin/exe-licenses/route.ts
+170     19      app/api/admin/exe-licenses/route.ts
+$ ... -- app/api/setup/license/validate/route.ts
+81      0       app/api/setup/license/validate/route.ts
+$ npx tsc --noEmit; echo LIVE_TSC_EXIT=$?
+LIVE_TSC_EXIT=0
+```
+
+`git status --porcelain` in the worktree after the run — two modified files, no untracked leftovers:
+
+```console
+ M app/api/setup/license/validate/route.ts
+ M tests/self-hosted-setup.test.ts
+```
+
+### Honest gaps
+
+- **UNVERIFIED: the wizard UI showing “lifetime / no renewal needed”** — that is `T10`; the route only exposes `lifetime: boolean` here (proven above). (`S-rows` for T10 are untouched by this task.)
+- **UNVERIFIED: an admin-issued `selfhosted_os` key through a *running* `next start` wizard** — not run: it needs a booted server with `.env` placeholders overridden on the command line (§3.16.3). The route is instead exercised as the **real module** (real validator, real HMAC) in both suites; no DB, no network, no `.env` touched.
+- **NOT RUNNABLE BY JUNIOR: none** — `S10` is the only §4.2 row naming `T9`, and it was run.
+- `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/license-service.ts`, `lib/exe-license-bind.ts` and `app/api/admin/exe-licenses/route.ts` were **read only**. No `.env`, no migration, no Prisma command, no VPS connection, no `TASK_134..TASK_144` file, no mailbox/admin-panel file.
+- `W19` is **not** consumed by this task (it binds `T11`/`T13`). This task introduces **no new user-visible string** that could collide with the existing revoked message: the mismatch copy is new and unique to a state the EXE gate has never described.
+
+READY FOR VERIFICATION - T9
+

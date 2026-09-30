@@ -341,23 +341,54 @@ test("C2: every setup route 403s once setup is complete without an admin session
   assert.equal(res.status, 400, "an admin passes the gate and reaches normal validation");
 });
 
-test("C3: license/validate accepts a REAL generated key and records it in setup state", async () => {
+test("C3: license/validate accepts a self-hosted key, rejects a foreign product, and records only the accepted one", async () => {
+  // TASK_145 T9 (senior §3 D6.1 / S10): the wizard route runs the raw offline
+  // validator, which has no build-target product check — so it must reject a
+  // key signed for a different product, and must not record it in setup state.
+  const foreign = licenseLib.generateLicenseKey({
+    licensee: "buyer@example.test",
+    plan: "extractor",
+    product: "extractor_exe",
+  });
+  const rejected = await postJson(licenseRoute, { licenseKey: foreign.licenseKey });
+  assert.equal(rejected.status, 200);
+  assert.equal(rejected.body.valid, false);
+  assert.match(String(rejected.body.error), /Extractor EXE/);
+  assert.equal(
+    (await state.readSetupState()).license,
+    undefined,
+    "a foreign-product key must not be recorded",
+  );
+
   const issued = licenseLib.generateLicenseKey({
     licensee: "buyer@example.test",
-    plan: "self_hosted",
-    product: "automation_exe",
+    plan: "selfhosted",
+    product: "selfhosted_os",
   });
 
   const res = await postJson(licenseRoute, { licenseKey: issued.licenseKey });
   assert.equal(res.status, 200);
   assert.equal(res.body.valid, true);
   assert.equal(res.body.licensee, "buyer@example.test");
-  assert.equal(res.body.plan, "self_hosted");
+  assert.equal(res.body.plan, "selfhosted");
+  assert.equal(res.body.lifetime, false, "a term key is never lifetime");
 
   const stored = await state.readSetupState();
   assert.equal(stored.license?.key, issued.licenseKey);
   assert.equal(typeof stored.license?.validatedAt, "string");
   assert.equal(await state.isSetupComplete(), false, "step 1 alone must not mark setup complete");
+
+  // TASK_145 T9 (senior §3 D6.2): the route exposes the lifetime classification
+  // the wizard needs — derived from the decoded `expires_at` sentinel only.
+  const lifetime = licenseLib.generateLicenseKey({
+    licensee: "buyer@example.test",
+    plan: "selfhosted",
+    product: "selfhosted_os",
+    expiresAt: licenseLib.LIFETIME_EXPIRES_AT,
+  });
+  const lifetimeRes = await postJson(licenseRoute, { licenseKey: lifetime.licenseKey });
+  assert.equal(lifetimeRes.body.valid, true);
+  assert.equal(lifetimeRes.body.lifetime, true, "the year-2999 sentinel must read as lifetime");
 });
 
 test("C4: license/validate reports the validator's own error for a bad key, storing nothing", async () => {
