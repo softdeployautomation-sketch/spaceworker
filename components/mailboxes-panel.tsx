@@ -582,17 +582,35 @@ export default function MailboxesPanel() {
       description: "This cannot be undone.",
       confirmLabel: "Delete",
     }))) return;
-    // A refused delete (409 — the mailbox has send history) is the normal
-    // outcome here, not an edge case, so it must reach the user. Previously
-    // this was `if (res.ok)` with NO else and a bare `catch {}`, so a 409, a
-    // 4xx or a dropped connection produced no message, no state change and no
-    // console output: the button simply looked dead. Same error surface
-    // registerTestMailbox uses (setTestMbError) — here, the panel-level `error`
-    // rendered just under the heading.
     setError("");
     try {
-      const res = await fetch(`/api/mailboxes/${m.id}`, { method: "DELETE" });
-      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      // Plain delete first: the server deletes cleanly whenever the mailbox has
+      // no DELIVERED mail on it, which is the common case (a mailbox that was
+      // only ever queued or bounced has no history to lose). It refuses ONLY for
+      // delivered history or a campaign that is mid-send, and says so with
+      // requiresConfirmation rather than a bare failure.
+      //
+      // A refused delete must reach the user. Previously this was `if (res.ok)`
+      // with NO else and a bare `catch {}`, so a 409, a 4xx or a dropped
+      // connection produced no message, no state change and no console output:
+      // the button simply looked dead.
+      let res = await fetch(`/api/mailboxes/${m.id}`, { method: "DELETE" });
+      let data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        requiresConfirmation?: boolean;
+      };
+
+      if (res.status === 409 && data.requiresConfirmation) {
+        const go = await confirm({
+          title: `Delete "${m.label}" and its send history?`,
+          description: data.error ?? "",
+          confirmLabel: "Delete anyway",
+        });
+        if (!go) return;
+        res = await fetch(`/api/mailboxes/${m.id}?force=1`, { method: "DELETE" });
+        data = (await res.json().catch(() => ({}))) as { error?: string };
+      }
+
       if (!res.ok) {
         setError(typeof data.error === "string" ? data.error : "Could not delete mailbox");
         return;

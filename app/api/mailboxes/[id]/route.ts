@@ -109,7 +109,7 @@ export async function PUT(
 }
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
@@ -125,45 +125,107 @@ export async function DELETE(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
-  // A mailbox is a HISTORY-BEARING object, so a delete that would sever that
-  // history is REFUSED with an explanation rather than cascaded. EmailQueueItem
-  // .mailboxId references Mailbox with ON DELETE RESTRICT (verified in
-  // pg_constraint: confdeltype = 'r'), because each queue row is the record of a
-  // recipient this account actually sent to. Cascade-deleting those rows would
-  // destroy campaign history, and clearing EmailCampaign.mailboxIds first would
-  // let a running campaign keep sending on a mailbox that no longer exists —
-  // that is worse than the delete failing.
+  // Deleting a mailbox must actually delete it — that is the entire point of the
+  // button — but the queue rows it leaves behind are the ONLY record of what this
+  // account sent (there is no separate SendLog table: toEmail / status / sentAt /
+  // error live on EmailQueueItem itself), so the two cases are NOT the same and
+  // must not share one answer:
   //
-  // NOTE: this must go through isForeignKeyRefusal(), NOT an `err.code === "P2003"`
-  // test. PostgreSQL 18 (what production runs) raises SQLSTATE 23001 for RESTRICT,
-  // which Prisma does not map to any P-code — so a P2003 check is dead code there
-  // and this route kept returning 500 even after the first fix. PostgreSQL 16 (the
-  // dev machine) raises 23503, which IS mapped to P2003 — which is why every local
-  // test passed. See lib/prisma-fk-error.ts for the measurements.
+  //   * rows that were DELIVERED (`sent`) are history. Deleting the mailbox
+  //     destroys the only copy, so that needs the owner's explicit consent.
+  //   * rows that never left (`queued`) or were rejected by the provider
+  //     (`failed`) are not history — they are unsent work and provider errors.
+  //     Refusing to delete a mailbox because it has 71 never-sent rows for a
+  //     stopped campaign is friction with nothing behind it. That was the actual
+  //     complaint: a test mailbox with **0 delivered messages** could not be
+  //     removed, and its 50 rows were all 550-spam rejects.
+  //
+  // A campaign that is `sending` right now is also a blocker: its recipients are
+  // being drained through this mailbox as we speak.
+  //
+  // `EmailQueueItem.mailboxId` is ON DELETE RESTRICT, so the rows MUST go in the
+  // same transaction as the mailbox — hence the explicit deleteMany below rather
+  // than relying on the FK to cascade.
+  const force = new URL(req.url).searchParams.get("force") === "1";
+
+  const [sent, queued, failed, campaigns] = await Promise.all([
+    prisma.emailQueueItem.count({ where: { mailboxId: id, status: "sent" } }),
+    prisma.emailQueueItem.count({ where: { mailboxId: id, status: "queued" } }),
+    prisma.emailQueueItem.count({
+      where: { mailboxId: id, status: { notIn: ["sent", "queued"] } },
+    }),
+    prisma.emailCampaign.findMany({
+      where: { userId: session.userId, mailboxIds: { has: id } },
+      select: { id: true, name: true, status: true, mailboxIds: true },
+    }),
+  ]);
+  const total = sent + queued + failed;
+  const sending = campaigns.filter((c) => c.status === "sending");
+
+  if (!force && (sent > 0 || sending.length > 0)) {
+    const breakdown = [
+      sent > 0 ? `${sent} delivered` : null,
+      queued > 0 ? `${queued} not yet sent` : null,
+      failed > 0 ? `${failed} failed` : null,
+    ]
+      .filter(Boolean)
+      .join(", ");
+    const sendingNote = sending.length
+      ? ` It is sending for ${sending.map((c) => `"${c.name}"`).join(", ")} right now — stop that campaign first, or confirm to remove the mailbox anyway.`
+      : "";
+    return NextResponse.json(
+      {
+        error: `"${mailbox.label}" has sent mail (${breakdown}). Those ${total} message record(s) are the only copy, and deleting the mailbox deletes them.${sendingNote}`,
+        requiresConfirmation: true,
+        blockers: { sent, queued, failed, total },
+      },
+      { status: 409 }
+    );
+  }
+
   try {
-    await prisma.mailbox.delete({ where: { id } });
+    const result = await prisma.$transaction(async (tx) => {
+      const removed = await tx.emailQueueItem.deleteMany({ where: { mailboxId: id } });
+      // Strip the id out of every campaign that rotates through this mailbox.
+      // buildQueueItemRows assigns `mailboxIds[i % len]` from the campaign's own
+      // array, so a stale id left behind would be handed to a recipient on the
+      // next resume and fail the FK on insert. A campaign that ends up with []
+      // simply has nothing to send on, which is the honest outcome of deleting
+      // its only mailbox.
+      for (const c of campaigns) {
+        await tx.emailCampaign.update({
+          where: { id: c.id },
+          data: { mailboxIds: c.mailboxIds.filter((m) => m !== id) },
+        });
+      }
+      await tx.mailbox.delete({ where: { id } });
+      return { removed: removed.count, campaigns: campaigns.length };
+    });
+
+    return NextResponse.json({
+      ok: true,
+      deletedQueueItems: result.removed,
+      updatedCampaigns: result.campaigns,
+    });
   } catch (err) {
+    // Safety net only — every dependent we know of is handled above, so reaching
+    // here means a dependent nobody anticipated. Report it rather than 500.
+    //
+    // NOTE: this must go through isForeignKeyRefusal(), NOT an `err.code === "P2003"`
+    // test. PostgreSQL 18 (what production runs) raises SQLSTATE 23001 for RESTRICT,
+    // which Prisma does not map to any P-code — so a P2003 check is dead code there
+    // and this route kept returning 500 even after the first fix. PostgreSQL 16 (the
+    // dev machine) raises 23503, which IS mapped to P2003 — which is why every local
+    // test passed. See lib/prisma-fk-error.ts for the measurements.
     if (isForeignKeyRefusal(err)) {
-      // "roughly how much": total queue rows plus the number of campaigns they
-      // belong to, which is what tells the owner whether this is one stale test
-      // or real send history.
-      const [count, campaignRows] = await Promise.all([
-        prisma.emailQueueItem.count({ where: { mailboxId: id } }),
-        prisma.emailQueueItem.findMany({
-          where: { mailboxId: id },
-          select: { campaignId: true },
-          distinct: ["campaignId"],
-        }),
-      ]);
       return NextResponse.json(
         {
-          error: `This mailbox has already been used to send (${count} queued message(s) across ${campaignRows.length} campaign(s)), so it can't be deleted without losing that history. Use Pause to stop it being used for new sends.`,
+          error:
+            "This mailbox is still referenced by records that depend on it, so it can't be deleted yet.",
         },
         { status: 409 }
       );
     }
     throw err;
   }
-
-  return NextResponse.json({ ok: true });
 }
