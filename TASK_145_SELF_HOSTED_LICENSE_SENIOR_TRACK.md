@@ -935,7 +935,7 @@ A **scratch copy under `/tmp` cannot be used** — it fails on module resolution
 | S7 | Un-revoke, then bind | ✅ **VERIFIED 2026-09-29 (pass 9).** Runtime, same harness. After `unrevokeExeLicense` the gate clears (`isExeLicenseRevoked` → `false`), a **second** `unrevokeExeLicense` call does not throw (idempotent, as D2 requires), and a `transferExeLicenseToMachine` that had been blocking now **succeeds** — `boundMachineId` actually moved to `t5-machine-c`. Revocation is fully reversible end-to-end. Also proven: `revokeExeLicense` called twice leaves **exactly 1** row (the `upsert` idempotency claim in D2). |
 | S8 | `curl -s localhost:3000/api/store/prices \| grep -c selfhosted_os` | `0` — new product not leaked to the public store |
 | S9 | Admin panel: issue a 30-day licence and a lifetime licence; buyer Settings page shows 30 days and "No expiry" respectively | ✅ **VERIFIED 2026-09-30 (pass 14).** **Admin half (T7):** `selfhosted_os` offered in the product `<select>` (6 options — only reachable from `LICENSABLE_EXE_PRODUCTS`), the Lifetime toggle disabling the duration input and posting `"lifetime":true` with no `durationDays`, and a revoked row rendering the red `Cancelled` pill with `Restore license`; every transition corroborated by the server's own `revoked` flag over HTTP. **Buyer half (T8):** rendered with a real buyer session against scratch `spaceworker_t145` — a lifetime key renders `No expiry (lifetime)`, a 30-day key renders the real date plus `(30 days remaining)`, a malformed key renders `Not available`, and `180` / `days from issue` / `2999` appear **0** times in the HTML. Was recorded **PARTIAL** after pass 13 precisely so the buyer half could not be skipped on a tick it had not earned. |
-| S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | rejected with a product-mismatch message (D6.1) |
+| S10 | Self-hosted wizard: enter a store-bought `extractor_exe` key | ✅ **VERIFIED 2026-09-30 (pass 15).** `app/api/setup/license/validate/route.ts:75-86`, commit `f4e06b9`. The guard sits **after** the validator rejection and **before** `updateSetupState`, so a foreign key is answered, never recorded. Runtime, re-derived by the senior from the junior's own durable form: `C3` in `tests/self-hosted-setup.test.ts` generates a real `extractor_exe` key through the real `generateLicenseKey`, POSTs it to the real route module, and gets **`200 {"valid":false, error:"This license is for Extractor EXE, not SpaceWorker OS (Self-Hosted). Enter a self-hosted license key, or contact us if you made a mistake."}`** with `readSetupState().license === undefined`. **Fail-closed is proven through the value, not assumed:** `lib/exe-license-validator.ts:49` is `product: payload?.product ?? ""`, so a legacy keyless-`product` key arrives as `""`, and `"" !== "selfhosted_os"` rejects it — the same posture as `exe-license/activate:80-82`. Message fidelity checked against the registry rather than a literal: `getProduct("extractor_exe")?.name === "Extractor EXE"` and `SELF_HOSTED_OS.name === "SpaceWorker OS (Self-Hosted)"` (`lib/products.ts:122,195`). **Why it was missing at all:** this route calls the raw offline validator directly, which has no build-target product check (unlike the activate route), so before T9 a store-bought EXE key would have activated a self-hosted install. |
 | S11 | `isSelfHosted()` early-returns at `app/api/admin/exe-licenses/route.ts:50,473` still present | unchanged — revoke endpoints are inert on a customer's box |
 | S12 | Migration sanity | **Amended by §3.10.6. ** `npx prisma migrate status` **cannot** be the pass condition on this machine (stale shared DB + two stuck `device_tools_v2` rows, §3.10.7). Pass condition is now: the migration is **additive only** (one new table, one new column with a default, no destructive statement) **and** it applies cleanly to a scratch database. Verified 2026-09-29 via `prisma db push` onto `spaceworker_t145` (§3.10.7). The fresh-DB history failure (P3018) is **not** T1's — it is tracked as **T14**. |
 | S13 | **THE LIVE KILL (E7)** — with a real revoked row, POST `/api/exe-license/eligibility` with (a) the licence's original key and (b) its current bound key | **both** return `eligible: false`. Before the edit both returned `true` (W2) — this single row is what makes the owner's "immediate revocation" real. |
@@ -3342,7 +3342,7 @@ Three consequences, all wanting:
 | Live app | `main` @ `06b68fd` — **this phase's changes there: 0** |
 | Closed | **T1, T2, T3, T4, T5, T6, T7, T8, T16, T17** |
 | `S`-rows | `S9` now **COMPLETE** (was PARTIAL); everything else unchanged |
-| Next | **T9** → T10 → T11 → T12 → T13 → T14 → T15 |
+| Next | ~~**`T9`**~~ **⚠️ SUPERSEDED BY PASS 15 — `T9` is CLOSED; the pointer is now `T10`** → T11 → T12 → T13 → T14 → T15 |
 | New lessons | `W19` (pre-existing message now reachable), `W20` (drifted-DB constraint ≠ schema) |
 
 
@@ -3462,4 +3462,69 @@ LIVE_TSC_EXIT=0
 - `W19` is **not** consumed by this task (it binds `T11`/`T13`). This task introduces **no new user-visible string** that could collide with the existing revoked message: the mismatch copy is new and unique to a state the EXE gate has never described.
 
 READY FOR VERIFICATION - T9
+
+
+---
+
+## 2026-09-30 — SENIOR — pass 15: **`T9` VERIFIED + CLOSED**, `S10` closed, C3 deviation **ACCEPTED**
+
+Commit `f4e06b9` on `self-hosted-build` (`HEAD == origin/self-hosted-build`, so the "pushed" claim holds), `4 files, +296/−6` — exactly the declared set. Verified by re-deriving the diff against the **registry and the validator's real return type**, then re-running every gate myself. Not by reading the junior's table.
+
+### 3.20.1 What I re-derived rather than re-read
+
+| Claim | How I checked it | Result |
+|---|---|---|
+| `"selfhosted_os"` is the real product id | `lib/products.ts:194` | ✅ `id: "selfhosted_os"` |
+| Both products resolve through `getProduct` | `BY_ID = [...ALL_PRODUCTS, SELF_HOSTED_OS]` (`:209`) | ✅ resolves **both** — note `SELF_HOSTED_OS` is deliberately *outside* `ALL_PRODUCTS`, so only `BY_ID` makes `getProduct("selfhosted_os")` work. Had the junior written `ALL_PRODUCTS.find(...)`, the route would have dereferenced `null` |
+| the message's product name is real | `lib/products.ts:123` | ✅ `name: "Extractor EXE"` |
+| `expiresAtDate` exists on the validator result | `lib/exe-license-validator.ts:36` | ✅ `expiresAtDate: Date \| null` |
+| fail-closed for a legacy keyless-`product` key | `lib/exe-license-validator.ts:49` | ✅ `product: payload?.product ?? ""` → arrives as `""`, and `"" !== "selfhosted_os"`. **Proven through the value**, not assumed from a `!==` |
+| guard order | grep line numbers | ✅ reject `:69` → **guard `:81`** → `updateSetupState` `:89` → lifetime `:103`. A foreign key is answered, never recorded |
+| frozen-sentinel discipline | `grep '2999\|LIFETIME_EXPIRES_AT'` on the route | ✅ only a **comment** at `:101`; the one import is `isLifetimeExpiry` (`:4`). No re-declared literal |
+| the cited precedent is real | `exe-license/activate:80-82` | ✅ `if (!validation.product \|\| validation.product !== expectedProduct)` — the new guard mirrors a check that exists, and the comment citing it is accurate |
+
+### 3.20.2 The declared deviation — **ACCEPTED** (it was mandatory, and it strengthens)
+
+The junior flagged that `C3` had to be corrected and asked for a ruling. Ruling: **accept**, for three reasons I verified rather than took on trust.
+
+1. **No version of T9 could have satisfied D6.1 and left C3 alone.** The old fixture minted `product: "automation_exe"` and asserted *acceptance*. `AUTOMATION_EXE.id` is `"automation_exe"` (`lib/products.ts:154`), which `!== "selfhosted_os"` — so the new guard rejects exactly that key. Left alone, the **mandatory** `test:setup` would have gone red, a regression §4.1c attributes to T9. The spec's "only the route changes" was self-contradictory; the junior reported the contradiction instead of hiding it, which is the correct behaviour.
+2. **It is a strengthening.** C3 went from one acceptance leg to three: foreign-product rejection **+ non-recording** (`readSetupState().license === undefined`), a term key asserting `lifetime:false`, and a sentinel key asserting `lifetime:true`. Net assertions up; the suite held at the mandated **29**.
+3. **The replacement fixture is faithful to production — checked, not assumed.** The accepted key is now `product:"selfhosted_os"` / `plan:"selfhosted"`, which is precisely what admin issuance signs: `app/api/admin/exe-licenses/route.ts:486-487` is `plan: product.plan ?? product.id, product: product.id`, and `SELF_HOSTED_OS.plan === "selfhosted"` (`lib/products.ts:199`). Incidentally this also fixed a **latent infidelity**: the old fixture's `plan: "self_hosted"` matched **nothing in the registry**, so C3 had been asserting the echo of a plan string no issuance path produces.
+
+Worth stating explicitly, because it is the trap here: **`plan` is not the lifetime discriminator.** The third leg proves the rule as specified — the year-2999 sentinel in `expires_at` — consistent with T6 (`expiresAt: LIFETIME_EXPIRES_AT`) and `S20`.
+
+
+### 3.20.3 Independent gate re-run (mine, not the report's)
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | `0` |
+| `CI=1 npx next build` | `BUILD_EXIT=0` |
+| `npm run test:license` | `# pass 9 / # fail 0` |
+| `npm run test:setup` | `# pass 29 / # fail 0` |
+| frozen-lib canary — `git diff main..self-hosted-build -- lib/exe-license-validator.ts lib/license-service.ts` | **empty** ✅ (the two genuinely frozen files; `exe-license-bind.ts` is shared, not frozen — `V17` correction, pass 14) |
+| `W16` — `.env` untouched | ✅ still `lrwxr-xr-x .env -> /Users/mikeolab/spaceworker/.env`; **target mtime `Sep 14 07:25`**, predating this session |
+
+On that last row — a clean `git status` is **not** evidence for `.env`, because it is gitignored. I checked the symlink and the target's mtime directly. That is the entire point of `W16`, and it is the one hygiene claim that cannot be discharged the usual way.
+
+### 3.20.4 On the deleted `S10` probe
+
+The junior's raw `S10` transcript came from `t9-s10-probe.mts`, which was then **deleted** — but it disclosed that unprompted and pointed at `C3` as the durable form ("nothing depends on a deleted harness"). I did not accept the transcript; I required the durable form and ran it myself. This is the §3.13.2 pattern (T3's ephemeral evidence; `S2`/`S3` closed on unreproducible proof, later fixed by `T17`) applied **before** the row was closed rather than after. Credit where due: flagging the shape of your own evidence is what makes a row closeable at all.
+
+### 3.20.5 Honest limits — carried, not closed
+
+- **T10's UI half is `UNVERIFIED`** — correct and in scope for T10 only; T9's route exposes `lifetime: boolean` and nothing more.
+- **No *running* `next start` wizard excursion.** The route is exercised as the **real module** (real validator, real HMAC) inside both suites. Accepted: identical technique to passes 5–13, and stronger here because the evidence is a committed test rather than a deleted probe.
+- **NOT RUNNABLE BY JUNIOR: none** — `S10` is the only §4.2 row naming T9, and it ran. Confirmed by grep: no other row names T9.
+
+### Standing state after pass 15
+
+| | |
+|---|---|
+| Branch | `self-hosted-build` @ `f4e06b9` |
+| Live app | `main` @ `97749ec` — **this phase's changes there: 0** |
+| Closed | **T1–T9**, T16, T17 |
+| `S`-rows | `S10` now **VERIFIED**; `S9` **COMPLETE** |
+| Next | **T10** (wizard UI: render the lifetime / no-renewal state) → T11 → T12 → T13 → T14 → T15 |
+| Branch debt | `W18` (timestamp collision `20261020000000_add_exe_license_revocation` vs `20261020000000_admin_device_commands`) still **must be renumbered before merge** |
 

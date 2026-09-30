@@ -6,15 +6,27 @@
 
 > ⚠️ **REVISION 2 (2026-09-29) — read senior track §3.9 before §2 here.** The owner clarified the product: a **1-month test** licence must be killable ("just like the other exe"), and a **lifetime** licence must be **admin-move-only**. This **amends D5** and adds **D8–D10**, which is why the work order grew past its original `T1 → T10` shape. **Task numbers record the order things were *discovered*, not the order you *do* them — always follow the `▶ NEXT TASK` pointer in §2, never the lowest unused number.**
 
-**▶ NEXT TASK: `T9` — the setup wizard API must offer the self-hosted product and accept a lifetime key (`app/api/setup/license/validate/route.ts`, full spec in §2).** `T8` is **CLOSED** — the buyer's Settings page no longer hardcodes 180 days; it derives the expiry from the **decoded key** and renders `"No expiry (lifetime)"` for the sentinel. The senior verified it in pass 14 (`tsc` clean, both suites green, all six canaries unchanged, and the rendered buyer half of `S9` produced against a real session — `S9` is now **COMPLETE**). `T9` is the **wizard API** half: it must accept the self-hosted product and a `lifetime` key rather than assuming a 30-day term. Do that one task, run its acceptance check, log it, stop. **`T10` (wizard UI) follows.**
+**▶ NEXT TASK: `T10` — the wizard UI must *use* the lifetime flag (`app/setup/setup-wizard.tsx`, full spec in §2).** `T9` is **CLOSED** — the wizard API now rejects a key signed for any product other than `selfhosted_os` (recording nothing when it does), and exposes `lifetime: boolean` derived **solely** from the decoded `expires_at` sentinel. The senior verified it in pass 15 (`tsc` clean, `BUILD_EXIT=0`, both suites green at 9/9 and 29/29, canaries unchanged, both frozen libs byte-identical — `S10` is now **VERIFIED**). `T10` is the **UI** half: `app/api/setup/license/validate/route.ts` already *returns* the flag, and nothing consumes it yet. Extend `ApiOk` with `lifetime?: boolean`, store it beside `licenseValidated`, and branch the activation copy + the Review step's Licence row. Do that one task, run its acceptance check, log it, stop. **`T11` (the live kill) follows — it is the highest-value edit in Revision 2.**
 
 > ⚠️ **`T12` and `T8` edit files that `V17` used to call "frozen". That claim was WRONG and is corrected (§1.6 / senior §3.14.1).** `lib/exe-license-bind.ts`, `app/dashboard/settings/licenses-section.tsx` and `app/api/admin/exe-licenses/route.ts` are **shared**, not frozen — `T5` (done), `T6` (done), `T7`, `T8` and `T12` legitimately change them. Only `lib/exe-license-validator.ts` and `lib/license-service.ts` are frozen for the whole phase. If you are assigned one of those tasks, a diff in the shared file is **correct and expected** — do not revert it and do not log an objection about it.
 
 > ⚠️ **NEVER edit `.env` from this worktree (new in `T7`'s pass — §1.8 / senior §3.16.3 / `W16`).** It is a **symlink to the live app's `.env`** *and* gitignored, so an edit changes the running product with **zero trace in `git status`**. If you need `next start`, pass overrides on the command line (see §1.8).
 
-**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T6` ✅ · `T7` ✅ · `T8` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `d61969f`) · **`T9`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
+**Status:** `T1` ✅ · `T2` ✅ · `T3` ✅ · `T4` ✅ · `T5` ✅ · `T6` ✅ · `T7` ✅ · `T8` ✅ · `T9` ✅ · `T16` ✅ · `T17` ✅ all closed (latest `f4e06b9`) · **`T10`–`T15` not started.** The senior moves the pointer above at the end of every pass; if it ever disagrees with a `T*` heading or with a later revision banner, **this pointer wins** — read §2 for the spec.
 
 ---
+## 1.11 — REVISION 13 (2026-09-30): `T9` is CLOSED. `T10` is next.
+
+**What just happened.** `T9` landed (`app/api/setup/license/validate/route.ts`, `+28/−2`, commit `f4e06b9`) and the senior verified it in **pass 15** by re-deriving the guard against the registry and re-running every gate — not by reading your log. Four results worth knowing before you touch `T10`:
+
+1. **The route already returns `lifetime`; nothing consumes it yet.** `lifetime: isLifetimeExpiry(validation.expiresAtDate)` sits on the existing success body. Your `T10` job is purely to *use* it. Both states are now asserted in `C3`, so you have a fixture to copy.
+2. **`plan` is NOT the lifetime discriminator.** The self-hosted plan string is `"selfhosted"` (`SELF_HOSTED_OS.plan`) and it is **identical** for a monthly and a lifetime licence — only `expires_at` distinguishes them. Never branch on `plan`.
+3. **A product mismatch is an *answer*, not a transport failure.** The route returns `200 {valid:false, error:"This license is for Extractor EXE, not SpaceWorker OS (Self-Hosted)…"}`. `T10`'s UI must render `data.error` as a normal validation message: do **not** treat `res.ok` as "activated", and do not style a 200-shaped rejection as a crash.
+4. **The `C3` fixture was corrected** — a declared deviation the senior **accepted** (senior §3.20.2, pass 15). It now mints `product:"selfhosted_os"` / `plan:"selfhosted"`, the same values `app/api/admin/exe-licenses/route.ts:486` signs. If you add a fixture in `T10`, copy those, or your test and an admin-issued key will disagree.
+
+> ⚠️ **`T10`'s runtime half has a documented `NOT RUNNABLE` risk — and the handling is already settled.** The wizard is a client component. Before you declare its runtime unverifiable, read §1.8 for the `next start` incantation (**never** edit `.env` — `W16`) and §4.1e. If you genuinely cannot drive it headlessly, write `NOT RUNNABLE BY JUNIOR: <row> — <why>` and show the exact `fetch` the button makes, exactly as `T7` did.
+
+
 
 ## 1.10 — REVISION 12 (2026-09-30): `T8` is CLOSED. `S9` is COMPLETE. `T9` is next.
 
@@ -2979,4 +2991,27 @@ LIVE_TSC_EXIT=0
 - `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/license-service.ts`, `lib/exe-license-bind.ts` and `app/api/admin/exe-licenses/route.ts` were **read only**. No `.env`, no migration, no Prisma command, no VPS connection, no `TASK_134..TASK_144` file, no mailbox/admin-panel file.
 
 READY FOR VERIFICATION - T9
+
+
+---
+
+## 2026-09-30 — SENIOR pass 15 (verification record): `T9` VERIFIED + CLOSED, `S10` closed
+
+**This entry is the senior's verification of `T9`, recorded in the junior log for continuity.** Full reasoning is in senior track §3.20. Do not edit this entry; append below it.
+
+**`T9` VERIFIED** — `app/api/setup/license/validate/route.ts`, `+28/−2`, commit `f4e06b9` (4 files with the test and both logs). Verified by re-deriving the diff against `lib/products.ts` and the validator's real return type, then re-running every gate myself — not by reading your table.
+
+**The guard is correct and correctly placed.** `:69` validator reject → **`:81` product guard** → `:89` `updateSetupState` → `:103` `lifetime`; order checked by line number, not by description. A foreign key is answered, never recorded. **Fail-closed is proven through the value, not assumed:** `lib/exe-license-validator.ts:49` is `product: payload?.product ?? ""`, so a legacy keyless-`product` key arrives as `""`, and `"" !== "selfhosted_os"` rejects it — the same posture as `exe-license/activate:80-82`, which I confirmed exists.
+
+**The `SELF_HOSTED_OS`/`BY_ID` subtlety you got right and could easily have got wrong.** The product is deliberately **outside** `ALL_PRODUCTS` (so it never reaches `/pricing`, `/api/store/prices` or the wallets price form) and is registered only in `BY_ID`. Had you resolved it via `ALL_PRODUCTS.find(...)` instead of `getProduct(...)`, the route would have dereferenced `null` on every valid key. Your import was the correct one.
+
+**Your declared deviation is ACCEPTED** (senior §3.20.2). It was **mandatory**, not discretionary: the old `C3` fixture minted `product:"automation_exe"`, which the new guard rejects, so **no** version of `T9` could satisfy D6.1 and leave `C3` intact. It is also a **strengthening** (one acceptance leg → three: rejection + non-recording, term `lifetime:false`, sentinel `lifetime:true`) while holding the suite at 29. And the replacement fixture is **faithful to production** — `product:"selfhosted_os"` / `plan:"selfhosted"` is exactly what `app/api/admin/exe-licenses/route.ts:486-487` signs (`plan: product.plan ?? product.id, product: product.id`). It also fixed a latent infidelity: the old `plan:"self_hosted"` matched nothing in the registry.
+
+**Gates, re-run by me:** `tsc` `0` · `next build` `BUILD_EXIT=0` · `test:license` `9/0` · `test:setup` `29/0` · frozen-lib canary (`lib/exe-license-validator.ts`, `lib/license-service.ts`) **empty** ✅ · `.env` symlink intact with target mtime `Sep 14 07:25` — checked directly, because `git status` cannot see a gitignored file (`W16`).
+
+**On your deleted `S10` probe:** you disclosed it unprompted and pointed at `C3` as the durable form. I did not accept the transcript — I required the durable form and ran it. That is the §3.13.2 pattern applied *before* closing a row rather than after. Correct call; keep doing that.
+
+**Honest limits carried:** `T10`'s UI half `UNVERIFIED` (out of scope, correct). No running `next start` excursion (accepted — same technique as passes 5–13, and stronger here because the evidence is committed rather than deleted). `NOT RUNNABLE BY JUNIOR: none` — confirmed by grep: `S10` is the only §4.2 row naming `T9`.
+
+**▶ NEXT TASK: `T10` — the wizard UI (`app/setup/setup-wizard.tsx`). Read §1.11 first.** The route already returns `lifetime`; nothing consumes it yet.
 
