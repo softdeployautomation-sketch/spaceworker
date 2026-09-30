@@ -416,4 +416,58 @@ a backslash is an ordinary filename character, so every multi-level pattern matc
 nothing, which is why the file-list checks could not be exercised off Windows at all.
 
 **Still not verified for this layer:** whether Chrome *loads* a copied extension from a
+
+### The session-half equivalent of the same bug (2026-09-30)
+
+§12 above is about *which browsers are named*. This is about *whether the name is used*,
+and it is the sharper lesson.
+
+`Invoke-CaptureFromDir` and `Invoke-Restore` each decided the cookie browsers with an
+**inline literal in the function body**:
+
+```
+capture:  @('chrome', 'edge')            ← Brave excluded
+restore:  @('chrome', 'edge', 'brave')   ← Brave included
+```
+
+So a Brave clone walked its profile, carried its history, bookmarks, tabs and extensions,
+**skipped its session**, and returned exit code 0. `cookie_transfer` stayed at `'none'` —
+the same value it reports for a browser that carries no cookies by design — so nothing
+downstream could tell "not applicable" from "silently skipped".
+
+The check in §12 could not see it, for a reason worth remembering: a `ValidateSet` is part
+of a *parameter*, and this bug lived in a *body*. Both branches now read one script-scope
+constant (`$script:CarriableBrowsers`), and the contract check gained two new cases:
+
+| New case | What it catches |
+|---|---|
+| `$script:CarriableBrowsers` must equal the carriable set | the constant itself drifting |
+| the **keys** of `$script:ChromiumUserDataSubdirs` must equal it | a browser losing its `User Data` root |
+| no browser list may appear **inline at a call site** (comments stripped; exactly one occurrence allowed — the definition) | the exact shape of this bug, in any future function |
+
+The last one is the one that generalises: the previous check could only verify lists that
+were *declared*; this verifies that nothing *re-declares* one.
+
+Behavioural guard, because a static scan proves the list is written right and not that it is
+used right: `tests/Test-Roundtrip.ps1` §4g captures from a synthetic profile as Brave and
+asserts the cookie branch was reached. Verified by re-introducing the bug — the contract
+check exits 1 and the PS suite exits 2 with two named FAILs (`TASK_135` §11.4 has the table).
+
+### The device suites are now a CI step (2026-09-30)
+
+`npm run test:ps` (`scripts/test-device-ps.mjs`) runs `Test-Roundtrip.ps1`,
+`Test-SilentTrigger.ps1` and `Test-CookieCapture.ps1`, and `deploy.yml` calls it in the
+build job. Until this date none of the three ran anywhere but a developer's Windows machine,
+and they **could not** run in CI: without `SPACEWORKER_CLONE_KEY` they seal with DPAPI,
+which throws *"Operation is not supported on this platform"* off Windows. The runner injects
+a random job key per run to take the platform-independent GCM path.
+
+It fails the step on a `FAIL` line, a missing success marker, a non-zero exit, or **too few
+checks** — the last because one of these harnesses once could not fail at all (§ above).
+Verified with a stub `pwsh` that exits 0 and prints nothing: 6 problems, exit 1.
+
+**What CI still does not prove:** DPAPI sealing (Windows-only), and the suites' results on a
+real Windows box with a real browser installed. The runner prints that limitation rather
+than letting "green in CI" be read as "green on the device".
+
 restored profile. The files now travel; the load has not been observed on Windows.

@@ -710,3 +710,121 @@ Unchanged from §9: no live device has pushed a real profile through the pipe, t
 migrations are content-verified but not applied to the project's database, and `sync-state`
 has not run on Windows. The Brave path inherits all three — its state half is tested, its
 end-to-end path has not run.
+
+## 11. The device half gets a guard: a Brave session bug, and the suites that never ran (2026-09-30)
+
+§10 made Brave *reachable*. This pass found that Brave's **session** still did not travel,
+and that the reason nobody knew is one of the more uncomfortable findings in this task:
+the device-side suites were not running anywhere.
+
+### 11.1 The bug — two lists in one file, already disagreeing
+
+`lib/ProfilePaths.ps1` decided which browsers get their cookies captured in the **body** of
+`Invoke-CaptureFromDir`, and which get them imported in the body of `Invoke-Restore`. Both
+were written out inline, and they had already drifted apart:
+
+```
+capture:  @('chrome', 'edge')            ← Brave excluded
+restore:  @('chrome', 'edge', 'brave')   ← Brave included
+```
+
+The consequence was the worst shape a failure can take here. A Brave clone:
+
+- walked and carried its history, bookmarks, tabs and extensions — all correct;
+- never attempted the cookie capture, because the gate returned false;
+- left `cookie_transfer` at its initial `'none'` — the value it *also* reports for a
+  browser that carries no cookies **by design**, so nothing downstream could distinguish
+  "not applicable" from "silently skipped";
+- returned **exit code 0**, i.e. reported a clean clone.
+
+Every component supported Brave. The CDP module's `ValidateSet` accepted it (§10), the
+`User Data` map resolved its root, the version reader read its own tree. The *composition*
+did not, and no test was checking the composition.
+
+**Why the contract check could not see it.** That check parses `[ValidateSet(...)]`
+attributes, which are part of a function's *parameters*. This bug lived in a function
+*body* as a bare literal, where a parameter scan cannot reach. Extending the check meant
+adding a new kind of parser rather than a new case.
+
+### 11.2 Why it survived — the device suites never ran in CI
+
+Three PowerShell/proof suites cover this layer: `Test-Roundtrip.ps1`,
+`Test-SilentTrigger.ps1` and `Test-CookieCapture.ps1`. None was in `deploy.yml` and none
+was in `package.json`. All were run by hand, on Windows, by whoever remembered.
+
+They were *unable* to run in CI, and that is the real finding: without
+`SPACEWORKER_CLONE_KEY` the capture seals with **DPAPI**
+(`[System.Security.Cryptography.ProtectedData]::Protect`), which throws
+*"Operation is not supported on this platform"* anywhere but Windows. `Test-Roundtrip.ps1:84`
+calls `Invoke-CaptureFromDir` with the key absent by default, so on CI's ubuntu runner it
+dies at step 4 — after printing six PASS lines, so it *looks* like it mostly worked.
+
+That is also why the suite had grown a quiet asymmetry: step 4c already skipped itself on
+Linux (`SKIP restore.tampered-rejected (no SPACEWORKER_CLONE_KEY; DPAPI path is
+Windows-only)`), while steps 4 and 4b unconditionally took the DPAPI path. Half of it knew.
+### 11.3 What changed
+
+The fix (the bug itself):
+
+- `$script:CarriableBrowsers = @('chrome', 'edge', 'brave')` is now a script-scope
+  constant in `ProfilePaths.ps1`, and **both** branches read it — the capture gate and the
+  CDP import. One list cannot disagree with itself.
+- The App-Bound comment was corrected: the gate applies to the whole Chromium family
+  rather than being guessed per browser, so an affected Brave is refused *by name* instead
+  of exporting nothing. Deliberately conservative — a named refusal or a named failure,
+  never a silent `'none'`.
+
+The guards (so it cannot come back):
+
+1. `check:clone-contract` additionally parses, **by name**, `$script:CarriableBrowsers` and
+   the **keys** of `$script:ChromiumUserDataSubdirs`, and compares both to the carriable set.
+2. …and fails if a browser list appears inline at a call site again (PowerShell comments are
+   stripped first, because that file's comments quote the buggy literals on purpose).
+   Exactly one occurrence is expected: the constant's own definition.
+3. `tests/Test-Roundtrip.ps1` §4g — **behavioural**, on a real capture: a Brave capture must
+   REACH the cookie branch (`'skipped:no-local-state'` for a synthetic profile that has no
+   `Local State`) and must not report `'none'`. `LOCALAPPDATA` is pointed at an empty
+   sandbox for the duration, so the verdict cannot depend on whether the machine running
+   the test happens to have Brave installed.
+4. New `npm run test:ps` → `scripts/test-device-ps.mjs`: finds `pwsh` (its absence is a
+   **failure**, not a skip), injects a random 32-byte base64 job key so the suites take the
+   GCM path, runs all three suites, and fails on any `FAIL` line, a missing success marker,
+   a non-zero exit, or **too few checks** — the last because one of these harnesses once
+   could not fail at all.
+5. `deploy.yml`: a "Device PowerShell suites" step in the build job. These suites now run
+   automatically for the first time.
+
+### 11.4 Verification — sabotage, not assertion
+
+The bug and **both** guards were verified by re-introducing it (2026-09-30, this workspace):
+
+| State of the code | Contract check | `Test-Roundtrip.ps1` |
+|---|---|---|
+| as fixed | exit 0 | exit 0 · 35 PASS · "ALL PASSED" |
+| gate reverted to `@('chrome','edge')` | **exit 1** — "has 2 inline array literal(s)" | **exit 2** — `FAIL capture.brave-reaches-cookie-branch`, `FAIL capture.brave-not-no-cookies-by-design` |
+| restored | exit 0 (diff vs backup: 0 lines) | — |
+
+`npm run test:ps` **exit 0**: roundtrip 35 checks / silent-trigger 35 / cookie-capture 60,
+0 failed. The runner's own guard was verified too — with a stub `pwsh` that exits 0 and
+prints nothing it reports **6 problems and exits 1** ("never printed ALL PASSED" / "ran only
+0 check(s)").
+
+Full gate (the way `deploy.yml` runs it): `tsc` 0 · `test:clone` **112/112** ·
+`test:browser` **PASSED** (13+18+10, none skipped) · `check:clone-contract` 0 ·
+`check:workflows` 0 (21 `run:` blocks) · `engine-dist` 10 artifacts · `gofmt` clean ·
+`go build`/`vet`/`test`/`-race` all 0 · `test:ps` **PASSED**.
+
+### 11.5 Still not verified
+
+- **No live device has pushed a real profile** — unchanged from §9/§10.
+- **The end-to-end Brave path**: its state half is tested, its session half is now tested at
+  the gate, and neither has run against a real Brave installation on a real machine.
+- **DPAPI sealing is not exercised by CI** (Windows-only). The runner states this explicitly
+  rather than implying full coverage; what CI proves is the profile logic and the GCM path.
+- **Brave's real `Last Version` format and App-Bound-Encryption status** were not verified on
+  a real install. The gate is therefore deliberately conservative — the same numeric rule for
+  the whole Chromium family, so the worst case is a *named* refusal rather than a silent empty
+  capture. If Brave turns out never to use ABE, the fix is to narrow that condition, **not** to
+  widen the browser list.
+
+

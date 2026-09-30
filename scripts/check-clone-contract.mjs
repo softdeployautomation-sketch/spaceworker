@@ -210,6 +210,33 @@ function extractBrowserSetsByOwner(source, label) {
   return found;
 }
 
+/**
+ * Pulls `$script:NAME = @('a', 'b')` out of PowerShell.
+ *
+ * Written because the browser lists that mattered most were NOT ValidateSets: they
+ * were literals inside function bodies (`@('chrome','edge') -contains $Browser`),
+ * which no parameter scan can reach. Those literals had already drifted apart from
+ * each other — capture excluded Brave, restore included it — and the result was a
+ * Brave clone that carried no session while still exiting 0. They are one
+ * script-scope constant now, and this is what keeps that constant honest.
+ */
+function extractPsArrayByName(source, name, label) {
+  const m = source.match(new RegExp(`\\$${name}\\s*=\\s*@\\(([^)]*)\\)`));
+  if (!m) throw new Error(`could not find $${name} in ${label}`);
+  const values = [...m[1].matchAll(/'([a-z0-9_]+)'/g)].map((x) => x[1]);
+  if (values.length === 0) throw new Error(`parsed zero values from $${name} in ${label}`);
+  return values;
+}
+
+/** Pulls the quoted KEYS of a PowerShell hashtable literal (`$script:X = @{ 'a' = … }`). */
+function extractPsMapKeys(source, name, label) {
+  const m = source.match(new RegExp(`\\$${name}\\s*=\\s*@\\{([\\s\\S]*?)\\n\\}`));
+  if (!m) throw new Error(`could not find $${name} in ${label}`);
+  const keys = [...m[1].matchAll(/^\s*'([a-z0-9_]+)'\s*=/gm)].map((x) => x[1]);
+  if (keys.length === 0) throw new Error(`parsed zero keys from $${name} in ${label}`);
+  return keys;
+}
+
 /** Compares a list against an expected set, reporting drift in both directions. */
 function compareSets(label, actual, expected) {
   const actualSet = new Set(actual);
@@ -273,6 +300,48 @@ for (const [file, what] of [
     const chromiumOnly = owner.startsWith("Get-Chromium") || file.endsWith("CdpCookies.ps1");
     compareSets(`${file} ${owner} (${what})`, values, chromiumOnly ? carriableSet : allSet);
   }
+}
+
+// The two lists INSIDE ProfilePaths.ps1 are checked by NAME, and they are the reason
+// this section exists in its current shape. Both used to be written inline at their
+// call sites, in two different functions, and they had already DRIFTED apart: the
+// capture branch said `@('chrome','edge')` while the restore branch said
+// `@('chrome','edge','brave')`, so a Brave clone captured its history and bookmarks,
+// skipped its cookies, and still returned exit code 0 — a clean-looking clone with no
+// session. A ValidateSet scan cannot see a literal in the middle of a function body,
+// so these two are parsed by name: the shared `$script:CarriableBrowsers` constant
+// that both branches now read, and the User Data map's keys (which directory a
+// browser's files are read from). If either stops being the carriable set, this fails.
+const profilePathsFile = join(root, "michael", "browser-clone", "lib", "ProfilePaths.ps1");
+const profilePathsSource = readFileSync(profilePathsFile, "utf8");
+compareSets(
+  "michael/browser-clone/lib/ProfilePaths.ps1 $script:ChromiumUserDataSubdirs keys",
+  extractPsMapKeys(profilePathsSource, "script:ChromiumUserDataSubdirs", "ProfilePaths.ps1"),
+  carriableSet,
+);
+compareSets(
+  "michael/browser-clone/lib/ProfilePaths.ps1 $script:CarriableBrowsers",
+  extractPsArrayByName(profilePathsSource, "script:CarriableBrowsers", "ProfilePaths.ps1"),
+  carriableSet,
+);
+
+// And no browser list may be written out INLINE at a call site again. The check above
+// verifies the shared constant is correct; it cannot see a function body that ignores
+// the constant and spells the browsers out again — which is precisely how the two
+// cookie branches drifted apart, and invisible to every scan that came before.
+// Comments are stripped first, because this file's comments quote the buggy literals
+// on purpose to record why the constant exists.
+function stripPsComments(source) {
+  return source.replace(/<#[\s\S]*?#>/g, "").replace(/^[ \t]*#.*$/gm, "");
+}
+const inlineBrowserLiterals = [...stripPsComments(profilePathsSource).matchAll(/@\(\s*'[a-z0-9_]+'/g)];
+if (inlineBrowserLiterals.length !== 1) {
+  problems.push(
+    `ProfilePaths.ps1 has ${inlineBrowserLiterals.length} inline array literal(s) ` +
+      `(${inlineBrowserLiterals.map((m) => m[0]).join(", ")}); expected exactly 1 — the ` +
+      "$script:CarriableBrowsers definition. A browser list written at a call site is a " +
+      "second list, and a second list is one that can disagree with the first.",
+  );
 }
 
 console.log(

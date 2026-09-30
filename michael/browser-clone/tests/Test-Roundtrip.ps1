@@ -219,6 +219,37 @@ Check 'cdp.brave-exe-resolves' ($cdpFound['brave'] -eq (Join-Path $work 'pf\Brav
 Check 'cdp.brave-does-not-run-a-chromium-exe' ($cdpFound['brave'] -notmatch 'chrome\.exe|msedge\.exe')
 
 
+# ── 4g. the capture's cookie gate covers the whole Chromium family ──────────
+# The bug this pins, found 2026-09-30: the capture branch tested `@('chrome','edge')`
+# while the RESTORE branch tested `@('chrome','edge','brave')`. A Brave clone
+# therefore carried its files and silently skipped its session — `cookie_transfer`
+# stayed 'none' and the exit code stayed 0, a clean-looking clone with no logins.
+# Both branches now read ONE shared `$script:CarriableBrowsers` (a list cannot
+# disagree with itself), and this asserts the observable consequence: a Brave capture
+# REACHES the cookie branch instead of falling straight past it.
+#
+# 'skipped:no-local-state' is the correct verdict here and is also the proof: the
+# synthetic profile has no `Local State` at its User Data root, so arriving at that
+# answer means the gate let Brave in. The old gate produced 'none' — the same value
+# it produces for a browser that carries no cookies by design, which is precisely why
+# nothing reported the bug.
+#
+# LOCALAPPDATA is pointed at an empty sandbox for the duration: on a Windows machine
+# with Brave installed the CONFIGURED root would otherwise supply a real version and
+# change the verdict, and a check whose result depends on the machine is not a check.
+$savedLocalForCookies = $env:LOCALAPPDATA
+try {
+    $env:LOCALAPPDATA = Join-Path $work 'lad-empty'
+    New-Item -ItemType Directory -Path (Join-Path $work 'lad-empty') -Force | Out-Null
+    $braveArchive = Join-Path $work 'brave.psa'
+    $bcap = Invoke-CaptureFromDir -ProfileDir $fp -Out $braveArchive -Browser 'brave' -Key $capKey
+} finally {
+    $env:LOCALAPPDATA = $savedLocalForCookies
+}
+Check 'capture.brave-reaches-cookie-branch' ($bcap.cookie_transfer -eq 'skipped:no-local-state')
+Check 'capture.brave-not-no-cookies-by-design' ($bcap.cookie_transfer -ne 'none')
+Check 'capture.browsers-are-one-list' (($script:CarriableBrowsers -join ',') -eq 'chrome,edge,brave')
+
 Check 'contract.exit-codes' ($script:Magic.Length -eq 7)
 
 Write-Output ''

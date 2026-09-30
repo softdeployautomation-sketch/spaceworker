@@ -33,7 +33,38 @@ from it.
 | Console picker (`components/device-console.tsx`) | ✅ | ✅ | ✅ | ✅ offered, honest |
 | Profile **state** carry (`engine/pkg/browser/walkable.go`, `STATE_SYNC_BROWSERS`) | ✅ | ✅ | ✅ | ❌ `state_browser_unsupported` |
 | Session **cookies** (`CdpCookies.ps1`, `Get-ChromiumUserDataRoot`) | ✅ | ✅ | ✅ | ❌ |
+| ↳ the **gate** that decides whether to capture them (`ProfilePaths.ps1`) | ✅ | ✅ | ✅ ⚠️ *was ❌ until 2026-09-30 — see below* | ❌ |
 | Destination **build** (`hosted-browser-version.ts`: Chromium family) | ✅ | ✅ | ✅ | ❌ |
+
+⚠️ The row above is the one that lied. Every layer that *could* move Brave's cookies
+supported Brave — the CDP module's `ValidateSet`, the `User Data` map, the version
+reader — but the branch that decides to *attempt* the capture tested
+`@('chrome','edge')`. So a Brave clone walked its profile, carried its history,
+bookmarks and tabs, **skipped its session, and reported exit code 0**: a clean-looking
+clone with no logins. The matrix said ✅ because the components did support it; the
+*composition* did not, and nothing was checking the composition.
+
+### One list, or it will disagree with itself (2026-09-30, the Brave cookie bug)
+
+The same lesson as the `User Data` map above, one layer further in. The cookie branch in
+`Invoke-CaptureFromDir` and the import branch in `Invoke-Restore` each wrote the browsers
+out **inline**, and they had already drifted apart:
+
+```
+capture:  @('chrome', 'edge')            ← Brave excluded, silently
+restore:  @('chrome', 'edge', 'brave')   ← Brave included, so it was ready for cookies
+                                             that the capture never sent
+```
+
+Both branches now read ONE script-scope constant, `$script:CarriableBrowsers`, and
+`check:clone-contract` fails if a browser list is ever written inline at a call site
+again. The reason that check had to be added rather than a `ValidateSet` scan extended:
+a `ValidateSet` is part of a *parameter*, and this bug lived in the *body* of a function,
+where no parameter scan can see it.
+
+The verification for this is in the two places that could each catch it independently —
+the contract check (static) and `tests/Test-Roundtrip.ps1` §4g (behavioural, on a real
+capture) — and both were confirmed by re-introducing the bug and watching each fail.
 
 ### Chrome, Edge, Brave — fully carriable
 
@@ -87,8 +118,25 @@ extensions load) and to make the clone *look* like the same browser.
   browser**, because refusing a profile path for a browser the picker offers is a door
   that opens onto a wall;
 - `CLONE_BROWSERS` must be built from both halves, or a browser would be pickable in the
-  console and refused by everything behind it.
+  console and refused by everything behind it;
+- `$script:CarriableBrowsers` in `lib/ProfilePaths.ps1` and the `$script:ChromiumUserDataSubdirs`
+  map's **keys** — **must be the carriable set**, because these are the lists the
+  capture/restore branches and the `User Data` lookup actually read;
+- **no browser list may be written inline at a call site again** — the exact shape of the
+  2026-09-30 bug, and invisible to a `ValidateSet` scan because it lived in a function
+  *body*. Comments are stripped first, because that file's comments quote the buggy
+  literals on purpose to record why the constant exists.
 
 The check reports drift by file **and function** (a per-file rule cannot be right about
-both `Get-ChromiumUserDataRoot` and `Get-BrowserProfileDir`), and each of the four cases
+both `Get-ChromiumUserDataRoot` and `Get-BrowserProfileDir`), and each of the six cases
 above is verified by sabotage runs — see `STATE-PIPE.md` §10 for the evidence list.
+
+The two PowerShell cases get a **second, behavioural** guard, because a static scan proves
+the list is *written* right and not that it is *used* right:
+`npm run test:ps` runs `tests/Test-Roundtrip.ps1` (whose §4g captures from a synthetic
+profile as Brave and asserts the cookie branch was reached), plus the silent-trigger and
+cookie-capture harnesses. That runner is now a CI step; before 2026-09-30 these suites
+were hand-run on Windows only, because without a job key they seal with DPAPI, which
+cannot run off Windows — so CI could not execute them and quietly did not. `test:ps`
+supplies a random key per run to take the platform-independent AES-256-GCM path, and
+**fails the step if a suite passes while asserting too little**.

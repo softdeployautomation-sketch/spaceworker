@@ -7,7 +7,7 @@ Captures a user's browser profile (Chrome, Edge, Brave; Firefox as a fresh sessi
 - `Invoke-BrowserClone.ps1` — contract entry: `-Browser chrome|edge|firefox -Mode capture|restore -Out <path> [-Profile <name>] [-In <archive>] [-PreferEngine]`; exit codes 0/1/2
 - `lib/GcmCrypto.ps1` — AES-256-GCM via Windows CNG (BCrypt P/Invoke), correct auth-info interop, PS 5.1 + pwsh 7
 - `lib/ProfilePaths.ps1` — browser/profile detection, §2 file enumeration, locked-file retry (3×/5 s → skip), capture/restore, zip-slip guard, lock scrub
-- `tests/Test-Roundtrip.ps1` — self-test: GCM roundtrip, tamper rejection, wrong-key rejection, file-list, exit-code constants
+- `tests/Test-Roundtrip.ps1` — self-test: GCM roundtrip, tamper rejection, wrong-key rejection, file-list, exit-code constants, browser roots/version/labels, and §4g the cookie-capture gate (every carriable browser must reach it)
 - `engine/` — full `spaceworker-browser-clone` Go codebase (cmd/hack-browser-clone, cmd/relay, cmd/native-host, pkg/*, extension/, scripts/, docs/, tests/). The PowerShell layer is the MT-1 contract skin; the engine is the production pipeline (RECV CHECKs, MOUNT/INJECT CHECKs, egress relay per §13).
 - `engine/README-ENGINE.md` — engine map and how Invoke-BrowserClone delegates to it with `-PreferEngine`
 - `STATE-PIPE.md` — **the browser state pipe (TASK_135 §6)**: how history, bookmarks, open tabs, extensions and settings reach a clone; the two hard rules (completely silent on the work PC, AV-excluded directories); how a transfer larger than one device command still finishes; every failure name; and an exact statement of what is and is not verified.
@@ -26,10 +26,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File Invoke-BrowserClone.ps1 ^
 # full-fidelity engine path (transfer + RECV/MOUNT/INJECT CHECKs + egress relay):
 ...\Invoke-BrowserClone.ps1 -Browser chrome -Mode capture -Out C:\jobs\a.psa -PreferEngine
 
-# self-test:
-powershell -NoProfile -File tests\Test-Roundtrip.ps1
+# self-test (PowerShell; needs a job key for the GCM path, else it takes the
+# Windows-only DPAPI path):
+powershell -NoProfile -File tests\Test-Roundtrip.ps1 -WithKey
+
+# the whole device half at once — the supported way to run these, and what CI runs:
+npm run test:ps
 ```
 Exit codes: **0** success · **1** partial (some files skipped after lock retries) · **2** failure (bad args, missing key/profile, tamper detected, restore error).
+
+`npm run test:ps` runs `Test-Roundtrip.ps1`, `Test-SilentTrigger.ps1` and
+`Test-CookieCapture.ps1`, injecting a random job key per run so they take the
+platform-independent AES-256-GCM path (without a key they seal with DPAPI, which throws
+off Windows — which is why these were never in CI and why a Brave cookie-capture bug
+survived in them). It fails the step if a suite passes while asserting too little.
 
 ## Inputs / outputs
 - Args in: `-Browser`, `-Mode`, `-Out`, optional `-Profile`, `-In`, `-PreferEngine`.

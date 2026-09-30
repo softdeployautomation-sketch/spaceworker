@@ -109,6 +109,19 @@ jobs:
           npm run test:clone
           npm run test:browser
 
+      # TASK_135 — the DEVICE half, which no JS suite can reach: the PowerShell that
+      # walks a real profile, the cookie-capture chain (REAL cmd/native-host + the REAL
+      # extension service worker) and the silent-trigger harness. This is the first time
+      # these run automatically. They used to be hand-run on Windows only, because
+      # without a job key they seal with DPAPI — which throws on any non-Windows
+      # platform — so CI's ubuntu runner could not execute them at all and quietly did
+      # not. The runner supplies a random key per run to take the platform-independent
+      # AES-256-GCM path, and it fails the step if a suite passes while asserting too
+      # little. A real Brave cookie-capture bug lived in those files for exactly one
+      # reason: nothing ran them.
+      - name: Device PowerShell suites — profile capture, cookie chain, silent trigger
+        run: npm run test:ps
+
       - name: Build
         run: npm run build
         env:

@@ -26,6 +26,24 @@ $script:ChromiumUserDataSubdirs = @{
     'brave'  = 'BraveSoftware\Brave-Browser\User Data'
 }
 
+<#
+  The browsers whose COOKIES this module can move — the same set as the map above,
+  and deliberately a list of its own so `check:clone-contract` can compare the two.
+
+  WHY A SHARED CONSTANT RATHER THAN LITERALS AT THE CALL SITES: the cookie branch in
+  Invoke-CaptureFromDir and the import branch in Invoke-Restore each spelled the
+  browsers out inline — and the two had already DISAGREED. Capture said
+  `@('chrome','edge')`; restore said `@('chrome','edge','brave')`. So a Brave clone
+  captured its history, bookmarks and tabs, skipped its cookies, and still reported
+  exit code 0: a clean-looking clone with no session, which is exactly the
+  silent-partial failure this whole feature exists to eliminate.
+
+  The lesson is the same one the User Data map above records: a list written out
+  twice is a list that can disagree with itself, and the disagreement surfaces as a
+  wrong result rather than an error. One constant cannot.
+#>
+$script:CarriableBrowsers = @('chrome', 'edge', 'brave')
+
 function Get-ChromiumUserDataRoot {
     <#
       The LOCALAPPDATA-relative "User Data" root for a Chromium browser, or $null when
@@ -268,9 +286,9 @@ function Invoke-CaptureFromDir {
 
         $cookieTransfer = 'none'
         $cookieInfo = $null
-        if ($WithCookies -and @('chrome', 'edge') -contains $Browser) {
+        if ($WithCookies -and $script:CarriableBrowsers -contains $Browser) {
             if ($majorVersion -and [int]$majorVersion -ge 127) {
-                # DECISIVE, and not a bug to work around here: Chrome/Edge 127+
+                # DECISIVE, and not a bug to work around here: Chrome and Edge 127+
                 # seal cookie values with the App-Bound key (v20), released only
                 # to a path-validated browser process. Any out-of-process reader
                 # gets nothing, and a relocated copy makes the browser DELETE the
@@ -280,6 +298,10 @@ function Invoke-CaptureFromDir {
                 # the console offer the route that DOES work — the live session
                 # (in-browser capture via the extension, TASK_119B → CDP
                 # injection). Everything else in this archive is unaffected.
+                #
+                # The gate is applied to the whole Chromium family rather than
+                # guessed per browser, so an affected Brave is refused BY NAME here
+                # instead of silently exporting nothing.
                 $cookieTransfer = 'unsupported:app-bound-encryption'
             } elseif (-not (Test-Path $localState)) {
                 $cookieTransfer = 'skipped:no-local-state'
@@ -441,7 +463,7 @@ function Invoke-Restore {
         $cookieResult = $null
         $cookiePayload = Join-Path $stage '_meta\cookies.json'
         if (Test-Path $cookiePayload) {
-            $browserForCdp = if ($BrowserHint -in @('chrome', 'edge', 'brave')) { $BrowserHint } else { 'chrome' }
+            $browserForCdp = if ($script:CarriableBrowsers -contains $BrowserHint) { $BrowserHint } else { 'chrome' }
             if (-not (Get-Command Import-CdpCookies -ErrorAction SilentlyContinue)) {
                 $cookieTransfer = 'skipped:cdp-module-not-loaded'
             } else {
