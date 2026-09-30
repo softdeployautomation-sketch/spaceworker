@@ -2995,3 +2995,145 @@ So every figure still means exactly what it meant — validator **empty**, `lice
 
 **SENIOR PASS 12 COMPLETE — branch confirmed `self-hosted-build`; `main` divergence audited (`W17`/`W18` recorded). `▶ NEXT TASK: T7` (unchanged).**
 
+
+---
+
+### 2026-09-30 — JUNIOR — **`T7` implemented** (admin UI half of revocation: Lifetime toggle + `Cancelled` badge + Cancel/Restore + the `LICENSABLE_EXE_PRODUCTS` swap). No other task started. Runtime `S9` **was** run — evidence below.
+
+**Files changed: `app/admin/(protected)/admin-panel.tsx` ONLY — `112 insertions, 12 deletions` (`git diff --numstat HEAD` in the worktree).** `git status --short` in the worktree shows exactly two modified paths, this file and the junior track's own log: no library, no API route, no migration, no `package.json`, no `.env`, and nothing in the live checkout.
+
+| `file:line` | Change |
+|---|---|
+| `:6` | added `LICENSABLE_EXE_PRODUCTS` to the existing `@/lib/products` import — the **first** mandated swap site |
+| `:3565` | `EXE_PRODUCTS.map` → `LICENSABLE_EXE_PRODUCTS.map` in the issuer's product `<select>` — the **second** swap site |
+| `:3479` | **UNCHANGED ON PURPOSE** — `useState<string>(EXE_PRODUCTS[0].id)`. That default is an EXE product, not the self-hosted one; the task text put it out of scope, so it stays. |
+| `:3481-3484` | `const [lifetime, setLifetime] = useState(false)` |
+| `:3502-3504` | POST body sends `{ lifetime: true }` **or** `{ durationDays: … }`, mutually exclusive — the day count is never computed when `lifetime` is set |
+| `:3576`, `:3578` | duration `<input disabled={lifetime}>` + `disabled:opacity-50` |
+| `:3581-3592` | the **Lifetime (no expiry)** checkbox, in the file's existing `text-sm`/`dark:` form idiom |
+| `:4049-4051` | `const [cancellingId, setCancellingId] = useState<string \| null>(null)` — kept separate from the pre-existing `revokingId` ("clear this device's binding") so the two operations never share a spinner |
+| `:4157-4207` | `setRevoked(r, revoked)` — posts `action:"revoke"` / `action:"unrevoke"` with `{ email, exeLicenseId }` to the **existing** `T6` route, behind `useConfirm`, then `await load()` to re-read the **server's** flag |
+| `:4209-4221` | `cancelRestoreButton(r)` — label/colour driven only by `r.revoked` |
+| `:4268-4273` | `statusBadge` gained a **leading** `r.revoked` → red `Cancelled` pill, ahead of the `Bound` / `Unclaimed` arms |
+| `:4306` | Cancel/Restore added to the current (ungrouped) row |
+| `:4349-4358` | history `<li>`: the Delete button wrapped in a `flex items-center gap-2` div so Cancel/Restore sits beside it — layout only, Delete unchanged |
+| `:4389-4392` | `revoked?: boolean` on `type AdminLicenseRow`, documented as the GET list's own flag |
+
+**Hosted-safe / invariant notes.** `revoked` is taken **only** from the API's GET payload — never inferred from the key, never from a date, and "is this lifetime" is never computed client-side. `Restore` is wired into this admin tab and nowhere else. On `main` the field is absent, so `r.revoked` is falsy: no badge, and the button renders its live-state label on a surface where nothing is ever revoked → **inert**. No new auth path, no new response shape, no new API call. `lib/exe-license-validator.ts` and `lib/license-service.ts` untouched; no migration touched; nothing renamed; `admin-panel.tsx` was edited only as the branch's current worktree file, never synced with `main` and never reverted (`W17`), and no side was resolved (`W18` left to the senior).
+
+**Static acceptance check — raw output:**
+
+```
+$ cd /Users/mikeolab/sw-selfhost
+$ npx tsc --noEmit
+TSC_EXIT=0
+
+$ CI=1 npx next build
+BUILD_EXIT=0
+
+$ npm run test:license
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 430.534735
+
+$ npm run test:setup
+1..29
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 783.523414
+```
+
+
+**Runtime half — senior `S9`, RUN AGAINST `spaceworker_t145`.** Procedure: real `CI=1 next start -p 3011` seeded with throwaway command-line overrides for `SESSION_SECRET`/`RESEND_API_KEY`/`ADMIN_TOKEN` — the checked-in `.env` (a symlink into the live app) was **not** edited, per §4.1e — driven by a throwaway `/tmp/t7_s9b.mts` Playwright script against the system Chrome, because this repo ships neither Playwright nor a test browser. The script, the browser and the server are gone; the scratch-DB rows this run created were deleted afterwards. Raw output, verbatim:
+
+```
+[requestfailed] GET http://localhost:3011/admin?_rsc=MB54gAX280Bv495Z net::ERR_ABORTED
+[requestfailed] GET http://localhost:3011/admin?_rsc=wlSPTlro2qyD3j5o net::ERR_ABORTED
+LOGIN_OK url= http://localhost:3011/admin
+HTTP GET /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"licenses":[{"id":"cmunumne0000o9k1h3s3en5om","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:34:07.465Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunucnly000e9k1h0rjjyg4p","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:26:21.190Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunuaq3p00069k1hfkgi3w1b","email":"t7-proof-30d@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:24:51.109Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false}]}
+TAB_OPEN = Licenses
+S9-a) PRODUCT_SELECT_OPTIONS = [{"value":"extractor_exe","label":"Extractor EXE"},{"value":"mailer_exe","label":"Mailer EXE"},{"value":"combined_exe","label":"Combined EXE"},{"value":"automation_exe","label":"Automation-enabled EXE"},{"value":"agent_exe","label":"SpaceWorker Agent"},{"value":"selfhosted_os","label":"SpaceWorker OS (Self-Hosted)"}]
+S9-a) OFFERS_selfhosted_os = true | COUNT = 6
+S9-b) LIFETIME_LABEL_TEXT = "Lifetime (no expiry)"
+S9-b) LIFETIME_UNCHECKED_BY_DEFAULT = true
+S9-b) DURATION_DISABLED_WHEN_TICKED = true
+S9-b) DURATION_ENABLED_WHEN_UNTICKED = true
+HTTP POST /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"reused":true,"licenseKey":"eyJleHBpcmVzX2F0IjogIjIwMjYtMTAtMzBUMDg6MjQ6NTEuMDYwMDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTMwVDA4OjI0OjUxLjA2MDAwMCIsICJsaWNlbnNlZSI6ICJ0Ny1wcm9vZi0zMGRAZXhhbXBsZS50ZXN0IiwgInBsYW4iOiAic2VsZmhvc3RlZCIsICJwcm9kdWN0IjogInNlbGZob3N0ZWRfb3MifQ==.0624697c3cf603e4a2f535e9c466c1f38a6254730c8c7db16a11a0f171e2f7d5","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"t7-proof-30d@example.test","expiresAt":"2026-10-30T08:24:51.060Z","exeLicenseId":"cmunuaq3p00069k1hfkgi3w1b","boundMachineId":null,"mustClaimNote":"This buyer already has a usable, unclaimed license — nothing new was created. Claim (bind) it below."}
+S9-c) ISSUE_30D_RESULT_LINE = "Buyer: t7-proof-30d@example.test · Expires: 30/10/2026, 09:24:51 · Tracked as ExeLicense #cmunuaq3p00069k1hfkgi3w1b."
+S9-c) ISSUE_30D_DAYS_OUT = 30
+S9-c) POST_BODY_30D = "{\"email\":\"t7-proof-30d@example.test\",\"product\":\"selfhosted_os\",\"durationDays\":30}"
+S9-c) THIRTY_DAY_KEY_PAYLOAD = "{\"expires_at\": \"2026-10-30T08:24:51.060000\", \"issued_at\": \"2026-09-30T08:24:51.060000\", \"licensee\": \"t7-proof-30d@example.test\", \"plan\": \"selfhosted\", \"product\": \"selfhosted_os\"}"
+S9-d) DURATION_INPUT_DISABLED(editable=false) = true
+HTTP POST /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"licenseKey":"eyJleHBpcmVzX2F0IjogIjI5OTktMTItMzFUMjM6NTk6NTkuMDAwMDAwIiwgImlzc3VlZF9hdCI6ICIyMDI2LTA5LTMwVDA4OjM3OjM5Ljk4MDAwMCIsICJsaWNlbnNlZSI6ICJ0Ny1wcm9vZi1saWZldGltZUBleGFtcGxlLnRlc3QiLCAicGxhbiI6ICJzZWxmaG9zdGVkIiwgInByb2R1Y3QiOiAic2VsZmhvc3RlZF9vcyJ9.5b9f3eda9b4295ac535c047d6e1653aa99e588d834882e9acd523f919cba1760","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","licensee":"t7-proof-lifetime@example.test","expiresAt":"2999-12-31T23:59:59.000Z","exeLicenseId":"cmunur7db000y9k1hdjo1z9ox","isNewAccount":false,"claimUrl":"http://localhost:3400/api/exe-license/claim?token=FIN_AuYOxWrrBLCx3fEs_ePSgKcXvTq8dL-NHuVELyQ.1791362259984"}
+S9-d) ISSUE_LIFETIME_RESULT_LINE = "Buyer: t7-proof-lifetime@example.test · Expires: 01/01/3000, 00:59:59 · Tracked as ExeLicense #cmunur7db000y9k1hdjo1z9ox."
+S9-d) POST_BODY_LIFETIME = "{\"email\":\"t7-proof-lifetime@example.test\",\"product\":\"selfhosted_os\",\"lifetime\":true}"
+S9-d) LIFETIME_KEY_PAYLOAD = "{\"expires_at\": \"2999-12-31T23:59:59.000000\", \"issued_at\": \"2026-09-30T08:37:39.980000\", \"licensee\": \"t7-proof-lifetime@example.test\", \"plan\": \"selfhosted\", \"product\": \"selfhosted_os\"}"
+S9-d) LIFETIME_SENTINEL_IN_SIGNED_KEY = true
+S9-d) POST_BODIES_ALL = ["{\"email\":\"t7-proof-30d@example.test\",\"product\":\"selfhosted_os\",\"durationDays\":30}","{\"email\":\"t7-proof-lifetime@example.test\",\"product\":\"selfhosted_os\",\"lifetime\":true}"]
+HTTP GET /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"licenses":[{"id":"cmunur7db000y9k1hdjo1z9ox","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:37:39.983Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false},{"id":"cmunumne0000o9k1h3s3en5om","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:34:07.465Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunucnly000e9k1h0rjjyg4p","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:26:21.190Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunuaq3p00069k1hfkgi3w1b","email":"t7-proof-30d@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:24:51.109Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false}]}
+S9-e) ROW_BEFORE = "t7-proof-lifetime@example.test | SpaceWorker OS (Self-Hosted) | Issued 30/09/2026, 09:37:39 | Unclaimed | Cancel license | Revoke | Show history (2)"
+S9-e) ROW_BEFORE_BADGE_CANCELLED = false
+S9-e) ROW_BEFORE_HAS_CANCEL_CONTROL = true
+--- clicking Cancel license ---
+S9-e) CONFIRM_DIALOG_TITLE = "Cancel this license?"
+S9-e) CONFIRM_DIALOG_BODY = "The licence for t7-proof-lifetime@example.test stops working immediately — a cancelled key can no longer be bound or transferred, and it will never be handed back out by a re-issue. You can restore it later."
+HTTP POST /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"ok":true,"revoked":true,"exeLicenseId":"cmunur7db000y9k1hdjo1z9ox"}
+HTTP GET /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"licenses":[{"id":"cmunur7db000y9k1hdjo1z9ox","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:37:39.983Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunumne0000o9k1h3s3en5om","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:34:07.465Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunucnly000e9k1h0rjjyg4p","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:26:21.190Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunuaq3p00069k1hfkgi3w1b","email":"t7-proof-30d@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:24:51.109Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false}]}
+S9-e) ROW_AFTER_CANCEL = "t7-proof-lifetime@example.test | SpaceWorker OS (Self-Hosted) | Issued 30/09/2026, 09:37:39 | Cancelled | Restore license | Revoke | Show history (2)"
+S9-e) ROW_AFTER_BADGE_CANCELLED = true
+S9-e) ROW_AFTER_HAS_RESTORE_CONTROL = true
+S9-e) ROW_AFTER_HTML_SLICE = -400">Issued 30/09/2026, 09:37:39</span><span class="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">Cancelled</span><button class="rounded-lg border border-emerald-300 px-2 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900 dark:text-emerald-400 dark:hover:bg-emerald-950">Restore license</button><button class="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:ho
+S9-e) GET_API revoked(server flag) AFTER_CANCEL = true
+--- clicking Restore license ---
+S9-f) CONFIRM_DIALOG_TITLE = "Restore this license?"
+HTTP POST /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"ok":true,"revoked":false,"exeLicenseId":"cmunur7db000y9k1hdjo1z9ox"}
+HTTP GET /api/admin/exe-licenses -> 200 cache-control=no-store, must-revalidate body={"licenses":[{"id":"cmunur7db000y9k1hdjo1z9ox","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:37:39.983Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false},{"id":"cmunumne0000o9k1h3s3en5om","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:34:07.465Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunucnly000e9k1h0rjjyg4p","email":"t7-proof-lifetime@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:26:21.190Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":true},{"id":"cmunuaq3p00069k1hfkgi3w1b","email":"t7-proof-30d@example.test","product":"selfhosted_os","productName":"SpaceWorker OS (Self-Hosted)","issuedAt":"2026-09-30T08:24:51.109Z","boundMachineId":null,"boundMachineLabel":null,"boundLicenseKey":null,"boundAt":null,"revoked":false}]}
+S9-f) ROW_AFTER_RESTORE = "t7-proof-lifetime@example.test | SpaceWorker OS (Self-Hosted) | Issued 30/09/2026, 09:37:39 | Unclaimed | Cancel license | Revoke | Show history (2)"
+S9-f) GET_API revoked(server flag) AFTER_RESTORE = false
+S9-g) ROW_30D = "t7-proof-30d@example.test | SpaceWorker OS (Self-Hosted) | Issued 30/09/2026, 09:24:51 | Unclaimed | Cancel license | Revoke"
+S9_DONE
+```
+
+**What S9 actually proves (rendered half).** `S9-a` — the product `<select>` offers **`selfhosted_os`**, 6 options total, which can only come from `LICENSABLE_EXE_PRODUCTS` (the `EXE_PRODUCTS` list is 5 and excludes it), so the `:6`/`:3565` swap is live in the built app, not just in source. `S9-b`/`S9-d` — the Lifetime toggle exists, is **unchecked by default**, ticked it **disables** the duration input, unticking re-enables it, and the POST body then carries **`"lifetime":true`** with **no** `durationDays`; the re-signed key carries `expires_at: 2999-12-31T23:59:59.000000` and the result panel shows `Expires: 01/01/3000`. `S9-c` — the unticked path is unaffected and still sends `"durationDays":30` with a real 30-day expiry. `S9-e` — a genuinely revoked row renders the red `Cancelled` pill **and** swaps Cancel→`Restore license`; the HTML slice shows the badge span and the emerald Restore button in the DOM. `S9-f` — Restore removes both and the server flag returns to `false`. `S9-g` — the untouched 30-day row still reads `Unclaimed | Cancel license`, so nothing regressed. Every transition is corroborated by the server's own `revoked` flag read back over HTTP, which is the whole point: the UI reflects the server, it does not decide.
+
+**Proof nothing regressed** (`/Users/mikeolab/spaceworker`, read-only, no writes):
+
+```
+$ git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+                        <- EMPTY (canary intact)
+$ git diff --stat main self-hosted-build -- lib/license-service.ts
+                        <- EMPTY (FROZEN, intact)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts
+27      2       lib/exe-license-bind.ts
+$ git diff --numstat main self-hosted-build -- app/api/admin/exe-licenses/route.ts
+170     19      app/api/admin/exe-licenses/route.ts
+$ git diff --numstat main self-hosted-build -- lib/products.ts
+24      2       lib/products.ts
+$ git diff --numstat main self-hosted-build -- 'app/admin/(protected)/admin-panel.tsx'
+31      1354    app/admin/(protected)/admin-panel.tsx
+$ cd /Users/mikeolab/spaceworker && npx tsc --noEmit
+LIVE_TSC_EXIT=0        (0 lines of output)
+```
+
+All canaries read exactly the pass-12 figures. The `31 1354` is the **committed** `W17` divergence and is not mine; my edit was uncommitted when that was measured and reads **`112 12`** against `HEAD` in the worktree. Nothing else in the worktree is modified, so T7 is fully attributable. The live app's `tsc` is clean with the other agent's WIP in place, so the canary is not hiding a fault.
+
+**UNVERIFIED:** the `.mts` proof script, the browser it drove and the throwaway server are gone — the S9 output above is the artefact. `S13`/`S14` (`T11`/`T13`) and `S15`/`S16` remain untested. I did **not** revoke a licence that is **bound** (`S13`'s ground, `T11`'s kill path), and I did not see a **bound-then-revoked** row rendered — the badge precedence puts `revoked` before `boundMachineId`, so it should read `Cancelled`, but that is reasoning, not something I observed.
+**NOT RUNNABLE BY JUNIOR:** nothing in `T7`'s check block was skipped — both static halves ran and the runtime `S9` ran against `spaceworker_t145`.
+
+**Environment notes for the next agent.** `next start` cannot boot this worktree off the checked-in `.env` (placeholder guard on `SESSION_SECRET`/`RESEND_API_KEY`) — command-line overrides only; `.env` was not edited. `node_modules` needed no repair (real clone). The repo ships no test browser, so S9 drove the system Chrome through `playwright-core`. Trap: a `page.waitForFunction` that matches the buyer's email inside **any** `div.rounded-xl` false-matches the **issue-result panel** above the table, which never carries a badge — match the group card by its `span.text-sm.font-semibold` title span instead.
+
+READY FOR VERIFICATION - T7
+

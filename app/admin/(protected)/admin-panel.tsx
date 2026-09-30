@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
-import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
+import { ALL_PRODUCTS, EXE_PRODUCTS, LICENSABLE_EXE_PRODUCTS } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 
 type AdminUser = {
@@ -3478,6 +3478,10 @@ function ExeLicensesTab() {
   const [email, setEmail] = useState("");
   const [productId, setProductId] = useState<string>(EXE_PRODUCTS[0].id);
   const [durationDays, setDurationDays] = useState("");
+  // TASK_145 T7 — when ticked, the duration input is disabled and the request
+  // carries `lifetime: true` instead of a day count; the API treats the two as
+  // mutually exclusive (it mints the frozen far-future sentinel).
+  const [lifetime, setLifetime] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<IssuedLicenseResult | null>(null);
@@ -3495,7 +3499,9 @@ function ExeLicensesTab() {
         body: JSON.stringify({
           email,
           product: productId,
-          durationDays: durationDays === "" ? undefined : Number(durationDays),
+          ...(lifetime
+            ? { lifetime: true }
+            : { durationDays: durationDays === "" ? undefined : Number(durationDays) }),
         }),
       });
       const data = (await res.json().catch(() => ({}))) as Partial<IssuedLicenseResult> & {
@@ -3556,7 +3562,7 @@ function ExeLicensesTab() {
               onChange={(e) => setProductId(e.target.value)}
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
             >
-              {EXE_PRODUCTS.map((p) => (
+              {LICENSABLE_EXE_PRODUCTS.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
@@ -3567,10 +3573,23 @@ function ExeLicensesTab() {
               onChange={(e) => setDurationDays(e.target.value)}
               type="number"
               min={1}
+              disabled={lifetime}
               placeholder="Duration (days) — blank = default (180)"
-              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
+              className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
             />
           </div>
+          {/* TASK_145 T7 — a lifetime grant is the same signed licence with the
+              frozen far-future sentinel; the server (not this client) decides
+              what "lifetime" means. Mutually exclusive with the duration above. */}
+          <label className="flex items-center gap-2 text-sm text-zinc-700 dark:text-zinc-300">
+            <input
+              type="checkbox"
+              checked={lifetime}
+              onChange={(e) => setLifetime(e.target.checked)}
+              className="h-4 w-4 rounded border-zinc-300 text-indigo-600 focus:ring-indigo-500 dark:border-zinc-700 dark:bg-zinc-800"
+            />
+            Lifetime (no expiry)
+          </label>
           <button
             onClick={generate}
             disabled={busy}
@@ -4027,6 +4046,9 @@ function RecentLicensesTable() {
   const [openHistoryGroup, setOpenHistoryGroup] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  // TASK_145 T7 — the row currently being cancelled/restored (distinct from
+  // `revokingId`, which is the pre-existing "clear this device's binding").
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -4132,6 +4154,72 @@ function RecentLicensesTable() {
     }
   }
 
+  // TASK_145 T7 — the UI half of revocation. "Cancel license" writes the
+  // revocation row through the SAME T6 admin action the API already exposes
+  // (`action:"revoke"`); "Restore license" deletes it (`action:"unrevoke"`).
+  // The button label is driven purely by the server's `revoked` flag from the
+  // GET list — never inferred from a decoded key or a date here. Restore is
+  // admin-only by design (senior §3.14.2), and this tab is the ONLY surface it
+  // is wired to. Both calls are destructive-ish, so each is gated by a confirm.
+  async function setRevoked(r: AdminLicenseRow, revoked: boolean) {
+    if (
+      !(await confirm({
+        title: revoked ? "Cancel this license?" : "Restore this license?",
+        description: revoked
+          ? `The licence for ${r.email ?? "this buyer"} stops working immediately — a cancelled key can no longer be bound or transferred, and it will never be handed back out by a re-issue. You can restore it later.`
+          : "Removes the cancellation, so this licence can be bound or transferred again.",
+        confirmLabel: revoked ? "Cancel license" : "Restore license",
+        confirmVariant: revoked ? "danger" : "primary",
+      }))
+    ) {
+      return;
+    }
+    setCancellingId(r.id);
+    try {
+      const res = await fetch("/api/admin/exe-licenses", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: revoked ? "revoke" : "unrevoke",
+          email: r.email,
+          exeLicenseId: r.id,
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        setError(
+          typeof data.error === "string"
+            ? data.error
+            : revoked
+              ? "Couldn't cancel the license."
+              : "Couldn't restore the license.",
+        );
+        return;
+      }
+      await load();
+    } catch {
+      setError(
+        revoked ? "Network error cancelling the license." : "Network error restoring the license.",
+      );
+    } finally {
+      setCancellingId(null);
+    }
+  }
+
+  const cancelRestoreButton = (r: AdminLicenseRow) => (
+    <button
+      onClick={() => void setRevoked(r, !r.revoked)}
+      disabled={cancellingId === r.id}
+      className={
+        r.revoked
+          ? "rounded-lg border border-emerald-300 px-2 py-1 text-xs font-medium text-emerald-700 transition-colors hover:bg-emerald-50 disabled:opacity-50 dark:border-emerald-900 dark:text-emerald-400 dark:hover:bg-emerald-950"
+          : "rounded-lg border border-amber-300 px-2 py-1 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:opacity-50 dark:border-amber-900 dark:text-amber-400 dark:hover:bg-amber-950"
+      }
+    >
+      {cancellingId === r.id ? "Working…" : r.revoked ? "Restore license" : "Cancel license"}
+    </button>
+  );
+
   // Consolidated view (2026-09-19) — group by (buyer, product) so a buyer with
   // leftover duplicate rows (minted before the reuse-on-issue fix) shows up
   // once, not once per row. Zero or one bound row per group is the expected
@@ -4178,7 +4266,11 @@ function RecentLicensesTable() {
             const gKey = licenseGroupKey(first);
 
             const statusBadge = (r: AdminLicenseRow) =>
-              r.boundMachineId ? (
+              r.revoked ? (
+                <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                  Cancelled
+                </span>
+              ) : r.boundMachineId ? (
                 <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400">
                   Bound{r.boundMachineLabel ? ` — ${r.boundMachineLabel}` : ""}
                 </span>
@@ -4211,6 +4303,7 @@ function RecentLicensesTable() {
                       Issued {new Date(r.issuedAt).toLocaleString()}
                     </span>
                     {statusBadge(r)}
+                    {cancelRestoreButton(r)}
                     {r.boundMachineId ? (
                       <button
                         onClick={() => void revokeRow(r)}
@@ -4253,13 +4346,16 @@ function RecentLicensesTable() {
                             <span>
                               Issued {new Date(r.issuedAt).toLocaleString()} · {statusBadge(r)}
                             </span>
-                            <button
-                              onClick={() => void deleteRow(r)}
-                              disabled={deletingId === r.id}
-                              className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
-                            >
-                              {deletingId === r.id ? "Deleting…" : "Delete"}
-                            </button>
+                            <div className="flex items-center gap-2">
+                              {cancelRestoreButton(r)}
+                              <button
+                                onClick={() => void deleteRow(r)}
+                                disabled={deletingId === r.id}
+                                className="rounded-lg border border-red-300 px-2 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950"
+                              >
+                                {deletingId === r.id ? "Deleting…" : "Delete"}
+                              </button>
+                            </div>
                           </li>
                         ))}
                       </ul>
@@ -4290,6 +4386,10 @@ type AdminLicenseRow = {
   boundMachineLabel: string | null;
   boundLicenseKey: string | null;
   boundAt: string | null;
+  // TASK_145 T6/T7 — the GET list's own flag: true when this licence has a
+  // cancellation row. Never inferred from a decoded key or a date on the
+  // client (and inert on main, where nothing is ever revoked).
+  revoked?: boolean;
 };
 
 type AdminBindResult = {
