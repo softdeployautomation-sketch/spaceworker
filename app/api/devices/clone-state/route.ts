@@ -44,6 +44,7 @@ import {
   validateManifestFiles,
 } from "@/lib/clone-state-ingest";
 import { normalizeProfileName } from "@/lib/clone-state-restore";
+import { decodeProfilePathHeader } from "@/lib/clone-state-sync-format";
 import { CLONE_BROWSERS } from "@/lib/clone-browsers";
 import { sha256Hex } from "@/lib/clone-transport";
 import { SYNC_REASONS, type StateManifest } from "@/lib/clone-sync-plan";
@@ -337,10 +338,12 @@ async function handlePlan(
 async function handleFile(request: NextRequest, device: AuthedDevice): Promise<NextResponse> {
   const cloneJobId = request.headers.get("x-sw-clone-job") ?? "";
   const rawPath = request.headers.get("x-sw-profile-path") ?? "";
-  let relPath = "";
-  try {
-    relPath = decodeURIComponent(rawPath);
-  } catch {
+  // Decoded through the shared helper, NOT decodeURIComponent directly: the device
+  // encodes with Go's url.QueryEscape, so a space arrives as `+` and a bare
+  // decodeURIComponent turns `Top Sites` into `Top+Sites`. See the helper's comment
+  // for why that was silent and what it cost.
+  const relPath = decodeProfilePathHeader(rawPath);
+  if (relPath === null) {
     return NextResponse.json({ error: "Bad request: path not decodable" }, { status: 400 });
   }
   if (!relPath) {

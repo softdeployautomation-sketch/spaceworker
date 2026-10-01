@@ -6,6 +6,7 @@
 // so nothing here is mocked.
 
 import { strict as assert } from "node:assert";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, existsSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,7 @@ import {
   stateTargetKey,
   validateManifestFiles,
 } from "./clone-state-ingest";
+import { SYNC_MODE_DELTA, SYNC_REASONS, isDeltaEmpty } from "./clone-sync-plan";
 import type { StateManifest } from "./clone-sync-plan";
 
 const FP = (path: string, size = 10, mtime = 1000) => ({ path, size, mtime });
@@ -293,6 +295,101 @@ test("a non-regular entry is not fingerprinted as a file", async () => {
   const files = await fingerprintCache(cache);
   for (const f of files) assert.notEqual(f.path, "evil-link");
   assert.ok(files.some((f) => f.path === "History"));
+});
+
+// ---------------------------------------------------- the seam: cache -> decision
+//
+// WHY THIS TEST EXISTS, AND WHY IT IS THE IMPORTANT ONE HERE.
+//
+// Both halves of this feature were tested on their own — the device decided what to
+// send, the server decided what to ask for — and BOTH suites were green while the
+// pair was broken: a real second sync re-uploaded the WHOLE profile. Neither half
+// could see it, because neither half is where the mistake was. The join was. So
+// this runs the real sequence over the bytes a clone actually carries: stage the
+// profile into a cache, fingerprint that cache exactly as the route does, and
+// compute the decision from the manifest a device would post.
+
+/** A realistic profile, including the space-bearing and nested names that only a
+ *  real cache walk produces. */
+const REAL_PROFILE: Array<[string, string]> = [
+  ["History", "history-bytes"],
+  ["Bookmarks", "bookmark-bytes"],
+  ["Preferences", "prefs-bytes"],
+  ["Web Data", "web-data-bytes"],
+  ["Top Sites", "top-sites-bytes"],
+  ["Network/Network Persistent State", "nps-bytes"],
+  ["Sessions/Session_0001", "session-bytes"],
+  ["Sessions/Tabs_0001", "tab-bytes"],
+  ["Local Storage/leveldb/000003.log", "leveldb-bytes"],
+  ["Extensions/abcdefghijklmnopabcdefghijklmnop/manifest.json", '{"name":"ext"}'],
+  ["Extensions/abcdefghijklmnopabcdefghijklmnop/1.0.0/background.js", "ext-bytes"],
+];
+
+/** The SOURCE file's mtime on the work PC, which is what a device really posts. It
+ *  can never equal a staged copy's mtime — that is a value from the SERVER's clock —
+ *  which is the whole reason the comparison has to be content-based. */
+const SOURCE_MTIME = 1_600_000_000;
+
+test("a second sync of an unchanged profile asks for nothing", async () => {
+  const cache = mkdtempSync(join(tmpdir(), "sw-seam-"));
+  const source = new Map<string, Buffer>();
+  for (const [rel, text] of REAL_PROFILE) {
+    const content = Buffer.from(text);
+    source.set(rel, content);
+    const res = await ingestStateFile({ cacheDir: cache, relPath: rel, content });
+    assert.equal(res.ok, true, `${rel} must stage: ${res.error}`);
+  }
+
+  /** The manifest a device posts: digest and size of ITS bytes, and ITS mtime. */
+  const posted = (overrides: Record<string, string> = {}) => {
+    const files = REAL_PROFILE.map(([rel]) => {
+      const content = overrides[rel] === undefined ? source.get(rel)! : Buffer.from(overrides[rel]);
+      return {
+        path: rel,
+        size: content.length,
+        mtime: SOURCE_MTIME,
+        sha256: createHash("sha256").update(content).digest("hex"),
+      };
+    });
+    const checked = validateManifestFiles(files);
+    assert.deepEqual(checked.excluded, [], "a realistic profile must not be refused as a whole");
+    return manifest({ files: checked.kept });
+  };
+
+  // The baseline the route builds when no manifest is stored yet: the cache, read
+  // back through the same fingerprinter (the ingest route's `loadBaseline`), and
+  // without a deviceId — exactly the shape the route produces.
+  const baseline: StateManifest = {
+    browser: "chrome",
+    profile: "Default",
+    capturedAt: new Date().toISOString(),
+    files: await fingerprintCache(cache),
+  };
+
+  // The premise of every delta: the cache's mtimes differ from the source's, so only
+  // the DIGEST can recognise a file that has already landed. Asserted rather than
+  // assumed — if the fixture ever shared an mtime, this test would pass for the
+  // wrong reason.
+  for (const f of baseline.files) {
+    assert.equal(f.sha256?.length, 64, `${f.path}: the cache must declare a digest, or the comparison falls back to size+mtime`);
+    assert.notEqual(f.mtime, SOURCE_MTIME, `${f.path}: the fixture must not share an mtime with the source`);
+  }
+
+  // SYNC 2, nothing changed — the steady state of a healthy reconnect. The server
+  // must ask for NOTHING. Not the whole profile: reading the empty request list as
+  // "send everything" is what made every reconnect re-upload every file.
+  const nothing = decideStateSync({ previous: baseline, next: posted() });
+  assert.equal(nothing.mode, SYNC_MODE_DELTA, "an unchanged profile is a delta, not a full transfer");
+  assert.equal(nothing.reason, SYNC_REASONS.syncOnReconnect);
+  assert.deepEqual(nothing.requestedPaths, [], "nothing changed, so nothing may be requested");
+  assert.ok(nothing.delta && isDeltaEmpty(nothing.delta), "the delta must be empty");
+  assert.deepEqual(nothing.excluded, [], "nothing in this profile is a secret to refuse");
+
+  // And the delta is not VACUOUSLY empty: one changed file is asked for, by its own
+  // name — spaces included, which is the spelling a naive URL encoding mangles.
+  const oneChanged = decideStateSync({ previous: baseline, next: posted({ "Top Sites": "top-sites-v2" }) });
+  assert.equal(oneChanged.mode, SYNC_MODE_DELTA);
+  assert.deepEqual(oneChanged.requestedPaths, ["Top Sites"]);
 });
 
 test("a removal deletes from the cache, and refuses anything unsafe", async () => {

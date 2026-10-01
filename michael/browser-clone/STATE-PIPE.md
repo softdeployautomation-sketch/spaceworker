@@ -337,9 +337,12 @@ The migration *content* is sound; only the ordering is not. Evidence in §10.
 
 **NOT yet verified — do not read this document as saying otherwise:**
 
-1. **No live device has pushed a real profile through this pipe.** Both ends are tested
-   and the format is proven against a test server, but the two have never met outside a
-   test. This is the remaining gap.
+1. **No WINDOWS device has pushed a real profile through this pipe.** Both ends are tested, and
+   on 2026-09-30 the real engine, the real route and a real PostgreSQL 16 were run against each
+   other for the first time — which is how two bugs were found that neither half's own suite
+   could see (§12, "the first time both ends ran together"). What has still never happened is a
+   run on a real work PC: the DPAPI sealing path, a real Brave/Edge profile, and a browser
+   holding its own files open while the clone reads them. That is the remaining gap.
 2. **The three migrations have been applied to a real database, twice over, and the resulting
    schema is asserted equal to `schema.prisma`.** On 2026-09-30 all 69 migrations were applied
    to PostgreSQL 16 from empty, on **two independent fresh databases**, using
@@ -455,6 +458,7 @@ a backslash is an ordinary filename character, so every multi-level pattern matc
 nothing, which is why the file-list checks could not be exercised off Windows at all.
 
 **Still not verified for this layer:** whether Chrome *loads* a copied extension from a
+restored profile. The files now travel; the load has not been observed on Windows.
 
 ### The session-half equivalent of the same bug (2026-09-30)
 
@@ -509,4 +513,63 @@ Verified with a stub `pwsh` that exits 0 and prints nothing: 6 problems, exit 1.
 real Windows box with a real browser installed. The runner prints that limitation rather
 than letting "green in CI" be read as "green on the device".
 
-restored profile. The files now travel; the load has not been observed on Windows.
+### The first time both ends ran together: two bugs, neither visible to either half (2026-09-30)
+
+Everything above is a test of ONE side. On this date the real Go engine, the real Next route and
+a real PostgreSQL 16 were pointed at each other for the first time, with a synthetic Chrome
+profile (11 state files, including `Top Sites`, `Web Data` and
+`Network/Network Persistent State`) and a **second** sync of the same, unchanged profile. The
+two ends met and immediately disagreed — about two things, and each was invisible to both
+suites, because neither suite is where the mistake was.
+
+**Bug 1 — the path header was encoded one way and decoded another.** The engine writes
+`x-sw-profile-path` with Go's `url.QueryEscape`, which spells a space as `+`; the route read it
+with `decodeURIComponent`, which does not turn `+` back into a space. `Top Sites` therefore
+staged as `Top+Sites`, `Web Data` as `Web+Data`. Nothing failed anywhere:
+
+- the bytes landed, under the wrong name, and the run reported `done: true`;
+- the next sync compared `Top Sites` (device) against the same file as `Top+Sites` (cache) as
+  two different paths, so every space-bearing file was re-sent **forever** — the delta silently
+  degraded into a full transfer, permanently, and only the file *counts* showed it.
+
+The fix is one mapping before the decode (`lib/clone-state-sync-format.ts`,
+`decodeProfilePathHeader`), and it can only be made there: `+` is a legal character in a path, so
+the sender must be read as a query component rather than a URI component. Both directions are
+covered (14 tests: space, tab, literal `+`, `%20`, non-ASCII), and the document that specifies
+the header now says which encoding it is.
+
+**Bug 2 — an empty request list meant two different things.** The server answers a full transfer
+with `requested_paths: []` *because there is nothing to enumerate when everything is being sent*,
+and it answers a delta whose files have all already landed with `requested_paths: []` *because
+there is nothing to send*. The device consulted the list and not the mode:
+
+```go
+if plan.Mode != SyncModeDelta || len(plan.RequestedPaths) == 0 { return collected, nil }
+```
+
+so a healthy reconnect — the single case the whole budget design exists for — re-uploaded the
+**entire** profile. The second sync of this run reported `mode: delta`, `reason:
+cache_baseline`, `sent: 11`. The server's half answered correctly; the device's half was correct
+in isolation and wrong against the answer it was actually given.
+
+The fix separates the cases by *whether the field was sent*: an explicit `[]` means "nothing to
+send", while an **absent** field — a server whose intent cannot be known — still means
+"everything". Two tests, both confirmed to fail against the old code (they report
+`sent: 5, want 0`):
+
+| Test | What it pins |
+|---|---|
+| `TestSyncStateDeltaWithNothingAskedSendsNothing` | over a real `net/http` server: 0 files reach the wire, the run is still `done`, and finalize still runs |
+| `TestSelectStateFilesDeltaAskingForNothingSendsNothing` | the two SHAPES side by side — explicit `[]` sends nothing, absent sends everything |
+
+**The lesson, and the test it bought.** Both halves were green while the pair was broken. So
+`lib/clone-state-ingest.test.ts` gained a test that runs the real JOIN over real bytes: stage the
+11-file profile into a cache, fingerprint that cache exactly the way the route does, build the
+manifest a device would post (digests of those same bytes, and **the source machine's** mtimes),
+and assert the decision is `delta` with `requested_paths: []` — then change one byte and assert
+exactly one path comes back, spaces intact. It asserts its own premise too (every cache
+fingerprint carries a 64-character digest, and no cache mtime equals the source's), because a
+fixture that accidentally shared mtimes would let the whole test pass for the wrong reason.
+Verified in the other direction as well: mutating the content comparison
+(`lib/clone-sync-plan.ts` `sameFile`) to answer "changed" makes that test report all 11 files as
+requested — which is precisely what the run looked like.

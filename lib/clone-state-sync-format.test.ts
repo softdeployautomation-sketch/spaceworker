@@ -22,9 +22,63 @@ import {
   DEVICE_COMMAND_MAX_SECONDS,
   STATE_SYNC_BROWSERS,
   buildStateSyncCommand,
+  decodeProfilePathHeader,
   parseStateSyncOutput,
   stateSyncSummary,
 } from "./clone-state-sync-format";
+
+/**
+ * The header round-trip, against the ENCODING THE DEVICE ACTUALLY USES.
+ *
+ * This suite exists because the two ends disagreed and nothing said so. The device
+ * encodes with Go's url.QueryEscape (form-encoded: space → `+`), the server decoded
+ * with decodeURIComponent (percent-only), and the result was a cache full of
+ * `Top+Sites` reported as a complete transfer. These are the exact strings that
+ * misbehaved, verified end-to-end on 2026-09-30 against a real profile.
+ *
+ * The Go side of each case is spelled out in the test name so the two cannot drift
+ * apart again without someone seeing the pairing in the failure message.
+ */
+test("a space decodes correctly (Go QueryEscape sends `+`, not `%20`)", () => {
+  // The observed failures: every one of these is a REAL Chromium profile filename.
+  for (const name of ["Top Sites", "Web Data", "Network Persistent State", "Visited Links"]) {
+    const encoded = name.replace(/ /g, "+"); // exactly what url.QueryEscape produces
+    assert.equal(
+      decodeProfilePathHeader(encoded),
+      name,
+      `QueryEscape'd ${JSON.stringify(name)} → ${JSON.stringify(encoded)} must decode back`,
+    );
+  }
+});
+
+test("a LITERAL plus survives, because QueryEscape sends it as %2B", () => {
+  // The reason `+` → `%20` is safe rather than a guess: QueryEscape never emits a
+  // bare `+` for a literal plus. If this ever regressed, a file genuinely named
+  // `notes+archive` would silently arrive as `notes archive`.
+  assert.equal(decodeProfilePathHeader("notes%2Barchive"), "notes+archive");
+  assert.equal(decodeProfilePathHeader("a%2Bb+c"), "a+b c");
+});
+
+test("backslashes and nested paths still decode (the reason QueryEscape was chosen)", () => {
+  // A Windows path: `Extensions\abc\1.0_0\manifest.json`.
+  assert.equal(
+    decodeProfilePathHeader("Extensions%5Cabc%5C1.0_0%5Cmanifest.json"),
+    "Extensions\\abc\\1.0_0\\manifest.json",
+  );
+  assert.equal(
+    decodeProfilePathHeader("Network%2FNetwork+Persistent+State"),
+    "Network/Network Persistent State",
+  );
+});
+
+test("a malformed escape is refused rather than guessed at", () => {
+  // The caller answers 400 on null. Returning a mangled path instead would let a
+  // broken transfer write to a filename nobody asked for.
+  assert.equal(decodeProfilePathHeader("%E0%A4%A"), null);
+  assert.equal(decodeProfilePathHeader("%zz"), null);
+  // An empty header is not a decode failure — the caller distinguishes "missing".
+  assert.equal(decodeProfilePathHeader(""), "");
+});
 
 test("the command tells the device to stop sending BEFORE the platform's own timeout", () => {
   // The whole reason a transfer larger than one command can finish. If the device

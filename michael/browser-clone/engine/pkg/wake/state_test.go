@@ -163,6 +163,36 @@ func TestSelectStateFilesNamesARequestItCannotSatisfy(t *testing.T) {
 		t.Fatalf("an unsatisfiable request must be named: %+v", missing)
 	}
 }
+func TestSelectStateFilesDeltaAskingForNothingSendsNothing(t *testing.T) {
+	// The same rule at the unit level, where the SHAPE of the empty list is the
+	// only thing that differs. An explicitly-empty `requested_paths` means the
+	// server looked at the replica and found nothing to send — the steady state of
+	// a healthy reconnect — so the answer is nothing. An ABSENT field is a server
+	// whose intent is unknown, so the conservative "send everything" still applies.
+	collected, _ := CollectStateFiles(makeProfile(t), 0)
+	if len(collected) == 0 {
+		t.Fatal("the fixture profile must contain files for this to mean anything")
+	}
+
+	// Present and empty: the server asked for nothing, so nothing is sent. NOT the
+	// whole profile — misreading this as "everything" re-uploaded it on every sync.
+	got, missing := SelectStateFiles(collected, StatePathPlan{
+		Mode: SyncModeDelta, Reason: "cache_baseline", RequestedPaths: []string{},
+	})
+	if len(got) != 0 {
+		t.Fatalf("a delta that asked for nothing sent %v", paths(got))
+	}
+	if len(missing) != 0 {
+		t.Fatalf("nothing was asked for, so nothing can be missing: %v", missing)
+	}
+
+	// Absent: an unknown server, so fall back to everything rather than risk an
+	// incomplete replica.
+	got2, _ := SelectStateFiles(collected, StatePathPlan{Mode: SyncModeDelta})
+	if len(got2) != len(collected) {
+		t.Fatalf("an absent requested_paths must fall back to everything: got %d of %d", len(got2), len(collected))
+	}
+}
 
 func TestSyncStateCarriesAProfileEndToEnd(t *testing.T) {
 	root := makeProfile(t)

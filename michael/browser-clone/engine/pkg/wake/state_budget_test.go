@@ -254,6 +254,49 @@ func TestSyncStateSendsOnlyWhatTheServerAskedFor(t *testing.T) {
 	}
 }
 
+func TestSyncStateDeltaWithNothingAskedSendsNothing(t *testing.T) {
+	// The steady state of a healthy reconnect, over the real wire: the server
+	// compared the manifest against the replica, matched every file by content
+	// hash, and asked for none of them. The device must then send NOTHING and
+	// still report the run as done.
+	//
+	// It used to send the WHOLE profile here. `requested_paths: []` is also what a
+	// full plan carries — "a full sync sends everything readable, so there is
+	// nothing to enumerate" — so an empty list was read as "send everything". Every
+	// reconnect therefore re-uploaded the entire profile and the delta, which is the
+	// whole reason this budget path exists, saved nothing. Nothing errored and
+	// nothing looked wrong: the only symptom was `sent` equalling the whole profile
+	// on a run the server had itself classified as `delta`.
+	profile := makeProfile(t)
+	srv, counters := stateServer(t, map[string]any{
+		"ok": true, "mode": "delta", "reason": "cache_baseline",
+		"requested_paths": []string{}, "removed_paths": []string{}, "cached_files": 11,
+	})
+
+	res := SyncState(context.Background(), syncOptions(srv, profile))
+	if res.Failed != "" {
+		t.Fatalf("failed: %s", res.Failed)
+	}
+	if res.Sent != 0 {
+		t.Fatalf("Sent = %d, want 0 — a delta that requested nothing must upload nothing", res.Sent)
+	}
+	if !res.Done || res.Pending != 0 {
+		t.Fatalf("Done=%v Pending=%d, want true and 0 — nothing is left to send", res.Done, res.Pending)
+	}
+	if res.Mode != "delta" || res.Reason != "cache_baseline" {
+		t.Fatalf("mode/reason = %s/%s, want the server's own decision echoed", res.Mode, res.Reason)
+	}
+	_, files, finalizes := counters.snapshot()
+	if files != 0 {
+		t.Fatalf("%d files reached the wire, want 0", files)
+	}
+	// Finalize still has to run: it is what records the replica's real contents as
+	// the next baseline, and skipping it is how a landed run gets re-sent forever.
+	if finalizes != 1 {
+		t.Fatalf("finalize ran %d times, want exactly 1", finalizes)
+	}
+}
+
 func TestSelectStateFilesIgnoresRequestedPathsWhenTheModeIsFull(t *testing.T) {
 	// A full plan means "send what you have". If a full plan happened to carry
 	// requested paths, honouring them would silently send a fraction of the

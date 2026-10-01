@@ -215,8 +215,31 @@ func CollectStateFiles(profileDir string, maxBytes int64) ([]StateFile, []CloneS
 // and every requested path that is NOT in the collected set is returned as a
 // refusal — that is how "the server wants a file we can no longer read" becomes
 // visible instead of silently absent from the replica.
+//
+// AN EMPTY `requested_paths` IS NOT "SEND EVERYTHING" FOR A DELTA.
+//
+// The server sets `requested_paths: []` for a full transfer on purpose ("a full
+// sync sends everything readable, so there is nothing to enumerate") — but it ALSO
+// returns an empty list for a delta in the steady state, when it compared the
+// manifest against the replica and found every file already present. Reading the
+// second case as the first meant every reconnect re-uploaded the WHOLE profile, so
+// the delta saved nothing and the one cost this design exists to avoid was paid on
+// every sync. Found 2026-09-30 by syncing a real profile twice: the second run —
+// correctly classified `delta` by the server, `sent: 0` expected — reported
+// `sent: 11`, the entire profile. Nothing errored; the only symptom was the count.
+//
+// So the two cases are separated by whether the field was SENT:
+//
+//   - explicitly `[]`  → the server looked and there is nothing to send → send nothing;
+//   - absent (nil)     → a server that does not send the field has an intent that
+//     cannot be known, so the conservative reading ("everything") still applies.
 func SelectStateFiles(collected []StateFile, plan StatePathPlan) ([]StateFile, []CloneStateFilter) {
-	if plan.Mode != SyncModeDelta || len(plan.RequestedPaths) == 0 {
+	if plan.Mode != SyncModeDelta {
+		return collected, nil
+	}
+	// The field was absent entirely: an older or newer server whose intent is
+	// unknown. Send everything, as before.
+	if plan.RequestedPaths == nil {
 		return collected, nil
 	}
 	want := make(map[string]struct{}, len(plan.RequestedPaths))
@@ -523,6 +546,16 @@ func postStateFile(
 	// url.QueryEscape, and deliberately NOT PathEscape: a Windows profile path
 	// contains backslashes, and QueryEscape is the encoding that survives every
 	// intermediary for an opaque value like this.
+	//
+	// THE PAIRING IS LOAD-BEARING. QueryEscape is the FORM alphabet, not percent
+	// encoding: it sends a space as `+` and a literal `+` as `%2B`. The receiver
+	// (app/api/devices/clone-state/route.ts → decodeProfilePathHeader) must
+	// therefore map `+` back to a space BEFORE percent-decoding. It did not, and the
+	// mismatch was silent: `Top Sites` was stored as `Top+Sites` while the run
+	// reported done:true, and every later sync re-sent every space-bearing file
+	// because the stored baseline and the device could never agree. Found
+	// 2026-09-30 by running a real profile end-to-end. If this line ever becomes
+	// PathEscape (space → `%20`), the receiver must change with it.
 	req.Header.Set("x-sw-profile-path", url.QueryEscape(f.Fingerprint.Path))
 	req.Header.Set("authorization", "Bearer "+opts.Token)
 

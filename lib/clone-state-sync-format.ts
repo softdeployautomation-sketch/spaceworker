@@ -34,6 +34,40 @@ export const STATE_SYNC_BROWSERS = ["chrome", "edge", "brave"] as const;
 const SUPPORTED_BROWSERS = new Set<string>(STATE_SYNC_BROWSERS);
 
 /**
+ * Decodes the profile-relative path the device sends in `x-sw-profile-path`.
+ *
+ * THE DEVICE SIDE IS Go's `url.QueryEscape` (engine/pkg/wake/state.go), and that is
+ * the **application/x-www-form-urlencoded** alphabet, NOT percent-encoding: a space
+ * travels as `+`, and a literal `+` travels as `%2B`. `decodeURIComponent` alone
+ * inverts only the percent half, so `Top Sites` arrived here as `Top+Sites`.
+ *
+ * That mismatch was SILENT and it was found only by running a real profile through
+ * (2026-09-30). Nothing failed: the bytes transferred perfectly, the device reported
+ * `done: true`, and the cache held a filename Chromium never reads — `Top+Sites`
+ * instead of `Top Sites`. Worse, the NEXT sync's delta planner compared the device's
+ * `Top Sites` against a stored baseline of `Top+Sites`, so every space-bearing file
+ * was re-uploaded on every sync for the life of the clone: the delta silently
+ * degraded to a full transfer, which is the exact cost this design exists to avoid.
+ *
+ * So `+` is mapped to `%20` FIRST, then percent-decoded. That is precisely
+ * invertible for QueryEscape output, because QueryEscape never emits a bare `+` for
+ * a literal `+` — it emits `%2B`, which survives this substitution and decodes back
+ * to `+`. Chromium profile trees are full of spaces (`Top Sites`, `Web Data`,
+ * `Network Persistent State`, `Visited Links`), so this is the common case, not an
+ * edge case.
+ *
+ * Returns null when the value cannot be decoded at all, so the caller can answer
+ * with a bad request instead of guessing at a path.
+ */
+export function decodeProfilePathHeader(raw: string): string | null {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, "%20"));
+  } catch {
+    return null;
+  }
+}
+
+/**
  * How much of the run-command timeout the DEVICE spends sending.
  *
  * Deliberately less than the platform's own timeout. If the two were equal the
