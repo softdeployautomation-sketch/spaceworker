@@ -44,6 +44,16 @@ type DeliverabilityCheck = {
   createdAt: string;
 };
 
+// TASK_150 T5 — what one multi-address test run reports PER ADDRESS, straight from
+// the test-send route (it is a report over the DeliverabilityCheck rows the run
+// wrote, not a second store of them).
+type TestSendRecipientOutcome = {
+  email: string;
+  outcome: "delivered" | "failed";
+  error: string | null;
+  mailboxes: { label: string; outcome: string; error: string | null }[];
+};
+
 // Task 33 — a single isolation-diagnostic probe: which element (subject, body,
 // or From) a given probe changed, the EXACT content it was tested as (variant +
 // from), whether it was even runnable, and — once run — where it landed.
@@ -103,6 +113,10 @@ type CampaignDetail = {
   // and the From address every TEST send uses (the "is the From what's causing
   // spam?" lever). Neither is ever read by a real send.
   testRecipientPool: string[];
+  // TASK_150 T5 — which of `testRecipientPool` ONE test send goes to ([] = not in
+  // use: fall back to the single active target). A reload keeps it. [] rather than
+  // null because Prisma 6 rejects optional list columns.
+  testRecipientSelection: string[];
   testFromOverride: string | null;
   // Task 144 — "html" (default) sends the body as HTML plus a derived plaintext
   // alternative; "text" sends a plain-text-ONLY message (no HTML part at all).
@@ -207,7 +221,14 @@ export default function CampaignDetailPage() {
   const [liveFeed, setLiveFeed] = useState<RecentSend[]>([]);
   const [liveStats, setLiveStats] = useState<LiveStats | null>(null);
   const [testBusy, setTestBusy] = useState(false);
-  const [testResult, setTestResult] = useState<{ outcome: string; error?: string } | null>(null);
+  const [testResult, setTestResult] = useState<{
+    outcome: string;
+    error?: string;
+    // TASK_150 T5 — per-address outcomes when the send went to several addresses.
+    // Additive: a single-address / seed-mailbox send leaves this undefined, so
+    // every existing render below is unchanged.
+    recipients?: TestSendRecipientOutcome[];
+  } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [debating, setDebating] = useState(false);
   // Human-assisted deliverability fallback — offered after the platform seed
@@ -413,7 +434,11 @@ export default function CampaignDetailPage() {
   // quickest way to answer "is it the From address triggering spam?"). Both are
   // passed straight through to the test-send route, which applies them for this
   // request only. Omitting them reproduces the previous behaviour exactly.
-  async function sendTest(overrides?: { to?: string; from?: string }) {
+  // TASK_150 T5 — `to` may also be an ARRAY: one send to every address in it (the
+  // route fans out serially, reporting per address). A plain string still means
+  // exactly one address, and omitting `to` still means "use the stored target /
+  // the stored multi-selection", so no existing caller changes behaviour.
+  async function sendTest(overrides?: { to?: string | string[]; from?: string }) {
     setTestBusy(true);
     setTestResult(null);
     try {
@@ -426,11 +451,20 @@ export default function CampaignDetailPage() {
             }
           : {}),
       });
-      const data = (await res.json().catch(() => ({}))) as { outcome?: string; error?: string; check?: DeliverabilityCheck };
+      const data = (await res.json().catch(() => ({}))) as {
+        outcome?: string;
+        error?: string;
+        check?: DeliverabilityCheck;
+        recipients?: TestSendRecipientOutcome[];
+      };
       if (!res.ok) {
         setTestResult({ outcome: "failed", error: data.error ?? "Test-send failed" });
       } else {
-        setTestResult({ outcome: data.outcome ?? "failed", error: data.error });
+        setTestResult({
+          outcome: data.outcome ?? "failed",
+          error: data.error,
+          ...(data.recipients ? { recipients: data.recipients } : {}),
+        });
         // Task 34 — merge just the new check into state; no full campaign re-fetch.
         if (data.check) prependCheck(data.check);
       }
@@ -541,8 +575,11 @@ export default function CampaignDetailPage() {
   async function saveTestSetup(patch: {
     email?: string | null;
     pool?: string[];
+    // TASK_150 T5 — the ticked subset of the pool this ONE test send goes to
+    // ([] = back to the single active target).
+    selection?: string[];
     from?: string | null;
-    sendTo?: string;
+    sendTo?: string | string[];
     sendFrom?: string;
     thenTest?: boolean;
   }) {
@@ -552,6 +589,7 @@ export default function CampaignDetailPage() {
       const body: Record<string, unknown> = {};
       if ("email" in patch) body.email = patch.email;
       if ("pool" in patch) body.pool = patch.pool;
+      if ("selection" in patch) body.selection = patch.selection;
       if ("from" in patch) body.from = patch.from;
       if (Object.keys(body).length > 0) {
         const res = await fetch(`/api/campaigns/${id}/test-recipient`, {
@@ -563,6 +601,7 @@ export default function CampaignDetailPage() {
           error?: string;
           testRecipientOverride?: string | null;
           testRecipientPool?: string[];
+          testRecipientSelection?: string[];
           testFromOverride?: string | null;
         };
         if (!res.ok) {
@@ -572,6 +611,9 @@ export default function CampaignDetailPage() {
         patchCampaign({
           ...("testRecipientOverride" in data ? { testRecipientOverride: data.testRecipientOverride ?? null } : {}),
           ...(data.testRecipientPool ? { testRecipientPool: data.testRecipientPool } : {}),
+          // TASK_150 T5 — [] is a real, meaningful value here (selection cleared),
+          // so key off the property existing rather than its truthiness.
+          ...("testRecipientSelection" in data ? { testRecipientSelection: data.testRecipientSelection ?? [] } : {}),
           ...("testFromOverride" in data ? { testFromOverride: data.testFromOverride ?? null } : {}),
         });
       }
@@ -1010,6 +1052,12 @@ export default function CampaignDetailPage() {
   // would carry undefined here, and every use below indexes straight into it.
   const testRecipientPool = campaign.testRecipientPool ?? [];
 
+  // TASK_150 T5 — the persisted multi-selection, normalised the same way (a
+  // response from an older cached client would carry undefined, and every use
+  // below iterates/indexes it). Empty means "not in use" — send to the single
+  // active target, exactly as before.
+  const testSelection = campaign.testRecipientSelection ?? [];
+
   // Task 32 — the From addresses the draft probe can be sent as: every Task 30
   // item 4 configured from address across the campaign's mailboxes, deduped, plus
   // each mailbox's SMTP username as a fallback (an empty list on a mailbox means
@@ -1089,40 +1137,106 @@ export default function CampaignDetailPage() {
               </button>
             )}
 
-            {/* The shortlist: one click switches which of the saved addresses is
-                active AND re-tests immediately, which is the whole point — the
-                question being asked is always "did THIS inbox get it?". */}
+            {/* TASK_150 T5 — the shortlist, now with MULTI-SELECT. Ticking entries
+                (or "All") turns one test send into a fan-out to exactly those
+                addresses, in order, serially; leaving everything unticked keeps
+                the original single-active behaviour. The count is shown BEFORE
+                committing, and both the tick state and the count survive a reload
+                because the selection is persisted. */}
             {testRecipientPool.length > 0 && (
-              <ul className="mt-2 space-y-1">
-                {testRecipientPool.map((addr) => {
-                  const isActive = addr === campaign.testRecipientOverride;
-                  return (
-                    <li key={addr} className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void saveTestSetup({ email: addr, thenTest: true, sendTo: addr })}
-                        disabled={testTargetBusy || testBusy}
-                        className={`rounded-lg border px-2 py-1 text-xs font-medium disabled:opacity-50 ${
-                          isActive
-                            ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
-                            : "border-zinc-300 text-zinc-600 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
-                        }`}
-                      >
-                        {isActive ? `✓ ${addr} — test again` : `Test ${addr}`}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void saveTestSetup({ pool: testRecipientPool.filter((a) => a !== addr) })}
-                        disabled={testTargetBusy || testBusy}
-                        className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
-                        aria-label={`Remove ${addr}`}
-                      >
-                        Remove
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
+              <div className="mt-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                    Test to several at once
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => void saveTestSetup({ selection: [...testRecipientPool] })}
+                    disabled={testTargetBusy || testBusy || testSelection.length === testRecipientPool.length}
+                    className="rounded border border-zinc-300 px-1.5 py-0.5 text-xs text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void saveTestSetup({ selection: [] })}
+                    disabled={testTargetBusy || testBusy || testSelection.length === 0}
+                    className="rounded border border-zinc-300 px-1.5 py-0.5 text-xs text-zinc-600 hover:bg-black/5 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                  >
+                    None
+                  </button>
+                  {testSelection.length > 0 && (
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {testSelection.length} of {testRecipientPool.length} selected
+                    </span>
+                  )}
+                </div>
+                <ul className="mt-2 space-y-1">
+                  {testRecipientPool.map((addr) => {
+                    const isActive = addr === campaign.testRecipientOverride;
+                    const isSelected = testSelection.some((s) => s.toLowerCase() === addr.toLowerCase());
+                    return (
+                      <li key={addr} className="flex flex-wrap items-center gap-2">
+                        <label className="flex items-center gap-1.5 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() =>
+                              void saveTestSetup({
+                                selection: isSelected
+                                  ? testSelection.filter((s) => s.toLowerCase() !== addr.toLowerCase())
+                                  : [...testSelection, addr],
+                              })
+                            }
+                            disabled={testTargetBusy || testBusy}
+                            aria-label={`Include ${addr} in the next test send`}
+                            className="h-3.5 w-3.5 accent-violet-600 disabled:opacity-50"
+                          />
+                          <span className="text-zinc-600 dark:text-zinc-300">{addr}</span>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => void saveTestSetup({ email: addr, thenTest: true, sendTo: addr })}
+                          disabled={testTargetBusy || testBusy}
+                          className={`rounded-lg border px-2 py-1 text-xs font-medium disabled:opacity-50 ${
+                            isActive
+                              ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-900/60 dark:bg-emerald-950/30 dark:text-emerald-300"
+                              : "border-zinc-300 text-zinc-600 hover:bg-black/5 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-white/5"
+                          }`}
+                        >
+                          {isActive ? "✓ test only this one" : "Test only this one"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void saveTestSetup({ pool: testRecipientPool.filter((a) => a !== addr) })}
+                          disabled={testTargetBusy || testBusy}
+                          className="text-xs text-red-600 hover:underline disabled:opacity-50 dark:text-red-400"
+                          aria-label={`Remove ${addr}`}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {testSelection.length > 0 && (
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void sendTest({ to: testSelection })}
+                      disabled={testBusy || testTargetBusy}
+                      className="rounded-lg bg-violet-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-violet-500 disabled:opacity-50"
+                    >
+                      {testBusy
+                        ? "Sending…"
+                        : `Send a test to ${testSelection.length === 1 ? testSelection[0] : `${testSelection.length} addresses`}`}
+                    </button>
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      Sent one at a time, a few seconds apart — an address that fails does not stop the others.
+                    </span>
+                  </div>
+                )}
+              </div>
             )}
 
             <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1807,6 +1921,26 @@ export default function CampaignDetailPage() {
               {latestCheck.error ? <span className="text-zinc-500"> — {latestCheck.error}</span> : null}
               {latestCheck.checkedAt ? <span className="text-zinc-400"> ({new Date(latestCheck.checkedAt).toLocaleString()})</span> : null}
             </p>
+          )}
+
+          {/* TASK_150 T5 — per-address outcomes for a fan-out test. Without this,
+              a 3-address run where one address failed would only show the summary
+              line above, and the failing address would not be identifiable. A
+              failed address is listed with its own error; the others are listed as
+              sent, because one bad address never stops the rest. */}
+          {(testResult?.recipients?.length ?? 0) > 0 && (
+            <ul className="mt-2 space-y-0.5">
+              {testResult!.recipients!.map((r) => (
+                <li key={r.email} className="text-sm">
+                  <span className={r.outcome === "failed" ? "font-medium text-red-600" : "font-medium text-emerald-600"}>
+                    {r.outcome === "failed" ? "✗" : "✓"} {r.email}
+                  </span>
+                  <span className="text-zinc-500">
+                    {r.outcome === "failed" ? ` — ${r.error ?? "not delivered"}` : " — sent (not auto-verified)"}
+                  </span>
+                </li>
+              ))}
+            </ul>
           )}
 
           {/* Ask the human what actually happened, rather than only offering a

@@ -1,0 +1,16 @@
+-- TASK_150 T5 — one manual test send can target ALL of the campaign's test
+-- addresses or a ticked SUBSET of them (before this, exactly one address per
+-- test send: EmailCampaign.testRecipientOverride, or a one-shot `to` string).
+--
+-- testRecipientSelection: the ticked subset of testRecipientPool, in the user's
+-- own order, persisted so a reload keeps it. It is NOT a second store of the
+-- address list — the pool remains the only owner of the LIST and this is validated
+-- as a subset of it by POST /api/campaigns/[id]/test-recipient.
+--
+-- Purely ADDITIVE with a default of '{}', matching how the pool column was added:
+-- every existing row gets '{}', and '{}' means the new field is not in use, so a
+-- test send keeps targeting the single active address exactly as before. (NULL is
+-- not an option: Prisma 6 rejects optional list fields — P1012 — so the not-set
+-- value for an additive list is the empty list.) No row is rewritten, no count
+-- changes, nothing on the real send path reads it.
+ALTER TABLE "EmailCampaign" ADD COLUMN "testRecipientSelection" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];

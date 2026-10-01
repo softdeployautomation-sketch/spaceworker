@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { MAX_TEST_SEND_RECIPIENTS, looksLikeEmail, normalizeRecipientList } from "@/lib/test-send-recipients";
 
 // Sets a campaign's human-assisted deliverability test settings
 // (EmailCampaign.testRecipientOverride / testRecipientPool / testFromOverride).
@@ -26,40 +27,20 @@ import { getSession } from "@/lib/session";
 //
 // POST /api/campaigns/[id]/test-recipient
 //   body: {
-//     email?: string | null,   // the ACTIVE test recipient (null = back to the seed mailbox)
-//     pool?:  string[],        // replace the whole shortlist
-//     from?:  string | null,   // the From address every TEST send uses (null = normal rotation)
+//     email?:     string | null,  // the ACTIVE test recipient (null = back to the seed mailbox)
+//     pool?:      string[],       // replace the whole shortlist
+//     selection?: string[] | null, // TASK_150 T5 — which pool entries ONE test send
+//                                  // goes to (all of them, or a ticked subset);
+//                                  // null/[] = not in use, i.e. the active one only
+//     from?:      string | null,  // the From address every TEST send uses (null = normal rotation)
 //   }
 // Every field is optional and independent — the client sends only what changed.
-export const MAX_TEST_RECIPIENTS = 20;
-
-/**
- * A deliberately light shape check: the real proof an address works is the test
- * send the caller runs right after this, not a regex. It exists to catch typos
- * and stray whitespace, not to adjudicate RFC 5322 — so it insists only on
- * "exactly one @, no spaces, something on both sides", which still permits
- * internal-only addresses like user@localhost.
- */
-function looksLikeEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+$/.test(value);
-}
-
-/** Trim, drop blanks, de-duplicate (case-insensitively, keeping the first spelling). */
-function normalizePool(input: unknown): string[] | null {
-  if (!Array.isArray(input)) return null;
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const entry of input) {
-    const value = typeof entry === "string" ? entry.trim() : "";
-    if (!value) continue;
-    const key = value.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(value);
-    if (out.length >= MAX_TEST_RECIPIENTS) break;
-  }
-  return out;
-}
+//
+// TASK_150 T5 — a `selection` entry MUST already be in the resulting pool: this
+// route owns the LIST, and the selection is only a ticked subset of it, never a
+// second place an address can live. Selecting an address that isn't in the pool is
+// rejected (400) rather than silently added, so the two can't drift apart.
+export const MAX_TEST_RECIPIENTS = MAX_TEST_SEND_RECIPIENTS;
 
 // POST /api/campaigns/[id]/test-recipient   body: { email?, pool?, from? }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -76,7 +57,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     );
   }
 
-  let body: { email?: unknown; pool?: unknown; from?: unknown };
+  let body: { email?: unknown; pool?: unknown; selection?: unknown; from?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -86,8 +67,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const data: {
     testRecipientOverride?: string | null;
     testRecipientPool?: string[];
+    testRecipientSelection?: string[];
     testFromOverride?: string | null;
   } = {};
+
+  // What the client asked for as a multi-selection, if anything (resolved against
+  // the pool further down, once that pool is final). An empty list = "not in use".
+  let requestedSelection: { present: boolean; value: string[] } = { present: false, value: [] };
 
   // --- the ACTIVE test recipient -------------------------------------------
   let active: string | null | undefined;
@@ -98,6 +84,39 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     }
     active = raw || null;
     data.testRecipientOverride = active;
+    // TASK_150 T5 — picking ONE active address is the opposite instruction to a
+    // multi-selection, and the two would otherwise both describe "where the next
+    // test goes". The newest instruction wins: an explicit single pick (the
+    // "Test this address" button, applyTestRecipient, campaign creation) clears
+    // the multi-selection unless the same request sets one explicitly. Without
+    // this, a stale ticked subset would silently outrank the address the user just
+    // chose.
+    if (!("selection" in body)) {
+      requestedSelection = { present: true, value: [] };
+    }
+  }
+
+  // --- the multi-selection (TASK_150 T5) -----------------------------------
+  // Validated against the FINAL pool below, so only shape-checking happens here.
+  if ("selection" in body) {
+    if (body.selection === null) {
+      // Accepted (and treated as "not in use") so a client written against the
+      // nullable shape can still clear the selection.
+      requestedSelection = { present: true, value: [] };
+    } else {
+      const selection = normalizeRecipientList(body.selection);
+      if (!Array.isArray(body.selection)) {
+        return NextResponse.json(
+          { error: "selection must be an array of email addresses or null" },
+          { status: 400 },
+        );
+      }
+      const bad = selection.find((sel) => !looksLikeEmail(sel));
+      if (bad) {
+        return NextResponse.json({ error: `"${bad}" is not a valid email address` }, { status: 400 });
+      }
+      requestedSelection = { present: true, value: selection };
+    }
   }
 
   // --- the shortlist -------------------------------------------------------
@@ -106,10 +125,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // automatically, which makes "type an address and test it" a single action
   // instead of "add it to the list, then select it".
   if ("pool" in body) {
-    const pool = normalizePool(body.pool);
-    if (!pool) {
+    if (!Array.isArray(body.pool)) {
       return NextResponse.json({ error: "pool must be an array of email addresses" }, { status: 400 });
     }
+    const pool = normalizeRecipientList(body.pool);
     const bad = pool.find((p) => !looksLikeEmail(p));
     if (bad) {
       return NextResponse.json({ error: `"${bad}" is not a valid email address` }, { status: 400 });
@@ -138,6 +157,39 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     data.testRecipientOverride = null;
   }
 
+  // --- resolve the multi-selection against the FINAL pool -------------------
+  // TASK_150 T5. An entry the pool doesn't contain is a 400 (this route is where
+  // the address LIST lives — the selection only ever ticks entries of it), and
+  // what IS stored is re-spelled from the pool so the two can never disagree on
+  // casing. The stored value is small and additive: the pool is still the sole
+  // owner of the addresses.
+  if (requestedSelection.present) {
+    const wanted = requestedSelection.value;
+    if (wanted.length > 0) {
+      const outside = wanted.find((sel) => !pool.some((p) => p.toLowerCase() === sel.toLowerCase()));
+      if (outside) {
+        return NextResponse.json(
+          { error: `"${outside}" is not in this campaign's test-address list — add it first.` },
+          { status: 400 },
+        );
+      }
+      data.testRecipientSelection = wanted.map(
+        (sel) => pool.find((p) => p.toLowerCase() === sel.toLowerCase())!,
+      );
+    } else {
+      // Explicitly cleared. [] (not null — Prisma rejects optional lists) is the
+      // "not in use" value the test-send precedence treats as "fall back to the
+      // single active target".
+      data.testRecipientSelection = [];
+    }
+  } else if (data.testRecipientPool) {
+    // The list was replaced without mentioning the selection: anything it dropped
+    // has to go too, or the selection would point outside the pool.
+    const current = campaign.testRecipientSelection ?? [];
+    const kept = current.filter((sel) => pool.some((p) => p.toLowerCase() === sel.toLowerCase()));
+    if (kept.length !== current.length) data.testRecipientSelection = kept;
+  }
+
   // --- the test-only From address ------------------------------------------
   if ("from" in body) {
     const raw = typeof body.from === "string" ? body.from.trim() : "";
@@ -148,7 +200,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   }
 
   if (Object.keys(data).length === 0) {
-    return NextResponse.json({ error: "Nothing to update — pass email, pool and/or from" }, { status: 400 });
+    return NextResponse.json(
+      { error: "Nothing to update — pass email, pool, selection and/or from" },
+      { status: 400 },
+    );
   }
 
   const updated = await prisma.emailCampaign.update({
@@ -158,6 +213,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       id: true,
       testRecipientOverride: true,
       testRecipientPool: true,
+      testRecipientSelection: true,
       testFromOverride: true,
     },
   });

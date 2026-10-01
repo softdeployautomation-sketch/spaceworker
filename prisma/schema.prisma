@@ -449,6 +449,22 @@ model EmailCampaign {
   // a real send: nothing on the send path (mail-queue drain / transporterForMailbox)
   // reads this field — only the test-send and diagnostics routes do.
   testRecipientPool     String[]              @default([])
+  // TASK_150 T5 — which of `testRecipientPool` ONE manual test send should go to
+  // when the user wants several (or all) of them, rather than the single active
+  // address in `testRecipientOverride` above. Order-preserving.
+  //
+  // Deliberately NOT a second store of the pool: the pool stays the only owner of
+  // the address LIST, this is just the ticked subset of it (the test-recipient
+  // route 400s on an entry the pool doesn't contain).
+  //
+  // "Not in use" is `[]`, not NULL: Prisma 6 rejects optional lists outright
+  // ("Optional lists are not supported", P1012), so an additive non-breaking
+  // column here means a defaulted list. `[]` is treated identically to unset
+  // everywhere — test sends fall back to the single active target, and the batch
+  // -gate probe (which reads only `testRecipientOverride`) is untouched — so every
+  // pre-existing row behaves exactly as it did. Nothing on the real send path
+  // reads it; only test-send does.
+  testRecipientSelection String[]              @default([])
   testFromOverride      String?
   // Task 35 — configurable send pacing. The drain's per-send jitter is
   // `min + random * (max - min)` seconds; defaults (5/45) match the pre-Task-35
