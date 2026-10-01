@@ -256,7 +256,7 @@ NOTE:            **WAIVED by the owner 2026-10-01.** Adding another test address
 ```
 
 
-### Owner-requested design work — D1's §13 answers LANDED 2026-10-01 (START D1 NOW); D2 still waits on §10
+### Owner-requested design work — D1 P1 LANDED 2026-10-01 (`a131835`); **START D1 AT P2**; D2 still waits on §10
 
 ```
 TASK:            D1 / Task 155 — "Workers & Pages": the Hosting tab (pages, redirects, files,
@@ -266,7 +266,8 @@ TASK DOC:        PLAN_TASK_155_WORKERS_AND_PAGES.md
                  (phasing), §3 (hard constraints), §5 (token model), §11 (AUP), §13.2 (creds).
 DEPENDS ON:      NOTHING — START NOW. §13 answered 2026-10-01; throwaway Cloudflare account/token
                  supplied (§13.2: CLOUDFLARE_API_TOKEN_DEV + CLOUDFLARE_ACCOUNT_ID_DEV in the
-                 gitignored .env), and the T0 spikes are ALREADY DONE + PASSED (§9). Begin at P1.
+                 gitignored .env), and the T0 spikes are ALREADY DONE + PASSED (§9).
+                 **P1 is DONE (`a131835`) — BEGIN AT P2.**
 BRANCH:          main
 DEPLOY?          yes, per phase — EXCEPT P1 (files) must not disturb the LIVE /e/ + /downloads/
                  services that already serve customer files today. Cloudflare phases only after T0.
@@ -278,12 +279,15 @@ ORDER — do not skip a step:
   2. P1 — FILES on our own metal (NO Cloudflare): upload/list/rename/delete; Content-Disposition
      rename with sha256 PROVABLY unchanged; expiry; per-user quota (§14 caps, admin-editable).
      Ships behind the new `hosting` entitlement, DARK.
+     **DONE + PROVEN + PUSHED 2026-10-01 — `a131835` (NOT deployed).** Full evidence:
+     PLAN_TASK_155 §9 P1 + SENIOR_HANDOFF §12. Tests: `tests/hosting-files.test.ts` (26/26) +
+     `npm run test:hosting`. **Do not rebuild it; go to step 3.**
   3. P2 — REDIRECTS, user-owned: promote the live /r/<token> + LinkRedirect to user-owned links
      + custom slugs + hit counts.
   4. P3 — PAGES (BYO token): connection pane + scoped-token checklist + verify-on-save; deploy a
      template; return the live *.pages.dev URL; agent-does-it as a GATED proposal.
-  STOP after P1 (and P2 if told). Do NOT start P4/P5 (converters/templates/bulk/platform tier)
-  and NEVER start Task 156.
+  STOP after P2 (and P3 if told). P1 is already DONE. Do NOT start P4/P5 (converters/templates/
+  bulk/platform tier) and NEVER start Task 156.
 
 FILES YOU MAY TOUCH:      new app/hosting/ + app/api/hosting/ + lib/hosting* + components/hosting*
                           files you create; prisma/schema.prisma (ADDITIVE models only) + exactly

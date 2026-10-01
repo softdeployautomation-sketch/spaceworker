@@ -1,8 +1,9 @@
 # PLAN — Task 155: Workers & Pages (hosting, redirects, files, converters)
 
 **Status: SCOPED + UNBLOCKED + T0 DONE — owner answered §13 on 2026-10-01, supplied a throwaway
-Cloudflare account/token (§13.2), and the T0 spikes are **PASSED with raw evidence** (§9). Next:
-**P1** → P2 → P3.**
+Cloudflare account/token (§13.2), and the T0 spikes are **PASSED with raw evidence** (§9).
+**P1 is BUILT + PROVEN + PUSHED (`a131835`, 2026-10-01) but NOT deployed.** Next:
+**P2 (redirects) → P3 (Pages).**
 **v1 = FREE-FIRST on our own metal** (files + redirects; no Cloudflare needed). Cloudflare
 (Pages, custom domains, bulk redirects, R2) is a *later* engine, never the only path.
 **All caps are admin-editable (§14) — decided by the engineer, changed by the owner in admin.**
@@ -293,10 +294,32 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
 - **Deliverable:** this note. **Nothing user-facing was built.** The throwaway project was
   **deleted** (account back to 6 projects).
 
-### P1 — Files engine on our own metal (free, no Cloudflare at all)
+### P1 — Files engine on our own metal (free, no Cloudflare at all) — ✅ **DONE + PROVEN 2026-10-01 (`a131835`), NOT deployed**
 - Upload/list/rename/delete; `Content-Disposition` rename with `sha256` unchanged;
   expiry; per-user quota (AdminSetting). Ships behind the `hosting` entitlement, **dark**.
 - **Exit:** a user uploads an EXE, renames it, downloads it, and the hash matches.
+- **Shipped:** `lib/hosting/{providers,rules,files}.ts`; `app/api/hosting/{status,files,files/[id]}`;
+  `app/api/admin/hosting`; `app/hf/[token]` (the public serve route); `app/dashboard/hosting` +
+  `components/hosting-panel.tsx` (customer tab); the admin **Infrastructure → “Hosting limits
+  (Workers & Pages)”** panel (caps + live counters + engine picker); one **additive** migration
+  `20261028000000_task155_p1_hosting_files` (10 defaulted `AdminSetting` columns + `HostedAsset` +
+  `HostingUsageMonthly`); `tests/hosting-files.test.ts` + `npm run test:hosting`.
+- **Proven (raw, local — NOT production):** `npx tsc --noEmit` → 0; `CI=1 npx next build` → exit 0
+  with all 6 routes in the manifest; `npm run test:hosting` **26/26**; a live **E2E** on a scratch
+  Postgres + real `next start` **36/36** (EXE upload → **201** with real sha256; `/hf/<token>` →
+  200 byte-identical; **rename changes only `Content-Disposition`, sha256 identical**; `.php` → 400
+  `blocked_extension`; EXE w/o ack → 400 `gated_ack_required`; cross-tenant → 404; admin PATCH w/o
+  cookie → 403; **cap change live with no restart** (`freeMaxFileSizeMb=7` → `status` says 7);
+  `pagesMaxAssetMb=999` → 400 hard ceiling; 2 MB under a 1 MB cap → **400 `quota_file_size`**, never
+  500); a **headed-browser** proof **23/23** (upload → rename in UI keeps the sha256 → real browser
+  GET of `/hf` byte-identical with the new filename → admin login → set cap 9 → read back live from
+  the customer session **and** `AdminSetting.hostingFreeMaxFileSizeMb=9`); every `test:*` suite re-run
+  → **0 failures**.
+- **NOT done by P1 (the lead's call):** the **deploy** (the D1 prompt says P1 must not disturb the
+  live `/e/` + `/downloads/` services) and the **`dl.*`/instaweb vhost `location /hf/`** — that nginx
+  config is on the VPS, not in this repo, so a minted URL 404s until it is added. `cloudflare` /
+  `external` engines are **registered, not implemented**. `prisma migrate deploy` on production is
+  unrun. **Next: P2.**
 
 ### P2 — Redirects, user-owned (free, no Cloudflare)
 - Promote the existing `/r/<token>` machinery to user-owned links + custom slugs + hits.
@@ -368,7 +391,7 @@ safety net **with** it.
 | **Archive** | ⚠️ `7z` **present**, `zip`/`unzip` **absent** | prefer the `7z` already installed |
 | **Video** | ❌ `ffmpeg` **absent** | out of scope until demand (heavy dep) |
 | **R2** | ❌ not configured; needs billing (R13) | premium/BYO path only |
-| **Cloudflare account + token** | ✅ **throwaway account/token supplied 2026-10-01** (§13.2); Account ID `4c822d…0492` | The token verifies `active` and — with the Account ID — `/pages/projects` and `/workers/scripts` return **200** (R2 → **403**, no scope). The **T0 spikes** (25 MiB rejection, Direct-Upload REST, R4/R15, custom-domain endpoint) are still unrun. The real **platform** token is a production decision. |
+| **Cloudflare account + token** | ✅ **throwaway account/token supplied 2026-10-01** (§13.2); Account ID `4c822d…0492` | The token verifies `active` and — with the Account ID — `/pages/projects` and `/workers/scripts` return **200** (R2 → **403**, no scope). The **T0 spikes** (25 MiB rejection, Direct-Upload REST, R4/R15) are **DONE + PASSED 2026-10-01** (§9); the custom-domain endpoint was identified but **not** executed (premium-only). The real **platform** token is a production decision. |
 
 **VPS facts as measured 2026-10-01:** node `v24.20.0`, npm `12.0.2`, `7z` present,
 `ffmpeg`/`libreoffice`/`pandoc`/`convert`/`qpdf`/`zip`/`unzip` **missing**, 23 GiB RAM

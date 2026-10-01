@@ -342,20 +342,41 @@ forward >25 MiB**. (e) the deployment is **not** a *build* (R4): Direct Upload d
 500-builds/month quota. Local gotcha: the **macOS `curl` is LibreSSL 3.3.6 and fails the TLS
 handshake to `*.pages.dev`** — use Node's `fetch` (or a modern curl) to verify the served bytes.
 
+**20. Task 155 P1's local hosting engine writes INSIDE the repo by default, and its download
+accounting is fire-and-forget.** *(Hit 2026-10-01 building P1.)* Four bites, all cheap once known:
+(a) `hostingStorageRoot()` = `HOSTING_STORAGE_DIR ?? path.join(process.cwd(), ".hosting-storage")`
+(`lib/hosting/providers.ts:84`). **`.hosting-storage` is NOT in `.gitignore`** — proved:
+`git check-ignore -v .hosting-storage` → *not ignored*. A dev who runs the app locally without the
+env var (or an e2e that forgets it) puts **real uploaded bytes inside the working tree**; the VPS
+deploy must set `HOSTING_STORAGE_DIR=/opt/spaceworker/storage/hosting`. Never `git add .`/`-A`
+(rule 4) — check `git status` for `.hosting-storage/` before every commit.
+(b) `recordServe()` (`app/hf/[token]/route.ts`) is **fire-and-forget**: the GET returns before the
+counter is written, so a test that asserts `downloadCount` immediately after the response fails
+**intermittently**. Poll (the T155 e2e harness polls for 2.5 s). Same for the monthly bandwidth row.
+(c) **Turbopack now prints a SECOND “overly broad file pattern … matches N files in [project]/”
+warning**, traced `./lib/hosting/providers.ts` → `./app/api/hosting/status/route.ts` — because
+`path.join(hostingStorageRoot(), safeSegment(token))` is a dynamic path under the project root.
+It is the same class as the pre-existing one traced through `lib/clone-engine-dist.ts`. `next build`
+still exits **0** (2 warnings, 0 errors) — **do not “fix” it by inlining a path or by moving the
+storage root**, and do not mistake it for a failure.
+(d) The admin hosting rows and the customer file list render only **after** their `fetch` resolves.
+Asserting the DOM immediately after clicking the tab (or right after an upload) reports **false
+FAILs** — wait for one known row text first.
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (Task 155 **T0 spikes** session — the owner answered §13 and supplied a throwaway Cloudflare account/token; **T0 passed with raw evidence**: Direct Upload over raw REST proven live (a 3-file site served 200 with exact bytes) and the **25 MiB cap witnessed** (24/25 MiB → 200, **26 MiB → 500**); R4 resolved (Direct Upload is **not** a build); the owner ruled **all caps are admin-editable** (plan §14). Docs-only — **no app code changed**. Earlier the same day: §13 answers + T0 prerequisites; TASK_150 closed (T6 waived); TASK_154 N3 gate evaluated against the LIVE fleet — does **not** bite.)**
+**Last verified: 2026-10-01 (Task 155 **P1 IMPLEMENTED + PROVEN + PUSHED — NOT deployed** — `main` @ `a131835`: the hosting FILES engine on our own metal (upload/list/rename/delete at `/hf/<token>`), behind the new `hosting` entitlement, **dark** (`hostingEnabled=false`), every cap an admin-editable `AdminSetting` enforced server-side so a limit change is live **without a redeploy**, and the storage engine a registry (`local` implemented; `cloudflare`/`external` registered). One additive migration, **not yet applied to production**. Proven with `npm run test:hosting` (**26/26**), a live **E2E** against a real Postgres scratch DB + a running `next start` (**36/36**), and a **headed-browser** proof of the user-visible flow including a live admin cap change (**23/23**); `npx tsc --noEmit` → **0**, `CI=1 npx next build` → **exit 0**. Earlier 2026-10-01: Task 155 **T0 spikes** passed with raw evidence (Direct Upload over raw REST; **26 MiB → 500**); the owner answered §13, supplied a throwaway Cloudflare account/token, ruled **all caps are admin-editable** (plan §14) and **user files are served from the instaweb public family** (plan §15). TASK_150 closed (T6 waived); TASK_154 N3 gate evaluated against the LIVE fleet — does **not** bite.)**
 
 ### 6.1 Live app — `main`
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ the current tip (run `git log --oneline -1`). The last **code** commits are **`e342578`** (TASK_154 N2) and `a64c702` (N1); **everything above `e342578` is documentation-only** and changes no behaviour. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
-| Sync | in sync with `origin/main`; working tree **clean** |
-| Deployed to production | **Live build is `iyIlFSwZhjQ_1Rap4MFWC`, `BUILD_ID` mtime `2026-10-01 16:19:43 CEST` — deployed from `main` @ `3d484af` (the screen-capture failure-message fix, `61f6a9e` + `3d484af`). TASK_154 N1+N2 shipped in the previous build `4-aARmhO-lJKtaX2Lx-9y` and are still present.** Verified live (not assumed): the improved capture-failure copy is in the shipped chunks (`grep -rl "capture service" /opt/spaceworker/.next/static` → 2 chunks), and §12 of the earlier entry's N1/N2 evidence still holds (that build also returned the top-level `idle:{state,asOf}` object and shipped the string `"activity unknown"`). |
-| Deploy run | **`36875156299`** (`workflow_dispatch` @ `3d484af`, `conclusion=success`) — the deploy that shipped the capture-failure fix. *One earlier dispatch the same hour **failed**: `36873911731`, “Process completed with exit code 255” — a transient SSH failure to the VPS; the re-dispatch succeeded. A failed dispatch is not necessarily a broken build.* |
-| CI on current HEAD | push run for `3d484af` and the docs-only commits above it: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
-| Migrations applied | **No pending migrations in this deploy** — `git diff --name-only 06a5eeb HEAD -- prisma/` = **0** (N1/N2 are pure code). `_prisma_migrations` unchanged; `ScreenshotRotationCursor` still exists. |
+| Branch / HEAD | `main` @ **`a131835`** (TASK_155 P1). The last code commits before it: `5c7bf4c`/`17577bb` (docs) and `3d484af` (the capture-failure fix, **deployed**). Run `git log --oneline -1` to re-check — §6 can lag (trap 14). |
+| Sync | in sync with `origin/main` (`5c7bf4c..a131835` pushed); working tree **clean** |
+| Deployed to production | **UNCHANGED by P1 — the live build is still `iyIlFSwZhjQ_1Rap4MFWC`, `BUILD_ID` mtime `2026-10-01 16:19:43 CEST`, from `main` @ `3d484af`.** P1 is **committed and pushed but NOT deployed** (the DEPLOY line for D1 says P1 must not disturb the live `/e/` + `/downloads/` services, and the migration story was deliberately left to the lead). So `HostedAsset`, `HostingUsageMonthly` and the ten `AdminSetting.hosting*` columns **do not exist in production**, and **`/hf/…` 404s there because the route is not in the shipped build** — *not* because of the master switch. |
+| Deploy run | last successful deploy is still run `36875156299` (`workflow_dispatch` @ `3d484af`). **No dispatch has been made for P1.** |
+| CI on current HEAD | push run for `a131835`: `Build & typecheck` = see `gh run list --limit 3`; `Deploy to production (manual only)` = **skipped** (workflow_dispatch-gated). |
+| Migrations applied | **P1 ADDS one migration that is NOT applied anywhere yet:** `prisma/migrations/20261028000000_task155_p1_hosting_files/migration.sql` (10 `AdminSetting` columns, all with DEFAULTS, + 2 empty tables). It was applied to a **throwaway scratch DB only** (`spaceworker_t155`) to run the E2E; `prisma migrate deploy` against production has **not** been run. Production `_prisma_migrations` is unchanged. |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
 
@@ -403,6 +424,31 @@ every earlier tick `{"ok":true,...}`; the *next* tick (15:30:40) exited `status=
 the next clean tick** — see §5 trap 15.
 
 ### 6.4 Known-unverified (do not claim these work)
+
+- **TASK_155 P1 is NOT deployed, so nothing about it is live.** *Stated plainly so no later
+  reader mistakes the local proofs for production facts:*
+  - The E2E (**36/36**) and the headed-browser proof (**23/23**) ran against a **local `next start`
+    on port 3999** backed by a **scratch Postgres DB** (`spaceworker_t155`) — **not** the VPS,
+    **not** production, **not** a simulation either (real HTTP, real Postgres, real browser,
+    screenshots in `/tmp/t155-ui/`), but **not** the deployed host.
+  - **`GET https://<instaweb host>/hf/<token>` has never been attempted.** The URL is minted from
+    `HOSTING_PUBLIC_BASE_URL` (`https://dl.instaweb.top` locally), and `dl.instaweb.top` **does**
+    resolve with TLS (plan §15: `→ 404`), but the vhost's **nginx config lives on the VPS, not in
+    this repo** (`deploy/nginx-spaceworker.conf` only declares `server_name spaceworker.top` and
+    proxies to `127.0.0.1:3500`). **Until a `location /hf/ { proxy_pass http://127.0.0.1:3500; }`
+    (or equivalent) exists on the dl/instaweb vhost, a minted URL will 404 in the real world.**
+    This is an infra action for the lead, not a code change.
+  - **`cloudflare` and `external` storage engines are REGISTERED BUT NOT IMPLEMENTED.** They are
+    listed in `/api/hosting/status` + the admin picker (`implemented:false`) and selecting one for
+    an upload throws the typed `HostingProviderNotReadyError` ("Switch back to “This server”") —
+    proven by `tests/hosting-files.test.ts`. Direct Upload over that path is **not** wired; only the
+    T0 spike proved the protocol works.
+  - The migration has only ever been applied to the scratch DB; **`prisma migrate deploy` against
+    production is unrun** (see §6.1). Its additive/nullable-default shape is checked by
+    `prisma migrate diff` (datamodel → datamodel, 0 drift beyond the intended block), not by
+    applying it to the live DB.
+  - **Premium/BYO quota path:** `resolveHostingCaps` swaps the storage quota for premium and is
+    unit-tested, but no real premium user has uploaded through it live.
 
 - **TASK_154 N3 was EVALUATED, not built (2026-10-01).** Its gate — *“only if
   hostname-keying demonstrably bites”* — was tested against the **LIVE** fleet and **FAILS**.
@@ -472,6 +518,7 @@ banner, decides what runs next.
 | ~~3~~ | ✅ ~~**DEPLOY N1 + N2 together**~~ **DONE 2026-10-01** — run `36867996177`, build `4-aARmhO-lJKtaX2Lx-9y`; verified live per §8/§12 | — | Closed TASK_154's owner report. |
 | ~~1~~ | ✅ ~~**TASK_154 N3** — key idle by agent id, not hostname~~ **EVALUATED 2026-10-01 — gate FAILS, does not bite; no code written** | `TASK_154_...md` §3 N3 | Live evidence in §12; trap 17. Cross-repo (needs a **Vantra** change). Left as a latent, correctly-filed follow-up — **not** a defect. |
 | ~~1~~ | ✅ ~~**TASK_150 T6** — confirm/fix changing the test email mid-send~~ **WAIVED by the owner 2026-10-01** — *"we can add another test email during send, that's enough for now; I tested that."* **NOT queued** | `TASK_150_...md` §3 T6 | Closes TASK_150 (T1–T5 done). Do not re-open unless the owner reports it again. |
+| ~~4~~ | ✅ ~~**TASK_155 P1** — hosting FILES engine (`/hf/<token>`, dark, admin-capped)~~ **DONE + PUSHED 2026-10-01 (`a131835`) — NOT DEPLOYED** | `PLAN_TASK_155_...md` §9 P1 | Code + one additive migration + `tests/hosting-files.test.ts`. **Blocked from "done" only by the lead's deploy decision** (migration + the `dl.*` nginx `location /hf/`, §6.1/§6.4). |
 
 **N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
 **always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
@@ -485,18 +532,19 @@ positively-active reading (< 60 s, matching `formatIdle`).
 scoped yet. It needs its own safety work; the observability half (M1–M7) had to land first.
 Do not fold M8 into any of the above.
 
-**Owner-requested design work (scoping delivered 2026-10-01 — docs exist, nothing built):**
+**Owner-requested design work (Task 155 **P1 is now BUILT + PUSHED**, `a131835`; the rest below is still scoping-only):**
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT; UNGATED 2026-10-01 — T0 PASSED, START P1** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *v1 / free first.* **§13 answered 2026-10-01** (v1 = free-first P1→P2→P3; free platform-token tier ≤1 day; premium = user-selectable duration (3/5 days, or indefinite **with a billing warning**); **a hard cap applies in EVERY token mode**; custom domains **premium only**; AUP handled by the owner's UK lawyer; **converters Q4 still open**). A throwaway Cloudflare account/token is in the gitignored `.env`; the **T0 spikes are DONE + PASSED** (§9): Direct Upload over raw REST proven live, **25 MiB → 500** witnessed, R4 resolved. Owner also ruled **all caps are admin-editable** (plan §14) and that **user files are served from the instaweb public family, never the main `spaceworker` host** (plan §15; new optional `HOSTING_PUBLIC_BASE_URL`). **Next: P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** |
-| 2 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). |
+| ~~1~~ | ✅ ~~**D1 — Task 155 P1** (files engine on our own metal)~~ **DONE + PROVEN + PUSHED 2026-10-01 (`a131835`) — NOT deployed** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` §9 P1 | `/hf/<token>` upload/list/rename/delete behind the new `hosting` entitlement, **dark**; rename rewrites only `dispositionFilename`/`mime` so **sha256 is provably unchanged**; every cap is an admin-editable `AdminSetting` (live change, no redeploy — proven in a real browser); engine registry `local` implemented / `cloudflare`+`external` registered. `tests/hosting-files.test.ts` (**26/26**), E2E **36/36**, browser **23/23**. **Next action for the lead: confirm the deploy + the migration (§6.1) and the `dl.*` nginx `location /hf/` (§6.4).** |
+| **1** | **D1 — Task 155 P2** (redirects, user-owned) — **NEXT, start now** | same doc §9 P2 | Promote the live `/r/<token>` + `LinkRedirect` to **user-owned links + custom slugs + hit counts**, in the Hosting tab. `HostedAsset.slug` already exists (P1 reserved it) and `/r/<token>` is live today — **do not change `/r/`'s current behaviour for anonymous links** (the D1 prompt forbids touching the existing route's behaviour). |
+| 2 | **D1 — Task 155 P3** (Pages, BYO token) | same doc §9 P3 | Connection pane + scoped-token checklist + verify-on-save; deploy from a template; return the live `*.pages.dev` URL; agent-does-it as a **gated proposal**. **Cloudflare Direct Upload is re-use of the T0-proven protocol** (§5 trap 19) — the `cloudflare` provider slot already exists. |
+| 3 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). |
 
-*D1 is the promoted live-app item and is **now UNGATED** — the owner answered §13 on 2026-10-01
-and supplied the throwaway Cloudflare account/token whose T0 prerequisites are proven live. Its
-immediate next step is the **T0 spikes** (`PLAN_TASK_155_...md` §9), then **P1**. D2 still waits
-on D1 P1/P2 **and** its §10. **Converters (155 §13 Q4) remain unanswered** — do not install heavy
-binaries.*
+*D1's P1 is **built and pushed** (`a131835`) but **deliberately NOT deployed** — the D1 prompt's
+DEPLOY line says P1 must not disturb the live `/e/` + `/downloads/` services, and the migration
+story is the lead's call (§9). **P2 is the next live-app item.** D2 still waits on D1 P1/P2
+**and** its §10. **Converters (155 §13 Q4) remain unanswered** — do not install heavy binaries.*
 
 **Self-hosted line:** T10 → T11 (the live kill — highest value) → T12 → T13 → T14 → T15,
 per `TASK_145_...JUNIOR_TRACK.md`.
@@ -915,3 +963,68 @@ half-done. A half-done change with no note is worse than no change.
   `self-hosted-build` untouched (`f6b6f78`). Throwaway token still in the local `.env` only.
 - **Next:** **D1 / Task 155 — P1** (files on our own metal, dark behind `hosting`, caps per §14).
   Converters (155 §13 Q4) still open — do not install heavy binaries.
+
+### 2026-10-01 — TASK_155 P1 BUILT + PROVEN + PUSHED (`a131835`); NOT deployed; TASK_150 T6 recorded as NOT NEEDED
+- **Did:** Built **Task 155 P1** — the hosting **FILES** engine on our own metal: upload / list /
+  rename / delete, served publicly at **`/hf/<token>`**, behind the **new `hosting` entitlement**,
+  **dark** (`hostingEnabled=false` by default). Every cap is an **additive `AdminSetting` column**
+  (10 of them) enforced **server-side**, editable in the admin **Infrastructure → “Hosting limits
+  (Workers & Pages)”** panel, so a limit change is **live without a redeploy**; the storage engine
+  is a **registry** (`local` implemented; `cloudflare` / `external` registered, `implemented:false`)
+  picked from the same panel, so a file can live on our metal **or** a third party. One **additive**
+  migration (`20261028000000_task155_p1_hosting_files`) — 10 defaulted columns + 2 empty tables, zero
+  row rewrites. Added `tests/hosting-files.test.ts` + `npm run test:hosting`.
+  **Also (same session, doc-only):** marked **TASK_150 T6 “test email mid-send” NOT NEEDED** in
+  `TASK_150_LIVE_CAMPAIGN_AND_EXTRACTOR_FIXES.md` per the owner — *“we can add another test email
+  during send, that's enough for now, I tested that”* — so T6 will not be picked up by anyone.
+- **Verified (raw, this session, all local — NOT production):**
+  - `npx tsc --noEmit` → **exit 0**.
+  - `CI=1 npx next build` → **exit 0**, `✓ Compiled successfully in 53s`; the build manifest lists
+    `ƒ /api/admin/hosting`, `ƒ /api/hosting/status`, `ƒ /api/hosting/files`,
+    `ƒ /api/hosting/files/[id]`, `ƒ /dashboard/hosting`, `ƒ /hf/[token]`. (2 *warnings*, 0 errors —
+    one of them new, see trap 20c.)
+  - `npm run test:hosting` → **26/26 pass, 0 fail**.
+  - **E2E against a real Postgres scratch DB + a real `next start` (port 3999)** — `36/36`:
+    unauthenticated `/api/hosting/status` **401**; entitled **200** with `providers=[local,
+    cloudflare,external]` and `publicBase=https://dl.instaweb.top`; a real EXE upload → **201** with
+    the **real sha256**; `GET /hf/<token>` → **200** with **byte-identical** bytes; **the rename
+    anchor**: `PATCH` rename → the `Content-Disposition` filename changes to
+    `Totally Different Name.exe` while `sha256` and the served bytes are **identical**;
+    `.php` → **400 `blocked_extension`**; EXE without ack → **400 `gated_ack_required`**; another
+    user's file → **404**; `PATCH /api/admin/hosting` without the admin cookie → **403**;
+    `freeMaxFileSizeMb=7` → **200** and **immediately live** in `/api/hosting/status` (`got=7`,
+    *no restart*); `pagesMaxAssetMb=999` → **400** (hard 25 MiB ceiling); `freeMaxFiles=0` → **400**;
+    unknown field → **400**; and the **quota-breach anchor**: a 2 MB upload under a **1 MB** admin cap
+    → **400 `quota_file_size`** with the human message *“Files are limited to 1 MB each.”* —
+    **never a 500**; delete → **200** then `/hf` **404**.
+  - **Headed-browser proof (real Chromium, real DOM, screenshots in `/tmp/t155-ui/`)** — `23/23`:
+    the Hosting tab renders and lists the uploaded file with its **server-computed sha256 prefix** and
+    download count; the **rename in the UI** changed the displayed filename while the list still showed
+    the **same sha256** (`9e7c0020df82…`); a browser navigation to `/hf/<token>` → **200** with
+    **byte-identical** bytes and the **renamed** filename in `Content-Disposition`; then admin login
+    (real passcode) → **Infrastructure** shows the **Hosting limits** panel with all four cap rows,
+    the **live counters** (`7 file(s) · 0.00 GB stored · 7 user(s)`) and the **storage-engine picker**;
+    clicking **Set** on *Max file size* = **9** was read back **from the customer's own session**
+    (`/api/hosting/status` → `maxFileSizeMb=9`) **and** from `AdminSetting.hostingFreeMaxFileSizeMb=9`
+    → **an admin cap change is live with no redeploy**. No uncaught page errors.
+  - **Nothing else broke:** every `test:*` suite re-run → **0 failures** across all 26 suites
+    (engine 79, vantra 58, domains 37, screenshots 36, governor 26, hosting 26, screennotify 16,
+    message 15, summaries 15, …).
+- **NOT verified (expected, not a weakness):** P1 is **not deployed**, so **nothing about it is
+  live**. `GET https://dl.instaweb.top/hf/<token>` has **never been attempted** — and **will 404
+  until the `dl.*`/instaweb vhost on the VPS gets a `location /hf/` proxy** (that nginx config is
+  **on the VPS, not in this repo**; `deploy/nginx-spaceworker.conf` only declares
+  `server_name spaceworker.top` → `127.0.0.1:3500`). `prisma migrate deploy` against production is
+  **unrun**. The `cloudflare` / `external` engines are **registered but not implemented** (a typed
+  `HostingProviderNotReadyError`, not a silent failure). **SIMULATION: none** — every line above is
+  real HTTP / a real browser / a real DB; the only thing simulated is *nothing at all*.
+- **State left behind:** `main` @ **`a131835`**, pushed to `origin/main`, **working tree clean**.
+  **Deployed build unchanged** — still `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`
+  (`3d484af`). `self-hosted-build` untouched. The scratch DB `spaceworker_t155` + its test users/assets
+  still exist locally (harmless, isolated); the ad-hoc harnesses were removed from the repo tree and
+  kept only in `/tmp` (`/tmp/t155_e2e.final.mjs`, `/tmp/t155_ui.final.mjs`).
+- **Next:** **P2 (redirects, user-owned)** — promote the live `/r/<token>` + `LinkRedirect` to
+  user-owned links + custom slugs + hit counts **without changing `/r/`'s current behaviour**. The
+  lead must first decide the **P1 deploy + migration** and the **`dl.*` nginx `location /hf/`**.
+  Converters (155 §13 Q4) still open — do not install heavy binaries.
+
