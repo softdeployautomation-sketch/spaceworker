@@ -349,6 +349,11 @@ export const captureViaService: CaptureFn = async (device, framePath): Promise<C
         cookieDomain: base.hostname,
         secureCookie: base.protocol === "https:",
         outputPath: framePath,
+        // TASK_153 S2 — observation never ticks the mesh Input toggle. Sent
+        // EXPLICITLY (not merely omitted) and always `false`, so the sweep's
+        // intent is on the wire and cannot be changed by accident. captureScreen
+        // refuses `true` anyway; see browser-capture/capture.ts.
+        enableInput: false,
       }),
       // Slightly longer than the service's own 75s watchdog so the service's
       // specific failure reason wins the race instead of a bare client abort.

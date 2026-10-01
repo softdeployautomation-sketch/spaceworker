@@ -80,6 +80,11 @@ function parseRequest(body: Record<string, unknown>): CaptureRequest {
     cookieDomain: str("cookieDomain"),
     secureCookie: body.secureCookie === true,
     outputPath: str("outputPath"),
+    // TASK_153 S2 — observation only. The wire MAY carry enableInput, but
+    // captureScreen refuses `true` outright (see its guard), so a stray local
+    // caller can never tick the mesh Input toggle. Omitting it defaults to
+    // false, which is the only path the sweep uses.
+    enableInput: body.enableInput === true,
   };
 }
 

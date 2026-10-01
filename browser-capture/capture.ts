@@ -82,6 +82,17 @@ export interface CaptureRequest {
   secureCookie: boolean;
   /** Absolute path to write the PNG to. The APP owns the storage layout. */
   outputPath: string;
+  /**
+   * TASK_153 S2 — whether to tick the mesh Input (control) toggle before
+   * shooting. DEFAULT FALSE, and that default is the whole point: capturing is
+   * OBSERVATION, and a view-only session paints the same remote desktop (S2
+   * compared frames byte-for-byte on a live device). The toggle only grants a
+   * capability this code never uses, while risking a stray click on the real
+   * machine. There is no legitimate caller for `true` today — see the guard at
+   * the top of captureScreen — so it exists only so the deferred task/control
+   * phase must change this ON PURPOSE rather than by inaction.
+   */
+  enableInput?: boolean;
 }
 
 export interface CaptureResult {
@@ -142,33 +153,20 @@ async function waitForConnected(frame: Frame, timeoutMs = CONNECTED_TIMEOUT_MS):
   throw new CaptureError("mesh_session_not_connected");
 }
 
-/**
- * Enable the Input (control) toggle the way the proven sequence did — WITHOUT
- * `force`, and never fatally.
- *
- * WHY PHASE 1 TOUCHES THIS AT ALL: the confirmed frame was taken with this
- * checkbox ticked, so this preserves the proven state rather than trusting that
- * a view-only session paints the same pixels. Phase 1 itself NEVER dispatches
- * input (no mouse or keyboard event is sent anywhere in this file) — ticking the
- * box grants a capability nothing here uses.
- *
- * WHY IT IS NON-FATAL: the investigation found that forcing this check risks
- * landing a stray click on the live desktop (a context menu opened on the real
- * machine during testing). So if the box is not plainly actionable the capture
- * continues anyway: a possibly view-only frame beats no frame, and beating on
- * somebody's desktop to get one is never acceptable.
- */
-async function enableInputToggle(frame: Frame): Promise<boolean> {
-  try {
-    const box = frame.locator("#DeskControl");
-    await box.waitFor({ state: "visible", timeout: 5_000 });
-    if (await box.isChecked()) return true;
-    await box.check({ timeout: 5_000 }); // no `force: true` — deliberately
-    return true;
-  } catch {
-    return false;
-  }
-}
+// (TASK_153 S2 REMOVED `enableInputToggle` HERE.)
+//
+// It ticked the mesh Input toggle (`#DeskControl`) before EVERY frame "to match
+// the proven state". Its own docblock already conceded the capability was
+// unused — this file dispatches no input — and NOBODY had verified that a
+// view-only session paints the same pixels. TASK_153 S2 verified it on a live
+// device: the same session shot with input ON and OFF produced equivalent
+// frames, so the tick bought nothing and only risked landing a stray click on
+// the real desktop (the reason it was originally written non-fatal, no `force`).
+//
+// THE RULE (do not lose this): input is enabled ONLY when a task must DRIVE the
+// device; observation never needs it. When the deferred task/control phase is
+// scoped it must wire the toggle DELIBERATELY, behind captureScreen's
+// `enableInput` guard below — not here, and never silently.
 
 /** Best-effort clean disconnect — see finding (2) in this file's header. */
 async function disconnectFrame(frame: Frame): Promise<void> {
@@ -200,6 +198,18 @@ export async function captureScreen(req: CaptureRequest): Promise<CaptureResult>
     // relative one would be written wherever this process happens to be
     // running, which is never intended.
     throw new CaptureError("output_path_must_be_absolute");
+  }
+
+  if (req.enableInput === true) {
+    // TASK_153 S2 — THE RULE: input is enabled ONLY when a task must DRIVE the
+    // device; observation never needs it, and capturing is observation. This
+    // branch is deliberately NOT implemented, and it THROWS so the capability
+    // cannot creep back in by accident (an omitted/false option is the only
+    // working call). When the deferred task/control phase is scoped it must
+    // implement the drive path HERE, on purpose, with its own justification —
+    // and re-add the `enableInputToggle` helper (ticking `#DeskControl`, no
+    // `force`) that S2 removed above.
+    throw new CaptureError("enable_input_not_wired_for_observation");
   }
 
   // A holder object rather than plain locals: TypeScript cannot see assignments
@@ -266,8 +276,11 @@ export async function captureScreen(req: CaptureRequest): Promise<CaptureResult>
     await waitForConnected(held.frame);
     await page.waitForTimeout(SETTLE_MS);
 
-    // 4) Match the proven state, without `force` and without caring if it fails.
-    await enableInputToggle(held.frame);
+    // 4) INPUT IS DELIBERATELY LEFT OFF. See the rule above and on
+    //    CaptureRequest.enableInput: capturing is OBSERVATION, and S2 compared
+    //    input ON vs OFF on the same live session — equivalent frames — so
+    //    ticking `#DeskControl` bought nothing and only risked a stray click on
+    //    the real machine. There is no `enableInputToggle` call here any more.
 
     // 5) A PAGE-level screenshot, which is what the investigation proved
     //    captures the real remote desktop (icons, wallpaper, taskbar).
