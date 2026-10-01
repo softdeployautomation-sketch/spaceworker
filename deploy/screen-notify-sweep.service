@@ -1,0 +1,22 @@
+# Install: sudo cp screen-notify-sweep.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion) — never substitute %INTERNAL_BEARER_TOKEN% by hand:
+# that is exactly how four sibling units silently 401'd on 2026-09-24.
+# PORT 3500 — matches spaceworker.service (same convention as digest-sweep.service).
+#
+# TASK_152 M5 — runs the screen-monitoring trigger pass and, for any user whose
+# digest is due, the periodic digest. The CADENCE OF DIGESTS is NOT set here: it
+# is User.screenDigestIntervalMinutes (default 120), which the owner can change.
+# This timer only decides how often we LOOK; the (userId, windowStart) rollup
+# unique key makes a repeated look a no-op. Both features default OFF, so on an
+# untouched install this sweep does nothing.
+[Unit]
+Description=SpaceWorker screen-monitoring notification sweep — triggers + periodic digest (TASK_152 M5)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
+ExecStart=/usr/bin/curl -s -X POST \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
+  http://localhost:3500/api/internal/screen-notify-sweep
+TimeoutStartSec=300

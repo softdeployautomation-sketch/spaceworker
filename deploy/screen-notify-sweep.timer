@@ -1,0 +1,19 @@
+# Install: sudo cp screen-notify-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now screen-notify-sweep.timer
+[Unit]
+Description=Run the SpaceWorker screen-monitoring notification sweep every 5 minutes
+
+# Five-minute cadence. The TRIGGER pass runs against a one-shot queue (frames whose
+# summary has not yet been checked), and every firing is cooldown-limited, so a
+# denser sweep fires no more than the cooldown allows. The DIGEST only actually
+# sends when User.screenDigestIntervalMinutes has elapsed since the last rollup, so
+# a user on the default 2-hour cadence gets one message per 2 hours regardless of
+# how often this timer fires. systemd will not start a second instance while one is
+# active, and every send decision is derived from database rows, so overlapping
+# ticks cannot double-send.
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=5min
+Unit=screen-notify-sweep.service
+
+[Install]
+WantedBy=timers.target

@@ -104,6 +104,21 @@ model User {
   // entirely; on by default since it's a pure UI convenience, not a new
   // capability with any side effect of its own.
   agentWidgetEnabled       Boolean                @default(true)
+  // TASK_152 M5 — screen-monitoring notifications. BOTH master switches default
+  // FALSE: a notification feature that switches itself on is how trust is lost,
+  // so screen alerts only ever speak after the owner turns them on for their
+  // account. A per-trigger `enabled` flag (ScreenTrigger.enabled) is the second,
+  // narrower switch beneath these.
+  //   screenTriggerNotificationsEnabled = master switch for the keyword triggers
+  //                                       matched against frame summaries.
+  //   screenDigestEnabled               = master switch for the periodic
+  //                                       "every N minutes, all my monitored
+  //                                       devices" digest.
+  //   screenDigestIntervalMinutes       = that cadence (default 120 = 2 hours,
+  //                                       which is the owner's own example).
+  screenTriggerNotificationsEnabled Boolean @default(false)
+  screenDigestEnabled               Boolean @default(false)
+  screenDigestIntervalMinutes       Int     @default(120)
   createdAt                DateTime               @default(now())
   verifications            VerificationCode[]
   rateLimits               RateLimitEvent[]
@@ -148,6 +163,9 @@ model User {
   deviceOnboardings        DeviceOnboarding[]
   // TASK_139 — self-serve DKIM for mail relayed through SpaceWorker's own relay.
   sendingDomains           SendingDomain[]
+  // TASK_152 M5 — screen-monitoring notification config + firing state.
+  screenTriggers           ScreenTrigger[]
+  screenDigestRollups      ScreenDigestRollup[]
 }
 
 model VerificationCode {
@@ -1382,6 +1400,10 @@ model Device {
   relays                RelayHealth[]
   hostedSessions        HostedBrowserSession[]
 
+  // TASK_152 M5 — screen-monitoring trigger config + cooldown state.
+  screenTriggers        ScreenTrigger[]
+  screenTriggerStates   ScreenTriggerState[]
+
   @@index([userId])
   @@index([userId, status])
   @@index([userId, powerLanSubnet])
@@ -2049,6 +2071,13 @@ model DeviceScreenshot {
   summaryModel  String?
   summarisedAt  DateTime?
   imagePurgedAt DateTime?
+  // TASK_152 M5 — set the moment this frame's summary has been CHECKED against
+  // the owner's triggers (whether or not one fired). This is what makes the
+  // trigger pass a one-shot work queue instead of re-scanning every summary on
+  // every sweep: a frame is evaluated once, then never looked at again. Null on
+  // every pre-M5 frame and on any frame whose summary does not exist yet — the
+  // pass selects `summary != null AND triggerEvaluatedAt IS NULL`.
+  triggerEvaluatedAt DateTime?
   // The UTC day this frame belongs to, stamped at insert so Phase 2's daily
   // summary is one indexed range read instead of a timezone computation per row.
   summaryDate   DateTime
@@ -2063,10 +2092,84 @@ model DeviceScreenshot {
   //   a device's frames for a day  -> deviceId + summaryDate
   //   the retention purge          -> summaryDate + status
   //   a user's recent frames       -> userId + createdAt
+  //   the trigger pass's work queue -> summaryDate + triggerEvaluatedAt (TASK_152 M5)
   @@index([status])
   @@index([deviceId, summaryDate, status])
   @@index([userId, createdAt])
   @@index([summaryDate, status])
+  @@index([summaryDate, triggerEvaluatedAt])
+}
+
+// TASK_152 M5 — a user-defined trigger for screen-monitoring notifications.
+//
+// FIRST VERSION IS TEXT/KEYWORD ONLY (the owner's example: "the screen shows a
+// balance"). `keyword` is matched case-insensitively as a substring of the
+// AI-written frame SUMMARY (DeviceScreenshot.summary) — there is NO visual or
+// complex-event matching in this version, by design (stated in the writeup).
+//
+// Scope: deviceId null => every monitored device of this user; set => only that
+// device. A trigger belongs to the USER (it is their notification) and is
+// deleted with the account.
+model ScreenTrigger {
+  id       String  @id @default(cuid())
+  userId   String
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // null = all of this user's monitored devices; set = this device only.
+  deviceId String?
+  device   Device? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  // The word/phrase to look for in a frame summary. Stored trimmed; matched
+  // case-insensitively as a plain substring (never a regex — a user-supplied
+  // regex is a cost/DoS foot-gun and buys nothing for this version).
+  keyword  String
+  // Optional human label used in the notification ("Balance shown"). Falls back
+  // to the keyword when absent.
+  label    String?
+  // The per-trigger off switch, independent of the account master switch.
+  enabled  Boolean @default(true)
+  // Minimum minutes between two firings of THIS trigger on the SAME device.
+  // Without this, a "balance" that stays on screen would fire on every capture.
+  // Default 120 (2 hours); bounded 1..1440 at the API edge.
+  cooldownMinutes Int @default(120)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  states   ScreenTriggerState[]
+
+  @@index([userId])
+  @@index([userId, enabled])
+}
+
+// TASK_152 M5 — the COOLDOWN STATE for one (trigger, device) pair: when this
+// trigger last fired for this device. A row appears only AFTER a firing, so a
+// never-fired trigger has no row. This is STATE, not a delivery log — every
+// actual delivery is recorded on the existing NotificationLog (never here).
+model ScreenTriggerState {
+  id          String        @id @default(cuid())
+  triggerId   String
+  trigger     ScreenTrigger @relation(fields: [triggerId], references: [id], onDelete: Cascade)
+  deviceId    String
+  device      Device        @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  lastFiredAt DateTime
+
+  @@unique([triggerId, deviceId])
+}
+
+// TASK_152 M5 — one DELIVERED periodic screen-monitoring digest. Mirrors
+// ActivityRollup's idempotency: unique (userId, windowStart) means a re-fired
+// sweep can never double-send the same window. Covers ALL of the user's
+// monitored devices for [windowStart, windowEnd) in ONE message.
+model ScreenDigestRollup {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  windowStart DateTime
+  windowEnd   DateTime
+  deviceCount Int
+  digestText  String
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, windowStart])
+  @@index([userId, windowStart])
 }
 
 // TASK_128 — the device onboarding quarantine ("one process at a time").

@@ -30,6 +30,7 @@ import {
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
 import { ScreenTimeline } from "@/components/screen-timeline";
+import { ScreenAlertsCard } from "@/components/screen-alerts-card";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { formatIdle } from "@/lib/device-idle";
 import { timeAgo } from "@/lib/format-date";
@@ -1560,6 +1561,13 @@ export function DeviceConsole({
           {!fullScreen && (
             <div className={tab === "monitoring" ? undefined : "hidden"}>
               <ScreenMonitoringCard deviceId={deviceId} onState={setScreenMon} />
+              {/* TASK_152 M5 — the alert configuration for this account lives
+                  right under the machinery it watches: user-defined keyword
+                  triggers + the periodic digest, each with its own off switch
+                  (both default OFF). */}
+              <div className="mt-4">
+                <ScreenAlertsCard deviceId={deviceId} />
+              </div>
             </div>
           )}
 
