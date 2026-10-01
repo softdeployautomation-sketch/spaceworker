@@ -23,6 +23,18 @@ the owner is objecting to.
 
 ---
 
+## Status
+
+- **N1 — ✅ DONE 2026-10-01**, commit `a64c702` (pushed, CI-green, **NOT deployed**). See the
+  STATUS note at the end of §3 N1; raw evidence in `SENIOR_HANDOFF.md` §12.
+- **N2 — NEXT.** Read `SENIOR_HANDOFF.md` §7 "N2 shape note" first: N1's per-row provenance is
+  **opt-in** (`?idle=provenance`); what every call already receives is the top-level
+  `idle: { asOf, state }` (`fresh`/`stale`/`unknown`).
+- **N3 — not started** (optional, cross-repo).
+
+Live-app state, deploy status and the update protocol live in `SENIOR_HANDOFF.md` (§6, §9, §10);
+this doc holds only the diagnosis (§1) and the design/tasks (§2–§3).
+
 ## 1. Verified state (2026-10-01, `main`)
 
 ### 1.1 The label has a degradation path that lies
@@ -247,6 +259,17 @@ clearly-marked, cross-repo follow-up and may be skipped without blocking the own
 - Show the rate-limited warning firing **once** across several successive failures.
 - Show a cold cache + failing mesh degrades honestly (unknown), not to a guessed "active".
 - `npx tsc --noEmit` clean; run the existing test suites and paste the tallies.
+
+> **STATUS: ✅ DONE 2026-10-01 — commit `a64c702` (pushed, CI-green, NOT deployed).** Implemented
+> exactly per the above: the cache is a module-level `Map` keyed **by org** in `lib/vantra-link.ts`
+> (no Redis, no new dependency, no second admission counter); TTL default **25 s** (`DEVICE_IDLE_CACHE_TTL_MS`
+> overridable), chosen because the client polls every **20 s** (`device-list.tsx`), so one poll can
+> never be served by a cold read twice in a row; the shape is **additive** (`idleSeconds` untouched;
+> new always-on top-level `idle: { asOf, state }`; new **opt-in** per-row `idle` via `?idle=provenance`)
+> so no consumer — admin included — was broken; a mesh failure never 500s; the failure warning is
+> **rate-limited** to once/org/60 s. Live healthy path re-proven against real Vantra (`{"I":104}`,
+> HTTP 200 ×3). Raw evidence: `SENIOR_HANDOFF.md` §12 (2026-10-01 entry). Test: `npm run test:idle`
+> (**8/8**; was RED 8/8 before the fix).
 
 ### N2 — Client: latch idle, and delete the "bare status" fallback
 

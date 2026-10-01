@@ -257,21 +257,35 @@ which is a real failure mode.
 
 **13. There are two remotes and one is dead.** See §3.
 
+**14. §6 can be wrong about the current HEAD, and §6.5 can be stale.** Found 2026-10-01:
+§6.1 named HEAD as `77f60f7` when `main` was actually `aa533cd` — `77f60f7` is `aa533cd`'s
+*ancestor*, i.e. the doc recorded a commit that had already been superseded and effectively
+named its own parent. §6.5 recorded the self-hosted worktree as **DIRTY** @ `163c1a1` with
+`setup-wizard.tsx` in flight; it was actually **clean** @ `f6b6f78` (that agent had finished
+T10). Both claims were plausible and both were wrong. **Do not act on §6 — checking out a SHA,
+avoiding a "dirty" worktree, assuming the deploy matches HEAD — without re-deriving it:
+`git rev-parse HEAD`, `git status --porcelain`, and the live `BUILD_ID`/run id.** §6 is a claim
+to verify, not a fact to trust (§10 item 1).
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (senior pass, session with Mike).**
+**Last verified: 2026-10-01 (N1 session — every §6 claim below re-checked against the live VPS and this repo, not copied forward).**
 
 ### 6.1 Live app — `main`
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ **`77f60f7`** ("TASK_154: scope the device status chip fix") |
+| Branch / HEAD | `main` @ **`a64c702`** (TASK_154 N1). *(The previous pass recorded HEAD as `77f60f7` — that is `a64c702`'s grandparent; the doc named its own ancestor. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
-| Deployed to production | **YES** — build `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` |
-| Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) |
-| Migrations applied | all pending applied (8 in that deploy); `ScreenshotRotationCursor` exists |
+| Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb` (the commit before the current HEAD). The current HEAD (`a64c702`, N1) is committed, pushed and CI-green but NOT deployed**, deliberately: N1 is a server-side predecessor with no owner-visible change on its own. |
+| Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
+| CI on current HEAD | push run `36857561751`: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
+| Migrations applied | all pending applied (**5** in that deploy — verified by counting `finished_at >= deploy start`); `ScreenshotRotationCursor` exists |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
+
+*Describes the **deployed** build `MLKWXpSxzHtvt8KoE_F3h` (`06a5eeb`). It does **not**
+include N1 — see §6.1/§6.4.*
 
 - **TASK_152 M1–M7** — device screen monitoring: its own console **Monitoring tab**
   (confirmed rendered; Summary now shows only a pointer), per-frame summaries + scrollable
@@ -294,10 +308,17 @@ which is a real failure mode.
 
 ### 6.4 Known-unverified (do not claim these work)
 
+- **TASK_154 N1 is not deployed, so none of it is verified live.** It is committed,
+  pushed and CI-green (`a64c702`), and its behaviour is proven by unit test +
+  harness (§12) — but the running production build predates it. **Do not tell Mike the
+  idle-provenance fix is live.** Deploying N1 alone would change nothing he can see
+  (the provenance is additive and opt-in); it becomes user-visible only once N2 renders
+  it. **N1 + N2 should deploy together.**
 - **M3 summarisation has never been exercised against a live frame.** The summariser is
   proven present in the compiled bundle and the timeline UI renders, but the device's
-  `screenshotMonitoringEnabled` is `false` and nobody flipped consent to test it. **Mike
-  will test this himself.**
+  `screenshotMonitoringEnabled` is `false` (**re-verified this session: all 8 rows of
+  `Device` are `false`**) and nobody flipped consent to test it. **Mike will test this
+  himself.**
 - `main`'s local dev DB cannot render `/dashboard` (§5 trap 11), so UI verification must
   use a scratch DB.
 - `notifyAdmin` Telegram text changes are verified by inspection only (needs admin
@@ -307,16 +328,18 @@ which is a real failure mode.
 
 | | |
 |---|---|
-| Branch / HEAD | `self-hosted-build` @ **`163c1a1`** (TASK_145 pass 15) |
+| Branch / HEAD | `self-hosted-build` @ **`f6b6f78`** (TASK_145 T10 — wizard UI lifetime vs countdown) |
 | Sync | in sync with `origin/self-hosted-build` |
-| Working tree | **DIRTY** — `app/setup/setup-wizard.tsx` modified (a T10 agent mid-work) |
-| Progress | T1–T9, T16, T17 **CLOSED**; T10–T15 remain |
-| Next task | **T10** (wizard UI consumes the `lifetime` flag) → **T11** is the highest-value edit |
+| Working tree | **CLEAN** (re-verified 2026-10-01: `git status --porcelain` empty) |
+| Progress | T1–T10, T16, T17 **CLOSED**; T11–T15 remain |
+| Next task | **T11** (the live kill — highest value), per the `▶ NEXT TASK` pointer |
 
-**Do not start T10 if that file is still dirty from another agent — it is theirs to finish
-and log.** The authoritative work order is the `▶ NEXT TASK` pointer near the top of
-`TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`; that pointer, not any banner, decides what
-runs next.
+*(Corrected 2026-10-01: the previous pass recorded `163c1a1`, **DIRTY** with
+`setup-wizard.tsx` in flight from a T10 agent. That agent finished — T10 is committed and
+pushed as `f6b6f78` and the tree is clean. There is **no** in-flight work in the worktree
+now; it is safe to start T11.)* The authoritative work order is the `▶ NEXT TASK` pointer
+near the top of `TASK_145_SELF_HOSTED_LICENSE_JUNIOR_TRACK.md`; that pointer, not any
+banner, decides what runs next.
 
 **Two carry-over obligations for this branch:**
 - **`W18` — a migration timestamp collision.** `20261020000000_add_exe_license_revocation`
@@ -336,10 +359,18 @@ runs next.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| 1 | **TASK_154 N1** — server: idle readings carry provenance; mesh hiccup cannot blank them | `TASK_154_...md` §3 N1 | Isolated to `lib/vantra-link.ts`, `app/api/devices/route.ts` |
-| 2 | **TASK_154 N2** — client: latch idle, delete the "bare status" fallback | same §3 N2 | **After N1** (consumes its shape) |
-| 3 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo |
-| 4 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
+| ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance; a mesh hiccup cannot blank them~~ **DONE 2026-10-01** (`a64c702`, pushed, CI-green, **not deployed**) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; new `tests/vantra-idle-provenance.test.ts` (**8/8**). See §12. |
+| 1 | **TASK_154 N2** — client: latch idle, delete the "bare status" fallback | same §3 N2 | **Next.** Consumes N1's shape — see the shape note below. |
+| 2 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo |
+| 3 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
+
+**N2 shape note (important — N1 does not hand you what N2's doc assumed).** N1 made the
+per-row provenance object **opt-in** (`GET /api/devices?idle=provenance`) so the default
+payload stays byte-identical for existing callers. What N2 gets **for free** on every call
+is the top-level `idle: { asOf, state }` (`state` ∈ `fresh`/`stale`/`unknown`) alongside the
+unchanged `idleSeconds`. That is enough to latch and to stop blanking; if N2 needs per-row
+`state`/`asOf`, it must request `?idle=provenance`. Decide deliberately and say which you
+chose. **N1 + N2 should deploy together** (N1 alone changes nothing the owner can see).
 
 **TASK_152 M8 (device task/control — the deferred "final version")** is deliberately NOT
 scoped yet. It needs its own safety work; the observability half (M1–M7) had to land first.
@@ -505,4 +536,40 @@ half-done. A half-done change with no note is worse than no change.
   `self-hosted-build` @ `163c1a1`, **dirty** (`app/setup/setup-wizard.tsx` — another agent
   mid-T10; hands off).
 - **Next:** TASK_154 N1 (server: idle provenance + org-keyed TTL cache), then N2.
+
+### 2026-10-01 — §6 re-verified (2 corrections); TASK_154 N1 implemented, proven, pushed (not deployed)
+- **Did:** (a) **Verified §6 against reality, not copied.** All §6.1–§6.4 health claims held
+  (§6.3 `systemctl --failed` empty, 6 units running, 6 timers armed; deploy `36845942402`
+  success; `BUILD_ID` `MLKWXpSxzHtvt8KoE_F3h`; **5** migrations at the deploy; `ScreenshotRotationCursor`
+  exists; all 8 `Device.screenshotMonitoringEnabled = false`). **Two corrections:** §6.1 named
+  HEAD `77f60f7` when `main` was `aa533cd` (doc named its own ancestor), and §6.5 called the
+  worktree DIRTY @ `163c1a1` when it was clean @ `f6b6f78`. Both fixed in place (§6.1, §6.5) and
+  recorded as **new trap 14**.
+  (b) **TASK_154 N1.** `lib/vantra-link.ts` (`+118`, one new block at `:717-834`): `BulkIdleReading`,
+  an **org-keyed** TTL cache (`DEVICE_IDLE_CACHE_TTL_MS`, default **25 s** ≥ the 20 s client poll),
+  **stale-serving** on a mesh failure, a **rate-limited** failure warning (60 s/org), and
+  `fetchUserIdleReading()` that never throws. `app/api/devices/route.ts` (`:10`, `:20-89`): consumes it,
+  emits top-level `idle: { asOf, state }`, keeps `idleSeconds` byte-identical, and adds an
+  **opt-in** per-row `idle` object via `?idle=provenance`. `package.json:34` `test:idle`.
+  New `tests/vantra-idle-provenance.test.ts` (8 tests). Commit **`a64c702`**, pushed `aa533cd..a64c702`.
+- **Verified (raw):** **reproduce-first** — `npm run test:idle` was RED `# pass 0 / # fail 8`,
+  test 2 failing `null !== 104` ("the reading must survive the hiccup instead of blanking to
+  null"); after the fix `# pass 8 / # fail 0`. `npx tsc --noEmit` → `TSC_EXIT=0`;
+  `CI=1 npx next build` → `✓ Compiled successfully in 23.7s`, `BUILD_EXIT=0`. Full sweep: **all 23
+  `test:*` suites pass, 0 fail** (test:vantra 58, test:idle 8, test:devices 6, test:monitorctx 13, …).
+  **HTTP evidence** (throwaway harness `/tmp/n1-http-evidence.ts`, **NOT committed**): healthy →
+  `HTTP 200` `"idle":{"asOf":"2026-10-01T11:44:31.255Z","state":"fresh"}` with `I` `idleSeconds:104`;
+  next poll, mesh throws → `HTTP 200`, reading **retained** (state `stale`), log
+  `[device-idle] bulk idle read failed for org org-demo: mesh_timeout (serving last good map)`;
+  a third poll within the TTL returned the reading **without a second mesh call**. CI on the push:
+  run **`36857561751`** → `Build & typecheck` **success**, `Deploy to production (manual only)` **skipped**.
+- **NOT verified:** **N1 live — it is not deployed**, and I deliberately did not deploy it (additive,
+  no owner-visible change alone; deploy is a manual gate). No browser/DOM check of N1 for the same
+  reason. The mesh timeout is a **SIMULATION** (a thrown `fetch` error), not an observed live 15 s
+  socket timeout. Trap 1 (PG18 vs PG16) not exercised — N1 adds no Prisma error-code branch.
+- **State left behind:** `main` @ **`a64c702`**, clean, in sync with `origin/main`, CI green; the
+  **deployed build is unchanged** (`06a5eeb`). `self-hosted-build` @ **`f6b6f78`**, clean, in sync
+  (read-only this session — no work done there).
+- **Next:** **TASK_154 N2** (client) — consume N1's provenance (see the §7 shape note); then deploy
+  **N1 + N2 together** and screenshot the device page per §8.
 
