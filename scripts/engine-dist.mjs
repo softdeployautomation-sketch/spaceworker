@@ -6,10 +6,20 @@
  *   node scripts/engine-dist.mjs
  *
  * Cross-compiles the three Windows binaries from michael/browser-clone/engine
- * and copies the installer + MT-1 PowerShell scripts next to them, then writes
- * engine-dist/manifest.json with a SHA-256 + byte count per artifact. The agent
- * verifies every hash before installing, so the manifest is the contract —
- * regenerate it whenever a binary or script changes.
+ * plus the Linux `swfwd` forwarder, copies the installer + MT-1 PowerShell
+ * scripts next to them, then writes engine-dist/manifest.json with a SHA-256 +
+ * byte count per artifact. The agent verifies every hash before installing, so
+ * the manifest is the contract — regenerate it whenever a binary or script
+ * changes.
+ *
+ * WHY A LINUX BINARY IS IN HERE (TASK_119A A4): `swfwd-linux-amd64` is NOT
+ * downloaded by any device — it is the CDP forwarder that runs INSIDE a hosted
+ * clone's container, so its consumer is browser-server on our own VPS
+ * (`SWFWD_BIN`, defaulting to <dist>/swfwd-linux-amd64). It rides this pipeline
+ * because that is what makes it versioned, hashed and deployed with everything
+ * else rather than hand-copied onto a server. Per-role setup downloads are
+ * filtered by name (lib/clone-setup.ts ROLE_ARTIFACTS), so no device ever
+ * fetches it.
  *
  * engine-dist/ is deliberately NOT committed (build outputs do not belong in
  * git); it is rsynced to the VPS at deploy time:
@@ -42,6 +52,19 @@ const SCRIPTS = [
   path.join(psSrc, "lib", "ProfilePaths.ps1"),
 ];
 
+/**
+ * Host-side (VPS) binaries. Built for the VPS's own OS/arch, NOT for devices —
+ * see the header. Kept static (CGO_ENABLED=0) so it runs in any container base.
+ */
+const HOST_BINARIES = [
+  {
+    pkg: "./cmd/swfwd",
+    name: "swfwd-linux-amd64",
+    goos: "linux",
+    goarch: "amd64",
+  },
+];
+
 function sha256(file) {
   return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
@@ -55,6 +78,14 @@ for (const bin of BINARIES) {
     cwd: engineSrc,
     stdio: "inherit",
     env: { ...process.env, GOOS: "windows", GOARCH: "amd64", CGO_ENABLED: "0" },
+  });
+}
+
+for (const bin of HOST_BINARIES) {
+  execFileSync("go", ["build", "-trimpath", "-ldflags=-s -w", "-o", path.join(out, bin.name), bin.pkg], {
+    cwd: engineSrc,
+    stdio: "inherit",
+    env: { ...process.env, GOOS: bin.goos, GOARCH: bin.goarch, CGO_ENABLED: "0" },
   });
 }
 

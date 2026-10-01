@@ -1887,6 +1887,50 @@ model CloneJob {
   // means existing behaviour is unchanged.
   sessionMode         String       @default("fresh")
   browser             String
+  // TASK_135 §4 — what the SOURCE browser actually was, as the device reported
+  // it (the engine reads Chrome/Edge's `Last Version` file, Firefox's
+  // `compatibility.ini`). The DESTINATION browser is pinned to this version,
+  // because Chromium refuses or mangles a profile written by a different version
+  // and extensions are version-sensitive — a mismatched profile is not a
+  // replica. `sourceBrowserMajor` is what the pin resolves on; NULL means
+  // UNDETERMINED, which refuses by name at launch (`browser_version_unknown`)
+  // rather than silently serving "latest", the one outcome this whole module
+  // exists to prevent.
+  sourceBrowserMajor  Int?
+  sourceBrowserVersion String?
+  // The source's UI language, when the capture reports one. Only used for the
+  // clone's `--lang` parity flag; absent means no flag, never a default guess.
+  sourceBrowserLang   String?
+  // The version we ACTUALLY delivered, stamped at launch. Evidence rather than
+  // intent: a record that claims a match it never verified is worse than none.
+  destinationBrowserVersion String?
+  // TASK_135 — first clone vs sync on reconnect. This is the last ACCEPTED state
+  // manifest: fingerprints only (path/size/mtime, optionally sha256), never
+  // content, so holding it adds no secret store. It lives on the SERVER because
+  // the server is the side that can be trusted with the comparison — a device
+  // claiming "delta, nothing changed" must not be able to freeze a replica.
+  stateManifest       Json?
+  stateManifestAt     DateTime?
+  // What was actually decided ("full" | "delta") and why (a named reason such as
+  // first_clone / sync_on_reconnect / manifest_stale). Recorded so no clone is
+  // ever described as synced without a reason a human can read.
+  stateSyncMode       String?
+  stateSyncReason     String?
+  // TASK_135 §6.3 — files the last transfer did NOT manage to send, because a
+  // single device command cannot carry a whole profile. NON-NULL AND NON-ZERO
+  // means the replica is incomplete and a later run must continue: the cache
+  // already holds what did arrive, so continuing sends only the remainder.
+  // Recorded because "the sync ran" and "the sync finished" are different claims,
+  // and a clone launched on a partial replica must be able to say so.
+  stateSyncPending    Int?
+  // TASK_135 §3/§5 — why a clone did not get the source's browser version, or why
+  // staged state could not be materialised. Both are NAMED codes recorded on the
+  // job, because the fallback is deliberate but must never be invisible: a clone
+  // that silently ran the wrong build is the exact failure the pin exists to
+  // prevent, and "the files are in the profile but the browser did not use them"
+  // is indistinguishable from a bug without this.
+  browserPinError     String?
+  stateRestoreNote    String?
   // TASK_97/PLAN call this `browserProfileRef` — kept as `profileName` because
   // DESIGN_BROWSER_CLONE_UI_AND_FLOW §3 maps the UI's "Browser / profile" column
   // to exactly `browser, profileName`. Same value: the engine profile name.

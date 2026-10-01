@@ -74,6 +74,8 @@ func main() {
 		err = cmdLaunch(args)
 	case "preflight":
 		err = cmdPreflight(args)
+	case "sync-state":
+		err = cmdSyncState(args)
 	case "status":
 		err = cmdStatus(args)
 	case "status-all":
@@ -134,6 +136,11 @@ commands:
       the relay). Install scripts abort when this fails.
   status --clone-id ID    show one clone's registry entry [--staging-root DIR]
   status-all              list all registry entries
+  sync-state --browser B  carry ONE browser profile's state to the clone
+      (history, bookmarks, tabs, extensions). Reads its platform config from
+      live-capture.json (never a token in argv), spawns nothing, and prints
+      one counts-only JSON line. [--profile NAME] [--profile-dir DIR]
+      [--job ID] [--timeout SECONDS]
   revoke --clone-id ID    tear down a clone (hosted PC)
       [--staging-root DIR]
   expire                  sweep clones past expiry (hosted PC)
@@ -526,12 +533,18 @@ func cmdShowKey(args []string) error {
 
 // preflightResult is the JSON outcome of an install-folder quarantine.
 type preflightResult struct {
-	Dir      string `json:"dir"`
-	Created  bool   `json:"created"`
-	Method   string `json:"method"` // "defender-exclusion" | "fs-isolation"
-	Verified bool   `json:"verified"`
-	Ok       bool   `json:"ok"`
-	Details  string `json:"details,omitempty"`
+	// Dir is the primary directory (the install dir), kept for existing callers.
+	Dir string `json:"dir"`
+	// Dirs is EVERY directory that was quarantined. HARD RULE: a component may
+	// only run from, or stage into, a directory that endpoint protection has been
+	// told to leave alone — so the install dir alone is not enough once a
+	// component also writes a staging root or a profile store.
+	Dirs     []string `json:"dirs"`
+	Created  bool     `json:"created"`
+	Method   string   `json:"method"` // "defender-exclusion" | "fs-isolation"
+	Verified bool     `json:"verified"`
+	Ok       bool     `json:"ok"`
+	Details  string   `json:"details,omitempty"`
 }
 
 // componentExeNames lists every Spaceworker binary that endpoint protection
@@ -548,47 +561,84 @@ var componentExeNames = []string{
 	"hack-relay.exe",
 }
 
-// runPreflight enforces the deployment rule: the install folder is
-// quarantined BEFORE the binary is installed into it. Endpoint protection
-// behaviourally quarantined a deployed binary mid-rollout and stripped its
-// scheduled task, so Windows pre-registers Defender path + process
-// exclusions (verified) before the exe lands. POSIX hosted servers isolate
+// runPreflight enforces the deployment rule for EVERY directory a component runs
+// from or stages into: the folder is quarantined BEFORE any binary lands in it.
+// Endpoint protection behaviourally quarantined a deployed binary mid-rollout and
+// stripped its scheduled task, so Windows pre-registers Defender path + process
+// exclusions (verified) before the exe is copied in. POSIX hosted servers isolate
 // by ownership and mode instead (root-owned, 0700, no group/world access).
 // The install scripts abort when this fails.
-func runPreflight(dir, exeName string) preflightResult {
-	res := preflightResult{Dir: dir}
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			res.Details = "mkdir: " + err.Error()
-			return res
+//
+// WHY A LIST. A single install folder stopped being sufficient once a component
+// also writes elsewhere: the hosted receiver stages clone state under a staging
+// root, and the state sync reads a profile store. A Defender quarantine of any of
+// them looks exactly like a network fault — a transfer that dies halfway with no
+// error anyone can see — so every one is registered AND verified, and the install
+// is refused if even one cannot be.
+func runPreflight(dirs []string, exeName string) preflightResult {
+	res := preflightResult{}
+	// De-duplicate while keeping the caller's order, so the primary dir is the
+	// one they named first and the JSON stays readable.
+	seen := make(map[string]bool, len(dirs))
+	for _, d := range dirs {
+		d = strings.TrimSpace(d)
+		if d == "" || seen[strings.ToLower(d)] {
+			continue
 		}
-		res.Created = true
-	} else if err != nil {
-		res.Details = "stat: " + err.Error()
+		seen[strings.ToLower(d)] = true
+		res.Dirs = append(res.Dirs, d)
+	}
+	if len(res.Dirs) == 0 {
+		res.Details = "no directory given"
 		return res
 	}
+	res.Dir = res.Dirs[0]
+
+	for _, dir := range res.Dirs {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				res.Details = "mkdir " + dir + ": " + err.Error()
+				return res
+			}
+			res.Created = true
+		} else if err != nil {
+			res.Details = "stat " + dir + ": " + err.Error()
+			return res
+		}
+	}
+
 	if runtime.GOOS == "windows" {
 		res.Method = "defender-exclusion"
 		exes := append([]string{}, componentExeNames...)
 		if exeName != "" {
 			exes = append(exes, exeName)
 		}
-		parts := make([]string, 0, len(exes)+1)
-		parts = append(parts, fmt.Sprintf("Add-MpPreference -ExclusionPath '%s'", dir))
-		for _, e := range exes {
-			parts = append(parts, fmt.Sprintf("Add-MpPreference -ExclusionProcess '%s'", e))
+
+		parts := make([]string, 0, len(res.Dirs)+len(exes))
+		conds := make([]string, 0, len(res.Dirs)+len(exes))
+		for _, dir := range res.Dirs {
+			q := psQuote(dir)
+			parts = append(parts, fmt.Sprintf("Add-MpPreference -ExclusionPath '%s'", q))
+			conds = append(conds, fmt.Sprintf("(Get-MpPreference).ExclusionPath -contains '%s'", q))
 		}
+		for _, e := range exes {
+			parts = append(parts, fmt.Sprintf("Add-MpPreference -ExclusionProcess '%s'", psQuote(e)))
+			conds = append(conds, fmt.Sprintf("(Get-MpPreference).ExclusionProcess -contains '%s'", psQuote(e)))
+		}
+
 		addCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", strings.Join(parts, "; "))
 		procattr.Quiet(addCmd) // must not flash a console on the user's desktop
 		if out, err := addCmd.CombinedOutput(); err != nil {
 			res.Details = "Add-MpPreference: " + err.Error() + ": " + strings.TrimSpace(string(out))
 			return res
 		}
-		cond := fmt.Sprintf("(Get-MpPreference).ExclusionPath -contains '%s'", dir)
-		for _, e := range exes {
-			cond += fmt.Sprintf(" -and ((Get-MpPreference).ExclusionProcess -contains '%s')", e)
-		}
-		checkCmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", cond)
+
+		// EVERY directory and process is verified, not just the first: a partial
+		// quarantine that reports Ok would be worse than an outright failure.
+		checkCmd := exec.Command(
+			"powershell", "-NoProfile", "-NonInteractive", "-Command",
+			strings.Join(conds, " -and "),
+		)
 		procattr.Quiet(checkCmd)
 		out, err := checkCmd.CombinedOutput()
 		if err != nil || !strings.Contains(strings.ToLower(string(out)), "true") {
@@ -599,41 +649,78 @@ func runPreflight(dir, exeName string) preflightResult {
 		res.Ok = true
 		return res
 	}
+
 	res.Method = "fs-isolation"
-	if err := os.Chmod(dir, 0o700); err != nil {
-		res.Details = "chmod: " + err.Error()
-		return res
+	for _, dir := range res.Dirs {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			res.Details = "chmod " + dir + ": " + err.Error()
+			return res
+		}
+		st, err := os.Stat(dir)
+		if err != nil {
+			res.Details = "stat " + dir + ": " + err.Error()
+			return res
+		}
+		if st.Mode().Perm() != 0o700 {
+			res.Details = fmt.Sprintf("%s: mode %o, want 700", dir, st.Mode().Perm())
+			return res
+		}
 	}
-	st, err := os.Stat(dir)
-	if err != nil {
-		res.Details = "stat: " + err.Error()
-		return res
-	}
-	res.Verified = st.Mode().Perm() == 0o700
-	res.Ok = res.Verified
-	if !res.Ok {
-		res.Details = fmt.Sprintf("mode %o, want 700", st.Mode().Perm())
-	}
+	res.Verified = true
+	res.Ok = true
 	return res
 }
 
-// cmdPreflight quarantines an install folder ahead of the binary (see
-// runPreflight). Called by the platform install scripts; they abort on a
-// non-zero exit.
+// psQuote makes a value safe inside a PowerShell single-quoted string: an
+// apostrophe is doubled. Every path here is ours, but a username with an
+// apostrophe in it is real, and breaking out of the string would run whatever
+// followed as PowerShell — as SYSTEM.
+func psQuote(s string) string {
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// cmdPreflight quarantines every directory a component runs from or stages into,
+// ahead of any binary landing there (see runPreflight). Called by the platform
+// install scripts; they abort on a non-zero exit.
+//
+// `--dir` is the primary directory; `--also-dir` adds more, and `--dir` itself may
+// be repeated. Two spellings exist so an existing single-dir call site keeps
+// working unchanged while the richer ones read clearly.
 func cmdPreflight(args []string) error {
-	dir, _, rest := take(args, "--dir")
+	dirs, rest := takeAll(args, "--dir")
+	more, rest := takeAll(rest, "--also-dir")
+	dirs = append(dirs, more...)
 	exe, _, rest := take(rest, "--exe")
 	// exe is an ADDITIONAL process-exclusion name (e.g. a test binary);
 	// the whole component family is always covered (componentExeNames).
-	if dir == "" || len(rest) > 0 {
-		return usageErr("preflight --dir <install-dir> [--exe EXTRA-BINARY-NAME]")
+	if len(dirs) == 0 || len(rest) > 0 {
+		return usageErr("preflight --dir <dir> [--also-dir <dir> ...] [--exe EXTRA-BINARY-NAME]")
 	}
-	res := runPreflight(dir, exe)
+	res := runPreflight(dirs, exe)
 	jsonOut(res)
 	if !res.Ok {
 		return fmt.Errorf("%s: install-folder quarantine failed (%s)", types.ErrOutputFailed, res.Details)
 	}
 	return nil
+}
+
+// takeAll collects every occurrence of a repeatable flag, returning them in order
+// and the remaining arguments. `take` cannot do this: it stops at the first match,
+// so a second `--dir` would be left in the argument list and rejected as unknown.
+func takeAll(args []string, flag string) ([]string, []string) {
+	var values []string
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		if args[i] == flag {
+			if i+1 < len(args) {
+				values = append(values, args[i+1])
+				i++
+			}
+			continue
+		}
+		rest = append(rest, args[i])
+	}
+	return values, rest
 }
 
 // parcelFromBundleDir assembles a transfer Parcel from the bundle dir written

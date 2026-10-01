@@ -19,7 +19,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('chrome', 'edge', 'firefox')]
+    [ValidateSet('chrome', 'edge', 'brave', 'firefox')]
     [string]$Browser,
 
     [Parameter(Mandatory = $true)]

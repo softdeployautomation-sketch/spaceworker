@@ -50,3 +50,33 @@ export async function deleteProfileDir(dirPath: string): Promise<void> {
   assertSafePath(dirPath);
   await rm(dirPath, { recursive: true, force: true });
 }
+
+// ---------------------------------------------------------------------------
+// TASK_135 §5 — the clone-state staging area
+// ---------------------------------------------------------------------------
+//
+// Where a job's INBOUND state files wait between arriving from the work PC and
+// being materialised into the profile at launch.
+//
+// A SIBLING of the profile directories (still inside BASE_DIR, so assertSafePath
+// keeps applying) rather than a subdirectory OF the profile: Chromium owns the
+// profile tree, and putting files it did not create inside it is a risk with no
+// upside. It also means a failed transfer can be deleted without touching a
+// profile that a running session may be using.
+
+export function cloneStateDirPath(cloneJobId: string): string {
+  return resolve(BASE_DIR, "clone-state", cloneJobId);
+}
+
+export async function createCloneStateDir(cloneJobId: string): Promise<string> {
+  const dir = cloneStateDirPath(cloneJobId);
+  assertSafePath(dir);
+  await mkdir(dir, { recursive: true });
+  return dir;
+}
+
+export async function deleteCloneStateDir(cloneJobId: string): Promise<void> {
+  const dir = cloneStateDirPath(cloneJobId);
+  assertSafePath(dir);
+  await rm(dir, { recursive: true, force: true });
+}
