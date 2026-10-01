@@ -258,42 +258,127 @@ jobs:
             systemctl is-active extraction-worker || echo "::warning::extraction-worker is not active after deploy"
           REMOTE_EOF
 
-      - name: Install systemd timer units (mail-queue-drain, dispatcher, payment-verify, automations-sweep)
+      - name: Install systemd units (discovered from deploy/)
         run: |
-          # Ship ONLY these four oneshot-curl units from the repo's deploy/ to the
-          # VPS (that's how the mail-queue drain originally got there manually,
-          # and how this would otherwise silently never ship automations-sweep).
-          # Deliberately an explicit name list, NOT a `deploy/*.service` glob:
-          # deploy/ also holds extraction-worker.service and
-          # spaceworker-browser.service, which are the ACTUAL long-running app
-          # services managed separately by the deploy step above — the repo's
-          # copies of those two are stale reference/template files (literal
-          # %WORKER_AUTH_TOKEN%/"/path/to/..." placeholders, never filled in),
-          # not what is really running. A blanket glob would silently overwrite
-          # the VPS's real, manually-configured unit files with those broken
-          # templates — inert until the next restart/reboot, then a real outage.
-          # Substitutes the real INTERNAL_BEARER_TOKEN from the VPS .env, then
-          # (re)starts every timer so a new tracker is picked up on deploy.
-          # Idempotent — safe to re-run.
-          # Same quoted-heredoc rule as the deploy step above — see the comment
+          # Ship EVERY systemd unit the repo declares, discovered from deploy/ at
+          # deploy time. NEVER name units in this workflow again: a hardcoded list
+          # is exactly how M5 screen-notify-sweep.timer silently never shipped -
+          # the code went out, no timer invoked it, and a green deploy said nothing.
+          #
+          # Three kinds of file live in deploy/, all handled explicitly:
+          #   * timers    - every deploy/*.timer, plus the oneshot .service it
+          #                 activates (Unit= in the timer, else <name>.service). A
+          #                 oneshot sweep has no [Install] on purpose (its timer
+          #                 activates it), so it is INSTALLED but never enabled -
+          #                 only its timer is.
+          #   * daemons   - a deploy/*.service with no matching .timer: the real
+          #                 long-running services (screenshot-capture.service,
+          #                 spaceworker-browser.service). These ARE enabled+started.
+          #   * templates - a .service still holding an unrendered placeholder
+          #                 (extraction-worker.service has /path/to and
+          #                 %WORKER_AUTH_TOKEN%) is hand-provisioned on the VPS and
+          #                 must NOT be copied over it: that would clobber its real
+          #                 User=/venv/ExecStart and stay inert until the next
+          #                 restart, then be a real outage. It is only ASSERTED to
+          #                 still be installed+enabled.
+          #
+          # Substitutes the real INTERNAL_BEARER_TOKEN from the VPS .env (same
+          # form as before), then enables+starts and VERIFIES every unit, exiting
+          # non-zero on any miss so an omission can never be green again.
+          # Same quoted-heredoc rule as the deploy step above - see the comment
           # there. The body is passed to the remote bash on stdin, so nothing in
           # it (including ${INTERNAL}, which must expand ON THE VPS) is touched by
-          # the runner's shell.
+          # the runner shell.
           ssh -i ~/.ssh/vps_key root@164.68.105.96 'bash -s' <<'REMOTE_EOF'
             set -e
+            cd /opt/spaceworker/deploy
             INTERNAL=$(grep ^INTERNAL_BEARER_TOKEN= /opt/spaceworker/.env | head -n1 | cut -d= -f2-)
             if [ -z "$INTERNAL" ]; then echo "WARNING: INTERNAL_BEARER_TOKEN not found in .env" >&2; fi
-            for name in mail-queue-drain dispatcher payment-verify automations-sweep; do
-              cp "/opt/spaceworker/deploy/$name.service" /etc/systemd/system/
-              cp "/opt/spaceworker/deploy/$name.timer" /etc/systemd/system/
-              sed -i "s|%INTERNAL_BEARER_TOKEN%|${INTERNAL}|g" "/etc/systemd/system/$name.service"
+
+            TIMERS=(); SWEEPS=(); DAEMONS=(); TEMPLATES=()
+
+            # 1) Every timer, and the oneshot service it activates.
+            for t in *.timer; do
+              if [ ! -e "$t" ]; then continue; fi
+              TIMERS+=("$t")
+              svc=$(grep -im1 '^Unit=' "$t" | cut -d= -f2- | tr -d '[:space:]')
+              if [ -z "$svc" ]; then svc="${t%.timer}.service"; fi
+              SWEEPS+=("$svc")
             done
+
+            # 2) Standalone .service files: a real daemon, or a template.
+            for s in *.service; do
+              if [ ! -e "$s" ]; then continue; fi
+              if [ -e "${s%.service}.timer" ]; then continue; fi
+              others=$(grep -oE '%[A-Z_]+%' "$s" | grep -vx '%INTERNAL_BEARER_TOKEN%' || true)
+              if grep -q '/path/to' "$s" || [ -n "$others" ]; then
+                TEMPLATES+=("$s")
+              else
+                DAEMONS+=("$s")
+              fi
+            done
+
+            if [ "${#TIMERS[@]}" -eq 0 ]; then
+              echo "::error::discovered ZERO timers in /opt/spaceworker/deploy - discovery is broken" >&2
+              exit 1
+            fi
+            echo "discovered ${#TIMERS[@]} timer(s), ${#SWEEPS[@]} sweep service(s), ${#DAEMONS[@]} daemon(s), ${#TEMPLATES[@]} template(s)"
+            echo "timers:  ${TIMERS[*]}"
+            echo "daemons: ${DAEMONS[*]}"
+            echo "templates: ${TEMPLATES[*]}"
+
+            # ---- install every discovered unit file ----
+            for u in "${TIMERS[@]}" "${SWEEPS[@]}" "${DAEMONS[@]}"; do
+              if [ ! -e "$u" ]; then echo "::error::repo declares no unit file $u" >&2; exit 1; fi
+              cp "$u" /etc/systemd/system/
+            done
+
+            # ---- %INTERNAL_BEARER_TOKEN% substitution (unchanged in form) ----
+            # Skip a file that is not present rather than crashing the step here,
+            # so that a missing unit is reported by the VERIFY block below (the
+            # single, deliberate gate) and not by an incidental sed error.
+            for s in "${SWEEPS[@]}" "${DAEMONS[@]}"; do
+              if [ ! -e "/etc/systemd/system/$s" ]; then continue; fi
+              sed -i "s|%INTERNAL_BEARER_TOKEN%|${INTERNAL}|g" "/etc/systemd/system/$s"
+            done
+
             systemctl daemon-reload
-            for t in mail-queue-drain dispatcher payment-verify automations-sweep; do
-              systemctl enable "$t.timer" 2>/dev/null || true
-              systemctl restart "$t.timer" 2>/dev/null || systemctl start "$t.timer" || true
+
+            # ---- enable+start: timers as timers, daemons as services ----
+            for t in "${TIMERS[@]}"; do systemctl enable --now "$t"; done
+            for s in "${DAEMONS[@]}"; do systemctl enable --now "$s"; done
+
+            # ---- VERIFY every repo unit; fail loudly and NON-ZERO on any miss ----
+            rc=0
+            for t in "${TIMERS[@]}"; do
+              if [ ! -e "/etc/systemd/system/$t" ]; then echo "::error::NOT INSTALLED: $t"; rc=1; fi
+              en=$(systemctl is-enabled "$t" 2>&1 || true)
+              if [ "$en" != enabled ]; then echo "::error::NOT ENABLED: $t (is-enabled=$en)"; rc=1; fi
+              ac=$(systemctl is-active "$t" 2>&1 || true)
+              if [ "$ac" != active ]; then echo "::error::NOT ACTIVE: $t (is-active=$ac)"; rc=1; fi
             done
-            systemctl is-active automations-sweep.timer || true
+            for s in "${DAEMONS[@]}"; do
+              if [ ! -e "/etc/systemd/system/$s" ]; then echo "::error::NOT INSTALLED: $s"; rc=1; fi
+              en=$(systemctl is-enabled "$s" 2>&1 || true)
+              if [ "$en" != enabled ]; then echo "::error::NOT ENABLED: $s (is-enabled=$en)"; rc=1; fi
+              ac=$(systemctl is-active "$s" 2>&1 || true)
+              if [ "$ac" != active ]; then echo "::error::NOT ACTIVE: $s (is-active=$ac)"; rc=1; fi
+            done
+            # Oneshot sweeps cannot be enabled (no [Install]); their timer covers them.
+            for s in "${SWEEPS[@]}"; do
+              if [ ! -e "/etc/systemd/system/$s" ]; then echo "::error::NOT INSTALLED: $s"; rc=1; fi
+            done
+            # Hand-provisioned templates: never overwritten, but never forgotten.
+            for s in "${TEMPLATES[@]}"; do
+              if [ ! -e "/etc/systemd/system/$s" ]; then echo "::error::MISSING hand-provisioned unit: $s"; rc=1; fi
+              en=$(systemctl is-enabled "$s" 2>&1 || true)
+              if [ "$en" != enabled ]; then echo "::error::NOT ENABLED (hand-provisioned): $s (is-enabled=$en)"; rc=1; fi
+            done
+            if [ "$rc" -ne 0 ]; then
+              echo "::error::systemd unit verification FAILED - a repo unit is not installed/enabled/active (see lines above)" >&2
+              exit 1
+            fi
+            echo "OK: installed + verified ${#TIMERS[@]} timers, ${#SWEEPS[@]} sweep services, ${#DAEMONS[@]} daemons, ${#TEMPLATES[@]} hand-provisioned templates"
           REMOTE_EOF
 
       - name: Clean up SSH key
