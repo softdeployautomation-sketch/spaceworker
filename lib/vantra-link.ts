@@ -714,6 +714,124 @@ export async function fetchUserIdle(userId: string): Promise<Record<string, numb
   return merged;
 }
 
+// ---------------------------------------------------------------------------
+// TASK_154 N1 — bulk idle WITH provenance, and the tolerance the old path lacked.
+//
+// Before this, `fetchUserIdle` returned a bare map and a single MeshCentral
+// socket timeout produced `{}`. The route then emitted `idleSeconds: null` for
+// every row, and the client deleted the idle text for null — so a hiccup made an
+// idle machine read as a bare `online`, indistinguishable from "active now"
+// (components/device-list.tsx:638). Three different situations shared one shape:
+//   • the read just succeeded,
+//   • the read failed but we still hold a recent reading,
+//   • we genuinely do not know.
+// `BulkIdleReading` separates them (`state` + `asOf`); a short-TTL cache keyed
+// by ORG serves the last good map to every user of that org; and a rate-limited
+// warning makes the failure observable — it used to be swallowed at three levels
+// (TASK_154 §1.4.3), which is why this defect was invisible in production.
+//
+// This never throws and never guesses "active": absent evidence is not evidence
+// of activity (TASK_154 §2.1).
+// ---------------------------------------------------------------------------
+
+/** Provenance for a bulk idle read. `asOf` is when the observation was made. */
+export interface BulkIdleReading {
+  /** hostname → idle seconds. Empty is legitimate (no live node reported). */
+  idleByHostname: Record<string, number | null>;
+  /** ISO timestamp of the observation behind this map. */
+  asOf: string;
+  /** "fresh" = read within the TTL · "stale" = last good map, mesh failed · "unknown" = no reading. */
+  state: "fresh" | "stale" | "unknown";
+}
+
+/**
+ * Cache TTL. MUST be >= the client poll interval (20 s, device-list.tsx) so one
+ * poll can never be served by a cold mesh read twice in a row; a cache hit never
+ * opens the socket. Overridable for tests/ops via `DEVICE_IDLE_CACHE_TTL_MS`.
+ */
+const IDLE_CACHE_TTL_DEFAULT_MS = 25_000;
+/** Rate limit: at most one failure warning per org per window. */
+const IDLE_WARN_WINDOW_MS = 60_000;
+
+interface OrgIdleCacheEntry {
+  idleByHostname: Record<string, number | null>;
+  fetchedAtMs: number;
+}
+interface OrgIdleReading {
+  idleByHostname: Record<string, number | null>;
+  asOfMs: number;
+  state: "fresh" | "stale" | "unknown";
+}
+
+const orgIdleCache = new Map<string, OrgIdleCacheEntry>();
+const lastIdleWarnMs = new Map<string, number>();
+
+function idleCacheTtlMs(): number {
+  const raw = Number(process.env.DEVICE_IDLE_CACHE_TTL_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : IDLE_CACHE_TTL_DEFAULT_MS;
+}
+
+function warnIdleFailure(orgId: string, err: unknown, servedCache: boolean): void {
+  const now = Date.now();
+  if (now - (lastIdleWarnMs.get(orgId) ?? 0) < IDLE_WARN_WINDOW_MS) return;
+  lastIdleWarnMs.set(orgId, now);
+  const msg = err instanceof Error ? err.message : String(err);
+  console.warn(
+    `[device-idle] bulk idle read failed for org ${orgId}: ${msg} ` +
+      `(${servedCache ? "serving last good map" : "no cached reading - idle unknown"})`,
+  );
+}
+
+async function fetchOrgIdleReading(orgId: string): Promise<OrgIdleReading> {
+  const now = Date.now();
+  const cached = orgIdleCache.get(orgId);
+  if (cached && now - cached.fetchedAtMs < idleCacheTtlMs()) {
+    return { idleByHostname: cached.idleByHostname, asOfMs: cached.fetchedAtMs, state: "fresh" };
+  }
+  try {
+    const fresh = await fetchOrgIdle(orgId);
+    const at = Date.now();
+    orgIdleCache.set(orgId, { idleByHostname: fresh, fetchedAtMs: at });
+    return { idleByHostname: fresh, asOfMs: at, state: "fresh" };
+  } catch (err) {
+    if (cached) {
+      warnIdleFailure(orgId, err, true);
+      return { idleByHostname: cached.idleByHostname, asOfMs: cached.fetchedAtMs, state: "stale" };
+    }
+    warnIdleFailure(orgId, err, false);
+    return { idleByHostname: {}, asOfMs: Date.now(), state: "unknown" };
+  }
+}
+
+/**
+ * TASK_154 N1 — bulk idle for every org linked to a user, WITH provenance.
+ * Never throws: on a mesh failure it serves the last good map (as `stale`) or
+ * degrades to `unknown`. The single source for `GET /api/devices`.
+ */
+export async function fetchUserIdleReading(userId: string): Promise<BulkIdleReading> {
+  const link = await db.vantraLink.findUnique({
+    where: { userId },
+    select: { orgId: true, privateOrgId: true, status: true },
+  });
+  if (!link || link.status === "revoked") {
+    return { idleByHostname: {}, asOf: new Date().toISOString(), state: "unknown" };
+  }
+  const orgIds = link.privateOrgId ? [link.orgId, link.privateOrgId] : [link.orgId];
+  const readings = await Promise.all(orgIds.map((orgId) => fetchOrgIdleReading(orgId)));
+
+  const idleByHostname: Record<string, number | null> = {};
+  let state: BulkIdleReading["state"] = "unknown";
+  let asOfMs = 0;
+  for (const r of readings) {
+    for (const [hostname, idle] of Object.entries(r.idleByHostname)) idleByHostname[hostname] = idle;
+    // "fresh" wins if any org read fresh; else "stale"; else "unknown".
+    if (r.state === "fresh") state = "fresh";
+    else if (r.state === "stale" && state !== "fresh") state = "stale";
+    if (r.asOfMs > asOfMs) asOfMs = r.asOfMs;
+  }
+  return { idleByHostname, asOf: new Date(asOfMs || Date.now()).toISOString(), state };
+}
+
 /**
  * Device sync: pulls the org's agent list from Vantra and upserts SpaceWorker
  * Device rows (identity = vantraAgentId, Task 92 layer). Also flips the link
