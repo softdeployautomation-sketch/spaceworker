@@ -19,7 +19,7 @@ import { useConfirm } from "@/components/confirm-provider";
 import { PanicButton } from "@/components/panic-button";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
-import { formatIdle } from "@/lib/device-idle";
+import { idleChipLabel, idleReadProvenanceFrom, type IdleReadProvenance } from "@/lib/device-idle";
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
   formatOnboardingElapsed,
@@ -68,14 +68,9 @@ type DeviceRow = {
 // component never pulls in the server-only module).
 type InstallerNames = { zipName?: string; updateLinkName?: string; innerFolder?: string };
 
-function relTime(iso: string | null): string {
-  if (!iso) return "never";
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
-  return `${Math.floor(s / 86400)} d ago`;
-}
+// TASK_154 N2 — `relTime` / `statusWord` / the idle chip moved to the ONE shared,
+// client-safe helper (`lib/device-idle.ts`) so this list and the device console
+// can no longer diverge. See that module for why (the bare-status flicker).
 
 function osLabel(d: DeviceRow): string {
   const name = (d.osName ?? "").toLowerCase();
@@ -165,6 +160,10 @@ export function DeviceList() {
   // countdown; it does NOT fetch. The countdown derives from the server's
   // timerStartedAt, so a reload never "jumps the clock back" (no websocket).
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // TASK_154 N2 — the bulk idle read's provenance (N1's additive `idle` field +
+  // `onlineWindowMs`), so the shared chip can bound a latched reading against the
+  // SERVER's offline window instead of inventing a second one on the client.
+  const [idleRead, setIdleRead] = useState<IdleReadProvenance | null>(null);
 
   const loadLink = useCallback(async () => {
     try {
@@ -200,6 +199,7 @@ export function DeviceList() {
       const res = await fetch("/api/devices");
       if (!res.ok) throw new Error("Failed to load devices");
       const data = await res.json();
+      setIdleRead(idleReadProvenanceFrom(data));
       setDevices(
         (data.devices ?? []).map((d: { effectiveStatus?: string; status?: string } & DeviceRow) => ({
           ...d,
@@ -623,21 +623,23 @@ export function DeviceList() {
     [devices, nowMs],
   );
 
-  const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
-
   // Task 106 (bit C1) — the row's ONLY status + last-seen / idle rendering.
   // Owner 2026-09-23: this used to be duplicated by a dedicated "Last seen"
   // column right next to it (same timestamp twice on one row), so that column
   // is gone and this chip owns it — "offline · last seen …" when disconnected,
-  // "online · idle …" when connected. Idle exists only while connected
-  // (MeshCentral `idletime` goes stale offline), and a missing idle signal
-  // degrades to the plain status rather than reading as "online · unknown".
-  const statusIdleLabel = (d: DeviceRow): string => {
-    const online = d.status === "online" || d.status === "asleep";
-    if (!online) return `offline · last seen ${relTime(d.lastSeenAt)}`;
-    if (d.idleSeconds === null) return statusWord(d.status);
-    return `${statusWord(d.status)} · ${formatIdle(d.idleSeconds)}`;
-  };
+  // "online · idle …" when connected.
+  //
+  // TASK_154 N2 — the label is built by the ONE shared helper. It used to end
+  // `if (d.idleSeconds === null) return statusWord(d.status);` — a bare "online",
+  // indistinguishable from "active", which is what made an idle machine read as
+  // ACTIVE on a single mesh hiccup. The helper latches the last idle reading and
+  // never prints a bare status; the list and the console now cannot diverge.
+  const statusIdleLabel = (d: DeviceRow): string =>
+    idleChipLabel(d, {
+      onlineWindowMs: idleRead?.onlineWindowMs ?? undefined,
+      readState: idleRead?.state,
+      readAsOf: idleRead?.asOf,
+    });
 
   // 2026-09-27 — hand the floating agent widget a real, compact summary of
   // what's actually on screen (per-device name + status), not just "you're

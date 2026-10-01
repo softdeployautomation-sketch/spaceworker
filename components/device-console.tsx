@@ -32,7 +32,12 @@ import { useConfirm } from "@/components/confirm-provider";
 import { ScreenTimeline } from "@/components/screen-timeline";
 import { ScreenAlertsCard } from "@/components/screen-alerts-card";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
-import { formatIdle } from "@/lib/device-idle";
+import {
+  idleChipLabel,
+  idleReadProvenanceFrom,
+  relTime,
+  type IdleReadProvenance,
+} from "@/lib/device-idle";
 import { timeAgo } from "@/lib/format-date";
 import {
   DEFAULT_AGENT_LABEL,
@@ -368,14 +373,9 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
   ["monitoring", "Screen monitoring", Eye],
 ];
 
-function relTime(iso: string | null): string {
-  if (!iso) return "never";
-  const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} hr ago`;
-  return `${Math.floor(s / 86400)} d ago`;
-}
+// TASK_154 N2 — `relTime`, `statusWord` and the idle chip live in the ONE shared
+// client-safe helper (`lib/device-idle.ts`); this file no longer keeps its own
+// copies, so the console and the Devices list cannot diverge.
 
 function timeAt(iso: string | null): string {
   if (!iso) return "—";
@@ -448,20 +448,22 @@ export function DeviceConsole({
 }) {
   const [device, setDevice] = useState<DeviceView | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // TASK_154 N2 — the bulk idle read's provenance (N1's additive `idle` field +
+  // `onlineWindowMs`), so the shared chip bounds a latched reading against the
+  // SERVER's offline window instead of inventing a second one on the client.
+  const [idleRead, setIdleRead] = useState<IdleReadProvenance | null>(null);
 
   // 2026-09-27 — the floating widget's real context for THIS specific device
   // console (not just "you're on a device page"). Only this page's own
   // already-fetched state, same pattern as the devices list page.
   useSetAgentPageContext(
     loaded && device
-      ? (() => {
-          const online = device.status === "online" || device.status === "asleep";
-          const word = device.status === "asleep" ? "asleep" : online ? "online" : "offline";
-          return (
-            `Device console for "${device.name}" (${osLabel(device.osName)}): ${word}` +
-            (online ? ` · idle ${formatIdle(device.idleSeconds)}` : "")
-          );
-        })()
+      ? `Device console for "${device.name}" (${osLabel(device.osName)}): ` +
+          idleChipLabel(device, {
+            onlineWindowMs: idleRead?.onlineWindowMs ?? undefined,
+            readState: idleRead?.state,
+            readAsOf: idleRead?.asOf,
+          })
       : null,
   );
   // TASK_103 BUG-A — the tab is URL state (`?tab=`): a new window lands on
@@ -563,6 +565,7 @@ export function DeviceConsole({
       const data = await res.json();
       const row = (data.devices ?? []).find((d: { id: string }) => d.id === deviceId);
       if (!row) throw new Error("Device not found");
+      setIdleRead(idleReadProvenanceFrom(data));
       setDevice({
         ...row,
         status: row.effectiveStatus ?? row.status ?? "unknown",
@@ -1338,7 +1341,6 @@ export function DeviceConsole({
     }
   }
 
-  const statusWord = (s: string) => (s === "asleep" ? "asleep" : s === "online" ? "online" : "offline");
   const dot =
     device?.status === "online"
       ? "bg-emerald-500"
@@ -1388,11 +1390,16 @@ export function DeviceConsole({
               <span className="flex shrink-0 items-center gap-1.5 text-xs">
                 <span className={cn("inline-block h-2 w-2 rounded-full", dot)} />
                 <span className={isOnline ? "text-emerald-500" : "text-fg-muted"}>
-                  {!isOnline
-                    ? `offline · last seen ${relTime(device.lastSeenAt)}`
-                    : device.idleSeconds === null
-                      ? statusWord(device.status)
-                      : `${statusWord(device.status)} · ${formatIdle(device.idleSeconds)}`}
+                  {/* TASK_154 N2 — the ONE shared chip. It used to fall back to a
+                      bare `statusWord(device.status)` ("online") when idleSeconds
+                      was null, which is indistinguishable from "active now" and
+                      is exactly the owner's flicker. The helper latches, bounds
+                      and never prints a bare status. */}
+                  {idleChipLabel(device, {
+                    onlineWindowMs: idleRead?.onlineWindowMs ?? undefined,
+                    readState: idleRead?.state,
+                    readAsOf: idleRead?.asOf,
+                  })}
                 </span>
               </span>
             )}
@@ -1451,6 +1458,7 @@ export function DeviceConsole({
             <SummaryTab
               device={device}
               loaded={loaded}
+              idleRead={idleRead}
               liveClone={liveClone ?? null}
               lastClone={lastClone ?? null}
               clonesLoaded={clonesLoaded}
@@ -1637,6 +1645,7 @@ export function DeviceConsole({
 function SummaryTab({
   device,
   loaded,
+  idleRead,
   liveClone,
   lastClone,
   clonesLoaded,
@@ -1650,6 +1659,7 @@ function SummaryTab({
 }: {
   device: DeviceView | null;
   loaded: boolean;
+  idleRead: IdleReadProvenance | null;
   liveClone: CloneRow | null;
   lastClone: CloneRow | null;
   clonesLoaded: boolean;
@@ -1687,7 +1697,11 @@ function SummaryTab({
         label="User activity"
         value={
           device.status === "online" || device.status === "asleep"
-            ? formatIdle(device.idleSeconds)
+            ? idleChipLabel(device, {
+                onlineWindowMs: idleRead?.onlineWindowMs ?? undefined,
+                readState: idleRead?.state,
+                readAsOf: idleRead?.asOf,
+              })
             : "—"
         }
       />
