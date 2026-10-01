@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { parseRecipientsCsv } from "@/lib/csv";
 import { leadToRecipient, insertManualRecipients } from "@/lib/campaign-recipients";
+import { parseFilterTerms, excludeRecipients } from "@/lib/lead-filter";
 import { resolveTestTarget } from "@/lib/test-target";
 import { createCampaign } from "@/lib/campaign-create";
 
@@ -60,6 +61,11 @@ export async function POST(req: Request) {
     csv?: string;
     searchJobId?: string;
     leadIds?: unknown;
+    // TASK_151 R2 — the picker's exclude terms. The server re-applies the SAME
+    // rule (lib/lead-filter.ts) after resolving recipients, so an excluded address
+    // cannot be reached by a crafted leadIds list even though the picker also
+    // prunes its own selection. Absent/empty => no-op (every other source unchanged).
+    excludeTerms?: unknown;
     rotateEvery?: unknown;
     // Task 29, item 6 — per-batch deliverability checkpoint size (default 50).
     batchSize?: unknown;
@@ -116,6 +122,16 @@ export async function POST(req: Request) {
       }
     }
   }
+  // TASK_151 R2 — the exclude terms travel with the request so the SERVER applies
+  // the same rule the picker did. Parsed with the shared helper (comma/newline,
+  // trimmed, deduped) so a crafted or hand-edited body gets identical semantics.
+  const excludeTerms = parseFilterTerms(
+    Array.isArray(body.excludeTerms)
+      ? body.excludeTerms.map((t) => String(t)).join(",")
+      : typeof body.excludeTerms === "string"
+        ? body.excludeTerms
+        : "",
+  );
   // Task 26, Piece 5b — how many consecutive recipients share a mailbox/subject
   // before the rotation advances. Clamped server-side like every other numeric
   // knob in this app (see maxResults/minResults in app/api/jobs/route.ts); no
@@ -247,6 +263,30 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: "That job has no leads with an email address." },
         { status: 400 }
+      );
+    }
+  }
+
+  // TASK_151 R2 item 4 — the SERVER-SIDE guard, applied where the selection is
+  // actually consumed (right after resolution, for EVERY source: csv, leadIds, or
+  // a job deep link). This is what makes the picker's prune an optimisation rather
+  // than the only line of defence: a crafted request that names an excluded lead's
+  // id (or CSV row) is still filtered here, because the rule lives in the shared
+  // lib/lead-filter.ts. excludeTerms empty => the array is returned untouched, so
+  // every existing caller (which sends no terms) is bit-for-bit unchanged.
+  {
+    const before = recipients.length;
+    const guarded = excludeRecipients(recipients, excludeTerms);
+    recipients = guarded.recipients;
+    if (guarded.excludedCount > 0 && recipients.length === 0) {
+      return NextResponse.json(
+        { error: "Every selected recipient is excluded by your exclude filter." },
+        { status: 400 }
+      );
+    }
+    if (guarded.excludedCount > 0) {
+      console.info(
+        `[campaigns] TASK_151 exclude filter removed ${guarded.excludedCount}/${before} resolved recipients`,
       );
     }
   }

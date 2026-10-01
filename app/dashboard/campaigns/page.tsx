@@ -10,6 +10,14 @@ import { useConfirm } from "@/components/confirm-provider";
 // show the user exactly what a recipient would receive (including the raw gap a
 // missing merge variable leaves) BEFORE they confirm the send.
 import { renderMerge } from "@/lib/render-merge";
+// TASK_151 (R1/R2) — the picker's include/exclude rule. Shared with the server
+// send path (POST /api/campaigns) so the client's filter and the server's guard
+// can never drift; see lib/lead-filter.ts.
+import {
+  parseFilterTerms,
+  filterPickerLeads,
+  pruneExcludedSelection,
+} from "@/lib/lead-filter";
 
 type Campaign = {
   id: string;
@@ -251,7 +259,12 @@ export default function CampaignsPage() {
   const [pickerLoading, setPickerLoading] = useState(false);
   const [pickerError, setPickerError] = useState("");
   const [pickerJobId, setPickerJobId] = useState("");
-  const [pickerSearch, setPickerSearch] = useState("");
+  // TASK_151 R1/R2 — the filter is now TWO free-text controls, each accepting
+  // multiple comma/newline-separated terms. `pickerInclude` keeps the old single
+  // box's exact semantics (one term = today's behaviour); a second blank value
+  // means "no include filter", identical to the old empty box.
+  const [pickerInclude, setPickerInclude] = useState("");
+  const [pickerExclude, setPickerExclude] = useState("");
   const [selectedLeadIds, setSelectedLeadIds] = useState<string[]>([]);
 
   const load = useCallback(async () => {
@@ -371,7 +384,8 @@ export default function CampaignsPage() {
     // fetched /api/leads/selectable payload is cached so revisits don't re-fetch).
     setRecipientSource("csv");
     setPickerJobId("");
-    setPickerSearch("");
+    setPickerInclude("");
+    setPickerExclude("");
     setSelectedLeadIds([]);
     setPickerError("");
     setModalOpen(true);
@@ -390,7 +404,18 @@ export default function CampaignsPage() {
     try {
       const res = await fetch("/api/leads/selectable");
       if (!res.ok) throw new Error("Failed to load your leads");
-      setPickerData((await res.json()) as PickerData);
+      const data = (await res.json()) as PickerData;
+      setPickerData(data);
+      // TASK_151 R2 — safety net for the async gap: if an exclude term was typed
+      // BEFORE the picker's lead list finished loading, the exclude handler
+      // couldn't map ids to leads yet. Now that they're here, prune the pending
+      // selection so an excluded lead can never ride along into a send. (This runs
+      // in the fetch callback, not an effect body — deliberate: the repo's
+      // react-hooks/set-state-in-effect rule forbids the latter.)
+      setSelectedLeadIds((prev) => {
+        const next = pruneExcludedSelection(prev, data.leads, parseFilterTerms(pickerExclude));
+        return next.length === prev.length ? prev : next;
+      });
     } catch (e) {
       setPickerError(e instanceof Error ? e.message : "Failed to load your leads");
     } finally {
@@ -410,17 +435,28 @@ export default function CampaignsPage() {
     );
   }
 
-  // The leads currently visible in the picker (job filter × free-text search).
-  const visibleLeads: PickerLead[] = (pickerData?.leads ?? []).filter((l) => {
-    if (pickerJobId && l.searchJobId !== pickerJobId) return false;
-    const q = pickerSearch.trim().toLowerCase();
-    if (!q) return true;
-    return (
-      (l.email ?? "").toLowerCase().includes(q) ||
-      (l.businessName ?? "").toLowerCase().includes(q) ||
-      (l.contactName ?? "").toLowerCase().includes(q)
-    );
-  });
+  // TASK_151 R1/R2 — the picker's visible set: job AND (include OR-terms) AND NOT
+  // (exclude terms), plus the "N excluded" count. The rule itself lives in
+  // lib/lead-filter.ts so the exact same code runs on the server (the send guard).
+  const includeTerms = useMemo(() => parseFilterTerms(pickerInclude), [pickerInclude]);
+  const excludeTerms = useMemo(() => parseFilterTerms(pickerExclude), [pickerExclude]);
+  const { visible: visibleLeads, excluded: excludedCount } = useMemo(
+    () =>
+      filterPickerLeads(pickerData?.leads ?? [], {
+        jobId: pickerJobId,
+        include: includeTerms,
+        exclude: excludeTerms,
+      }),
+    [pickerData, pickerJobId, includeTerms, excludeTerms],
+  );
+
+  // TASK_151 R2 — EXCLUDING PRUNES THE SELECTION. Hiding a row is not enough: if
+  // an excluded lead stays in `selectedLeadIds` the submit path still sends to it
+  // and the filter is cosmetic. Two places keep the selection pruned: the exclude
+  // input handler (prunes on every keystroke, so the "N recipients selected" total
+  // is correct without a frame of lag) and loadPicker (re-prunes once the lead list
+  // arrives, closing the async gap). The server re-applies the same rule regardless
+  // — see app/api/campaigns/route.ts — so this is a convenience, not the guard.
 
   // Bug fix (2026-09-12): `pickerData.leads` only ever contains VALID leads
   // (see GET /api/leads/selectable), so choosing a job that hasn't been
@@ -456,6 +492,49 @@ export default function CampaignsPage() {
     const all = new Set(selectedLeadIds);
     (pickerData?.leads ?? []).forEach((l) => all.add(l.id));
     setSelectedLeadIds([...all]);
+  }
+
+  // TASK_151 R1 — the include box. Multi-term (comma/newline), OR semantics; one
+  // term or none behaves exactly like the old single box. Purely a view filter —
+  // it must NOT touch the selection (a lead you haven't got round to excluding
+  // yet stays selectable across terms).
+  function setIncludeFilter(value: string) {
+    setPickerInclude(value);
+  }
+
+  // TASK_151 R2 — the exclude box. Beyond hiding rows this PRUNES the selection on
+  // every keystroke, so the "N recipients selected" total (and the payload sent to
+  // the server) can never contain an address the picker is showing as excluded.
+  function setExcludeFilter(value: string) {
+    setPickerExclude(value);
+    const terms = parseFilterTerms(value);
+    if (terms.length === 0) return;
+    setSelectedLeadIds((prev) => {
+      const next = pruneExcludedSelection(prev, pickerData?.leads ?? [], terms);
+      return next.length === prev.length ? prev : next;
+    });
+  }
+
+  // TASK_151 R2 — one-click "drop everything my exclude just hid". Explicit and
+  // destructive-by-request, which is why it is a separate button rather than
+  // silently folding into the exclude box's typing.
+  function deselectHidden() {
+    if (excludeTerms.length === 0) return;
+    setSelectedLeadIds((prev) => pruneExcludedSelection(prev, pickerData?.leads ?? [], excludeTerms));
+  }
+
+  // TASK_151 R1 item 3 — removable chips. Removing a term re-serializes the box
+  // ("a, b"). For include this is purely cosmetic; for exclude it also re-runs the
+  // prune (removing an exclude term can never ADD a lead back, but re-pruning keeps
+  // the invariant "selection contains no excluded lead" true regardless).
+  function removeIncludeTerm(term: string) {
+    const next = includeTerms.filter((t) => t.toLowerCase() !== term.toLowerCase());
+    setPickerInclude(next.join(", "));
+  }
+
+  function removeExcludeTerm(term: string) {
+    const next = excludeTerms.filter((t) => t.toLowerCase() !== term.toLowerCase());
+    setExcludeFilter(next.join(", "));
   }
 
   function toggleMailbox(id: string) {
@@ -662,6 +741,14 @@ export default function CampaignsPage() {
             : recipientSource === "leads"
               ? { leadIds: selectedLeadIds }
               : { csv: csvContent }),
+          // TASK_151 R2 — send the exclude terms so the server re-applies the SAME
+          // rule where the selection is consumed. The picker has already pruned the
+          // selection; this is the server-side guard against a crafted/edited body,
+          // so it is always sent when the picker source is used (even if the picker
+          // somehow left a stale id behind).
+          ...(recipientSource === "leads" && excludeTerms.length > 0
+            ? { excludeTerms }
+            : {}),
           ...(miEnabled && miEmail.trim()
             ? {
                 manualInsert: {
@@ -1378,16 +1465,52 @@ export default function CampaignsPage() {
                           </select>
                         </label>
                         <label className="flex flex-col gap-1 text-xs font-medium">
-                          Search email / business
+                          Include — email / business / name
                           <input
                             type="text"
-                            value={pickerSearch}
-                            onChange={(e) => setPickerSearch(e.target.value)}
-                            placeholder="Filter…"
+                            value={pickerInclude}
+                            onChange={(e) => setIncludeFilter(e.target.value)}
+                            placeholder="acme, globex"
+                            title="Show leads matching ANY term (comma- or newline-separated). One term behaves exactly like the old search box."
                             className="w-48 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                           />
                         </label>
+                        <label className="flex flex-col gap-1 text-xs font-medium">
+                          Exclude — email / business / name
+                          <input
+                            type="text"
+                            value={pickerExclude}
+                            onChange={(e) => setExcludeFilter(e.target.value)}
+                            placeholder="bob@acme.test, initech"
+                            title="Hide AND un-select leads matching ANY term. Excluded leads are removed from the selection, so they can never be sent to."
+                            className="w-48 rounded-lg border border-red-300 bg-white px-2 py-1.5 text-sm font-normal outline-none focus:border-red-500 dark:border-red-900 dark:bg-zinc-950"
+                          />
+                        </label>
                       </div>
+                      {/* TASK_151 R1 item 3 — the active terms as removable chips, with
+                          the live count of what each side matches/hides. */}
+                      {(includeTerms.length > 0 || excludeTerms.length > 0) && (
+                        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs">
+                          {includeTerms.map((t) => (
+                            <span key={`inc-${t}`} className="inline-flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                              {t}
+                              <button type="button" onClick={() => removeIncludeTerm(t)} title={`Remove include term "${t}"`} className="text-zinc-400 hover:text-zinc-700 dark:hover:text-zinc-100">×</button>
+                            </span>
+                          ))}
+                          {includeTerms.length > 0 && (
+                            <span className="text-zinc-400">→ {visibleLeads.length + excludedCount} match</span>
+                          )}
+                          {excludeTerms.map((t) => (
+                            <span key={`exc-${t}`} className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-red-700 dark:bg-red-950/50 dark:text-red-300">
+                              {t}
+                              <button type="button" onClick={() => removeExcludeTerm(t)} title={`Remove exclude term "${t}"`} className="text-red-400 hover:text-red-700 dark:hover:text-red-100">×</button>
+                            </span>
+                          ))}
+                          {excludeTerms.length > 0 && (
+                            <span className="text-zinc-400">→ {excludedCount} excluded</span>
+                          )}
+                        </div>
+                      )}
                       <div className="mt-1 flex flex-wrap gap-2">
                         <button type="button" onClick={selectAllVisible} className="rounded-lg border border-zinc-300 px-3 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-400">
                           Select all in this session ({visibleLeads.length})
@@ -1408,9 +1531,28 @@ export default function CampaignsPage() {
                             Clear all ({selectedLeadIds.length})
                           </button>
                         )}
+                        {excludeTerms.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={deselectHidden}
+                            title="Remove every hidden (excluded) lead from the selection"
+                            className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                          >
+                            Deselect all hidden ({excludedCount})
+                          </button>
+                        )}
                       </div>
                       <p className="text-sm font-semibold">
                         {selectedLeadIds.length} recipient{selectedLeadIds.length === 1 ? "" : "s"} selected
+                        {excludeTerms.length > 0 && (
+                          // TASK_151 R2 — a visible exclude count. A silent exclude is
+                          // indistinguishable from a broken filter, so say both how many
+                          // rows the exclude hid AND that they are already pruned from the
+                          // selection (never "still selected but hidden").
+                          <span className="ml-2 font-normal text-xs text-red-600 dark:text-red-400">
+                            · {excludedCount} excluded, pruned from selection
+                          </span>
+                        )}
                       </p>
                       <div className="max-h-[220px] overflow-y-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
                         {visibleLeads.length === 0 ? (

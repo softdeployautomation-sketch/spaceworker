@@ -24,6 +24,7 @@
     "test:mailboxes": "tsx --test tests/campaign-mailboxes.test.ts",
     "test:target": "tsx --test tests/test-target.test.ts",
     "test:testrecipients": "tsx --test tests/test-send-recipients.test.ts",
+    "test:leadfilter": "tsx --test tests/lead-filter.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
