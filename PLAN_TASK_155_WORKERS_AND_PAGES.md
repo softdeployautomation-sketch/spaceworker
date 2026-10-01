@@ -6,6 +6,7 @@ Cloudflare account/token (§13.2), and the T0 spikes are **PASSED with raw evide
 **v1 = FREE-FIRST on our own metal** (files + redirects; no Cloudflare needed). Cloudflare
 (Pages, custom domains, bulk redirects, R2) is a *later* engine, never the only path.
 **All caps are admin-editable (§14) — decided by the engineer, changed by the owner in admin.**
+**User files are served from the instaweb public family, never the main `spaceworker` host (§15).**
 **Companion doc: `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` — these two ship hand in hand.**
 
 **Owner's one-line version:** give every SpaceWorker user **one place to put something on
@@ -501,3 +502,35 @@ mechanism.
 
 **P1 acceptance addition:** the hosting caps above are settable in admin, change server behaviour
 without a redeploy, and a quota breach returns a clear message (not a 500).
+
+---
+
+## 15. Public serving host — owner decision (2026-10-01) — BINDING
+
+Owner: *"We don't want to use our main `spaceworker`; we can allow users [to] use the **instaweb**
+domain, which is for the public agent — and also the Workers/Pages, if linked, can be used for the
+storage. Or, if it's hosted with instaweb, users can create a **redirect** to it, to have a better
+and shorter link straight to download the file."*
+
+**Decisions that follow:**
+
+1. **Never serve user-uploaded bytes from the main `spaceworker.top` app host.** The hosting
+   surface lives on the **`instaweb` public family** (`*.instaweb.top`, wildcard TLS already
+   covers any single label — see TASK_122 §9), exactly like the public agent
+   (`agent.instaweb.top`) and the installer-download host (`dl.instaweb.top`). Measured live
+   2026-10-01: `dl.instaweb.top → 404` (host + TLS present, no root content — the natural
+   candidate), `agent.instaweb.top → 200`, `spaceworker.instaweb.top → 200`.
+   - Config is a **new optional `HOSTING_PUBLIC_BASE_URL`**, following `PUBLIC_LINK_BASE_URL`'s
+     exact pattern in `lib/env.ts` (defaults to `appBaseUrl`, trailing slash stripped) ⇒ a
+     **zero-behaviour-change addition** until the owner sets it to the chosen host.
+2. **Pages *is* storage.** A user's linked Pages project (P3) already holds their assets
+   (≤ 25 MiB/file, §9) and serves them from `*.pages.dev`; we do not duplicate those bytes on our
+   metal. "Hosting" = our metal (P1) **or** the user's Pages project (P3) — one tab, two engines.
+3. **A redirect is the short link.** The `/r/<token>` machinery (P2) promotes to user-owned
+   redirects: a user can point a short slug at a `dl.instaweb.top` file **or** at a `*.pages.dev`
+   URL, giving "a better and shorter link straight to download". So P1/P3 produce the *bytes* and
+   P2 produces the *pretty link* — deliberately decoupled.
+
+**Consequence for §9 phasing:** P1's serving route is built host-agnostic (`/dl/<token>`-style)
+and reads `HOSTING_PUBLIC_BASE_URL`; the owner flips the host in admin/env, not in code.
+
