@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import {
   Cloud,
+  FlaskConical,
   Globe,
   LayoutDashboard,
   Megaphone,
@@ -46,6 +47,12 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   // TASK_155 P1 — hosting (files / pages / links). Web-only, so it is absent
   // from the extractor build's BUILD_ALLOWED_HREFS set below (auto-excluded).
   { href: "/dashboard/hosting", label: "Hosting", icon: Cloud },
+  // TASK_156 (Cyber Lab) — nav entry + dashboard card land NOW (owner,
+  // 2026-10-01: "the cyberlab and workers should be added to the menu and
+  // dashboard cards"), but the engine itself is C1/C2 work. The page is a dark
+  // "not available yet" placeholder until AdminSetting.cyberlabEnabled is on and
+  // the lab ships, exactly like Hosting was before P1 was switched on.
+  { href: "/dashboard/cyberlab", label: "Cyber Lab", icon: FlaskConical },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

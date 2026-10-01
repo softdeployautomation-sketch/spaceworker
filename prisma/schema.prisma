@@ -400,6 +400,38 @@ model AdminSetting {
   hostingPagesMaxAssetMb            Int     @default(20)
   hostingPlatformTokenTtlHours      Int     @default(24)
   hostingModulePriceUsd             Float   @default(9)
+  // TASK_155 P2 — user-owned redirect links (the /r/<token> promotion). Per free user.
+  hostingFreeMaxLinks               Int     @default(50)
+
+  // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
+  // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
+  // asked for "all caps for the workers and cyberlab ... available for edit in
+  // admin" up front, so these columns + the admin panel land NOW, before the lab
+  // itself — nothing reads them yet, they are all defaulted, and the migration is
+  // additive, so this changes no behaviour.
+  //
+  //   cyberlabEnabled                 = master switch; false => lab dark (mirrors
+  //                                     hostingEnabled).
+  //   cyberlabFreeMaxConcurrentRanges = how many lab ranges one user may hold
+  //                                     active at once. 1 (serialize, never share).
+  //   cyberlabFreeMaxRangeMinutes     = hard TTL for a range before it is torn down.
+  //   cyberlabRangeRamMb              = RAM reserved per range host (the scarce
+  //                                     resource the owner called out — "if it's
+  //                                     going to take a lot of ram").
+  //   cyberlabHostRamBudgetMb         = total RAM the lab hosts may use; the
+  //                                     resource governor (TASK_105) queues against
+  //                                     this so a lab run never starves the app.
+  //   cyberlabMaxTargetsPerScenario   = attested targets cap (legal spine, §5).
+  //   cyberlabMaxEpisodesPerMonth     = per-user evidence-bundle cap.
+  //   cyberlabModulePriceUsd          = price of the `cyberlab_module` product.
+  cyberlabEnabled                   Boolean @default(false)
+  cyberlabFreeMaxConcurrentRanges   Int     @default(1)
+  cyberlabFreeMaxRangeMinutes       Int     @default(30)
+  cyberlabRangeRamMb                Int     @default(2048)
+  cyberlabHostRamBudgetMb           Int     @default(8192)
+  cyberlabMaxTargetsPerScenario     Int     @default(10)
+  cyberlabMaxEpisodesPerMonth       Int     @default(20)
+  cyberlabModulePriceUsd            Float   @default(29)
 }
 
 model Mailbox {
@@ -1199,6 +1231,15 @@ model LinkRedirect {
   // Opaque, url-safe lookup key for GET /r/<token>. __no secret__ — the counter
   // is a plain aggregate, and an unknown/expired token must 404 cleanly.
   token      String         @unique
+  // TASK_155 P2 — owner (owner, 2026-10-01): user-owned short links. A NULL
+  // userId is the anonymous campaign-cloaked link Task 30 created (unknown to any
+  // account); a non-NULL userId is a link the user created in the Hosting tab.
+  // Plain scalar, matching HostedAsset.userId, so the User model needs no edit.
+  userId     String?
+  // TASK_155 P2 — optional friendly slug, so /r/<slug> resolves as well as
+  // /r/<token>. Validated against SLUG_RE (lib/hosting/rules.ts) before it is
+  // stored; NULL for token-only links (every anonymous link today).
+  slug       String?        @unique
   campaignId String?
   campaign   EmailCampaign? @relation(fields: [campaignId], references: [id])
   // The real destination this cloaked link redirects to.
@@ -1211,7 +1252,48 @@ model LinkRedirect {
   createdAt  DateTime       @default(now())
 
   @@index([campaignId])
+  @@index([userId])
 }
+
+// TASK_155 P2 — a user's own hosting credential (BYO Cloudflare account id +
+// API token), so a file can be hosted on the platform engine OR the user's own
+// account. The owner (2026-10-01): "option for users to add their own cf tokens
+// and id, and if users add multiple like 3, we should be able to switch between
+// them for hosting". `isDefault` marks the one used unless a request picks
+// another, so N credentials are representable before any multi-select UI lands.
+//
+// The token is NEVER stored in plaintext and is NEVER returned by any route: it
+// is encrypted at rest with the existing MAILBOX_ENCRYPTION_KEY helpers
+// (lib/mailbox-crypto.ts), the same AES-256-GCM pattern the SMTP passwords use.
+// `tokenHint` keeps the last 4 chars only, so the UI can label a credential
+// without ever holding the secret.
+model HostingCredential {
+  id        String   @id @default(cuid())
+  userId    String
+  // Which engine this credential is for: "cloudflare" today (an R2/S3 or other
+  // engine can reuse the same row shape).
+  provider  String   @default("cloudflare")
+  // The user's own account identifier (Cloudflare account id). Not a secret.
+  accountId String
+  // A human label so several credentials are distinguishable ("Work", "Trial").
+  label     String
+  // AES-256-GCM ciphertext of the API token — never plaintext, never returned.
+  tokenCiphertext String
+  tokenIv         String
+  tokenTag        String
+  // Last 4 chars of the token, for a non-secret UI hint only.
+  tokenHint String
+  // The credential used when a request does not name one. Exactly one row per
+  // user+provider is default; the API clears the previous default on switch.
+  isDefault Boolean  @default(false)
+  // "active" | "revoked" — revoked rows are kept for audit, never used.
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, provider])
+}
+
 
 // Task 31, item 3 — the Automations "Ask the agent" feature. Threads, messages,
 // and TTL-gated pending actions that implement the approval-gated tool calling

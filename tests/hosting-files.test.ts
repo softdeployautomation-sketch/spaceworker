@@ -75,6 +75,7 @@ function baseCapsSrc(overrides: Partial<HostingCapSource> = {}): HostingCapSourc
     hostingPremiumStorageQuotaMb: 10240,
     hostingPagesMaxAssetMb: 20,
     hostingPlatformTokenTtlHours: 24,
+    hostingFreeMaxLinks: 50,
     ...overrides,
   };
 }

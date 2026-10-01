@@ -50,6 +50,8 @@ const WRITABLE_FIELDS = {
   pagesMaxAssetMb: { column: "hostingPagesMaxAssetMb", kind: "capped" },
   platformTokenTtlHours: { column: "hostingPlatformTokenTtlHours", kind: "int" },
   modulePriceUsd: { column: "hostingModulePriceUsd", kind: "money" },
+  // TASK_155 P2 — the per-user redirect-link cap.
+  freeMaxLinks: { column: "hostingFreeMaxLinks", kind: "int" },
 } as const;
 
 const WRITABLE_KEYS = Object.keys(WRITABLE_FIELDS) as Array<keyof typeof WRITABLE_FIELDS>;
@@ -65,6 +67,7 @@ type HostingSettingRow = {
   hostingPagesMaxAssetMb: number;
   hostingPlatformTokenTtlHours: number;
   hostingModulePriceUsd: number;
+  hostingFreeMaxLinks: number;
 };
 
 // The full state the panel renders, always returned fresh from both GET and PATCH
@@ -83,6 +86,8 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       pagesMaxAssetMb: settings.hostingPagesMaxAssetMb,
       platformTokenTtlHours: settings.hostingPlatformTokenTtlHours,
       modulePriceUsd: settings.hostingModulePriceUsd,
+      // TASK_155 P2 — the per-user redirect-link cap (see the write hook below).
+      freeMaxLinks: settings.hostingFreeMaxLinks,
     },
     // The Cloudflare per-asset ceiling is a HARD platform limit, not a dial — the
     // panel shows it so nobody sets pagesMaxAssetMb above it expecting it to hold.

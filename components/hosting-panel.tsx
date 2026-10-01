@@ -26,8 +26,41 @@ interface HostingStatus {
     maxFiles: number;
     maxBandwidthGbPerMonth: number;
     pagesMaxAssetMb: number;
+    maxLinks: number;
   };
-  usage: { storageBytes: number; fileCount: number; bandwidthBytes: number; period: string };
+  usage: {
+    storageBytes: number;
+    fileCount: number;
+    bandwidthBytes: number;
+    period: string;
+    linkCount: number;
+  };
+  /** TASK_155 P2 — the caller's own hosting credentials (never the token). */
+  credentials: HostingCredential[];
+}
+
+/** TASK_155 P2 — a user-owned short link (/r/<slug|token> → target). */
+interface HostedLink {
+  id: string;
+  token: string;
+  slug: string | null;
+  label: string | null;
+  target: string;
+  clickCount: number;
+  shortPath: string;
+  createdAt: string;
+}
+
+/** TASK_155 P2 — a BYO Cloudflare credential (account id + encrypted token). */
+interface HostingCredential {
+  id: string;
+  provider: string;
+  accountId: string;
+  label: string;
+  tokenHint: string;
+  isDefault: boolean;
+  status: string;
+  createdAt: string;
 }
 
 interface HostedFile {
@@ -61,6 +94,10 @@ export function HostingPanel() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [slugs, setSlugs] = useState<Record<string, string>>({});
+  // TASK_155 P2 — the short links + BYO credentials surfaces.
+  const [links, setLinks] = useState<HostedLink[]>([]);
+  const [linkForm, setLinkForm] = useState({ target: "", label: "", slug: "" });
+  const [credForm, setCredForm] = useState({ accountId: "", label: "", token: "" });
   const fileInput = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
@@ -79,10 +116,20 @@ export function HostingPanel() {
     setFiles(data.files);
   }, []);
 
+  // TASK_155 P2 — the user's short links (deliberately a separate endpoint from
+  // files; they are a different resource with a different cap).
+  const loadLinks = useCallback(async () => {
+    const res = await fetch("/api/hosting/links");
+    if (!res.ok) return;
+    const data = (await res.json()) as { links: HostedLink[] };
+    setLinks(data.links);
+  }, []);
+
   useEffect(() => {
     void loadStatus();
     void loadFiles();
-  }, [loadStatus, loadFiles]);
+    void loadLinks();
+  }, [loadStatus, loadFiles, loadLinks]);
 
   const activeProvider = useMemo(
     () => status?.providers.find((p) => p.id === status.provider) ?? null,

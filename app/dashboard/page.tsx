@@ -15,6 +15,8 @@ const DESCRIPTIONS: Record<string, string> = {
   Campaigns: "Draft outreach and send safely under a daily cap.",
   Automations: "Save a re-runnable extract + send config, or ask the agent to plan one for you.",
   "Private Browser": "A real Chrome instance routed through a proxy, with isolated profiles under the Browser Profiles tab.",
+  Hosting: "Put a file online and get a link back. Rename it any time — the bytes never change.",
+  "Cyber Lab": "Real-world offensive + defensive tooling on isolated ranges — with an evidence trail.",
   Settings: "Account, billing, and workspace preferences.",
 };
 
@@ -28,6 +30,11 @@ export default function DashboardPage() {
       i.href === "/dashboard/automations" ||
       i.href === "/dashboard/extract" ||
       i.href === "/dashboard/browser" ||
+      // TASK_155/156 (owner, 2026-10-01) — Hosting and Cyber Lab get overview
+      // cards too. Both come straight from useNavItems, so a build target that
+      // hides them (the Extractor EXE) hides their cards in the same breath.
+      i.href === "/dashboard/hosting" ||
+      i.href === "/dashboard/cyberlab" ||
       i.href === "/dashboard/settings",
   );
   // Confirmed live (2026-09-19) — the sidebar nav (dashboard-nav.tsx's

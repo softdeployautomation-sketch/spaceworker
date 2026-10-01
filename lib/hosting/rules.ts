@@ -44,6 +44,8 @@ export interface HostingCapSource {
   hostingPremiumStorageQuotaMb: number;
   hostingPagesMaxAssetMb: number;
   hostingPlatformTokenTtlHours: number;
+  /** TASK_155 P2 — per-user cap on user-owned redirect links (AdminSetting). */
+  hostingFreeMaxLinks: number;
 }
 
 export interface HostingCaps {
@@ -63,6 +65,8 @@ export interface HostingCaps {
   pagesMaxAssetMb: number;
   /** How long a platform-token project lives before reclaim. */
   platformTokenTtlHours: number;
+  /** TASK_155 P2 — per-user redirect-link count ceiling. */
+  maxLinks: number;
 }
 
 export const MB = 1024 * 1024;
@@ -90,6 +94,7 @@ export function resolveHostingCaps(src: HostingCapSource, opts: { premium: boole
     maxBandwidthGbPerMonth: src.hostingFreeMaxBandwidthGbPerMonth,
     pagesMaxAssetMb: Math.min(src.hostingPagesMaxAssetMb, CLOUDFLARE_HARD_ASSET_MB),
     platformTokenTtlHours: src.hostingPlatformTokenTtlHours,
+    maxLinks: src.hostingFreeMaxLinks,
   };
 }
 
@@ -271,6 +276,21 @@ function base64url(bytes: Uint8Array): string {
 export const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 export function isValidSlug(slug: string): boolean {
   return SLUG_RE.test(slug);
+}
+
+/**
+ * TASK_155 P2 — a redirect target must be an absolute http(s) URL. This is the
+ * only thing stopping a user link from becoming a `javascript:` or `data:` XSS
+ * vector on the world-readable /r/<key> route, so it is deliberately strict: any
+ * scheme other than http/https is refused, not "sanitized".
+ */
+export function isValidLinkTarget(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

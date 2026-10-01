@@ -1879,6 +1879,8 @@ type HostingCaps = {
   pagesMaxAssetMb: number;
   platformTokenTtlHours: number;
   modulePriceUsd: number;
+  // TASK_155 P2 — the per-user cap on user-owned short links.
+  freeMaxLinks: number;
 };
 
 type HostingCapsState = {
@@ -1952,6 +1954,15 @@ const HOSTING_CAP_ROWS: Array<{
     unit: "USD",
     hint: "Price of the self-serve hosting upgrade.",
     money: true,
+  },
+  {
+    // TASK_155 P2 — user-owned short links. Sits next to the file dials because
+    // it is the same "free tier" envelope; the campaign links (userId NULL) are
+    // never counted against it.
+    field: "freeMaxLinks",
+    label: "Max short links (per user)",
+    unit: "links",
+    hint: "How many /r/ redirect links one user may create in the Hosting tab. Campaign links are not counted.",
   },
 ];
 
@@ -2120,6 +2131,214 @@ function HostingCapsPanel() {
   );
 }
 
+
+
+// TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab admin dials.
+//
+// The owner was explicit: "all caps for the workers and cyberlab … available for
+// edit in admin" and "if it's going to take a lot of ram … we need every hard load
+// monitored and queued properly". So the RAM envelope (rangeRamMb,
+// hostRamBudgetMb) is a first-class dial here, editable live, for the resource
+// governor (TASK_105) to queue against once the heavy tooling lands. Nothing reads
+// these yet — the lab models do not exist — so this panel changes no behaviour; it
+// exists so the owner can set the load envelope before the lab ships.
+type CyberLabCaps = {
+  freeMaxConcurrentRanges: number;
+  freeMaxRangeMinutes: number;
+  rangeRamMb: number;
+  hostRamBudgetMb: number;
+  maxTargetsPerScenario: number;
+  maxEpisodesPerMonth: number;
+  modulePriceUsd: number;
+};
+
+type CyberLabCapsState = {
+  enabled: boolean;
+  caps: CyberLabCaps;
+};
+
+type CyberLabCapField = keyof CyberLabCaps;
+
+const CYBERLAB_CAP_ROWS: Array<{
+  field: CyberLabCapField;
+  label: string;
+  unit: string;
+  hint: string;
+  money?: boolean;
+}> = [
+  {
+    field: "freeMaxConcurrentRanges",
+    label: "Concurrent ranges (per user)",
+    unit: "ranges",
+    hint: "How many isolated lab ranges one user may hold active at once.",
+  },
+  {
+    field: "freeMaxRangeMinutes",
+    label: "Max range duration",
+    unit: "minutes",
+    hint: "Hard TTL before a range is torn down — the safety backstop.",
+  },
+  {
+    field: "rangeRamMb",
+    label: "RAM per range",
+    unit: "MB",
+    hint: "Reserved for each range host — the scarce resource the governor queues against.",
+  },
+  {
+    field: "hostRamBudgetMb",
+    label: "Host RAM budget",
+    unit: "MB",
+    hint: "Total RAM the lab may use across all users. Set below the host's real headroom.",
+  },
+  {
+    field: "maxTargetsPerScenario",
+    label: "Attested targets per scenario",
+    unit: "targets",
+    hint: "Cap on authorised targets per scenario — the legal spine.",
+  },
+  {
+    field: "maxEpisodesPerMonth",
+    label: "Episodes per month (per user)",
+    unit: "episodes",
+    hint: "Evidence bundles a user may produce per month.",
+  },
+  {
+    field: "modulePriceUsd",
+    label: "Cyber Lab module price",
+    unit: "USD",
+    hint: "Price of the self-serve Cyber Lab upgrade.",
+    money: true,
+  },
+];
+
+function CyberLabCapsPanel() {
+  const [state, setState] = useState<CyberLabCapsState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/cyberlab");
+      if (!res.ok) throw new Error("Failed to load Cyber Lab limits");
+      setState((await res.json()) as CyberLabCapsState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load Cyber Lab limits");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function patch(field: string, body: Record<string, boolean | number>) {
+    setSaving(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/cyberlab", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState(data as CyberLabCapsState);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Cyber Lab limits</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Dials for the Cyber Lab (TASK_156). Read server-side, so a change here is live without a redeploy. The lab
+        engine is not built yet — these exist so the RAM envelope and caps are set before the heavy tooling lands and
+        the resource governor can queue against them.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">Cyber Lab</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.enabled ? "Enabled — the lab surface is live." : "Off — the lab is dark until it ships."}
+                </p>
+              </div>
+              <button
+                onClick={() => patch("enabled", { enabled: !state.enabled })}
+                disabled={saving === "enabled"}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.enabled ? "Enabled" : "Disabled"}
+              </button>
+            </div>
+          </div>
+
+          {CYBERLAB_CAP_ROWS.map((row) => {
+            const current = state.caps[row.field];
+            const draft = drafts[row.field];
+            return (
+              <div
+                key={row.field}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                    {row.label} <span className="text-xs font-normal text-zinc-400">({row.unit})</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={0}
+                    step={row.money ? "0.01" : "1"}
+                    value={draft ?? String(current)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                    className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
+                  <button
+                    onClick={() => {
+                      const n = Number(draft ?? current);
+                      const min = row.money ? 0 : 1;
+                      if (!Number.isFinite(n) || n < min) {
+                        setError(`${row.label} must be a number \u2265 ${min}`);
+                        return;
+                      }
+                      patch(row.field, { [row.field]: row.money ? n : Math.floor(n) });
+                    }}
+                    disabled={saving === row.field || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Set
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 
 // Task 93 — admin visibility + revoke for Vantra links (owner's per-user
@@ -2584,7 +2803,7 @@ function InfrastructureTab() {
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Every system-level control that isn&apos;t about one product feature: admission,
         the extraction worker, the resource governor, browser-clone limits, hosting
-        limits, and linked Vantra devices.
+        limits, Cyber Lab limits, and linked Vantra devices.
       </p>
 
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
@@ -2600,6 +2819,7 @@ function InfrastructureTab() {
       <ScreenshotPanel />
       <CloneLimitsPanel />
       <HostingCapsPanel />
+      <CyberLabCapsPanel />
       <VantraLinksPanel />
     </div>
   );

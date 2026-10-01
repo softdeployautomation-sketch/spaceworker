@@ -2,10 +2,13 @@ import { NextResponse } from "next/server";
 
 import { getAdminSettings } from "@/lib/admin-settings";
 import { hasEntitlement } from "@/lib/entitlements";
+import { env } from "@/lib/env";
 import { getCurrentUser } from "@/lib/session-user";
 import { readUsage, resolveCapsForUser } from "@/lib/hosting/files";
+import { listHostingCredentials } from "@/lib/hosting/credentials";
 import { listProviders } from "@/lib/hosting/providers";
 import { hostingPublicBase } from "@/lib/hosting/providers";
+import { listHostedLinks } from "@/lib/hosting/links";
 
 // TASK_155 P1 — GET /api/hosting/status.
 //
@@ -23,7 +26,11 @@ export async function GET() {
   const [settings, decision] = await Promise.all([getAdminSettings(), hasEntitlement(user.id, "hosting")]);
   const entitled = decision.allowed;
   const { caps } = await resolveCapsForUser(user.id);
-  const usage = await readUsage(user.id);
+  const [usage, links, credentials] = await Promise.all([
+    readUsage(user.id),
+    listHostedLinks(user.id),
+    listHostingCredentials(user.id),
+  ]);
 
   return NextResponse.json({
     enabled: settings.hostingEnabled,
@@ -32,18 +39,28 @@ export async function GET() {
     provider: caps.provider,
     providers: listProviders(),
     publicBase: hostingPublicBase(),
+    // TASK_155 P2 — where a user-owned /r/<slug|token> short link resolves. This
+    // is the APP host (the same base Task 30 campaign links use), NOT the file
+    // host: files are served from `publicBase`, short links from here.
+    linksBase: env.publicLinkBaseUrl,
     caps: {
       storageQuotaMb: caps.storageQuotaMb,
       maxFileSizeMb: caps.maxFileSizeMb,
       maxFiles: caps.maxFiles,
       maxBandwidthGbPerMonth: caps.maxBandwidthGbPerMonth,
       pagesMaxAssetMb: caps.pagesMaxAssetMb,
+      // TASK_155 P2.
+      maxLinks: caps.maxLinks,
     },
     usage: {
       storageBytes: usage.storageBytes,
       fileCount: usage.fileCount,
       bandwidthBytes: usage.bandwidthBytes,
       period: usage.period,
+      linkCount: links.length,
     },
+    // TASK_155 P2 — the caller's own hosting credentials (never the token; each
+    // row carries only a 4-char hint) so the tab can render the switcher.
+    credentials,
   });
 }
