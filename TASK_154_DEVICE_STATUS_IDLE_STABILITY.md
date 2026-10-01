@@ -25,15 +25,17 @@ the owner is objecting to.
 
 ## Status
 
-- **N1 — ✅ DONE 2026-10-01**, commit `a64c702` (pushed, CI-green, **NOT deployed**). See the
+- **N1 — ✅ DONE + DEPLOYED 2026-10-01**, commit `a64c702`. See the
   STATUS note at the end of §3 N1; raw evidence in `SENIOR_HANDOFF.md` §12.
-- **N2 — ✅ DONE 2026-10-01**, commit `e342578` (pushed, CI-green, **NOT deployed**). One shared
+- **N2 — ✅ DONE + DEPLOYED 2026-10-01**, commit `e342578`. One shared
   helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all three console print sites
   wired; old bare-status fallback deleted; `tests/device-idle-chip.test.ts` (**10/10**). It used
   only the **always-on** top-level `idle: { state, asOf }` (not `?idle=provenance`). Raw evidence
   in `SENIOR_HANDOFF.md` §12.
-- **NEXT — DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot `/devices` and a
-  device console (§8). That is what closes the owner report. **Nothing is live yet.**
+- **DEPLOY — ✅ DONE 2026-10-01**, run `36867996177` (`workflow_dispatch`), live build
+  `4-aARmhO-lJKtaX2Lx-9y` (`BUILD_ID` mtime `2026-10-01 15:23:32 CEST`). Verified live: the
+  `null`-idle chip `online` → `online · idle 3 min`; `/api/devices` gained the top-level `idle`
+  object; the client bundle carries the new label. **The owner report is closed.**
 - **N3 — not started** (optional, cross-repo).
 
 Live-app state, deploy status and the update protocol live in `SENIOR_HANDOFF.md` (§6, §9, §10);
@@ -264,7 +266,8 @@ clearly-marked, cross-repo follow-up and may be skipped without blocking the own
 - Show a cold cache + failing mesh degrades honestly (unknown), not to a guessed "active".
 - `npx tsc --noEmit` clean; run the existing test suites and paste the tallies.
 
-> **STATUS: ✅ DONE 2026-10-01 — commit `a64c702` (pushed, CI-green, NOT deployed).** Implemented
+> **STATUS: ✅ DONE + DEPLOYED 2026-10-01 — commit `a64c702`, live in build `4-aARmhO-...`.**
+> Implemented
 > exactly per the above: the cache is a module-level `Map` keyed **by org** in `lib/vantra-link.ts`
 > (no Redis, no new dependency, no second admission counter); TTL default **25 s** (`DEVICE_IDLE_CACHE_TTL_MS`
 > overridable), chosen because the client polls every **20 s** (`device-list.tsx`), so one poll can
@@ -311,7 +314,7 @@ clearly-marked, cross-repo follow-up and may be skipped without blocking the own
   DOM/text check — not a code read.
 - `npx tsc --noEmit` clean; run the existing test suites and paste the tallies.
 
-> **STATUS: ✅ DONE 2026-10-01 — commit `e342578` (pushed, CI-green, NOT deployed).** All of the
+> **STATUS: ✅ DONE + DEPLOYED 2026-10-01 — commit `e342578`, live in build `4-aARmhO-...`.** All of the
 > above met: one shared helper `idleChipLabel` in `lib/device-idle.ts` (module-global latch `Map`,
 > keyed `id:` else `name:`; clears only on a positively-active reading `< 60 s`, matching
 > `formatIdle`; self-bounds against the **server's** `onlineWindowMs` so a sustained outage cannot
@@ -324,7 +327,9 @@ clearly-marked, cross-repo follow-up and may be skipped without blocking the own
 > (real components in real Chromium; `/api/devices` bodies stubbed = **SIMULATION**):
 > `["online · idle 1 min"], ["online"], ["online · idle 1 min"]` → all three `["online · idle 1 min"]`.
 > `npm run test:idlechip` **10/10**; `tsc` clean; full 24-suite sweep 0 fail. Raw evidence:
-> `SENIOR_HANDOFF.md` §12 (2026-10-01 N2 entry). **Not live — deploy N1 + N2 together.**
+> `SENIOR_HANDOFF.md` §12 (2026-10-01 N2 entry). **Deployed 2026-10-01 — run `36867996177`,
+> build `4-aARmhO-lJKtaX2Lx-9y`; live-verified (chip `online` → `online · idle 3 min`, N1 `idle`
+> object present, bundle carries `"activity unknown"`).**
 
 ### N3 — (follow-up, cross-repo) key idle by agent id, not hostname
 

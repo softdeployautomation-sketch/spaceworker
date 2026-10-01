@@ -267,26 +267,44 @@ avoiding a "dirty" worktree, assuming the deploy matches HEAD — without re-der
 `git rev-parse HEAD`, `git status --porcelain`, and the live `BUILD_ID`/run id.** §6 is a claim
 to verify, not a fact to trust (§10 item 1).
 
+**15. A deploy's restart window makes a 5-minute systemd oneshot report `failed` — a false
+alarm.** Several `deploy/` oneshots (`device-onboarding-sweep`, `automations-sweep`, …) run
+every 5 min and `curl` the app on `localhost:3500`. If a tick lands in the deploy's
+`stop → extract → migrate → start` window, `curl` exits **7 (connection refused)** and the unit
+shows **failed** in `systemctl --failed` / `systemctl status`. Observed 2026-10-01 (the N1+N2
+deploy): `device-onboarding-sweep.service` failed **once** at 15:25:39 (journal: every prior
+tick `{"ok":true,...}`; `Main PID ... status=7/NOTRUNNING`), then **self-healed** at the next
+tick 15:30:40 (`status=0/SUCCESS`) and `--failed` returned empty. **Do not read a post-deploy
+oneshot failure as your change breaking production** — check the journal timestamp against the
+deploy window and re-check after the next tick. Only a unit still failing after a clean tick is
+a real defect.
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (N1 session — every §6 claim below re-checked against the live VPS and this repo, not copied forward).**
+**Last verified: 2026-10-01 (deploy session — TASK_154 N1+N2 deployed to production and verified live; every §6 claim below re-checked against the live VPS and this repo, not copied forward).**
 
 ### 6.1 Live app — `main`
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ the tip, which is at or above the last **code** commit **`e342578`** (TASK_154 N2), itself above **`a64c702`** (N1). **Everything above `e342578` is documentation-only** — to see the tip run `git log --oneline -1`; if it is newer than `e342578`, nothing in it changes behaviour. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
+| Branch / HEAD | `main` @ the current tip (run `git log --oneline -1`). The last **code** commits are **`e342578`** (TASK_154 N2) and `a64c702` (N1); **everything above `e342578` is documentation-only** and changes no behaviour. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
-| Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb`. HEAD (`e342578`, N1+N2) is committed, pushed and CI-green but NOT deployed.** Neither half is live; **N2 is the commit that makes the fix owner-visible** — deploy N1+N2 together. |
-| Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
-| CI on current HEAD | push run `36865754289` (N2) and `36857561751` (N1): `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** each time (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
-| Migrations applied | all pending applied (**5** in that deploy — verified by counting `finished_at >= deploy start`); `ScreenshotRotationCursor` exists |
+| Deployed to production | **Live build is `4-aARmhO-lJKtaX2Lx-9y`, `BUILD_ID` mtime `2026-10-01 15:23:32 CEST` — deployed from `main` @ `9f5d0d4` (docs-only above the N2 code commit), and it CONTAINS TASK_154 N1+N2.** Verified live (not assumed): `/api/devices` now returns the top-level `idle:{state:"fresh",asOf}` object (N1) and the shipped client chunks contain the string `"activity unknown"` (N2 — see §12 for raw before/after). |
+| Deploy run | `36867996177` (`workflow_dispatch` @ `9f5d0d4`, `conclusion=success` — both jobs) — the deploy that shipped N1+N2 |
+| CI on current HEAD | push run `36867043084`: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
+| Migrations applied | **No pending migrations in this deploy** — `git diff --name-only 06a5eeb HEAD -- prisma/` = **0** (N1/N2 are pure code). `_prisma_migrations` unchanged; `ScreenshotRotationCursor` still exists. |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
 
-*Describes the **deployed** build `MLKWXpSxzHtvt8KoE_F3h` (`06a5eeb`). It does **not**
-include N1 — see §6.1/§6.4.*
+*Describes the **deployed** build `4-aARmhO-lJKtaX2Lx-9y` (`main` @ `9f5d0d4`). It **does**
+include TASK_154 N1+N2 — see the first bullet.*
 
+- **TASK_154 N1+N2 (this deploy)** — device idle provenance + the client idle latch. Server
+  (N1): `/api/devices` carries a top-level `idle:{asOf,state}` object alongside the unchanged
+  `onlineWindowMs` and per-row `idleSeconds`. Client (N2): both device surfaces route their
+  status chip through ONE helper (`lib/device-idle.ts`) so a `null` idle no longer blanks the
+  chip to a bare status word — it shows the last known good reading (latched) or, cold+unknown,
+  the explicit `activity unknown`. Verified live — raw before/after in §12.
 - **TASK_152 M1–M7** — device screen monitoring: its own console **Monitoring tab**
   (confirmed rendered; Summary now shows only a pointer), per-frame summaries + scrollable
   timeline, configurable cadence, user triggers + Telegram/digest, capture scheduler
@@ -301,19 +319,28 @@ include N1 — see §6.1/§6.4.*
 
 ### 6.3 Production health (checked this session)
 
-`systemctl --failed` → **empty**. Running: `spaceworker`, `spaceworker-browser`,
-`screenshot-capture`, `extraction-worker`, `exit-node-us1`, `exit-node-us2`. Timers armed:
-`dispatcher`, `mail-queue-drain`, `screenshot-sweep`, `screen-notify-sweep`,
-`payment-verify`, `automations-sweep`.
+`systemctl --failed` → **empty** (after the transient below cleared). Running:
+`spaceworker`, `spaceworker-browser`, `extraction-worker` all **active** (plus `screenshot-capture`,
+`exit-node-us1`, `exit-node-us2`). Timers armed: `dispatcher`, `mail-queue-drain`,
+`screenshot-sweep`, `screen-notify-sweep`, `payment-verify`, `automations-sweep`,
+`device-onboarding-sweep`.
+
+**Post-deploy caveat (proved this session):** right after this deploy, `systemctl --failed`
+showed **`device-onboarding-sweep.service` failed** — its 5-minute tick had collided with the
+deploy's stop/extract window and `curl` exited **7 (connection refused)**. The journal showed
+every earlier tick `{"ok":true,...}`; the *next* tick (15:30:40) exited `status=0/SUCCESS` and
+`--failed` returned empty. **A post-deploy oneshot failure is a false alarm unless it survives
+the next clean tick** — see §5 trap 15.
 
 ### 6.4 Known-unverified (do not claim these work)
 
-- **TASK_154 N1 *and* N2 are committed, pushed and CI-green — but NEITHER is deployed, so
-  the owner's idle-chip fix is NOT live.** The production build predates both. N1
-  (`a64c702`, server provenance) is additive/opt-in and invisible on its own; N2
-  (`e342578`, the client latch in `lib/device-idle.ts`) is the half that changes what Mike
-  actually sees. **Do not tell Mike the idle fix is live. Deploy N1 + N2 together, then
-  screenshot the device page (§8) — that deploy is what closes TASK_154's owner report.**
+- **TASK_154 N1+N2 ARE now deployed and verified live** (build `4-aARmhO-lJKtaX2Lx-9y`, deploy
+  `36867996177`). Raw before/after in §12. **Honest gap:** the specific `null → "activity
+  unknown"` branch was **not** observed *rendered* live after the deploy — at capture time the
+  mesh read for every device I could reach succeeded (`WilkSF9` idle = `215`s), so the `null`
+  path simply did not occur. That branch is proven by the N2 session's stubbed-body browser
+  render harness (**SIMULATION**, labelled in §12) and by `tests/device-idle-chip.test.ts`
+  (10/10) and the live bundle grep — **not** by a live screenshot. Do not over-claim it.
 - **M3 summarisation has never been exercised against a live frame.** The summariser is
   proven present in the compiled bundle and the timeline UI renders, but the device's
   `screenshotMonitoringEnabled` is `false` (**re-verified this session: all 8 rows of
@@ -359,11 +386,11 @@ banner, decides what runs next.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance~~ **DONE** (`a64c702`) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; `tests/vantra-idle-provenance.test.ts` (**8/8**). Not deployed. |
-| ~~2~~ | ✅ ~~**TASK_154 N2** — client: latch idle, delete the "bare status" fallback~~ **DONE 2026-10-01** (`e342578`, pushed, CI-green, **not deployed**) | same §3 N2 | ONE shared helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all 3 console sites wired; `tests/device-idle-chip.test.ts` (**10/10**). See §12. |
-| 1 | **DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot the device page per §8 | — | **Do this first — it is what actually closes TASK_154** for Mike. |
-| 2 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo |
-| 3 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
+| ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance~~ **DONE + DEPLOYED** (`a64c702`) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; `tests/vantra-idle-provenance.test.ts` (**8/8**). Live in `4-aARmhO-...`. |
+| ~~2~~ | ✅ ~~**TASK_154 N2** — client: latch idle, delete the "bare status" fallback~~ **DONE + DEPLOYED 2026-10-01** (`e342578`) | same §3 N2 | ONE shared helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all 3 console sites wired; `tests/device-idle-chip.test.ts` (**10/10**). Live in `4-aARmhO-...`. See §12. |
+| ~~3~~ | ✅ ~~**DEPLOY N1 + N2 together**~~ **DONE 2026-10-01** — run `36867996177`, build `4-aARmhO-lJKtaX2Lx-9y`; verified live per §8/§12 | — | Closed TASK_154's owner report. |
+| 1 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo. Only worth doing if the hostname-keying bites in practice. |
+| 2 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
 
 **N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
 **always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
@@ -472,6 +499,10 @@ fails, **stop and report — do not improvise a repair against production.**
 `systemctl --failed` is empty · any new timer is in `systemctl list-timers` · **and the
 owner-visible behaviour actually changed** — screenshot the real page. A green deploy that
 changed nothing the user can see is the exact failure that produced TASK_153.
+
+**Caveat on `systemctl --failed`:** immediately after a deploy it can show a 5-minute oneshot
+(`device-onboarding-sweep`, …) as `failed` because its tick hit the restart window (curl exit 7).
+That is a **false alarm** — re-check after the next tick before calling it a regression (§5 trap 15).
 
 
 ## 10. Update protocol — do this before you finish, or the handoff dies
@@ -619,4 +650,19 @@ half-done. A half-done change with no note is worse than no change.
   `self-hosted-build` @ `f6b6f78`, clean (untouched).
 - **Next:** **DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot `/devices` and a
   device console (§8) — that is what closes TASK_154 for Mike. Then N3 (optional).
+
+
+### 2026-10-01 — TASK_154 N1+N2 DEPLOYED to production and verified live (raw before/after); new trap 15 (post-deploy oneshot false-failure)
+- **Did:** triggered the manual deploy that ships N1+N2 — `gh workflow run deploy.yml --ref main` → run **`36867996177`** (`workflow_dispatch`, sha `9f5d0d4`). **No code changed this pass** (N1 `a64c702`, N2 `e342578` were already committed); this session *deployed and verified* them. New in this file: **§5 trap 15**, refreshed **§6.1/6.2/6.3/6.4**, **§7** queue, **§9** caveat, this log.
+- **Verified (raw):**
+  - **Reproduce-first / BEFORE** (pre-deploy build `MLKWXpSxzHtvt8KoE_F3h`): live `GET /api/devices` for real user `myrate619@gmail.com` (read-only 1 h session token minted **on the VPS** from `SESSION_SECRET`, which never left the host) → top-level keys **`onlineWindowMs,devices` — NO `idle` key**; device `WilkSF9` online, **`idleSeconds=null`**; `Sc` offline. Real-Chromium full-page screenshots of `/dashboard/devices` + the console → `WilkSF9` chip = bare **`online`** (`/tmp/n2-live-BEFORE/{list,console}.png`).
+  - **Deploy:** run `36867996177` → `Build & typecheck` **success**, `Deploy to production (manual only)` **success**. Live `BUILD_ID` = **`4-aARmhO-lJKtaX2Lx-9y`**, mtime **`2026-10-01 15:23:32 CEST`**.
+  - **AFTER (live):** `GET /api/devices` top-level keys now **`onlineWindowMs,idle,devices`**, `idle` = **`{"asOf":"2026-10-01T13:27:05Z","state":"fresh"}`** → **N1 live**. Same DOM capture → `WilkSF9` chip = **`online · idle 3 min`** on BOTH list and console header (before: `online`); `Sc` still `offline · last seen 1 d ago`. `/tmp/n2-live-AFTER/{list,console}.png`. **N2 live** proven by bundle grep: `grep -rl "activity unknown" /opt/spaceworker/.next/static` → **3 chunks**.
+  - **Health:** `systemctl --failed` → **empty** (after the transient, see below); `spaceworker`/`spaceworker-browser`/`extraction-worker` **active**; **no pending migrations** (`git diff --name-only 06a5eeb HEAD -- prisma/` = **0**).
+  - **Regression:** full local `test:*` sweep **0 failed / 430 tests**; `npx tsc --noEmit` **EXIT=0**.
+  - **Tooling note:** Playwright 1.63 expects `chromium-1243`, which **cannot be downloaded on this mac12 workstation** (`Playwright does not support chromium on mac12`); verification used the cached `chromium-1208` **"Google Chrome for Testing"** binary via an explicit `executablePath`. The screenshots are a **real browser on the real site**, not the sim harness.
+- **NOT verified:** the specific **`null → "activity unknown"`** render was **not** re-observed *live after* the deploy — the mesh read succeeded for every device I could reach (`WilkSF9` idle=215 s, 12 polls), so the `null` path did not occur. That branch rests on the N2 session's **SIMULATION** harness (stubbed `/api/devices` bodies, labeled in the entry above) + `tests/device-idle-chip.test.ts` — **not** a live screenshot. All live actions were **read-only**; the minted token was **deleted** from the VPS. The `device-onboarding-sweep` failure is the deploy-collision (trap 15), not shown to be a standing defect.
+- **PROCESS FINDING:** `systemctl --failed` **is not empty right after a deploy** — a 5-min oneshot that collides with the restart window shows `failed` (curl exit 7) and self-heals on the next tick. This cost real diagnosis time and is now **§5 trap 15** + a **§9** caveat.
+- **State left behind:** deployed build `4-aARmhO-lJKtaX2Lx-9y` (deploy run `36867996177`, sha `9f5d0d4`); this docs commit advances `main` past `9f5d0d4` (documentation-only). Tree **clean**, in sync with `origin/main`, CI green. `self-hosted-build` @ `f6b6f78`, clean (untouched).
+- **Next:** TASK_154 **N3** (key idle by agent id) **only if** hostname-keying bites in practice; otherwise **TASK_150 T6** (the last TASK_150 item, `TASK_150_...md` §3).
 
