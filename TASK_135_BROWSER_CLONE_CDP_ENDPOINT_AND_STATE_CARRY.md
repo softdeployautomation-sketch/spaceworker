@@ -667,7 +667,9 @@ The three TASK_135 migrations were **applied**, not just read, on a disposable P
 ### Honest remaining gap
 
 **No live device has pushed a real profile through this pipe.** Both ends are tested and the
-wire format is proven against a real `net/http` server, but they have never met outside a test.
+wire format is proven against a real `net/http` server. They **had** never met outside a test;
+as of 2026-09-30 they have — the real engine, the real route and a real PostgreSQL 16 — and that
+meeting found two bugs (§12). What remains unproven is the Windows half, stated below.
 Also outstanding: the three migrations applied to *the real* database (their content is
 verified; the target's migration-record state is not — see above), and a Windows run of
 `sync-state` (unit-tested on Linux, cross-compiles for Windows, never executed on Windows in
@@ -719,10 +721,12 @@ this is `michael/browser-clone/BROWSER-SUPPORT.md`.
 
 ### Still not verified
 
-Unchanged from §9: no live device has pushed a real profile through the pipe, the three
-migrations are content-verified but not applied to the project's database, and `sync-state`
-has not run on Windows. The Brave path inherits all three — its state half is tested, its
-end-to-end path has not run.
+Updated 2026-09-30 (§12): the two **ends** have now met — the real engine, the real route and a
+real PostgreSQL 16 — which found two bugs, and the migrations have been applied to two fresh
+databases with the schema asserted equal to `schema.prisma`. Still true: no live device has
+pushed a real profile through the pipe, and `sync-state` has not executed on Windows. The Brave
+path inherits the Windows half — its state half is tested, and its end-to-end path has now run,
+but not against a real Brave installation.
 
 ## 11. The device half gets a guard: a Brave session bug, and the suites that never ran (2026-09-30)
 
@@ -829,7 +833,10 @@ Full gate (the way `deploy.yml` runs it): `tsc` 0 · `test:clone` **112/112** ·
 
 ### 11.5 Still not verified
 
-- **No live device has pushed a real profile** — unchanged from §9/§10.
+- **No live device has pushed a real profile** — unchanged from §9/§10, and now stated
+  precisely: as of 2026-09-30 the two *ends* have met and that run found two bugs (§12), but it
+  used a synthetic profile and a Linux engine binary. A Windows device with a real profile is
+  still the open gap.
 - **The end-to-end Brave path**: its state half is tested, its session half is now tested at
   the gate, and neither has run against a real Brave installation on a real machine.
 - **DPAPI sealing is not exercised by CI** (Windows-only). The runner states this explicitly
@@ -841,3 +848,92 @@ Full gate (the way `deploy.yml` runs it): `tsc` 0 · `test:clone` **112/112** ·
   widen the browser list.
 
 
+## 12. The two ends meet: two bugs, neither visible to either half (2026-09-30)
+
+§11 closed the *device* half's blind spot. This pass closed the other one. Every test in this task
+so far exercised one side; here the real Go engine binary, the real Next route and a real
+PostgreSQL 16 were pointed at each other for the first time, with a synthetic Chrome profile of 11
+state files (including `Top Sites`, `Web Data` and `Network/Network Persistent State`) and a
+**second** sync of that same, unchanged profile. The two ends met and immediately disagreed about
+two things — and each was invisible to both suites, because neither suite is where the mistake
+was. Neither produced an error message. Both were visible only in file names and file counts.
+
+### 12.1 Bug 1 — the path header was encoded one way and decoded another
+
+The engine writes `x-sw-profile-path` with Go's `url.QueryEscape`, which spells a space as `+`. The
+route read it back with `decodeURIComponent`, which does not turn `+` back into a space. `Top
+Sites` therefore staged as `Top+Sites`, `Web Data` as `Web+Data`. Nothing anywhere failed:
+
+- the bytes landed, under the wrong name, and the run returned `done: true`;
+- on the next sync `Top Sites` (the device's manifest) and `Top+Sites` (the cache) were two
+  different paths, so **every space-bearing file was re-sent forever**. The delta silently
+  degraded into a permanent full transfer, and only the file counts showed it.
+
+The fix is one mapping before the decode — `decodeProfilePathHeader` in
+`lib/clone-state-sync-format.ts` — and it can only be made there: `+` is a legal character in a
+path, so a value that encoded spaces as `+` has to be read as a *query* component rather than a
+URI component. The header's specification now states which encoding it is. Both directions are
+covered (14 tests: space, tab, literal `+`, `%20`, non-ASCII).
+
+### 12.2 Bug 2 — an empty request list meant two different things
+
+The server answers a **full** transfer with `requested_paths: []` because there is nothing to
+enumerate when everything is being sent, and it answers a **delta** whose files have all already
+landed with `requested_paths: []` because there is nothing to send. The device consulted the list
+and not the mode:
+
+```go
+if plan.Mode != SyncModeDelta || len(plan.RequestedPaths) == 0 { return collected, nil }
+```
+
+so a healthy reconnect — the single case the entire budget design exists for — re-uploaded the
+**whole** profile. The second sync of this run reported `mode: delta`, `reason: cache_baseline`,
+`sent: 11`. The server's half answered correctly; the device's half was correct in isolation and
+wrong against the answer it was actually given.
+
+The fix separates the cases on *whether the field was sent*: an explicit `[]` means "nothing to
+send", while an **absent** field — a server whose intent cannot be known — still means
+"everything". Two tests, both of which fail against the old code with `Sent = 5, want 0`:
+
+| Test | What it pins |
+|---|---|
+| `TestSyncStateDeltaWithNothingAskedSendsNothing` | over a real `net/http` server: zero files reach the wire, the run is still `done`, and finalize still runs |
+| `TestSelectStateFilesDeltaAskingForNothingSendsNothing` | the two *shapes* side by side — explicit `[]` sends nothing, absent sends everything |
+
+### 12.3 The test that would have caught both
+
+The missing test was never a test of one half; it was a test of the **join**, and it now exists.
+`lib/clone-state-ingest.test.ts` stages the 11-file profile into a cache, fingerprints that cache
+exactly the way the route does, builds the manifest a device would post (digests of those same
+bytes, and **the source machine's** mtimes), and asserts the decision is `delta` with
+`requested_paths: []` — then changes one byte and asserts exactly one path comes back, spaces
+intact. It asserts its own premise as well (every cache fingerprint carries a 64-character digest,
+and no cache mtime equals the source's), because a fixture that accidentally shared mtimes would
+let the whole test pass for the wrong reason.
+
+### 12.4 Evidence that the new tests can fail
+
+Each new assertion was verified by reintroducing the bug, not by asserting it could catch one:
+
+| Mutation | Result |
+|---|---|
+| `SelectStateFiles`: read `len(RequestedPaths) == 0` as "send everything" again | `TestSyncStateDeltaWithNothingAskedSendsNothing` **FAIL** (`Sent = 5, want 0`); `TestSelectStateFilesDeltaAskingForNothingSendsNothing` **FAIL** — names all 5 files. Restored: pass |
+| `sameFile` (`lib/clone-sync-plan.ts`) answers "changed" for equal digests | the new join test **FAIL** — `requestedPaths` reports all 11 files, which is exactly what the real run looked like. Restored: pass |
+
+### 12.5 Gate on this pass (the way `deploy.yml` runs it)
+
+`tsc` 0 · `test:clone` **117/117** · `test:browser` **PASSED** (10/10, none skipped) · `test:ps`
+**PASSED** (cookie-capture 60 checks, 0 failed) · `check:clone-contract` **PASSED** (device and
+server exclusion lists agree; sync modes agree in both directions) · `check:workflows` 0 (21
+`run:` blocks) · Go `build` · `vet` · `gofmt` (nothing unformatted) · `test ./...` (every package
+ok) · `test -race ./pkg/wake/` **ok**.
+
+### 12.6 Still not verified
+
+- **No WINDOWS device has pushed a real profile.** This run used a synthetic profile and a Linux
+  engine binary. What has still never happened is a run on a real work PC: DPAPI sealing, a real
+  Brave/Edge profile, and a browser holding its own files open while the clone reads them.
+- **The production database's own `_prisma_migrations` contents** — unchanged from §9: a fact
+  about that environment, not readable from here. If it does not already record the five as
+  applied, run `npm run repair:migrations` there **before** deploying.
+- **Brave's real `Last Version` format and App-Bound-Encryption status** — unchanged from §11.5.
