@@ -9,14 +9,15 @@ export const metadata: Metadata = { title: "Device console — SpaceWorker OS" }
 // (OUTSIDE app/dashboard/*, so the <Shell> menubar + dock never render):
 // just the session window + its toolbox line. `?tab=` selects the initial
 // tab (`remote` = Remote control; default `remote` — the owner opens this
-// from Remote control via the expand button).
-const TAB_ALIASES: Record<string, "summary" | "control" | "command" | "clone" | "activity"> = {
+// from Remote control via the expand button). TASK_152 M2 added `monitoring`.
+const TAB_ALIASES: Record<string, "summary" | "control" | "command" | "clone" | "activity" | "monitoring"> = {
   summary: "summary",
   remote: "control",
   control: "control",
   command: "command",
   clone: "clone",
   activity: "activity",
+  monitoring: "monitoring",
 };
 
 export default async function FullScreenConsolePage({

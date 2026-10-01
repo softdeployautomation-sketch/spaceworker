@@ -7,16 +7,17 @@ export const metadata: Metadata = { title: "Device console — SpaceWorker OS" }
 
 // Task 95 — the per-device console (ScreenConnect-style session window).
 // Auth is checked here; the console client fetches its own live data.
-// TASK_103 BUG-A — `?tab=summary|remote|command|clone|activity` selects the
-// initial tab (`remote` = Remote control). `?full=1` is kept working: it
-// redirects to the chrome-free console so old links do not break.
-const TAB_ALIASES: Record<string, "summary" | "control" | "command" | "clone" | "activity"> = {
+// TASK_103 BUG-A — `?tab=summary|remote|command|clone|activity|monitoring`
+// selects the initial tab (`remote` = Remote control). `?full=1` is kept
+// working: it redirects to the chrome-free console so old links do not break.
+const TAB_ALIASES: Record<string, "summary" | "control" | "command" | "clone" | "activity" | "monitoring"> = {
   summary: "summary",
   remote: "control",
   control: "control",
   command: "command",
   clone: "clone",
   activity: "activity",
+  monitoring: "monitoring",
 };
 
 export default async function DeviceConsolePage({

@@ -91,7 +91,7 @@ type PowerView = {
   wake: { available: boolean; reason: "ok" | "no_power_mac" | "no_same_subnet_peer" };
 };
 
-type Tabs = "summary" | "control" | "command" | "clone" | "activity";
+type Tabs = "summary" | "control" | "command" | "clone" | "activity" | "monitoring";
 
 // TASK_127 Phase 1 — the device-screen-monitoring read model, mirroring
 // GET /api/devices/:id/screenshots. Frame BYTES are not here: each frame is
@@ -348,6 +348,11 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
   ["command", "Command", Terminal],
   ["clone", "Browser clone", Globe],
   ["activity", "Activity", Clock],
+  // TASK_152 M2 — screen monitoring is its own tab (owner: "I want the screen
+  // monitoring to be in a separate tab not under summary"). It is the "summary
+  // section" (frames + timeline) that TASK_152 Phase B builds on top of, so it
+  // gets a top-level tab rather than a card buried on Summary.
+  ["monitoring", "Screen monitoring", Eye],
 ];
 
 function relTime(iso: string | null): string {
@@ -529,6 +534,12 @@ export function DeviceConsole({
 
   // TASK_123 (B12) — keep-awake + wake-availability read model.
   const [powerView, setPowerView] = useState<PowerView | null>(null);
+
+  // TASK_152 M2 — the screen-monitoring card's loaded view, published up by the
+  // single card instance so Summary can show a one-line state + link WITHOUT
+  // fetching again or rendering a second card. The card itself is mounted once,
+  // in the tab body below.
+  const [screenMon, setScreenMon] = useState<ScreenMonitorView | null>(null);
 
   const isOnline = device?.status === "online" || device?.status === "asleep";
 
@@ -1435,6 +1446,8 @@ export function DeviceConsole({
               goToCloneTab={() => setTab("clone")}
               powerView={powerView}
               goToCloneSetup={() => setTab("clone")}
+              screenMon={screenMon}
+              goToMonitoring={() => setTab("monitoring")}
             />
           )}
           {/* TASK_103 NEW-3 — ALWAYS mounted, never behind a
@@ -1520,6 +1533,24 @@ export function DeviceConsole({
           )}
           {!fullScreen && tab === "activity" && <ActivityTab activity={activity} />}
 
+          {/* TASK_152 M2 — screen monitoring is its own tab. It is ALWAYS
+              mounted while the tabbed console is shown and only HIDDEN with CSS,
+              exactly like ControlTab above: a tab round-trip never unmounts the
+              card, so its local state (an open frame, a half-typed interval
+              override) survives and it does not refetch. There is exactly ONE
+              instance in the tree — Summary renders a pointer, never a second
+              card. Unlike MeshCentral's single-use `login=` token (the TASK_103
+              NEW-3 bug ControlTab guards against), the frame route holds no
+              one-time token — it re-checks ownership per request and is
+              `no-store` — so the risk here is a needless refetch, not a spent
+              URL. `onState` publishes the loaded view up for Summary's one-line
+              pointer. */}
+          {!fullScreen && (
+            <div className={tab === "monitoring" ? undefined : "hidden"}>
+              <ScreenMonitoringCard deviceId={deviceId} onState={setScreenMon} />
+            </div>
+          )}
+
           {/* PIN panel — Remote-control scoped ONLY. It must never render under
               the Command tab (owner 2026-09-24: "pin request show under
               command tab, i think thats a leak"). The Command tab keeps its
@@ -1594,6 +1625,8 @@ function SummaryTab({
   goToCloneTab,
   powerView,
   goToCloneSetup,
+  screenMon,
+  goToMonitoring,
 }: {
   device: DeviceView | null;
   loaded: boolean;
@@ -1605,6 +1638,8 @@ function SummaryTab({
   goToCloneTab: () => void;
   powerView: PowerView | null;
   goToCloneSetup: () => void;
+  screenMon: ScreenMonitorView | null;
+  goToMonitoring: () => void;
 }) {
   if (!loaded) return <p className="text-sm text-fg-muted">Loading…</p>;
   if (!device) return <p className="text-sm text-fg-muted">Machine not found.</p>;
@@ -1697,9 +1732,29 @@ function SummaryTab({
           </>
         )}
       </div>
-      {/* TASK_127 Phase 1 — screen monitoring. Placed on Summary, next to the
-          clone card, because this IS the owner's consent switch for it. */}
-      <ScreenMonitoringCard deviceId={device.id} />
+      {/* TASK_152 M2 — screen monitoring moved to its OWN tab. Summary keeps
+          only a one-line state + link (the full card is mounted exactly once,
+          on the monitoring tab): the opt-in state, read from the same single
+          card instance above, plus a switch to that tab. The switch that turns
+          monitoring on/off for this machine now lives on the monitoring tab. */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+        <span className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+          <Eye className="h-3.5 w-3.5" /> Screen monitoring
+        </span>
+        <span className="text-sm text-fg">
+          {screenMon
+            ? screenMon.device.optIn
+              ? "On for this machine"
+              : "Off for this machine"
+            : "checking…"}
+        </span>
+        <button
+          onClick={goToMonitoring}
+          className="ml-auto rounded-lg border border-border px-3 py-1.5 text-xs text-fg-muted transition-colors hover:text-fg"
+        >
+          Open screen monitoring →
+        </button>
+      </div>
       {/* TASK_128 — the onboarding quarantine, worded from the SAME 4 step
           labels as the Devices strip (no new tooling, no second stop: the
           technician's "till it will say stop" stays the existing Keep awake →
@@ -1840,7 +1895,15 @@ function OnboardingCard({ device }: { device: DeviceView }) {
  * on while the operator has monitoring off must not be left thinking their screen
  * is being photographed when it is not (and vice versa) — so the global state is
  * stated in plain words, read-only. */
-function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
+function ScreenMonitoringCard({
+  deviceId,
+  onState,
+}: {
+  deviceId: string;
+  /** TASK_152 M2 — publish the loaded view up so Summary can show a one-line
+   *  state + link without a second card instance or a second fetch. */
+  onState: (view: ScreenMonitorView) => void;
+}) {
   const [view, setView] = useState<ScreenMonitorView | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
@@ -1850,12 +1913,16 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
     try {
       const res = await fetch(`/api/devices/${deviceId}/screenshots`);
       if (!res.ok) throw new Error("could not load screen monitoring");
-      setView((await res.json()) as ScreenMonitorView);
+      const data = (await res.json()) as ScreenMonitorView;
+      setView(data);
+      // TASK_152 M2 — same source that Summary's pointer reads. Called AFTER the
+      // await, so it is not a synchronous set-state-in-effect.
+      onState(data);
       setErr("");
     } catch (e) {
       setErr(e instanceof Error ? e.message : "could not load screen monitoring");
     }
-  }, [deviceId]);
+  }, [deviceId, onState]);
 
   // Same false positive as the loadDevice/loadToolData effect above — `load`
   // awaits the fetch before either setView or setErr runs.
@@ -1954,7 +2021,10 @@ function ScreenMonitoringCard({ deviceId }: { deviceId: string }) {
     new Date(frame.capturedAt ?? frame.createdAt);
 
   return (
-    <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
+    <div
+      data-screen-monitor-card=""
+      className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2"
+    >
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
         <Monitor className="h-3.5 w-3.5" /> Screen monitoring
       </p>
