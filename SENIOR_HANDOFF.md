@@ -434,7 +434,7 @@ banner, decides what runs next.
 | ~~2~~ | ✅ ~~**TASK_154 N2** — client: latch idle, delete the "bare status" fallback~~ **DONE + DEPLOYED 2026-10-01** (`e342578`) | same §3 N2 | ONE shared helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all 3 console sites wired; `tests/device-idle-chip.test.ts` (**10/10**). Live in `4-aARmhO-...`. See §12. |
 | ~~3~~ | ✅ ~~**DEPLOY N1 + N2 together**~~ **DONE 2026-10-01** — run `36867996177`, build `4-aARmhO-lJKtaX2Lx-9y`; verified live per §8/§12 | — | Closed TASK_154's owner report. |
 | ~~1~~ | ✅ ~~**TASK_154 N3** — key idle by agent id, not hostname~~ **EVALUATED 2026-10-01 — gate FAILS, does not bite; no code written** | `TASK_154_...md` §3 N3 | Live evidence in §12; trap 17. Cross-repo (needs a **Vantra** change). Left as a latent, correctly-filed follow-up — **not** a defect. |
-| 1 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | **NEXT.** Last item of TASK_150. |
+| ~~1~~ | ✅ ~~**TASK_150 T6** — confirm/fix changing the test email mid-send~~ **WAIVED by the owner 2026-10-01** — *"we can add another test email during send, that's enough for now; I tested that."* **NOT queued** | `TASK_150_...md` §3 T6 | Closes TASK_150 (T1–T5 done). Do not re-open unless the owner reports it again. |
 
 **N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
 **always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
@@ -452,11 +452,12 @@ Do not fold M8 into any of the above.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| D1 | **Task 155 — Workers & Pages** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *"free first."* Three engines; token model = platform (capped) / BYO / managed pool. **Start with its T0 spikes then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** Has 5 owner questions in §13. |
-| D2 | **Task 156 — Cyber Lab, real-world** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Has 5 owner questions in §10. |
+| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT** (promoted 2026-10-01 when TASK_150 closed) | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *"free first."* Three engines; token model = platform (capped) / BYO / managed pool. **Do its T0 spikes FIRST, then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** **GATED:** needs the owner's answers to **§13 (5 Qs)** *and* a real Cloudflare account/token for the T0 spikes. Do NOT start before they land. |
+| 2 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). |
 
-*Neither is in the code queue yet — both are waiting on the owner's answers (D1 §13, D2 §10).
-Do not start them ahead of the live-app items above.*
+*D1 is now the promoted live-app item (TASK_150 is closed), but it is **still gated** on the
+owner's §13 answers and the T0 spikes. D2 waits on D1 P1/P2 **and** its §10. Neither starts
+ahead of those answers.*
 
 **Self-hosted line:** T10 → T11 (the live kill — highest value) → T12 → T13 → T14 → T15,
 per `TASK_145_...JUNIOR_TRACK.md`.
@@ -786,4 +787,30 @@ half-done. A half-done change with no note is worse than no change.
   **empty** (0 loaded units). `self-hosted-build` @ `f6b6f78`, clean (untouched).
 - **Next:** `main` — **TASK_150 T6** (confirm/fix changing the test email mid-send), the last item of
   TASK_150. Self-hosted — **T11** (the live kill). Design work (155/156) waits on the owner’s answers.
+
+
+### 2026-10-01 — TASK_150 CLOSED (owner waived T6); D1/Task 155 promoted to NEXT — still gated on §13
+- **Did:** (a) Owner **waived TASK_150 T6** (*"we can add another test email during send,
+  that's enough for now; I tested that."*) → `TASK_150_...md` header + §3 T6 marked **CLOSED /
+  T6 not needed** (T1–T5 already done: `35ce6bf`, `fb83115`, `a49c660`, `57e11ce`, `3f9bb18`).
+  (b) Handoff **§7** struck T6 and promoted **D1 / Task 155** to **NEXT**, keeping it gated on
+  the owner's **§13** answers + the **T0 spikes**. (c) `PROMPTS_SENIOR_ENGINEERS.md` T6 block
+  marked **WAIVED** and the two "next item" lines corrected. (d) Scoped D1 against the real
+  tree (see Verified). **No application code changed.**
+- **Verified:** `git rev-parse --short HEAD` = `335c951`; `git status --porcelain` **clean**
+  before the edits. Tree facts for D1: `lib/entitlements.ts:12` `ENTITLEMENT_KEYS` =
+  `[extractor, mailer, assistant, devices, cyberlab]` (**no `hosting`**);
+  `components/dashboard-nav.tsx:36` `NAV_ITEMS` + `:52` `BUILD_ALLOWED_HREFS` (single-source
+  nav confirmed); `/r/[token]` + `LinkRedirect` (`prisma/schema.prisma:1155`) live;
+  `lib/link-cloak.ts` + `lib/mailbox-crypto.ts` exist; deps — `sharp` **ABSENT**,
+  `wrangler` **ABSENT**, `xlsx ^0.18.5` present, `pdfjs-dist ^5.6.205` present; last migration
+  `20261027000000_task152_m6_capture_scheduler`.
+- **NOT verified:** nothing behavioural — this is a docs + scoping pass. The two T0 spikes
+  (Cloudflare Direct-Upload Direct REST + the 25 MiB rejection, and R4/R15/custom-domain) were
+  **not** run — they need a real Cloudflare account/token (owner's).
+- **State left behind:** `main` @ this docs commit; tree clean, in sync with `origin/main`.
+  **Deployed build unchanged** — `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`.
+  `self-hosted-build` untouched (`f6b6f78`).
+- **Next:** owner answers **`PLAN_TASK_155_WORKERS_AND_PAGES.md` §13** (5 Qs) + supplies a
+  Cloudflare account/token for **T0**; then D1 starts at **T0 → P1 (files on our own metal)**.
 

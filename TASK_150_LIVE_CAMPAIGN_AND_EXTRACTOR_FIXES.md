@@ -1,10 +1,15 @@
 # TASK_150 — Campaign batch-gate, mid-send edits, and extractor filter + dedupe
 
-**Status:** OPEN — Phase 1 **T1 + T2 DONE and committed** (`35ce6bf`, `fb83115`).
-**Phase 2 (campaigns, T3–T6)** is **UNBLOCKED** — the prerequisite merge-vars work
-was landed by the coordinator as `9c0f41c` on 2026-09-30 and the working tree is
-clean. See §7 for what was certified before landing it.
-**Next to assign: T3.**
+**Status:** CLOSED — **T1–T5 DONE and committed**; **T6 WAIVED by the owner on
+2026-10-01** (see §3 T6). Nothing left to assign.
+
+- **Phase 1:** **T1 + T2** (`35ce6bf`, `fb83115`).
+- **Phase 2 (campaigns):** **T3** (`a49c660`), **T4** (`57e11ce`), **T5** (`3f9bb18`) —
+  landed after the prerequisite merge-vars work was shipped by the coordinator as
+  `9c0f41c` on 2026-09-30 (see §7).
+- **T6 — NOT NEEDED FOR NOW.** Owner tested it live: adding another test address
+  *during* a send already does what he needs. Do **not** re-open T6 unless the owner
+  reports the mid-send test-email problem again.
 
 **Repo:** `/Users/mikeolab/spaceworker`, branch `main` — the LIVE app.
 This is **not** the self-hosted line (`/Users/mikeolab/sw-selfhost`).
@@ -304,13 +309,22 @@ last-mailbox refusal.
 invalid address fails alone without stopping the other two.
 
 ### T6 — Confirm and, if needed, fix changing the test email mid-send (campaigns)
+
+> **WAIVED — NOT NEEDED FOR NOW (owner, 2026-10-01).** Owner tested it live: *"we can add
+> another test email during send, that's enough for now, I tested that."* The mid-send
+> test-address flow already does what he needs, so this item is **not queued** and closes
+> out TASK_150. §2.6's observation stays on file as a **latent** note only — do not
+> "fix" the 409 speculatively.
+
+*Historical scope, retained for reference (NOT queued):*
 - Confirm the §2.6 hypothesis first (rendered while sending? does it 409?).
 - If confirmed, allow test-settings changes during `sending` / `paused_deliverability`.
   This cannot affect real sends by construction (see the route's own header comment).
 - Do not rebuild this feature if it works — say so and move on.
 
-**Acceptance:** either the confirmed fix with raw before/after HTTP evidence during an
-active send, or a clearly stated "already works" with the evidence that shows it.
+**Acceptance (if ever re-opened):** either the confirmed fix with raw before/after HTTP
+evidence during an active send, or a clearly stated "already works" with the evidence that
+shows it.
 
 ---
 

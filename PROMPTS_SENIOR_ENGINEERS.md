@@ -243,13 +243,16 @@ NOTE:            N3 is only worth doing if hostname-keying actually bites. The e
 ```
 
 ```
-TASK:            TASK_150 T6 — confirm/fix changing the test email mid-send
+TASK:            TASK_150 T6 — confirm/fix changing the test email mid-send   [WAIVED — do not assign]
 TASK DOC:        TASK_150_...md §3 T6
 DEPENDS ON:      TASK_154 N3 must be committed AND deployed first (shared files must not overlap).
 FILES YOU MAY TOUCH:      the files named in TASK_150 §3 T6 only
 FILES YOU MUST NOT TOUCH: everything outside that list
 BRANCH:          main
 DEPLOY?          yes — the last TASK_150 item, so it closes the task.
+NOTE:            **WAIVED by the owner 2026-10-01.** Adding another test address *during* a
+                 send already does what he needs (owner-tested), so T6 is NOT queued and
+                 TASK_150 is CLOSED (T1–T5 done). Skip this block; the next item is D1/Task 155.
 ```
 
 
@@ -374,8 +377,10 @@ NOTE:            Low value; do not let it displace a customer-facing item.
 
 1. **Verify §6** against the repo + VPS. Fix any wrong claim and log it (§10 item 4).
 2. **Assign ONE item** from §7 with PROMPT E filled in. Order today:
-   `TASK_154 N3` (only if hostname-keying demonstrably bites) → `TASK_150 T6` →
-   `D1 Task 155` (after §13 answers) → `D2 Task 156 C0/C1` (after D1 P1/P2 + §10 answers).
+   `TASK_154 N3` (only if hostname-keying bites — it **does NOT**, evaluated 2026-10-01) →
+   `TASK_150 T6` **WAIVED by the owner 2026-10-01, skip** →
+   **`D1 Task 155` (NEXT; after §13 answers + its T0 spikes)** →
+   `D2 Task 156 C0/C1` (after D1 P1/P2 + §10 answers).
    The **self-hosted line runs in its own tree, in parallel**: `T11 → T12 → T13 → T14 → (T15)`.
 3. **Run PROMPT V** on every report. Re-run the checks yourself. Never accept a summary.
 4. **Only then** strike §7, update §6/§5/§12, and assign the next item.
@@ -393,5 +398,6 @@ NOTE:            Low value; do not let it displace a customer-facing item.
 - `self-hosted-build` @ `f6b6f78`, clean, in sync (T10 done).
 - Both scoping docs exist and are unbuilt: `PLAN_TASK_155_WORKERS_AND_PAGES.md`,
   `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md`.
-- **Next item in the queue: `TASK_154 N3`** (conditional), then `TASK_150 T6`.
+- **Next item in the queue: `D1 Task 155`** — `TASK_154 N3` did not bite (no code written)
+  and `TASK_150 T6` is **waived**; D1 is gated on the owner's **§13** answers + its T0 spikes.
 
