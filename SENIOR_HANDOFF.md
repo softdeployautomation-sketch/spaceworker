@@ -305,9 +305,29 @@ The lesson: forcing the failure proves the *mechanism*, not the *risk*. Do not s
 cross-repo change (N3 needs the **Vantra** repo) on a hazard the live data says is absent —
 log the negative evidence, leave the follow-up, and move on. Evidence in §12.
 
+**18. An *account-scoped* Cloudflare API token verifies as `active` yet exposes no account —
+you must be handed the Account ID out-of-band.** For Task 155's T0 spikes the owner supplied a
+throwaway Cloudflare token. `GET /user/tokens/verify` returns
+`{"id":"dbe2bd...","status":"active"}`, `success:true` — so every "is the token valid?" check
+passes — **but** `GET /user` → `9109 Unauthorized`, `GET /memberships` → `10000 Authentication
+error`, and `GET /accounts` → `result: []`, `total_count: 0`. This is not a broken token: it is
+the **preferred** R14 shape (account-scoped, not user-scoped), and an account-scoped token simply
+**does not enumerate its own account**. Account-scoped endpoints need an explicit
+`/accounts/{account_id}/…` path segment, so **without the Account ID every Pages/Workers call
+fails** even though the token works. Measured live 2026-10-01 once the owner supplied the Account
+ID (`4c822d3b5378019cef1e1b79a3bf0492`): `/accounts/{id}/pages/projects` → **200** and
+`/accounts/{id}/workers/scripts` → **200** (scope works), while `/accounts/{id}/r2/buckets` →
+**403** (no R2 scope — and R2 needs billing anyway, R13). **Two more bites found the same pass:**
+(a) `?per_page=50` on `/pages/projects` fails with `8000024 Invalid list options` — the max is
+lower, use `per_page=10` and paginate; (b) **`GET /accounts/{id}` (the account object itself)
+returned `success:false`/`name:null`** even though its *sub-resources* answer 200 — a token can
+read a resource without being able to read the resource's *container*. Lesson: for an
+account-scoped credential, **demand the Account ID with the token**, and **probe each scope with
+the call you actually intend to make** before believing the token "works".
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (TASK_154 **N3 gate** session — evaluated the “only if hostname-keying bites” gate against the **LIVE** fleet with raw evidence; it does **NOT** bite, so **no code was written** — only §5/§6/§7/§12 and the task doc changed. Earlier the same day: the **screen-capture failure-message fix** was deployed and verified live; two scoping docs (Tasks 155/156) were added; **no app code changed** in either doc pass.)**
+**Last verified: 2026-10-01 (Task 155 **§13-answers + T0-prerequisite** session — the owner answered `PLAN_TASK_155_...md` §13 and supplied a throwaway Cloudflare account/token; the **T0 prerequisites are now proven live** (Account ID `4c822d3b5378019cef1e1b79a3bf0492`; `/accounts/{id}/pages/projects` → 200 with **6** existing projects; `/workers/scripts` → 200; R2 → 403). Docs-only — **no app code changed**. Earlier the same day: TASK_150 closed (T6 waived); TASK_154 N3 gate evaluated against the LIVE fleet — does **not** bite, no code written.)**
 
 ### 6.1 Live app — `main`
 
@@ -452,12 +472,14 @@ Do not fold M8 into any of the above.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT** (promoted 2026-10-01 when TASK_150 closed) | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *"free first."* Three engines; token model = platform (capped) / BYO / managed pool. **Do its T0 spikes FIRST, then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** **GATED:** needs the owner's answers to **§13 (5 Qs)** *and* a real Cloudflare account/token for the T0 spikes. Do NOT start before they land. |
+| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT; UNGATED 2026-10-01 — START at T0** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *v1 / free first.* **§13 answered 2026-10-01** (v1 = free-first P1→P2→P3; free platform-token tier ≤1 day; premium = user-selectable duration (3/5 days, or indefinite **with a billing warning**); **a hard cap applies in EVERY token mode**; custom domains **premium only**; AUP handled by the owner's UK lawyer; **converters Q4 still open**). A throwaway Cloudflare account/token is in the gitignored `.env` and the **T0 prerequisites are proven live** (§6, trap 18). **Do T0 spikes FIRST, then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** |
 | 2 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). |
 
-*D1 is now the promoted live-app item (TASK_150 is closed), but it is **still gated** on the
-owner's §13 answers and the T0 spikes. D2 waits on D1 P1/P2 **and** its §10. Neither starts
-ahead of those answers.*
+*D1 is the promoted live-app item and is **now UNGATED** — the owner answered §13 on 2026-10-01
+and supplied the throwaway Cloudflare account/token whose T0 prerequisites are proven live. Its
+immediate next step is the **T0 spikes** (`PLAN_TASK_155_...md` §9), then **P1**. D2 still waits
+on D1 P1/P2 **and** its §10. **Converters (155 §13 Q4) remain unanswered** — do not install heavy
+binaries.*
 
 **Self-hosted line:** T10 → T11 (the live kill — highest value) → T12 → T13 → T14 → T15,
 per `TASK_145_...JUNIOR_TRACK.md`.
@@ -814,3 +836,37 @@ half-done. A half-done change with no note is worse than no change.
 - **Next:** owner answers **`PLAN_TASK_155_WORKERS_AND_PAGES.md` §13** (5 Qs) + supplies a
   Cloudflare account/token for **T0**; then D1 starts at **T0 → P1 (files on our own metal)**.
 
+
+### 2026-10-01 — Task 155 §13 answered + throwaway Cloudflare account supplied; T0 prerequisites PROVEN LIVE; D1 UNGATED
+- **Did:** (a) Owner answered `PLAN_TASK_155_...md` **§13** and supplied a **throwaway Cloudflare
+  account token** (kept in the gitignored `spaceworker/.env` as `CLOUDFLARE_API_TOKEN_DEV` +
+  `CLOUDFLARE_ACCOUNT_ID_DEV`; the tracked `.env.example` gained **blank** `CLOUDFLARE_API_TOKEN`
+  / `CLOUDFLARE_ACCOUNT_ID` + a security note). (b) Ran the **T0 prerequisite probes live** (see
+  Verified). (c) Recorded the owner's binding decisions in the plan **§13.1–13.3**, refreshed the
+  plan header + §2/§12 status, added handoff **trap 18**, updated **§6** last-verified and
+  **§7** (D1 now **UNGATED**, start at T0), and rewrote the `PROMPTS_SENIOR_ENGINEERS.md` D1
+  block to match (start-now, free-first, T0-first, security rules, cap-in-every-mode).
+  **No application code changed.**
+- **Verified (raw Cloudflare API, live, 2026-10-01):**
+  `GET /user/tokens/verify` → `{"id":"dbe2bd7375e2fdfd03b478a440ae0aae","status":"active"}`
+  (`success:true`). `GET /user` → `9109 Unauthorized`; `GET /memberships` → `10000 Authentication
+  error`; `GET /accounts` → `result: []` (`total_count: 0`) ⇒ the token is **account-scoped** and
+  does **not** enumerate its own account. Owner then supplied **Account ID
+  `4c822d3b5378019cef1e1b79a3bf0492`** (+ subdomain `channelchannel4747.workers.dev`). With it:
+  `GET /accounts/{id}/pages/projects` → **200**, `success:true`, **`total_count: 6`** — projects
+  `fileshare`, `filesharing`, `securefilesharing`, `new`, `cfdirect`, `cfredirect` (all
+  `*.pages.dev`); `GET /accounts/{id}/workers/scripts` → **200**, `result: []`;
+  `GET /accounts/{id}/r2/buckets` → **403** (no R2 scope). Gotchas: `?per_page=50` on
+  `/pages/projects` → `8000024 Invalid list options` (use `per_page=10`); `GET /accounts/{id}`
+  (the object itself) → `success:false`, yet sub-resources answer 200.
+- **NOT verified:** the actual **T0 spikes** — a real **Direct-Upload deploy over raw REST**, the
+  **25 MiB rejection** (upload 26 MiB → fail), **R4** (Direct Upload vs the 500-builds/month
+  quota), **R15** (Workers free limits), and the **custom-domain** endpoint — **not yet run**;
+  only the token/scope/account prerequisites are proven. Nothing user-visible was built.
+  **SIMULATION: none** — every claim above is a live API response.
+- **State left behind:** `main` @ this docs commit; tree clean, in sync with `origin/main`.
+  **Deployed build unchanged** — `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`.
+  `self-hosted-build` untouched (`f6b6f78`). The throwaway token is live in the local `.env`
+  only; **revoke it once T0 is done**.
+- **Next:** **D1 / Task 155 — run the T0 spikes** (§9) against the account above, then **P1**
+  (files on our own metal). Converters (155 §13 Q4) still open — do not install heavy binaries.

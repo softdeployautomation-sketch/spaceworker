@@ -1,6 +1,9 @@
 # PLAN — Task 155: Workers & Pages (hosting, redirects, files, converters)
 
-**Status: RESEARCH / SCOPING — not started. Owner-requested 2026-10-01 ("free first").**
+**Status: SCOPED + UNBLOCKED — owner answered §13 on 2026-10-01 and supplied a throwaway
+Cloudflare account/token for the T0 spikes (§13.2). Buildable now: T0 → P1 → P2 → P3.**
+**v1 = FREE-FIRST on our own metal** (files + redirects; no Cloudflare needed). Cloudflare
+(Pages, custom domains, bulk redirects, R2) is a *later* engine, never the only path.
 **Companion doc: `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` — these two ship hand in hand.**
 
 **Owner's one-line version:** give every SpaceWorker user **one place to put something on
@@ -68,7 +71,8 @@ redirect infra) on the *same* rails, which is why Task 155 and Task 156 are a pa
 (Direct-Upload/build-quota interaction), R15 (Workers free daily/CPU numbers), the exact
 **attach-a-custom-domain-to-a-Pages-project** endpoint (`POST .../pages/projects/{p}/domains`),
 and whether a Free-plan account can create tokens via API without extra scopes. Each is a
-**T0 spike** in §9 before anything depends on it.
+**T0 spike** in §9 before anything depends on it. *(2026-10-01: the throwaway account now exists
+— §13.2 — so T0 is runnable; the token is `active` but its **Account ID** must be supplied first.)*
 
 ---
 
@@ -326,7 +330,7 @@ safety net **with** it.
 | **Archive** | ⚠️ `7z` **present**, `zip`/`unzip` **absent** | prefer the `7z` already installed |
 | **Video** | ❌ `ffmpeg` **absent** | out of scope until demand (heavy dep) |
 | **R2** | ❌ not configured; needs billing (R13) | premium/BYO path only |
-| **Cloudflare account + token** | ❌ none yet | owner creates one for the platform tier |
+| **Cloudflare account + token** | ✅ **throwaway account/token supplied 2026-10-01** (§13.2); Account ID `4c822d…0492` | The token verifies `active` and — with the Account ID — `/pages/projects` and `/workers/scripts` return **200** (R2 → **403**, no scope). The **T0 spikes** (25 MiB rejection, Direct-Upload REST, R4/R15, custom-domain endpoint) are still unrun. The real **platform** token is a production decision. |
 
 **VPS facts as measured 2026-10-01:** node `v24.20.0`, npm `12.0.2`, `7z` present,
 `ffmpeg`/`libreoffice`/`pandoc`/`convert`/`qpdf`/`zip`/`unzip` **missing**, 23 GiB RAM
@@ -334,13 +338,90 @@ safety net **with** it.
 
 ---
 
-## 13. Open questions for the owner
+## 13. Owner decisions (answered 2026-10-01) — these now BIND the build
 
-1. **Wedge for v1:** files+redirects on our own metal (P1/P2, zero third-party), or Pages
-   (P3, more impressive, needs a token)? *Recommendation: P1→P2→P3.*
-2. **Platform token tier:** how many days before an idle platform-hosted project is reclaimed?
-3. **Custom domains:** sell them as premium only (they need the user's zone/DNS)?
-4. **Converters:** install the heavy binaries (`libreoffice`, `ffmpeg`) on the VPS, or ship only
-   what is dependency-free (`sharp`, `7z`, `xlsx`, `pdfjs`)? *Recommendation: start
-   dependency-free.*
-5. **AUP:** which lawyer reviews the hosting + lab AUP (shared with the Cyber Lab's `LabConsent`)?
+**"Wedge" in plain words = *what ships first*.** The owner's answer: **v1 = free-first on our
+own metal.** Do not start with Cloudflare/Pages; build P1 → P2 → P3 (streaming §9).
+
+| # | Question | Owner's decision (2026-10-01, verbatim where quoted) | Effect on the build |
+|---|---|---|---|
+| 1 | Wedge for v1 | **"v1"** — i.e. the recommended order **P1 (files) → P2 (redirects) → P3 (Pages)**, our own metal first. | First deliveries need **zero third-party**. P1/P2 ship+test immediately. |
+| 2 | Platform token — **free** users | *"not even sure free users should use [it], but if that's right maybe 1 day."* → **do NOT offer it by default; if offered, 1 day max** before reclaim. | P5 stays last; the free "try-it" tier is **1 day, capped, reclaimable**. |
+| 2b | Platform token — **premium** users | **User-selectable duration** — *"maybe 3 or 5 days"*, or **indefinite**. Picking **indefinite MUST show a warning** that it can add to the user's hosting/usage billing. | Duration is a **user field**; `indefinite` ⇒ explicit billing warning in the UI. |
+| 2c | Caps | *"we are still going to build a cap to what users can do even if they add their own token, and also with our own added token."* → **a HARD cap applies in every mode.** | Per-user quota is **independent of token mode** (own token / our token). Enforce **server-side** (`AdminSetting`); never trust the client. |
+| 3 | Custom domains | **Premium only** (`"custom domains should be premium only"`). Zone specifics flexible — *"we can always change during testing."* | Custom-domain UI **and** `POST .../pages/projects/{p}/domains` are premium-gated. |
+| 4 | Converters | **NOT ANSWERED — still open.** Recommendation stands: start **dependency-free**. | P4 only. Do **not** install `libreoffice`/`ffmpeg` without asking (see §13.3). |
+| 5 | AUP lawyer | **Covered** — *"we have got a lawyer in the uk, an old friend, he is working on that."* | Do not block §11 / Task 156 C0 on this; the text is inbound. |
+
+### 13.1 v1 scope — what "shipped v1" means (do exactly this, nothing more)
+
+1. **T0 spikes** (§9) against the throwaway account — witness R4/R15 + the custom-domain
+   endpoint and the 25 MiB rejection. **If a spike fails, stop and report.**
+2. **P1 — Files on our own metal** (no Cloudflare): upload / list / rename / delete;
+   `Content-Disposition` rename with **`sha256` provably unchanged**; expiry; per-user quota,
+   behind the new `hosting` entitlement, **dark**.
+3. **P2 — Redirects, user-owned**: promote the live `/r/<token>` + `LinkRedirect` to
+   user-owned links + custom slugs + hit counts.
+4. **P3 — Pages (BYO token)** after T0 passes: connection pane, scoped-token checklist,
+   verify-on-save, deploy-from-template, live `*.pages.dev` URL, agent-does-it gated proposal.
+
+P4 (templates/converters/bulk) and P5 (platform tier/pool) are **NOT v1**.
+
+### 13.2 Credentials now available (throwaway Cloudflare account, 2026-10-01)
+
+- The owner supplied a **throwaway Cloudflare account API token** for the T0 spikes.
+- It lives **only** in the local, **gitignored** `spaceworker/.env` as
+  **`CLOUDFLARE_API_TOKEN_DEV`** and **`CLOUDFLARE_ACCOUNT_ID_DEV`** — the tracked `.env.example`
+  lists the **production** names `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` **blank**
+  (never put a real token there).
+- **Account facts supplied by the owner 2026-10-01 (not secrets):**
+  **Account ID = `4c822d3b5378019cef1e1b79a3bf0492`**, account subdomain
+  **`channelchannel4747.workers.dev`** (→ Pages projects surface as `*.pages.dev`).
+- **What was proven LIVE 2026-10-01 (raw output, not assumed):**
+
+  | Call | Result | Meaning |
+  |---|---|---|
+  | `GET /user/tokens/verify` | `{"id":"dbe2bd7375e2fdfd03b478a440ae0aae","status":"active"}`, `success:true` | The token is **valid and active**. |
+  | `GET /user` | `9109 Unauthorized` | It is **NOT a user token** → **account-scoped** (R14's preferred type). |
+  | `GET /memberships` | `10000 Authentication error` | Same conclusion. |
+  | `GET /accounts` | `result: []`, `total_count: 0` | An account-scoped token **does not enumerate its own account** (hence the manual Account ID). |
+  | `GET /accounts/{id}/pages/projects` | `200`, `success:true`, **`total_count: 6`** | ✅ **Pages scope works and the account is live.** 6 pre-existing projects from the owner's earlier testing: `fileshare` (`fileshare-8vs.pages.dev`), `filesharing` (`filesharing-7lp.pages.dev`), `securefilesharing` (`securefilesharing.pages.dev`), `new` (`new-4kn.pages.dev`), `cfdirect` (`cfdirect.pages.dev`), `cfredirect` (`cfredirect-e6m.pages.dev`). |
+  | `GET /accounts/{id}/workers/scripts` | `200`, `result: []` | ✅ **Workers Scripts scope works** (no scripts yet). |
+  | `GET /accounts/{id}/r2/buckets` | `403` (`10000 Authentication error`) | ❌ **No R2 scope** — and R2 needs billing anyway (R13). R2 stays the premium/BYO path. |
+
+- **API gotcha found live:** `?per_page=50` on `/pages/projects` fails with
+  `8000024 Invalid list options` — the **max is lower**; `per_page=10` works. Paginate; do not
+  request 50.
+- **Consequence for T0 — the prerequisites are met, so T0 can run now.** Pages + Workers scopes
+  are confirmed working against a real account, and there is a non-empty Pages project list to
+  read. Still to *witness* (S0-a/S0-b, §9): the 500-builds/month quota under Direct Upload, the
+  Workers free-plan numbers, the exact custom-domain endpoint, **a real Direct-Upload deploy over
+  raw REST**, and **the 25 MiB rejection** (upload 26 MiB → watch it fail). Re-run against the
+  account above:
+
+  ```bash
+  cd /Users/mikeolab/spaceworker
+  export CLOUDFLARE_API_TOKEN_DEV=$(grep '^CLOUDFLARE_API_TOKEN_DEV=' .env | cut -d= -f2-)
+  export CLOUDFLARE_ACCOUNT_ID_DEV=$(grep '^CLOUDFLARE_ACCOUNT_ID_DEV=' .env | cut -d= -f2-)
+  curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN_DEV" \
+    "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID_DEV/pages/projects?per_page=10"; echo
+  ```
+- **Rules (non-negotiable):** server-only; never in a client bundle, a log line, an AI prompt,
+  or an error message; **every** Cloudflare mutation writes an audit row. **Revoke the throwaway
+  token once T0 is done** — it exists to answer §2's open facts, not to ship.
+- **Do not reuse this throwaway token as the platform-tier credential.** The real platform
+  token is a separate, owner-created, production decision (§5 Mode 1).
+
+### 13.3 Still open after 2026-10-01 (do NOT invent answers)
+
+- **Q4 — converters:** heavy binaries (`libreoffice`, `ffmpeg`) on the VPS vs dependency-free
+  (`sharp`, `7z`, `xlsx`, `pdfjs`). **Owner did not answer.** P4 only; recommend dependency-free.
+- **T0 facts still unverified** (§2): R4, R15, the exact custom-domain endpoint, and whether a
+  Free-plan account can create tokens via API without extra scopes — **spike them, don't assume**.
+
+*Historical (pre-answer) questions retained for provenance:*
+1. Wedge for v1: files+redirects on our own metal (P1/P2), or Pages (P3)? *Rec: P1→P2→P3.*
+2. Platform token tier: days before reclaim?
+3. Custom domains: premium only?
+4. Converters: heavy binaries or dependency-free? *Rec: dependency-free.*
+5. AUP: which lawyer?

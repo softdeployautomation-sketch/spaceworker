@@ -256,23 +256,66 @@ NOTE:            **WAIVED by the owner 2026-10-01.** Adding another test address
 ```
 
 
-### Owner-requested design work — assign ONLY after D1's §13 / D2's §10 answers land
+### Owner-requested design work — D1's §13 answers LANDED 2026-10-01 (START D1 NOW); D2 still waits on §10
 
 ```
-TASK:            D1 — Task 155 "Workers & Pages" (hosting tab), FREE-FIRST
+TASK:            D1 / Task 155 — "Workers & Pages": the Hosting tab (pages, redirects, files,
+                 converters). FREE-FIRST.
 TASK DOC:        PLAN_TASK_155_WORKERS_AND_PAGES.md
-DEPENDS ON:      the owner's answers to §13 (5 questions). Do NOT start before they land.
-                 Then: T0 spikes FIRST (do not skip them — they decide the engine choice),
-                       then P1 (files on our own metal) -> P2 (redirects) -> P3 (Pages).
-FILES YOU MAY TOUCH:      per the plan's phase; expect lib/ + app/api/ + a new components/ tab,
-                          and ADDITIVE prisma models only
-FILES YOU MUST NOT TOUCH: lib/resource-governor.ts, lib/agent.ts, lib/clone*.ts,
-                          the /e/ and /downloads/ services, any existing migration
+                 Read §13 FIRST (owner decisions, 2026-10-01 — they BIND the build), then §9
+                 (phasing), §3 (hard constraints), §5 (token model), §11 (AUP), §13.2 (creds).
+DEPENDS ON:      NOTHING — START NOW. The owner answered §13 on 2026-10-01 and supplied a
+                 throwaway Cloudflare account token (in the gitignored .env as
+                 CLOUDFLARE_API_TOKEN_DEV). NB the token is `active` but lists NO account yet,
+                 so T0's first step is to get the Account ID (§13.2). T0 does NOT block P1/P2 —
+                 those need no Cloudflare. No other agent's work is in flight.
 BRANCH:          main
-DEPLOY?          yes, per phase — BUT P1 must not break the existing /e/ + /downloads/
-                 services that already serve customer files today.
-NOTE:            free-first means: our own metal (P1/P2) is the DEFAULT tier; Cloudflare is an
-                 engine (platform token capped / BYO token / managed pool), never the only path.
+DEPLOY?          yes, per phase — EXCEPT P1 (files) must not disturb the LIVE /e/ + /downloads/
+                 services that already serve customer files today. Cloudflare phases only after T0.
+
+ORDER — do not skip a step:
+  1. T0 SPIKES (§9) against the throwaway account:
+       - Get the Account ID (§13.2), then confirm the token + account work.
+       - S0-a: confirm R4 (Direct Upload vs the 500-builds/month quota), R15 (Workers free
+         limits), and the exact endpoint POST /accounts/{acct}/pages/projects/{project}/domains.
+       - S0-b: prove Direct Upload over RAW REST for a 3-file static site, AND prove the 25 MiB
+         rejection (upload 26 MiB → watch it fail). Witness it; do not assume it.
+     Append the raw evidence to §9. If a spike FAILS, STOP and report — do not design around an
+     unverified fact.
+  2. P1 — FILES on our own metal (NO Cloudflare): upload/list/rename/delete; Content-Disposition
+     rename with sha256 PROVABLY unchanged; expiry; per-user quota. Ships behind the new
+     `hosting` entitlement, DARK.
+  3. P2 — REDIRECTS, user-owned: promote the live /r/<token> + LinkRedirect to user-owned links
+     + custom slugs + hit counts.
+  4. P3 — PAGES (BYO token, only after T0 passes): connection pane + scoped-token checklist +
+     verify-on-save; deploy a template; return the live *.pages.dev URL; agent-does-it as a
+     GATED proposal.
+  STOP after P1 (and P2 if told). Do NOT start P4/P5 (converters/templates/bulk/platform tier)
+  and NEVER start Task 156.
+
+FILES YOU MAY TOUCH:      new app/hosting/ + app/api/hosting/ + lib/hosting* + components/hosting*
+                          files you create; prisma/schema.prisma (ADDITIVE models only) + exactly
+                          ONE additive migration; tests/*.test.ts; and minimally lib/entitlements.ts
+                          (add "hosting"), lib/products.ts, components/dashboard-nav.tsx.
+FILES YOU MUST NOT TOUCH: lib/resource-governor.ts, lib/agent.ts, lib/clone*.ts,
+                          the existing /e/ + /downloads/ + /r/ routes' current behaviour, any
+                          already-applied migration. REUSE lib/mailbox-crypto.ts — do not fork it.
+
+NON-NEGOTIABLE (from the plan):
+  - The Cloudflare token is SERVER-ONLY: never in a client bundle, a log line, an AI prompt, or
+    an error message. Read it from env (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID — .env.example).
+  - EVERY Cloudflare mutation writes an audit row; agent-initiated hosting is an AgentPendingAction
+    (kind "hosting"), never a silent write.
+  - A HARD per-user CAP applies in EVERY mode — even with the user's OWN token, and with ours.
+  - Custom domains are PREMIUM ONLY. An invalid/revoked token FAILS CLOSED with plain language,
+    never a raw Cloudflare JSON dump.
+  - Scan uploads (§11.1); never market links as "anonymous" (§11.5).
+
+VERIFY (house rules): npx tsc --noEmit → CI=1 npx next build → npm run test:<relevant> (CI does
+  NOT run test:*). ADD tests for: rename-does-not-change-bytes (sha256), the per-user cap, and
+  "cap applies even with a BYO token". Re-run every test:* suite you could have touched. Capture
+  user-visible proof (HTTP status+body / DOM text) for P1's upload→rename→download.
+COMMIT: explicit paths only, never -A. PUSH: origin main:main. Then follow SENIOR_HANDOFF §10.
 ```
 
 ```
@@ -379,7 +422,7 @@ NOTE:            Low value; do not let it displace a customer-facing item.
 2. **Assign ONE item** from §7 with PROMPT E filled in. Order today:
    `TASK_154 N3` (only if hostname-keying bites — it **does NOT**, evaluated 2026-10-01) →
    `TASK_150 T6` **WAIVED by the owner 2026-10-01, skip** →
-   **`D1 Task 155` (NEXT; after §13 answers + its T0 spikes)** →
+   **`D1 Task 155` (NEXT; §13 answered 2026-10-01 + throwaway Cloudflare account supplied — START at T0)** →
    `D2 Task 156 C0/C1` (after D1 P1/P2 + §10 answers).
    The **self-hosted line runs in its own tree, in parallel**: `T11 → T12 → T13 → T14 → (T15)`.
 3. **Run PROMPT V** on every report. Re-run the checks yourself. Never accept a summary.
@@ -399,5 +442,7 @@ NOTE:            Low value; do not let it displace a customer-facing item.
 - Both scoping docs exist and are unbuilt: `PLAN_TASK_155_WORKERS_AND_PAGES.md`,
   `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md`.
 - **Next item in the queue: `D1 Task 155`** — `TASK_154 N3` did not bite (no code written)
-  and `TASK_150 T6` is **waived**; D1 is gated on the owner's **§13** answers + its T0 spikes.
+  and `TASK_150 T6` is **waived**. D1 is **UNGATED as of 2026-10-01**: the owner answered its
+  **§13** and supplied a throwaway Cloudflare account/token (T0 prerequisites proven live) — its
+  next step is the **T0 spikes**, then **P1** (files on our own metal).
 
