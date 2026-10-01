@@ -3528,3 +3528,121 @@ The junior's raw `S10` transcript came from `t9-s10-probe.mts`, which was then *
 | Next | **T10** (wizard UI: render the lifetime / no-renewal state) → T11 → T12 → T13 → T14 → T15 |
 | Branch debt | `W18` (timestamp collision `20261020000000_add_exe_license_revocation` vs `20261020000000_admin_device_commands`) still **must be renumbered before merge** |
 
+
+---
+
+## 2026-10-01 — JUNIOR — **T10 implemented** (wizard UI: lifetime vs countdown). No other task started.
+
+**Scope:** `app/setup/setup-wizard.tsx` **only** (senior §3 D6.3–D6.4 / junior §2 T10). Purely additive against `main` (`625 0`). No API route, no `lib/`, no test, no migration, and no `.env` was written.
+
+### What changed (file:line)
+
+`app/setup/setup-wizard.tsx` — 7 additive hunks, **zero deletions**:
+- `:36-38` — `ApiOk` gains `lifetime?: boolean;` (optional, so the response shape is only *extended*, never replaced).
+- `:62-77` — new `formatExpiry(value)` helper: mirrors the repo's Python-isoformat convention (`lib/exe-license-validator.ts:124-131`) by appending `"Z"` before parsing, then `toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })`. Unreadable input returns `""` so the caller degrades instead of rendering `Invalid Date`. It *labels* a date only — it never classifies a licence.
+- `:142-145` — new state `licenseLifetime` / `licenseExpiresAt` beside the existing `licenseLicensee`.
+- `:189-194` — on `data.valid`: `setLicenseLifetime(Boolean(data.lifetime))` + `setLicenseExpiresAt(data.expiresAt ?? "")`; on rejection both reset. The flag is **consumed exactly as the API returns it** — never recomputed, never compared to `2999`, never inferred from a day count (§1.12 invariant).
+- `:291-293` — `const licenseExpiryLabel = formatExpiry(licenseExpiresAt);`
+- `:383-391` — success copy branches **only** on `licenseLifetime`: lifetime → `License accepted for {licensee} — lifetime license, no renewal needed.`; otherwise the pre-existing `License accepted for {licensee}. Valid until {date}.` shape is preserved, so a term key keeps its normal countdown (plus the retained `License accepted for {licensee}.` fallback when a valid key's `expiresAt` is unreadable).
+- `:586-591` — Review step Licence row: `licenseValidated ? (licenseLifetime ? "Lifetime" : "Activated") : "Not activated"`.
+
+The wizard's validation flow, the body POSTed to `/api/setup/license/validate`, and everything written to setup state are **untouched**; the file only renders. `W19` is not consumed here (it binds T11/T13): T10's strings are its own literal from the spec, and *"no renewal needed"* is the phase's existing lifetime wording — no far-future date, no `2999`, no countdown is ever printed for a lifetime key.
+
+### Commands run and RAW output (verbatim)
+
+```console
+$ cd /Users/mikeolab/sw-selfhost && npx tsc --noEmit; echo TSC_EXIT=$?
+TSC_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost && CI=1 npx next build; echo BUILD_EXIT=$?
+✓ Compiled successfully in 20.6s
+BUILD_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost && npm run test:license > /tmp/t10-lic.log 2>&1; echo TEST_LICENSE_EXIT=$?
+TEST_LICENSE_EXIT=0
+$ tail -9 /tmp/t10-lic.log
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 493.273407
+
+$ cd /Users/mikeolab/sw-selfhost && npm run test:setup > /tmp/t10-setup.log 2>&1; echo TEST_SETUP_EXIT=$?
+TEST_SETUP_EXIT=0
+$ tail -9 /tmp/t10-setup.log
+# tests 29
+# suites 0
+# pass 29
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 806.268027
+```
+
+### STEP 4 — canaries (raw)
+
+```console
+$ cd /Users/mikeolab/spaceworker && git diff --stat main self-hosted-build -- lib/exe-license-validator.ts
+(empty)
+$ ... -- lib/license-service.ts
+(empty)
+$ git diff --numstat main self-hosted-build -- lib/exe-license.ts
+13      0       lib/exe-license.ts
+$ git diff --numstat main self-hosted-build -- lib/exe-license-bind.ts app/api/admin/exe-licenses/route.ts app/setup/setup-wizard.tsx
+170     19      app/api/admin/exe-licenses/route.ts
+625     0       app/setup/setup-wizard.tsx
+27      2       lib/exe-license-bind.ts
+$ npx tsc --noEmit; echo LIVE_APP_TSC_EXIT=$?
+LIVE_APP_TSC_EXIT=0
+
+$ cd /Users/mikeolab/sw-selfhost && git config --get branch.self-hosted-build.merge
+refs/heads/self-hosted-build
+$ git status --porcelain
+ M app/setup/setup-wizard.tsx
+```
+
+`.env` was checked by hand, not by `git status` (which cannot see a gitignored file — `W16`): still `lrwxr-xr-x .env -> /Users/mikeolab/spaceworker/.env`, target mtime `Sep 14 07:25:16 2026` (predates this session). No `.env.local` exists.
+
+### Extra — a live wizard excursion (stronger than T10's `Check:` floor of `tsc` + `build`)
+
+No `S`-row in §4.2 names T10 (`grep`: `T10` appears in a §4.2 context only as a *later-task* reference at `TASK_145_SELF_HOSTED_LICENSE_SENIOR_TRACK.md:2108`; S9's lifetime leg is the buyer Settings page, already VERIFIED at T8). Because T10 is the first task whose sole subject is rendered UI, I did not stop at the type-check floor — I booted the **real** wizard and drove both licence classes through it with a headless browser.
+
+Method (no `.env` touched, §4.1e): a throwaway secret was used for `EXE_LICENSE_SECRET` **only** to mint throwaway keys offline; the server was booted with **command-line** overrides (`SELF_HOSTED=true`, `SPACEWORKER_LOCAL_DATA_DIR=/tmp/t10-live-data`, plus throwaway production-shaped `SESSION_SECRET`/`RESEND_API_KEY` because the checked-in `.env` holds a dev placeholder this build refuses in production). No DB, no migration, no Prisma, no VPS; scratch dir deleted and both servers stopped afterwards.
+
+```console
+$ SELF_HOSTED=true SPACEWORKER_LOCAL_DATA_DIR=/tmp/t10-live-data EXE_LICENSE_SECRET='t10-runtime-check-secret' DATABASE_URL='postgresql://localhost:5432/spaceworker_t145' SESSION_SECRET="$(openssl rand -hex 32)" RESEND_API_KEY="re_$(openssl rand -hex 20)" EMAIL_FROM='setup@spaceworker.test' APP_BASE_URL='https://spaceworker.test' npx next start -p 3499
+setup_http=200
+
+$ node /tmp/t10-live.mjs
+PASS  lifetime copy says 'no renewal needed'  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test — lifetime license, no renewal needed.
+PASS  lifetime copy never prints 2999  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test — lifetime license, no renewal needed.
+PASS  lifetime copy is not a 'Valid until <date>' countdown  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test — lifetime license, no renewal needed.
+PASS  lifetime copy keeps the licensee  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test — lifetime license, no renewal needed.
+PASS  review row shows 'Lifetime'  License Lifetime Database localhost:5432 / spaceworker_t145 RMM Engine Skipped AI provider Skipped Email Configured (Resend) Telegram Skipped
+PASS  term copy keeps a normal countdown ('Valid until <date>')  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test. Valid until March 30, 2027.
+PASS  term copy is NOT labelled lifetime  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test. Valid until March 30, 2027.
+PASS  term copy never prints 2999  1. Activate your license Paste the license key for this SpaceWorker install. This step can't be skipped. License key Activate License accepted for buyer@example.test. Valid until March 30, 2027.
+PASS  review row shows 'Activated' for a term key  License Activated Database localhost:5432 / spaceworker_t145 RMM Engine Skipped AI provider Skipped Email Configured (Resend) Telegram Skipped
+
+T10_LIVE: 9/9 passed
+LIVE_EXIT=0
+
+$ # the same build, SELF_HOSTED *unset* (hosted posture):
+--- hosted (SELF_HOSTED unset) ---
+setup_http=404
+validate_api_http=404
+```
+
+So a lifetime key renders *"lifetime license, no renewal needed."* with the Review row reading **Lifetime**, while a term key keeps **"Valid until March 30, 2027."** with Review reading **Activated** — and on a hosted build the page itself 404s, so the lifetime branch is provably inert there.
+
+### Honest gaps
+
+- **UNVERIFIED: nothing material to T10.** Both licence classes were rendered live; the only branch not independently exercised is the no-`expiresAt` fallback (`License accepted for {licensee}.`) — unreachable from real keys, since every valid key decodes an `expires_at`.
+- **NOT RUNNABLE BY JUNIOR: none** — no §4.2 `S`-row names T10 (confirmed by grep).
+- `lib/exe-license.ts`, `lib/exe-license-validator.ts`, `lib/license-service.ts`, `lib/exe-license-bind.ts`, `app/api/setup/license/validate/route.ts` and `app/api/admin/exe-licenses/route.ts` were **read only**. No `.env` edit, no migration, no Prisma command, no VPS connection, no `TASK_134..TASK_144` file, no mailbox/admin-panel file, and `/Users/mikeolab/spaceworker` untouched except read-only canaries.
+
+READY FOR VERIFICATION - T10

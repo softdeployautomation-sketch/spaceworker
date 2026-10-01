@@ -33,6 +33,9 @@ interface ApiOk {
   plan?: string;
   expiresAt?: string;
   username?: string;
+  // TASK_145 T10 (senior §3 D6.2/D6.4) — the server's own classification of the
+  // decoded `expires_at` sentinel. Never recomputed client-side.
+  lifetime?: boolean;
 }
 
 async function postJson(url: string, body: unknown): Promise<{ status: number; data: ApiOk }> {
@@ -54,6 +57,22 @@ async function postJson(url: string, body: unknown): Promise<{ status: number; d
 function maskSecret(value: string): string {
   if (value.length <= 6) return "••••••";
   return `${value.slice(0, 3)}••••••••${value.slice(-4)}`;
+}
+
+/**
+ * TASK_145 T10 (senior §3 D6.3) — human-readable label for the expiry the API
+ * returned. Mirrors the codebase's Python-isoformat convention
+ * (`lib/exe-license-validator.ts:124-131`): the value is UTC-naive, so append
+ * 'Z' before parsing. This only *labels* the date — it never classifies the
+ * licence (that is the API's `lifetime` flag, decided server-side) — and it
+ * returns "" for unreadable input so the caller degrades instead of rendering
+ * "Invalid Date".
+ */
+function formatExpiry(value: string): string {
+  if (!value) return "";
+  const parsed = new Date(value + "Z");
+  if (Number.isNaN(parsed.getTime())) return "";
+  return parsed.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 }
 
 function Field({
@@ -120,6 +139,10 @@ export default function SetupWizard({
   const [licenseLicensee, setLicenseLicensee] = useState("");
   const [licenseError, setLicenseError] = useState("");
   const [licenseBusy, setLicenseBusy] = useState(false);
+  // TASK_145 T10 (senior §3 D6.4) — stored beside `licenseValidated`, straight
+  // from the API's own `lifetime` boolean (never re-derived from a date).
+  const [licenseLifetime, setLicenseLifetime] = useState(false);
+  const [licenseExpiresAt, setLicenseExpiresAt] = useState("");
 
   // --- Step 3: RMM Engine ----------------------------------------------------
   const [rmmUrl, setRmmUrl] = useState("");
@@ -163,8 +186,12 @@ export default function SetupWizard({
       if (data.valid) {
         setLicenseValidated(true);
         setLicenseLicensee(data.licensee ?? "");
+        setLicenseLifetime(Boolean(data.lifetime));
+        setLicenseExpiresAt(data.expiresAt ?? "");
       } else {
         setLicenseValidated(false);
+        setLicenseLifetime(false);
+        setLicenseExpiresAt("");
         setLicenseError(data.error ?? "That license key was not accepted.");
       }
     } catch {
@@ -261,6 +288,9 @@ export default function SetupWizard({
     }
   }
 
+  // TASK_145 T10 (senior §3 D6.3) — label only; "" when the date is unreadable.
+  const licenseExpiryLabel = formatExpiry(licenseExpiresAt);
+
   const canContinue =
     step === 1
       ? licenseValidated
@@ -353,7 +383,11 @@ export default function SetupWizard({
               {licenseValidated ? (
                 <OkText>
                   {licenseLicensee
-                    ? `License accepted for ${licenseLicensee}.`
+                    ? licenseLifetime
+                      ? `License accepted for ${licenseLicensee} — lifetime license, no renewal needed.`
+                      : licenseExpiryLabel
+                        ? `License accepted for ${licenseLicensee}. Valid until ${licenseExpiryLabel}.`
+                        : `License accepted for ${licenseLicensee}.`
                     : "License accepted."}
                 </OkText>
               ) : null}
@@ -549,7 +583,12 @@ export default function SetupWizard({
                 after a restart.
               </p>
               <dl className="mt-4 divide-y divide-border rounded-lg border border-border bg-bg">
-                <ReviewRow label="License" value={licenseValidated ? "Activated" : "Not activated"} />
+                <ReviewRow
+                  label="License"
+                  value={
+                    licenseValidated ? (licenseLifetime ? "Lifetime" : "Activated") : "Not activated"
+                  }
+                />
                 <ReviewRow label="Database" value={databaseLabel} />
                 <ReviewRow
                   label="RMM Engine"
