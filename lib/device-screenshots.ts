@@ -8,7 +8,15 @@ import { db } from "./db";
 import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { createSessionToken, SESSION_COOKIE } from "./auth";
-import { requestSlot, type PressureSnapshot } from "./resource-governor";
+import {
+  requestSlot,
+  resolvePriority,
+  governorPriorityRank,
+  readPressure,
+  resolveGovernorSettings,
+  type PressureSnapshot,
+  type GovernorPriority,
+} from "./resource-governor";
 
 // ---------------------------------------------------------------------------
 // TASK_127 Phase 1 — device screenshot monitoring: CAPTURE.
@@ -43,6 +51,16 @@ export interface ScreenshotSettings {
   maxConcurrent: number;
   intervalMinutes: number;
   retentionDays: number;
+  // TASK_152 M6 — the scheduler's two resolved dials.
+  /**
+   * RAM used % below which the box counts as having headroom, so a lone
+   * monitoring user may run captures SIMULTANEOUSLY up to the cap. RESOLVED
+   * from `screenshotHeadroomRamPct` (0 = inherit `governorRamWarnPct`) and
+   * clamped to <= the hard line — see resolveScreenshotSettings.
+   */
+  headroomRamPct: number;
+  /** How long one rotation slice holds before the per-user cursor advances. */
+  rotationSliceMinutes: number;
 }
 
 /** Structural subset of AdminSetting this module reads. */
@@ -51,6 +69,12 @@ export interface ScreenshotSettingsRow {
   screenshotCapturesMaxConcurrent?: number | null;
   screenshotCaptureIntervalMinutes?: number | null;
   screenshotRetentionDays?: number | null;
+  // TASK_152 M6 — the scheduler's dials, plus the governor's RAM dials it
+  // RECONCILES against. Same AdminSetting row, so no second settings read.
+  screenshotHeadroomRamPct?: number | null;
+  screenshotRotationSliceMinutes?: number | null;
+  governorRamWarnPct?: number | null;
+  governorRamHardPct?: number | null;
 }
 
 function rowInt(value: number | null | undefined, fallback: number, min: number): number {
@@ -58,6 +82,18 @@ function rowInt(value: number | null | undefined, fallback: number, min: number)
     ? Math.floor(value)
     : fallback;
 }
+
+/** A percentage clamped into 1..100 (mirrors the governor's own `pct`). */
+function pctClamp(value: number | null | undefined, fallback: number): number {
+  return Math.min(100, Math.max(1, rowInt(value, fallback, 1)));
+}
+
+// TASK_152 M6 — the bounds shared by the scheduler and the admin dial, so the
+// two can never drift apart (same discipline as M4's interval bounds).
+export const SCREENSHOT_ROTATION_SLICE_MIN_MINUTES = 1;
+export const SCREENSHOT_ROTATION_SLICE_MAX_MINUTES = 1440;
+export const SCREENSHOT_HEADROOM_MIN_PCT = 0; // 0 is meaningful: "inherit the warn line"
+export const SCREENSHOT_HEADROOM_MAX_PCT = 100;
 
 /**
  * Resolve the admin dials, falling back to the schema defaults when a value is
@@ -70,6 +106,19 @@ function rowInt(value: number | null | undefined, fallback: number, min: number)
 export function resolveScreenshotSettings(
   row: ScreenshotSettingsRow | null | undefined,
 ): ScreenshotSettings {
+  // TASK_152 M6 — resolve the headroom line against the governor's OWN dials.
+  // The governor guarantees warn <= hard; mirror that here so a warn/hard pair
+  // written out of order can never invert the comparison.
+  const ramWarnPct = pctClamp(row?.governorRamWarnPct, 75);
+  const ramHardPct = Math.max(ramWarnPct, pctClamp(row?.governorRamHardPct, 90));
+  // 0 (the default) = INHERIT the warn line: that is the exact "box still
+  // healthy" boundary the governor already uses (premium bypass runs only at
+  // `level === normal`), so the default introduces no third threshold. A
+  // positive dial is the owner's explicit ~60% and is clamped to <= the hard
+  // line, because a headroom line above the hard line would be meaningless.
+  const rawHeadroom = rowInt(row?.screenshotHeadroomRamPct, 0, 0);
+  const headroomRamPct = rawHeadroom > 0 ? Math.min(rawHeadroom, ramHardPct) : ramWarnPct;
+
   return {
     enabled: typeof row?.screenshotMonitoringEnabled === "boolean"
       ? row.screenshotMonitoringEnabled
@@ -80,6 +129,12 @@ export function resolveScreenshotSettings(
     intervalMinutes: rowInt(row?.screenshotCaptureIntervalMinutes, 60, 1),
     // Floor of 1 DAY: a retention of 0 would delete each frame as it was taken.
     retentionDays: rowInt(row?.screenshotRetentionDays, 14, 1),
+    headroomRamPct,
+    rotationSliceMinutes: rowInt(
+      row?.screenshotRotationSliceMinutes,
+      25,
+      SCREENSHOT_ROTATION_SLICE_MIN_MINUTES,
+    ),
   };
 }
 
@@ -338,6 +393,15 @@ export interface CapturePassResult {
   failed: number;
   /** Devices the governor put in line instead of admitting (next tick retries). */
   queued: number;
+  // TASK_152 M6 — scheduling observability, and the honesty split the task doc
+  // demands: a device that has merely not had its turn yet is `deferred`, NOT a
+  // failure. It stays eligible and is served on a later rotation slice.
+  /** Devices NOT offered this pass because it was not their turn in the rotation. */
+  deferred: number;
+  /** Users that rotated this pass (eligible devices exceeded granted slots). */
+  rotatingUsers: number;
+  /** Whether cross-user parallelism was allowed this pass (idle box, one user). */
+  parallel: boolean;
   reaped: number;
   purged: number;
   results: Array<{ deviceId: string; status: string; reason?: string }>;
@@ -558,6 +622,58 @@ export async function listDueDevices(
     return !last || now.getTime() - last.getTime() >= intervalMs;
   });
 }
+/**
+ * TASK_152 M6 — a user's STABLE rotation ROSTER: every opted-in, ONLINE device,
+ * sorted by id.
+ *
+ * WHY THIS IS SEPARATE FROM `listDueDevices`: rotation must anchor on a set that
+ * does NOT move underneath it. The DUE set shrinks the instant a device is
+ * captured (it is no longer due), so rotating by index over the due set would
+ * SKIP a device every time one dropped out — e.g. capture d1, then index into the
+ * shrunken due list and land on d3 instead of d2. The roster (opted-in + online)
+ * only changes when the fleet or a consent flag changes, so a cursor stored
+ * against it stays valid and the slice advances one device at a time.
+ *
+ * In-flight devices are deliberately NOT excluded: the roster is an ORDERING, not
+ * a work list, and a device mid-capture must keep its place or the ordering would
+ * shift every time a capture is running.
+ *
+ * The DUE set returned by listDueDevices is always a SUBSET of this roster, so
+ * `slice ∩ due` is well defined.
+ */
+export async function listRotationRoster(): Promise<CaptureTarget[]> {
+  return db.device.findMany({
+    where: { screenshotMonitoringEnabled: true, status: "online" },
+    select: { id: true, userId: true, name: true },
+    orderBy: { id: "asc" },
+  });
+}
+
+
+/**
+ * TASK_152 M6 — ONE user's plan for the current pass: which of their due devices
+ * to OFFER the governor now, which to DEFER to a later rotation slice, and the
+ * cursor write (if any) to persist once the slice has actually been offered.
+ *
+ * This is a planning structure only. It never admits anything: every offer still
+ * goes through `requestSlot`, which is the single admission authority.
+ */
+interface UserSlicePlan {
+  userId: string;
+  /** Devices this pass will ASK the governor about (the current slice). */
+  offers: CaptureTarget[];
+  /** Due devices held back this pass — "not had its turn yet", NOT a failure. */
+  deferred: CaptureTarget[];
+  /** Cursor row to persist after this slice is served (null = hold, don't advance). */
+  cursorUpdate: { cursorDeviceId: string; rotatedAt: Date } | null;
+  /** True when this user is rotating (roster exceeded granted slots). */
+  rotating: boolean;
+}
+
+/** Stable device order (by id) so rotation is deterministic and reproducible. */
+function byDeviceId(a: CaptureTarget, b: CaptureTarget): number {
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
 
 /**
  * Run one capture pass.
@@ -574,13 +690,37 @@ export async function listDueDevices(
  * even though the captures themselves run in parallel — and, because the count
  * comes from the database rather than from memory, a pass that overlaps a
  * previous pass's still-running capture cannot over-admit either.
+ *
+ * TASK_152 M6 — WHO gets asked changed; the cap did not. Before asking the
+ * governor, the pass now plans each user's slice:
+ *   - FAIRNESS: the cap is divided across the users competing RIGHT NOW, so one
+ *     user's many devices cannot take a quiet user's share. Users are ordered by
+ *     the governor's own premium/standard/trial classes (then by how long they
+ *     have waited), and their offers are interleaved round-robin.
+ *   - ROTATION: when a user's due devices exceed their granted slots, only a
+ *     bounded slice is offered and the rest are DEFERRED (never failed). A
+ *     persisted per-user cursor (ScreenshotRotationCursor) advances the slice on
+ *     the admin's cadence, so every device is sampled and none starves.
+ *   - HEADROOM: parallelism (a user taking their full cap) is allowed only while
+ *     the box has headroom AND nobody else is competing; otherwise every user is
+ *     held to their fair share and rotates. Both this and the cap are re-derived
+ *     from the CURRENT AdminSetting + pressure on EVERY pass, so raising/lowering
+ *     the cap or the pressure switching mid-run takes effect WITHOUT a restart.
  */
 export async function runCapturePass(
   capture: CaptureFn,
   opts: CapturePassOptions = {},
 ): Promise<CapturePassResult> {
   const now = opts.now ?? new Date();
-  const settings = resolveScreenshotSettings(await getAdminSettings());
+  const adminRow = await getAdminSettings();
+  const settings = resolveScreenshotSettings(adminRow);
+  // TASK_152 M6 — ONE pressure snapshot for the whole pass. It decides headroom
+  // AND is handed to every `requestSlot`, so the pass can never read a "normal"
+  // box for its planning and a "hard" box for an admission (or vice versa). The
+  // governor reads the same snapshot itself when the caller omits it, so passing
+  // ours in changes nothing except that it can no longer drift mid-pass.
+  const pressure: PressureSnapshot =
+    opts.pressure ?? readPressure(resolveGovernorSettings(adminRow));
 
   const result: CapturePassResult = {
     skipped: null,
@@ -588,6 +728,9 @@ export async function runCapturePass(
     captured: 0,
     failed: 0,
     queued: 0,
+    deferred: 0,
+    rotatingUsers: 0,
+    parallel: false,
     reaped: 0,
     purged: 0,
     results: [],
@@ -611,16 +754,183 @@ export async function runCapturePass(
     return result;
   }
 
-  const inflight: Array<Promise<void>> = [];
-
+  // Group this pass's due devices by owner, in the stable order rotation uses.
+  const dueByUser = new Map<string, CaptureTarget[]>();
   for (const device of due) {
+    const list = dueByUser.get(device.userId);
+    if (list) list.push(device);
+    else dueByUser.set(device.userId, [device]);
+  }
+  for (const list of dueByUser.values()) list.sort(byDeviceId);
+
+  // TASK_152 M6 — the STABLE rotation roster per user (opted-in + online). This
+  // is what the cursor indexes into, so a device dropping out of the DUE set
+  // (because it was just captured) cannot shift the slice onto its neighbour.
+  const rosterByUser = new Map<string, CaptureTarget[]>();
+  for (const device of await listRotationRoster()) {
+    if (!dueByUser.has(device.userId)) continue; // only users with work this pass
+    const list = rosterByUser.get(device.userId);
+    if (list) list.push(device);
+    else rosterByUser.set(device.userId, [device]);
+  }
+  for (const list of rosterByUser.values()) list.sort(byDeviceId);
+
+  // A user is "active" if they have a due device OR a capture already in flight
+  // from a pass that is still running. The cap is divided across ACTIVE users —
+  // that division IS the fairness rule, and it needs no new counter: it reads the
+  // same `capturing` rows the governor's liveCount counts.
+  const inFlightUsers = await db.deviceScreenshot.findMany({
+    where: { status: "capturing" },
+    select: { userId: true },
+    distinct: ["userId"],
+  });
+  const activeUserIds = new Set<string>(dueByUser.keys());
+  for (const row of inFlightUsers) activeUserIds.add(row.userId);
+  const activeUsers = Math.max(1, activeUserIds.size);
+
+  // HEADROOM (owner: "if the box is idle and others are not monitoring, run
+  // simultaneously, else queue"). `headroomRamPct` IS governorRamWarnPct unless
+  // an admin overrode it, so this adds no third threshold. Parallelism also
+  // requires that nobody else is competing.
+  const headroomOk = pressure.level !== "hard" && pressure.ramUsedPct < settings.headroomRamPct;
+  const parallelAllowed = headroomOk && activeUsers <= 1;
+  result.parallel = parallelAllowed;
+
+  // How many devices ONE user may OFFER this pass. This bounds offers, never
+  // grants — the governor still decides the real concurrency. Three states,
+  // which is exactly the owner's rule:
+  //   * idle box, nobody else monitoring  -> the whole cap, i.e. SIMULTANEOUS.
+  //   * box has headroom but others compete -> the user's FAIR SHARE of the cap.
+  //   * box is out of headroom (any users) -> ONE at a time per user, i.e. QUEUE
+  //     (rotate), so captures never pile onto a loaded box.
+  // Every branch is re-derived from the CURRENT settings + pressure, so raising
+  // the cap or pressure clearing mid-run takes effect on the very next pass with
+  // no restart — there is no cached "mode".
+  const perUserSlots = parallelAllowed
+    ? settings.maxConcurrent
+    : headroomOk
+      ? Math.max(1, Math.floor(settings.maxConcurrent / activeUsers))
+      : 1;
+
+  // Order users by the governor's OWN class (premium > standard > trial), then by
+  // staleness of their rotation cursor (the user whose cursor has not moved in
+  // longest is served first — the starvation tiebreak, the same idea as
+  // governorStarvationPromoteMin, reusing the governor's persisted state rather
+  // than inventing a second priority system).
+  const priorityByUser = new Map<string, GovernorPriority>();
+  for (const userId of dueByUser.keys()) {
+    priorityByUser.set(userId, await resolvePriority(userId));
+  }
+  const cursorRows = await db.screenshotRotationCursor.findMany({
+    where: { userId: { in: [...dueByUser.keys()] } },
+  });
+  const cursorByUser = new Map(cursorRows.map((c) => [c.userId, c]));
+  const orderedUsers = [...dueByUser.keys()].sort((a, b) => {
+    const byClass =
+      governorPriorityRank(priorityByUser.get(a) ?? "trial") -
+      governorPriorityRank(priorityByUser.get(b) ?? "trial");
+    if (byClass !== 0) return byClass;
+    const byStarvation =
+      (cursorByUser.get(a)?.rotatedAt.getTime() ?? 0) -
+      (cursorByUser.get(b)?.rotatedAt.getTime() ?? 0);
+    if (byStarvation !== 0) return byStarvation;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+
+  const sliceMs = settings.rotationSliceMinutes * 60_000;
+  const plans: UserSlicePlan[] = [];
+  for (const userId of orderedUsers) {
+    const dueForUser = dueByUser.get(userId)!;
+    // The ROSTER is the stable set rotation indexes into; fall back to the due set
+    // if a roster read somehow missed this user (never expected — due ⊆ roster).
+    const roster = rosterByUser.get(userId) ?? dueForUser;
+
+    // Fits inside the granted slots: PARALLEL — offer every due device at once and
+    // never touch the cursor, so the user runs simultaneously up to the cap.
+    // Because `perUserSlots` is re-derived from the CURRENT AdminSetting every pass,
+    // an admin raising the cap (or contention clearing) flips a rotating user
+    // straight back to parallel — no restart and no cached "rotating" flag.
+    if (roster.length <= perUserSlots) {
+      plans.push({ userId, offers: dueForUser, deferred: [], cursorUpdate: null, rotating: false });
+      continue;
+    }
+
+    // ROTATION. The cursor names the LAST device the previous slice served, so the
+    // next slice always resumes one step after it — an advance that is CORRECT no
+    // matter how the granted slot count changes between slices (advancing by "one
+    // slice width" would re-serve or skip devices the moment the cap moved). The
+    // slice is taken from the ROSTER (not the shrunken due set) so capturing a
+    // device cannot shift the slice onto its neighbour.
+    const cursor = cursorByUser.get(userId);
+    const windowElapsed = !cursor || now.getTime() - cursor.rotatedAt.getTime() >= sliceMs;
+
+    // WITHIN the window the user HOLDS: it has already had its turn, so its other
+    // devices wait (deferred, never failed) until the slice elapses. This is the
+    // owner's 20-30 min per-device turn, and it is why a fresh capture cannot be
+    // followed one minute later by its neighbour.
+    if (!windowElapsed) {
+      plans.push({ userId, offers: [], deferred: dueForUser, cursorUpdate: null, rotating: true });
+      continue;
+    }
+
+    const anchorIdx = cursor?.cursorDeviceId
+      ? roster.findIndex((d) => d.id === cursor.cursorDeviceId)
+      : -1;
+    // A missing anchor (first slice, or the cursor device left the roster) starts at
+    // the top of the roster; otherwise resume one step past the last served device.
+    const startIdx = anchorIdx < 0 ? 0 : (anchorIdx + 1) % roster.length;
+    const slice = new Set<string>();
+    for (let i = 0; i < perUserSlots && i < roster.length; i++) {
+      slice.add(roster[(startIdx + i) % roster.length].id);
+    }
+    // The cursor advances to the LAST device of this slice (the next window resumes
+    // after it). Gated on the slice actually being served below, so a slice whose
+    // whole turn was queued is retried rather than skipped — no lost turn.
+    const lastServed = roster[(startIdx + Math.min(perUserSlots, roster.length) - 1) % roster.length];
+    plans.push({
+      userId,
+      // Offer only the slice devices that are DUE; the rest of the slice simply has
+      // nothing to do yet and keeps its place on a later pass.
+      offers: dueForUser.filter((d) => slice.has(d.id)),
+      deferred: dueForUser.filter((d) => !slice.has(d.id)),
+      cursorUpdate: { cursorDeviceId: lastServed.id, rotatedAt: now },
+      rotating: true,
+    });
+  }
+
+  // Round-robin the offers across users so submission ORDER is fair too: the
+  // governor admits head-first, so without this one user's burst could still own
+  // the head of the line.
+  const offers: CaptureTarget[] = [];
+  const maxOffers = plans.reduce((max, plan) => Math.max(max, plan.offers.length), 0);
+  for (let i = 0; i < maxOffers; i++) {
+    for (const plan of plans) {
+      if (i < plan.offers.length) offers.push(plan.offers[i]);
+    }
+  }
+
+  // Deferred devices are reported honestly as "not their turn yet" — never as a
+  // failure — so the owner can tell "not sampled this slice" from "monitoring is
+  // broken".
+  for (const plan of plans) {
+    if (plan.rotating) result.rotatingUsers += 1;
+    for (const device of plan.deferred) {
+      result.deferred += 1;
+      result.results.push({ deviceId: device.id, status: "deferred", reason: "rotation_slice" });
+    }
+  }
+
+  const inflight: Array<Promise<void>> = [];
+  const grantedUsers = new Set<string>();
+
+  for (const device of offers) {
     // `ref: device.id` makes a re-ask idempotent: a device that is already in
     // line keeps ONE governor row and ONE position across ticks rather than
     // pushing a new entry every minute.
     const decision = await requestSlot("deviceScreenshots", {
       userId: device.userId,
       ref: device.id,
-      pressure: opts.pressure,
+      pressure,
       now,
     });
 
@@ -633,6 +943,11 @@ export async function runCapturePass(
       });
       continue;
     }
+
+    // TASK_152 M6 — this user really had its slice served, so its cursor may
+    // advance after the loop (a slice whose whole turn was queued must NOT be
+    // skipped, or a device could lose its turn to contention).
+    grantedUsers.add(device.userId);
 
     // Admitted: create the slot-holding row BEFORE touching the browser, so the
     // governor's live count reflects reality for the next candidate.
@@ -704,6 +1019,28 @@ export async function runCapturePass(
           result.results.push({ deviceId: device.id, status: "failed", reason });
         }),
     );
+  }
+
+  // TASK_152 M6 — persist each advanced cursor NOW that the slice was offered.
+  // Only users who actually had a device ADMITTED are advanced: if the whole
+  // slice was queued behind other work, the cursor holds, so that slice is
+  // retried next pass instead of being skipped — nothing loses its turn to
+  // contention. Deriving this from `grantedUsers` (not from a fresh read) keeps
+  // the write consistent with what this pass truly did.
+  for (const plan of plans) {
+    if (!plan.cursorUpdate || !grantedUsers.has(plan.userId)) continue;
+    await db.screenshotRotationCursor.upsert({
+      where: { userId: plan.userId },
+      create: {
+        userId: plan.userId,
+        cursorDeviceId: plan.cursorUpdate.cursorDeviceId,
+        rotatedAt: plan.cursorUpdate.rotatedAt,
+      },
+      update: {
+        cursorDeviceId: plan.cursorUpdate.cursorDeviceId,
+        rotatedAt: plan.cursorUpdate.rotatedAt,
+      },
+    });
   }
 
   await Promise.allSettled(inflight);

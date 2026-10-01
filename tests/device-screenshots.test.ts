@@ -87,9 +87,20 @@ interface QueueRow {
   expiredAt: Date | null;
 }
 
+// TASK_152 M6 — the persisted per-user rotation cursor (one row per user).
+interface CursorRow {
+  id: string;
+  userId: string;
+  cursorDeviceId: string | null;
+  rotatedAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 let devices: DeviceRow[] = [];
 let frames: FrameRow[] = [];
 let queue: QueueRow[] = [];
+let cursors: CursorRow[] = [];
 let audits: Array<Record<string, unknown>> = [];
 let idSeq = 0;
 let clock = new Date("2026-09-27T12:00:00.000Z");
@@ -221,6 +232,12 @@ const fakeDb = {
         const seen = new Set<string>();
         rows = rows.filter((r) => (seen.has(r.deviceId) ? false : (seen.add(r.deviceId), true)));
       }
+      // TASK_152 M6 — the scheduler asks for the distinct OWNERS holding a
+      // capture right now (to count "active users" for the fair-share split).
+      if (args.distinct?.includes("userId")) {
+        const seen = new Set<string>();
+        rows = rows.filter((r) => (seen.has(r.userId) ? false : (seen.add(r.userId), true)));
+      }
       if (typeof args.take === "number") rows = rows.slice(0, args.take);
       return rows.map((r) => pick({ ...r }, args.select));
     },
@@ -254,6 +271,37 @@ const fakeDb = {
       const before = frames.length;
       frames = frames.filter((f) => !matches({ ...f }, args.where));
       return { count: before - frames.length };
+    },
+  },
+  // TASK_152 M6 — the persisted rotation cursor. `upsert` is the real call the
+  // post-loop write makes; `findMany` is the pre-loop read. Narrow on purpose:
+  // only the where/select shapes the scheduler actually uses.
+  screenshotRotationCursor: {
+    async findMany(args: { where?: Record<string, unknown> }) {
+      return cursors.filter((c) => matches({ ...c }, args.where)).map((c) => ({ ...c }));
+    },
+    async upsert(args: {
+      where: { userId: string };
+      create: { userId: string; cursorDeviceId: string; rotatedAt: Date };
+      update: { cursorDeviceId: string; rotatedAt: Date };
+    }) {
+      const existing = cursors.find((c) => c.userId === args.where.userId);
+      if (existing) {
+        existing.cursorDeviceId = args.update.cursorDeviceId;
+        existing.rotatedAt = args.update.rotatedAt;
+        existing.updatedAt = new Date(clock.getTime());
+        return { ...existing };
+      }
+      const row: CursorRow = {
+        id: nextId("cursor"),
+        userId: args.create.userId,
+        cursorDeviceId: args.create.cursorDeviceId,
+        rotatedAt: args.create.rotatedAt,
+        createdAt: new Date(clock.getTime()),
+        updatedAt: new Date(clock.getTime()),
+      };
+      cursors.push(row);
+      return { ...row };
     },
   },
 };
@@ -357,8 +405,29 @@ const {
   startOfUtcDay,
   screenshotBaseDir,
   CAPTURE_STUCK_MS,
+  countCapturing,
+  SCREENSHOT_ROTATION_SLICE_MIN_MINUTES,
+  SCREENSHOT_ROTATION_SLICE_MAX_MINUTES,
+  SCREENSHOT_HEADROOM_MIN_PCT,
+  SCREENSHOT_HEADROOM_MAX_PCT,
 } = require("../lib/device-screenshots") as typeof import("../lib/device-screenshots");
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+/**
+ * TASK_152 M6 — simulate a PROCESS RESTART: drop `lib/device-screenshots` from
+ * the require cache and re-require it, yielding a genuinely fresh module instance
+ * (a DIFFERENT function object) that shares nothing with the first but the
+ * injected fake DB. Because the scheduler keeps no in-memory scheduling state,
+ * anything that survives this is, by construction, the persisted cursor.
+ */
+function reloadRunCapturePass(): typeof runCapturePass {
+  const key = require.resolve("../lib/device-screenshots");
+  delete require.cache[key];
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const fresh = require("../lib/device-screenshots") as typeof import("../lib/device-screenshots");
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return fresh.runCapturePass;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -376,6 +445,18 @@ const NORMAL = {
   load1: 0.2,
   cpuCount: 4,
   reason: "",
+} as import("../lib/resource-governor").PressureSnapshot;
+
+/**
+ * A forced HARD snapshot — the box is out of headroom. The governor refuses the
+ * soft queue and holds work in line; the scheduler must NOT treat this as
+ * parallelism (TASK_152 M6 headroom rule).
+ */
+const HARD = {
+  ...NORMAL,
+  level: "hard",
+  ramUsedPct: 95,
+  reason: "test_hard",
 } as import("../lib/resource-governor").PressureSnapshot;
 
 function addDevice(
@@ -465,11 +546,20 @@ function frame(deviceId: string, over: Partial<FrameRow> = {}): FrameRow {
 const capturedFrames = () => frames.filter((f) => f.status === "captured");
 const capturingFrames = () => frames.filter((f) => f.status === "capturing");
 const deviceQueue = () => queue.filter((q) => q.feature === "deviceScreenshots");
+/** TASK_152 M6 — the persisted rotation cursor for a user, or undefined. */
+const cursorFor = (userId: string) => cursors.find((c) => c.userId === userId);
+/** Devices captured so far, in order. */
+const capturedIds = () => capturedFrames().map((f) => f.deviceId);
+/** Move the shared clock forward, so rotation slice windows can elapse. */
+const advanceMinutes = (m: number): void => {
+  clock = new Date(clock.getTime() + m * 60_000);
+};
 
 beforeEach(() => {
   devices = [];
   frames = [];
   queue = [];
+  cursors = [];
   audits = [];
   idSeq = 0;
   captureCalls = [];
@@ -496,6 +586,10 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
   assert.equal(defaults.maxConcurrent, 2, "owner decision: start at 2");
   assert.equal(defaults.intervalMinutes, 60);
   assert.equal(defaults.retentionDays, 14);
+  // TASK_152 M6 — the scheduler dials resolve to "inherit the governor's warn
+  // line" (75) and the owner's 25-minute rotation slice.
+  assert.equal(defaults.headroomRamPct, 75, "0 = inherit governorRamWarnPct (75)");
+  assert.equal(defaults.rotationSliceMinutes, 25, "owner figure: every 20-30 min");
 
   // A missing row must be as safe as an empty one.
   assert.deepEqual(resolveScreenshotSettings(null), defaults);
@@ -520,7 +614,15 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
     screenshotCaptureIntervalMinutes: 1,
     screenshotRetentionDays: 1,
   });
-  assert.deepEqual(one, { enabled: true, maxConcurrent: 1, intervalMinutes: 1, retentionDays: 1 });
+  assert.deepEqual(one, {
+    enabled: true,
+    maxConcurrent: 1,
+    intervalMinutes: 1,
+    retentionDays: 1,
+    // M6 fields, at their resolved defaults (no governor row => warn 75).
+    headroomRamPct: 75,
+    rotationSliceMinutes: 25,
+  });
 });
 
 test("frame paths are relative, grouped by device and UTC day, and traversal-proof", () => {
@@ -592,7 +694,7 @@ test("with monitoring OFF nothing is captured, nothing is persisted, nothing is 
   assert.equal(queue.length, 0, "a disabled feature never takes a place in line");
 });
 
-test("the cap admits two captures and reports the rest as queued (start at 2, per the owner)", async () => {
+test("the cap admits two captures and ROTATES the rest — the excess waits its turn (start at 2, per the owner)", async () => {
   adminRow.screenshotCapturesMaxConcurrent = 2;
   addDevice("d1");
   addDevice("d2");
@@ -603,7 +705,12 @@ test("the cap admits two captures and reports the rest as queued (start at 2, pe
   assert.equal(result.attempted, 2);
   assert.equal(result.captured, 2);
   assert.equal(result.failed, 0);
-  assert.equal(result.queued, 1);
+  // TASK_152 M6 — 3 eligible devices against 2 granted slots is now ROTATION, so
+  // the third device is DEFERRED (not yet its turn), never offered to — and so
+  // never queued by — the governor. It is NOT a failure and it produces no row.
+  assert.equal(result.queued, 0, "a deferred device is never put in the governor queue");
+  assert.equal(result.deferred, 1, "the third device waits for a later rotation slice");
+  assert.equal(result.rotatingUsers, 1, "one user is rotating");
   // The cap is on the BROWSER, so it must be visible as exactly 2 launched.
   assert.equal(captureCalls.length, 2);
   assert.equal(capturedFrames().length, 2);
@@ -637,7 +744,11 @@ test("the capture cap binds even with the governor's master switch OFF, and pers
   const result = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
 
   assert.equal(result.attempted, 1, "the feature cap still protects the box");
-  assert.equal(result.queued, 1);
+  // TASK_152 M6 — the second device is ROTATED (deferred), not queued: with the
+  // governor off there is no queue at all, and rotation is what keeps it alive to
+  // run on a later slice.
+  assert.equal(result.deferred, 1);
+  assert.equal(result.queued, 0);
   assert.equal(
     queue.length,
     0,
@@ -646,46 +757,27 @@ test("the capture cap binds even with the governor's master switch OFF, and pers
 });
 
 test("with the governor ON a queued device gets ONE durable row that a later pass reuses", async () => {
+  // TASK_152 M6 — a SINGLE device whose user's roster fits their slots is offered
+  // to the governor even when the box is under hard pressure: it is the governor,
+  // not the scheduler, that then holds it in line. (A user whose roster EXCEEDS
+  // their slots is served by ROTATION instead and never reaches the queue — that is
+  // asserted by the rotation tests.) This keeps TASK_105's idempotent-queue-row
+  // behaviour under test on the path M6 leaves open.
   adminRow.governorEnabled = true;
   adminRow.screenshotCapturesMaxConcurrent = 1;
   addDevice("d1");
-  addDevice("d2");
 
-  // A capture that stays in flight until we release it, so the cap remains full
-  // across a second pass — which is the only way to observe row reuse.
-  let release: (() => void) | null = null;
-  const blockingCapture = async (device: { id: string }, framePath: string) => {
-    captureCalls.push(device.id);
-    await new Promise<void>((res) => {
-      release = () => res();
-    });
-    await writeFile(framePath, Buffer.from("PNGDATA"));
-    return {
-      filePath: relative(screenshotBaseDir(), framePath),
-      bytes: 7,
-      width: 1440,
-      height: 900,
-    };
-  };
+  const pass1 = await runCapturePass(slowCapture(), { now: clock, pressure: HARD });
+  assert.equal(pass1.queued, 1, "hard pressure puts the device in line");
+  assert.equal(pass1.captured, 0, "nothing is captured under hard pressure");
 
-  const pass1 = runCapturePass(blockingCapture, { now: clock, pressure: NORMAL });
-  // Let pass 1 reach the point where d1's capture is holding the slot.
-  for (let i = 0; i < 50 && !captureCalls.includes("d1"); i++) {
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  assert.ok(captureCalls.includes("d1"), "pass 1 must have started d1's capture");
-  assert.equal(capturingFrames().length, 1, "the in-flight row holds the only slot");
-
-  const pass2 = await runCapturePass(blockingCapture, { now: clock, pressure: NORMAL });
-  assert.equal(pass2.queued, 1, "d2 is still waiting while d1 captures");
+  const pass2 = await runCapturePass(slowCapture(), { now: clock, pressure: HARD });
+  assert.equal(pass2.queued, 1, "the still-due device is offered again");
 
   const waiting = deviceQueue().filter((q) => q.status === "queued");
-  assert.equal(waiting.length, 1, "a re-ask must REUSE d2's one queue row, not add another");
-  assert.equal(waiting[0].ref, "d2", "the row is keyed by device id, which is what makes it idempotent");
-
-  release!();
-  await pass1;
-  assert.equal(capturedFrames().length, 1, "d1's capture still completed normally");
+  assert.equal(waiting.length, 1, "a re-ask must REUSE d1's one queue row, not add another");
+  assert.equal(waiting[0].ref, "d1", "the row is keyed by device id, which is what makes it idempotent");
+  assert.equal(captureCalls.length, 0, "a queued device launches no browser");
 });
 
 test("a capture that records a real frame stores its path and true size", async () => {
@@ -997,6 +1089,238 @@ test("the screenshot root is outside the application directory", () => {
   const root = screenshotBaseDir();
   assert.ok(!root.includes("/spaceworker/"), `screenshot root must be outside the repo: ${root}`);
 });
+
+// ---------------------------------------------------------------------------
+// TASK_152 M6 — the capture scheduler: headroom concurrency, fairness, rotation
+// ---------------------------------------------------------------------------
+//
+// SCOPE: these drive the REAL scheduler and the REAL governor against the
+// in-memory stand-ins above. There is no real device VM or browser here, so
+// nothing below proves a capture actually reached a real machine — that step is
+// owner-run and is labelled as such in the task doc. What IS proven here is the
+// scheduling DECISION (who is offered, deferred, rotated, throttled) and the
+// persisted cursor, with raw counts asserted at every step.
+
+test("rotation: one slot, four devices — every device gets its turn and none is failed", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  addDevice("d1");
+  addDevice("d2");
+  addDevice("d3");
+  addDevice("d4");
+
+  // Slice 1 (t0): the first device is served; the rest are DEFERRED, not failed.
+  const p1 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.equal(p1.captured, 1);
+  assert.equal(p1.failed, 0, "a device that has not had its turn is NOT a failure");
+  assert.equal(p1.deferred, 3, "the other three wait for a later slice");
+  assert.equal(p1.rotatingUsers, 1);
+  assert.deepEqual(captureCalls, ["d1"]);
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d1", "the cursor records the LAST device served");
+
+  // WITHIN the slice window nothing else is captured — the owner's 20-30 min
+  // per-device turn, not "capture everyone at once".
+  advanceMinutes(5);
+  const hold = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.equal(hold.captured, 0, "within the slice the user HOLDS");
+  assert.equal(hold.deferred, 3);
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d1", "a held pass does not advance the cursor");
+
+  // Each elapsed window serves exactly ONE more device and advances the cursor.
+  advanceMinutes(20); // t0 + 25 = one full slice
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.deepEqual(captureCalls.slice(1), ["d2"]);
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d2");
+
+  advanceMinutes(25); // t0 + 50
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  advanceMinutes(25); // t0 + 75 — d1 is due again by now, so the cycle wraps
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  advanceMinutes(25); // t0 + 100
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+
+  // Every device was served at least once — none starves.
+  assert.deepEqual(
+    [...new Set(capturedIds())].sort(),
+    ["d1", "d2", "d3", "d4"],
+    "every device got a turn",
+  );
+  assert.equal(capturedIds().length, 5, "the cycle wrapped and d1 came round again");
+});
+
+
+test("raising the cap mid-run switches a rotating user to PARALLEL without a restart", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  addDevice("d1");
+  addDevice("d2");
+  addDevice("d3");
+  addDevice("d4");
+
+  const p1 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.equal(p1.rotatingUsers, 1, "one slot against four devices rotates");
+  assert.deepEqual(captureCalls, ["d1"]);
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d1");
+
+  // The admin raises the cap to 4 — read on the NEXT pass, same process, NO restart.
+  adminRow.screenshotCapturesMaxConcurrent = 4;
+  advanceMinutes(1); // deliberately still INSIDE the old slice window
+  const p2 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+
+  assert.equal(p2.parallel, true, "idle box + nobody else => parallel");
+  assert.equal(p2.rotatingUsers, 0, "rotation STOPPED");
+  assert.equal(p2.deferred, 0, "nothing is held back when everything fits");
+  assert.deepEqual(captureCalls.slice(1).sort(), ["d2", "d3", "d4"], "the rest run at once");
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d1", "parallel mode leaves the cursor untouched");
+});
+
+test("lowering the cap mid-run degrades to rotation and LOSES NO QUEUED DEVICE", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 2;
+  addDevice("d1");
+  addDevice("d2");
+  addDevice("d3");
+  addDevice("d4");
+
+  const p1 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  // Two slots against four devices: the first slice serves d1+d2, defers d3+d4.
+  assert.deepEqual(captureCalls, ["d1", "d2"]);
+  assert.equal(p1.deferred, 2);
+  assert.equal(cursorFor("user_1")!.cursorDeviceId, "d2", "cursor = LAST device of the slice");
+
+  // Lower the cap to 1 mid-run, then run the NEXT slice.
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  advanceMinutes(25);
+  const p2 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  // CRITICAL: the fresh one-slot slice resumes ONE STEP PAST d2 — it must not
+  // re-serve d2 (already done) nor jump to d4 (which would lose d3).
+  assert.deepEqual(captureCalls.slice(2), ["d3"], "resumes right after the last served device");
+  assert.equal(p2.deferred, 1, "d4 still waits its turn");
+
+  advanceMinutes(25);
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  const served = new Set(capturedIds());
+  assert.ok(served.has("d3") && served.has("d4"), "no deferred device was dropped by the cap change");
+  assert.equal(
+    capturedIds().filter((id) => id === "d2").length,
+    1,
+    "the cap change did not duplicate a device's capture",
+  );
+});
+
+
+test("fairness: a many-device user does not starve a single-device user", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 2;
+  for (const id of ["a1", "a2", "a3", "a4"]) addDevice(id, { userId: "user_a" });
+  addDevice("b1", { userId: "user_b" });
+
+  const p1 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+
+  const byUser = (uid: string) => capturedFrames().filter((f) => f.userId === uid).length;
+  assert.equal(p1.parallel, false, "two users competing is not the parallel case");
+  assert.equal(p1.rotatingUsers, 1, "only the many-device user rotates");
+  assert.equal(byUser("user_a"), 1, "the big user is held to its fair SHARE (1)");
+  assert.equal(byUser("user_b"), 1, "the single-device user is NOT starved");
+});
+
+test("fairness at a cap of ONE: the busy user's rotation frees the slot for the other", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  for (const id of ["a1", "a2", "a3", "a4"]) addDevice(id, { userId: "user_a" });
+  addDevice("b1", { userId: "user_b" });
+
+  const p1 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  const p2 = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+
+  const byUser = (uid: string) => capturedFrames().filter((f) => f.userId === uid).length;
+  assert.equal(byUser("user_a"), 1, "one slot: the big user still takes just one turn");
+  assert.equal(byUser("user_b"), 1, "the single-device user then runs — it is not starved");
+  assert.equal(p1.captured + p2.captured, 2, "both users got exactly one capture across two passes");
+});
+
+test("the rotation cursor is PERSISTED: rotation survives a process restart", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  addDevice("d1");
+  addDevice("d2");
+  addDevice("d3");
+
+  await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.deepEqual(captureCalls, ["d1"]);
+  const persisted = cursorFor("user_1");
+  assert.ok(persisted, "the cursor is a DB row, not module state");
+  assert.equal(persisted.cursorDeviceId, "d1");
+
+  // Simulate a NEW PROCESS: a fresh module instance (a DIFFERENT function object).
+  const restarted = reloadRunCapturePass();
+  assert.notEqual(restarted, runCapturePass, "this is genuinely a different instance");
+
+  advanceMinutes(25);
+  await restarted(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.deepEqual(
+    captureCalls.slice(1),
+    ["d2"],
+    "after the restart the rotation resumed AFTER d1, from the persisted row",
+  );
+
+  // A second restart still resumes correctly — the row is durable, not cached.
+  const restartedAgain = reloadRunCapturePass();
+  advanceMinutes(25);
+  await restartedAgain(slowCapture(), { now: clock, pressure: NORMAL });
+  assert.deepEqual(capturedIds(), ["d1", "d2", "d3"]);
+});
+
+
+test("headroom: an idle box runs a lone user's devices SIMULTANEOUSLY", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 4;
+  for (const id of ["d1", "d2", "d3", "d4"]) addDevice(id);
+
+  const calm = await runCapturePass(slowCapture(), {
+    now: clock,
+    pressure: { ...NORMAL, ramUsedPct: 50 },
+  });
+  assert.equal(calm.parallel, true, "below the warn line with nobody else => parallel");
+  assert.equal(calm.captured, 4, "all four run at once");
+  assert.equal(calm.deferred, 0);
+  assert.equal(calm.rotatingUsers, 0);
+});
+
+test("the headroom DIAL fires: a box above it throttles the lone user to rotation", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 4;
+  adminRow.screenshotHeadroomRamPct = 60; // the owner's ~60% figure, as a dial
+  for (const id of ["d1", "d2", "d3", "d4"]) addDevice(id);
+
+  // 50% < the 60% dial => headroom => parallel, all four at once.
+  const calm = await runCapturePass(slowCapture(), {
+    now: clock,
+    pressure: { ...NORMAL, ramUsedPct: 50 },
+  });
+  assert.equal(calm.parallel, true, "below the dial IS headroom");
+  assert.equal(calm.captured, 4);
+
+  // 65% > the 60% dial => NO headroom => one at a time, the rest rotate. Move the
+  // clock on so the devices are due again for this second observation.
+  advanceMinutes(60);
+  const hot = await runCapturePass(slowCapture(), {
+    now: clock,
+    pressure: { ...NORMAL, ramUsedPct: 65 },
+  });
+  assert.equal(hot.parallel, false, "above the dial there is no headroom");
+  assert.equal(hot.captured, 1, "out of headroom => ONE at a time");
+  assert.equal(hot.deferred, 3);
+  assert.equal(hot.rotatingUsers, 1);
+});
+
+test("an offline device is skipped; one merely waiting its turn is DEFERRED — never failed", async () => {
+  adminRow.screenshotCapturesMaxConcurrent = 1;
+  addDevice("d1");
+  addDevice("d2", { status: "offline" }); // the real, existing failure mode: not online
+  addDevice("d3");
+
+  const r = await runCapturePass(slowCapture(), { now: clock, pressure: NORMAL });
+  const statusOf = (id: string) => r.results.find((x) => x.deviceId === id)?.status;
+
+  assert.equal(r.captured, 1);
+  assert.equal(r.failed, 0, "neither an offline device nor a waiting one is a failure");
+  assert.equal(statusOf("d3"), "deferred", "online-but-not-yet-its-turn is deferral, not failure");
+  assert.notEqual(statusOf("d2"), "failed", "the offline device never appears as a failure");
+});
+
 
 test.after(async () => {
   await rm(SCREENSHOT_ROOT, { recursive: true, force: true });

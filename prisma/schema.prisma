@@ -166,6 +166,8 @@ model User {
   // TASK_152 M5 — screen-monitoring notification config + firing state.
   screenTriggers           ScreenTrigger[]
   screenDigestRollups      ScreenDigestRollup[]
+  // TASK_152 M6 — the capture scheduler's persisted per-user rotation cursor.
+  screenshotRotationCursors ScreenshotRotationCursor[]
 }
 
 model VerificationCode {
@@ -332,6 +334,30 @@ model AdminSetting {
   screenshotCapturesMaxConcurrent  Int     @default(2)
   screenshotCaptureIntervalMinutes Int     @default(60)
   screenshotRetentionDays          Int     @default(14)
+  // TASK_152 M6 — the capture SCHEDULER's two dials. Both are admin settings
+  // (CROSS-TRACK RULE 7 — nothing hardwired) and both are ADDITIVE with a
+  // default that reproduces today's behaviour exactly (a 1-user box with the
+  // governor off never rotates and never consults headroom).
+  //
+  //   screenshotHeadroomRamPct = the RAM used % below which the box counts as
+  //                              having headroom, so a lone monitoring user may
+  //                              run captures SIMULTANEOUSLY up to the cap. The
+  //                              default 0 means INHERIT governorRamWarnPct —
+  //                              deliberately NOT a third hardcoded number: the
+  //                              warn line is already the exact "box is still
+  //                              healthy" boundary (premium bypass uses the same
+  //                              `level === normal` test). An admin who wants the
+  //                              owner's ~60% sets this to 60 here; anything
+  //                              > 0 is clamped to <= governorRamHardPct so a
+  //                              headroom line can never sit above the hard line.
+  //   screenshotRotationSliceMinutes = when a user's eligible devices exceed
+  //                              their granted slots, how long one ROTATION
+  //                              slice holds before the per-user cursor advances
+  //                              to the next slice (owner's figure: every
+  //                              20-30 min; default 25). A shorter/longer cadence
+  //                              is a dial, never a code change.
+  screenshotHeadroomRamPct         Int     @default(0)
+  screenshotRotationSliceMinutes   Int     @default(25)
 }
 
 model Mailbox {
@@ -2098,6 +2124,46 @@ model DeviceScreenshot {
   @@index([userId, createdAt])
   @@index([summaryDate, status])
   @@index([summaryDate, triggerEvaluatedAt])
+}
+
+// TASK_152 M6 — the capture scheduler's PERSISTED per-user ROTATION cursor.
+//
+// WHY THIS IS A TABLE AND NOT A MODULE VARIABLE: the whole point of rotation is
+// that it survives a restart. A capture pass runs in a short-lived sweep process
+// (deploy/screenshot-sweep.timer → app/api/internal/screenshot-sweep), so an
+// in-memory cursor would reset to "start at the first device" on every tick and
+// the LAST device would never be sampled. This row is the durable handoff.
+//
+// WHAT IT MEANS: `cursorDeviceId` is the LAST device the current slice served,
+// and `rotatedAt` is when that slice was served. A pass reads the cursor, serves a
+// slice of `min(granted slots, roster)` devices STARTING ONE STEP AFTER
+// `cursorDeviceId` (wrapping), and — only once `rotatedAt` is older than the
+// admin's `screenshotRotationSliceMinutes` — starts a fresh slice, moving the
+// cursor to that slice's last device so the next window continues from there.
+// Within the window a rotating user serves NOTHING (its other devices are simply
+// deferred), which is what gives each device its 20-30 min turn. Nothing here
+// gates admission: the governor's `deviceScreenshots` slot is still the ONLY
+// thing that decides whether a capture may run (schema.prisma:298-303 forbids a
+// parallel counter). This table only decides WHO to ASK about.
+//
+// ONE row per user (`@unique userId`). It is operational state, not an audit
+// record, so it cascades with the account (same reasoning as GovernorQueueEntry).
+model ScreenshotRotationCursor {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // The LAST device the current rotation slice served. The next slice resumes one
+  // step after it (wrapping), so the advance is correct even if the granted slot
+  // count changes between slices. Nullable because the very first pass for a user
+  // has no cursor yet (and because the device may later be removed — a dangling id
+  // degrades to "start at the first eligible device").
+  cursorDeviceId String?
+  // When the current slice began. The cursor advances only once this is older
+  // than screenshotRotationSliceMinutes, which is what makes a device hold its
+  // turn for the owner's 20-30 min before the next device takes over.
+  rotatedAt      DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 // TASK_152 M5 — a user-defined trigger for screen-monitoring notifications.
