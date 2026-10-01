@@ -12,6 +12,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import {
   ScreenTimeline,
+  captureFailureCopy,
   summaryPendingCopy,
   type ScreenTimelineFrame,
 } from "../components/screen-timeline";
@@ -92,14 +93,46 @@ test("a purged-image summary shows the TEXT with an \"image expired\" tile and n
   assert.doesNotMatch(rows[0], /<img/);
 });
 
-test("only a real CAPTURE failure is rendered as a failure", () => {
+test("only a real CAPTURE failure is rendered as a failure — and as a sentence", () => {
   const { rows } = render([
     frame({ id: "f1", status: "failed", failureReason: "device_offline", capturedAt: null }),
   ]);
-  assert.match(rows[0], /Capture failed — device_offline\./);
+  // The owner reads a sentence, never the machine code.
+  assert.match(rows[0], /The machine was offline, so nothing could be captured\./);
+  assert.doesNotMatch(rows[0], /device_offline/);
   assert.match(rows[0], /text-red-500/);
   assert.match(rows[0], /no frame/);
   assert.doesNotMatch(rows[0], /<img/);
+});
+
+test("the reported raw Playwright dump can never reach the timeline verbatim", () => {
+  // The EXACT reason stored on 2026-10-01 13:36:40 (DeviceScreenshot, WilkSF9) —
+  // the string the owner saw as unreadable red text.
+  const raw =
+    'capture_service_http_500: {"ok":false,"failureReason":"locator.click: Timeout 10000ms exceeded.\\nCall log:\\n  - waiting for getByRole(\'button\', { name: /^connect$/i })\\n    - locator resolved to <button disabled title=\\"The machine is offline\\" class=\\"flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white ...';
+  const { rows } = render([
+    frame({ id: "f1", status: "failed", failureReason: raw, capturedAt: null }),
+  ]);
+
+  // Still an honest failure, still red...
+  assert.match(rows[0], /Capture failed — /);
+  assert.match(rows[0], /text-red-500/);
+  // ...but ONE bounded line: the dump is truncated and none of its markup or
+  // call-log noise survives.
+  assert.match(rows[0], /…/, "an over-long reason is truncated");
+  assert.doesNotMatch(rows[0], /bg-brand-600/);
+  assert.doesNotMatch(rows[0], /element is not enabled/);
+  assert.doesNotMatch(rows[0], /- locator resolved to/);
+});
+
+test("every known capture-failure code maps to plain, actionable copy", () => {
+  assert.match(captureFailureCopy("device_offline"), /machine was offline/);
+  assert.match(captureFailureCopy("worker_timeout"), /retried/);
+  assert.match(captureFailureCopy("capture_service_token_not_set"), /not set up on the server/);
+  assert.match(captureFailureCopy("empty_frame"), /came back blank/);
+  assert.match(captureFailureCopy(null), /no reason was recorded/);
+  // An unknown code is still shown, never swallowed.
+  assert.equal(captureFailureCopy("something_new"), "Capture failed — something_new.");
 });
 
 test("every summaryError code maps to calm, specific copy", () => {

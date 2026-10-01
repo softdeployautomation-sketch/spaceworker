@@ -29,7 +29,7 @@ import {
 
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
-import { ScreenTimeline } from "@/components/screen-timeline";
+import { ScreenTimeline, captureFailureCopy } from "@/components/screen-timeline";
 import { ScreenAlertsCard } from "@/components/screen-alerts-card";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import {
@@ -2189,7 +2189,9 @@ function ScreenMonitoringCard({
                     key={frame.id}
                     onClick={() => setOpenFrame(openFrame === frame.id ? null : frame.id)}
                     title={`${frame.status} · ${frameAt(frame).toLocaleString()}${
-                      frame.failureReason ? ` · ${frame.failureReason}` : ""
+                      frame.status !== "captured"
+                        ? ` · ${captureFailureCopy(frame.failureReason)}`
+                        : ""
                     }`}
                     className={`rounded-md border px-2 py-1 text-xs transition-colors ${
                       openFrame === frame.id

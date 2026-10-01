@@ -57,6 +57,48 @@ export function frameTimestamp(frame: Pick<ScreenTimelineFrame, "capturedAt" | "
   return new Date(frame.capturedAt ?? frame.createdAt);
 }
 
+/**
+ * Why a FAILED capture reads the way it does — the mirror of summaryPendingCopy
+ * above, but for the OTHER axis (status !== "captured", which IS a real error).
+ *
+ * Only known machine codes get a sentence; the wording is deliberately plain and
+ * tells the owner whether anything is expected of them. An UNKNOWN reason is
+ * still shown rather than swallowed, but on ONE bounded line: a failure reason
+ * reaches here from the capture service, and a raw upstream dump (the
+ * `locator.click: Timeout 10000ms …` call log, once) must never be able to reflow
+ * the whole timeline. The root cause of THAT dump is fixed at the source (see
+ * browser-capture/capture.ts `connectRefusal`); this is the defensive half.
+ */
+export function captureFailureCopy(reason: string | null): string {
+  switch (reason) {
+    case null:
+    case "":
+      return "Couldn’t take the frame — no reason was recorded.";
+    case "device_offline":
+      return "The machine was offline, so nothing could be captured. This clears by itself once it checks in.";
+    case "worker_timeout":
+      return "A capture started but never finished. It will be retried.";
+    case "capture_service_token_not_set":
+      return "Screen capture is not set up on the server yet.";
+    case "capture_service_unreachable":
+      return "The capture service on the server could not be reached.";
+    case "empty_frame":
+      return "The screen came back blank, so there was nothing to store.";
+    case "no_frame":
+      return "No image was produced for this attempt.";
+    case "capture_failed":
+      return "The capture failed. It will be retried.";
+    default:
+      return `Capture failed — ${boundedReason(reason)}.`;
+  }
+}
+
+/** One bounded line: an unexpected reason must never reflow the timeline. */
+function boundedReason(reason: string): string {
+  const oneLine = reason.replace(/\s+/g, " ").trim();
+  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}…` : oneLine;
+}
+
 export function ScreenTimeline({
   deviceId,
   frames,
@@ -118,8 +160,7 @@ export function ScreenTimeline({
               )}
               {frame.status !== "captured" && (
                 <p className="mt-0.5 text-sm text-red-500">
-                  Capture failed
-                  {frame.failureReason ? ` — ${frame.failureReason}` : ""}.
+                  {captureFailureCopy(frame.failureReason)}
                 </p>
               )}
             </div>

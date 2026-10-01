@@ -153,6 +153,43 @@ async function waitForConnected(frame: Frame, timeoutMs = CONNECTED_TIMEOUT_MS):
   throw new CaptureError("mesh_session_not_connected");
 }
 
+// The minimum a Connect button must offer so this decision can be unit-tested
+// with no browser attached (tests/screen-capture-failure.test.ts). A real
+// Playwright `Locator` satisfies it structurally.
+export interface ConnectButton {
+  isDisabled(): Promise<boolean>;
+  click(options: { timeout: number }): Promise<void>;
+}
+
+/**
+ * Click a Connect button that the CONSOLE disables while the machine is offline.
+ *
+ * The console renders Connect as `<button disabled title="The machine is
+ * offline">` for an offline PC (components/device-console.tsx). Clicking a
+ * DISABLED button does not fail fast: Playwright waits out the entire click
+ * timeout and then throws a raw `locator.click: Timeout 10000ms exceeded` dump
+ * naming the button's own CSS classes and its actionability call log. That dump
+ * reached the owner's screen timeline verbatim as
+ * `capture_service_http_500: {"ok":false,"failureReason":"locator.click: …"}`
+ * and the one fact that mattered — the machine was offline — was buried in it.
+ *
+ * So: if the button is already disabled, or a click timeout shows it disabled
+ * (the machine can go offline between the two), report it as offline instead of
+ * letting the raw dump escape. Returns `true` when the click actually landed.
+ */
+export async function connectRefusal(button: ConnectButton): Promise<"clicked" | "offline"> {
+  if (await button.isDisabled().catch(() => false)) return "offline";
+  try {
+    await button.click({ timeout: 10_000 });
+    return "clicked";
+  } catch (err) {
+    // Re-check before rethrowing: a disabled-button timeout is the offline case,
+    // not a generic failure worth a Playwright call log.
+    if (await button.isDisabled().catch(() => false)) return "offline";
+    throw err;
+  }
+}
+
 // (TASK_153 S2 REMOVED `enableInputToggle` HERE.)
 //
 // It ticked the mesh Input toggle (`#DeskControl`) before EVERY frame "to match
@@ -259,7 +296,13 @@ export async function captureScreen(req: CaptureRequest): Promise<CaptureResult>
     await page.goto(req.consoleUrl, { waitUntil: "domcontentloaded", timeout: GOTO_TIMEOUT_MS });
     const ourConnect = page.getByRole("button", { name: /^connect$/i });
     await withTimeout(ourConnect.waitFor({ state: "visible" }), GOTO_TIMEOUT_MS, "our_connect");
-    await ourConnect.click({ timeout: 10_000 });
+    // The console DISABLES Connect for an offline machine (title "The machine is
+    // offline"). The app's own liveness check races this — the device can go
+    // offline between that check and now — so a refused click here is an
+    // EXPECTED outcome, reported plainly instead of as a Playwright log dump.
+    if ((await connectRefusal(ourConnect)) === "offline") {
+      return { ok: false, failureReason: "device_offline" };
+    }
 
     // 2) MeshCentral's OWN Connect, INSIDE the frame — without this click there
     //    is no live session (the iframe just says "Disconnected").
@@ -270,7 +313,11 @@ export async function captureScreen(req: CaptureRequest): Promise<CaptureResult>
       FRAME_TIMEOUT_MS,
       "mesh_connect",
     );
-    await meshConnect.click({ timeout: 10_000 });
+    // Same rule inside the frame: MeshCentral also disables its Connect while the
+    // agent is offline.
+    if ((await connectRefusal(meshConnect)) === "offline") {
+      return { ok: false, failureReason: "device_offline" };
+    }
 
     // 3) Wait for a genuinely live session, then let the desktop paint.
     await waitForConnected(held.frame);

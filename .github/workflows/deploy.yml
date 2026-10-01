@@ -256,6 +256,17 @@ jobs:
             systemctl start extraction-worker || echo "::warning::extraction-worker failed to start — main app unaffected"
             sleep 2
             systemctl is-active extraction-worker || echo "::warning::extraction-worker is not active after deploy"
+            # screenshot-capture OWNS the Chromium that takes device frames, and
+            # its code (browser-capture/) ships in the tar above. It must be
+            # RESTARTED to pick that code up: the units step's
+            # `systemctl enable --now` is a NO-OP for an already-running daemon,
+            # so without this line a change to capture.ts is extracted to disk and
+            # the live process keeps running the OLD code forever. It is
+            # stateless (no DB, no session secret), so a restart only aborts any
+            # in-flight capture — whose row the app's reaper already cleans up.
+            systemctl restart screenshot-capture || echo "::warning::screenshot-capture failed to restart — captures may keep using old code"
+            sleep 2
+            systemctl is-active screenshot-capture || echo "::warning::screenshot-capture is not active after deploy"
           REMOTE_EOF
 
       - name: Install systemd units (discovered from deploy/)

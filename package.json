@@ -29,6 +29,7 @@
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
     "test:summaries": "tsx --test tests/screenshot-summaries.test.ts",
     "test:timeline": "tsx --test tests/screen-timeline.test.ts",
+    "test:capturefail": "tsx --test tests/screen-capture-failure.test.ts",
     "test:screennotify": "tsx --test tests/screen-notifications.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
     "test:idle": "tsx --test tests/vantra-idle-provenance.test.ts",
