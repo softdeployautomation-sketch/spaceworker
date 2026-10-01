@@ -32,16 +32,37 @@ export interface ChannelryAiToolCall {
   arguments: unknown;
 }
 
+/**
+ * TASK_152 M3 — a message's content. A plain string (every caller before M3)
+ * OR the standard OpenAI-style multimodal parts array, which is how an IMAGE
+ * is attached to a call. The relay forwards `messages` verbatim, so accepting
+ * the array shape here is what lets the screenshot-summary path send a frame.
+ * Additive: every existing caller still passes a bare string.
+ */
+export type ChannelryAiMessageContent =
+  | string
+  | Array<
+      | { type: "text"; text: string }
+      | { type: "image_url"; image_url: { url: string } }
+    >;
+
 export interface ChannelryAiChatOptions {
   // Plain-completion mode: pass `system`/`user`.
   system?: string;
   user?: string;
   // Tool-calling mode: pass `messages` (and optionally `tools`).
-  messages?: Array<{ role: string; content: string }>;
+  messages?: Array<{ role: string; content: ChannelryAiMessageContent }>;
   tools?: unknown[];
   max_tokens?: number;
   temperature?: number;
   json_mode?: boolean;
+  // TASK_152 M3 — optional model HINT forwarded to the relay. The relay's
+  // documented contract does not currently advertise model selection, so this
+  // is a REQUEST, not a guarantee: an unrecognised value must be ignored by the
+  // relay rather than error the call. The screenshot-summary path passes a
+  // cheaper vision model for routine frames (see lib/screenshot-summaries.ts);
+  // the cost lever that is FULLY in our control today is BATCHING, not this.
+  model?: string;
   // SpaceWorker's own opaque user id. Channelry attributes cost per-client
   // (SpaceWorker) only — this field is what lets SpaceWorker break down ITS
   // OWN daily pool by its own user later if it ever wants to. Never hardcode
@@ -132,6 +153,9 @@ export async function channelryAiChat(
   if (opts.max_tokens !== undefined) payload.max_tokens = opts.max_tokens;
   if (opts.temperature !== undefined) payload.temperature = opts.temperature;
   if (opts.json_mode !== undefined) payload.json_mode = opts.json_mode;
+  // TASK_152 M3 — forward the optional model hint. Additive: callers that never
+  // set it (every caller before M3) send exactly the same payload as before.
+  if (opts.model !== undefined) payload.model = opts.model;
 
   let res: Response;
   try {

@@ -29,6 +29,7 @@ import {
 
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
+import { ScreenTimeline } from "@/components/screen-timeline";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { formatIdle } from "@/lib/device-idle";
 import { timeAgo } from "@/lib/format-date";
@@ -120,6 +121,17 @@ type ScreenMonitorView = {
     capturedAt: string | null;
     createdAt: string;
     bytes: number | null;
+    // TASK_152 M3 — the SUMMARY axis (mirrors lib/device-screenshots FrameView).
+    // A captured frame with summary === null is NORMAL, not an error: it may not
+    // be summarised yet, or the owner's AI budget for today ran out. The reason
+    // lives in summaryError and is rendered as information, never as a failure.
+    summary: string | null;
+    summaryError: string | null;
+    summaryModel: string | null;
+    summarisedAt: string | null;
+    /** Set when retention deleted the raw image but KEPT the summary row: there
+     *  is text to show and no file to fetch, so the UI must not render an <img>. */
+    imagePurgedAt: string | null;
   }>;
 };
 
@@ -2165,6 +2177,25 @@ function ScreenMonitoringCard({
                   />
                 </div>
               )}
+              {/* TASK_152 M3 — the SCROLLABLE timeline. Newest first (the API
+                  already returns frames newest-first), each summary sitting
+                  beside its own frame, so the owner can recollect the day by
+                  READING rather than by opening 24 pictures one at a time. The
+                  strip above is unchanged: clicking a time still opens that
+                  frame in place, and clicking a thumbnail here does the same.
+                  A captured frame with no summary renders a neutral "not
+                  summarised" line — never an error; only a real capture failure
+                  gets red. The markup lives in components/screen-timeline.tsx so
+                  it can be server-rendered (and asserted) on its own. */}
+              <p className="mt-3 text-xs font-medium uppercase tracking-wide text-fg-muted">
+                Timeline
+              </p>
+              <ScreenTimeline
+                deviceId={deviceId}
+                frames={view.frames}
+                openFrameId={openFrame}
+                onToggleFrame={(id) => setOpenFrame(openFrame === id ? null : id)}
+              />
             </>
           )}
         </>

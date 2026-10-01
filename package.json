@@ -27,6 +27,8 @@
     "test:leadfilter": "tsx --test tests/lead-filter.test.ts",
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
+    "test:summaries": "tsx --test tests/screenshot-summaries.test.ts",
+    "test:timeline": "tsx --test tests/screen-timeline.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",

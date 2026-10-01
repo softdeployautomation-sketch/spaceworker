@@ -57,7 +57,11 @@ export async function GET(
   if (!device) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const policy = resolveScreenshotSettings(await getAdminSettings());
-  const frames = await listRecentFrames(device.id, 20);
+  // TASK_152 M3 — 50, not 20: the Screen monitoring tab now renders a SCROLLABLE
+  // timeline of frames with their summaries, so the owner can scan back over a
+  // couple of days without clicking. The read model carries TEXT only (plus
+  // metadata); the image bytes are still fetched per-frame from ./[frameId].
+  const frames = await listRecentFrames(device.id, 50);
 
   const hasOverride = typeof device.screenshotIntervalMinutesOverride === "number";
   return NextResponse.json({

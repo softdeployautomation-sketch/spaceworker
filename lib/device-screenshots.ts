@@ -335,15 +335,43 @@ export async function reapStuckCaptures(now: Date, stuckMs = CAPTURE_STUCK_MS): 
  * next pass), whereas deleting the row first would strand an unreferenced image
  * of somebody's screen on disk with nothing left to find it by. An unlink that
  * fails because the file is already gone is treated as success, not an error.
+ *
+ * TASK_152 M3 — WHAT HAPPENS TO A SUMMARY WHEN ITS IMAGE EXPIRES (the deliberate
+ * decision, not an accident):
+ *
+ *   A summary is the owner's own record of what a machine was doing. Deleting it
+ *   the moment the PNG ages out would destroy the only thing that outlives the
+ *   picture, so the TEXT OUTLIVES THE PIXELS:
+ *
+ *     step 1 (image expiry, at `retentionDays`):
+ *       - the file is unlinked and the row's filePath/bytes/width/height are
+ *         NULLED, and `imagePurgedAt` is stamped;
+ *       - if the row HAS a summary it is KEPT (marked, never destroyed);
+ *       - if it has NO summary it is deleted outright, exactly as before, so a
+ *         failed frame leaves nothing behind.
+ *
+ *     step 2 (summary expiry, one further `retentionDays` after `imagePurgedAt`):
+ *       the kept row is finally deleted. Total lifetime is therefore at most
+ *       2 x retentionDays — image for R days, then its kept summary for R more.
+ *
+ * The console renders an image-purged frame as its summary with no thumbnail
+ * (there is no file to fetch), so the owner sees the text, not a broken image.
+ *
+ * Returns the number of expired rows processed (image purged and/or row deleted).
  */
 export async function purgeExpiredFrames(now: Date, retentionDays: number): Promise<number> {
   const cutoff = startOfUtcDay(new Date(now.getTime() - retentionDays * 24 * 60 * 60 * 1000));
+
+  // ---- Step 1: the image expires -------------------------------------------------
   const expired = await db.deviceScreenshot.findMany({
     where: { summaryDate: { lt: cutoff }, status: { not: "capturing" } },
-    select: { id: true, filePath: true },
+    select: { id: true, filePath: true, summary: true, imagePurgedAt: true },
   });
   let purged = 0;
   for (const row of expired) {
+    // Already handled on an earlier pass — its kept summary is step 2's business.
+    if (row.imagePurgedAt) continue;
+
     if (row.filePath) {
       try {
         const abs = frameAbsPath(row.filePath);
@@ -351,12 +379,38 @@ export async function purgeExpiredFrames(now: Date, retentionDays: number): Prom
         await unlink(abs);
       } catch {
         // Missing file (or a path that fails the traversal guard) must never
-        // stop the purge — the row still goes.
+        // stop the purge — the row still goes (or is kept, if it has a summary).
       }
     }
-    await db.deviceScreenshot.delete({ where: { id: row.id } });
+
+    if (row.summary) {
+      await db.deviceScreenshot.update({
+        where: { id: row.id },
+        data: {
+          filePath: null,
+          bytes: null,
+          width: null,
+          height: null,
+          imagePurgedAt: now,
+        },
+      });
+    } else {
+      await db.deviceScreenshot.delete({ where: { id: row.id } });
+    }
     purged++;
   }
+
+  // ---- Step 2: the kept summary expires R days after its image -------------------
+  const staleSummaries = await db.deviceScreenshot.findMany({
+    where: { imagePurgedAt: { lt: cutoff } },
+    select: { id: true },
+  });
+  if (staleSummaries.length > 0) {
+    await db.deviceScreenshot.deleteMany({
+      where: { id: { in: staleSummaries.map((r) => r.id) } },
+    });
+  }
+
   return purged;
 }
 
@@ -719,7 +773,17 @@ export async function captureDeviceNow(
 export interface FrameView {
   id: string;
   status: string;
+  /** Why the CAPTURE failed. Independent of `summaryError` — see below. */
   failureReason: string | null;
+  // TASK_152 M3 — the SUMMARY axis, deliberately separate from failureReason.
+  // A captured frame with `summary === null` is NORMAL (not summarised yet, or
+  // the budget/cap ran out); the UI must never render that as a capture failure.
+  summary: string | null;
+  summaryError: string | null;
+  summaryModel: string | null;
+  summarisedAt: string | null;
+  /** Set when the raw image was deleted by retention but the summary was KEPT. */
+  imagePurgedAt: string | null;
   bytes: number | null;
   width: number | null;
   height: number | null;
@@ -727,7 +791,13 @@ export interface FrameView {
   createdAt: string;
 }
 
-/** Recent frames for one device, newest first — what the owner's UI lists. */
+/**
+ * Recent frames for one device, newest first — what the owner's UI lists.
+ *
+ * TASK_152 M3 raised the console's call site to 50: the Screen monitoring tab
+ * renders a SCROLLABLE timeline, so "20" (a strip worth) is no longer the right
+ * amount. The default stays 20 for any other caller.
+ */
 export async function listRecentFrames(deviceId: string, limit = 20): Promise<FrameView[]> {
   const rows = await db.deviceScreenshot.findMany({
     where: { deviceId },
@@ -737,6 +807,11 @@ export async function listRecentFrames(deviceId: string, limit = 20): Promise<Fr
       id: true,
       status: true,
       failureReason: true,
+      summary: true,
+      summaryError: true,
+      summaryModel: true,
+      summarisedAt: true,
+      imagePurgedAt: true,
       bytes: true,
       width: true,
       height: true,
@@ -744,14 +819,20 @@ export async function listRecentFrames(deviceId: string, limit = 20): Promise<Fr
       createdAt: true,
     },
   });
+  const iso = (d: Date | null | undefined) => (d ? d.toISOString() : null);
   return rows.map((row) => ({
     id: row.id,
     status: row.status,
-    failureReason: row.failureReason,
+    failureReason: row.failureReason ?? null,
+    summary: row.summary ?? null,
+    summaryError: row.summaryError ?? null,
+    summaryModel: row.summaryModel ?? null,
+    summarisedAt: iso(row.summarisedAt),
+    imagePurgedAt: iso(row.imagePurgedAt),
     bytes: row.bytes,
     width: row.width,
     height: row.height,
-    capturedAt: row.capturedAt ? row.capturedAt.toISOString() : null,
+    capturedAt: iso(row.capturedAt),
     createdAt: row.createdAt.toISOString(),
   }));
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { captureViaService, runCapturePass } from "@/lib/device-screenshots";
+import { runSummaryPass, summariseViaRelay } from "@/lib/screenshot-summaries";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
@@ -43,5 +44,20 @@ export async function POST(req: Request) {
   }
 
   const result = await runCapturePass(captureViaService);
-  return NextResponse.json(result);
+
+  // TASK_152 M3 — the summary pass runs AFTER the capture pass and IN ITS OWN
+  // try/catch, so a summarisation problem can never turn a successful capture
+  // into a failed sweep response. The two fail independently: if the relay is
+  // down, the frames are still captured and the sweep still reports them; the
+  // frames simply carry a summaryError until a later pass succeeds.
+  let summaries: unknown;
+  try {
+    summaries = await runSummaryPass(summariseViaRelay);
+  } catch (err) {
+    summaries = {
+      error: err instanceof Error ? err.message : "summary_pass_failed",
+    };
+  }
+
+  return NextResponse.json({ ...result, summaries });
 }

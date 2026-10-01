@@ -2024,6 +2024,31 @@ model DeviceScreenshot {
   height        Int?
   // Why a failed capture failed — a stable machine-ish reason string.
   failureReason String?
+  // ---------------------------------------------------------------------
+  // TASK_152 M3 — the per-frame SUMMARY (the owner's "summary section").
+  //
+  // TWO INDEPENDENT AXES, deliberately kept apart:
+  //   failureReason describes the CAPTURE (did we get a frame at all?).
+  //   summaryError  describes the SUMMARISATION (why is there no summary?).
+  // A captured frame with no summary is NORMAL, never an error: it may not
+  // have been summarised yet, or the owner's daily AI budget ran out. The UI
+  // must not render a missing summary as a capture failure.
+  //
+  // summary       = the AI-written description of what was on screen. NULL
+  //                 until summarisation succeeds (or if it never can).
+  // summaryError  = why a CAPTURED frame has no summary — "cap_exhausted",
+  //                 "ai_unavailable", "summary_parse_failed", ... NULL when a
+  //                 summary exists OR summarisation was never attempted.
+  // summaryModel  = which model/route produced the text (cost-gate audit).
+  // summarisedAt  = when the summary was written.
+  // imagePurgedAt = set by retention when the RAW image was deleted but the
+  //                 SUMMARY was kept (purgeExpiredFrames: text outlives pixels
+  //                 — deliberate and documented, not an accident).
+  summary       String?
+  summaryError  String?
+  summaryModel  String?
+  summarisedAt  DateTime?
+  imagePurgedAt DateTime?
   // The UTC day this frame belongs to, stamped at insert so Phase 2's daily
   // summary is one indexed range read instead of a timezone computation per row.
   summaryDate   DateTime

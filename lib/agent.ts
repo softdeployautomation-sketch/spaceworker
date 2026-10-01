@@ -31,13 +31,22 @@ import { notifyPendingActionViaTelegram } from "@/lib/agent-approval-notify";
 export const AGENT_PROPOSAL_TTL_MS = 60 * 60 * 1000; // 1 hour
 const MESSAGE_HISTORY_LIMIT = 12;
 
-// Task 40 — the codebase's established "today" reset boundary, matching the
-// mail-queue-drain convention (`new Date().toISOString().slice(0, 10)` = UTC
-// "YYYY-MM-DD"). User AI daily caps reset at UTC midnight, exactly like
-// Mailbox.sentTodayDate. Do NOT invent a second (e.g. local-timezone) boundary.
-export function startOfTodayUTC(): Date {
-  return new Date(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
-}
+// The one metered path every AI caller must use: today's spend, the cap
+// decision, and the real-cost row. Imported (not reimplemented) so there is a
+// single implementation of the per-user daily cap.
+import {
+  aiCapReached,
+  getUsedAiTodayHundredthsCent,
+  recordAiUsage,
+  startOfTodayUTC,
+} from "./ai-metering";
+
+// Task 40 — the codebase's established "today" reset boundary. TASK_152 M3 moved
+// the primitives into lib/ai-metering.ts so the device-screen summary pass can
+// spend through the EXACT same rule; startOfTodayUTC is re-exported here because
+// app/api/admin/ai-usage/route.ts has always imported it from this module and
+// that contract must keep working.
+export { startOfTodayUTC };
 
 // The system prompt encodes what this session proved works for converting a
 // vague goal ("AI apps outreach") into GOOD find/location terms: broad-but-
@@ -736,13 +745,13 @@ export async function runAgentTurn(opts: {
     where: { id: opts.userId },
     select: { id: true, aiDailyCapHundredthsCent: true, agentActionsEnabled: true },
   });
-  const usedAgg = await prisma.aiUsageLog.aggregate({
-    where: { userId: opts.userId, createdAt: { gte: startOfTodayUTC() } },
-    _sum: { costHundredthsCent: true },
-  });
-  const usedToday = usedAgg._sum.costHundredthsCent ?? 0;
+  // TASK_152 M3 — the cap read/decision now live in the shared helpers above
+  // (getUsedAiTodayHundredthsCent / aiCapReached) so the screenshot-summary path
+  // meters through the EXACT same rule instead of a drifted copy. Behaviour is
+  // unchanged: same SUM over AiUsageLog, same default cap, same >= comparison.
+  const usedToday = await getUsedAiTodayHundredthsCent(opts.userId);
   const cap = user?.aiDailyCapHundredthsCent ?? 20000;
-  if (usedToday >= cap) {
+  if (aiCapReached(usedToday, cap)) {
     const reply =
       "You've hit today's AI usage limit. Your daily allowance resets at midnight UTC — an admin can raise it sooner if you need it right away. What else can I help you with meanwhile?";
     await prisma.agentMessage.create({
@@ -774,19 +783,12 @@ export async function runAgentTurn(opts: {
   });
 
   // Task 40 — append the REAL cost Channelry reported for this completed call
-  // (never estimate one). Log only meaningful, positive spend (a 0 reported cost
-  // is a no-op row in the audit trail). The admin test-connection button is not
-  // logged here by design — that's an admin diagnostic, not a user's usage.
-  const realCostHundredthsCent = result.usage.cost_hundredths_cent;
-  if (typeof realCostHundredthsCent === "number" && realCostHundredthsCent > 0) {
-    await prisma.aiUsageLog.create({
-      data: {
-        userId: opts.userId,
-        costHundredthsCent: Math.round(realCostHundredthsCent),
-        eventType: "agent_turn",
-      },
-    });
-  }
+  // (never estimate one). TASK_152 M3 moved the row-writing itself into the
+  // shared recordAiUsage helper so the screenshot-summary path writes the same
+  // shape; "agent_turn" stays this caller's event type. The admin
+  // test-connection button is still not logged here by design — that's an admin
+  // diagnostic, not a user's usage.
+  await recordAiUsage(opts.userId, result.usage.cost_hundredths_cent, "agent_turn");
 
   const tool = findToolCall(result.tool_calls);
   let processed = tool ? await processToolCall(tool.name, tool.args, opts.userId) : null;
