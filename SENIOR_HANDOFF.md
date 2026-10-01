@@ -275,7 +275,7 @@ to verify, not a fact to trust (§10 item 1).
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ **`a64c702`** (TASK_154 N1). *(The previous pass recorded HEAD as `77f60f7` — that is `a64c702`'s grandparent; the doc named its own ancestor. Corrected 2026-10-01, §12.)* |
+| Branch / HEAD | `main` @ the tip of this session's work: **`a64c702`** (TASK_154 N1 code) **+ `d55ef2e`** (this handoff update, docs-only). Any commit above this line is documentation-only. *(The previous pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
 | Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb` (the commit before the current HEAD). The current HEAD (`a64c702`, N1) is committed, pushed and CI-green but NOT deployed**, deliberately: N1 is a server-side predecessor with no owner-visible change on its own. |
 | Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
@@ -567,7 +567,8 @@ half-done. A half-done change with no note is worse than no change.
   no owner-visible change alone; deploy is a manual gate). No browser/DOM check of N1 for the same
   reason. The mesh timeout is a **SIMULATION** (a thrown `fetch` error), not an observed live 15 s
   socket timeout. Trap 1 (PG18 vs PG16) not exercised — N1 adds no Prisma error-code branch.
-- **State left behind:** `main` @ **`a64c702`**, clean, in sync with `origin/main`, CI green; the
+- **State left behind:** `main` @ the session tip — **`a64c702`** (N1 code) + **`d55ef2e`**
+  (handoff update, docs-only) — clean, in sync with `origin/main`, CI green; the
   **deployed build is unchanged** (`06a5eeb`). `self-hosted-build` @ **`f6b6f78`**, clean, in sync
   (read-only this session — no work done there).
 - **Next:** **TASK_154 N2** (client) — consume N1's provenance (see the §7 shape note); then deploy
