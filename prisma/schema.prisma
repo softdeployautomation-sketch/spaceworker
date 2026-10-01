@@ -358,6 +358,48 @@ model AdminSetting {
   //                              is a dial, never a code change.
   screenshotHeadroomRamPct         Int     @default(0)
   screenshotRotationSliceMinutes   Int     @default(25)
+
+  // TASK_155 P1 — Task 155 "Workers & Pages" hosting, FILES engine. Every cap is
+  // an AdminSetting (CROSS-TRACK RULE 7 — nothing hardwired; owner 2026-10-01:
+  // "we can add to the admin where those limits can be easily changed"). Purely
+  // ADDITIVE and OFF by default: hostingEnabled=false means the whole surface is
+  // dark, so applying this migration changes no existing behaviour.
+  //
+  //   hostingEnabled                 = master switch. false (the default) => the
+  //                                    Hosting tab + every /api/hosting* route
+  //                                    are inert ("dark" per PLAN §9 P1).
+  //   hostingProvider                = which storage engine serves NEW uploads.
+  //                                    "local" (our own metal, free, no third
+  //                                    party) is the v1 default; "cloudflare"
+  //                                    (Pages Direct Upload) and "external"
+  //                                    (a generic pluggable provider) are
+  //                                    registered but not yet implemented — see
+  //                                    lib/hosting/providers/index.ts. A stored
+  //                                    value the registry doesn't know falls back
+  //                                    to "local" rather than failing a request.
+  //   hostingFreeStorageQuotaMb      = per-user total bytes allowed (MB). 1024.
+  //   hostingFreeMaxFileSizeMb       = per-file ceiling (MB). 512.
+  //   hostingFreeMaxFiles            = per-user file COUNT. 500 (bounds inodes).
+  //   hostingFreeMaxBandwidthGbPerMonth = per-user downloads served / calendar
+  //                                    month (GB). 50. Downloads are the real cost.
+  //   hostingPremiumStorageQuotaMb   = larger quota for premium/BYO (MB). 10240.
+  //   hostingPagesMaxAssetMb         = Cloudflare Pages per-asset ceiling (MB).
+  //                                    20 — MUST stay < 25: Cloudflare 500s above
+  //                                    25 MiB (TASK_155 §9 R3, witnessed live), so
+  //                                    we pre-validate and never forward oversize.
+  //   hostingPlatformTokenTtlHours   = how long a platform-token "try it" project
+  //                                    lives before reclaim (hours). 24 (owner §13).
+  //   hostingModulePriceUsd          = price of the `hosting_module` store product.
+  hostingEnabled                    Boolean @default(false)
+  hostingProvider                   String  @default("local")
+  hostingFreeStorageQuotaMb         Int     @default(1024)
+  hostingFreeMaxFileSizeMb          Int     @default(512)
+  hostingFreeMaxFiles               Int     @default(500)
+  hostingFreeMaxBandwidthGbPerMonth Int     @default(50)
+  hostingPremiumStorageQuotaMb      Int     @default(10240)
+  hostingPagesMaxAssetMb            Int     @default(20)
+  hostingPlatformTokenTtlHours      Int     @default(24)
+  hostingModulePriceUsd             Float   @default(9)
 }
 
 model Mailbox {
@@ -2431,3 +2473,72 @@ model AdminDeviceCommand {
   @@index([userId, createdAt])
   @@index([batchId])
 }
+
+// TASK_155 P1 — the FILES engine. One row per hosted thing (a file today; pages
+// and redirects reuse this shape in P2/P3 via `kind`). Deliberately mirrors the
+// live LinkRedirect pattern (opaque `token` = lookup key, never a bearer secret)
+// and the `/e/<name>` rename insight from PLAN §4: the SERVED filename is a
+// column (`dispositionFilename` + `mime`), NEVER a namespace on disk, so a rename
+// writes only this row and `sha256` (the bytes) is provably unchanged.
+//
+// `userId` is a plain scalar (no Prisma relation), matching AdminDeviceCommand
+// above — this table never needs a User back-relation and adding one would edit
+// the User model for no gain.
+model HostedAsset {
+  id        String  @id @default(cuid())
+  userId    String
+  // "file" today; "page" | "redirect" reserved for P2/P3.
+  kind      String  @default("file")
+  // The user's label / original filename (informational, shown in the list).
+  name      String
+  // Opaque, url-safe public lookup key for GET /hf/<token>. __no secret__ — like
+  // LinkRedirect.token, an unknown/expired/private token must 404 cleanly.
+  token     String  @unique
+  // Optional friendly slug for the P2 short-link promotion (user-owned redirects).
+  slug      String? @unique
+  // Which storage engine holds the bytes: "local" (our metal) | "cloudflare"
+  // (Pages) | "external" (pluggable). The bytes' LOCATION is `storagePath`
+  // (provider-relative) or `externalId` (a remote key); never both required.
+  provider  String  @default("local")
+  storagePath  String?
+  externalId   String?
+  // Content hash — the acceptance anchor: sha256(before) == sha256(after) a rename.
+  sha256    String
+  bytes     Int
+  mime      String
+  // The filename sent in Content-Disposition. THIS is what "rename" changes.
+  dispositionFilename String
+  // "public" | "private" — private needs an authorised (session) download path.
+  visibility String  @default("public")
+  // "active" | "deleted" — soft delete so a mis-delete is recoverable + auditable.
+  status     String  @default("active")
+  expiresAt  DateTime?
+  // Cached public URL (derived from HOSTING_PUBLIC_BASE_URL at upload time so a
+  // host change does not silently rewrite already-handed-out links).
+  url        String?
+  downloadCount Int    @default(0)
+  // Cumulative bytes served (bandwidth). BIGINT: a 50 GB/month cap exceeds Int32.
+  bytesServed   BigInt @default(0)
+  uploadIp      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+}
+
+// TASK_155 P1 — per-user, per-calendar-month download bytes, so the bandwidth cap
+// (§14 hostingFreeMaxBandwidthGbPerMonth) is enforced against a resettable counter
+// rather than only the all-time HostedAsset.bytesServed. `period` is "YYYY-MM"
+// (UTC) — a plain string so the key is human-readable in the DB and needs no TZ maths.
+model HostingUsageMonthly {
+  id          String   @id @default(cuid())
+  userId      String
+  period      String
+  bytesServed BigInt   @default(0)
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, period])
+}
+

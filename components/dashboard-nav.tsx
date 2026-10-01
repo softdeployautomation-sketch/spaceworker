@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 import {
+  Cloud,
   Globe,
   LayoutDashboard,
   Megaphone,
@@ -42,6 +43,9 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   { href: "/dashboard/campaigns", label: "Campaigns", icon: Megaphone },
   { href: "/dashboard/automations", label: "Automations", icon: Zap },
   { href: "/dashboard/browser", label: "Private Browser", icon: Globe },
+  // TASK_155 P1 — hosting (files / pages / links). Web-only, so it is absent
+  // from the extractor build's BUILD_ALLOWED_HREFS set below (auto-excluded).
+  { href: "/dashboard/hosting", label: "Hosting", icon: Cloud },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

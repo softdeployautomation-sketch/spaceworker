@@ -339,7 +339,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
         {(
           [
-            { tab: "infrastructure" as Tab, label: "Infrastructure", hint: "Governor, admission, clone limits, worker, Vantra links" },
+            { tab: "infrastructure" as Tab, label: "Infrastructure", hint: "Governor, admission, clone limits, hosting limits, worker, Vantra links" },
             { tab: "wallets" as Tab, label: "Wallets & Prices", hint: "Admin-editable pricing for every product" },
             { tab: "notifications" as Tab, label: "Notifications", hint: "Every attempted send, most recent first" },
             { tab: "users" as Tab, label: "Users", hint: "Tiers, trial usage, premium grants" },
@@ -1870,6 +1870,258 @@ function CloneLimitsPanel() {
 
 
 
+type HostingCaps = {
+  freeStorageQuotaMb: number;
+  freeMaxFileSizeMb: number;
+  freeMaxFiles: number;
+  freeMaxBandwidthGbPerMonth: number;
+  premiumStorageQuotaMb: number;
+  pagesMaxAssetMb: number;
+  platformTokenTtlHours: number;
+  modulePriceUsd: number;
+};
+
+type HostingCapsState = {
+  enabled: boolean;
+  provider: string;
+  providers: Array<{ id: string; label: string; implemented: boolean }>;
+  caps: HostingCaps;
+  hardPagesMaxAssetMb: number;
+  live: { activeFiles: number; storageBytes: number; owners: number };
+};
+
+type HostingCapField = keyof HostingCaps;
+
+// PLAN §14 defaults, rendered as explicit "unit · one-line why" rows so the owner
+// changes behaviour without a deploy. `live` adds a "how much is in use" line the
+// same way the clone/admission panels do.
+const HOSTING_CAP_ROWS: Array<{
+  field: HostingCapField;
+  label: string;
+  unit: string;
+  hint: string;
+  live?: (s: HostingCapsState) => string;
+  money?: boolean;
+}> = [
+  {
+    field: "freeStorageQuotaMb",
+    label: "Free storage quota (per user)",
+    unit: "MB",
+    hint: "Total bytes one free user may store. 1024 MB = 1 GB.",
+  },
+  {
+    field: "freeMaxFileSizeMb",
+    label: "Max file size (per file)",
+    unit: "MB",
+    hint: "Ceiling for a single upload — above the EXE use-case, below anything dangerous in one write.",
+  },
+  {
+    field: "freeMaxFiles",
+    label: "Max files (per user)",
+    unit: "files",
+    hint: "Bounds inode + listing cost.",
+    live: (s) => `${s.live.activeFiles} file(s) hosted across ${s.live.owners} user(s)`,
+  },
+  {
+    field: "freeMaxBandwidthGbPerMonth",
+    label: "Bandwidth per month (per user)",
+    unit: "GB",
+    hint: "Downloads served per calendar month. Downloads are the real cost.",
+  },
+  {
+    field: "premiumStorageQuotaMb",
+    label: "Premium storage quota (per user)",
+    unit: "MB",
+    hint: "Storage for premium users (BYO token / R2). 10240 MB = 10 GB.",
+  },
+  {
+    field: "pagesMaxAssetMb",
+    label: "Max asset size for Pages",
+    unit: "MB",
+    hint: "Per-asset ceiling for the Cloudflare Pages engine. Cloudflare itself 500s above its hard limit (shown above), so this is clamped to it.",
+  },
+  {
+    field: "platformTokenTtlHours",
+    label: "Platform-token project lifetime",
+    unit: "hours",
+    hint: "How long a platform-token “try it” Pages project lives before it is reclaimed.",
+  },
+  {
+    field: "modulePriceUsd",
+    label: "Hosting module price",
+    unit: "USD",
+    hint: "Price of the self-serve hosting upgrade.",
+    money: true,
+  },
+];
+
+
+function HostingCapsPanel() {
+  const [state, setState] = useState<HostingCapsState | null>(null);
+  const [error, setError] = useState("");
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setError("");
+    try {
+      const res = await fetch("/api/admin/hosting");
+      if (!res.ok) throw new Error("Failed to load hosting limits");
+      setState((await res.json()) as HostingCapsState);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load hosting limits");
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // The route returns the whole state back, so one PATCH refreshes everything
+  // (caps AND live counts) without a second round-trip.
+  async function patch(field: string, body: Record<string, boolean | number | string>) {
+    setSaving(field);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/hosting", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to update");
+        return;
+      }
+      setState(data as HostingCapsState);
+      setDrafts((prev) => {
+        const next = { ...prev };
+        delete next[field];
+        return next;
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  const bytesToGb = (n: number) => `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-2xl font-semibold tracking-tight">Hosting limits (Workers &amp; Pages)</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Dials for the file-hosting engine. These are read server-side on every request, so changing one here changes
+        behaviour immediately — no redeploy. Files are hosted on our own metal until an engine is switched on below;
+        the two Cloudflare engines are shown but not yet enabled.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {!state ? (
+        <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-medium text-zinc-900 dark:text-zinc-100">Hosting</p>
+                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  {state.live.activeFiles} file(s) · {bytesToGb(state.live.storageBytes)} stored · {state.live.owners}{" "}
+                  user(s)
+                </p>
+              </div>
+              <button
+                onClick={() => patch("enabled", { enabled: !state.enabled })}
+                disabled={saving === "enabled"}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+                  state.enabled ? "bg-emerald-600 hover:bg-emerald-500" : "bg-zinc-400 hover:bg-zinc-500"
+                }`}
+              >
+                {state.enabled ? "Enabled" : "Disabled"}
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+              <span className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Storage engine</span>
+              {state.providers.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => patch("provider", { provider: p.id })}
+                  disabled={saving === "provider" || state.provider === p.id}
+                  className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-70 ${
+                    state.provider === p.id
+                      ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                      : p.implemented
+                        ? "border border-zinc-300 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                        : "border border-dashed border-zinc-300 text-zinc-400 dark:border-zinc-700 dark:text-zinc-500"
+                  }`}
+                >
+                  {p.label}
+                  {!p.implemented ? " — coming soon" : ""}
+                </button>
+              ))}
+            </div>
+          </div>
+
+
+          {HOSTING_CAP_ROWS.map((row) => {
+            const current = state.caps[row.field];
+            const draft = drafts[row.field];
+            const isCapped = row.field === "pagesMaxAssetMb";
+            return (
+              <div
+                key={row.field}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                    {row.label} <span className="text-xs font-normal text-zinc-400">({row.unit})</span>
+                  </p>
+                  <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                  {row.live && (
+                    <p className="mt-1 text-xs font-medium text-zinc-600 dark:text-zinc-300">{row.live(state)}</p>
+                  )}
+                </div>
+                <div className="flex items-center gap-3">
+                  <input
+                    type="number"
+                    min={0}
+                    step={row.money ? "0.01" : "1"}
+                    value={draft ?? String(current)}
+                    onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                    className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                  />
+                  <button
+                    onClick={() => {
+                      const n = Number(draft ?? current);
+                      const min = row.money ? 0 : 1;
+                      if (!Number.isFinite(n) || n < min) {
+                        setError(`${row.label} must be a number \u2265 ${min}`);
+                        return;
+                      }
+                      const value = row.money ? n : Math.floor(n);
+                      if (isCapped && value > state.hardPagesMaxAssetMb) {
+                        setError(`${row.label} cannot exceed ${state.hardPagesMaxAssetMb} MB`);
+                        return;
+                      }
+                      patch(row.field, { [row.field]: value });
+                    }}
+                    disabled={saving === row.field || draft === undefined}
+                    className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                  >
+                    Set
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+
 // Task 93 — admin visibility + revoke for Vantra links (owner's per-user
 // device-provisioning surface). Read-only table of every link + a revoke
 // button (audited through AgentActionAudit on the backend).
@@ -2331,8 +2583,8 @@ function InfrastructureTab() {
       <h2 className="text-2xl font-semibold tracking-tight">Infrastructure</h2>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Every system-level control that isn&apos;t about one product feature: admission,
-        the extraction worker, the resource governor, browser-clone limits, and linked
-        Vantra devices.
+        the extraction worker, the resource governor, browser-clone limits, hosting
+        limits, and linked Vantra devices.
       </p>
 
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
@@ -2347,6 +2599,7 @@ function InfrastructureTab() {
       <GovernorPanel />
       <ScreenshotPanel />
       <CloneLimitsPanel />
+      <HostingCapsPanel />
       <VantraLinksPanel />
     </div>
   );

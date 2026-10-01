@@ -35,6 +35,7 @@
     "test:idle": "tsx --test tests/vantra-idle-provenance.test.ts",
     "test:idlechip": "tsx --test tests/device-idle-chip.test.ts",
     "test:monitorctx": "tsx --test tests/monitor-agent-context.test.ts",
+    "test:hosting": "tsx --test tests/hosting-files.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",

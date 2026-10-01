@@ -14,6 +14,7 @@ export type ProductId =
   | "extractor_module"
   | "mailer_module"
   | "assistant_devices_module"
+  | "hosting_module"
   | "extractor_exe"
   | "mailer_exe"
   | "combined_exe"
@@ -62,6 +63,7 @@ export type AdminSettingPriceFields = {
   extractorModulePriceUsd: number;
   mailerModulePriceUsd: number;
   assistantDevicesModulePriceUsd: number;
+  hostingModulePriceUsd: number;
   agentExePriceUsd: number;
 };
 
@@ -110,10 +112,24 @@ export const ASSISTANT_DEVICES_MODULE: StoreProduct = {
   entitlementKeys: ["assistant", "devices"],
 };
 
+// TASK_155 P1 — the hosting module (PLAN §10). Sells the "put a file / page /
+// link online and get a URL" capability; the `hosting` entitlement key it grants
+// is the same gate the /api/hosting* routes and the Hosting tab check.
+export const HOSTING_MODULE: StoreProduct = {
+  id: "hosting_module",
+  name: "Hosting & Pages",
+  tagline:
+    "Put any file, page or link online and get a URL back — host downloads, rename them, and share a short link. No dashboard, no CLI, no token.",
+  priceField: "hostingModulePriceUsd",
+  kind: "module",
+  entitlementKeys: ["hosting"],
+};
+
 export const MODULE_PRODUCTS: StoreProduct[] = [
   EXTRACTOR_MODULE,
   MAILER_MODULE,
   ASSISTANT_DEVICES_MODULE,
+  HOSTING_MODULE,
 ];
 
 export const EXTRACTOR_EXE: StoreProduct = {
