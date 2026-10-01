@@ -275,7 +275,7 @@ to verify, not a fact to trust (§10 item 1).
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ **`f55ddd9`** (this docs catch-up). The last **code** commit is **`e342578`** (TASK_154 N2), stacked on **`a64c702`** (N1); anything above `e342578` is documentation-only. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
+| Branch / HEAD | `main` @ the tip, which is at or above the last **code** commit **`e342578`** (TASK_154 N2), itself above **`a64c702`** (N1). **Everything above `e342578` is documentation-only** — to see the tip run `git log --oneline -1`; if it is newer than `e342578`, nothing in it changes behaviour. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
 | Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb`. HEAD (`e342578`, N1+N2) is committed, pushed and CI-green but NOT deployed.** Neither half is live; **N2 is the commit that makes the fix owner-visible** — deploy N1+N2 together. |
 | Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
