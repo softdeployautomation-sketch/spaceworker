@@ -275,7 +275,7 @@ to verify, not a fact to trust (§10 item 1).
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ the tip of this session's work: **`e342578`** (TASK_154 N2 code), stacked on **`a64c702`** (N1). Any commit above this line is documentation-only. *(The pass before last recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
+| Branch / HEAD | `main` @ **`f55ddd9`** (this docs catch-up). The last **code** commit is **`e342578`** (TASK_154 N2), stacked on **`a64c702`** (N1); anything above `e342578` is documentation-only. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
 | Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb`. HEAD (`e342578`, N1+N2) is committed, pushed and CI-green but NOT deployed.** Neither half is live; **N2 is the commit that makes the fix owner-visible** — deploy N1+N2 together. |
 | Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
@@ -614,8 +614,9 @@ half-done. A half-done change with no note is worse than no change.
 - **PROCESS FINDING:** the N2 session **did not perform §10** — it left `SENIOR_HANDOFF.md` (§6/§7/§12)
   and `TASK_154_...md` un-updated, so the handoff was stale on arrival (trap 14). This senior pass
   re-verified the work independently and wrote the updates. §10 now carries an explicit reminder.
-- **State left behind:** `main` @ **`e342578`**, clean, in sync with `origin/main`, CI green; the
-  **deployed build is unchanged** (`06a5eeb`). `self-hosted-build` @ `f6b6f78`, clean (untouched).
+- **State left behind:** `main` @ **`f55ddd9`** (this docs catch-up) / **`e342578`** (N2 code),
+  clean, in sync with `origin/main`, CI green; the **deployed build is unchanged** (`06a5eeb`).
+  `self-hosted-build` @ `f6b6f78`, clean (untouched).
 - **Next:** **DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot `/devices` and a
   device console (§8) — that is what closes TASK_154 for Mike. Then N3 (optional).
 
