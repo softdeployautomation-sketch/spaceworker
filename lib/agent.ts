@@ -12,6 +12,7 @@ import {
 } from "@/lib/deliverability";
 import type { AgentActionKind } from "@/lib/agent-executor";
 import { notifyPendingActionViaTelegram } from "@/lib/agent-approval-notify";
+import { buildMonitorSummaryContext } from "@/lib/monitor-agent-context";
 
 // Task 31, item 3 — the Automations "Ask the agent" feature.
 //
@@ -175,7 +176,14 @@ Rules:
 - Never claim you ran or started a job — you only propose. The user must
   approve.
 - Prefer planning a single job/campaign per turn. If more is asked, propose the
-  first and mention the rest.`;
+  first and mention the rest.
+- A "Monitor summaries" block may appear below (TASK_152 M7). It is READ-ONLY
+  context about what the user's own opted-in devices have had on screen recently.
+  You may quote it, summarise it, and reason about it. You may NOT start, stop,
+  pause or change screen monitoring, and you may NOT control, wake or act on any
+  device — you have no such capability, so never claim or imply you did any of
+  those things. If a summary is absent, say you have none rather than inventing
+  one.`;
 
 // OpenAI function-calling tool shapes, forwarded verbatim to the relay's
 // tool-calling mode. `propose_job` mirrors the supported params of the real
@@ -771,9 +779,23 @@ export async function runAgentTurn(opts: {
   // changed no matter what page context was sent). Folded into the ONE
   // system message instead — the relay clearly honors that one, since the
   // whole rest of AGENT_SYSTEM_PROMPT's behavior already depends on it.
-  const systemContent = opts.pageContext
-    ? `${AGENT_SYSTEM_PROMPT}\n\nCurrent page context: ${opts.pageContext}`
-    : AGENT_SYSTEM_PROMPT;
+  //
+  // TASK_152 M7 — the user's OWN screen-monitoring summaries ride in that same
+  // single system message, right beside the page context. Built HERE, AFTER the
+  // cap gate above: a capped turn has already returned, so this context is never
+  // assembled, never sent, and never costs anything when the user is over budget.
+  // READ-ONLY by construction (see lib/monitor-agent-context.ts): it reads the
+  // same summary rows the monitoring tab shows and grants no tool and no device
+  // authority. `null` when the user has no summaries, so an unmonitored user's
+  // system message is byte-for-byte what it was before this change.
+  const monitorContext = await buildMonitorSummaryContext(opts.userId);
+  const systemContent = [
+    AGENT_SYSTEM_PROMPT,
+    monitorContext,
+    opts.pageContext ? `Current page context: ${opts.pageContext}` : null,
+  ]
+    .filter((part): part is string => Boolean(part))
+    .join("\n\n");
 
   const result = await channelryAiChat({
     messages: [{ role: "system", content: systemContent }, ...dialogue],

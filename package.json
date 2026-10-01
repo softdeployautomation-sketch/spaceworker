@@ -31,6 +31,7 @@
     "test:timeline": "tsx --test tests/screen-timeline.test.ts",
     "test:screennotify": "tsx --test tests/screen-notifications.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
+    "test:monitorctx": "tsx --test tests/monitor-agent-context.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",
