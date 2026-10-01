@@ -349,6 +349,7 @@ const {
   purgeExpiredFrames,
   listDueDevices,
   listRecentFrames,
+  resolveEffectiveIntervalMinutes,
   frameRelPath,
   frameAbsPath,
   frameRelPathFromAbs,
@@ -779,6 +780,66 @@ test("a device is only due once its interval has actually elapsed", async () => 
   // A device that has NEVER been captured is due immediately.
   frames = [];
   assert.deepEqual((await listDueDevices(clock, 60)).map((d) => d.id), ["d1"]);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_152 M4 — user-configurable cadence (the admin global is a CEILING)
+// ---------------------------------------------------------------------------
+
+test("effective cadence resolver: the global is a default with no override and a ceiling with one", () => {
+  // No override / non-positive override => the global, exactly as before.
+  assert.equal(resolveEffectiveIntervalMinutes(60, null), 60);
+  assert.equal(resolveEffectiveIntervalMinutes(60, undefined), 60);
+  assert.equal(resolveEffectiveIntervalMinutes(60, 0), 60);
+  // An override may make a device LESS frequent (a larger interval)...
+  assert.equal(resolveEffectiveIntervalMinutes(60, 120), 120);
+  // ...or match the admin's cadence exactly...
+  assert.equal(resolveEffectiveIntervalMinutes(60, 60), 60);
+  // ...but NEVER more frequent than the admin allows: a smaller value is capped
+  // to the ceiling here too, so a legacy/hand-written row cannot out-run the
+  // admin's bound even if the edge validation were ever bypassed.
+  assert.equal(resolveEffectiveIntervalMinutes(60, 5), 60);
+});
+
+test("a per-device override SLOWS a device: not due when the global cadence would be due", async () => {
+  // Two devices, both last captured 90 minutes ago. The plain device's global
+  // cadence (60) has elapsed, so it IS due; the 120-minute override has not.
+  addDevice("slow", { intervalOverride: 120 });
+  addDevice("plain");
+  frame("slow", { createdAt: new Date(clock.getTime() - 90 * 60_000) });
+  frame("plain", { createdAt: new Date(clock.getTime() - 90 * 60_000) });
+
+  const due = await listDueDevices(clock, 60);
+
+  assert.deepEqual(
+    due.map((d) => d.id),
+    ["plain"],
+    "the override really changes WHO is due, not just what is stored",
+  );
+});
+
+test("a per-device override cannot make a device due EARLIER than the global (ceiling enforced at schedule time)", async () => {
+  // A stored 30-minute override while the admin cadence is 60. 45 minutes have
+  // elapsed: if the stored override were honoured this device would be due, but
+  // the admin ceiling says not yet.
+  addDevice("fast", { intervalOverride: 30 });
+  frame("fast", { createdAt: new Date(clock.getTime() - 45 * 60_000) });
+  assert.deepEqual(await listDueDevices(clock, 60), [], "30 < global 60 is capped to the global");
+
+  // Once the GLOBAL interval has elapsed it becomes due, exactly like a device
+  // with no override — the ceiling, not the stored value, drives the schedule.
+  frames = [];
+  frame("fast", { createdAt: new Date(clock.getTime() - 61 * 60_000) });
+  assert.deepEqual((await listDueDevices(clock, 60)).map((d) => d.id), ["fast"]);
+});
+
+test("a device with no override is unchanged by M4 (default path)", async () => {
+  addDevice("d1"); // no override, no wake delay
+  frame("d1", { createdAt: new Date(clock.getTime() - 59 * 60_000) });
+  assert.deepEqual(await listDueDevices(clock, 60), [], "not due one minute early");
+  frames = [];
+  frame("d1", { createdAt: new Date(clock.getTime() - 61 * 60_000) });
+  assert.deepEqual((await listDueDevices(clock, 60)).map((d) => d.id), ["d1"], "due after the global cadence");
 });
 
 test("a wake delay holds a device back even though it never captured before", async () => {

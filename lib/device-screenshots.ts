@@ -83,6 +83,43 @@ export function resolveScreenshotSettings(
   };
 }
 
+// TASK_152 M4 — cadence bounds shared by the admin dial and the per-device
+// override, so the two can never drift apart.
+export const SCREENSHOT_INTERVAL_MIN_MINUTES = 1;
+export const SCREENSHOT_INTERVAL_MAX_MINUTES = 1440;
+
+/**
+ * TASK_152 M4 — the ONE place the effective cadence is decided.
+ *
+ * POLICY (decided here and enforced server-side; never the UI's job to enforce):
+ * the admin's global `screenshotCaptureIntervalMinutes` is a CEILING on capture
+ * FREQUENCY, i.e. a FLOOR on the interval. Concretely, a device may be captured
+ * at the admin's cadence or LESS often — a per-device override can only SLOW a
+ * device down, never make it MORE frequent than the admin allows:
+ *
+ *     effective = max(globalIntervalMinutes, override)
+ *
+ * WHY THE CEILING POINTS THIS WAY: RAM is the scarce, admin-owned resource here
+ * (each capture is a real headless Chromium — see the governor's
+ * `deviceScreenshots` slot). Only the admin can see the whole box, so "faster
+ * than the admin's value" must not be a per-user freedom; an owner who needs a
+ * finer cadence lowers the admin global, which keeps the admin the single
+ * authority over how hard the box may be driven.
+ *
+ * A null / non-positive override means "use the global as-is" — the exact
+ * behaviour a device with no override has always had (additive: unchanged).
+ */
+export function resolveEffectiveIntervalMinutes(
+  globalIntervalMinutes: number,
+  override: number | null | undefined,
+): number {
+  const global = Math.floor(globalIntervalMinutes);
+  if (typeof override !== "number" || !Number.isFinite(override) || override <= 0) {
+    return global;
+  }
+  return Math.max(global, Math.floor(override));
+}
+
 // ---------------------------------------------------------------------------
 // Where frames live
 // ---------------------------------------------------------------------------
@@ -508,14 +545,14 @@ export async function listDueDevices(
       if (now.getTime() - device.screenshotOnlineSinceAt.getTime() < delayMs) return false;
     }
 
-    // A per-device override (if set) replaces the global interval entirely
-    // for THIS device — e.g. compressing a test window to 1 minute without
-    // touching every other opted-in device's schedule.
-    const effectiveMinutes =
-      typeof device.screenshotIntervalMinutesOverride === "number" &&
-      device.screenshotIntervalMinutesOverride > 0
-        ? device.screenshotIntervalMinutesOverride
-        : intervalMinutes;
+    // TASK_152 M4 — the per-device override goes through the ONE shared
+    // resolver: the admin's global cadence is a CEILING on frequency (a floor on
+    // the interval), so an override can only make THIS device LESS frequent than
+    // the global, never more often. Null/0 = the global, exactly as before.
+    const effectiveMinutes = resolveEffectiveIntervalMinutes(
+      intervalMinutes,
+      device.screenshotIntervalMinutesOverride,
+    );
     const intervalMs = effectiveMinutes * 60 * 1000;
     const last = lastAttempt.get(device.id);
     return !last || now.getTime() - last.getTime() >= intervalMs;

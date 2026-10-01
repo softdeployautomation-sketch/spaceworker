@@ -6,7 +6,9 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import {
   deleteDeviceFrameTree,
   listRecentFrames,
+  resolveEffectiveIntervalMinutes,
   resolveScreenshotSettings,
+  SCREENSHOT_INTERVAL_MAX_MINUTES,
 } from "@/lib/device-screenshots";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +23,11 @@ export const dynamic = "force-dynamic";
 //           clear its wake delay ({ wakeDelayMinutes: number | null }) —
 //           "don't start capturing until N minutes after this device comes
 //           back online."
+//           TASK_152 M4: the override may only make THIS device LESS frequent
+//           than the admin's global cadence (the global is a CEILING on
+//           frequency) — a smaller/faster value is REJECTED here with 400,
+//           never clamped. See lib/device-screenshots.ts
+//           resolveEffectiveIntervalMinutes.
 //   DELETE→ delete every stored frame for this device on demand.
 //
 // Owner-scope rule (same as the clone routes): the device is resolved by id AND
@@ -74,16 +81,18 @@ export async function GET(
       wakeDelayMinutes: device.screenshotWakeDelayMinutes,
     },
     // The owner can see the policy they are subject to, but only an admin can
-    // change the GLOBAL default — this device's own override (above) is
-    // theirs to set. effectiveIntervalMinutes is override ?? global, the
-    // exact same precedence listDueDevices uses.
+    // change the GLOBAL value — this device's own override (above) is theirs to
+    // set. TASK_152 M4: the admin's global interval is a CEILING on frequency
+    // (a floor on the interval), so effectiveIntervalMinutes = max(global,
+    // override) — the exact same shared resolver listDueDevices uses.
     policy: {
       enabled: policy.enabled,
       intervalMinutes: policy.intervalMinutes,
       retentionDays: policy.retentionDays,
-      effectiveIntervalMinutes: hasOverride
-        ? device.screenshotIntervalMinutesOverride!
-        : policy.intervalMinutes,
+      effectiveIntervalMinutes: resolveEffectiveIntervalMinutes(
+        policy.intervalMinutes,
+        hasOverride ? device.screenshotIntervalMinutesOverride : null,
+      ),
     },
     frames,
   });
@@ -99,6 +108,12 @@ export async function PATCH(
 
   const device = await ownedDevice(deviceId, session.userId);
   if (!device) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // TASK_152 M4 — the admin's global cadence is the CEILING on capture
+  // FREQUENCY for this device's override. Read it here so the bound is enforced
+  // at the edge (reject, never clamp) rather than merely implied by the UI.
+  const policy = resolveScreenshotSettings(await getAdminSettings());
+  const fastestAllowed = policy.intervalMinutes;
 
   let body: Record<string, unknown>;
   try {
@@ -119,18 +134,31 @@ export async function PATCH(
   if (hasEnabled && typeof body.enabled !== "boolean") {
     return NextResponse.json({ error: "enabled must be a boolean" }, { status: 400 });
   }
-  // null clears the override (back to the global default); a number sets it.
-  // 1..1440 mirrors the admin dial's own bounds (lib/admin-settings.ts).
+  // null clears the override (back to the admin's global cadence); a whole
+  // number sets it. TASK_152 M4 bounds: an override may only make THIS device
+  // LESS frequent than the admin allows — 1..1440 overall, but never smaller
+  // than the global ceiling. REJECTED (400), never clamped — same discipline as
+  // app/api/admin/screenshots/route.ts's WRITABLE.
   let overrideValue: number | null | undefined;
   if (hasOverride) {
     const raw = body.intervalMinutesOverride;
     if (raw === null) {
       overrideValue = null;
-    } else if (typeof raw === "number" && Number.isFinite(raw) && raw >= 1 && raw <= 1440) {
-      overrideValue = Math.floor(raw);
+    } else if (
+      typeof raw === "number" &&
+      Number.isInteger(raw) &&
+      raw >= fastestAllowed &&
+      raw <= SCREENSHOT_INTERVAL_MAX_MINUTES
+    ) {
+      overrideValue = raw;
     } else {
       return NextResponse.json(
-        { error: "intervalMinutesOverride must be null or a whole number between 1 and 1440" },
+        {
+          error:
+            `intervalMinutesOverride must be null, or a whole number from ${fastestAllowed} ` +
+            `(the service cadence) to ${SCREENSHOT_INTERVAL_MAX_MINUTES}. A machine cannot be ` +
+            `captured more often than the service allows.`,
+        },
         { status: 400 },
       );
     }

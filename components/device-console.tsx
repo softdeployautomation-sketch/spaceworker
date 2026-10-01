@@ -2091,56 +2091,71 @@ function ScreenMonitoringCard({
               : "Nothing is captured from this machine while this is off."}
           </p>
           {view.device.optIn && (
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              {editingInterval ? (
-                <>
-                  <input
-                    type="number"
-                    min={1}
-                    max={1440}
-                    value={intervalDraft}
-                    onChange={(e) => setIntervalDraft(e.target.value)}
-                    placeholder={String(view.policy.intervalMinutes)}
-                    className="w-20 rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
-                  />
-                  <span className="text-xs text-fg-muted">minutes for this machine</span>
+            <div className="mt-1">
+              <div className="flex flex-wrap items-center gap-2">
+                {editingInterval ? (
+                  <>
+                    <input
+                      type="number"
+                      min={view.policy.intervalMinutes}
+                      max={1440}
+                      value={intervalDraft}
+                      onChange={(e) => setIntervalDraft(e.target.value)}
+                      placeholder={String(view.policy.effectiveIntervalMinutes)}
+                      className="w-20 rounded-md border border-border bg-bg px-2 py-1 text-xs text-fg"
+                    />
+                    <span className="text-xs text-fg-muted">minutes for this machine</span>
+                    <button
+                      onClick={() => {
+                        const n = Number(intervalDraft);
+                        if (Number.isInteger(n) && n >= view.policy.intervalMinutes && n <= 1440) {
+                          void saveIntervalOverride(n);
+                        } else {
+                          setErr(
+                            `Enter a whole number of minutes between ${view.policy.intervalMinutes} ` +
+                              `(the service cadence) and 1440.`,
+                          );
+                        }
+                      }}
+                      disabled={busy === "interval"}
+                      className="rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                    >
+                      {busy === "interval" ? "Saving…" : "Save"}
+                    </button>
+                    {view.device.intervalMinutesOverride !== null && (
+                      <button
+                        onClick={() => void saveIntervalOverride(null)}
+                        disabled={busy === "interval"}
+                        className="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-black/10 hover:text-fg disabled:opacity-50 dark:hover:bg-white/10"
+                      >
+                        Use service cadence
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setEditingInterval(false)}
+                      className="text-xs text-fg-muted hover:text-fg"
+                    >
+                      Cancel
+                    </button>
+                  </>
+                ) : (
                   <button
                     onClick={() => {
-                      const n = Number(intervalDraft);
-                      if (Number.isFinite(n) && n >= 1 && n <= 1440) void saveIntervalOverride(Math.floor(n));
-                      else setErr("Enter a whole number of minutes between 1 and 1440.");
+                      setIntervalDraft(String(view.policy.effectiveIntervalMinutes));
+                      setEditingInterval(true);
                     }}
-                    disabled={busy === "interval"}
-                    className="rounded-md border border-border px-2 py-1 text-xs text-fg transition-colors hover:bg-black/10 disabled:opacity-50 dark:hover:bg-white/10"
+                    className="text-xs text-fg-muted underline-offset-2 hover:text-fg hover:underline"
                   >
-                    {busy === "interval" ? "Saving…" : "Save"}
+                    Change how often this machine is captured
                   </button>
-                  {view.device.intervalMinutesOverride !== null && (
-                    <button
-                      onClick={() => void saveIntervalOverride(null)}
-                      disabled={busy === "interval"}
-                      className="rounded-md border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:bg-black/10 hover:text-fg disabled:opacity-50 dark:hover:bg-white/10"
-                    >
-                      Use default
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setEditingInterval(false)}
-                    className="text-xs text-fg-muted hover:text-fg"
-                  >
-                    Cancel
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => {
-                    setIntervalDraft(String(view.policy.effectiveIntervalMinutes));
-                    setEditingInterval(true);
-                  }}
-                  className="text-xs text-fg-muted underline-offset-2 hover:text-fg hover:underline"
-                >
-                  Edit schedule for this machine
-                </button>
+                )}
+              </div>
+              {editingInterval && (
+                <p className="mt-1 text-xs text-fg-muted">
+                  The service captures at most every {view.policy.intervalMinutes} minute
+                  {view.policy.intervalMinutes === 1 ? "" : "s"}. You can make this machine slower,
+                  not faster.
+                </p>
               )}
             </div>
           )}
