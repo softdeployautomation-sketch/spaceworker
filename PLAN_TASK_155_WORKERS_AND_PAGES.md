@@ -1,9 +1,11 @@
 # PLAN — Task 155: Workers & Pages (hosting, redirects, files, converters)
 
-**Status: SCOPED + UNBLOCKED — owner answered §13 on 2026-10-01 and supplied a throwaway
-Cloudflare account/token for the T0 spikes (§13.2). Buildable now: T0 → P1 → P2 → P3.**
+**Status: SCOPED + UNBLOCKED + T0 DONE — owner answered §13 on 2026-10-01, supplied a throwaway
+Cloudflare account/token (§13.2), and the T0 spikes are **PASSED with raw evidence** (§9). Next:
+**P1** → P2 → P3.**
 **v1 = FREE-FIRST on our own metal** (files + redirects; no Cloudflare needed). Cloudflare
 (Pages, custom domains, bulk redirects, R2) is a *later* engine, never the only path.
+**All caps are admin-editable (§14) — decided by the engineer, changed by the owner in admin.**
 **Companion doc: `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` — these two ship hand in hand.**
 
 **Owner's one-line version:** give every SpaceWorker user **one place to put something on
@@ -248,12 +250,47 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
 
 ## 9. Phased delivery — free first
 
-### T0 — Spikes (no user-facing code; answers the open questions in §2)
-- **S0-a** Confirm R4/R15 and the custom-domain endpoint with **one real curl** against a
-  throwaway Cloudflare account (owner's). Deliverable: a short evidence note appended here.
-- **S0-b** Prove **Direct Upload over raw REST** for a 3-file static site, and prove the
-  **25 MiB rejection** (upload a 26 MiB file → observe the failure) so the constraint is
-  witnessed, not assumed.
+### T0 — Spikes (DONE 2026-10-01 — raw evidence below; no user-facing code)
+- **S0-a — facts confirmed.** Read from live Cloudflare docs (2026-10-01) **and** probed with the
+  throwaway account:
+  - **R1** Pages projects/account = **100** (Free). (Account currently holds **6**.)
+  - **R3** max single asset = **25 MiB** (`MAX_ASSET_SIZE = 25 * 1024 * 1024` in wrangler).
+  - **R4 RESOLVED** — **500 builds/month** (Free), and the docs tie a *build* to
+    *"each time you push new code to your Git repository"* ⇒ **Direct Upload is NOT a build**; it
+    does not consume the 500. (Direct Upload still shares the 100-project / 20 000-file / 25 MiB
+    limits.)
+  - **R5** custom domains **per project** = **100** (Free).
+  - **R7** `_redirects`: **2 100** rules (2 000 static + 100 dynamic) — Bulk Redirects needed beyond.
+  - **R15 (Workers Free)** — Workers has its **own** limit (100 Workers on Free, separate from the
+    100 Pages projects); the Workers-free *requests/day* number was **not cleanly captured** in the
+    truncated doc fetch — **still to confirm** before P5.
+  - **Custom-domain endpoint** = `POST /accounts/{account_id}/pages/projects/{project_name}/domains`
+    (permission: Pages **Edit**). Not yet *executed* (premium-only, §13).
+- **S0-b — Direct Upload over raw REST: PROVEN LIVE.** The full protocol, executed against the
+  throwaway account (`sw-t0-spike`, since deleted):
+  1. `hashFile = blake3(base64(fileBytes) + extension)` → hex, **truncated to 32 chars**
+     (`blake3-wasm` semantics; validated here with `@noble/hashes` against the `abc`
+     test-vector `6437b3ac…9d85`).
+  2. `GET  /accounts/{id}/pages/projects/{p}/upload-token` → `{jwt}` (short-lived, ~300 s).
+  3. `POST /pages/assets/check-missing` `{hashes:[…]}` (Bearer **jwt**) → which hashes are absent.
+  4. `POST /pages/assets/upload` → **JSON array** of
+     `{key:hash, value:base64, metadata:{contentType}, base64:true}` (Bearer **jwt**) →
+     `{"successful_key_count":3,"unsuccessful_keys":[]}`.
+  5. `POST /pages/assets/upsert-hashes` `{hashes:[…]}` (Bearer **jwt**).
+  6. `POST /accounts/{id}/pages/projects/{p}/deployments` — **multipart** with fields
+     `manifest` (`{"/index.html":hash, …}`) + `branch` (Bearer **API token**, *not* the jwt).
+     → deployment `id`, `url`, `latest_stage.status:"success"`.
+  - **Verified live:** the production URL `https://sw-t0-spike.pages.dev/` returned **200
+    `text/html`** with the exact uploaded HTML, and `/hello.txt` returned **200 `text/plain`** with
+    the exact uploaded text (fetched via Node — the system `curl` is LibreSSL 3.3.6 and fails the
+    TLS handshake; a **local-tooling gotcha**, not a Cloudflare problem).
+  - **25 MiB rejection WITNESSED (bracketed):** `24 MiB → HTTP 200`, `25 MiB (26 214 400 B) →
+    HTTP 200`, **`26 MiB → HTTP 500`** with an HTML error page titled
+    *"Worker threw exception | api.pages.cloudflare.com"*. So the cap holds at 25 MiB, and
+    **oversize is a 500, not a clean 4xx** ⇒ **our own cap must be `< 25 MiB`** and we must never
+    forward an oversize body to Cloudflare (pre-validate).
+- **Deliverable:** this note. **Nothing user-facing was built.** The throwaway project was
+  **deleted** (account back to 6 projects).
 
 ### P1 — Files engine on our own metal (free, no Cloudflare at all)
 - Upload/list/rename/delete; `Content-Disposition` rename with `sha256` unchanged;
@@ -416,8 +453,8 @@ P4 (templates/converters/bulk) and P5 (platform tier/pool) are **NOT v1**.
 
 - **Q4 — converters:** heavy binaries (`libreoffice`, `ffmpeg`) on the VPS vs dependency-free
   (`sharp`, `7z`, `xlsx`, `pdfjs`). **Owner did not answer.** P4 only; recommend dependency-free.
-- **T0 facts still unverified** (§2): R4, R15, the exact custom-domain endpoint, and whether a
-  Free-plan account can create tokens via API without extra scopes — **spike them, don't assume**.
+- **R15 (Workers free requests/day)** — not cleanly captured; confirm before P5. *(R4, R5, R1, R3,
+  R7 and the custom-domain endpoint are now RESOLVED — see §9 T0.)*
 
 *Historical (pre-answer) questions retained for provenance:*
 1. Wedge for v1: files+redirects on our own metal (P1/P2), or Pages (P3)? *Rec: P1→P2→P3.*
@@ -425,3 +462,42 @@ P4 (templates/converters/bulk) and P5 (platform tier/pool) are **NOT v1**.
 3. Custom domains: premium only?
 4. Converters: heavy binaries or dependency-free? *Rec: dependency-free.*
 5. AUP: which lawyer?
+
+---
+
+## 14. Admin-editable caps (owner decision 2026-10-01) — BINDING
+
+Owner: *"You can decide the limit. And we can add to the admin where those limits can be easily
+changed — and also all caps for the workers and cyberlab to be available for edit in admin."*
+
+**Three rules follow from this, and they apply to BOTH D1 (Task 155, "workers"/hosting) and
+D2 (Task 156, Cyber Lab):**
+
+1. **No cap is a hard-coded literal.** Every limit lives in a named field on the existing
+   `AdminSetting` record (the same single-row pattern the app already uses), read **server-side**
+   on every request. A cap the client can bypass is not a cap.
+2. **Every cap is editable in the admin UI** with a sane default, a unit label, and a one-line
+   explanation — so the owner changes behaviour without a deploy.
+3. **Sane defaults ship on**: the numbers below are **my** chosen defaults (the owner delegated
+   them). They are starting points, tunable in admin, and must be enforced with a clear,
+   user-facing message when hit.
+
+**D1 (hosting) defaults** — new `hosting*` `AdminSetting` fields (schema lands in P1):
+
+| Field | Default | Unit | Why this number |
+|---|---|---|---|
+| `hostingFreeStorageQuotaMb` | **1024** (1 GB) | MB / user | Generous for the "share a file / an EXE" use-case; the free tier is our own metal. |
+| `hostingFreeMaxFileSizeMb` | **512** | MB / file | Above the EXE use-case, below anything that makes the VPS disk dangerous in one write. |
+| `hostingFreeMaxFiles` | **500** | files / user | Bounds inode + listing cost. |
+| `hostingFreeMaxBandwidthGbPerMonth` | **50** | GB / month | Downloads are the real cost; 50 GB ≈ a few thousand EXE pulls. |
+| `hostingPremiumStorageQuotaMb` | **10240** (10 GB) | MB / user | Premium (BYO token / R2) can be far larger. |
+| `hostingPagesMaxAssetMb` | **20** | MB / file | **Must stay `< 25`** — Cloudflare 500s above 25 MiB (§9). Pre-validate; never forward oversize. |
+| `hostingPlatformTokenTtlHours` | **24** | hours | Owner: free platform-token tier ≤ 1 day before reclaim (§13 Q2). |
+
+**D2 (Cyber Lab) defaults** follow the same mechanism and are enumerated in
+`PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` §10, but the *mechanism* is decided here: caps go on
+`AdminSetting`, are admin-editable, and are enforced server-side. D2 must not invent a second
+mechanism.
+
+**P1 acceptance addition:** the hosting caps above are settable in admin, change server behaviour
+without a redeploy, and a quota breach returns a clear message (not a 500).

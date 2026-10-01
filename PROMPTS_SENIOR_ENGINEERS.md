@@ -264,32 +264,24 @@ TASK:            D1 / Task 155 — "Workers & Pages": the Hosting tab (pages, re
 TASK DOC:        PLAN_TASK_155_WORKERS_AND_PAGES.md
                  Read §13 FIRST (owner decisions, 2026-10-01 — they BIND the build), then §9
                  (phasing), §3 (hard constraints), §5 (token model), §11 (AUP), §13.2 (creds).
-DEPENDS ON:      NOTHING — START NOW. The owner answered §13 on 2026-10-01 and supplied a
-                 throwaway Cloudflare account token (in the gitignored .env as
-                 CLOUDFLARE_API_TOKEN_DEV). NB the token is `active` but lists NO account yet,
-                 so T0's first step is to get the Account ID (§13.2). T0 does NOT block P1/P2 —
-                 those need no Cloudflare. No other agent's work is in flight.
+DEPENDS ON:      NOTHING — START NOW. §13 answered 2026-10-01; throwaway Cloudflare account/token
+                 supplied (§13.2: CLOUDFLARE_API_TOKEN_DEV + CLOUDFLARE_ACCOUNT_ID_DEV in the
+                 gitignored .env), and the T0 spikes are ALREADY DONE + PASSED (§9). Begin at P1.
 BRANCH:          main
 DEPLOY?          yes, per phase — EXCEPT P1 (files) must not disturb the LIVE /e/ + /downloads/
                  services that already serve customer files today. Cloudflare phases only after T0.
 
 ORDER — do not skip a step:
-  1. T0 SPIKES (§9) against the throwaway account:
-       - Get the Account ID (§13.2), then confirm the token + account work.
-       - S0-a: confirm R4 (Direct Upload vs the 500-builds/month quota), R15 (Workers free
-         limits), and the exact endpoint POST /accounts/{acct}/pages/projects/{project}/domains.
-       - S0-b: prove Direct Upload over RAW REST for a 3-file static site, AND prove the 25 MiB
-         rejection (upload 26 MiB → watch it fail). Witness it; do not assume it.
-     Append the raw evidence to §9. If a spike FAILS, STOP and report — do not design around an
-     unverified fact.
+  1. T0 SPIKES (§9) — **DONE 2026-10-01, PASSED.** R4 resolved (Direct Upload is NOT a build);
+     Direct Upload over raw REST proven live (a 3-file site served 200 with exact bytes); the
+     25 MiB cap witnessed (24/25 MiB → 200, 26 MiB → 500). Do NOT re-run; read §9 for the protocol.
   2. P1 — FILES on our own metal (NO Cloudflare): upload/list/rename/delete; Content-Disposition
-     rename with sha256 PROVABLY unchanged; expiry; per-user quota. Ships behind the new
-     `hosting` entitlement, DARK.
+     rename with sha256 PROVABLY unchanged; expiry; per-user quota (§14 caps, admin-editable).
+     Ships behind the new `hosting` entitlement, DARK.
   3. P2 — REDIRECTS, user-owned: promote the live /r/<token> + LinkRedirect to user-owned links
      + custom slugs + hit counts.
-  4. P3 — PAGES (BYO token, only after T0 passes): connection pane + scoped-token checklist +
-     verify-on-save; deploy a template; return the live *.pages.dev URL; agent-does-it as a
-     GATED proposal.
+  4. P3 — PAGES (BYO token): connection pane + scoped-token checklist + verify-on-save; deploy a
+     template; return the live *.pages.dev URL; agent-does-it as a GATED proposal.
   STOP after P1 (and P2 if told). Do NOT start P4/P5 (converters/templates/bulk/platform tier)
   and NEVER start Task 156.
 
@@ -307,6 +299,8 @@ NON-NEGOTIABLE (from the plan):
   - EVERY Cloudflare mutation writes an audit row; agent-initiated hosting is an AgentPendingAction
     (kind "hosting"), never a silent write.
   - A HARD per-user CAP applies in EVERY mode — even with the user's OWN token, and with ours.
+    ALL caps are named AdminSetting fields (§14), enforced SERVER-SIDE, editable in the admin UI,
+    and shipped with the §14 defaults. No cap is a hard-coded literal.
   - Custom domains are PREMIUM ONLY. An invalid/revoked token FAILS CLOSED with plain language,
     never a raw Cloudflare JSON dump.
   - Scan uploads (§11.1); never market links as "anonymous" (§11.5).

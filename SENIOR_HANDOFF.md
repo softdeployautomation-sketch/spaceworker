@@ -325,9 +325,26 @@ read a resource without being able to read the resource's *container*. Lesson: f
 account-scoped credential, **demand the Account ID with the token**, and **probe each scope with
 the call you actually intend to make** before believing the token "works".
 
+**19. Cloudflare Pages Direct Upload: the manifest hash is `blake3(base64(bytes)+extension)`
+truncated to 32 hex chars — and an oversize asset returns a raw `500`, not a `4xx`.** Task 155's
+T0 spike needed Direct Upload **without** wrangler, so the protocol was read from wrangler's source
+and **executed against the live throwaway account** 2026-10-01. The parts that will bite:
+(a) the per-file key is **`blake3(base64(fileBytes) + extensionWithoutDot)` → hex → first 32 chars**
+— **not** a hash of the raw bytes, and **not** MD5 (the widely-copied blog uses MD5 and is wrong);
+get this wrong and every deployment 500s with no useful message. (b) the flow is
+`upload-token` → `check-missing` → `assets/upload` → `upsert-hashes` → `deployments`, and only the
+**`deployments` POST uses the API token** while the three `assets/*` calls use the short-lived
+**JWT**. (c) the `deployments` body is **multipart** with `manifest` (`{"/path":hash}`) + `branch`;
+a hand-rolled boundary that is even slightly off returns a bare **500**. (d) **`MAX_ASSET_SIZE =
+25 MiB` and oversize is a `500` "Worker threw exception", not a clean `413`** — measured:
+`24 MiB → 200`, `25 MiB → 200`, **`26 MiB → 500`**. So **pre-validate on our side and never
+forward >25 MiB**. (e) the deployment is **not** a *build* (R4): Direct Upload does not consume the
+500-builds/month quota. Local gotcha: the **macOS `curl` is LibreSSL 3.3.6 and fails the TLS
+handshake to `*.pages.dev`** — use Node's `fetch` (or a modern curl) to verify the served bytes.
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (Task 155 **§13-answers + T0-prerequisite** session — the owner answered `PLAN_TASK_155_...md` §13 and supplied a throwaway Cloudflare account/token; the **T0 prerequisites are now proven live** (Account ID `4c822d3b5378019cef1e1b79a3bf0492`; `/accounts/{id}/pages/projects` → 200 with **6** existing projects; `/workers/scripts` → 200; R2 → 403). Docs-only — **no app code changed**. Earlier the same day: TASK_150 closed (T6 waived); TASK_154 N3 gate evaluated against the LIVE fleet — does **not** bite, no code written.)**
+**Last verified: 2026-10-01 (Task 155 **T0 spikes** session — the owner answered §13 and supplied a throwaway Cloudflare account/token; **T0 passed with raw evidence**: Direct Upload over raw REST proven live (a 3-file site served 200 with exact bytes) and the **25 MiB cap witnessed** (24/25 MiB → 200, **26 MiB → 500**); R4 resolved (Direct Upload is **not** a build); the owner ruled **all caps are admin-editable** (plan §14). Docs-only — **no app code changed**. Earlier the same day: §13 answers + T0 prerequisites; TASK_150 closed (T6 waived); TASK_154 N3 gate evaluated against the LIVE fleet — does **not** bite.)**
 
 ### 6.1 Live app — `main`
 
@@ -472,7 +489,7 @@ Do not fold M8 into any of the above.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT; UNGATED 2026-10-01 — START at T0** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *v1 / free first.* **§13 answered 2026-10-01** (v1 = free-first P1→P2→P3; free platform-token tier ≤1 day; premium = user-selectable duration (3/5 days, or indefinite **with a billing warning**); **a hard cap applies in EVERY token mode**; custom domains **premium only**; AUP handled by the owner's UK lawyer; **converters Q4 still open**). A throwaway Cloudflare account/token is in the gitignored `.env` and the **T0 prerequisites are proven live** (§6, trap 18). **Do T0 spikes FIRST, then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** |
+| **1** | **D1 — Task 155 "Workers & Pages"** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) — **NEXT; UNGATED 2026-10-01 — T0 PASSED, START P1** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *v1 / free first.* **§13 answered 2026-10-01** (v1 = free-first P1→P2→P3; free platform-token tier ≤1 day; premium = user-selectable duration (3/5 days, or indefinite **with a billing warning**); **a hard cap applies in EVERY token mode**; custom domains **premium only**; AUP handled by the owner's UK lawyer; **converters Q4 still open**). A throwaway Cloudflare account/token is in the gitignored `.env`; the **T0 spikes are DONE + PASSED** (§9): Direct Upload over raw REST proven live, **25 MiB → 500** witnessed, R4 resolved. Owner also ruled **all caps are admin-editable** (plan §14). **Next: P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** |
 | 2 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). |
 
 *D1 is the promoted live-app item and is **now UNGATED** — the owner answered §13 on 2026-10-01
@@ -870,3 +887,31 @@ half-done. A half-done change with no note is worse than no change.
   only; **revoke it once T0 is done**.
 - **Next:** **D1 / Task 155 — run the T0 spikes** (§9) against the account above, then **P1**
   (files on our own metal). Converters (155 §13 Q4) still open — do not install heavy binaries.
+
+### 2026-10-01 — Task 155 T0 spikes PASSED (raw evidence); owner ruled caps are admin-editable; D1 ready for P1
+- **Did:** (a) Ran the **T0 spikes** against the throwaway Cloudflare account — **S0-a** (docs +
+  probe: R1/R3/R5/R7 + **R4 resolved**) and **S0-b** (**Direct Upload over raw REST**, end-to-end).
+  (b) Recorded the full protocol + raw evidence in `PLAN_TASK_155_...md` **§9**, set the header to
+  **T0 DONE**, and added **§14 "Admin-editable caps"** from the owner's 2026-10-01 instruction
+  (*"You can decide the limit … add to the admin where those limits can be easily changed, and also
+  all caps for the workers and cyberlab"*) with chosen defaults. (c) Added handoff **trap 19**;
+  refreshed **§6** last-verified and **§7** (D1 now **T0 PASSED — START P1**). (d) Updated the
+  `PROMPTS_SENIOR_ENGINEERS.md` D1 block (T0 done, caps-in-admin). **No application code changed.**
+- **Verified (raw, live, 2026-10-01):** created project `sw-t0-spike`; manifest hash =
+  `blake3(base64(bytes)+ext)`→hex→32 chars (blake3 validated vs the `abc` vector
+  `6437b3ac…9d85`); `upload-token` → `check-missing` → `assets/upload`
+  (`{"successful_key_count":3,"unsuccessful_keys":[]}`) → `upsert-hashes` →
+  `deployments` (multipart `manifest`+`branch`) → `latest_stage.status:"success"`. Served proof
+  via **Node fetch**: `https://sw-t0-spike.pages.dev/` → **200 text/html** with the exact uploaded
+  HTML; `/hello.txt` → **200 text/plain** with the exact bytes. **25 MiB cap witnessed:**
+  `24 MiB → 200`, `25 MiB → 200`, **`26 MiB → 500`** (`Worker threw exception`). **R4 RESOLVED:**
+  Direct Upload is **not** a build. Project **deleted** (account back to 6).
+- **NOT verified:** the **custom-domain endpoint** was identified
+  (`POST …/pages/projects/{p}/domains`) but **not executed** (premium-only; §13); **R15** Workers
+  free requests/day not cleanly captured (deferred to P5). Nothing user-visible was built.
+  **SIMULATION: none** — every result above is a live API response.
+- **State left behind:** `main` @ this docs commit; tree clean, in sync with `origin/main`.
+  **Deployed build unchanged** — `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`.
+  `self-hosted-build` untouched (`f6b6f78`). Throwaway token still in the local `.env` only.
+- **Next:** **D1 / Task 155 — P1** (files on our own metal, dark behind `hosting`, caps per §14).
+  Converters (155 §13 Q4) still open — do not install heavy binaries.
