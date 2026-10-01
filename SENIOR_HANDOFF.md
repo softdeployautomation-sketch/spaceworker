@@ -275,11 +275,11 @@ to verify, not a fact to trust (§10 item 1).
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ the tip of this session's work: **`a64c702`** (TASK_154 N1 code) **+ `d55ef2e`** (this handoff update, docs-only). Any commit above this line is documentation-only. *(The previous pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
+| Branch / HEAD | `main` @ the tip of this session's work: **`e342578`** (TASK_154 N2 code), stacked on **`a64c702`** (N1). Any commit above this line is documentation-only. *(The pass before last recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
-| Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb` (the commit before the current HEAD). The current HEAD (`a64c702`, N1) is committed, pushed and CI-green but NOT deployed**, deliberately: N1 is a server-side predecessor with no owner-visible change on its own. |
+| Deployed to production | **Live build is `MLKWXpSxzHtvt8KoE_F3h`, `BUILD_ID` mtime `2026-10-01 11:58 CEST` — from `06a5eeb`. HEAD (`e342578`, N1+N2) is committed, pushed and CI-green but NOT deployed.** Neither half is live; **N2 is the commit that makes the fix owner-visible** — deploy N1+N2 together. |
 | Deploy run | `36845942402` (`workflow_dispatch`, `conclusion=success`) — the last real deploy |
-| CI on current HEAD | push run `36857561751`: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
+| CI on current HEAD | push run `36865754289` (N2) and `36857561751` (N1): `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** each time (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
 | Migrations applied | all pending applied (**5** in that deploy — verified by counting `finished_at >= deploy start`); `ScreenshotRotationCursor` exists |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
@@ -308,12 +308,12 @@ include N1 — see §6.1/§6.4.*
 
 ### 6.4 Known-unverified (do not claim these work)
 
-- **TASK_154 N1 is not deployed, so none of it is verified live.** It is committed,
-  pushed and CI-green (`a64c702`), and its behaviour is proven by unit test +
-  harness (§12) — but the running production build predates it. **Do not tell Mike the
-  idle-provenance fix is live.** Deploying N1 alone would change nothing he can see
-  (the provenance is additive and opt-in); it becomes user-visible only once N2 renders
-  it. **N1 + N2 should deploy together.**
+- **TASK_154 N1 *and* N2 are committed, pushed and CI-green — but NEITHER is deployed, so
+  the owner's idle-chip fix is NOT live.** The production build predates both. N1
+  (`a64c702`, server provenance) is additive/opt-in and invisible on its own; N2
+  (`e342578`, the client latch in `lib/device-idle.ts`) is the half that changes what Mike
+  actually sees. **Do not tell Mike the idle fix is live. Deploy N1 + N2 together, then
+  screenshot the device page (§8) — that deploy is what closes TASK_154's owner report.**
 - **M3 summarisation has never been exercised against a live frame.** The summariser is
   proven present in the compiled bundle and the timeline UI renders, but the device's
   `screenshotMonitoringEnabled` is `false` (**re-verified this session: all 8 rows of
@@ -359,18 +359,19 @@ banner, decides what runs next.
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
-| ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance; a mesh hiccup cannot blank them~~ **DONE 2026-10-01** (`a64c702`, pushed, CI-green, **not deployed**) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; new `tests/vantra-idle-provenance.test.ts` (**8/8**). See §12. |
-| 1 | **TASK_154 N2** — client: latch idle, delete the "bare status" fallback | same §3 N2 | **Next.** Consumes N1's shape — see the shape note below. |
+| ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance~~ **DONE** (`a64c702`) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; `tests/vantra-idle-provenance.test.ts` (**8/8**). Not deployed. |
+| ~~2~~ | ✅ ~~**TASK_154 N2** — client: latch idle, delete the "bare status" fallback~~ **DONE 2026-10-01** (`e342578`, pushed, CI-green, **not deployed**) | same §3 N2 | ONE shared helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all 3 console sites wired; `tests/device-idle-chip.test.ts` (**10/10**). See §12. |
+| 1 | **DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot the device page per §8 | — | **Do this first — it is what actually closes TASK_154** for Mike. |
 | 2 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo |
 | 3 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
 
-**N2 shape note (important — N1 does not hand you what N2's doc assumed).** N1 made the
-per-row provenance object **opt-in** (`GET /api/devices?idle=provenance`) so the default
-payload stays byte-identical for existing callers. What N2 gets **for free** on every call
-is the top-level `idle: { asOf, state }` (`state` ∈ `fresh`/`stale`/`unknown`) alongside the
-unchanged `idleSeconds`. That is enough to latch and to stop blanking; if N2 needs per-row
-`state`/`asOf`, it must request `?idle=provenance`. Decide deliberately and say which you
-chose. **N1 + N2 should deploy together** (N1 alone changes nothing the owner can see).
+**N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
+**always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
+`?idle=provenance`, so N1's per-row opt-in object is still unused by the app (available if N3
+needs per-row provenance). The latch is a **module-global `Map`** in `lib/device-idle.ts`, keyed
+`id:` else `name:`, **not** reset on unmount — it self-bounds via the server's `onlineWindowMs`
+and the 60 s active boundary, so a stale idle cannot freeze forever. It clears only on a
+positively-active reading (< 60 s, matching `formatIdle`).
 
 **TASK_152 M8 (device task/control — the deferred "final version")** is deliberately NOT
 scoped yet. It needs its own safety work; the observability half (M1–M7) had to land first.
@@ -475,6 +476,12 @@ changed nothing the user can see is the exact failure that produced TASK_153.
 
 ## 10. Update protocol — do this before you finish, or the handoff dies
 
+> **This was skipped once and it cost the next reader a full re-derivation.** The 2026-10-01 N2
+> session shipped correct, CI-green work and then left **this file and `TASK_154_...md` untouched** —
+> so §6 named a stale HEAD and §7 still said "NEXT" for an already-done task (trap 14). **Finishing
+> the code is not finishing the task. If you did work, you owe these four edits in the same session,
+> before you stop.** Code-complete + doc-stale == a broken handoff.
+
 **In the same session as the work:**
 
 1. **§6 Current state** — update the `Last verified:` date, HEAD SHAs, sync status,
@@ -573,4 +580,42 @@ half-done. A half-done change with no note is worse than no change.
   (read-only this session — no work done there).
 - **Next:** **TASK_154 N2** (client) — consume N1's provenance (see the §7 shape note); then deploy
   **N1 + N2 together** and screenshot the device page per §8.
+
+### 2026-10-01 — TASK_154 N2 shipped (client latch); N1+N2 still NOT deployed; handoff was NOT updated by the N2 session (this pass fixed that)
+- **Did (N2 code — authored by the N2 session, verified and recorded here by the senior pass):**
+  deleted the bare-status fallback on **both** surfaces and routed every chip through ONE shared
+  client-safe helper. `lib/device-idle.ts` **+180** (new block `:20-198`): `idleChipLabel()` (the
+  latch + age-out), `statusWord()`, `relTime()`/`relTimeAt()`, `idleReadProvenanceFrom()`,
+  `IDLE_ACTIVE_MAX_SECONDS = 60`, `IdleChipDevice`/`IdleReadProvenance` types, and the module-level
+  latch `Map`. `components/device-list.tsx` (`:22`, `:202`, `:625-642`): `statusIdleLabel` now calls
+  the helper; old `if (d.idleSeconds === null) return statusWord(d.status)` **gone**.
+  `components/device-console.tsx` (`:36-40`, `:462`, `:568`, `:1398`, `:1700`): local `relTime`/
+  `statusWord` copies deleted; **all three** print sites (agent context, header chip, Summary "User
+  activity") wired. `package.json:35` `test:idlechip`; new `tests/device-idle-chip.test.ts` (10 tests).
+  **Commit `e342578`**, pushed `bb2394f..e342578`. No schema change, no migration; `lib/devices.ts`
+  (`deviceStatus()`/`DEVICE_ONLINE_WINDOW_MS`), the 20 s poll cadence, `.env`, `browser-capture/`,
+  `src-tauri/` untouched.
+- **Verified (raw, by the senior pass — independent re-run, not carried forward):**
+  `git rev-parse HEAD` = `e342578` = `origin/main`, `git status --porcelain` empty; commit stat = the
+  5 files above (392+/44−). **Reproduce-first** via the N2 session's render harness
+  (`/tmp/n2-render-evidence.mjs`, real `DeviceList`/`DeviceConsole` in real Chromium/Playwright,
+  `/api/devices` bodies stubbed — **SIMULATION**, throwaway `app/__n2probe` pages since removed):
+  BEFORE flicker = `["online · idle 1 min"], ["online"], ["online · idle 1 min"]`; AFTER = all three
+  `["online · idle 1 min"]`; age-bound BEFORE froze at `online · idle 12 min`, AFTER → `offline · last
+  seen 11 min ago` (R3 owns it); `clear` and `offline` identical before/after. `npx tsc --noEmit` →
+  `EXIT=0`; **full sweep: all 24 `test:*` suites pass, 0 fail** (test:idlechip 10, test:idle 8,
+  test:devices 6, test:vantra 58, …). CI push run **`36865754289`** → `Build & typecheck` **success**,
+  `Deploy to production (manual only)` **skipped**.
+- **NOT verified:** **nothing is deployed** — the owner-visible fix is **not live**; the production
+  build still predates N1+N2. The mesh hiccup is a **SIMULATION** (a stubbed `/api/devices` body / a
+  thrown fetch), not an observed live 15 s socket timeout. Cold+unknown is proven at the helper level
+  (`tests/device-idle-chip.test.ts:61-66`), **not** rendered in the browser. The render harness does
+  not embed a git SHA, so "before = N2 reverted" rests on the harness run, not an artifact tag.
+- **PROCESS FINDING:** the N2 session **did not perform §10** — it left `SENIOR_HANDOFF.md` (§6/§7/§12)
+  and `TASK_154_...md` un-updated, so the handoff was stale on arrival (trap 14). This senior pass
+  re-verified the work independently and wrote the updates. §10 now carries an explicit reminder.
+- **State left behind:** `main` @ **`e342578`**, clean, in sync with `origin/main`, CI green; the
+  **deployed build is unchanged** (`06a5eeb`). `self-hosted-build` @ `f6b6f78`, clean (untouched).
+- **Next:** **DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot `/devices` and a
+  device console (§8) — that is what closes TASK_154 for Mike. Then N3 (optional).
 

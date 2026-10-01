@@ -27,9 +27,13 @@ the owner is objecting to.
 
 - **N1 — ✅ DONE 2026-10-01**, commit `a64c702` (pushed, CI-green, **NOT deployed**). See the
   STATUS note at the end of §3 N1; raw evidence in `SENIOR_HANDOFF.md` §12.
-- **N2 — NEXT.** Read `SENIOR_HANDOFF.md` §7 "N2 shape note" first: N1's per-row provenance is
-  **opt-in** (`?idle=provenance`); what every call already receives is the top-level
-  `idle: { asOf, state }` (`fresh`/`stale`/`unknown`).
+- **N2 — ✅ DONE 2026-10-01**, commit `e342578` (pushed, CI-green, **NOT deployed**). One shared
+  helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all three console print sites
+  wired; old bare-status fallback deleted; `tests/device-idle-chip.test.ts` (**10/10**). It used
+  only the **always-on** top-level `idle: { state, asOf }` (not `?idle=provenance`). Raw evidence
+  in `SENIOR_HANDOFF.md` §12.
+- **NEXT — DEPLOY N1 + N2 together** (manual `workflow_dispatch`), then screenshot `/devices` and a
+  device console (§8). That is what closes the owner report. **Nothing is live yet.**
 - **N3 — not started** (optional, cross-repo).
 
 Live-app state, deploy status and the update protocol live in `SENIOR_HANDOFF.md` (§6, §9, §10);
@@ -306,6 +310,21 @@ clearly-marked, cross-repo follow-up and may be skipped without blocking the own
 - Rendered evidence from **both** the device list and the device console, plus a raw
   DOM/text check — not a code read.
 - `npx tsc --noEmit` clean; run the existing test suites and paste the tallies.
+
+> **STATUS: ✅ DONE 2026-10-01 — commit `e342578` (pushed, CI-green, NOT deployed).** All of the
+> above met: one shared helper `idleChipLabel` in `lib/device-idle.ts` (module-global latch `Map`,
+> keyed `id:` else `name:`; clears only on a positively-active reading `< 60 s`, matching
+> `formatIdle`; self-bounds against the **server's** `onlineWindowMs` so a sustained outage cannot
+> freeze an idle forever; cold+unknown → `online · activity unknown`, never a guessed "active").
+> The old bare-status fallback is **deleted** from both `components/device-list.tsx`
+> (`:625-642`) and `components/device-console.tsx`, and **all three** console print sites
+> (`:462`, `:1398`, `:1700`) route through the helper. `deviceStatus()` /
+> `DEVICE_ONLINE_WINDOW_MS` (`lib/devices.ts`), the 20 s poll cadence, `.env`, `browser-capture/`
+> and `src-tauri/` were **not** touched; no schema change, no migration. **Rendered** before/after
+> (real components in real Chromium; `/api/devices` bodies stubbed = **SIMULATION**):
+> `["online · idle 1 min"], ["online"], ["online · idle 1 min"]` → all three `["online · idle 1 min"]`.
+> `npm run test:idlechip` **10/10**; `tsc` clean; full 24-suite sweep 0 fail. Raw evidence:
+> `SENIOR_HANDOFF.md` §12 (2026-10-01 N2 entry). **Not live — deploy N1 + N2 together.**
 
 ### N3 — (follow-up, cross-repo) key idle by agent id, not hostname
 
