@@ -279,9 +279,21 @@ oneshot failure as your change breaking production** — check the journal times
 deploy window and re-check after the next tick. Only a unit still failing after a clean tick is
 a real defect.
 
+**16. A plan's `§SCHEMA` section is a *draft*, not the database.** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`
+§SCHEMA lists `LabScenario` / `LabRange` / `LabEpisode` / `LabFinding` / `DetectionPack` /
+`LabConsent` and an `AgentPendingAction` kind `"lab-action"` in a list headed *"reserved seams,
+shared by EVERYTHING device-side"* — which reads as "these exist, consume them". Measured
+2026-10-01: `grep '^model Lab' prisma/schema.prisma` returns **nothing**, and only
+`"browser-clone"` exists as an `AgentPendingAction` kind. The *device* seams in the same list
+(`DeviceJob`, `DeviceAudit`, `AgentActionAudit`, `UserEntitlement`, the panic switch in
+`app/api/devices/panic/route.ts`, `lib/resource-governor.ts`) **are** real — so a reader cannot
+tell the built ones from the aspirational ones by reading the plan. **Before a task doc says
+"reuse X", grep for X.** Same class of error as trap 14 (a document describing a system that
+has moved on), one level deeper.
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (deploy session — TASK_154 N1+N2 deployed to production and verified live; every §6 claim below re-checked against the live VPS and this repo, not copied forward).**
+**Last verified: 2026-10-01 (later session — the **screen-capture failure-message fix** was deployed and verified live; **§6.1 was stale again (trap 14)** and is corrected below. This session also added two scoping docs (Tasks 155/156); **no app code changed**.)**
 
 ### 6.1 Live app — `main`
 
@@ -289,15 +301,22 @@ a real defect.
 |---|---|
 | Branch / HEAD | `main` @ the current tip (run `git log --oneline -1`). The last **code** commits are **`e342578`** (TASK_154 N2) and `a64c702` (N1); **everything above `e342578` is documentation-only** and changes no behaviour. *(An earlier pass recorded HEAD as `77f60f7` — an ancestor of `aa533cd`; the doc named its own parent. Corrected 2026-10-01, §12.)* |
 | Sync | in sync with `origin/main`; working tree **clean** |
-| Deployed to production | **Live build is `4-aARmhO-lJKtaX2Lx-9y`, `BUILD_ID` mtime `2026-10-01 15:23:32 CEST` — deployed from `main` @ `9f5d0d4` (docs-only above the N2 code commit), and it CONTAINS TASK_154 N1+N2.** Verified live (not assumed): `/api/devices` now returns the top-level `idle:{state:"fresh",asOf}` object (N1) and the shipped client chunks contain the string `"activity unknown"` (N2 — see §12 for raw before/after). |
-| Deploy run | `36867996177` (`workflow_dispatch` @ `9f5d0d4`, `conclusion=success` — both jobs) — the deploy that shipped N1+N2 |
-| CI on current HEAD | push run `36867043084`: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
+| Deployed to production | **Live build is `iyIlFSwZhjQ_1Rap4MFWC`, `BUILD_ID` mtime `2026-10-01 16:19:43 CEST` — deployed from `main` @ `3d484af` (the screen-capture failure-message fix, `61f6a9e` + `3d484af`). TASK_154 N1+N2 shipped in the previous build `4-aARmhO-lJKtaX2Lx-9y` and are still present.** Verified live (not assumed): the improved capture-failure copy is in the shipped chunks (`grep -rl "capture service" /opt/spaceworker/.next/static` → 2 chunks), and §12 of the earlier entry's N1/N2 evidence still holds (that build also returned the top-level `idle:{state,asOf}` object and shipped the string `"activity unknown"`). |
+| Deploy run | **`36875156299`** (`workflow_dispatch` @ `3d484af`, `conclusion=success`) — the deploy that shipped the capture-failure fix. *One earlier dispatch the same hour **failed**: `36873911731`, “Process completed with exit code 255” — a transient SSH failure to the VPS; the re-dispatch succeeded. A failed dispatch is not necessarily a broken build.* |
+| CI on current HEAD | push run for `3d484af` and the docs-only commits above it: `Build & typecheck` = **success**, `Deploy to production (manual only)` = **skipped** (the deploy job is `workflow_dispatch`-gated; a push only runs build/typecheck) |
 | Migrations applied | **No pending migrations in this deploy** — `git diff --name-only 06a5eeb HEAD -- prisma/` = **0** (N1/N2 are pure code). `_prisma_migrations` unchanged; `ScreenshotRotationCursor` still exists. |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
 
-*Describes the **deployed** build `4-aARmhO-lJKtaX2Lx-9y` (`main` @ `9f5d0d4`). It **does**
-include TASK_154 N1+N2 — see the first bullet.*
+*Describes the **deployed** build `iyIlFSwZhjQ_1Rap4MFWC` (`main` @ `3d484af`), which is the
+previous build `4-aARmhO-lJKtaX2Lx-9y` (N1+N2) **plus the screen-capture failure-message fix**.*
+
+- **Screen-capture failure messages (this deploy)** — `61f6a9e` + `3d484af`. Every capture
+  failure reason is reduced to **one plain sentence, never a raw dump**; the Connect control is
+  never clickable while disabled; `browser-capture/capture.ts` classifies failures
+  (`tests/screen-capture-failure.test.ts` added, `tests/screen-timeline.test.ts` extended).
+  Deploy also gained a remote step (+11 lines in `deploy.yml`). **Verified live:** the copy is in
+  the shipped chunks and the build mtime is `2026-10-01 16:19:43 CEST`.
 
 - **TASK_154 N1+N2 (this deploy)** — device idle provenance + the client idle latch. Server
   (N1): `/api/devices` carries a top-level `idle:{asOf,state}` object alongside the unchanged
@@ -403,6 +422,16 @@ positively-active reading (< 60 s, matching `formatIdle`).
 **TASK_152 M8 (device task/control — the deferred "final version")** is deliberately NOT
 scoped yet. It needs its own safety work; the observability half (M1–M7) had to land first.
 Do not fold M8 into any of the above.
+
+**Owner-requested design work (scoping delivered 2026-10-01 — docs exist, nothing built):**
+
+| # | Task | Doc | Notes |
+|---|---|---|---|
+| D1 | **Task 155 — Workers & Pages** (hosting tab: pages, redirects, files, converters; Cloudflare as engine, our `dl.*` as the free tier) | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | Owner: *"free first."* Three engines; token model = platform (capped) / BYO / managed pool. **Start with its T0 spikes then P1 (files on our own metal) → P2 (redirects) → P3 (Pages).** Has 5 owner questions in §13. |
+| D2 | **Task 156 — Cyber Lab, real-world** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Has 5 owner questions in §10. |
+
+*Neither is in the code queue yet — both are waiting on the owner's answers (D1 §13, D2 §10).
+Do not start them ahead of the live-app items above.*
 
 **Self-hosted line:** T10 → T11 (the live kill — highest value) → T12 → T13 → T14 → T15,
 per `TASK_145_...JUNIOR_TRACK.md`.
@@ -549,6 +578,9 @@ half-done. A half-done change with no note is worse than no change.
 | `TASK_127_DEVICE_SCREENSHOT_DAILY_SUMMARY.md` | Screen monitoring phase 1 + the deferred phase 3 (device tasks) |
 | `TASK_150`–`TASK_154` | The current live-app workstreams (see §7) |
 | `TASK_145_*_TRACK.md` (in the worktree) | The self-hosted licence workstream, two-track format |
+| `PROMPTS_SENIOR_ENGINEERS.md` | **The assignment pack** — PROMPT L (onboard the lead), PROMPT E (per-engineer task template) and PROMPT V (the lead's independent verification). Use it to hand work out; it encodes §4/§5/§8/§9/§10 as copy-paste operations. |
+| `PLAN_TASK_155_WORKERS_AND_PAGES.md` | **Scoping, not built** — the Workers & Pages hosting tab (free-first). Owner Qs in §13. |
+| `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Scoping, not built** — the real-world Cyber Lab (tooling matrix + abuse sentinel). Depends on 155 P1/P2. Owner Qs in §10. |
 | `HANDOFF.md` (root) | **STALE** (Sep 2026, PR merge notes). Historical only — do not follow. |
 | `app/AGENTS.md`, `app/CLAUDE.md` | Repo-local agent conventions |
 
@@ -666,3 +698,13 @@ half-done. A half-done change with no note is worse than no change.
 - **State left behind:** deployed build `4-aARmhO-lJKtaX2Lx-9y` (deploy run `36867996177`, sha `9f5d0d4`); this docs commit advances `main` past `9f5d0d4` (documentation-only). Tree **clean**, in sync with `origin/main`, CI green. `self-hosted-build` @ `f6b6f78`, clean (untouched).
 - **Next:** TASK_154 **N3** (key idle by agent id) **only if** hostname-keying bites in practice; otherwise **TASK_150 T6** (the last TASK_150 item, `TASK_150_...md` §3).
 
+
+### 2026-10-01 — two scoping docs (Tasks 155/156) + the assignment pack; §6.1 corrected again (trap 14); new trap 16
+
+- **Did:** (a) Wrote `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` (new, 328 lines, 11 sections — the real-world Cyber Lab scoping the owner asked for: capability matrix, **abuse sentinel**, `Lab*` schema deltas, phasing C0–C6, and open questions). (b) Wrote `PROMPTS_SENIOR_ENGINEERS.md` (new, 397 lines — PROMPT L for the incoming lead, PROMPT E per-engineer template, PROMPT V the lead's independent verification, plus instantiated headers for `TASK_154 N3`, `TASK_150 T6`, `Task 155`, `Task 156`, and the self-hosted `T11`–`T15`). (c) Handoff §5 (+trap 16), §6 (corrected), §7 (+design work), §11 (+3 rows). **No application code changed in this pass.**
+- **Verified:** `main` @ `3d484af` == `origin/main`; **live build `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`**, `systemctl --failed` **empty**; the capture-failure copy is in the shipped chunks. §6.1 still named the **previous** build (`4-aARmhO-…` / `9f5d0d4`) — **stale again (trap 14)** — corrected to the current build + deploy run `36875156299` (and the failed dispatch `36873911731`, exit 255 = transient SSH).
+- **New trap (16):** a plan's `§SCHEMA` list is a **draft**, not the database. Measured: `grep '^model Lab' prisma/schema.prisma` → **nothing**; only `"browser-clone"` exists as an `AgentPendingAction` kind — while the *device* seams in the same list **are** real, so a reader cannot tell built from aspirational. Also measured: the prod VPS has **only `tcpdump`** from a 13-tool security list.
+- **NOT verified:** nothing runtime in this pass (docs only). `PLAN_TASK_155` was written in a prior compacted pass and was **not** re-audited line-by-line here — its §4/§5 claims about engines and the `dl.*` service were read but not re-measured this pass. The Cyber Lab has **no** code, no schema, and no host — every `Lab*` item is unbuilt.
+- **State left behind:** `main` @ docs commit (above `3d484af`, documentation-only); tree clean, in sync. `self-hosted-build` @ `f6b6f78`, clean (untouched — `git status --porcelain` empty).
+- **Next:** `main` — **TASK_154 N3 only if hostname-keying bites** (must be shown first), else **TASK_150 T6**. Self-hosted — **T11** (the live kill), highest value. Design work (155/156) waits on the owner's answers; do not start either ahead of the live-app items.
+- **Owner note:** confirmed the screen-capture fix reads correctly — *"device is offline and would clear itself as soon as it comes on"*.
