@@ -105,7 +105,7 @@ test("only a real CAPTURE failure is rendered as a failure — and as a sentence
   assert.doesNotMatch(rows[0], /<img/);
 });
 
-test("the reported raw Playwright dump can never reach the timeline verbatim", () => {
+test("the reported raw Playwright dump reads as OFFLINE, never as a call log", () => {
   // The EXACT reason stored on 2026-10-01 13:36:40 (DeviceScreenshot, WilkSF9) —
   // the string the owner saw as unreadable red text.
   const raw =
@@ -115,14 +115,27 @@ test("the reported raw Playwright dump can never reach the timeline verbatim", (
   ]);
 
   // Still an honest failure, still red...
-  assert.match(rows[0], /Capture failed — /);
   assert.match(rows[0], /text-red-500/);
-  // ...but ONE bounded line: the dump is truncated and none of its markup or
-  // call-log noise survives.
-  assert.match(rows[0], /…/, "an over-long reason is truncated");
+  // ...but a sentence, with the machine-offline fact UP FRONT and no call-log
+  // noise, no JSON, no CSS classes.
+  assert.match(rows[0], /The machine was offline, so nothing could be captured\./);
+  assert.doesNotMatch(rows[0], /capture_service_http_500/);
+  assert.doesNotMatch(rows[0], /locator\.click/);
+  assert.doesNotMatch(rows[0], /Call log/);
   assert.doesNotMatch(rows[0], /bg-brand-600/);
-  assert.doesNotMatch(rows[0], /element is not enabled/);
-  assert.doesNotMatch(rows[0], /- locator resolved to/);
+});
+
+test("a capture-service HTTP failure with no recognisable cause is one sentence", () => {
+  const { rows } = render([
+    frame({
+      id: "f1",
+      status: "failed",
+      failureReason: 'capture_service_http_500: {"ok":false,"failureReason":"boom\\nstack"}',
+      capturedAt: null,
+    }),
+  ]);
+  assert.match(rows[0], /The capture service could not take the frame\. It will be retried\./);
+  assert.doesNotMatch(rows[0], /\{|\}|boom|stack/);
 });
 
 test("every known capture-failure code maps to plain, actionable copy", () => {
@@ -131,8 +144,12 @@ test("every known capture-failure code maps to plain, actionable copy", () => {
   assert.match(captureFailureCopy("capture_service_token_not_set"), /not set up on the server/);
   assert.match(captureFailureCopy("empty_frame"), /came back blank/);
   assert.match(captureFailureCopy(null), /no reason was recorded/);
-  // An unknown code is still shown, never swallowed.
+  // Prefixed forms reduce to the SAME sentence — the detail is dropped, not shown.
+  assert.match(captureFailureCopy("capture_service_unreachable: connect ECONNREFUSED 127.0.0.1:3403"), /could not be reached/);
+  // An unknown CODE is still shown, never swallowed...
   assert.equal(captureFailureCopy("something_new"), "Capture failed — something_new.");
+  // ...but an unknown SLAB OF TEXT never is.
+  assert.equal(captureFailureCopy("Some huge runtime error\nat foo (bar.ts:1)"), "The capture failed. It will be retried.");
 });
 
 test("every summaryError code maps to calm, specific copy", () => {

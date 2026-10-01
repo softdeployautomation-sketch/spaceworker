@@ -61,42 +61,63 @@ export function frameTimestamp(frame: Pick<ScreenTimelineFrame, "capturedAt" | "
  * Why a FAILED capture reads the way it does — the mirror of summaryPendingCopy
  * above, but for the OTHER axis (status !== "captured", which IS a real error).
  *
- * Only known machine codes get a sentence; the wording is deliberately plain and
- * tells the owner whether anything is expected of them. An UNKNOWN reason is
- * still shown rather than swallowed, but on ONE bounded line: a failure reason
- * reaches here from the capture service, and a raw upstream dump (the
- * `locator.click: Timeout 10000ms …` call log, once) must never be able to reflow
- * the whole timeline. The root cause of THAT dump is fixed at the source (see
- * browser-capture/capture.ts `connectRefusal`); this is the defensive half.
+ * The stored `failureReason` is NOT a clean enum: it can be a short code
+ * ("device_offline"), a code WITH detail ("capture_service_http_500: {…}"), or a
+ * RAW upstream dump (a Playwright `locator.click: Timeout … Call log: …`). The
+ * owner must never read that last kind on their screen timeline — it reached
+ * them once verbatim, as unreadable red text with the one relevant fact buried
+ * in it. So the reason is first REDUCED to a short code (`failureCode`), then
+ * mapped to a plain sentence. An unknown code is still shown honestly; only a
+ * code can reach the sentence, so a dump can never leak through.
  */
+const CAPTURE_FAILURE_COPY: Record<string, string> = {
+  device_offline:
+    "The machine was offline, so nothing could be captured. This clears by itself once it checks in.",
+  worker_timeout: "A capture started but never finished. It will be retried.",
+  capture_service_token_not_set: "Screen capture is not set up on the server yet.",
+  capture_service_unreachable: "The capture service on the server could not be reached.",
+  capture_service_http_error: "The capture service could not take the frame. It will be retried.",
+  empty_frame: "The screen came back blank, so there was nothing to store.",
+  no_frame: "No image was produced for this attempt.",
+  capture_failed: "The capture failed. It will be retried.",
+  request_too_large: "The request was rejected as too large. It will be retried.",
+};
+
 export function captureFailureCopy(reason: string | null): string {
-  switch (reason) {
-    case null:
-    case "":
-      return "Couldn’t take the frame — no reason was recorded.";
-    case "device_offline":
-      return "The machine was offline, so nothing could be captured. This clears by itself once it checks in.";
-    case "worker_timeout":
-      return "A capture started but never finished. It will be retried.";
-    case "capture_service_token_not_set":
-      return "Screen capture is not set up on the server yet.";
-    case "capture_service_unreachable":
-      return "The capture service on the server could not be reached.";
-    case "empty_frame":
-      return "The screen came back blank, so there was nothing to store.";
-    case "no_frame":
-      return "No image was produced for this attempt.";
-    case "capture_failed":
-      return "The capture failed. It will be retried.";
-    default:
-      return `Capture failed — ${boundedReason(reason)}.`;
-  }
+  if (!reason) return "Couldn’t take the frame — no reason was recorded.";
+  const code = failureCode(reason);
+  return CAPTURE_FAILURE_COPY[code] ?? `Capture failed — ${code}.`;
 }
 
-/** One bounded line: an unexpected reason must never reflow the timeline. */
-function boundedReason(reason: string): string {
-  const oneLine = reason.replace(/\s+/g, " ").trim();
-  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}…` : oneLine;
+/**
+ * Reduce ANY stored reason to a short, speakable code. This is the boundary that
+ * keeps raw text off the screen: only a bare code is ever returned.
+ */
+function failureCode(reason: string): string {
+  const raw = reason.trim();
+  if (CAPTURE_FAILURE_COPY[raw]) return raw;
+
+  // The raw Playwright dump this codebase used to produce: an OFFLINE machine's
+  // Connect button is DISABLED, so the click waits out its 10s timeout and
+  // throws a call log. New frames no longer produce it (capture.ts
+  // `connectRefusal`), but a frame stored BEFORE that fix must still read as
+  // offline rather than as a stack trace.
+  if (/locator\.click:\s*Timeout/i.test(raw)) {
+    return /(machine is offline|disabled|not enabled)/i.test(raw) ? "device_offline" : "capture_failed";
+  }
+
+  // "<code>: <detail>" — keep the code, drop the detail.
+  const prefixed = /^([a-z0-9_]{3,40}):/i.exec(raw);
+  if (prefixed) {
+    const base = prefixed[1].toLowerCase();
+    if (CAPTURE_FAILURE_COPY[base]) return base;
+    // capture_service_http_500 / _401 / … → one sentence, never the JSON body.
+    if (/^capture_service_http_\d{3}$/.test(base)) return "capture_service_http_error";
+    return base;
+  }
+
+  // A bare short machine code is honest to show; anything longer is a dump.
+  return /^[a-z][a-z0-9_]{2,40}$/i.test(raw) ? raw.toLowerCase() : "capture_failed";
 }
 
 export function ScreenTimeline({
