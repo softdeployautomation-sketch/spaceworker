@@ -36,7 +36,10 @@ the owner is objecting to.
   `4-aARmhO-lJKtaX2Lx-9y` (`BUILD_ID` mtime `2026-10-01 15:23:32 CEST`). Verified live: the
   `null`-idle chip `online` → `online · idle 3 min`; `/api/devices` gained the top-level `idle`
   object; the client bundle carries the new label. **The owner report is closed.**
-- **N3 — not started** (optional, cross-repo).
+- **N3 — ✅ EVALUATED 2026-10-01 — gate FAILS (does not bite); no code written.** The live fleet
+  has **zero** same-org hostname collisions and every SW device name resolves to its mesh idle key,
+  so this optional, cross-repo follow-up is **not** a defect. Raw evidence: `SENIOR_HANDOFF.md` §12
+  (2026-10-01 N3 entry) + §5 trap 17 + §6.4.
 
 Live-app state, deploy status and the update protocol live in `SENIOR_HANDOFF.md` (§6, §9, §10);
 this doc holds only the diagnosis (§1) and the design/tasks (§2–§3).
@@ -339,6 +342,24 @@ side already stores `vantraAgentId`. §1.4.2 shows the hostname key is a single 
 (`"I"`) — it is fragile and collides silently. Changing the key to a stable identity
 removes a whole class of mis-attribution. Scope it only after N1/N2 land, and only if
 the owner wants it.
+
+> **STATUS: ✅ EVALUATED 2026-10-01 — gate FAILS; NO code written (by design).** The condition this
+> task is gated on (*“only if hostname-keying demonstrably bites”*) was tested against the **LIVE**
+> fleet and is **not** met:
+> - TRMM `(client_id, hostname)` duplicates = **0** (`GROUP BY client_id,hostname HAVING count(*)>1`
+>   → 0 rows; per client: `8/I`, `43/{Sc,WilkSF9}`, `44/I`, `47/CSFD-CHECKOUT`).
+> - SW `Device.name` duplicates per user (non-removed) = **0**; empty names = **0**.
+> - Vantra `/api/internal/sw/devices/idle` for **all 6** live SW orgs → **distinct** keys, and
+>   **every** SW device name resolves to its mesh key (`I`→104, `WilkSF9`→0, `Sc`→0,
+>   `CSFD-CHECKOUT`→15).
+>
+> The mechanism IS real but **latent** — a *forced* collision (**SIMULATION**, real route +
+> real `idleChipLabel`, hand-built mesh) makes a machine idle **900 s** render **`online · active
+> now`** (the exact R2 lie), while distinct hostnames stay correct. So the follow-up is **filed, not
+> dead**: keying idle by `vantraAgentId` still requires a **Vantra** change (out of this task’s
+> one-repo scope) and should be done only if hostnames ever collide or the owner asks. Raw evidence:
+> `SENIOR_HANDOFF.md` §12 (2026-10-01 N3 entry); rationale indexed as §5 trap 17. **No files were
+> changed; `tsc` EXIT=0, `CI=1 next build` EXIT=0, 25/25 `test:*` suites 0 fail (§12).**
 
 ---
 

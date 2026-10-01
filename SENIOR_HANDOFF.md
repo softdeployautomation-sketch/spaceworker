@@ -279,8 +279,8 @@ oneshot failure as your change breaking production** — check the journal times
 deploy window and re-check after the next tick. Only a unit still failing after a clean tick is
 a real defect.
 
-**16. A plan's `§SCHEMA` section is a *draft*, not the database.** `PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`
-§SCHEMA lists `LabScenario` / `LabRange` / `LabEpisode` / `LabFinding` / `DetectionPack` /
+**16. A plan's `§SCHEMA` section is a *draft*, not the database.**
+`PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`§SCHEMA lists `LabScenario` / `LabRange` / `LabEpisode` / `LabFinding` / `DetectionPack` /
 `LabConsent` and an `AgentPendingAction` kind `"lab-action"` in a list headed *"reserved seams,
 shared by EVERYTHING device-side"* — which reads as "these exist, consume them". Measured
 2026-10-01: `grep '^model Lab' prisma/schema.prisma` returns **nothing**, and only
@@ -291,9 +291,23 @@ tell the built ones from the aspirational ones by reading the plan. **Before a t
 "reuse X", grep for X.** Same class of error as trap 14 (a document describing a system that
 has moved on), one level deeper.
 
+**17. A conditional task (“only if X demonstrably bites”) must be closed with LIVE evidence
+— and “bites” means the live fleet, not a constructed example.** TASK_154 §3 N3 (“key idle
+by agent id, not hostname”) is gated on *“only if hostname-keying demonstrably bites”* and is
+explicitly *“not required for the owner’s fix… only if the owner wants it.”* The idle map is
+keyed by the **mutable `Device.name` (= TRMM hostname)**, so a collision would silently let one
+machine render another’s activity — a real, latent correctness hazard. Measured against the
+**live** fleet 2026-10-01: **0** duplicate `(client_id, hostname)` in TRMM, **0** duplicate
+non-removed `Device.name` per user, and **distinct, fully-resolving** idle keys across all 6 SW
+orgs — i.e. it does **not** bite. A *forced* collision (**SIMULATION**) does reproduce the
+failure (`online · active now` on a machine idle 900 s), which is why N3 is **filed, not dead**.
+The lesson: forcing the failure proves the *mechanism*, not the *risk*. Do not spend a
+cross-repo change (N3 needs the **Vantra** repo) on a hazard the live data says is absent —
+log the negative evidence, leave the follow-up, and move on. Evidence in §12.
+
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (later session — the **screen-capture failure-message fix** was deployed and verified live; **§6.1 was stale again (trap 14)** and is corrected below. This session also added two scoping docs (Tasks 155/156); **no app code changed**.)**
+**Last verified: 2026-10-01 (TASK_154 **N3 gate** session — evaluated the “only if hostname-keying bites” gate against the **LIVE** fleet with raw evidence; it does **NOT** bite, so **no code was written** — only §5/§6/§7/§12 and the task doc changed. Earlier the same day: the **screen-capture failure-message fix** was deployed and verified live; two scoping docs (Tasks 155/156) were added; **no app code changed** in either doc pass.)**
 
 ### 6.1 Live app — `main`
 
@@ -353,6 +367,17 @@ the next clean tick** — see §5 trap 15.
 
 ### 6.4 Known-unverified (do not claim these work)
 
+- **TASK_154 N3 was EVALUATED, not built (2026-10-01).** Its gate — *“only if
+  hostname-keying demonstrably bites”* — was tested against the **LIVE** fleet and **FAILS**.
+  Raw evidence in §12: TRMM `(client_id, hostname)` duplicates = **0**; SW non-removed
+  `Device.name` duplicates per user = **0**; and across all **6** live SW orgs the Vantra
+  `/idle` map keys are **distinct** and **every** SW device name resolves to its mesh key
+  (`I`→104, `WilkSF9`→0, `Sc`→0, `CSFD-CHECKOUT`→15). The mechanism is real but **latent**:
+  a *forced* collision collapses two agents onto one key and makes the idle machine read
+  `online · active now` (**SIMULATION**, §12). N3 therefore stays a **correctly-filed
+  follow-up (cross-repo, needs a Vantra change), NOT a defect** — do not “fix” it
+  speculatively across two repos. See §5 trap 17.
+
 - **TASK_154 N1+N2 ARE now deployed and verified live** (build `4-aARmhO-lJKtaX2Lx-9y`, deploy
   `36867996177`). Raw before/after in §12. **Honest gap:** the specific `null → "activity
   unknown"` branch was **not** observed *rendered* live after the deploy — at capture time the
@@ -408,8 +433,8 @@ banner, decides what runs next.
 | ~~1~~ | ✅ ~~**TASK_154 N1** — server: idle readings carry provenance~~ **DONE + DEPLOYED** (`a64c702`) | `TASK_154_...md` §3 N1 | `lib/vantra-link.ts` + `app/api/devices/route.ts`; `tests/vantra-idle-provenance.test.ts` (**8/8**). Live in `4-aARmhO-...`. |
 | ~~2~~ | ✅ ~~**TASK_154 N2** — client: latch idle, delete the "bare status" fallback~~ **DONE + DEPLOYED 2026-10-01** (`e342578`) | same §3 N2 | ONE shared helper `idleChipLabel` in `lib/device-idle.ts`; both surfaces + all 3 console sites wired; `tests/device-idle-chip.test.ts` (**10/10**). Live in `4-aARmhO-...`. See §12. |
 | ~~3~~ | ✅ ~~**DEPLOY N1 + N2 together**~~ **DONE 2026-10-01** — run `36867996177`, build `4-aARmhO-lJKtaX2Lx-9y`; verified live per §8/§12 | — | Closed TASK_154's owner report. |
-| 1 | **TASK_154 N3** — key idle by agent id, not hostname | same §3 N3 | Optional follow-up, cross-repo. Only worth doing if the hostname-keying bites in practice. |
-| 2 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | Last item of TASK_150 |
+| ~~1~~ | ✅ ~~**TASK_154 N3** — key idle by agent id, not hostname~~ **EVALUATED 2026-10-01 — gate FAILS, does not bite; no code written** | `TASK_154_...md` §3 N3 | Live evidence in §12; trap 17. Cross-repo (needs a **Vantra** change). Left as a latent, correctly-filed follow-up — **not** a defect. |
+| 1 | **TASK_150 T6** — confirm/fix changing the test email mid-send | `TASK_150_...md` §3 T6 | **NEXT.** Last item of TASK_150. |
 
 **N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
 **always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
@@ -708,3 +733,57 @@ half-done. A half-done change with no note is worse than no change.
 - **State left behind:** `main` @ docs commit (above `3d484af`, documentation-only); tree clean, in sync. `self-hosted-build` @ `f6b6f78`, clean (untouched — `git status --porcelain` empty).
 - **Next:** `main` — **TASK_154 N3 only if hostname-keying bites** (must be shown first), else **TASK_150 T6**. Self-hosted — **T11** (the live kill), highest value. Design work (155/156) waits on the owner's answers; do not start either ahead of the live-app items.
 - **Owner note:** confirmed the screen-capture fix reads correctly — *"device is offline and would clear itself as soon as it comes on"*.
+
+### 2026-10-01 — TASK_154 N3 gate EVALUATED against the LIVE fleet: does NOT bite → no code written; new trap 17; N3 struck, TASK_150 T6 promoted
+
+- **Did:** discharged TASK_154 §3 N3 (*“key idle by agent id, not hostname”*) — a task whose own doc
+  gates it (*“only if hostname-keying demonstrably bites”*, *“not required for the owner’s fix… only
+  if the owner wants it”*, *“cross-repo”*). Tested the gate with raw evidence instead of implementing
+  it; on a **negative** result I wrote **no application code** (a real fix needs the **Vantra** repo,
+  out of this task’s one-repo scope) and instead recorded the finding. New **§5 trap 17**, **§6.4**
+  bullet, **§7** (strike N3, promote **TASK_150 T6**), this entry; TASK_154 doc **Status** + §3 N3
+  marked evaluated. Throwaway repro harness created, run, and **removed** (not committed).
+- **Reproduce (SIMULATION — hand-built org/mesh, NOT live):** drove the **REAL**
+  `app/api/devices/route.ts` + the **REAL** `idleChipLabel` (house require-hook, real code, stubbed
+  deps) with two distinct devices sharing one hostname vs. distinct hostnames. Raw:
+  ```
+  COLLISION  dev-A idleSeconds= 5 chip= "online · active now" (truth: idle 900s)
+  COLLISION  dev-B idleSeconds= 5 chip= "online · active now" (truth: idle 5s)
+  COLLISION  both rows share one idleSeconds? true
+  CONTROL    dev-A idleSeconds= 900 chip= "online · idle 15 min"
+  CONTROL    dev-B idleSeconds= 5   chip= "online · active now"
+  ```
+  → the **mechanism is real**: a same-hostname collision collapses two agents onto one map key, so
+  the idle machine reads `online · active now` (the exact TASK_154 R2 lie). Distinct hostnames are
+  correct. **This is what the bug WOULD do — not what the live fleet does.**
+- **Verified — the gate itself, against LIVE data (read-only; raw):**
+  - **TRMM `(client_id, hostname)` duplicates → 0.** `SELECT c.id, a.hostname, count(*) FROM
+    agents_agent a JOIN clients_site s ON s.id=a.site_id JOIN clients_client c ON c.id=s.client_id
+    GROUP BY 1,2 HAVING count(*)>1` → **0 rows**. Per-client hostnames: `8/I`, `43/{Sc,WilkSF9}`,
+    `44/I`, `47/CSFD-CHECKOUT` — **no client has two machines of the same name.**
+  - **SW `Device.name` duplicates per user (non-removed) → 0**; **empty names → 0**.
+  - **Vantra `/api/internal/sw/devices/idle` for ALL 6 live SW orgs** (Bearer token read on the VPS,
+    never printed): `cmucs1rq5…`→`{}`, `cmue394ot…`→`{"WilkSF9":0,"Sc":0}`, `cmufkhca6…`→`{"I":104}`,
+    `cmulntqlg…`→`{}`, `cmuncir0v…`→`{}`, `cmuncovco…`→`{"CSFD-CHECKOUT":15}` — **every key distinct
+    and every SW device name resolves to its mesh key** (`I`→104, `WilkSF9`→0, `Sc`→0,
+    `CSFD-CHECKOUT`→15). HTTP 200, ~0.10–0.15 s each.
+  - **Conclusion:** hostname-keying does **not** demonstrably bite on the live fleet → the gate
+    **fails** → N3 is a latent, correctly-filed follow-up, not a defect.
+- **Regression / tree health (no code changed, so before == after):** `npx tsc --noEmit` **EXIT=0**;
+  `CI=1 npx next build` **EXIT=0** (BEFORE it briefly reported the known stale-`.next/types`
+  `Cannot find module './routes.js'` artifact — cleared once the build regenerated `.next/types`);
+  **full sweep: 25/25 `test:*` suites, 0 fail** (incl. `test:idle`, `test:idlechip`, `test:devices`,
+  `test:vantra`).
+- **NOT verified (expected):** no code change → nothing new to verify at runtime; nothing was
+  **deployed** (deploy is a separate manual gate and there is no code to ship). The collision is a
+  **SIMULATION** — the live fleet was checked and is collision-free, so the failure was **never
+  observed in production**. The **Vantra-side agent-id keying was not built** (out of this task’s
+  scope). Cross-user leak was reasoned (idle is per-org, so a hostname cannot cross users) but not
+  separately exercised.
+- **State left behind:** `main` @ this docs commit; tree clean, in sync with `origin/main`; CI on the
+  current HEAD `4f0e96c` **success** (run `36878242413`, deploy job skipped). **Deployed build
+  unchanged** — `iyIlFSwZhjQ_1Rap4MFWC`, mtime `2026-10-01 16:19:43 CEST`; `systemctl --failed`
+  **empty** (0 loaded units). `self-hosted-build` @ `f6b6f78`, clean (untouched).
+- **Next:** `main` — **TASK_150 T6** (confirm/fix changing the test email mid-send), the last item of
+  TASK_150. Self-hosted — **T11** (the live kill). Design work (155/156) waits on the owner’s answers.
+
