@@ -440,6 +440,14 @@ model AdminSetting {
   hostingMaxHeavyJobsPerUser        Int     @default(1)
   hostingPublishedRevisionsKept     Int     @default(3)
 
+  // TASK_155 P6a (PLAN §19) — the platform Cloudflare kill-switch. When FALSE the
+  // Premium (ours) site engine is down with a plain-language message, without a
+  // redeploy and without touching any HostingPlatformAccount row. Same §14
+  // mechanism: an admin-editable AdminSetting read server-side on every deploy.
+  // Default TRUE so a P6a deploy with zero platform rows fails on the empty
+  // roster (setup message), not on a dark master switch.
+  hostingPlatformCfEnabled          Boolean @default(true)
+
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
   // asked for "all caps for the workers and cyberlab ... available for edit in
@@ -1369,6 +1377,41 @@ model HostingCredential {
   updatedAt DateTime @updatedAt
 
   @@index([userId, provider])
+}
+
+// TASK_155 P6a (PLAN §19) — OUR Cloudflare accounts, managed by the admin and
+// rotated across premium users ("ours should be the premium"). Deliberately NOT
+// a HostingCredential: there is no userId (ownership is the platform) and no
+// isDefault (rotation is `priority`). Same AES-256-GCM token discipline — the
+// token is NEVER plaintext and NEVER returned by any route; the view carries
+// only `tokenHint` (last 4 chars). Rotation = the healthy row with the LOWEST
+// priority serves; unhealthy rows (verifyError non-null or status != "active")
+// are SKIPPED, never used. Purely ADDITIVE: no existing table changes shape.
+model HostingPlatformAccount {
+  id        String   @id @default(cuid())
+  // Cloudflare account id (not a secret) — shown in the admin list.
+  accountId String
+  // Human label ("cf-main", "cf-backup-2").
+  label     String
+  // AES-256-GCM ciphertext of the API token — never plaintext, never returned.
+  tokenCiphertext String
+  tokenIv         String
+  tokenTag        String
+  // Last 4 chars of the token, for a non-secret UI hint only.
+  tokenHint String @default("")
+  // Rotation order: the healthy row with the LOWEST priority serves. 1 = primary.
+  priority  Int      @default(100)
+  // "active" | "disabled" — disabled rows are kept, never used.
+  status    String   @default("active")
+  // Same health contract as HostingCredential: NULL lastVerifiedAt = never
+  // verified; non-null verifyError marks the row RED and rotation skips it.
+  // Never contains the token.
+  lastVerifiedAt DateTime?
+  verifyError    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, priority])
 }
 
 

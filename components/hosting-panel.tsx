@@ -44,6 +44,15 @@ interface HostingStatus {
   };
   /** TASK_155 P2 — the caller's own hosting credentials (never the token). */
   credentials: HostingCredential[];
+  /**
+   * TASK_155 P6a (PLAN §19.4) — the three-option picker's two facts:
+   *   premium       — this user may use OUR Cloudflare accounts
+   *   platformReady — at least one platform account is healthy right now
+   * The tab must not offer Premium without both, or the user hits a dead end at
+   * publish. Free is always available to everyone (§19.2).
+   */
+  premium: boolean;
+  platformReady: boolean;
   /** Where a /r/<slug|token> short link resolves (the app host). */
   linksBase: string;
 }
@@ -300,12 +309,30 @@ export function HostingPanel() {
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       if (!siteForm.name.trim()) return;
-      // §17.4 — the picker disables Premium (Cloudflare) while there is no
-      // account yet; this guard covers stale state (an account removed while
-      // this form sat open). The token itself lives in Settings now.
-      if (siteForm.engine === "cloudflare" && (status?.credentials.length ?? 0) === 0) {
-        setError("Connect an account in Settings first — then Premium unlocks here.");
-        return;
+      // §17.4 + §19.4 — the picker only OFFERS options we can honour; this guard
+      // covers stale state (the plan lapsed, or an admin turned the engine off
+      // while this form sat open). The server re-checks both anyway.
+      if (siteForm.engine === "cloudflare" && !siteForm.credentialId) {
+        if (!status?.premium) {
+          setError("Premium hosting is part of the premium plan — upgrade, or host this site on the free server.");
+          return;
+        }
+        if (!status?.platformReady) {
+          setError("Premium hosting is being set up right now — try again shortly, or pick your own account.");
+          return;
+        }
+      }
+      if (siteForm.engine === "cloudflare" && siteForm.credentialId) {
+        // §19.9 Q1 ANSWERED: "Yours" is premium too — the select disables it, this
+        // only catches stale state (the plan lapsed while the form sat open).
+        if (!status?.premium) {
+          setError("Premium hosting is part of the premium plan — upgrade, or host this site on the free server.");
+          return;
+        }
+        if ((status?.credentials.length ?? 0) === 0) {
+          setError("Connect an account in Settings first — then it appears here.");
+          return;
+        }
       }
       setBusy(true);
       setError("");
@@ -632,9 +659,9 @@ export function HostingPanel() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Sites</h2>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Zip a folder, check the preview, then publish. Pick the engine per site — our server is
-          free and instant; Premium runs on our global edge with custom domains. Optional: connect
-          your own account under Settings → Hosting accounts.
+          Zip a folder, check the preview, then publish. Three ways to host, per site: <strong>Free</strong> on our own
+          server, <strong>Premium</strong> on our global edge (premium plan, nothing to set up), or <strong>Yours</strong>{" "}
+          on an account of your own — connect one under Settings → Hosting accounts.
         </p>
 
         <form
@@ -653,25 +680,57 @@ export function HostingPanel() {
           <label className="flex flex-col gap-1 text-xs text-zinc-500">
             Engine
             <select
-              value={siteForm.engine}
-              onChange={(e) => setSiteForm((s) => ({ ...s, engine: e.target.value }))}
+              value={siteForm.engine === "cloudflare" && siteForm.credentialId ? "byo" : siteForm.engine}
+              onChange={(e) => {
+                // "Yours" is still engine: "cloudflare" on the wire — it just names
+                // a credentialId too, which is exactly what separates it from
+                // "Premium" (engine: "cloudflare", credentialId: null).
+                const v = e.target.value;
+                setSiteForm((s) => ({
+                  ...s,
+                  engine: v === "byo" ? "cloudflare" : v,
+                  credentialId: v === "byo" ? (s.credentialId || status.credentials[0]?.id || "") : "",
+                }));
+              }}
               className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             >
-              <option value="local">Our server (free)</option>
+              <option value="local">Free — on our server</option>
+              <option value="cloudflare" disabled={!status.premium || !status.platformReady}>
+                {status.premium
+                  ? status.platformReady
+                    ? "Premium — our global edge"
+                    : "Premium — coming online shortly"
+                  : "Premium — upgrade to unlock"}
+              </option>
+              {/* §19.9 Q1 ANSWERED (2026-10-02): BYO ("Yours") is PREMIUM-only
+                  like option 2 — free users get one engine, ours. Both CF-ish
+                  options therefore disable together, with one honest hint. */}
               {status.credentials.length > 0 ? (
-                <option value="cloudflare">Premium</option>
+                <option value="byo" disabled={!status.premium}>
+                  {status.premium ? "Yours — your own account" : "Yours — upgrade to unlock"}
+                </option>
               ) : (
-                <option value="cloudflare" disabled>
-                  Premium — connect an account in Settings
+                <option value="byo" disabled>
+                  Yours — connect an account in Settings
                 </option>
               )}
             </select>
-            {siteForm.engine === "cloudflare" && status.credentials.length === 0 && (
+            {!status.premium && (
               <span className="text-xs text-amber-600 dark:text-amber-400">
-                No account connected yet — add one in Settings; it becomes an option here right away.
+                Free hosting is included. Premium and Yours are both part of the premium plan.
+              </span>
+            )}
+            {status.premium && !status.platformReady && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Our edge accounts are being set up — try again shortly, or use your own account below.
               </span>
             )}
           </label>
+          {siteForm.engine === "cloudflare" && siteForm.credentialId && status.credentials.length === 0 && (
+            <span className="text-xs text-amber-600 dark:text-amber-400">
+              No account connected yet — add one in Settings; it becomes an option here right away.
+            </span>
+          )}
           {siteForm.engine === "cloudflare" && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
               Account
@@ -680,7 +739,7 @@ export function HostingPanel() {
                 onChange={(e) => setSiteForm((s) => ({ ...s, credentialId: e.target.value }))}
                 className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
               >
-                <option value="">Ours (default)</option>
+                <option value="">Ours (premium)</option>
                 {status.credentials.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label} · …{c.tokenHint}
@@ -712,7 +771,15 @@ export function HostingPanel() {
                   <div className="flex items-center gap-2">
                     <span className="truncate font-medium text-zinc-900 dark:text-zinc-100">{site.name}</span>
                     <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                      {site.engine === "cloudflare" ? "Premium" : "Our server"}
+                      {/* §19.4 — the badge must say WHICH source serves the site:
+                          a CF site with no credentialId IS ours (option 2), not
+                          "premium-ish". Saying only "Premium" is what let a BYO
+                          site masquerade as ours. */}
+                      {site.engine === "cloudflare"
+                        ? site.credentialId
+                          ? "Yours"
+                          : "Ours · premium"
+                        : "Free · our server"}
                     </span>
                     <span className="text-xs text-zinc-400">{site.status}</span>
                   </div>

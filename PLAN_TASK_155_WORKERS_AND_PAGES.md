@@ -1357,15 +1357,18 @@ per-asset provider column — that is **P6b**, its own slice, NOT in P6a.
 > **Q4 (rotation shape) → ANSWERED: multiple CF accounts in priority order** ("*option to add more
 > to rotate at the admin*"). **Q5 (DB vs env) → ANSWERED: DB**, admin-managed from the UI ("*add
 > more to the admin, so users can use ours*"). **Q3 (kill-switch dial) → default stands: yes**
-> (cheap, one bool; the owner never objected). **Q1 (may a FREE user use BYO?) → STILL OPEN** — the
-> owner's "*byo … to get more*" reads either way; one line settles it. **Q2 (did "premium links"
-> mean the Links tab literally?) → STILL OPEN** — default stands (P6a treats it as sites; links keep
-> their P4 caps). Everything else in this section is unchanged.
+> (cheap, one bool; the owner never objected). **Q1 (may a FREE user use BYO?) → ANSWERED: NO —**
+> see §19.11: the owner's *"free which is the instaweb"* grants free users exactly one engine,
+> so both Cloudflare options are premium. **Q2 (did "premium links" mean the Links tab literally?)
+> → STILL OPEN** — default stands (P6a treats it as sites; links keep their P4 caps). Everything
+> else in this section is unchanged.
 
-1. **May a FREE user use BYO (option 3)?** Default I'd build to: **yes** — the cost sits on the
-   user's own Cloudflare account, and refusing it punishes someone for bringing their own wallet.
-   (The owner's wording "byo … to get more" could also mean BYO requires premium. One line
-   settles it.)
+1. **May a FREE user use BYO (option 3)? → ANSWERED 2026-10-02: NO.** The owner granted free users
+   *"free which is the instaweb"* and nothing else — *"ours should be the premium"* and *"byo … to
+   get more"* both sit on the premium side of the line. **Implemented** in `createSite` and
+   `resolveDeployCredential` (both 403 `premium_required`, create-time AND deploy-time). This
+   supersedes the original default below, which said "yes — the cost sits on the user's own
+   account". One line in `lib/hosting/sites.ts` reverts it if the owner ever changes his mind.
 2. **Did *"premium links"* mean the Links tab literally?** If yes: custom domain = §18 P5; CF edge
    redirect = new P6c scope. Default: P6a treats it as "sites" and links keep their P4 caps.
 3. **Include the `hostingPlatformCfEnabled` kill-switch dial?** Default: yes (cheap, one bool).
@@ -1411,10 +1414,50 @@ per-asset provider column — that is **P6b**, its own slice, NOT in P6a.
    binding, with BYO as the escape hatch** — one line in the §18 binding table decides it (§18.9 Q1
    amendment: provider = platform | byo, default platform).
 
+### 19.11 Owner decisions, BINDING (2026-10-02) — premium-only BYO, all three resources
+
+Recorded here because these answered §19.9 and they bind every hosting screen from P6a on.
+
+> "free which is the instaweb … then premium which is the cloudflare and option to add more to
+> rotate at the admin, and then byo which is the users own cloudflare **to get more**."
+
+1. **BYO is PREMIUM-ONLY.** Free users get exactly one engine: `local` (our metal), under §14's
+   free quotas. Options 2 **and** 3 — *ours* and *yours* — both require premium. Enforced twice,
+   at `createSite` and at `resolveDeployCredential` (403 `premium_required`, plain language),
+   because a downgrade between create and publish must not buy a Cloudflare deploy. The picker
+   disables **both** non-free options with one shared hint ("*Free hosting is included. Premium
+   and Yours are both part of the premium plan.*").
+   *This supersedes §19.9 Q1's original default. Revert point: one `if (!premium)` in each of
+   `lib/hosting/sites.ts`'s two gates.*
+2. **Local/free stays open to everyone**, with the admin-editable free caps: `hostingFreeStorageQuotaMb`
+   (total stored bytes — files **and** site revisions), `hostingFreeMaxBandwidthGbPerMonth`,
+   `hostingFreeMaxFiles`, `hostingFreeMaxFileSizeMb`, `hostingFreeMaxLinks`.
+3. **The free STORAGE limit the owner asked for already exists and is wired**: `hostingFreeStorageQuotaMb`
+   (default 1024 MB), editable in Admin → Hosting caps as `freeStorageQuotaMb`, enforced in
+   `lib/hosting/rules.ts` (uploads) and `lib/hosting/sites.ts` (site trees). Premium reads the
+   sibling `hostingPremiumStorageQuotaMb`. **No new migration, no new code** — this item is
+   CLOSED; the monthly-shaped part of the ask is `hostingFreeMaxBandwidthGbPerMonth`.
+   *Read the owner's "per month" as the bandwidth dial; storage is a standing cap, not a reset.*
+4. **Platform + BYO apply to FILES, LINKS and SITES — not sites only.** P6a ships **sites**
+   (the resource the owner was testing). The same three-way choice must reach:
+   - **files** — today the global `hostingProvider` dial picks the upload engine for everyone;
+     per-user choice needs a provider column on the asset row → **P6b**;
+   - **links** — a redirect has no engine today; a CF edge base is **P6c** *only if* §19.9 Q2
+     confirms "premium links" meant the Links tab literally (still open). Until then links keep
+     their P4 premium cap (500).
+   Nobody should report "files/links don't have the three options" as a P6a bug — it is declared
+   scope, tracked here.
+
+**P6a status:** built (schema + migration, resolver, create/deploy gates, three-option picker,
+per-site *ours/yours* badge, admin roster route + panel, kill switch, status fields) and covered by
+`tests/hosting-platform-accounts.test.ts` + `tests/hosting-platform-admin-route.test.ts`.
+**Not yet done:** a real platform Cloudflare account added/verified on the live box (the roster is
+empty until the admin pastes one — until then premium sites honestly say "being set up").
+
 ---
-*End of §19. Scope only — no P6 code exists yet. §19 is the binding spec for P6a; the copy fixes
-ordered by §19.10 rules 1–2 ARE built (hosting-panel.tsx); P4 (deployed, live) and §18 (P5, scoped)
-are unaffected by it.*
+*End of §19. §19.1–§19.10 were scope; §19.11 records the owner's BINDING answers. P6a's code now
+exists (see the P6a status above); P4 (deployed, live), §18 (P5, scoped), §19.11's P6b/P6c and §20
+(P6d) are unaffected by it.*
 
 ---
 

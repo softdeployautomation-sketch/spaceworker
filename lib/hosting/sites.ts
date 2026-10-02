@@ -16,10 +16,10 @@ import {
 import { newHostingToken, sha256Hex } from "./rules";
 import { deployTree, ensureProject, verifyCredential, type CfCredential, type DeployFile } from "./cloudflare";
 import {
-  getDefaultHostingCredential,
   getHostingCredentialById,
   markHostingCredentialVerified,
 } from "./credentials";
+import { healthyPlatformAccountCount, resolvePlatformCredential } from "./platform-accounts";
 
 // TASK_155 P3 — the SITES engine (stateful half). This is the §16.1 flow:
 //
@@ -188,7 +188,7 @@ export interface CreateSiteInput {
  * fail CLOSED, never a silent fallback (§16.4).
  */
 export async function createSite(input: CreateSiteInput): Promise<HostingResult<HostingSiteView>> {
-  const { caps } = await resolveCapsForUser(input.userId);
+  const { caps, premium } = await resolveCapsForUser(input.userId);
   if (!caps.enabled) {
     return { ok: false, status: 403, code: "disabled", message: "Hosting is not enabled on this account yet." };
   }
@@ -197,6 +197,38 @@ export async function createSite(input: CreateSiteInput): Promise<HostingResult<
   if (!name) return { ok: false, status: 400, code: "invalid_name", message: "Give your site a name." };
 
   const engine = input.engine === "cloudflare" ? "cloudflare" : "local";
+
+  // TASK_155 P6a (PLAN §19.2 + §19.9 Q1 ANSWERED 2026-10-02) — the PREMIUM gate,
+  // checked at CREATION as well as at deploy (a downgrade between create and
+  // publish must not buy a platform deploy). The owner's answer was explicit:
+  // free users get ONE engine — our metal (local). Options 2 AND 3 (ours and
+  // yours) are premium, so the gate covers a cloudflare engine with or without a
+  // named credential. (Only `local` is free, for everyone, under §14 quotas.)
+  const credentialId = input.credentialId ?? null;
+  if (engine === "cloudflare" && !premium) {
+    return {
+      ok: false,
+      status: 403,
+      code: "premium_required",
+      message: "Premium hosting is part of the premium plan — upgrade to use it, or host this site on our free server.",
+    };
+  }
+  if (engine === "cloudflare" && !credentialId) {
+    // Do not let someone start a Premium site we cannot finish: with no healthy
+    // platform account it would fail at publish with a worse message. Note the
+    // user's OWN credential does not excuse this — a NULL credentialId resolves
+    // ONLY to the platform roster (§19.2), so a default BYO row would not save it.
+    const healthy = await healthyPlatformAccountCount();
+    if (healthy === 0) {
+      return {
+        ok: false,
+        status: 403,
+        code: "platform_empty",
+        message:
+          "Premium hosting is being set up right now — try again shortly, or connect your own Cloudflare account in Settings.",
+      };
+    }
+  }
 
   const count = await prisma.hostingSite.count({ where: { userId: input.userId } });
   if (count >= caps.premiumMaxProjects) {
@@ -216,7 +248,7 @@ export async function createSite(input: CreateSiteInput): Promise<HostingResult<
       userId: input.userId,
       name,
       engine,
-      credentialId: input.credentialId ?? null,
+      credentialId,
       previewToken,
       cfProject,
       status: "draft",
@@ -504,39 +536,99 @@ type RevisionRecord = {
   previewToken: string;
 };
 
-async function resolveDeployCredential(
+/**
+ * TASK_155 P6a (PLAN §19.2) — the resolution rule, verbatim from the spec:
+ *
+ *   engine = "cloudflare", credentialId <id>  -> that BYO credential (§16.4, fail CLOSED)
+ *   engine = "cloudflare", credentialId NULL  -> the PLATFORM account, premium only
+ *   engine = "local"                          -> our metal (never reaches here)
+ *
+ * The premium gate lives HERE (deploy time), not only at site creation, because
+ * a downgrade between create and publish must not be able to buy a platform
+ * deploy — defense in depth, exactly as §19.2 requires.
+ */
+/**
+ * Which Cloudflare account a cloudflare-engine deploy actually runs on —
+ * the whole P6a feature lives in this one function:
+ *
+ *   credentialId <id>  → THAT BYO credential, and only that one (never the
+ *                        platform, never a default — "Yours" must mean yours).
+ *   credentialId NULL  → the PLATFORM roster, and only the roster (never a
+ *                        default BYO row — "Premium" must mean OUR account).
+ *
+ * Both branches are premium (PLAN §19.9 Q1 answered 2026-10-02: free users get
+ * one engine, `local`). Exported so tests/hosting-platform-accounts.test.ts can
+ * prove the matrix without a live Cloudflare call.
+ */
+export async function resolveDeployCredential(
   userId: string,
   credentialId: string | null
 ): Promise<HostingResult<CfCredential & { credentialId: string }>> {
-  // A named credential is honoured; otherwise the user's default; otherwise the
-  // platform account (env). A dead token fails CLOSED — never a silent fallback.
-  const cred = credentialId
-    ? await getHostingCredentialById(userId, credentialId)
-    : await getDefaultHostingCredential(userId);
-  if (!cred) {
-    return {
-      ok: false,
-      status: 400,
-      code: "no_credential",
-      message: "Add a Cloudflare account in the Hosting tab before deploying to Cloudflare.",
-    };
-  }
-
-  // §16.4 "re-verify on use": confirm the token still works before we hand it to a
-  // deploy. A dead token marks the row red and fails CLOSED with plain language —
-  // it never silently falls back to the platform account.
-  const verdict = await verifyCredential({ accountId: cred.accountId, token: cred.token });
-  if (!verdict.ok) {
-    await markHostingCredentialVerified(userId, cred.id, verdict.error ?? "That API token could not be verified.");
+  // TASK_155 P6a (PLAN §19.9 Q1 ANSWERED 2026-10-02): free users get exactly ONE
+  // engine — our metal. BOTH Cloudflare branches (ours and yours) are premium, so
+  // the gate sits above both, before any credential is looked up. This is the
+  // deploy-time half of the createSite gate (§19.2 "defense in depth").
+  const { premium } = await resolveCapsForUser(userId);
+  if (!premium) {
     return {
       ok: false,
       status: 403,
-      code: "credential_invalid",
-      message: verdict.error ?? "That Cloudflare account could not be verified. Check the account in the Hosting tab.",
+      code: "premium_required",
+      message: "Premium hosting is part of the premium plan — upgrade to use it, or host this site on our free server.",
     };
   }
-  await markHostingCredentialVerified(userId, cred.id, null);
-  return { ok: true, value: { accountId: cred.accountId, token: cred.token, credentialId: cred.id } };
+
+  // A NAMED credential resolves ONLY to that credential — never to the platform
+  // roster, never to a default. If the user picked "Yours", leaving their account
+  // silently would be the worst possible failure mode (we'd bill their site to
+  // someone else's account and they'd never know).
+  if (credentialId) {
+    const named = await getHostingCredentialById(userId, credentialId);
+    if (!named) {
+      return {
+        ok: false,
+        status: 400,
+        code: "no_credential",
+        message: "That account is no longer connected. Reconnect it in Settings.",
+      };
+    }
+    // §16.4 "re-verify on use": confirm the token still works before we hand it to
+    // a deploy. A dead token marks the row red and fails CLOSED with plain
+    // language — it never silently falls back to the platform account.
+    const verdict = await verifyCredential({ accountId: named.accountId, token: named.token });
+    if (!verdict.ok) {
+      await markHostingCredentialVerified(userId, named.id, verdict.error ?? "That API token could not be verified.");
+      return {
+        ok: false,
+        status: 403,
+        code: "credential_invalid",
+        message: verdict.error ?? "That account could not be verified. Reconnect it in Settings.",
+      };
+    }
+    await markHostingCredentialVerified(userId, named.id, null);
+    return { ok: true, value: { accountId: named.accountId, token: named.token, credentialId: named.id } };
+  }
+
+  // credentialId NULL → PLATFORM account ONLY (§19.2). No default-BYO preference,
+  // no silent substitution: the whole point of option 2 is that "Premium" means
+  // OUR account, whatever the user happens to have connected in Settings. A
+  // platform selection that quietly used their own token would make the "ours vs
+  // yours" badge a lie and burn their Cloudflare quota instead of ours.
+
+  const platform = await resolvePlatformCredential((cred) => verifyCredential(cred));
+  if (!platform.ok) {
+    // Fail CLOSED with plain language. Never a silent `local` fallback for a
+    // cloudflare site, and never a raw Cloudflare error string.
+    return { ok: false, status: 403, code: platform.code, message: platform.message };
+  }
+  return {
+    ok: true,
+    value: {
+      accountId: platform.value.accountId,
+      token: platform.value.token,
+      credentialId: `platform:${platform.value.platformAccountId}`,
+    },
+  };
 }
 
 async function deployRevision(

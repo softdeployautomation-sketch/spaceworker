@@ -9,6 +9,7 @@ import { listHostingCredentials, countSitesByCredential } from "@/lib/hosting/cr
 import { listProviders } from "@/lib/hosting/providers";
 import { hostingPublicBase } from "@/lib/hosting/providers";
 import { listHostedLinks } from "@/lib/hosting/links";
+import { healthyPlatformAccountCount } from "@/lib/hosting/platform-accounts";
 
 // TASK_155 P1 — GET /api/hosting/status.
 //
@@ -25,12 +26,16 @@ export async function GET() {
 
   const [settings, decision] = await Promise.all([getAdminSettings(), hasEntitlement(user.id, "hosting")]);
   const entitled = decision.allowed;
-  const { caps } = await resolveCapsForUser(user.id);
-  const [usage, links, credentials, siteCounts] = await Promise.all([
+  const { caps, premium } = await resolveCapsForUser(user.id);
+  const [usage, links, credentials, siteCounts, platformHealthy] = await Promise.all([
     readUsage(user.id),
     listHostedLinks(user.id),
     listHostingCredentials(user.id),
     countSitesByCredential(user.id),
+    // TASK_155 P6a (PLAN §19.4) — the picker must not OFFER a Premium option we
+    // cannot honour. `premiumAvailable` is therefore the AND of "the user is
+    // premium" and "at least one platform account is healthy right now".
+    healthyPlatformAccountCount(),
   ]);
 
   return NextResponse.json({
@@ -72,5 +77,14 @@ export async function GET() {
     // TASK_155 P3 — §16.4 adds the per-account project count + the verify stamp
     // (lastVerifiedAt/verifyError) so the chooser is one honest row per account.
     credentials: credentials.map((c) => ({ ...c, projectCount: siteCounts[c.id] ?? 0 })),
+    // TASK_155 P6a (PLAN §19.4) — the three-option picker (Free / Premium /
+    // Yours). It needs two facts, and the client must not guess either:
+    //   premium       — is this user premium (BYO is not gated, the platform is)
+    //   platformReady — is at least one platform account healthy right now
+    // Together they let the tab render an honest, non-dead-end option list: a
+    // non-premium user with no account of their own sees "Free" plus an upgrade
+    // prompt, never a Premium row that fails at deploy time.
+    premium,
+    platformReady: platformHealthy > 0,
   });
 }

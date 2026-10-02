@@ -6,6 +6,7 @@ import { useConfirm } from "@/components/confirm-provider";
 import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
+import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 
 type AdminUser = {
   id: string;
@@ -2972,6 +2973,9 @@ function InfrastructureTab() {
       <ScreenshotPanel />
       <CloneLimitsPanel />
       <HostingCapsPanel />
+      {/* TASK_155 P6a (PLAN §19) — the premium engine's roster lives next to the
+          caps it works with: the caps say WHAT is allowed, this says WHO serves. */}
+      <PlatformAccountsPanel />
       <CyberLabCapsPanel />
       <VantraLinksPanel />
     </div>
