@@ -1,313 +1,323 @@
-# PROMPT — NEXT SENIOR AGENT (D2 / Task 156 "Cyber Lab, real-world" — **C0 → C1 ONLY**)
+# PROMPT — NEXT SENIOR AGENT (Task 155 hosting P5 / P6 / P6d **and** Task 156 C2+ — the WHOLE pending queue)
 
 > **Self-contained, copy-paste prompt.** Paste the `TASK BLOCK` below into the next senior agent.
-> It **supersedes** the D1 instantiated prompt in `PROMPTS_SENIOR_ENGINEERS.md` §"Owner-requested design
-> work", which still says "START D1 AT P2" — **stale: D1 / Task 155 P1 + P2 + P3 are built, deployed and
-> LIVE** (see VERIFIED STATE + the P3 record at the bottom of this file). Everything the agent needs is
-> in this file plus the docs it names.
+> It **supersedes** the previous `PROMPT_NEXT_AGENT.md`, which scoped D2 / Task 156 **C0 → C1 ONLY**
+> — that work is **DONE, DEPLOYED and LIVE** (commit `5485fdc`, deploy run `36995895931`). It also
+> supersedes the stale note in `PROMPTS_SENIOR_ENGINEERS.md` §"Owner-requested design work" that still
+> says "START D1 AT P2" — **D1 / Task 155 P1 + P2 + P3 + P4 are all built, deployed and LIVE.**
 >
-> **D1 is CLOSED** (`bb6ff6c`, build `LjgrTG69r2eiN-w07Hj-i`, run `36966548887`).
-> **This run is D2 / Task 156, phases `C0` then `C1` ONLY** — it owns the owner's A13 and picks up exactly
-> where the D1 agent stopped, per the owner's standing instruction: *"read this file end to end … and when
-> P3 is committed/deployed/reported, continue straight into D2 / Task 156 C0→C1."*
-> **C2+ is a SEPARATE assignment** — do **not** scan, spoof, or fire anything.
-
+> **Nothing in this file is work you must finish in one run.** It is the *full pending queue*, with
+> the grounding each item needs and the exact gate that must clear before it binds. Take them **one at
+> a time**, in the order in §5 — the recommended first item is **Task 155 P6a**.
 
 ---
 
 ## TASK BLOCK (paste from here)
 
 ```
-TREE:            /Users/mikeolab/spaceworker           (branch: main)
-TASK:            D2 / Task 156 - "Cyber Lab, real-world": offensive + defensive tooling that meets
-                 TODAY'S attacks (simulate all kinds of emails / DNS / server attacks, research),
-                 built on the Linux box, EASY for users and POWERFUL, with the end-to-end
-                 simulation running on the USER'S OWN VM (SpaceWorker authors it).
-                 YOU START AT:  C0 (AUP/consent text) then C1 (schema + PREMIUM gate + admin
-                 limits + LabToolCatalog + the read-only Research admin page) ONLY. NO staff
-                 badge/gate (owner A14 - SpaceWorker has none today).
-                 C2+ is a separate assignment - do NOT start it.
-TASK DOC:        PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md   read section 12 FIRST (owner
-                                                              addendum 2026-10-02 - BINDS the lab:
-                                                              research gate 12.1, email 12.2, DNS
-                                                              12.3, server 12.4, on-your-VM 12.5,
-                                                              UX 12.6, Linux charter 12.7, phasing
-                                                              impact 12.8), then 2 (exists vs lack),
-                                                              3 (rails shared with 155), 4 (where the
-                                                              machines are), 5 (matrix + the abuse
-                                                              sentinel 5.2), 6 (schema draft),
-                                                              7 (phasing C0-C6), 8 (how we prove
-                                                              "not simulation"), 10 (the 5 open Qs).
-                 SENIOR_HANDOFF.md                            section 5 (traps - esp. 3, 7, 15, 16,
-                                                              22), section 6 (current state), 8, 9,
-                                                              10.
-                 PLAN_TASK_155_WORKERS_AND_PAGES.md           section 16.6 + section 14 (the CAP
-                                                              MECHANISM you MUST reuse - see
-                                                              NON-NEGOTIABLE).
-                 PROMPT_NEXT_AGENT.md                         this file (current state + asks).
-DEPENDS ON:      D1 / Task 155 P1 + P2 + P3 are DONE, DEPLOYED and LIVE (`bb6ff6c`, build
-                 `LjgrTG69r2eiN-w07Hj-i`). The BINDING D2 spec is PLAN_156 section 12. The owner's
-                 answers to PLAN_156 section 10 (the 5 open Qs) cover the SHAPE of the lab; anything
-                 not answered there that would change C1's schema/gate - ASK THE LEAD BEFORE YOU
-                 COMMIT IT. C1 is otherwise UNGATED.
-BRANCH:          main
-DEPLOY?          C0 = docs + a screen only, NO deploy. C1 = schema + PREMIUM gate (no staff gate) +
-                 admin limits + LabToolCatalog + read-only Research admin page: ADDITIVE + NULLABLE,
-                 deployable via deploy.yml in-window exactly as D1's P3 deploy was (follow
-                 SENIOR_HANDOFF section 9 verbatim: dispatch, verify BUILD_ID, grep the BUILT
-                 chunks under /opt/spaceworker/.next/static - components/ and lib/ are NOT
-                 shipped). C2+ (anything that actually attacks a host) = LEAD decision, on a
-                 NON-production host, NEVER the prod VPS.
+TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ cab860a)
+WHAT IS PENDING: the hosting workstream (Task 155 P5 / P6 / P6d) AND the Cyber Lab follow-on
+                 (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
+                 RECOMMENDED FIRST ITEM: Task 155 P6a (PLAN_155 section 19 — BINDS it).
+                 Do NOT batch items silently: each has its own "open questions" section that MUST
+                 be answered by the owner/lead BEFORE its schema/behaviour is committed.
+TASK DOCS:       PLAN_TASK_155_WORKERS_AND_PAGES.md
+                   section 19  -> P6a: the THREE-option engine model (Free/Premium/BYO). BINDING.
+                   section 20  -> P6d: site upload inputs (file / folder / zip). BINDING.
+                   section 18  -> P5:  the Domains tab (grounded; section 18.9 Q2 ANSWERED).
+                   section 17  -> P4:  DONE (tabbed UI, premium link cap, Settings accounts).
+                   section 16  -> P3:  DONE (Pages engine, folder->preview->publish).
+                   section 14  -> the CAP MECHANISM you MUST reuse (do not invent a second one).
+                 PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md
+                   section 12  -> BINDS the lab (12.1 research gate ... 12.9 premium gate).
+                   section 7   -> C0-C6 phasing. C0+C1 are DONE; C2+ is a SEPARATE assignment.
+                 SENIOR_HANDOFF.md
+                   section 6 (current state) · 7 (queue) · 8 (verify) · 9 (deploy)
+                   section 5 (traps - especially 3, 7, 13, 14, 15, 16, 22, 23)
+                 PROMPT_NEXT_AGENT.md -> this file.
+DEPLOY?          Task 155 P6a: ADDITIVE + NULLABLE (one new table + one new AdminSetting dial) ->
+                 deployable in-window via deploy.yml, following SENIOR_HANDOFF section 9 VERBATIM.
+                 Task 155 P5a: additive (one new table) -> same path.
+                 Task 155 P6d: NO migration - a UI + lib change only.
+                 Task 156 C2+: NEVER the production VPS. Non-production host, owner + lawyer gated.
+                 NEVER deploy without reading your own diff for pending migrations first.
 ```
-
-## OWNER'S ASKS (these BIND; do not re-litigate)
-
-```
-A1  "the cyberlab and workers should be added to the menu and dashboard cards"
-      ->  DONE in D1-P2 (Hosting + Cyber Lab nav items AND dashboard cards are live). PROVE
-          they are still there; do NOT rebuild them.
-A2  "go ahead with deploy ... flip it when we deploy and we test to see how it works"
-      ->  DONE in D1-P2 (hostingEnabled=true, live). Keep it live. Cyber Lab stays dark until C1
-          flips cyberlabEnabled at the END of this run (behind the AUP gate).
-A3  "go ahead with the ssh to get the nginx you need"
-      ->  AUTHORISED. Use SSH (`ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96`) for any infra
-          this run needs (env vars; a preview/lab `location`). D1-P2 added `location /hf/` on
-          dl.instaweb.top and D1-P3 added the /pv/ + /hs/ app routes - do not disturb them.
-A4  "we need both options available and an option for users to add their own cf tokens and id"
-      ->  DONE in D1-P2/P3 (PLATFORM + BYO credential store, section 16.4 chooser, fail-closed
-          verify). NOT this run.
-A5  "if users add multiple like 3, we should be able to switch between them ... lets start with one"
-      ->  DONE in D1-P2 (multi-credential store). NOT this run.
-A6  "use the throwaway cf acct for p3"
-      ->  DONE in D1-P3 (throwaway account is the platform default). NOT this run.
-A7  "you can add the cyberlabs cap to admin"
-      ->  D1-P2 added the first Cyber Lab RAM dials (admin route + panel). THIS run adds the Lab*
-          cap family for C1 (the sentinel dials) using the SAME mechanism - do not re-do the
-          existing dials.
-A8  "if its going to take a lot of ram ... we need every hard load monitored and queued
-      properly, so the governor can also adjust ... lets build first, and when we are done, we
-      will update the governor"
-      ->  STILL TRUE. Do NOT edit lib/resource-governor.ts. Every heavy-load dial is an
-          AdminSetting field (155 section 14 rule 1), and you RECORD metrics/dials only.
-A9  "for now we dont need converters, just the rename of file upload is enough for file store"
-      ->  CONVERTERS ARE OFF (155 section 16.5). Do NOT install sharp / ffmpeg / libreoffice /
-          ImageMagick. Still true.
-A10 "no option to upload folder and we extract and push to preview first and then live"
-      ->  DONE in D1-P3 (folder/zip -> 7z extract -> /pv/<token>/ preview -> Publish -> /hs/<token>/).
-          NOT this run.
-A11 "option to switch between the server and the premium"
-      ->  DONE in D1-P3 (per-site engine picker; explicit migration, never a silent fallback).
-          NOT this run.
-A12 "nothing that using premium is capped"
-      ->  DONE in D1-P3 (premium has its OWN cap family, admin-editable, enforced server-side).
-          NOT this run.
-A13 (NEW 2026-10-02) Cyber Lab must meet today's hacker world (simulate all kinds of email / DNS /
-    server attacks, research, Linux tooling, run the simulation on the USER's own VM, created from
-    SpaceWorker)
-      ->  THIS RUN. It is D2 / Task 156. Build spec = PLAN_TASK_156 section 12 (BINDING). Phases
-          C0-C6; YOU DO C0 then C1 ONLY.
-A14 (NEW 2026-10-02) "we dont have staff gate in spaceworker yet, so just build it premium gated ...
-     we are still going to evaluate how the users tier work instead and decide whether to add the
-     staff gate to spaceworker; we only had it in vantra. lets not make this a blocker"
-       ->  THIS RUN. SpaceWorker has NO staff badge and NO staff-role gate today (only Vantra ever
-           had a "staff track"; grep finds no staff helper in lib/*.ts). C1 therefore gates the
-           Cyber Lab by the PREMIUM entitlement (the `cyberlab` key, ALREADY in ENTITLEMENT_KEYS and
-           already wired through UserEntitlement) - NOT a staff badge, NOT the admin role. Do NOT
-           build a staff gate and do NOT block C1 on one. The user-tier model is under review;
-           whether SpaceWorker needs its own staff gate is a LATER decision. Wherever PLAN_156 says
-           "staff" (the tool-audience column, "staff-only v1"), read it as AUDIENCE ("internal /
-           operator only until the tier model is decided"), not a second gate.
-           Build spec = PLAN_TASK_156 section 12.9 (BINDING).
-```
-
-## VERIFIED STATE AT HANDOFF (read this before you touch anything)
-
-**D1 / Task 155 — CLOSED. P1 + P2 + P3 are built, proven, pushed, DEPLOYED and LIVE.**
-`main` @ **`bb6ff6c`**, deployed build **`LjgrTG69r2eiN-w07Hj-i`** (`BUILD_ID` mtime
-`2026-10-02 06:56:12 CEST`), deploy run **`36966548887`**. All three hosting migrations are applied to
-production. `AdminSetting.hostingEnabled = true`; `cyberlabEnabled = false` (dark — C1 flips it at the end).
-
-- **P1 — `a131835`** — FILES engine on our own metal: `/hf/<token>` upload/list/rename/delete behind the
-  new `hosting` entitlement; rename rewrites only `dispositionFilename`+`mime` so **sha256 is provably
-  unchanged**.
-- **P2 — `435d419`** — user-owned redirects (`/r/<slug|token>`), the BYO credential store
-  (`HostingCredential`, AES-256-GCM via `lib/mailbox-crypto.ts`, 4-char hint only), and the Cyber Lab
-  nav/card/panel + the first admin RAM dials. `HOSTING_PUBLIC_BASE_URL=https://dl.instaweb.top` with the
-  `dl.*` nginx `location /hf/` proxy, proven live.
-- **P3 — `bb6ff6c`** — the **Pages engine**: `cloudflare` implemented (raw REST Direct Upload), and the
-  **folder/zip → `7z` extract → PREVIEW (`/pv/<token>/`) → PUBLISH (`/hs/<token>/`)** flow; the per-site
-  engine picker ("Our server (free)" vs "Premium (Cloudflare)"); the **section 16.4 account chooser**
-  (platform + BYO, verify-on-save); the `hostingPremium*`/`hostingMaxZip*` cap family; a per-user job lock
-  + recorded metrics. **Additive** migration `20261029000000_task155_p3_pages_sites`. `test:hosting`
-  **39/39** incl. the new `tests/hosting-pages.test.ts` (drives a **real `7z`** binary). New **trap 22**:
-  `7z l` prints an archive header block that is not an entry — the real-archive test caught the bug a
-  hand-typed fixture had hidden.
-
-**Live right now (proved this session on `spaceworker.top`):** `/` → **200**; `/dashboard/hosting` →
-**307** (auth); `/api/hosting/sites` → **401** (auth-gated route exists); `/pv/<bad>` and `/hs/<bad>` →
-**404** (the new public handlers exist, no 500). On the VPS: `prisma migrate status` → *"Database schema
-is up to date!"*; `_prisma_migrations` shows the P3 migration; `pg_tables` shows `HostingSite`/
-`HostingRevision`/`HostingJob`/`HostingCredential`/`HostingUsageMonthly`; `systemctl --failed` → **empty**;
-`spaceworker`/`spaceworker-browser`/`extraction-worker` all **active**.
-
-**What is NOT done (YOUR JOB — this is D2 C0 → C1):**
-1. **The Cyber Lab does not exist as a product.** No AUP/consent screen, no consent record, no gate.
-2. **No `Lab*` schema** — `PLAN_156` section 6 (the draft) has never been applied; no migration exists.
-3. **No `LabToolCatalog`** — there is no catalogue of capabilities (ATT&CK id, last-reviewed, upstream
-   version, CVE history, licence, `staleAfter`).
-4. **No Research admin page** (read-only feeds only — it does NOT run an attack).
-5. **No `Lab*` admin limits** beyond D1-P2's RAM dials — and **no staff badge/gate** (SpaceWorker
-   has none; owner A14 says gate the lab by PREMIUM instead — do not build a staff gate).
-6. **`cyberlabEnabled=false`** — the nav item + card + panel are dark on purpose. C1 flips it at the END,
-   **behind the AUP gate**, never before.
-7. The governor knows **nothing** about lab RAM (A8 — deliberately deferred). **Record dials only.**
-
-**D1's remaining honest gaps (NOT yours to close, do not re-claim them as done):** the production *write*
-path for hosting (create site → zip → preview 200 → publish → live 200) has **not** been run by hand on
-prod; the **premium/Cloudflare** leg ran against the **throwaway** account only; `external` storage engine is still registered-not-implemented. See `SENIOR_HANDOFF.md` section 6.4.
-## DO IT IN THIS ORDER — do not skip a step
-
-1. **REPRODUCE FIRST.** Before changing a line, prove the **absence** with raw output:
-   - `GET /api/cyberlab/status` (authenticated) → the lab reports dark (`cyberlabEnabled:false`), no
-     `LabToolCatalog`, no consent gate.
-   - `grep -rn 'LabToolCatalog\|LabConsent' prisma/schema.prisma` → **no matches** (no `Lab*` schema).
-   - the nav item + card + panel exist (A1) but there is **no AUP screen and nothing is gated**.
-   Paste the raw output.
-2. **READ PLAN_156 section 12 FIRST** (it binds the lab), then sections 2/3/4/5/6/7/8/10. If you disagree
-   with any of it, say so with evidence — do not silently work around it.
-3. **C0 — write the AUP + LabConsent text** as a repo doc **and** a screen that gates the lab; record the
-   acceptance. Nothing runs before it exists.
-4. **C1 — build the PREMIUM gate + schema + limits + catalogue + Research page (NO staff badge).** Reuse the 155 §14 cap
-   mechanism (named `AdminSetting` fields, server-enforced, admin-editable, shipped with defaults) and the
-   existing `cyberlab` entitlement key. One **additive** migration. Smallest correct diff per file; match
-   the neighbours' conventions (read `lib/entitlements.ts`, `lib/admin-settings.ts`, `lib/hosting/rules.ts`
-   and an existing `app/api/admin/*` route first).
-5. **PROVE IT PASSES — same command, raw output, before AND after:**
-   - `npx tsc --noEmit` → exit 0
-   - `CI=1 npx next build` → success
-   - every `test:*` suite that touches what you changed (CI does NOT run `test:*` — you must). Add a
-     `tests/cyberlab-*.test.ts` for the gate + the `staleAfter` hiding. A check that cannot fail is not
-     evidence.
-6. **PROVE IT VISIBLY.** With a real browser (Playwright is installed) show: a **non-premium** user is
-   blocked at the `cyberlab` entitlement (and the AUP screen blocks until accepted); after accepting (and,
-   for a premium user, being entitled), the panel opens; and a live admin PATCH flips a `Lab*` limit
-   **without a redeploy** (same proof pattern as the hosting caps). **No staff badge** — owner A14. A green
-   build that changed nothing the user can see is the exact failure that produced TASK_153.
-7. **BROKEN-NOTHING CHECK.** BEFORE and AFTER, `curl` the live `/e/...`, `/downloads/...`, an existing
-   campaign `/r/<token>` redirect, and the D1 `/hf/<token>` + `/pv/<token>/` + `/hs/<token>/` paths —
-   identical behaviour. Run every `test:*` suite that touches what you changed.
-8. **COMMIT** — explicit paths only, never `-A`, never `.`:
-   `git add <path1> <path2> ...` → `git commit -m "feat(cyberlab): Task 156 C0+C1 - AUP consent gate, Lab* schema, premium gate, LabToolCatalog, read-only Research admin"` → `git push origin main:main`.
-9. **DEPLOY** — **C1 only** (C0 is docs + a screen; deploy after C1 is green). Follow handoff section 9
-   verbatim; run the additive migration in-window; verify the BUILD_ID + a **BUILT chunk** grep (a
-   source-tree grep proves nothing — `components/` and `lib/` are NOT shipped). **Beware trap 15**: a
-   5-minute oneshot may show `failed` right after a deploy — re-check after the next tick.
-10. **UPDATE THE HANDOFF (section 10 — same session):** section 6 last-verified date/HEAD/deployed
-    BUILD_ID/sync, section 7 strike your item + promote what's next, section 5 any NEW trap with the
-    evidence that proved it, section 12 one log entry (Did / Verified / NOT verified / State left behind /
-    Next), and mark the item done in `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md`. Commit + push those
-    docs (explicit paths).
-## D2 — what C0 and C1 actually are (the only green-light work)
-
-```
-C0  AUP + LabConsent text. NOTHING runs before it exists. (Legal, not code - but the text is
-    a repo artefact AND a UI screen.) Deliverable: the AUP/consent copy as (a) a repo doc
-    (e.g. docs/ or a markdown under the task doc) AND (b) a screen that gates the lab -
-    reaching the lab requires accepting it, and the acceptance is recorded.
-C1  schema (PLAN_156 section 6, one ADDITIVE migration) + the entitlement/gate (key "cyberlab"
-    ALREADY in ENTITLEMENT_KEYS) - PREMIUM gated, NO staff badge (owner A14) + the admin limits
-    (Lab*) + the section 12.1 LabToolCatalog (a row per capability: ATT&CK id, last-reviewed,
-    upstream version, CVE history, licence, staleAfter) + the read-only Research admin page
-    (feeds only - it does NOT run an attack).
-    STOP HERE.
-```
-
-## D2 — non-negotiable (these BIND; from PLAN_156 §12/§5.2 + 155 §14 rule 1)
-
-- **The gate is the PREMIUM entitlement, not a staff role (owner A14).** SpaceWorker has **no staff
-  badge and no staff gate** today (only Vantra did; grep finds no staff helper in `lib/*.ts`). Gate the
-  Cyber Lab with the `cyberlab` key in `ENTITLEMENT_KEYS` via the existing `UserEntitlement` path — the
-  same gate `hosting` uses. Do **not** invent a staff/second role; the user-tier model is under review.
-  PLAN_156's "staff" wording = tool **audience** (internal/operator), not a code gate.
-- **One cap mechanism, never a second.** All lab limits are named `AdminSetting` fields, enforced
-  **server-side**, editable in the **admin UI**, shipped with defaults — **exactly** the 155 §14
-  pattern. Do **not** invent a parallel config. (`hosting` proved this works live without a redeploy.)
-- **The abuse sentinel (§5.2) is the price of the power and is not optional:** every run is
-  pre-flight **attested-target** checked; the **egress/DNS sentinel** watches volume+entropy; intent
-  classification refuses third-party / product research. The §8.2 refusal demo must fire.
-- **Never the production VPS.** Attack tooling lives on the **lab host** (second VPS / LAN box) and
-  the **user's own VM** (§12.5). Prod keeps only `tcpdump` + purely defensive tools.
-- **`requestSlot()` stays the single admission authority** (TASK_105 rule). Do **not** duplicate the
-  governor and do **not** edit `lib/resource-governor.ts` — the governor task comes later (owner A8);
-  you only *record* the load metrics/dials.
-- **Reuse the safety plumbing that already exists** — the panic switch
-  (`app/api/devices/panic/route.ts`), `AgentActionAudit`, `UserEntitlement`, the admin routes. Do
-  **not** rebuild them.
-- **Nothing customer-facing offensive before C0 + the L4 fences + lawyer sign-off.** Every tool row
-  carries a **legal-basis note**; email/DNS rows additionally carry the **allow-list check**.
-- **Reuse `lib/mailbox-crypto.ts` for any secret at rest — do not fork it.**
-
-## D2 — FILES YOU MAY TOUCH / MUST NOT TOUCH
-
-```
-MAY TOUCH:   new lib/lab/** , app/api/lab/** , app/dashboard/cyberlab/** , components/cyberlab* ,
-             app/admin/**/lab* , prisma/schema.prisma (ADDITIVE models only) + exactly ONE additive
-             migration, tests/*.test.ts, and minimally lib/entitlements.ts / lib/products.ts /
-             components/dashboard-nav.tsx (the Cyber Lab item already exists - extend, don't fork).
-             The AUP/consent copy as a repo doc + a screen.
-MUST NOT:    lib/resource-governor.ts, lib/agent.ts, lib/clone*.ts, any already-applied migration,
-             the D1 hosting behaviour (/e/ + /downloads/ + /r/ + /hf/ + /pv/ + /hs/), and anything
-             on self-hosted-build. Do not rebuild the Cyber Lab nav/card/panel (A1 is done).
-```
-
-## D2 ACCEPTANCE (the exit criterion for C0/C1)
-
-> C0: the AUP/consent text exists as a screen + a repo doc and gates the lab (nothing runs without
-> accepting it). C1: the schema is applied (additive, no data loss), the `cyberlab` entitlement gates
-> the panel (PREMIUM - no staff badge, owner A14), every lab limit is an admin-editable `AdminSetting`
-> **live without a redeploy**, and `LabToolCatalog` rows render with a **`staleAfter`** date that hides
-> a stale row.
-> Capture: the raw `prisma migrate` output, the live admin PATCH (status+body), the panel DOM text,
-> and `npx tsc --noEmit` → 0 + `CI=1 npx next build` → 0 + `npm run test:<relevant>` green.
-> **C2+ is NOT in this run** — do not scan, spoof, or fire anything.
-
-## LAST — what you must NOT start
-
-- **C2+** — anything that scans, spoofs, sends, or fires at a host. That is a separate assignment on a
-  NON-production host, gated on the owner + a lawyer.
-- **Resource-governor changes** (A8). Record dials/metrics only.
-- **Converters** (A9 — still OFF).
-- **Anything on `self-hosted-build`.**
-
-REPORT BACK WITH EXACTLY: files + line ranges changed; the raw BEFORE output; the raw AFTER output;
-the exact commands you ran; what you could NOT verify (expected, not a weakness); the commit SHA(s);
-and confirmation the handoff is updated. LABEL ANYTHING SIMULATED AS "SIMULATION".
-STOP WHEN YOUR TASK IS DONE. Do not start the next item. Do not deploy someone else's work.
 
 ---
 
-## APPENDIX — D1 / Task 155 P3 as-built (for the record; D1 is CLOSED)
+## 1. VERIFIED STATE AT HANDOFF (2026-10-02)
 
-- **Commit `bb6ff6c`** (25 files, +3448/−13), pushed `282ee9a..bb6ff6c`; deploy run **`36966548887`** →
-  build **`LjgrTG69r2eiN-w07Hj-i`**.
-- **New/changed:** `lib/hosting/{cloudflare,extract,serve,sites}.ts`, `lib/hosting/rules.ts`,
-  `lib/hosting/credentials.ts`, `lib/hosting/providers.ts`, `app/api/hosting/sites/**` (create/list/get +
-  revisions + publish), `app/api/hosting/credentials/[id]/verify/route.ts`, `app/api/hosting/status/route.ts`,
-  `app/pv/[token]/[[...path]]/route.ts` (**preview**, `noindex`, TTL), `app/hs/[token]/[[...path]]/route.ts`
-  (**live**, immutable), `components/hosting-panel.tsx`, `app/api/admin/hosting/route.ts`,
-  `app/admin/(protected)/admin-panel.tsx`, `prisma/schema.prisma` (9 `AdminSetting` cols + 2 NULLABLE
-  `HostingCredential` cols + `HostingSite`/`HostingRevision`/`HostingJob`), migration
-  `20261029000000_task155_p3_pages_sites`, `tests/hosting-pages.test.ts`, `package.json` (`test:pages`).
-- **Evidence:** `npx prisma validate` OK · `prisma generate` OK · `npx tsc --noEmit` → **0** ·
-  `CI=1 npx next build` → **exit 0** · `npm run test:hosting` → **39/39** + `test:pages` green. VPS:
-  `BUILD_ID` = `LjgrTG69r2eiN-w07Hj-i` (mtime `2026-10-02 06:56:12 CEST`); `prisma migrate status` →
-  *"Database schema is up to date!"*; P3 migration in `_prisma_migrations`; new tables in `pg_tables`;
-  `systemctl --failed` empty; three services active. Live: `/` 200, `/dashboard/hosting` 307,
-  `/api/hosting/sites` 401, `/pv/<bad>` + `/hs/<bad>` 404.
-- **New trap 22** (see `SENIOR_HANDOFF.md` §5): `7z l -slt` prints an **archive header** block before the
-  first `----------`; a naive parser records the archive itself as entry #1 and the "no nested archives"
-  guard then refuses **every** real archive. The fix (skip to the first `----------`) was forced by driving
-  a **real `7z`** in `tests/hosting-pages.test.ts`; a hand-typed listing had hidden it.
-- **Still open (NOT this run):** the production hosting *write* path has not been run by hand; the
-  premium/Cloudflare leg ran against the throwaway account only; `external` engine unimplemented; the
-  governor does not yet know about hosting/lab RAM (§16.6 defers it).
+**`main` @ `cab860a`, synced with `origin/main`, working tree clean.** Live build
+**`BWRMBHG8mkpIrzUPTQ8-t`** (`/opt/spaceworker/.next/BUILD_ID`, mtime `2026-10-02 12:33:13 CEST`),
+deploy run **`36995895931`** (`workflow_dispatch`, **success**, 5m16s).
+
+| Item | Commit | State |
+|---|---|---|
+| Task 155 **P1** files engine (`/hf/<token>`) | `a131835` | ✅ deployed + live |
+| Task 155 **P2** links + BYO credential store + Cyber Lab scaffolding | `435d419` | ✅ deployed + live (`hostingEnabled=true`) |
+| Task 155 **P3** Pages engine (zip → preview → publish, per-site engine) | `bb6ff6c` | ✅ deployed + live (build `LjgrTG69r2eiN-w07Hj-i`) |
+| Task 155 **P4** tabbed Hosting UI + premium link cap + Settings accounts + §19.10 copy pass | `d79eee6` | ✅ deployed + live (this build) |
+| Task 156 **C0 + C1** AUP/consent + premium-gated lab schema + Research admin | `5485fdc` | ✅ deployed + live (this build) |
+
+**Two migrations recorded live this deploy** (`finished_at 2026-10-02 12:35:49 CEST`):
+`20261030000000_task156_c1_lab_schema` and `20261030120000_task155_p4_premium_links`. Both **additive
+/ NULLABLE — no row rewritten**.
+
+**Green this session:** `npx prisma validate` OK · `npx tsc --noEmit` → **0** · `CI=1 npx next build` →
+**exit 0** · `npm run test:hosting` → **40/40** · `test:pages` → **19/19** · `test:lab` → **10/10** ·
+**eslint at HEAD parity on every touched file** (the only errors are the pre-existing
+`react-hooks/set-state-in-effect` warnings in `admin-panel.tsx` / `hosting-panel.tsx`, which also exist
+at HEAD — do not "fix" them by suppressing; they are a separate, pre-existing class).
+
+**⚠ NOT verified — do not claim these work:**
+1. The P3/P4 hosting **write** path on production — **nobody has clicked *upload → preview → publish*
+   on the live site yet.** The pipeline is proven on a scratch DB + a real `7z` + `next start`, and the
+   **premium/Cloudflare** leg only against a **throwaway** account. **This is the first thing to prove
+   by hand**, and §20.8 makes it an acceptance item for whichever hosting item ships next.
+2. Production **email/password login** was not re-confirmed this session.
+3. **Fresh-DB migration replay is broken** (≥5 out-of-order migrations — **trap 23**). The live DB and
+   deploys are unaffected; only brand-new DBs (scratch/CI/local) hit it. Filed as its own hygiene task.
+
+---
+
+## 2. YOUR ACCESS PACK — everything you need is available; use it
+
+### 2.1 The production box (read-only unless deploying)
+
+```bash
+ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96
+```
+
+- **App root:** `/opt/spaceworker` · **service:** `spaceworker.service` (`User=trmm`,
+  `ExecStart` = `next start -p 3500`) · siblings `spaceworker-browser`, `extraction-worker`.
+- **nginx 1.30.4** — 13 vhosts in `/etc/nginx/sites-enabled/` (incl. `spaceworker.top`,
+  `instaweb.top`, `dl.instaweb.top`, plus the OTHER products: `vantra`, `rmm`, `mesh`, `agent`, `dl`).
+  **There is NO `default_server` vhost** — an unknown `Host` falls through to the first-listed block.
+- **certbot 1.21.0** installed; 8 lineages in `/etc/letsencrypt/live/`.
+- **sudoers:** `/etc/sudoers.d/trmm` grants **`trmm ALL=(ALL) NOPASSWD:ALL`** — so certbot / nginx
+  reload are runnable passwordless from app code today (this is what makes §18 Path B cheap).
+- **Postgres:** DB `spaceworker`, reachable as `sudo -u postgres psql -d spaceworker`.
+- **⚠ DO NOT touch the other products' vhosts** (vantra/rmm/mesh share this box).
+
+### 2.2 Verify what is actually live (never assume)
+
+```bash
+cat /opt/spaceworker/.next/BUILD_ID ; stat -c %y /opt/spaceworker/.next/BUILD_ID
+systemctl --failed                      # empty, except a known 5-min oneshot false alarm (trap 15)
+sudo -u postgres psql -d spaceworker -c 'SELECT migration_name, finished_at FROM "_prisma_migrations" ORDER BY finished_at DESC LIMIT 5;'
+```
+
+**⚠ `components/` and `lib/` are NOT shipped to the box.** To prove a source change is live, grep the
+**built chunks** under `/opt/spaceworker/.next/static/`, never the source tree (which is stale by
+design). A grep *miss* in `/opt/spaceworker/components/` proves **nothing**.
+
+### 2.3 Deploy (manual only — pushing does NOT deploy)
+
+```bash
+cd /Users/mikeolab/spaceworker
+gh workflow run deploy.yml --ref main
+gh run list --workflow=deploy.yml --limit 3
+gh run view <run_id> --json status,conclusion,headSha
+```
+
+Follow **`SENIOR_HANDOFF.md` §9 verbatim.** In short: build job on every push; the **deploy** job is
+gated to `workflow_dispatch`; it tars `.next node_modules package.json package-lock.json prisma
+browser-server worker deploy browser-capture` (NOT `components/`/`lib/`), scp's it, stops the three
+services, extracts, runs `sudo -u trmm npx prisma migrate deploy` **under `set -e`** (a failing
+migration aborts and can leave services stopped — **if that happens, stop and report; do not improvise
+a repair against production**), restarts, asserts `is-active`, installs every unit in `deploy/`.
+**Afterwards verify the owner-visible behaviour actually changed** — a green deploy that changed
+nothing the user can see is the failure that produced TASK_153.
+
+### 2.4 Local verification (this workstation)
+
+```bash
+cd /Users/mikeolab/spaceworker
+grep '^DATABASE_URL' .env                    # confirm the target BEFORE any DB write
+createdb sw_mycheck
+DATABASE_URL='postgresql://mikeolab@127.0.0.1:5432/sw_mycheck' npx prisma db push --skip-generate
+#   ...or apply migrations dir-by-dir if you need the real history (see trap 23 below)
+CI=1 npx next build
+npx tsc --noEmit
+npm run test:hosting        # + test:pages / test:lab / test:summaries, whichever you touched
+dropdb sw_mycheck
+```
+
+`package.json` test scripts that matter here: **`test:hosting`**, **`test:pages`**, **`test:lab`**,
+`test:summaries`. **CI does not run them** (trap 3) — run them yourself.
+
+**⚠ Trap 23 — a FRESH DB cannot replay migration history.** ≥5 migrations are out-of-order (e.g.
+`20260914150000_add_license_claim_token` references `ExeLicense`, created by a *later* migration). Fix
+on scratch: apply up to the break, `npx prisma migrate resolve --applied <name>`, continue. **Never
+edit another task's migration.** Live is unaffected (its history is already recorded).
+
+---
+
+## 3. THE PENDING QUEUE — every open item, grounded
+
+Order below is the recommended run order. Each item names its binding doc section and its **gate**.
+
+### ★ 1 — Task 155 **P6a**: the THREE-option engine model  *(top live-app item)*
+
+**Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§19 (BINDING)** + **§19.9/§19.10**.
+
+**The owner's complaint, verbatim:** *"i can see no more premium links unless user add there cloudflare
+… ours should be the premium, while byo should be for the users added cloudflare … free which is the
+instaweb, then premium which is the cloudflare and option to add more to rotate at the admin, and then
+byo which is the users own cloudflare to get more."*
+
+**The gap, grounded:** `HostingSite.credentialId`'s schema comment already says *"(NULL = platform
+account)"* and `resolveDeployCredential`'s comment says *"otherwise the platform account (env)"* — **but
+the code does not implement it.** Today a `cloudflare` site with no named credential 400s
+`no_credential` ("Add a Cloudflare account…"). So "Premium" is meaningless until the user brings their
+own token. **The three options:** (1) `local` = our metal, free; (2) `cloudflare` + `credentialId NULL`
+= **OUR** Cloudflare, **premium users, zero setup** ← the whole fix; (3) `cloudflare` + a credentialId =
+**BYO**, the user's own account.
+
+**Build (P6a, per §19.3/§19.7):** one **NEW additive** table `HostingPlatformAccount` (AES-256-GCM
+token, `priority` rotation order, `status`, health `lastVerifiedAt`/`verifyError` — same discipline as
+`HostingCredential`); the **platform branch** in `resolveDeployCredential`; a **premium gate** on
+option 2 at BOTH create and deploy (defense in depth against a mid-flight downgrade); the **three-option
+picker** + badges ("ours" vs "yours"); the **admin rotation** surface (add/verify/reorder/disable
+accounts); the `hostingPlatformCfEnabled` kill-switch dial; **fail CLOSED** with plain language (**never**
+a silent `local` fallback for a CF-engine site, never a raw CF error). Tests must cover the §19.2 matrix.
+
+**Gate:** §19.9 — **Q4 (multiple accounts, priority order) and Q5 (store tokens in the DB, admin-managed)
+are ANSWERED by the owner's own words**; **Q3 (kill-switch dial) default = build it**; **Q1 (may a FREE
+user use BYO?) and Q2 (did "premium links" mean the Links tab literally?) are STILL OPEN** — one line each.
+Until Q1/Q2 land, treat BYO for free users as **out of scope** and links as keeping their P4 caps.
+**Also carries §19.10's binding UI rules:** the Hosting page says **no "Cloudflare"**; option 2 is
+labelled **`Premium`**, option 3 **`Yours`**; brand talk lives only in **Settings → Hosting accounts**.
+
+### 2 — Task 155 **P5a**: the Domains tab  *(depends on P6a)*
+
+**Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§18** (grounded spec; §18.9 Q2 **answered on the box**).
+
+**The ask:** users add a domain and **choose that domain instead of the link**; we do the automation.
+**The honest core (§18.3):** **one DNS record from the user is unavoidable**; everything else is ours.
+**Two delivery paths:** **A** = Cloudflare edge on a platform/BYO token (no VPS change); **B** = our
+metal (catch-all nginx vhost + per-domain certbot + a `Host` resolver). **§18.9 Q2 is ANSWERED:** certbot
+1.21.0, nginx 1.30.4, `trmm NOPASSWD:ALL`, **no default vhost** → Path B is "write one vhost + wire the
+resolver", not a week of provisioning. **Recommended phasing:** **P5a** = tab + `HostingDomain` model
+(additive, `hostname @unique`) + verification + binding, **Path A**, `provider = platform` **default**
+per §19.10 rule 5, BYO as the escape hatch; **P5b** = our-metal serving. **Gate:** §18.9 **Q1** (phased
+recommendation vs our-metal-first), **Q3** (BYO token's Pages custom-domain scope), **Q6** (abuse guardrails).
+
+### 3 — Task 155 **P6d**: site upload inputs — file / folder / zip  *(independent)*
+
+**Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§20 (BINDING)**.
+
+**The ask:** *"not only zip option should be available for site upload … we should be able to collect
+file or folder."* **Today only a `.zip` works**; a single `.html` or a folder does not. **The BINDING
+recommendation (§20.2):** **normalize every input to the ONE existing zip pipeline, in the browser** —
+so all of `analyseArchive`'s guards (zip-slip, symlink, nested zip, entry + per-file ceilings, the 25 MiB
+Pages ceiling) stay in **one tested place**; a second server path would re-derive all of them for
+client-named multipart parts — a larger attack surface for no user-visible gain. Cost: one tiny pure-JS
+zip lib (**recommend `fflate`**), running in the **browser** (never server RSS). Optional §20.4
+loose-file server path (~30 lines, no traversal surface). **§20.5: NO migration.** **Gate:** §20.9
+**Q1** (fflate vs a store-only writer we own), **Q2** (folder is desktop-only — OK?), **Q3** (build
+§20.4?). Sequence against P6a — **they touch the same panel.**
+
+### 4 — Task 156 **C2 → C6**: the lab actually *does* something  *(SEPARATE assignment)*
+
+**Doc:** `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (binds)** + **§7 (C0–C6 phasing)**.
+**C0 + C1 are DONE + LIVE.** Everything from C2 up (anything that scans, spoofs, sends or fires) is
+**gated on the owner + a lawyer**, runs on a **NON-production host**, and is **NEVER** pointed at the
+prod VPS. Reuse 155 §14's cap mechanism, the existing panic switch / `AgentActionAudit` /
+`UserEntitlement`; **do not edit `lib/resource-governor.ts`.** Do not start it without those gates.
+
+### 5 — Hygiene: fresh-DB migration replay (trap 23)
+
+**No task doc yet — write one.** ≥5 out-of-order migrations break a brand-new DB (§2.4). Live + deploys
+are unaffected. Fix = reorder/repair **or** a documented `migrate resolve` cheat-sheet. **Do NOT silently
+edit another task's migration.**
+
+### 6 — Close the P3/P4 hosting WRITE-path gap on prod (small; do it alongside #1 or #3)
+
+Nobody has run *upload → preview → publish* on production yet (§1.2). Prove it by hand once a hosting item
+ships; §20.8 already makes it an acceptance item.
+
+---
+
+## 4. NON-NEGOTIABLES (carried forward — these have all bitten before)
+
+1. **Reuse the CAP MECHANISM** (`PLAN_155` §14): every new limit is an **admin-editable `AdminSetting`**
+   that changes **live without a redeploy**; free-vs-premium is a swap inside `resolveHostingCaps`. Do
+   **not** invent a second cap system or hard-code a number.
+2. **Migrations are ADDITIVE + NULLABLE.** No row rewritten, no column dropped, no type narrowed. Read
+   your own diff for pending migrations **before** you trigger a deploy.
+3. **Fail CLOSED.** A dead credential → refusal with plain language, never a silent fallback, never a raw
+   provider error. (Same rule for P6a's platform tokens.)
+4. **The owner's A14 rule stands:** the Cyber Lab (and anything lab-adjacent) is gated by the **PREMIUM
+   entitlement** — **there is NO staff badge and NO staff gate in SpaceWorker.** Do not build one.
+5. **The Hosting screen never says "Cloudflare"** (§19.10). It says **Free / Premium / Yours**. Brand
+   talk lives in Settings → Hosting accounts.
+6. **`7z` only, never into RSS.** Archives are listed and extracted by shelling out to `7z`; the parse +
+   tree→manifest mapping stays PURE and unit-testable. A rejected archive leaves **zero** partial state.
+7. **Never improvise against production.** No repair, no manual SQL, no "quick fix" on the VPS beyond the
+   documented read-only checks and the `deploy.yml` path.
+8. **Verify owner-visible behaviour, not just green CI.** A deploy that changed nothing the user can see
+   is the exact failure TASK_153 was written about.
+
+---
+
+## 5. WHAT TO DO **FIRST** (do not skip this)
+
+1. **Read, in this order:** `SENIOR_HANDOFF.md` §6 → §7 → §8 → §9 → §5 (traps). Then your item's
+   binding section (`PLAN_TASK_155` §19 for P6a).
+2. **Answer that item's "open questions"** with the owner/lead **before** you commit its schema or
+   behaviour. If an answer would change the schema or the gate, **ask — do not guess.**
+3. **Prove the current state yourself** (§2.2). Never trust this file's numbers over what you see.
+4. **Reproduce, then change, then show it passing** with raw output (§8 of the handoff).
+5. **Commit, and only then deploy** — and only with the owner's go-ahead. Update
+   `SENIOR_HANDOFF.md` **§6 + §7 + §12** (and §5 if you hit a new trap) **in the same session** — a
+   code-complete but doc-stale handoff is a failure (trap 14).
+
+## 6. MAY TOUCH / MUST NOT TOUCH
+
+**MAY TOUCH (hosting items):** `lib/hosting/**`, `app/api/hosting/**`, `app/api/admin/hosting/route.ts`,
+`components/hosting-panel.tsx`, `components/hosting-credentials-settings.tsx`,
+`app/dashboard/hosting/page.tsx`, `app/dashboard/settings/page.tsx`,
+`app/admin/(protected)/admin-panel.tsx` (hosting/lab panels only), `prisma/schema.prisma` (**additive
+only**), `prisma/migrations/<new>/`, `tests/hosting-*.ts`, `package.json` (test scripts).
+
+**MUST NOT TOUCH (this workstream):** `lib/resource-governor.ts`; the **other products' nginx vhosts**
+on the box (vantra / rmm / mesh / agent); **another task's migrations** (trap 23); `components/`/`lib/`
+shipping assumptions in `deploy.yml`; the converters (still **OFF**, §16.5 — do not install
+`sharp`/`ffmpeg`/`libreoffice`); anything that scans/spoofs/sends (that is Task 156 **C2+**, a separate
+assignment).
+
+## 7. REPORT BACK WITH EXACTLY
+
+- **Files + line ranges** changed, and **what you did NOT change** (and why).
+- **The raw BEFORE output** and **the raw AFTER output** for the thing you fixed.
+- **The exact commands** you ran, and their raw results.
+- **What you could NOT verify** — this list is expected, not a weakness.
+- The **commit SHA(s)** and, if deployed, the **`BUILD_ID`** + **run id**.
+- **Confirmation the handoff (§6/§7/§12) is updated.**
+- **LABEL ANYTHING SIMULATED AS "SIMULATION".**
+
+**STOP WHEN YOUR ITEM IS DONE. Do not start the next one. Do not deploy someone else's work.**
+
+---
+
+## 8. APPENDIX — as-built record (for the record; already closed)
+
+- **Task 155 P4** — commit `d79eee6`, deployed in run `36995895931`. Tabs (Sites \| Links \| Files) with
+  count badges; `AdminSetting.hostingPremiumMaxLinks` (500) via `resolveHostingCaps`; *Hosting accounts*
+  card on `dashboard/settings`; links open/edit/delete + files visibility toggle; migration
+  `20261030120000_task155_p4_premium_links`. `test:hosting` **40/40**.
+- **Task 156 C0 + C1** — commit `5485fdc`, deployed in the same run. `TASK_156_CYBER_LAB_AUP.md` +
+  `components/cyberlab-aup.tsx`; ten additive `Lab*` models + `AdminSetting.cyberlab*` dials (migration
+  `20261030000000_task156_c1_lab_schema`); `lib/lab/{aup,consent,gate,tools,catalog-seed,research}.ts`;
+  the **PREMIUM** `cyberlab` gate (owner **A14**, no staff gate); `LabToolCatalog` seeded **16 rows**
+  with `staleAfter` hiding; read-only Research admin page. `test:lab` **10/10**.
+- **Scope docs written this session (no code):** `PLAN_TASK_155` **§18 (P5 Domains)**, **§19 (P6
+  three-option engine)**, **§20 (P6d upload inputs)**; handoff **§6 + §7 + §12** and **trap 23**.
+- **Box facts confirmed this session:** certbot **1.21.0**, nginx **1.30.4**, app `User=trmm`,
+  `/etc/sudoers.d/trmm` = `NOPASSWD:ALL`, **no default vhost**, 13 vhosts / 8 certbot lineages.
+- **Still open after this session:** the P3/P4 prod **write** path (§1.2), prod login re-check, and the
+  fresh-DB migration replay (trap 23).
+
+
+

@@ -1128,10 +1128,19 @@ when over the cap or not entitled).
    wants the our-metal Link path FIRST (the owner's literal ask), then P5 must start with the VPS
    prerequisite: a hand-applied nginx catch-all vhost + a sudoers grant for `certbot` /
    `nginx -t` / `systemctl reload nginx`. **Confirm the box is open to that.**
-2. **Is `certbot` installed, and what is the current sudoers grant for the app user?** NOT verified
-   from this machine — `~/.ssh/vps_key` does not exist locally and the live host prompted for a
-   password when probed. Answer this ON the VPS before P5b is planned (it decides whether Path B is
-   a day or a week).
+2. ~~**Is `certbot` installed, and what is the current sudoers grant for the app user?**~~
+   **✅ ANSWERED 2026-10-02, verified directly on the box** (`ssh -i ~/.ssh/tacticalrmm_vps
+   root@164.68.105.96`): **certbot 1.21.0 installed** (`/usr/bin/certbot`), **nginx 1.30.4**
+   installed with 13 live vhosts in `/etc/nginx/sites-enabled/` (spaceworker.top, instaweb.top,
+   vantra, rmm, mesh, agent, dl — all separate `server_name`s), 8 certbot lineages in
+   `/etc/letsencrypt/live/` (incl. `instaweb.top`, `spaceworker-top`, `broks.beauty-wildcard`), the
+   app runs as **`User=trmm`** (`next start -p 3500`), and **`/etc/sudoers.d/trmm` grants
+   `trmm ALL=(ALL) NOPASSWD:ALL`** — i.e. the sudoers prerequisite for Path B is ALREADY SATISFIED
+   (certbot/nginx/reload are all runnable passwordless today; a scoped grant would be tidier but is
+   not required). **There is NO default vhost** (no `default_server`, no `000-default`) — an unknown
+   `Host` falls through to the first-listed server block, so the catch-all vhost is a NEW file to
+   add, not an edit. Path B is therefore "write one vhost + wire the resolver", NOT a week of
+   provisioning. NOTE: do NOT touch the other products' vhosts (vantra/rmm/mesh share this box).
 3. **Does the BYO Cloudflare token carry the scopes Path A needs** (`Zone:DNS:Edit` and
    `Pages:Edit` on the domain's zone)? If not, Path A still works but the user may have to add the
    returned CNAME by hand — confirm that's acceptable as "one DNS record".
@@ -1146,4 +1155,414 @@ when over the cap or not entitled).
 
 ---
 *End of §18. Scope only — no P5 code exists yet. Nothing above is implemented; the only changes on
-disk today are this section and the P4 work committed at `d79eee6`.*
+disk today are this section and the P4 work committed at `d79eee6`. §18.9 Q2 was later answered from
+the live box — see the corrected Q2 below (2026-10-02, verified via ssh).*
+
+---
+
+## 19. Owner addition 2026-10-02 (after P4 deploy) — the THREE-option engine model. SCOPED, NOT BUILT (this IS the P6 spec)
+
+### 19.0 The ask, verbatim (binding)
+
+> "i can see no more premium links unless user add there cloudflare, i hope i can switch between
+> the cloudflare throway and the instaweb link, and also option to add more to the admin, so users
+> can use ours. and ours should be the premium, while byo should be for the users added cloudflare,
+> i thought it was going to be 3 options, free which is the instaweb, then premium which is the
+> cloudflare and option to add more to rotate at the admin, and then byo which is the users own
+> cloudflare to get more. lets make sure its scoped properly"
+
+Restated as the three options the owner expects to see, **per item, switchable**:
+
+| # | Option | Who provides Cloudflare | Who can pick it | State today |
+|---|---|---|---|---|
+| 1 | **Free — Instaweb / "Our server"** | nobody (our metal, `/hs` `/pv` `/hf` `/r`) | any user with hosting enabled | ✅ exists (`engine: "local"`) |
+| 2 | **Premium — OUR Cloudflare (platform account)** | the **platform**; admin adds/rotates accounts | premium users, **zero setup** | ❌ **missing — this is the gap** |
+| 3 | **BYO — the user's own Cloudflare** | the user (`HostingCredential`) | users who added a token | ⚠️ exists, but the UI mislabels it "Premium (Cloudflare)" (§17.4) |
+
+The owner's first sentence — *"no more premium links unless user add their cloudflare"* — is TRUE
+as perceived today: the engine picker's only Cloudflare option is disabled until a BYO credential
+exists, so "premium" currently means nothing until the user brings their own token. Option 2 fixes
+that: **premium must work with no BYO at all.**
+
+### 19.1 Exists vs missing (all verified in-tree / on the box, 2026-10-02)
+
+**Exists:**
+- `HostingSite.credentialId` schema comment ALREADY says *"(NULL = platform account)"* — the schema
+  anticipated option 2 (prisma/schema.prisma, HostingSite).
+- `resolveDeployCredential` comment says *"otherwise the platform account (env)"* — **the code does
+  NOT implement it**: named BYO → user default → 400 `no_credential` ("Add a Cloudflare account…").
+  This comment currently lies; P6a makes it true (lib/hosting/sites.ts, `resolveDeployCredential`).
+- `createSite` has **no premium check** on `engine: "cloudflare"` — any hosting-enabled user can
+  create a CF site; it only fails at deploy with a BYO nudge.
+- BYO credential store complete: AES-256-GCM, `isDefault`, verify-on-use, red-fail-closed
+  (`lib/hosting/credentials.ts`) — **reused verbatim for platform rows' crypto + health pattern**.
+- Cloudflare Pages client complete and used by sites: `verifyCredential` / `ensureProject` /
+  `deployTree` (`lib/hosting/cloudflare.ts`).
+- Admin dials pattern: `WRITABLE_FIELDS` (`app/api/admin/hosting/route.ts`) + `HOSTING_CAP_FIELDS`
+  and `HostingCapsPanel` (`app/admin/(protected)/admin-panel.tsx`).
+- Caps resolver free-vs-premium split (`resolveHostingCaps` / `resolveCapsForUser`).
+
+**Missing (the P6a build list):**
+1. **Platform-account storage** — admin-managed Cloudflare accounts: N rows, AES-GCM tokens,
+   health, rotation order.
+2. **The platform fallback branch** in `resolveDeployCredential` (the comment is written; the code
+   is not).
+3. **A premium gate** on `engine: "cloudflare"` with `credentialId = NULL` (option 2 = premium;
+   see §19.9 Q1 for option 3's gate).
+4. **The three-option picker** + per-site badge that says *which* Cloudflare source ("ours" vs
+   "yours"), and removal of the §17.4 misnomer (BYO is not "Premium").
+5. **The admin rotation surface** — add / verify / reorder / disable platform accounts with health.
+6. Honest degradation: when no healthy platform account exists, a plain-language message (never a
+   silent fall back to `local` for a CF-engine site).
+
+### 19.2 The resolution rule (BINDING — this is the whole feature in one block)
+
+```
+engine = "local"                       → our metal. Free tier default. Any hosting-enabled user.
+
+engine = "cloudflare", credentialId NULL
+                                       → PLATFORM account: premium users only.
+                                         Pick the healthy row with the LOWEST priority
+                                         (1 = primary); unhealthy rows (verifyError non-null
+                                         or status != "active") are SKIPPED, not used.
+                                         NO BYO required. Zero setup.
+
+engine = "cloudflare", credentialId <id>
+                                       → that BYO credential (the user's own account),
+                                         still re-verified on use (§16.4, fail CLOSED).
+```
+
+- **Fail CLOSED, in order:** dead platform token → mark row red, try next priority; **no healthy
+  platform row** → `403` with plain language ("Premium Cloudflare hosting is being set up right now
+  — try again shortly, or add your own Cloudflare account"), **never** a silent `local` fallback for
+  a CF-engine site, and never a raw CF error.
+- **Free user selects option 2** → `403 premium_required` ("Premium Cloudflare hosting is part of
+  the premium plan…"), caught at site creation AND at deploy (defense in depth — creation alone can
+  be raced by a downgrade between create and publish).
+- **Rotation** = admin reordering `priority` + automatic skip of unhealthy rows. Re-verify on use,
+  exactly like BYO (the existing `verifyCredential` call site is shared, not forked).
+
+### 19.3 Schema draft (P6a) — one NEW additive table, nothing existing changes shape
+
+```prisma
+// TASK_155 P6 (PLAN §19) — OUR Cloudflare accounts, managed by the admin and
+// rotated across premium users ("ours should be the premium"). Deliberately
+// NOT a HostingCredential: there is no userId (ownership is the platform) and
+// no isDefault (rotation is `priority`). Same AES-256-GCM token discipline.
+model HostingPlatformAccount {
+  id        String   @id @default(cuid())
+  // Cloudflare account id (not a secret) — shown in the admin list.
+  accountId String
+  // Human label ("cf-main", "cf-backup-2").
+  label     String
+  // AES-256-GCM ciphertext of the API token — never plaintext, never returned.
+  tokenCiphertext String
+  tokenIv         String
+  tokenTag        String
+  tokenHint String @default("")
+  // Rotation order: the healthy row with the LOWEST priority serves. 1 = primary.
+  priority  Int      @default(100)
+  // "active" | "disabled" | "revoked" — disabled/revoked rows are kept, never used.
+  status    String   @default("active")
+  // Same health contract as HostingCredential: NULL = never verified;
+  // non-null verifyError marks the row RED and it is skipped by rotation.
+  lastVerifiedAt DateTime?
+  verifyError    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, priority])
+}
+```
+
+- **No change to `HostingSite`** — its `credentialId NULL` ALREADY means platform (the column
+  comment promised this in P3).
+- **No change to `HostingCredential`** — BYO stays byte-for-byte as built in P2/P3.
+- Migration is purely additive (one `CREATE TABLE`) → same deploy path as P4.
+
+### 19.4 UI — the picker becomes exactly the owner's three options
+
+**Sites create form** (`components/hosting-panel.tsx`, the engine `<select>`):
+
+1. `Our server (free)` — always enabled. (unchanged)
+2. `Cloudflare — ours (Premium)` — enabled **iff** premium (and ≥1 healthy platform account);
+   **no credential dropdown appears**; sub-line: "No setup needed — hosted on our Cloudflare."
+3. `Cloudflare — yours` — enabled iff ≥1 active BYO credential; credential dropdown (existing) +
+   Settings link; sub-line: "Uses your own Cloudflare account, limits and domains." With zero
+   credentials: disabled + "Add your Cloudflare token in Settings" (the §17.4 hint, re-worded so it
+   no longer claims to be "Premium").
+
+**Per-site badge:** `Our server` | `Cloudflare · ours` | `Cloudflare · yours` (derive:
+`engine === "cloudflare" && credentialId === null` → *ours*).
+
+**Admin panel:** a new **"Platform Cloudflare accounts"** block inside `HostingCapsPanel`'s tab —
+rows (label, account id, token hint, priority with ↑/↓, last-verified stamp, health dot), plus
+**Add** (account id + API token + label — token never echoed back), **Verify now**, **Disable**.
+Follows the panel's existing fetch → state → PATCH pattern; served by a sibling
+`/api/admin/hosting/platform-accounts` route (admin session, same `requireAdminSession` as today)
+rather than overloading the caps PATCH, so the caps route's subset-PATCH semantics stay untouched.
+
+### 19.5 Optional dial (§19.9 Q3)
+
+`hostingPlatformCfEnabled` (bool, `kind: "bool"` in `WRITABLE_FIELDS`) — a kill-switch that takes
+option 2 down without a redeploy or touching rows. Cheap; include it unless the lead objects.
+
+### 19.6 What "premium links" means — FLAGGED, not guessed (§19.9 Q2)
+
+Links (`LinkRedirect`, served by `/r/<token>` on our base) have **no engine** — a link is a DB row +
+a redirect, never touching Cloudflare. So the owner's *"switch between the cloudflare throway and
+the instaweb link"* is ambiguous:
+- **(a)** he means hosted **sites** (he has been testing sites) → fully covered by P6a;
+- **(b)** he means the **Links tab literally** → the premium benefit would be serving that redirect
+  from a CF edge (a Worker) or on a custom domain — the latter is **§18 Domains (P5)**, the former a
+  possible **P6c**. Do NOT build a CF-Worker link base in P6a without an explicit answer.
+- The Links tab's premium cap (500, P4) stays exactly as shipped either way.
+
+**Files:** the global `hostingProvider` AdminSetting dial still selects the upload engine for
+everyone (§17.4 NOT-DONE list). Applying option 2 to *files* (per-user provider resolution) needs a
+per-asset provider column — that is **P6b**, its own slice, NOT in P6a.
+
+### 19.7 Phasing
+
+- **P6a (deliverable, this spec):** `HostingPlatformAccount` + migration; the platform branch in
+  `resolveDeployCredential`; premium gate on option 2 (create + deploy); the three-option picker +
+  badges + §17.4 relabel; the admin rotation block (+ kill-switch dial); tests for the §19.2 matrix;
+  deploy (additive, §9 procedure).
+- **P6b:** option 2 for FILES/uploads — per-user engine resolution instead of the single global
+  `hostingProvider` dial (needs a `HostedAsset.provider` column; own decision, own run).
+- **P6c (only if §19.9 Q2 answers "literally links"):** CF-Worker-backed redirect base, or defer to
+  §18 P5 domains.
+
+### 19.8 Acceptance bar (P6a)
+
+- `prisma validate` clean; the new migration applies to a scratch DB; `tsc --noEmit` 0; eslint at
+  HEAD parity on touched files; `CI=1 next build` exit 0; **`npm run test:hosting` green** with new
+  cases: (a) free user, `engine=cloudflare`, NULL credential → `403 premium_required`; (b) premium
+  user, NULL credential, healthy platform row → resolves the PLATFORM accountId (CF client mocked);
+  (c) first platform row unhealthy → rotation skips to the next priority; none healthy → clean 403
+  with the plain-language message; (d) explicit BYO credentialId → that credential even if a
+  platform row exists; (e) admin can add/reorder/disable a platform account, and PATCH rejects
+  unknown fields (existing behaviour preserved).
+- **Live after deploy:** a premium user creates a CF site **with zero BYO** and publishes; the admin
+  adds a second platform account, reorders, and the badge reads *ours* vs *yours* correctly; a free
+  user gets the premium_required message; killing switch (if built) takes option 2 down with a
+  clean message.
+- **Explicitly NOT in P6a (so nobody reports it as a bug):** files on the platform engine (P6b),
+  links on a CF edge (P6c / §18), custom domains (§18 P5), any change to BYO behaviour.
+
+### 19.9 Open questions for the lead — ANSWER BEFORE P6a BINDS
+
+> **★ AMENDMENT 2026-10-02 (owner answered some by construction).** Read the §19.0 verbatim again
+> before treating any question below as open. The owner's own words already settle these:
+> **Q4 (rotation shape) → ANSWERED: multiple CF accounts in priority order** ("*option to add more
+> to rotate at the admin*"). **Q5 (DB vs env) → ANSWERED: DB**, admin-managed from the UI ("*add
+> more to the admin, so users can use ours*"). **Q3 (kill-switch dial) → default stands: yes**
+> (cheap, one bool; the owner never objected). **Q1 (may a FREE user use BYO?) → STILL OPEN** — the
+> owner's "*byo … to get more*" reads either way; one line settles it. **Q2 (did "premium links"
+> mean the Links tab literally?) → STILL OPEN** — default stands (P6a treats it as sites; links keep
+> their P4 caps). Everything else in this section is unchanged.
+
+1. **May a FREE user use BYO (option 3)?** Default I'd build to: **yes** — the cost sits on the
+   user's own Cloudflare account, and refusing it punishes someone for bringing their own wallet.
+   (The owner's wording "byo … to get more" could also mean BYO requires premium. One line
+   settles it.)
+2. **Did *"premium links"* mean the Links tab literally?** If yes: custom domain = §18 P5; CF edge
+   redirect = new P6c scope. Default: P6a treats it as "sites" and links keep their P4 caps.
+3. **Include the `hostingPlatformCfEnabled` kill-switch dial?** Default: yes (cheap, one bool).
+4. **Rotation shape:** multiple CF **accounts** in priority order (what §19 builds — "option to add
+   more to rotate at the admin"), or one account and rotation is just re-verification? Confirm the
+   multiple-accounts reading.
+5. **Platform tokens in the DB (AES-GCM, admin adds them from the UI — no redeploy) vs env vars on
+   the box?** Default: **DB** — the owner explicitly wants to add/rotate from the admin.
+
+### 19.10 Owner follow-up, verbatim (2026-10-02, same day) — CF-silent UI, premium-first, domains
+
+> "also fix the ui. the hosting label is just for file, and also take out the cloudflare talk on the
+> screen, space premium gives users the premium first, then users have option to add cloudflare to
+> settings and then be able to add domain easily, and we handle the automation. and if we can also
+> allow users just add domain to our cloudflare, just thinking if it wont make things complicated."
+
+**Rules this adds (binding for every future hosting screen):**
+
+1. **"Hosting" must not read as file-only.** The header line describes all three tabs (Files, links
+   and sites in one place…). ✅ **DONE** — fixed in the copy pass (committed with §19's scoping run).
+2. **Cloudflare talk is OFF the Hosting page.** No "Cloudflare" string on `/dashboard/hosting` —
+   engine option 2 is labeled **`Premium`**, the account dropdown says **`Account` / `Ours
+   (default)`**, hints say "connect an account in Settings". Brand talk (pasting a CF token) lives
+   only in **Settings → Hosting accounts**, which is where the owner wants it. ✅ **DONE** for all
+   existing copy; P6a must keep this rule when it rewrites the picker (§19.4 labels below are
+   superseded by this rule — read option 2 as the word **`Premium`**, option 3 as **`Yours`**).
+3. **Premium-first, zero setup:** a premium user's Premium option works **immediately** — nothing to
+   paste, nothing to connect (that is exactly option 2 / P6a). BYO is the *optional* upgrade path,
+   not the entry ticket. The current UI (premium disabled until a credential exists) violates this
+   and is what P6a fixes.
+4. **Domains ride the same flow:** premium first → (optionally) connect their own Cloudflare in
+   Settings → **add a domain easily → WE handle the automation** (the TXT/CNAME verification, the
+   attachment, the TLS — §18.3's "one record from the user, everything else ours").
+5. **"Add a domain to OUR Cloudflare" — feasibility verdict (owner asked "if it won't make things
+   complicated"):** **it does NOT complicate the model — it is §18 Path A run on the platform
+   account instead of a BYO token.** Because §18 already requires the user to VERIFY the domain
+   first (TXT proof they own it), pointing a domain at our platform CF is safe: no zone is ever
+   transferred, the user just adds the one CNAME/TXT we show them, and we attach the verified
+   hostname via the platform token. The only real constraints: (a) it needs a healthy
+   `HostingPlatformAccount` (P6a) to exist — so this is **§18 Path A + platform provider**, not new
+   machinery; (b) abusive domains pointed at us are governed by §18.9 Q6's guardrails exactly like
+   any other domain. **Recommendation: make "Ours (automatic)" the DEFAULT provider for domain
+   binding, with BYO as the escape hatch** — one line in the §18 binding table decides it (§18.9 Q1
+   amendment: provider = platform | byo, default platform).
+
+---
+*End of §19. Scope only — no P6 code exists yet. §19 is the binding spec for P6a; the copy fixes
+ordered by §19.10 rules 1–2 ARE built (hosting-panel.tsx); P4 (deployed, live) and §18 (P5, scoped)
+are unaffected by it.*
+
+---
+
+## 20. Owner addition 2026-10-02 (after P4 deploy) — SITE UPLOAD INPUTS: not only `.zip`. SCOPED, NOT BUILT (this IS the P6d spec)
+
+### 20.0 The ask, verbatim (binding)
+
+> "also add to the plan, not only zip option should be available for site upload,, i think we should
+> be able to collect file or folder. or what do you think"
+
+The owner wants the **Sites** tab to accept **three inputs** — a **single file**, a **folder**, and
+(today's only option) a **`.zip`** — instead of forcing everyone to zip a folder by hand first.
+
+### 20.1 Exists vs missing (all verified in-tree, 2026-10-02)
+
+**Exists / what is actually true today:**
+- The upload API `app/api/hosting/sites/[id]/revisions/route.ts` (POST) takes **exactly one**
+  multipart part named `file` (a `Blob`). It does **not** accept many parts and does **not** read any
+  folder structure.
+- `writeIncomingArchive` (`lib/hosting/sites.ts:110`) streams that Blob to disk and **hard-names it
+  `<token>.zip`**. The extension is cosmetic — `7z` sniffs the real format by **content**, so a real
+  `.zip` works regardless of the name.
+- `createRevisionFromArchive` (`lib/hosting/sites.ts:357`) → `listArchive` (`7z l -slt`, `extract.ts`)
+  → **`analyseArchive`** (PURE, holds *all* the §16.1 guards: zip-slip / absolute path, symlink,
+  nested `.zip`, entry ceiling, per-file ceiling, junk filtering) → `extractArchive` (`7z x`) →
+  `scanExtractedTree` (+ `scanSiteFile`, `rules.ts:295`) → preview (`deployRevision`) → publish.
+  **The entire pipeline is zip-shaped.**
+- The UI is a single `<input type="file" accept=".zip">`; the copy reads *"Zip a folder, check the
+  preview, then publish."*
+- **A single-file upload does NOT work today.** Post `index.html`: it is stored as `<token>.zip`,
+  then `7z l` rejects it as "not archive" → the user gets a bad-archive refusal. It is simply not a
+  supported input.
+- **A folder upload does NOT work today.** A plain `<input type="file">` yields *files*, not a tree;
+  there is no `webkitdirectory`; and the API takes one Blob.
+- **The Files tab (a *different* surface) already accepts a single arbitrary file** — this ask is
+  about **site** upload only.
+- **No JS zip library in `package.json`** (checked: no `fflate`/`jszip`/`adm-zip`/`archiver`). The box
+  has only **`7z`** (`unzip` is absent — PLAN §12), so a *server-side* re-zip is not even available.
+
+**Missing (the P6d build list):**
+1. The three UI input modes (file / folder / zip).
+2. A folder → one-archive normalization for the API.
+3. A single-file → one-entry-archive path.
+4. Copy naming all three inputs (and the §19.10 rule: no "Cloudflare" string on this screen).
+
+### 20.2 The normalization rule (BINDING recommendation — this is the whole feature in one block)
+
+**Normalize EVERY input to the ONE existing zip pipeline, in the browser.**
+
+```
+mode "zip"    → the chosen .zip is uploaded byte-for-byte (today's path, UNCHANGED).
+mode "folder" → the browser zips the folder (webkitdirectory gives the tree; a small
+                pure-JS zip writer assembles ONE .zip) and uploads THAT.
+                Same API call, same caps, same 7z pipeline.
+mode "file"   → the browser zips the single file as a ONE-ENTRY archive (member name
+                preserved, e.g. index.html) and uploads that.
+```
+
+**Why this, and not a second server path — the direct answer to "or what do you think":** the server
+pipeline is where every safety guard lives, and all of them are in ONE pure function
+(`analyseArchive`) with a real-`7z` test behind it. A **second** server path for loose files or
+multi-part folder uploads would mean **re-deriving all of those guards** for data that now arrives as
+many HTTP parts with **client-supplied relative names** — a strictly *larger* attack surface (exactly
+the class of bug the guard exists to stop) for **zero** user-visible gain. Client normalization keeps
+**one** pipeline, **one** set of caps, and **one** place to test.
+
+**Cost, stated honestly:** one tiny pure-JS zip dependency. Recommend **`fflate`** (MIT, ~8 KB, no
+native deps, ESM; store-only or deflate). It runs in the **user's browser**, so it never touches the
+server's RSS (the reason we deliberately never unzip server-side into memory). The existing
+`maxZipMb` ceiling still bounds what any user can send, and `maxZipEntries` still bounds the tree.
+
+**Rejected for v1 (record it so nobody re-proposes it as "free"):** server-side multi-part upload and
+server-side zipping of a loose tree. If ever wanted, that is its own task with its own guard tests.
+
+### 20.3 Single-file = the "quick site" case
+
+A lone `index.html` is the most common *"just put this online"* case. Under §20.2 it is a one-entry
+zip; the site then serves that file at the revision directory root (`/pv/<token>/` in preview,
+`/hs/<token>/` live). **No new serving rule is needed** — it is the existing pipeline with
+`fileCount: 1` — but the UX should name it ("Upload a file → we'll serve it as your site's page").
+
+### 20.4 Optional server hardening (NOT required for P6d)
+
+Accept a **loose single file** server-side: if the uploaded Blob is **not** a zip (no `PK\x03\x04`
+magic at offset 0), write it straight into the revision staging dir (a single **sanitised** filename —
+no path components, so there is nothing to zip-slip), **skip `7z` entirely**, run the **existing**
+`scanSiteFile` on it, then the **existing** quota / manifest-hash / preview steps. This is ~30 lines,
+removes the last *"you must zip first"* trap for scripts and `curl`, and adds no traversal surface
+(there is no archive and no relative path). **Default: build it**; if the lead prefers minimal surface,
+the client path (§20.2) alone already satisfies the owner's ask.
+
+### 20.5 Schema impact: NONE
+
+No new table, no new column, **no migration**. The revision row already stores
+`archiveName`/`archiveBytes`/`fileCount`/`manifest`; a one-file site is simply `fileCount: 1`. The
+`HostingRevision` shape is unchanged, so P6d is **UI + a small `lib/` helper only** — nothing to
+deploy-verify in the DB.
+
+### 20.6 UX (Sites tab)
+
+The create-revision form becomes a small segmented control:
+
+```
+[ Upload a file ]  [ Upload a folder ]  [ Upload a .zip ]
+```
+
+- **file** → `<input type="file">` (any single file; a `.php`-class member is still refused by
+  `scanSiteFile` after extraction).
+- **folder** → `<input type="file" webkitdirectory multiple>` (desktop; **not available on iOS Safari**
+  — mobile users fall back to file/zip).
+- **zip** → today's `<input accept=".zip">`.
+- Keep the preview→publish hint (unchanged) and the **§19.10 rule: no "Cloudflare" string on this
+  screen.**
+
+### 20.7 Phasing
+
+- **P6d (this spec):** the three input modes + client normalization (§20.2), the optional server
+  loose-file path (§20.4), the copy, and the tests. **Independent** of P6a/b/c **and** of §18 P5 — it
+  may ship before or after them. It touches `components/hosting-panel.tsx` +
+  `app/api/hosting/sites/[id]/revisions/route.ts` + a new `lib/hosting/` helper; **P6a touches the same
+  panel, so sequence the two if they land in one run.**
+- **Not in P6d:** server-side multi-part tree upload, a drag-and-drop editor, incremental/partial
+  upload, resume.
+
+### 20.8 Acceptance bar (P6d)
+
+- A folder with subdirectories zipped **in the browser** produces the **same revision** (same
+  `fileCount`, same manifest keys) as the same folder zipped **by hand** — proven by a test that builds
+  both and compares.
+- A single `.html` uploads, previews and publishes; `/hs/<token>/` serves it.
+- The existing zip path is **byte-for-byte unchanged** — `test:hosting` stays green and
+  `tests/hosting-pages.test.ts` needs no edit.
+- Caps still bite: over-ceiling folder → `archive_too_large`; over-entry folder → `too_many_entries`;
+  a >25 MiB member → `file_over_limit`; a `.php` member → `scanSiteFile` refusal.
+- `tsc --noEmit` 0 · eslint at HEAD parity · `CI=1 next build` 0 · `npm run test:hosting` green.
+- **Live after deploy:** upload a folder on `/dashboard/hosting` → preview 200 → publish → `/hs/<token>/`
+  200. (This closes the **P3 write-path gap** that §6.4 of the handoff still lists as unverified — do it
+  here rather than leaving it open.)
+
+### 20.9 Open questions for the lead — ANSWER BEFORE P6d BINDS
+
+1. **Zip dependency:** add **`fflate`** (recommended), or prefer **store-only** (no compression → larger
+   uploads, but a ~200-line writer we own and no dependency)? Default: **`fflate`**.
+2. **Folder on mobile:** confirm *"file/zip only; folder is desktop-only"* is acceptable
+   (`webkitdirectory` is not on iOS Safari). Default: acceptable.
+3. **Loose-file server path (§20.4):** build it, or client-only? Default: **build it**.
+
+---
+
+*End of §20. Scope only — no P6d code exists yet. §20 is the binding spec for P6d. P4 (deployed, live),
+§18 (P5, scoped) and §19 (P6, scoped) are unaffected by it.*
