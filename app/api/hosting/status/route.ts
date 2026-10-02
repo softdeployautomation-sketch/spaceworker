@@ -5,7 +5,7 @@ import { hasEntitlement } from "@/lib/entitlements";
 import { env } from "@/lib/env";
 import { getCurrentUser } from "@/lib/session-user";
 import { readUsage, resolveCapsForUser } from "@/lib/hosting/files";
-import { listHostingCredentials } from "@/lib/hosting/credentials";
+import { listHostingCredentials, countSitesByCredential } from "@/lib/hosting/credentials";
 import { listProviders } from "@/lib/hosting/providers";
 import { hostingPublicBase } from "@/lib/hosting/providers";
 import { listHostedLinks } from "@/lib/hosting/links";
@@ -26,10 +26,11 @@ export async function GET() {
   const [settings, decision] = await Promise.all([getAdminSettings(), hasEntitlement(user.id, "hosting")]);
   const entitled = decision.allowed;
   const { caps } = await resolveCapsForUser(user.id);
-  const [usage, links, credentials] = await Promise.all([
+  const [usage, links, credentials, siteCounts] = await Promise.all([
     readUsage(user.id),
     listHostedLinks(user.id),
     listHostingCredentials(user.id),
+    countSitesByCredential(user.id),
   ]);
 
   return NextResponse.json({
@@ -51,6 +52,13 @@ export async function GET() {
       pagesMaxAssetMb: caps.pagesMaxAssetMb,
       // TASK_155 P2.
       maxLinks: caps.maxLinks,
+      // TASK_155 P3 — the site/premium dials (PLAN §16.3/§16.6).
+      premiumMaxProjects: caps.premiumMaxProjects,
+      premiumMaxFilesPerProject: caps.premiumMaxFilesPerProject,
+      premiumDeploymentsPerDay: caps.premiumDeploymentsPerDay,
+      maxZipMb: caps.maxZipMb,
+      previewTtlHours: caps.previewTtlHours,
+      publishedRevisionsKept: caps.publishedRevisionsKept,
     },
     usage: {
       storageBytes: usage.storageBytes,
@@ -61,6 +69,8 @@ export async function GET() {
     },
     // TASK_155 P2 — the caller's own hosting credentials (never the token; each
     // row carries only a 4-char hint) so the tab can render the switcher.
-    credentials,
+    // TASK_155 P3 — §16.4 adds the per-account project count + the verify stamp
+    // (lastVerifiedAt/verifyError) so the chooser is one honest row per account.
+    credentials: credentials.map((c) => ({ ...c, projectCount: siteCounts[c.id] ?? 0 })),
   });
 }

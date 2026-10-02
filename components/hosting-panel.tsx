@@ -27,6 +27,13 @@ interface HostingStatus {
     maxBandwidthGbPerMonth: number;
     pagesMaxAssetMb: number;
     maxLinks: number;
+    /** TASK_155 P3 — the site/premium dials (PLAN §16.3/§16.6). */
+    premiumMaxProjects: number;
+    premiumMaxFilesPerProject: number;
+    premiumDeploymentsPerDay: number;
+    maxZipMb: number;
+    previewTtlHours: number;
+    publishedRevisionsKept: number;
   };
   usage: {
     storageBytes: number;
@@ -37,6 +44,8 @@ interface HostingStatus {
   };
   /** TASK_155 P2 — the caller's own hosting credentials (never the token). */
   credentials: HostingCredential[];
+  /** Where a /r/<slug|token> short link resolves (the app host). */
+  linksBase: string;
 }
 
 /** TASK_155 P2 — a user-owned short link (/r/<slug|token> → target). */
@@ -60,6 +69,10 @@ interface HostingCredential {
   tokenHint: string;
   isDefault: boolean;
   status: string;
+  /** TASK_155 P3 — §16.4 verify stamp + per-account project count. */
+  lastVerifiedAt: string | null;
+  verifyError: string | null;
+  projectCount?: number;
   createdAt: string;
 }
 
@@ -77,6 +90,33 @@ interface HostedFile {
   url: string | null;
   expiresAt: string | null;
   downloadCount: number;
+  createdAt: string;
+}
+
+/** TASK_155 P3 — a hosted static site (a zipped folder → preview → publish). */
+interface HostingSite {
+  id: string;
+  name: string;
+  engine: string;
+  credentialId: string | null;
+  status: string;
+  previewToken: string;
+  liveToken: string | null;
+  liveUrl: string | null;
+  previewUrl: string | null;
+  createdAt: string;
+}
+
+/** TASK_155 P3 — one revision of a site (the §16.1 state machine). */
+interface HostingRevision {
+  id: string;
+  state: string;
+  fileCount: number;
+  bytes: number;
+  previewToken: string;
+  previewUrl: string | null;
+  cfUrl: string | null;
+  rejection: string | null;
   createdAt: string;
 }
 
@@ -99,6 +139,16 @@ export function HostingPanel() {
   const [linkForm, setLinkForm] = useState({ target: "", label: "", slug: "" });
   const [credForm, setCredForm] = useState({ accountId: "", label: "", token: "" });
   const fileInput = useRef<HTMLInputElement>(null);
+  // TASK_155 P3 — the Sites surface (folder → preview → publish + engine picker).
+  const [sites, setSites] = useState<HostingSite[]>([]);
+  const [siteForm, setSiteForm] = useState<{ name: string; engine: string; credentialId: string }>({
+    name: "",
+    engine: "local",
+    credentialId: "",
+  });
+  const [revisions, setRevisions] = useState<Record<string, HostingRevision[]>>({});
+  const [openSite, setOpenSite] = useState<string | null>(null);
+  const revisionInput = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
     const res = await fetch("/api/hosting/status");
@@ -125,11 +175,27 @@ export function HostingPanel() {
     setLinks(data.links);
   }, []);
 
+  // TASK_155 P3 — the caller's sites, and (on demand) a site's revisions.
+  const loadSites = useCallback(async () => {
+    const res = await fetch("/api/hosting/sites");
+    if (!res.ok) return;
+    const data = (await res.json()) as { sites: HostingSite[] };
+    setSites(data.sites);
+  }, []);
+
+  const loadRevisions = useCallback(async (siteId: string) => {
+    const res = await fetch(`/api/hosting/sites/${siteId}`);
+    if (!res.ok) return;
+    const data = (await res.json()) as { revisions: HostingRevision[] };
+    setRevisions((r) => ({ ...r, [siteId]: data.revisions }));
+  }, []);
+
   useEffect(() => {
     void loadStatus();
     void loadFiles();
     void loadLinks();
-  }, [loadStatus, loadFiles, loadLinks]);
+    void loadSites();
+  }, [loadStatus, loadFiles, loadLinks, loadSites]);
 
   const activeProvider = useMemo(
     () => status?.providers.find((p) => p.id === status.provider) ?? null,
@@ -225,6 +291,225 @@ export function HostingPanel() {
     setNotice("Link copied.");
   }, []);
 
+  // --- TASK_155 P3 — the Sites flow handlers --------------------------------
+
+  const onCreateSite = useCallback(
+    async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      if (!siteForm.name.trim()) return;
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch("/api/hosting/sites", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: siteForm.name.trim(),
+            engine: siteForm.engine,
+            credentialId: siteForm.engine === "cloudflare" && siteForm.credentialId ? siteForm.credentialId : null,
+          }),
+        });
+        const data = (await res.json()) as { site?: HostingSite; error?: string };
+        if (!res.ok || !data.site) {
+          setError(data.error ?? "Couldn’t create the site.");
+          return;
+        }
+        setSiteForm({ name: "", engine: "local", credentialId: "" });
+        setNotice(`Created “${data.site.name}”. Zip a folder to preview it.`);
+        await loadSites();
+      } catch {
+        setError("Couldn’t create the site — check your connection and try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadSites, siteForm]
+  );
+
+  const onUploadRevision = useCallback(
+    async (site: HostingSite, file: File) => {
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const form = new FormData();
+        form.append("file", file);
+        form.append("filename", file.name);
+        const res = await fetch(`/api/hosting/sites/${site.id}/revisions`, { method: "POST", body: form });
+        const data = (await res.json()) as { revision?: HostingRevision; error?: string };
+        if (!res.ok || !data.revision) {
+          setError(data.error ?? "The folder couldn’t be prepared.");
+          return;
+        }
+        setNotice(`Prepared ${data.revision.fileCount} file(s) — open the preview, then publish.`);
+        setOpenSite(site.id);
+        await Promise.all([loadSites(), loadRevisions(site.id), loadStatus()]);
+      } catch {
+        setError("The upload failed — check your connection and try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadRevisions, loadSites, loadStatus]
+  );
+
+  const onPublish = useCallback(
+    async (site: HostingSite, revision: HostingRevision) => {
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/sites/${site.id}/revisions/${revision.id}/publish`, {
+          method: "POST",
+        });
+        const data = (await res.json()) as { revision?: HostingRevision; error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Publish failed.");
+          return;
+        }
+        setNotice("Published. Your live link is ready.");
+        await Promise.all([loadSites(), loadRevisions(site.id), loadStatus()]);
+      } catch {
+        setError("Publish failed — check your connection and try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadRevisions, loadSites, loadStatus]
+  );
+
+  const onDeleteSite = useCallback(
+    async (site: HostingSite) => {
+      if (!window.confirm(`Delete “${site.name}” and its previews? The live link will stop working.`)) return;
+      const res = await fetch(`/api/hosting/sites/${site.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        setError(data.error ?? "Delete failed.");
+        return;
+      }
+      setNotice("Site deleted.");
+      if (openSite === site.id) setOpenSite(null);
+      await Promise.all([loadSites(), loadStatus()]);
+    },
+    [loadSites, loadStatus, openSite]
+  );
+
+  const onToggleSite = useCallback(
+    async (site: HostingSite) => {
+      if (openSite === site.id) {
+        setOpenSite(null);
+        return;
+      }
+      setOpenSite(site.id);
+      await loadRevisions(site.id);
+    },
+    [loadRevisions, openSite]
+  );
+
+  const onAddCredential = useCallback(
+    async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch("/api/hosting/credentials", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(credForm),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t save that account.");
+          return;
+        }
+        setCredForm({ accountId: "", label: "", token: "" });
+        setNotice("Account saved.");
+        await loadStatus();
+      } catch {
+        setError("Couldn’t save that account — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [credForm, loadStatus]
+  );
+
+  const onUseCredential = useCallback(
+    async (id: string) => {
+      const res = await fetch(`/api/hosting/credentials/${id}/default`, { method: "POST" });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        setError(data.error ?? "Couldn’t switch accounts.");
+        return;
+      }
+      setNotice("That account will be used for new premium deploys.");
+      await loadStatus();
+    },
+    [loadStatus]
+  );
+
+  // TASK_155 P3 — §16.4 "verify now": re-confirm a stored token and refresh its
+  // stamp. A dead token comes back as a red row (200), not an error.
+  const onVerifyCredential = useCallback(
+    async (id: string) => {
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/credentials/${id}/verify`, { method: "POST" });
+        const data = (await res.json()) as { credential?: HostingCredential; error?: string };
+        if (!res.ok || !data.credential) {
+          setError(data.error ?? "Couldn’t verify that account.");
+          return;
+        }
+        setNotice(
+          data.credential.verifyError
+            ? `That account isn’t working: ${data.credential.verifyError}`
+            : "Account verified — the token works."
+        );
+        await loadStatus();
+      } catch {
+        setError("Couldn’t verify that account — check your connection and try again.");
+      }
+    },
+    [loadStatus]
+  );
+
+  const onAddLink = useCallback(
+    async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      if (!linkForm.target.trim()) return;
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch("/api/hosting/links", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            target: linkForm.target.trim(),
+            label: linkForm.label.trim() || null,
+            slug: linkForm.slug.trim() || null,
+          }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t create that link.");
+          return;
+        }
+        setLinkForm({ target: "", label: "", slug: "" });
+        setNotice("Link created.");
+        await Promise.all([loadLinks(), loadStatus()]);
+      } catch {
+        setError("Couldn’t create that link — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [linkForm, loadLinks, loadStatus]
+  );
+
 
   if (!status) {
     return <div className="p-6 text-sm text-zinc-500">Loading hosting…</div>;
@@ -290,6 +575,190 @@ export function HostingPanel() {
         </div>
       </section>
 
+      {/* TASK_155 P3 — Sites: zip a folder → PREVIEW → PUBLISH, per-item engine. */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Sites</h2>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          Zip a folder, check the preview, then publish. Pick the engine per site — our server is free and instant;
+          premium (Cloudflare) gives a global edge and custom domains.
+        </p>
+
+        <form
+          onSubmit={onCreateSite}
+          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+        >
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Site name
+            <input
+              value={siteForm.name}
+              onChange={(e) => setSiteForm((s) => ({ ...s, name: e.target.value }))}
+              placeholder="my-site"
+              className="w-48 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Engine
+            <select
+              value={siteForm.engine}
+              onChange={(e) => setSiteForm((s) => ({ ...s, engine: e.target.value }))}
+              className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <option value="local">Our server (free)</option>
+              <option value="cloudflare">Premium (Cloudflare)</option>
+            </select>
+          </label>
+          {siteForm.engine === "cloudflare" && (
+            <label className="flex flex-col gap-1 text-xs text-zinc-500">
+              Cloudflare account
+              <select
+                value={siteForm.credentialId}
+                onChange={(e) => setSiteForm((s) => ({ ...s, credentialId: e.target.value }))}
+                className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <option value="">Platform account (default)</option>
+                {status.credentials.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label} · …{c.tokenHint}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="submit"
+            disabled={busy || !status.enabled || !status.entitled}
+            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          >
+            Create site
+          </button>
+        </form>
+
+        {sites.length === 0 && (
+          <p className="text-sm text-zinc-500">No sites yet. Create one, then zip a folder to preview it.</p>
+        )}
+
+        {sites.map((site) => {
+          const open = openSite === site.id;
+          const revs = revisions[site.id] ?? [];
+          return (
+            <div key={site.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="truncate font-medium text-zinc-900 dark:text-zinc-100">{site.name}</span>
+                    <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      {site.engine === "cloudflare" ? "Premium" : "Our server"}
+                    </span>
+                    <span className="text-xs text-zinc-400">{site.status}</span>
+                  </div>
+                  {site.liveUrl && (
+                    <div className="mt-0.5 flex items-center gap-2 text-xs text-emerald-600">
+                      <a href={site.liveUrl} target="_blank" rel="noreferrer" className="hover:underline">
+                        {site.liveUrl}
+                      </a>
+                      <button onClick={() => copy(site.liveUrl as string)} className="text-zinc-500 hover:underline">
+                        Copy
+                      </button>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => void onToggleSite(site)}
+                    className="text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+                  >
+                    {open ? "Hide" : "Manage"}
+                  </button>
+                  <button onClick={() => void onDeleteSite(site)} className="text-xs text-red-600 hover:underline">
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              {open && (
+                <div className="mt-3 space-y-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      const input = revisionInput.current;
+                      const file = input?.files?.[0];
+                      if (!file) return;
+                      void onUploadRevision(site, file).then(() => {
+                        if (input) input.value = "";
+                      });
+                    }}
+                    className="flex flex-wrap items-center gap-3"
+                  >
+                    <input
+                      ref={revisionInput}
+                      type="file"
+                      accept=".zip,application/zip"
+                      className="text-sm text-zinc-700 file:mr-3 file:rounded file:border-0 file:bg-zinc-900 file:px-3 file:py-1.5 file:text-sm file:text-white dark:text-zinc-300 dark:file:bg-zinc-100 dark:file:text-zinc-900"
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="rounded bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                    >
+                      {busy ? "Working…" : "Upload zip → preview"}
+                    </button>
+                    <span className="text-xs text-zinc-500">
+                      A .zip up to {status.caps.maxZipMb} MB.
+                      {site.engine === "cloudflare"
+                        ? ` Max ${status.caps.premiumMaxFilesPerProject} files per site.`
+                        : ""}
+                    </span>
+                  </form>
+
+                  {revs.length === 0 && <p className="text-xs text-zinc-500">No revisions yet.</p>}
+
+                  {revs.map((rev) => {
+                    const previewUrl = rev.previewUrl ?? rev.cfUrl ?? `${status.publicBase}/pv/${rev.previewToken}/`;
+                    const isLive = rev.state === "published";
+                    return (
+                      <div key={rev.id} className="rounded border border-zinc-200 p-3 text-sm dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="min-w-0">
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                              {isLive ? "live" : "not live"}
+                            </span>
+                            <span className="ml-2 text-xs text-zinc-500">
+                              {rev.fileCount} file{rev.fileCount === 1 ? "" : "s"} · {formatBytes(rev.bytes)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <a
+                              href={previewUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-xs text-emerald-600 hover:underline"
+                            >
+                              Open preview
+                            </a>
+                            <button onClick={() => copy(previewUrl)} className="text-xs text-zinc-500 hover:underline">
+                              Copy
+                            </button>
+                            {!isLive && (
+                              <button
+                                onClick={() => void onPublish(site, rev)}
+                                disabled={busy}
+                                className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50"
+                              >
+                                Publish to live
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </section>
+
       {/* Upload */}
       <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
         <form onSubmit={onUpload} className="flex flex-wrap items-center gap-3">
@@ -309,6 +778,171 @@ export function HostingPanel() {
         <p className="mt-2 text-xs text-zinc-500">
           Any file up to {status.caps.maxFileSizeMb} MB. Executables are fine — scripts and pages aren’t.
         </p>
+      </section>
+
+      {/* TASK_155 P3 — Connection: the §16.4 account chooser. */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Connection</h2>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          One row per account. Tokens are encrypted and never shown — only the last 4 characters. The default account
+          powers new premium deploys; an existing site keeps the account it was built on.
+        </p>
+
+        {status.credentials.length === 0 && (
+          <p className="text-sm text-zinc-500">No Cloudflare account yet. Add one to host on premium.</p>
+        )}
+
+        {status.credentials.map((c) => (
+          <div
+            key={c.id}
+            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+          >
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-zinc-900 dark:text-zinc-100">{c.label}</span>
+                {c.isDefault && (
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
+                    default
+                  </span>
+                )}
+                {/* TASK_155 P3 — §16.4 the last-verified stamp, red when broken. */}
+                {c.verifyError ? (
+                  <span
+                    className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800 dark:bg-red-950 dark:text-red-200"
+                    title={c.verifyError}
+                  >
+                    not working
+                  </span>
+                ) : c.lastVerifiedAt ? (
+                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                    verified {new Date(c.lastVerifiedAt).toLocaleDateString()}
+                  </span>
+                ) : (
+                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                    never verified
+                  </span>
+                )}
+              </div>
+              <div className="mt-0.5 truncate text-xs text-zinc-500">
+                {c.accountId} · token …{c.tokenHint} · {c.projectCount ?? 0} site
+                {(c.projectCount ?? 0) === 1 ? "" : "s"}
+              </div>
+              {c.verifyError && (
+                <div className="mt-0.5 text-xs text-red-600 dark:text-red-300">{c.verifyError}</div>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <button onClick={() => void onVerifyCredential(c.id)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
+                Re-verify
+              </button>
+              {!c.isDefault && (
+                <button onClick={() => void onUseCredential(c.id)} className="text-xs text-emerald-600 hover:underline">
+                  Use for new deploys
+                </button>
+              )}
+            </div>
+          </div>
+        ))}
+
+        <form
+          onSubmit={onAddCredential}
+          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+        >
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Label
+            <input
+              value={credForm.label}
+              onChange={(e) => setCredForm((s) => ({ ...s, label: e.target.value }))}
+              placeholder="Work"
+              className="w-32 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Account id
+            <input
+              value={credForm.accountId}
+              onChange={(e) => setCredForm((s) => ({ ...s, accountId: e.target.value }))}
+              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            API token
+            <input
+              type="password"
+              value={credForm.token}
+              onChange={(e) => setCredForm((s) => ({ ...s, token: e.target.value }))}
+              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy}
+            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          >
+            Add account
+          </button>
+        </form>
+      </section>
+
+      {/* TASK_155 P2 — Links: user-owned short links (/r/<slug|token>). */}
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Links</h2>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          Short links that redirect to anything — a hosted file, a site, or any URL. {status.usage.linkCount} /{" "}
+          {status.caps.maxLinks} used.
+        </p>
+        <form
+          onSubmit={onAddLink}
+          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+        >
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Target URL
+            <input
+              value={linkForm.target}
+              onChange={(e) => setLinkForm((s) => ({ ...s, target: e.target.value }))}
+              placeholder="https://…"
+              className="w-72 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Name (optional)
+            <input
+              value={linkForm.slug}
+              onChange={(e) => setLinkForm((s) => ({ ...s, slug: e.target.value }))}
+              placeholder="my-link"
+              className="w-40 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy || !status.enabled || !status.entitled}
+            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          >
+            Create link
+          </button>
+        </form>
+        {links.length === 0 && <p className="text-sm text-zinc-500">No links yet.</p>}
+        {links.map((link) => {
+          const shortUrl = `${status.linksBase}/r/${link.slug ?? link.token}`;
+          return (
+            <div
+              key={link.id}
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+            >
+              <div className="min-w-0">
+                <a href={shortUrl} target="_blank" rel="noreferrer" className="truncate text-sm text-emerald-600 hover:underline">
+                  {shortUrl}
+                </a>
+                <div className="mt-0.5 truncate text-xs text-zinc-500">
+                  → {link.target} · {link.clickCount} click{link.clickCount === 1 ? "" : "s"}
+                </div>
+              </div>
+              <button onClick={() => copy(shortUrl)} className="text-xs text-zinc-500 hover:underline">
+                Copy
+              </button>
+            </div>
+          );
+        })}
       </section>
 
       {/* Files */}

@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getCurrentUser } from "@/lib/session-user";
-import { deleteHostingCredential, updateHostingCredential } from "@/lib/hosting/credentials";
+import {
+  deleteHostingCredential,
+  updateHostingCredential,
+  verifyHostingCredential,
+} from "@/lib/hosting/credentials";
 
 // TASK_155 P2 — PATCH  /api/hosting/credentials/<id>  (edit; token optional)
 //                 DELETE /api/hosting/credentials/<id>  (revoke; promotes a new default)
@@ -42,7 +46,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
   }
-  return NextResponse.json({ credential: result.value });
+  // TASK_155 P3 — §16.4 verify-on-save: an edit (a new token, or a corrected
+  // account id) re-confirms against Cloudflare and re-stamps the row. Like POST,
+  // this never fails the save.
+  const verified = await verifyHostingCredential(user.id, id).catch(() => null);
+  return NextResponse.json({ credential: verified?.ok ? verified.value : result.value });
 }
 
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {

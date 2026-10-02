@@ -1881,6 +1881,16 @@ type HostingCaps = {
   modulePriceUsd: number;
   // TASK_155 P2 — the per-user cap on user-owned short links.
   freeMaxLinks: number;
+  // TASK_155 P3 — the §16.3 premium/site dials + §16.6 heavy-load dials.
+  premiumMaxProjects: number;
+  premiumMaxFilesPerProject: number;
+  premiumMaxBandwidthGbPerMonth: number;
+  premiumDeploymentsPerDay: number;
+  previewTtlHours: number;
+  maxZipMb: number;
+  maxZipEntries: number;
+  maxHeavyJobsPerUser: number;
+  publishedRevisionsKept: number;
 };
 
 type HostingCapsState = {
@@ -1889,7 +1899,7 @@ type HostingCapsState = {
   providers: Array<{ id: string; label: string; implemented: boolean }>;
   caps: HostingCaps;
   hardPagesMaxAssetMb: number;
-  live: { activeFiles: number; storageBytes: number; owners: number };
+  live: { activeFiles: number; storageBytes: number; owners: number; sites: number };
 };
 
 type HostingCapField = keyof HostingCaps;
@@ -1963,6 +1973,64 @@ const HOSTING_CAP_ROWS: Array<{
     label: "Max short links (per user)",
     unit: "links",
     hint: "How many /r/ redirect links one user may create in the Hosting tab. Campaign links are not counted.",
+  },
+  // TASK_155 P3 — the premium/site family (§16.3). "Premium is capped too" is a
+  // product rule: premium has its OWN envelope, separate from the free file dials.
+  {
+    field: "premiumMaxProjects",
+    label: "Max sites (per user)",
+    unit: "sites",
+    hint: "How many hosted sites (folder→preview→publish) one user may own.",
+    live: (s) => `${s.live.sites} site(s) across every user`,
+  },
+  {
+    field: "premiumMaxFilesPerProject",
+    label: "Max files per site",
+    unit: "files",
+    hint: "Ceiling on the extracted file count for one site revision.",
+  },
+  {
+    field: "premiumMaxBandwidthGbPerMonth",
+    label: "Premium bandwidth per month",
+    unit: "GB",
+    hint: "Downloads served per calendar month on the premium engine.",
+  },
+  {
+    field: "premiumDeploymentsPerDay",
+    label: "Deploys per day (per user)",
+    unit: "deploys",
+    hint: "Preview + publish deploys allowed per user per day — bounds the Pages API spend.",
+  },
+  {
+    field: "previewTtlHours",
+    label: "Preview lifetime",
+    unit: "hours",
+    hint: "A preview the user never publishes is swept after this. Long enough for a weekend review.",
+  },
+  // TASK_155 P3 — the §16.6 heavy-load dials the later resource-governor turns.
+  {
+    field: "maxZipMb",
+    label: "Max upload archive size",
+    unit: "MB",
+    hint: "Ceiling for a single .zip upload — refused before it is read, so an oversize archive never fills the disk.",
+  },
+  {
+    field: "maxZipEntries",
+    label: "Max entries in an archive",
+    unit: "entries",
+    hint: "Refuses a zip bomb / a tarball of one-byte files by name, before extraction.",
+  },
+  {
+    field: "maxHeavyJobsPerUser",
+    label: "Heavy jobs at once (per user)",
+    unit: "jobs",
+    hint: "The single-slot lock: a zip extract and a deploy never run at once for one tenant. Raise only with RAM headroom.",
+  },
+  {
+    field: "publishedRevisionsKept",
+    label: "Published revisions kept",
+    unit: "revisions",
+    hint: "How many past publishes stay for one-click undo before their bytes are freed.",
   },
 ];
 

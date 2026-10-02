@@ -22,15 +22,18 @@ type LiveCounts = {
   storageBytes: number;
   /** Distinct users currently holding at least one active asset. */
   owners: number;
+  /** TASK_155 P3 — hosted sites (the folder→preview→publish flow). */
+  sites: number;
 };
 
 async function liveCounts(): Promise<LiveCounts> {
-  const [activeFiles, agg, owners] = await Promise.all([
+  const [activeFiles, agg, owners, sites] = await Promise.all([
     prisma.hostedAsset.count({ where: { status: "active" } }),
     prisma.hostedAsset.aggregate({ where: { status: "active" }, _sum: { bytes: true } }),
     prisma.hostedAsset.findMany({ where: { status: "active" }, select: { userId: true }, distinct: ["userId"] }),
+    prisma.hostingSite.count(),
   ]);
-  return { activeFiles, storageBytes: agg._sum.bytes ?? 0, owners: owners.length };
+  return { activeFiles, storageBytes: agg._sum.bytes ?? 0, owners: owners.length, sites };
 }
 
 // The writable subset, mapped to its AdminSetting column. Field names here match
@@ -52,6 +55,17 @@ const WRITABLE_FIELDS = {
   modulePriceUsd: { column: "hostingModulePriceUsd", kind: "money" },
   // TASK_155 P2 — the per-user redirect-link cap.
   freeMaxLinks: { column: "hostingFreeMaxLinks", kind: "int" },
+  // TASK_155 P3 — the §16.3 premium cap family + the §16.6 heavy-load dials, so
+  // the later resource-governor task has knobs to turn WITHOUT a schema change.
+  premiumMaxProjects: { column: "hostingPremiumMaxProjects", kind: "int" },
+  premiumMaxFilesPerProject: { column: "hostingPremiumMaxFilesPerProject", kind: "int" },
+  premiumMaxBandwidthGbPerMonth: { column: "hostingPremiumMaxBandwidthGbPerMonth", kind: "int" },
+  premiumDeploymentsPerDay: { column: "hostingPremiumDeploymentsPerDay", kind: "int" },
+  previewTtlHours: { column: "hostingPreviewTtlHours", kind: "int" },
+  maxZipMb: { column: "hostingMaxZipMb", kind: "int" },
+  maxZipEntries: { column: "hostingMaxZipEntries", kind: "int" },
+  maxHeavyJobsPerUser: { column: "hostingMaxHeavyJobsPerUser", kind: "int" },
+  publishedRevisionsKept: { column: "hostingPublishedRevisionsKept", kind: "int" },
 } as const;
 
 const WRITABLE_KEYS = Object.keys(WRITABLE_FIELDS) as Array<keyof typeof WRITABLE_FIELDS>;
@@ -68,6 +82,15 @@ type HostingSettingRow = {
   hostingPlatformTokenTtlHours: number;
   hostingModulePriceUsd: number;
   hostingFreeMaxLinks: number;
+  hostingPremiumMaxProjects: number;
+  hostingPremiumMaxFilesPerProject: number;
+  hostingPremiumMaxBandwidthGbPerMonth: number;
+  hostingPremiumDeploymentsPerDay: number;
+  hostingPreviewTtlHours: number;
+  hostingMaxZipMb: number;
+  hostingMaxZipEntries: number;
+  hostingMaxHeavyJobsPerUser: number;
+  hostingPublishedRevisionsKept: number;
 };
 
 // The full state the panel renders, always returned fresh from both GET and PATCH
@@ -88,6 +111,16 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       modulePriceUsd: settings.hostingModulePriceUsd,
       // TASK_155 P2 — the per-user redirect-link cap (see the write hook below).
       freeMaxLinks: settings.hostingFreeMaxLinks,
+      // TASK_155 P3 — the premium/site dials (§16.3) + heavy-load dials (§16.6).
+      premiumMaxProjects: settings.hostingPremiumMaxProjects,
+      premiumMaxFilesPerProject: settings.hostingPremiumMaxFilesPerProject,
+      premiumMaxBandwidthGbPerMonth: settings.hostingPremiumMaxBandwidthGbPerMonth,
+      premiumDeploymentsPerDay: settings.hostingPremiumDeploymentsPerDay,
+      previewTtlHours: settings.hostingPreviewTtlHours,
+      maxZipMb: settings.hostingMaxZipMb,
+      maxZipEntries: settings.hostingMaxZipEntries,
+      maxHeavyJobsPerUser: settings.hostingMaxHeavyJobsPerUser,
+      publishedRevisionsKept: settings.hostingPublishedRevisionsKept,
     },
     // The Cloudflare per-asset ceiling is a HARD platform limit, not a dial — the
     // panel shows it so nobody sets pagesMaxAssetMb above it expecting it to hold.

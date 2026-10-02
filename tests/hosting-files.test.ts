@@ -76,6 +76,16 @@ function baseCapsSrc(overrides: Partial<HostingCapSource> = {}): HostingCapSourc
     hostingPagesMaxAssetMb: 20,
     hostingPlatformTokenTtlHours: 24,
     hostingFreeMaxLinks: 50,
+    // TASK_155 P3 — the premium/site dials (defaults mirror the AdminSetting schema).
+    hostingPremiumMaxProjects: 25,
+    hostingPremiumMaxFilesPerProject: 2000,
+    hostingPremiumMaxBandwidthGbPerMonth: 200,
+    hostingPremiumDeploymentsPerDay: 50,
+    hostingPreviewTtlHours: 72,
+    hostingMaxZipMb: 2048,
+    hostingMaxZipEntries: 20000,
+    hostingMaxHeavyJobsPerUser: 1,
+    hostingPublishedRevisionsKept: 3,
     ...overrides,
   };
 }

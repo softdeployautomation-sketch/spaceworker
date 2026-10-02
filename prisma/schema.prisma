@@ -403,6 +403,40 @@ model AdminSetting {
   // TASK_155 P2 — user-owned redirect links (the /r/<token> promotion). Per free user.
   hostingFreeMaxLinks               Int     @default(50)
 
+  // TASK_155 P3 — the Pages/premium + folder→preview→publish dials (PLAN §16.3/§16.6,
+  // owner 2026-10-02: "nothing that using premium is capped" is a PRODUCT rule, not
+  // a licence — premium still has its OWN cap family so our shared Cloudflare
+  // account cannot be abused). Same mechanism as every other cap: a named
+  // AdminSetting field, read server-side on every request, admin-editable live.
+  //
+  //   hostingPremiumMaxProjects          = premium projects per user. 25 (the shared
+  //                                        account holds 100 — R1 — so four heavy
+  //                                        users can't consume it).
+  //   hostingPremiumMaxFilesPerProject   = files per project. 2000 (a fifth of the
+  //                                        20000 Direct-Upload ceiling, R19).
+  //   hostingPremiumMaxBandwidthGbPerMonth = soft abuse alert, not a bill (Pages
+  //                                        static egress is free). 200.
+  //   hostingPremiumDeploymentsPerDay    = preview+publish = 2 deploys; 50 is
+  //                                        generous for a builder, hostile to a script.
+  //   hostingPreviewTtlHours             = an unpublished preview is swept after
+  //                                        this long. 72 (a weekend review).
+  //   hostingMaxZipMb                    = upload archive ceiling (MB). 2048.
+  //   hostingMaxZipEntries               = entries per archive, EXACTLY the
+  //                                        Direct-Upload ceiling (R19). 20000.
+  //   hostingMaxHeavyJobsPerUser         = the §16.6 single-slot lock: one heavy
+  //                                        hosting job (extract/deploy) per tenant.
+  //   hostingPublishedRevisionsKept      = one-click "undo my last publish" without
+  //                                        unbounded storage. 3.
+  hostingPremiumMaxProjects         Int     @default(25)
+  hostingPremiumMaxFilesPerProject  Int     @default(2000)
+  hostingPremiumMaxBandwidthGbPerMonth Int  @default(200)
+  hostingPremiumDeploymentsPerDay   Int     @default(50)
+  hostingPreviewTtlHours            Int     @default(72)
+  hostingMaxZipMb                   Int     @default(2048)
+  hostingMaxZipEntries              Int     @default(20000)
+  hostingMaxHeavyJobsPerUser        Int     @default(1)
+  hostingPublishedRevisionsKept     Int     @default(3)
+
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
   // asked for "all caps for the workers and cyberlab ... available for edit in
@@ -1288,6 +1322,15 @@ model HostingCredential {
   isDefault Boolean  @default(false)
   // "active" | "revoked" — revoked rows are kept for audit, never used.
   status    String   @default("active")
+  // TASK_155 P3 — verify-on-save (§16.4: "Verify on save, and re-verify on use").
+  // Last time `GET /user/tokens/verify` (+ a cheap Pages read) confirmed the token.
+  // NULL = never verified (e.g. added while offline). The UI shows this as the
+  // "last-verified" stamp on the Connection chooser row.
+  lastVerifiedAt DateTime?
+  // Plain-language reason the last verify failed, or NULL when healthy. A non-null
+  // value marks the row RED and the engine fails CLOSED — it never silently falls
+  // back to the platform account. Never contains the token.
+  verifyError    String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2622,5 +2665,125 @@ model HostingUsageMonthly {
   updatedAt   DateTime @updatedAt
 
   @@unique([userId, period])
+}
+
+// TASK_155 P3 — a hosted SITE (a static folder that was zipped, extracted,
+// previewed and published). PLAN §16.1/§16.2: the engine is a PER-ITEM column
+// ("local" = our own metal, free; "cloudflare" = premium Pages), so a user can
+// host one site on our server and another on Cloudflare at the same time. The
+// account a site was built on is IMMUTABLE (moving it is the §16.2 migration).
+//
+// `previewToken` and `liveToken` are opaque, url-safe lookup keys (never secrets,
+// exactly like HostedAsset.token) — the preview and live serve routes resolve a
+// token to this row. A site is DARK until a revision is published: `liveToken`
+// is NULL and the live URL 404s.
+model HostingSite {
+  id        String  @id @default(cuid())
+  userId    String
+  // The user's label for the site (informational).
+  name      String
+  // "local" | "cloudflare" — the §16.2 per-item engine.
+  engine    String  @default("local")
+  // The BYO/platform credential used for a cloudflare site (NULL = platform
+  // account). Immutable once the site has a published revision.
+  credentialId String?
+  // Opaque preview lookup key for GET /pv/<token>/… . Minted at creation so the
+  // first deploy can preview immediately. Never a secret.
+  previewToken String @unique
+  // Opaque LIVE lookup key for GET /hs/<token>/… . NULL until the first publish —
+  // that is what makes a site "not live yet".
+  liveToken    String? @unique
+  // "draft" | "previewed" | "published" | "failed" — a coarse site state; the
+  // per-revision state machine lives on HostingRevision.
+  status    String  @default("draft")
+  // Cloudflare project name for a premium site (slugified from `name`), NULL for
+  // a local site. Used by the Pages REST client.
+  cfProject String?
+  // The live deployment URL (a *.pages.dev URL for premium, the /hs/<token> URL
+  // for local) — cached so the UI can show it without recomputing.
+  liveUrl   String?
+  previewUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+}
+
+// TASK_155 P3 — one revision of a site: an uploaded+extracted tree that can be
+// previewed and (deliberately) published. PLAN §16.1's four states are modelled
+// here (`state`), and the last `hostingPublishedRevisionsKept` (default 3)
+// published revisions are kept so "undo my last publish" is a DB pointer change,
+// never a Cloudflare delete.
+//
+// `manifest` maps a site-relative path ("/index.html") to its content hash — the
+// exact shape the Pages Direct-Upload `deployments` call wants (§9 T0), so a
+// publish on the premium engine is a manifest-only call when the bytes are
+// already uploaded. `storagePath` is the extracted staging tree on our metal
+// (provider-relative), used by the local engine to serve preview/live.
+model HostingRevision {
+  id        String  @id @default(cuid())
+  siteId    String
+  userId    String
+  // "uploaded" | "extracted" | "previewed" | "published" | "rejected" | "expired"
+  // (the §16.1 state machine).
+  state     String  @default("uploaded")
+  // The original archive filename the user dropped (informational).
+  archiveName String?
+  // Bytes of the uploaded archive.
+  archiveBytes Int    @default(0)
+  // Extracted file count + total extracted bytes (what the quota counts).
+  fileCount Int    @default(0)
+  bytes     BigInt @default(0)
+  // Path→hash manifest (Json) — see the model comment.
+  manifest  Json?
+  // Where the extracted tree lives on our metal (local engine).
+  storagePath String?
+  // Cloudflare deployment id + its URL (premium engine).
+  cfDeploymentId String?
+  cfUrl     String?
+  // The revision's own preview token (local engine serves /pv/<token>/…), so each
+  // revision previews independently.
+  previewToken String @unique
+  // When it was published to live (NULL until published).
+  publishedAt DateTime?
+  // When an unpublished preview expires (swept by a later job).
+  expiresAt DateTime?
+  // §16.6 heavy-load metrics, recorded so the later resource-governor task can
+  // see and shape the load. peakRssMb is best-effort (the shell-out's own report).
+  entries   Int    @default(0)
+  durationMs Int   @default(0)
+  peakRssMb Int    @default(0)
+  // Why a revision was rejected (plain language), NULL when fine.
+  rejection String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([siteId, state])
+  @@index([userId, createdAt])
+}
+
+// TASK_155 P3 — the §16.6 single-slot lock + load metrics for a heavy hosting
+// job (a zip extract or a Pages deploy). At most `hostingMaxHeavyJobsPerUser`
+// rows are "running" for one user at a time, so two heavy ops never run at once
+// for one tenant. Every job records bytesProcessed/entries/durationMs/peakRssMb
+// so the LATER resource-governor task has real numbers to shape (A8: build first,
+// update the governor later — this run does NOT touch lib/resource-governor.ts).
+model HostingJob {
+  id        String   @id @default(cuid())
+  userId    String
+  siteId    String?
+  // "extract" | "deploy" | "upload".
+  kind      String
+  // "running" | "done" | "failed".
+  status    String   @default("running")
+  bytesProcessed BigInt @default(0)
+  entries   Int      @default(0)
+  durationMs Int     @default(0)
+  peakRssMb Int      @default(0)
+  error     String?
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+
+  @@index([userId, status])
 }
 

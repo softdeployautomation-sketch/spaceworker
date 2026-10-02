@@ -46,6 +46,16 @@ export interface HostingCapSource {
   hostingPlatformTokenTtlHours: number;
   /** TASK_155 P2 — per-user cap on user-owned redirect links (AdminSetting). */
   hostingFreeMaxLinks: number;
+  // TASK_155 P3 — the premium/site dials (§16.3/§16.6).
+  hostingPremiumMaxProjects: number;
+  hostingPremiumMaxFilesPerProject: number;
+  hostingPremiumMaxBandwidthGbPerMonth: number;
+  hostingPremiumDeploymentsPerDay: number;
+  hostingPreviewTtlHours: number;
+  hostingMaxZipMb: number;
+  hostingMaxZipEntries: number;
+  hostingMaxHeavyJobsPerUser: number;
+  hostingPublishedRevisionsKept: number;
 }
 
 export interface HostingCaps {
@@ -67,6 +77,25 @@ export interface HostingCaps {
   platformTokenTtlHours: number;
   /** TASK_155 P2 — per-user redirect-link count ceiling. */
   maxLinks: number;
+  // TASK_155 P3 — the premium/site caps (§16.3/§16.6).
+  /** Premium projects per user. */
+  premiumMaxProjects: number;
+  /** Files per project. */
+  premiumMaxFilesPerProject: number;
+  /** Premium bandwidth soft-alert threshold (GB/month). */
+  premiumMaxBandwidthGbPerMonth: number;
+  /** Preview + publish deployments per user per day. */
+  premiumDeploymentsPerDay: number;
+  /** How long an unpublished preview lives before it is swept. */
+  previewTtlHours: number;
+  /** Upload archive ceiling (MB). */
+  maxZipMb: number;
+  /** Entries per archive (the Direct-Upload ceiling). */
+  maxZipEntries: number;
+  /** Concurrent heavy jobs per user (the §16.6 single-slot lock). */
+  maxHeavyJobsPerUser: number;
+  /** Published revisions kept per project (one-click undo). */
+  publishedRevisionsKept: number;
 }
 
 export const MB = 1024 * 1024;
@@ -95,6 +124,16 @@ export function resolveHostingCaps(src: HostingCapSource, opts: { premium: boole
     pagesMaxAssetMb: Math.min(src.hostingPagesMaxAssetMb, CLOUDFLARE_HARD_ASSET_MB),
     platformTokenTtlHours: src.hostingPlatformTokenTtlHours,
     maxLinks: src.hostingFreeMaxLinks,
+    // TASK_155 P3 — the premium/site dials (shared; premium only swaps the quota).
+    premiumMaxProjects: src.hostingPremiumMaxProjects,
+    premiumMaxFilesPerProject: src.hostingPremiumMaxFilesPerProject,
+    premiumMaxBandwidthGbPerMonth: src.hostingPremiumMaxBandwidthGbPerMonth,
+    premiumDeploymentsPerDay: src.hostingPremiumDeploymentsPerDay,
+    previewTtlHours: src.hostingPreviewTtlHours,
+    maxZipMb: src.hostingMaxZipMb,
+    maxZipEntries: src.hostingMaxZipEntries,
+    maxHeavyJobsPerUser: src.hostingMaxHeavyJobsPerUser,
+    publishedRevisionsKept: src.hostingPublishedRevisionsKept,
   };
 }
 
@@ -235,6 +274,31 @@ export function scanUpload(filename: string): ScanVerdict {
     };
   }
   return { ok: true, gated: GATED_EXTENSIONS.has(extension), extension };
+}
+
+// TASK_155 P3 — the SITE scan (a folder that becomes a Pages site). This is a
+// DIFFERENT policy from scanUpload: a site is *made of* html/js/css/svg, so those
+// are allowed here (they were denied for downloads because a download must never
+// render inline). What a static site must NEVER carry is SERVER-SIDE executable
+// content — a `.php`/`.jsp`/`.cgi`/`.sh` that a misconfigured host could run — so
+// only that class is refused, by name, before extraction completes (§16.1).
+export const SITE_BLOCKED_EXTENSIONS = new Set<string>([
+  "php", "php3", "php4", "php5", "phtml", "pht",
+  "jsp", "jspx", "asp", "aspx", "ashx", "cgi", "pl", "py", "rb",
+  "sh", "bash", "zsh", "ps1", "psm1", "bat", "cmd", "com", "scr", "vbs", "vbe", "wsf", "wsh", "hta", "lnk",
+  "jar",
+]);
+
+export function scanSiteFile(filename: string): ScanVerdict {
+  const extension = extensionOf(filename);
+  if (SITE_BLOCKED_EXTENSIONS.has(extension)) {
+    return {
+      ok: false,
+      code: "blocked_extension",
+      message: `Files of type “.${extension}” can’t be published in a site — a site is static content only. Remove it and try again.`,
+    };
+  }
+  return { ok: true, gated: false, extension };
 }
 
 // ---------------------------------------------------------------------------
