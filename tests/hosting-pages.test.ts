@@ -50,7 +50,7 @@ const serve = require("../lib/hosting/serve") as typeof import("../lib/hosting/s
 
 const { parseSevenZipListing, isZipSlip, isJunkEntry, analyseArchive, manifestFromTree, listArchive, extractArchive, scanExtractedTree } = extract;
 const { scanSiteFile, MB } = rules;
-const { pagesAssetKey } = cloudflare;
+const { pagesAssetKey, deployTree } = cloudflare;
 const { mimeForPath } = serve;
 
 
@@ -182,6 +182,167 @@ test("pagesAssetKey: deterministic, and distinct for content or extension change
   assert.equal(a.length, 32);
   assert.notEqual(a, c, "content change must change the key");
   assert.notEqual(a, d, "extension is part of the key (T0 rule)");
+});
+// ---------------------------------------------------------------------------
+// deployTree — the FIVE-call Direct-Upload wire contract (PLAN §9 T0, §16.1).
+//
+// WHY THIS EXISTS: the live "Cloudflare returned 405." bug was an endpoint
+// contract slip. An earlier draft called account-token, PROJECT-SCOPED asset
+// paths (`…/pages/projects/{p}/check-missing|upload|upsert-hashes`) that do not
+// exist (they answer 405), and posted a JSON body to `…/deployments`, which only
+// accepts multipart STRING fields. A unit test that only checks `pagesAssetKey`
+// is blind to both, so this pins the exact five calls, their auth, and the
+// deploy body shape — re-verified live 2026-10-02 against the real account:
+//
+//   1. GET  …/pages/projects/{p}/upload-token   (ACCOUNT token) -> jwt
+//   2. POST /pages/assets/check-missing         (jwt)
+//   3. POST /pages/assets/upload                (jwt, one ARRAY body per file)
+//   4. POST /pages/assets/upsert-hashes         (jwt)
+//   5. POST …/pages/projects/{p}/deployments    (ACCOUNT token, multipart)
+// ---------------------------------------------------------------------------
+
+type DeployCall = {
+  url: string;
+  method: string;
+  authorization: string | null;
+  contentType: string | null;
+  isFormData: boolean;
+  body: string;
+};
+
+function jsonRes(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** Drive the REAL deployTree against a stubbed fetch that records every call. */
+async function runDeployTree(opts: { missing: (keys: string[]) => string[] }) {
+  const cred = { accountId: "acct-123", token: "ACCOUNT_TOKEN" } as Parameters<typeof deployTree>[0];
+  const project = "demo";
+  const html = Buffer.from("<h1>hi</h1>");
+  const css = Buffer.from("h1{color:red}");
+  const files: Parameters<typeof deployTree>[2] = [
+    { path: "/index.html", filename: "index.html", read: async () => html },
+    { path: "/style.css", filename: "style.css", read: async () => css },
+  ];
+  const htmlKey = pagesAssetKey("index.html", html);
+  const cssKey = pagesAssetKey("style.css", css);
+
+  const calls: DeployCall[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init: RequestInit = {}) => {
+    const url = String(input);
+    const headers = new Headers(init.headers ?? {});
+    const isFormData = init.body instanceof FormData;
+    let body = "";
+    if (typeof init.body === "string") body = init.body;
+    else if (isFormData) {
+      for (const [k, v] of (init.body as FormData).entries()) body += `${k}=${String(v)};`;
+    }
+    calls.push({
+      url,
+      method: init.method ?? "GET",
+      authorization: headers.get("authorization"),
+      contentType: headers.get("content-type"),
+      isFormData,
+      body,
+    });
+
+    if (url.endsWith(`/pages/projects/${project}/upload-token`)) {
+      return jsonRes({ success: true, result: { jwt: "JWT123" } });
+    }
+    if (url.endsWith("/pages/assets/check-missing")) {
+      return jsonRes({ success: true, result: opts.missing([htmlKey, cssKey]) });
+    }
+    if (url.endsWith("/pages/assets/upload")) return jsonRes({ success: true, result: {} });
+    if (url.endsWith("/pages/assets/upsert-hashes")) return jsonRes({ success: true, result: {} });
+    if (url.endsWith(`/pages/projects/${project}/deployments`)) {
+      return jsonRes({ success: true, result: { id: "dep-1", url: "https://demo.pages.dev" } });
+    }
+    return jsonRes({ success: false, errors: [{ message: `unexpected ${url}` }] }, 500);
+  }) as typeof globalThis.fetch;
+
+  try {
+    const res = await deployTree(cred, project, files, "main");
+    return { res, calls, htmlKey, cssKey, project };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+test("deployTree: account token only for token+deploy, the JWT for /pages/assets/*, multipart manifest", async () => {
+  const { res, calls, htmlKey, cssKey, project } = await runDeployTree({ missing: (keys) => keys });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.url, "https://demo.pages.dev");
+
+  const find = (suffix: string) => calls.filter((c) => c.url.endsWith(suffix));
+  const token = find(`/pages/projects/${project}/upload-token`);
+  const missing = find("/pages/assets/check-missing");
+  const upload = find("/pages/assets/upload");
+  const upsert = find("/pages/assets/upsert-hashes");
+  const deploy = find(`/pages/projects/${project}/deployments`);
+
+  assert.equal(token.length, 1, "exactly one upload-token mint");
+  assert.equal(missing.length, 1);
+  assert.equal(upload.length, 2, "one POST per missing asset");
+  assert.equal(upsert.length, 1);
+  assert.equal(deploy.length, 1);
+
+  // 1 — the token is minted WITH the account token.
+  assert.equal(token[0].method, "GET");
+  assert.equal(token[0].authorization, "Bearer ACCOUNT_TOKEN");
+
+  // 2–4 — the /pages/assets/* family takes ONLY the short-lived JWT.
+  for (const c of [...missing, ...upload, ...upsert]) {
+    assert.equal(c.authorization, "Bearer JWT123", `${c.url} must use the upload JWT`);
+  }
+
+  // 3 — each upload body is a JSON ARRAY of {key, value(base64), metadata, base64:true}.
+  const bodyOf = (c: DeployCall) => JSON.parse(c.body) as Array<Record<string, unknown>>;
+  assert.deepEqual(upload.map((c) => bodyOf(c)[0].key).sort(), [htmlKey, cssKey].sort());
+  for (const c of upload) {
+    const entry = bodyOf(c)[0];
+    assert.equal(entry.base64, true);
+    assert.equal(typeof entry.value, "string");
+    const meta = entry.metadata as { contentType?: string };
+    assert.ok(meta.contentType && meta.contentType.length > 0, "contentType must never be empty (the original bug)");
+  }
+
+  // 5 — deployments is MULTIPART with `branch` + `manifest` as STRING fields,
+  //     authenticated with the account token.
+  assert.equal(deploy[0].method, "POST");
+  assert.equal(deploy[0].authorization, "Bearer ACCOUNT_TOKEN");
+  assert.ok(deploy[0].isFormData, "the deployments body must be multipart FormData");
+  assert.equal(
+    deploy[0].contentType,
+    null,
+    "no explicit Content-Type — fetch must set the multipart boundary itself (setting one breaks the deploy)"
+  );
+  assert.match(deploy[0].body, /branch=main;/);
+  const manifestField = /manifest=(\{.*?\});/.exec(deploy[0].body);
+  assert.ok(manifestField, "the manifest must be a multipart STRING field");
+  const manifest = JSON.parse(manifestField![1]) as Record<string, string>;
+  assert.equal(manifest["/index.html"], htmlKey);
+  assert.equal(manifest["/style.css"], cssKey);
+
+  // ZERO calls to the dead, project-scoped asset paths (the 405 bug).
+  for (const dead of [
+    `/pages/projects/${project}/check-missing`,
+    `/pages/projects/${project}/upload`,
+    `/pages/projects/${project}/upsert-hashes`,
+  ]) {
+    assert.equal(find(dead).length, 0, `${dead} does not exist on the account-token surface`);
+  }
+});
+
+test("deployTree: an already-uploaded tree is a manifest-only deploy — the bytes do not move twice", async () => {
+  const { res, calls } = await runDeployTree({ missing: () => [] });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.uploaded, 0);
+  assert.equal(res.value?.reused, 2);
+  assert.equal(calls.filter((c) => c.url.endsWith("/pages/assets/upload")).length, 0, "nothing uploads when nothing is missing");
+  assert.equal(calls.filter((c) => c.url.endsWith("/pages/projects/demo/deployments")).length, 1);
 });
 
 test("mimeForPath: serves the right Content-Type for the file kinds a site ships", () => {

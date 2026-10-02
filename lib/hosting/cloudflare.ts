@@ -86,6 +86,112 @@ async function cfFetch<T>(
   return { ok: true, status: res.status, value: (env?.result ?? (parsed as T)) };
 }
 
+/**
+ * A call authenticated with the SHORT-LIVED UPLOAD JWT (never the account token).
+ *
+ * The `/pages/assets/*` family is NOT on the account-token API surface: posting an
+ * account token there is rejected with `8000013 Authorization failed`, and the
+ * project-scoped `…/pages/projects/{p}/check-missing|upload|upsert-hashes` paths
+ * that an earlier draft of this file used DO NOT EXIST — Cloudflare answers those
+ * with **405 method_not_allowed** (that was the live "Cloudflare returned 405."
+ * bug). Verified live 2026-10-02 against the real account: the four original calls
+ * are wrong, these three are right.
+ */
+async function cfAssetFetch<T>(path: string, jwt: string, body: unknown): Promise<CfResult<T>> {
+  let res: Response;
+  try {
+    res = await fetch(`${API}${path}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${jwt}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    return { ok: false, status: 0, error: err instanceof Error ? err.message : "Network error reaching Cloudflare." };
+  }
+
+  let parsed: unknown = undefined;
+  try {
+    parsed = await res.json();
+  } catch {
+    // Some endpoints return empty bodies; treat as envelope-less.
+  }
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: firstError(parsed) ?? `Cloudflare returned ${res.status}.` };
+  }
+  const env = parsed as CfEnvelope<T> | undefined;
+  if (env && env.success === false) {
+    return { ok: false, status: res.status, error: firstError(parsed) ?? "Cloudflare rejected the request." };
+  }
+  return { ok: true, status: res.status, value: (env?.result ?? (parsed as T)) };
+}
+
+/**
+ * Mint a project's upload token — REST step 1, and the step the original draft
+ * never made. `GET /accounts/{id}/pages/projects/{project}/upload-token` returns
+ * `{ result: { jwt } }`; the JWT is valid for ~300 s and is the ONLY credential
+ * `/pages/assets/*` accepts. It is never logged, stored or returned to a caller.
+ */
+export async function uploadToken(cred: CfCredential, project: string): Promise<CfResult<string>> {
+  const res = await cfFetch<{ jwt?: string }>(
+    cred,
+    "GET",
+    `/accounts/${cred.accountId}/pages/projects/${project}/upload-token`
+  );
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+  const jwt = res.value?.jwt;
+  if (!jwt) {
+    return { ok: false, status: 502, error: "Cloudflare did not return an upload token for this project." };
+  }
+  return { ok: true, status: 200, value: jwt };
+}
+
+/** True when an asset call failed because the short-lived JWT expired. */
+function isExpiredJwt(res: CfResult<unknown>): boolean {
+  return res.status === 401 || /authorization failed/i.test(res.error ?? "");
+}
+
+/** A best-effort content type for an uploaded asset, so Pages serves it correctly. */
+function contentTypeFor(filename: string): string {
+  const ext = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();
+  switch (ext) {
+    case "html":
+    case "htm":
+      return "text/html; charset=utf-8";
+    case "css":
+      return "text/css; charset=utf-8";
+    case "js":
+    case "mjs":
+      return "text/javascript; charset=utf-8";
+    case "json":
+      return "application/json";
+    case "svg":
+      return "image/svg+xml";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "ico":
+      return "image/x-icon";
+    case "txt":
+      return "text/plain; charset=utf-8";
+    case "xml":
+      return "application/xml";
+    case "pdf":
+      return "application/pdf";
+    case "woff":
+      return "font/woff";
+    case "woff2":
+      return "font/woff2";
+    default:
+      return "application/octet-stream";
+  }
+}
+
 /** The T0 asset key: blake3(ext-without-dot + NUL + content), first 32 hex chars. */
 export function pagesAssetKey(filename: string, content: Buffer): string {
   const dot = filename.lastIndexOf(".");
@@ -138,6 +244,11 @@ export interface DeployFile {
   /** The file's base filename (used for the T0 ext-of-key rule). */
   filename: string;
   /**
+   * The mime type Pages should serve this asset as. Optional: when omitted the
+   * engine derives it from the extension (`contentTypeFor`).
+   */
+  contentType?: string;
+  /**
    * Lazily read the file's bytes. A getter (not a Buffer) so the whole tree is
    * NEVER resident in RAM at once — files are read one at a time, and only the
    * missing ones are read a second time to upload (§16.6).
@@ -153,10 +264,24 @@ export interface DeployResult {
 }
 
 /**
- * The four-call Direct-Upload deploy (§9 T0). `branch` is "main" for a PRODUCTION
- * publish and any other name for a non-production preview (R17). Publish reuses
- * the already-uploaded hashes (check-missing returns nothing missing), so it is
- * effectively a manifest-only call — the bytes move ONCE (§16.1).
+ * The Direct-Upload deploy (§9 T0, §16.1) — FIVE calls, re-verified live on
+ * 2026-10-02. `branch` is "main" for a PRODUCTION publish and any other name for
+ * a non-production preview (R17). Publish reuses the already-uploaded hashes
+ * (check-missing returns nothing missing), so it is effectively a manifest-only
+ * call — the bytes move ONCE (§16.1).
+ *
+ *   1. GET  …/pages/projects/{p}/upload-token      (account token) → short-lived jwt
+ *   2. POST /pages/assets/check-missing            (jwt)           → what is missing
+ *   3. POST /pages/assets/upload                   (jwt)           → one ARRAY body
+ *   4. POST /pages/assets/upsert-hashes            (jwt)
+ *   5. POST …/pages/projects/{p}/deployments       (account token, multipart:
+ *                                                   `branch` + `manifest` STRINGS)
+ *
+ * Steps 2–4 are the `/pages/assets/*` family and accept ONLY the upload JWT; the
+ * account-token, project-scoped `…/check-missing|upload|upsert-hashes` paths this
+ * file used to call do not exist (they answer 405), and step 5 refuses a JSON body
+ * ("A \"manifest\" field was expected…") as well as a File part — the manifest must
+ * be a plain multipart form field whose value is the JSON string.
  */
 export async function deployTree(
   cred: CfCredential,
@@ -175,51 +300,91 @@ export async function deployTree(
   }
   const hashes = [...byKey.keys()];
 
+  // Mint the upload token. Re-minted once, mid-flight, if it expires.
+  const tokenRes = await uploadToken(cred, project);
+  if (!tokenRes.ok || !tokenRes.value) {
+    return { ok: false, status: tokenRes.status, error: tokenRes.error };
+  }
+  let jwt = tokenRes.value;
+  const refreshJwt = async (): Promise<boolean> => {
+    const again = await uploadToken(cred, project);
+    if (!again.ok || !again.value) return false;
+    jwt = again.value;
+    return true;
+  };
+
   // 2. check-missing — which of these hashes are NOT already on Cloudflare?
-  const missingRes = await cfFetch<string[]>(
-    cred,
-    "POST",
-    `/accounts/${cred.accountId}/pages/projects/${project}/check-missing`,
-    { hashes }
-  );
+  let missingRes = await cfAssetFetch<string[]>("/pages/assets/check-missing", jwt, { hashes });
+  if (!missingRes.ok && isExpiredJwt(missingRes) && (await refreshJwt())) {
+    missingRes = await cfAssetFetch<string[]>("/pages/assets/check-missing", jwt, { hashes });
+  }
   if (!missingRes.ok) return { ok: false, status: missingRes.status, error: missingRes.error };
   const missing = new Set(missingRes.value ?? []);
 
-  // 3. upload each missing asset (value = base64 bytes, base64: true).
+  // 3. upload the missing assets. The body is a JSON ARRAY of
+  //    { key, value(base64), metadata:{contentType}, base64:true }.
   let uploaded = 0;
   for (const key of missing) {
     const file = byKey.get(key);
     if (!file) continue;
     const content = await file.read();
-    const up = await cfFetch<unknown>(cred, "POST", `/accounts/${cred.accountId}/pages/projects/${project}/upload`, {
-      key,
-      value: content.toString("base64"),
-      metadata: { contentType: "" },
-      base64: true,
-    });
+    const payload = [
+      {
+        key,
+        value: content.toString("base64"),
+        metadata: { contentType: file.contentType ?? contentTypeFor(file.filename) },
+        base64: true,
+      },
+    ];
+    let up = await cfAssetFetch<unknown>("/pages/assets/upload", jwt, payload);
+    if (!up.ok && isExpiredJwt(up) && (await refreshJwt())) {
+      up = await cfAssetFetch<unknown>("/pages/assets/upload", jwt, payload);
+    }
     if (!up.ok) return { ok: false, status: up.status, error: up.error ?? `Could not upload “${file.path}”.` };
     uploaded += 1;
   }
 
   // 4. upsert-hashes — register every hash (uploaded + reused) against the project.
-  const upsert = await cfFetch<unknown>(
-    cred,
-    "POST",
-    `/accounts/${cred.accountId}/pages/projects/${project}/upsert-hashes`,
-    { hashes }
-  );
+  const upsert = await cfAssetFetch<unknown>("/pages/assets/upsert-hashes", jwt, { hashes });
   if (!upsert.ok) return { ok: false, status: upsert.status, error: upsert.error };
 
-  // 5. deployments — the actual deploy, with the manifest.
-  const deploy = await cfFetch<{ id: string; url?: string; aliases?: string[] }>(
-    cred,
-    "POST",
-    `/accounts/${cred.accountId}/pages/projects/${project}/deployments`,
-    { branch, manifest }
-  );
-  if (!deploy.ok) return { ok: false, status: deploy.status, error: deploy.error };
+  // 5. deployments — multipart, with `branch` and the manifest as STRING fields.
+  //    No Content-Type header: fetch must set the multipart boundary itself.
+  let deployRes: Response;
+  try {
+    const form = new FormData();
+    form.append("branch", branch);
+    form.append("manifest", JSON.stringify(manifest));
+    deployRes = await fetch(
+      `${API}/accounts/${cred.accountId}/pages/projects/${project}/deployments`,
+      { method: "POST", headers: { Authorization: `Bearer ${cred.token}` }, body: form }
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      status: 0,
+      error: err instanceof Error ? err.message : "Network error reaching Cloudflare.",
+    };
+  }
 
-  const result = deploy.value;
+  let deployBody: unknown = undefined;
+  try {
+    deployBody = await deployRes.json();
+  } catch {
+    // Envelope-less response; fall through to the status check.
+  }
+  if (!deployRes.ok) {
+    return {
+      ok: false,
+      status: deployRes.status,
+      error: firstError(deployBody) ?? `Cloudflare returned ${deployRes.status}.`,
+    };
+  }
+  const deployEnv = deployBody as CfEnvelope<{ id?: string; url?: string; aliases?: string[] }> | undefined;
+  if (deployEnv && deployEnv.success === false) {
+    return { ok: false, status: deployRes.status, error: firstError(deployBody) ?? "Cloudflare rejected the deploy." };
+  }
+  const result = deployEnv?.result;
   const url = result?.url ?? result?.aliases?.[0] ?? "";
   return {
     ok: true,
