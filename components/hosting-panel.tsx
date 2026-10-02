@@ -304,7 +304,7 @@ export function HostingPanel() {
       // account yet; this guard covers stale state (an account removed while
       // this form sat open). The token itself lives in Settings now.
       if (siteForm.engine === "cloudflare" && (status?.credentials.length ?? 0) === 0) {
-        setError("Add a Cloudflare account in Settings first — then premium hosting unlocks here.");
+        setError("Connect an account in Settings first — then Premium unlocks here.");
         return;
       }
       setBusy(true);
@@ -547,7 +547,8 @@ export function HostingPanel() {
       <header>
         <h1 className="text-2xl font-semibold text-zinc-900 dark:text-zinc-100">Hosting</h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Put a file online and get a link back. Rename it any time — the file itself never changes.
+          Files, links and sites in one place — upload, check the preview, publish. Rename a file
+          any time; what it serves never changes.
         </p>
       </header>
 
@@ -631,9 +632,9 @@ export function HostingPanel() {
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Sites</h2>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          Zip a folder, check the preview, then publish. Pick the engine per site — our server is free and instant;
-          premium (Cloudflare) gives a global edge and custom domains. Manage the Cloudflare account token under
-          Settings → Hosting accounts.
+          Zip a folder, check the preview, then publish. Pick the engine per site — our server is
+          free and instant; Premium runs on our global edge with custom domains. Optional: connect
+          your own account under Settings → Hosting accounts.
         </p>
 
         <form
@@ -658,28 +659,28 @@ export function HostingPanel() {
             >
               <option value="local">Our server (free)</option>
               {status.credentials.length > 0 ? (
-                <option value="cloudflare">Premium (Cloudflare)</option>
+                <option value="cloudflare">Premium</option>
               ) : (
                 <option value="cloudflare" disabled>
-                  Premium (Cloudflare) — add an account in Settings
+                  Premium — connect an account in Settings
                 </option>
               )}
             </select>
             {siteForm.engine === "cloudflare" && status.credentials.length === 0 && (
               <span className="text-xs text-amber-600 dark:text-amber-400">
-                No account yet — add your Cloudflare token in Settings; it becomes an option here right away.
+                No account connected yet — add one in Settings; it becomes an option here right away.
               </span>
             )}
           </label>
           {siteForm.engine === "cloudflare" && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
-              Cloudflare account
+              Account
               <select
                 value={siteForm.credentialId}
                 onChange={(e) => setSiteForm((s) => ({ ...s, credentialId: e.target.value }))}
                 className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
               >
-                <option value="">Platform account (default)</option>
+                <option value="">Ours (default)</option>
                 {status.credentials.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label} · …{c.tokenHint}
