@@ -8,17 +8,22 @@
 >
 > **Nothing in this file is work you must finish in one run.** It is the *full pending queue*, with
 > the grounding each item needs and the exact gate that must clear before it binds. Take them **one at
-> a time**, in the order in §5 — the recommended first item is **Task 155 P6a**.
+> a time**, in the order in §5 — the recommended first item is **Task 155 P5a (Domains)**, now that
+> P6a has landed. Two items are awaiting a LIVE human check: TASK_157's OCR/summary (when a device
+> comes online) and the hosting write path (§1.2 / queue item 6).
 
 ---
 
 ## TASK BLOCK (paste from here)
 
 ```
-TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ cab860a)
-WHAT IS PENDING: the hosting workstream (Task 155 P5 / P6 / P6d) AND the Cyber Lab follow-on
-                 (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
-                 RECOMMENDED FIRST ITEM: Task 155 P6a (PLAN_155 section 19 — BINDS it).
+TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 0cd23f5)
+WHAT IS PENDING: the hosting workstream (Task 155 P5a / P5b / P6b / P6c / P6d) AND the Cyber Lab
+                 follow-on (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
+                 RECOMMENDED FIRST ITEM: Task 155 P5a — the Domains tab (PLAN_155 section 18 — BINDS it).
+                 P6a (three-option engine) is DONE + LIVE — see section 8. Two items await LIVE human
+                 checks: TASK_157 OCR/summary when a device comes online; hosting upload → preview →
+                 publish on production (section 1.2 + queue item 6).
                  Do NOT batch items silently: each has its own "open questions" section that MUST
                  be answered by the owner/lead BEFORE its schema/behaviour is committed.
 TASK DOCS:       PLAN_TASK_155_WORKERS_AND_PAGES.md
@@ -35,9 +40,9 @@ TASK DOCS:       PLAN_TASK_155_WORKERS_AND_PAGES.md
                    section 6 (current state) · 7 (queue) · 8 (verify) · 9 (deploy)
                    section 5 (traps - especially 3, 7, 13, 14, 15, 16, 22, 23)
                  PROMPT_NEXT_AGENT.md -> this file.
-DEPLOY?          Task 155 P6a: ADDITIVE + NULLABLE (one new table + one new AdminSetting dial) ->
-                 deployable in-window via deploy.yml, following SENIOR_HANDOFF section 9 VERBATIM.
-                 Task 155 P5a: additive (one new table) -> same path.
+DEPLOY?          Task 155 P6a: DONE + LIVE (migration 20261031200000 recorded ok on the box; see
+                 section 8). Next deployable item:
+                 Task 155 P5a: additive (one new table) -> deploy via deploy.yml, SENIOR_HANDOFF §9 VERBATIM.
                  Task 155 P6d: NO migration - a UI + lib change only.
                  Task 156 C2+: NEVER the production VPS. Non-production host, owner + lawyer gated.
                  NEVER deploy without reading your own diff for pending migrations first.
@@ -45,27 +50,38 @@ DEPLOY?          Task 155 P6a: ADDITIVE + NULLABLE (one new table + one new Admi
 
 ---
 
-## 1. VERIFIED STATE AT HANDOFF (2026-10-02)
+## 1. VERIFIED STATE AT HANDOFF (2026-10-02, updated after the P6a deploy)
 
-**`main` @ `cab860a`, synced with `origin/main`, working tree clean.** Live build
-**`BWRMBHG8mkpIrzUPTQ8-t`** (`/opt/spaceworker/.next/BUILD_ID`, mtime `2026-10-02 12:33:13 CEST`),
-deploy run **`36995895931`** (`workflow_dispatch`, **success**, 5m16s).
+**`main` @ `0cd23f5`, synced with `origin/main`, working tree clean.** Live build
+**`3KsVSvBvE284eXpdv5dkn`** (`/opt/spaceworker/.next/BUILD_ID`), deploy run **`37038272028`**
+(`workflow_dispatch`, **success**).
 
 | Item | Commit | State |
 |---|---|---|
 | Task 155 **P1** files engine (`/hf/<token>`) | `a131835` | ✅ deployed + live |
 | Task 155 **P2** links + BYO credential store + Cyber Lab scaffolding | `435d419` | ✅ deployed + live (`hostingEnabled=true`) |
-| Task 155 **P3** Pages engine (zip → preview → publish, per-site engine) | `bb6ff6c` | ✅ deployed + live (build `LjgrTG69r2eiN-w07Hj-i`) |
-| Task 155 **P4** tabbed Hosting UI + premium link cap + Settings accounts + §19.10 copy pass | `d79eee6` | ✅ deployed + live (this build) |
-| Task 156 **C0 + C1** AUP/consent + premium-gated lab schema + Research admin | `5485fdc` | ✅ deployed + live (this build) |
+| Task 155 **P3** Pages engine (zip → preview → publish, per-site engine) | `bb6ff6c` | ✅ deployed + live |
+| Task 155 **P4** tabbed Hosting UI + premium link cap + Settings accounts + §19.10 copy pass | `d79eee6` | ✅ deployed + live |
+| Task 156 **C0 + C1** AUP/consent + premium-gated lab schema + Research admin | `5485fdc` | ✅ deployed + live |
+| Screens fix: offline-device false `device_offline` on capture | `278c7d0` | ✅ deployed + live |
+| Task **157** OCR text layer + Summary/Extraction toggle + frame delete | `503c8be` | ✅ deployed + live — **owner still must eyeball it when a device comes online** |
+| Task 155 **P6a** three-option engine (Free/Premium/Yours) + platform roster | `0cd23f5` | ✅ deployed + live (build `3KsVSvBvE284eXpdv5dkn`) |
 
-**Two migrations recorded live this deploy** (`finished_at 2026-10-02 12:35:49 CEST`):
-`20261030000000_task156_c1_lab_schema` and `20261030120000_task155_p4_premium_links`. Both **additive
+**Migration `20261031200000_task155_p6a_platform_accounts` recorded live** (`ok=true clean=true`):
+new table `HostingPlatformAccount` + `AdminSetting.hostingPlatformCfEnabled` (default `true`).
+**The roster is EMPTY (0 rows) on prod** — until the admin pastes a real platform Cloudflare account,
+the Premium option honestly says *"being set up"* (`platform_empty`). That paste + a live Premium
+deploy is the top P6a follow-up (queue item 1).
+
+**Migrations recorded live, latest deploy:** `20261031200000_task155_p6a_platform_accounts`
+(`ok=true clean=true`). Earlier: `20261030200000_task157_screenshot_ocr_text`,
+`20261030120000_task155_p4_premium_links`, `20261030000000_task156_c1_lab_schema` — all **additive
 / NULLABLE — no row rewritten**.
 
-**Green this session:** `npx prisma validate` OK · `npx tsc --noEmit` → **0** · `CI=1 npx next build` →
-**exit 0** · `npm run test:hosting` → **40/40** · `test:pages` → **19/19** · `test:lab` → **10/10** ·
-**eslint at HEAD parity on every touched file** (the only errors are the pre-existing
+**Green at the P6a commit:** `npx prisma validate` OK · `npx tsc --noEmit` → **0** · `CI=1 npx next build` →
+**exit 0** · `npm run test:hosting` → **81/81** (incl. both new platform suites) · `test:pages` → **19/19** ·
+`test:lab` → **10/10** · `test:summaries` → **15/15** · `test:timeline` → **14/14** · `test:capturefail` → **5/5** ·
+`test:screenshots` → **36/36** · **eslint at HEAD parity on every touched file** (the only errors are the pre-existing
 `react-hooks/set-state-in-effect` warnings in `admin-panel.tsx` / `hosting-panel.tsx`, which also exist
 at HEAD — do not "fix" them by suppressing; they are a separate, pre-existing class).
 
@@ -73,9 +89,14 @@ at HEAD — do not "fix" them by suppressing; they are a separate, pre-existing 
 1. The P3/P4 hosting **write** path on production — **nobody has clicked *upload → preview → publish*
    on the live site yet.** The pipeline is proven on a scratch DB + a real `7z` + `next start`, and the
    **premium/Cloudflare** leg only against a **throwaway** account. **This is the first thing to prove
-   by hand**, and §20.8 makes it an acceptance item for whichever hosting item ships next.
-2. Production **email/password login** was not re-confirmed this session.
-3. **Fresh-DB migration replay is broken** (≥5 out-of-order migrations — **trap 23**). The live DB and
+   by hand** (queue item 6), and §20.8 makes it an acceptance item for whichever hosting item ships next.
+2. **P6a on prod needs one human step:** the admin must paste a real platform Cloudflare account into
+   Admin → Hosting → Platform accounts (the roster is empty; the Premium picker says *"coming online
+   shortly"* until then), then deploy one real Premium site end-to-end (this doubles as proof of #1).
+3. **TASK_157 live:** the owner said *"will test when a device comes online"* — OCR extraction,
+   the Summary/Extraction toggle, and frame delete are deployed but not yet eyeballed on live frames.
+4. Production **email/password login** was not re-confirmed this session.
+5. **Fresh-DB migration replay is broken** (≥5 out-of-order migrations — **trap 23**). The live DB and
    deploys are unaffected; only brand-new DBs (scratch/CI/local) hit it. Filed as its own hygiene task.
 
 ---
@@ -157,39 +178,18 @@ edit another task's migration.** Live is unaffected (its history is already reco
 
 Order below is the recommended run order. Each item names its binding doc section and its **gate**.
 
-### ★ 1 — Task 155 **P6a**: the THREE-option engine model  *(top live-app item)*
+### ✅ 0 — Task 155 **P6a**: the THREE-option engine model — **DONE + LIVE** (record only)
 
-**Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§19 (BINDING)** + **§19.9/§19.10**.
+Commit `0cd23f5`, deploy run `37038272028`, build `3KsVSvBvE284eXpdv5dkn`. Built per §19: additive
+`HostingPlatformAccount` (AES-256-GCM tokens, `priority` rotation, health columns) + the
+`hostingPlatformCfEnabled` kill-switch (default true); the platform branch in `resolveDeployCredential`
+(`credentialId NULL` → the roster, **premium only**, named credential → only that BYO row, **fail
+CLOSED**); premium gates at **createSite AND deploy** (403 `premium_required` — §19.11: BYO is
+premium-only too); three-option picker **Free / Premium / Yours** with §19.10 copy (no "Cloudflare" on
+the Hosting screen); admin roster route + panel; `test:hosting` **81/81**. **Follow-ups are live items
+now — see §1 items 4–5** (paste a real platform account; prove write-path on prod).
 
-**The owner's complaint, verbatim:** *"i can see no more premium links unless user add there cloudflare
-… ours should be the premium, while byo should be for the users added cloudflare … free which is the
-instaweb, then premium which is the cloudflare and option to add more to rotate at the admin, and then
-byo which is the users own cloudflare to get more."*
-
-**The gap, grounded:** `HostingSite.credentialId`'s schema comment already says *"(NULL = platform
-account)"* and `resolveDeployCredential`'s comment says *"otherwise the platform account (env)"* — **but
-the code does not implement it.** Today a `cloudflare` site with no named credential 400s
-`no_credential` ("Add a Cloudflare account…"). So "Premium" is meaningless until the user brings their
-own token. **The three options:** (1) `local` = our metal, free; (2) `cloudflare` + `credentialId NULL`
-= **OUR** Cloudflare, **premium users, zero setup** ← the whole fix; (3) `cloudflare` + a credentialId =
-**BYO**, the user's own account.
-
-**Build (P6a, per §19.3/§19.7):** one **NEW additive** table `HostingPlatformAccount` (AES-256-GCM
-token, `priority` rotation order, `status`, health `lastVerifiedAt`/`verifyError` — same discipline as
-`HostingCredential`); the **platform branch** in `resolveDeployCredential`; a **premium gate** on
-option 2 at BOTH create and deploy (defense in depth against a mid-flight downgrade); the **three-option
-picker** + badges ("ours" vs "yours"); the **admin rotation** surface (add/verify/reorder/disable
-accounts); the `hostingPlatformCfEnabled` kill-switch dial; **fail CLOSED** with plain language (**never**
-a silent `local` fallback for a CF-engine site, never a raw CF error). Tests must cover the §19.2 matrix.
-
-**Gate:** §19.9 — **Q4 (multiple accounts, priority order) and Q5 (store tokens in the DB, admin-managed)
-are ANSWERED by the owner's own words**; **Q3 (kill-switch dial) default = build it**; **Q1 (may a FREE
-user use BYO?) and Q2 (did "premium links" mean the Links tab literally?) are STILL OPEN** — one line each.
-Until Q1/Q2 land, treat BYO for free users as **out of scope** and links as keeping their P4 caps.
-**Also carries §19.10's binding UI rules:** the Hosting page says **no "Cloudflare"**; option 2 is
-labelled **`Premium`**, option 3 **`Yours`**; brand talk lives only in **Settings → Hosting accounts**.
-
-### 2 — Task 155 **P5a**: the Domains tab  *(depends on P6a)*
+### ★ 1 — Task 155 **P5a**: the Domains tab  *(top build item; its P6a dependency is now MET)*
 
 **Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§18** (grounded spec; §18.9 Q2 **answered on the box**).
 
@@ -203,7 +203,7 @@ resolver", not a week of provisioning. **Recommended phasing:** **P5a** = tab + 
 per §19.10 rule 5, BYO as the escape hatch; **P5b** = our-metal serving. **Gate:** §18.9 **Q1** (phased
 recommendation vs our-metal-first), **Q3** (BYO token's Pages custom-domain scope), **Q6** (abuse guardrails).
 
-### 3 — Task 155 **P6d**: site upload inputs — file / folder / zip  *(independent)*
+### 2 — Task 155 **P6d**: site upload inputs — file / folder / zip  *(independent)*
 
 **Doc:** `PLAN_TASK_155_WORKERS_AND_PAGES.md` **§20 (BINDING)**.
 
@@ -218,7 +218,7 @@ loose-file server path (~30 lines, no traversal surface). **§20.5: NO migration
 **Q1** (fflate vs a store-only writer we own), **Q2** (folder is desktop-only — OK?), **Q3** (build
 §20.4?). Sequence against P6a — **they touch the same panel.**
 
-### 4 — Task 156 **C2 → C6**: the lab actually *does* something  *(SEPARATE assignment)*
+### 3 — Task 156 **C2 → C6**: the lab actually *does* something  *(SEPARATE assignment)*
 
 **Doc:** `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (binds)** + **§7 (C0–C6 phasing)**.
 **C0 + C1 are DONE + LIVE.** Everything from C2 up (anything that scans, spoofs, sends or fires) is
@@ -226,16 +226,11 @@ loose-file server path (~30 lines, no traversal surface). **§20.5: NO migration
 prod VPS. Reuse 155 §14's cap mechanism, the existing panic switch / `AgentActionAudit` /
 `UserEntitlement`; **do not edit `lib/resource-governor.ts`.** Do not start it without those gates.
 
-### 5 — Hygiene: fresh-DB migration replay (trap 23)
+### 4 — Hygiene: fresh-DB migration replay (trap 23)
 
 **No task doc yet — write one.** ≥5 out-of-order migrations break a brand-new DB (§2.4). Live + deploys
 are unaffected. Fix = reorder/repair **or** a documented `migrate resolve` cheat-sheet. **Do NOT silently
 edit another task's migration.**
-
-### 6 — Close the P3/P4 hosting WRITE-path gap on prod (small; do it alongside #1 or #3)
-
-Nobody has run *upload → preview → publish* on production yet (§1.2). Prove it by hand once a hosting item
-ships; §20.8 already makes it an acceptance item.
 
 ---
 
