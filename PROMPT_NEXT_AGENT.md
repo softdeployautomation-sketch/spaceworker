@@ -17,13 +17,14 @@
 ## TASK BLOCK (paste from here)
 
 ```
-TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 0cd23f5)
+TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 7e380da)
 WHAT IS PENDING: the hosting workstream (Task 155 P5a / P5b / P6b / P6c / P6d) AND the Cyber Lab
                  follow-on (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
                  RECOMMENDED FIRST ITEM: Task 155 P5a — the Domains tab (PLAN_155 section 18 — BINDS it).
-                 P6a (three-option engine) is DONE + LIVE — see section 8. Two items await LIVE human
-                 checks: TASK_157 OCR/summary when a device comes online; hosting upload → preview →
-                 publish on production (section 1.2 + queue item 6).
+                 P6a (three-option engine) + the Pages deployTree fix are DONE + LIVE — see section 8.
+                 Platform roster ALREADY HAS row #1 ("Primary cf", verifyError NULL — healthy); the owner
+                 adds the rest. Two items await LIVE human checks: TASK_157 OCR/summary when a device comes
+                 online; hosting upload → preview → publish on production (section 1.2 + queue item 6).
                  Do NOT batch items silently: each has its own "open questions" section that MUST
                  be answered by the owner/lead BEFORE its schema/behaviour is committed.
 TASK DOCS:       PLAN_TASK_155_WORKERS_AND_PAGES.md
@@ -40,8 +41,8 @@ TASK DOCS:       PLAN_TASK_155_WORKERS_AND_PAGES.md
                    section 6 (current state) · 7 (queue) · 8 (verify) · 9 (deploy)
                    section 5 (traps - especially 3, 7, 13, 14, 15, 16, 22, 23)
                  PROMPT_NEXT_AGENT.md -> this file.
-DEPLOY?          Task 155 P6a: DONE + LIVE (migration 20261031200000 recorded ok on the box; see
-                 section 8). Next deployable item:
+DEPLOY?          Task 155 P6a + Pages fix: DONE + LIVE (migration 20261031200000 recorded ok on the box;
+                 build 2c8IJxhMyyYVVEgJh0wlt — see section 8). Next deployable item:
                  Task 155 P5a: additive (one new table) -> deploy via deploy.yml, SENIOR_HANDOFF §9 VERBATIM.
                  Task 155 P6d: NO migration - a UI + lib change only.
                  Task 156 C2+: NEVER the production VPS. Non-production host, owner + lawyer gated.
@@ -66,6 +67,13 @@ DEPLOY?          Task 155 P6a: DONE + LIVE (migration 20261031200000 recorded ok
 | Screens fix: offline-device false `device_offline` on capture | `278c7d0` | ✅ deployed + live |
 | Task **157** OCR text layer + Summary/Extraction toggle + frame delete | `503c8be` | ✅ deployed + live — **owner still must eyeball it when a device comes online** |
 | Task 155 **P6a** three-option engine (Free/Premium/Yours) + platform roster | `0cd23f5` | ✅ deployed + live (build `3KsVSvBvE284eXpdv5dkn`) |
+| **Pages `deployTree` fix** (upload-token + `/pages/assets/*` + multipart; fixes live 405/8000013) | `7e380da` | ✅ deployed + live (build **`2c8IJxhMyyYVVEgJh0wlt`**, run **`37051772321`**, success) |
+
+**Platform roster row #1 ALREADY EXISTS — the owner pasted their Cloudflare details into the
+admin panel before this commit, so nothing for the next agent to insert:** one row, label
+`"Primary cf"`, `priority 1`, `status "active"`, `verifyError NULL` (healthy, verified 2026-10-02).
+The owner adds the remaining rows themselves via the same panel (Add and verify → promote).
+NEVER paste tokens into chat/docs — credentials go in the admin/account forms only.
 
 **Migration `20261031200000_task155_p6a_platform_accounts` recorded live** (`ok=true clean=true`):
 new table `HostingPlatformAccount` + `AdminSetting.hostingPlatformCfEnabled` (default `true`).
@@ -218,6 +226,24 @@ loose-file server path (~30 lines, no traversal surface). **§20.5: NO migration
 **Q1** (fflate vs a store-only writer we own), **Q2** (folder is desktop-only — OK?), **Q3** (build
 §20.4?). Sequence against P6a — **they touch the same panel.**
 
+### 2b — OWNER'S NEWEST ASK (answer before P5a starts): Links + Files get the THREE engines too
+
+- The owner just noticed P6a landed on **sites only**: links + files still route through our server
+  only, with no Free/Premium/Yours choice — and they want all three surfaces on the same model:
+  **Free = our link (instancelink), Premium = Ours (platform roster), Yours = BYO.**
+- §19.12 documents this as of 2026-10-02; it is **scoped but NOT YET IN §19's binding text**.
+  Before building: (a) walk the links + files + providers libs and prove on paper which engine
+  each call-site can actually honour — files go through the provider put/remove interface
+  (needs an R2/Workers-shaped provider, NOT Pages), links are our-DB rows served from our metal
+  (needs a custom-hostname story, NOT raw Pages);
+  (b) write the missing §19.x design (per-asset engine columns? which Cloudflare API for
+  files/links? what serves a Cloudflare-backed link?) and get the owner/lead to sign it;
+  (c) only then build, additive + gated, same fail-CLOSED + premium-gate rules as P6a.
+- **Do NOT promise Cloudflare for links/files until the design exists.** Pages deploys static sites;
+  files/links need a different Cloudflare surface. Saying it just works without the design is the trap.
+
+---
+
 ### 3 — Task 156 **C2 → C6**: the lab actually *does* something  *(SEPARATE assignment)*
 
 **Doc:** `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (binds)** + **§7 (C0–C6 phasing)**.
@@ -311,6 +337,10 @@ assignment).
   three-option engine)**, **§20 (P6d upload inputs)**; handoff **§6 + §7 + §12** and **trap 23**.
 - **Box facts confirmed this session:** certbot **1.21.0**, nginx **1.30.4**, app `User=trmm`,
   `/etc/sudoers.d/trmm` = `NOPASSWD:ALL`, **no default vhost**, 13 vhosts / 8 certbot lineages.
+- **Pages deployTree fix** — commit `7e380da`, deploy run `37051772321` (**success**, build
+  **`2c8IJxhMyyYVVEgJh0wlt`**): `upload-token` + `/pages/assets/*` + multipart form (the account-token
+  calls hit live 405/8000013). Verified server-side on the box (lib is server-only, not in client
+  chunks) + `hosting_status=401`/`spaceworker active`.
 - **Still open after this session:** the P3/P4 prod **write** path (§1.2), prod login re-check, and the
   fresh-DB migration replay (trap 23).
 
