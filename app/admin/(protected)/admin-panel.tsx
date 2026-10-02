@@ -5,6 +5,7 @@ import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
 import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
+import { ResearchTab } from "@/components/admin-research-view";
 
 type AdminUser = {
   id: string;
@@ -51,7 +52,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "devices" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
+type Tab = "overview" | "users" | "devices" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -69,6 +70,11 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // Vantra links) under a label that had nothing to do with any of them —
   // literally why the resource governor toggle was hard to find (2026-09-26).
   { id: "infrastructure", label: "Infrastructure" },
+  // TASK_156 C1 — the §12.1 research gate's read-only admin page: the pinned
+  // ATT&CK release, the feed list, the refresh/stale cadence and the currency of
+  // every LabToolCatalog row. Sits right after Infrastructure because that is
+  // where the Cyber Lab's admin dials live.
+  { id: "research", label: "Research" },
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
@@ -203,6 +209,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "sessions" && <SessionsTab />}
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
+        {tab === "research" && <ResearchTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
@@ -2216,8 +2223,16 @@ type CyberLabCaps = {
   rangeRamMb: number;
   hostRamBudgetMb: number;
   maxTargetsPerScenario: number;
+  maxTargetsPerUser: number;
   maxEpisodesPerMonth: number;
+  maxRunsPerDay: number;
   modulePriceUsd: number;
+  toolStaleAfterDays: number;
+  researchRefreshDays: number;
+  sentinelDnsQueriesPerMinute: number;
+  sentinelEntropyThreshold: number;
+  sentinelFreezeOnRefusals: number;
+  consentTermsVersion: string;
 };
 
 type CyberLabCapsState = {
@@ -2233,6 +2248,8 @@ const CYBERLAB_CAP_ROWS: Array<{
   unit: string;
   hint: string;
   money?: boolean;
+  /** A string dial (the AUP version) renders a text input, not a number one. */
+  text?: boolean;
 }> = [
   {
     field: "freeMaxConcurrentRanges",
@@ -2265,10 +2282,52 @@ const CYBERLAB_CAP_ROWS: Array<{
     hint: "Cap on authorised targets per scenario — the legal spine.",
   },
   {
+    field: "maxTargetsPerUser",
+    label: "Attested targets per user",
+    unit: "targets",
+    hint: "Total attested inventory one user may hold across all scenarios (§5.2.1).",
+  },
+  {
     field: "maxEpisodesPerMonth",
     label: "Episodes per month (per user)",
     unit: "episodes",
     hint: "Evidence bundles a user may produce per month.",
+  },
+  {
+    field: "maxRunsPerDay",
+    label: "Runs per day (per user)",
+    unit: "runs",
+    hint: "Lab runs one user may start per calendar day.",
+  },
+  {
+    field: "toolStaleAfterDays",
+    label: "Tool currency window",
+    unit: "days",
+    hint: "A catalog row older than this is hidden from the UI until re-reviewed (§12.1).",
+  },
+  {
+    field: "researchRefreshDays",
+    label: "Research refresh cadence",
+    unit: "days",
+    hint: "How often the ATT&CK/rule feeds are re-pulled to justify tool currency (§12.1).",
+  },
+  {
+    field: "sentinelDnsQueriesPerMinute",
+    label: "Sentinel: DNS queries / minute",
+    unit: "queries",
+    hint: "Egress velocity cap — a spike freezes the run and files an abuse report (§5.2.2).",
+  },
+  {
+    field: "sentinelEntropyThreshold",
+    label: "Sentinel: entropy threshold",
+    unit: "score",
+    hint: "Tunnelling/covert-channel score above which egress is judged malicious (§5.2.2).",
+  },
+  {
+    field: "sentinelFreezeOnRefusals",
+    label: "Sentinel: refusals before freeze",
+    unit: "refusals",
+    hint: "Consecutive non-attested-target refusals before the account auto-freezes (§5.2.1).",
   },
   {
     field: "modulePriceUsd",
@@ -2276,6 +2335,13 @@ const CYBERLAB_CAP_ROWS: Array<{
     unit: "USD",
     hint: "Price of the self-serve Cyber Lab upgrade.",
     money: true,
+  },
+  {
+    field: "consentTermsVersion",
+    label: "AUP consent version",
+    unit: "version",
+    hint: "The current Acceptable-Use Policy version. Changing it forces every user to re-accept before the lab reopens.",
+    text: true,
   },
 ];
 
@@ -2300,7 +2366,7 @@ function CyberLabCapsPanel() {
     load();
   }, [load]);
 
-  async function patch(field: string, body: Record<string, boolean | number>) {
+  async function patch(field: string, body: Record<string, boolean | number | string>) {
     setSaving(field);
     setError("");
     try {
@@ -2376,15 +2442,24 @@ function CyberLabCapsPanel() {
                 </div>
                 <div className="flex items-center gap-3">
                   <input
-                    type="number"
-                    min={0}
-                    step={row.money ? "0.01" : "1"}
+                    type={row.text ? "text" : "number"}
+                    min={row.text ? undefined : 0}
+                    step={row.text ? undefined : row.money ? "0.01" : "1"}
                     value={draft ?? String(current)}
                     onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
                     className="w-28 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                   />
                   <button
                     onClick={() => {
+                      if (row.text) {
+                        const s = (draft ?? String(current)).trim();
+                        if (s.length === 0) {
+                          setError(`${row.label} must not be blank`);
+                          return;
+                        }
+                        patch(row.field, { [row.field]: s });
+                        return;
+                      }
                       const n = Number(draft ?? current);
                       const min = row.money ? 0 : 1;
                       if (!Number.isFinite(n) || n < min) {

@@ -1,39 +1,52 @@
 import { NextResponse } from "next/server";
 
 import { getAdminSettings } from "@/lib/admin-settings";
-import { hasEntitlement } from "@/lib/entitlements";
+import { cyberLabGate } from "@/lib/lab/gate";
 import { getCurrentUser } from "@/lib/session-user";
 
-// TASK_156 C1 (scaffolding) — GET /api/cyberlab/status.
+// TASK_156 C1 — GET /api/cyberlab/status.
 //
-// The Cyber Lab tab and its dashboard card land now (owner, 2026-10-01: "the
-// cyberlab and workers should be added to the menu and dashboard cards"), but
-// the engine itself is C1/C2 work in PLAN_TASK_156 §7. This route is the single
-// honest "what is the lab allowed to do right now" read, mirroring
-// /api/hosting/status's shape so the two tabs behave alike:
+// The Cyber Lab tab's single "what is the lab allowed to do right now" read, now
+// carrying the REAL C1 gate (§12.9) instead of the C1-scaffolding settings echo.
+// Always 200 for an authenticated user so the tab renders an honest state
+// (entitlement prompt / consent prompt / live) rather than an error:
 //
-//   enabled   = AdminSetting.cyberlabEnabled (the master switch, OFF by
-//               default — the lab is dark until C2 ships).
-//   entitled  = the per-user `cyberlab` entitlement (already present in
-//               ENTITLEMENT_KEYS).
-//   caps      = the admin dials (CROSS-TRACK RULE 7). They are read but not yet
-//               enforced anywhere, because nothing runs yet; they exist so the
-//               owner can set the load envelope before the heavy tooling lands.
+//   gate.enabled      = AdminSetting.cyberlabEnabled — platform master switch (OFF
+//                       by default; the lab is dark until C2 ships).
+//   gate.entitled     = the PREMIUM `cyberlab` entitlement (§12.9 — the ONE door;
+//                       there is no staff badge). A non-entitled user is refused
+//                       server-side by the gate helper, whatever the client renders.
+//   gate.consented    = the C0 AUP gate: a LabConsent row for the CURRENT
+//                       termsVersion. Bumping the admin dial forces re-acceptance.
+//   gate.open         = enabled && entitled && consented — the single boolean the
+//                       UI hangs on.
+//   caps              = the admin dials (CROSS-TRACK RULE 7). Read here; nothing
+//                       runs yet, so nothing enforces them — they exist so the owner
+//                       can set the load envelope before the heavy tooling lands.
 //
-// No lab model is touched here — it is a pure settings read, so this route is
-// safe to ship while the lab is unbuilt.
+// The AUP TEXT itself is NOT returned here: the panel imports it from the shared,
+// pure lib/lab/aup.ts, so the wording a user reads and the wording that is hashed
+// into their consent row can never drift.
+
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const [settings, decision] = await Promise.all([getAdminSettings(), hasEntitlement(user.id, "cyberlab")]);
+  const [settings, gate] = await Promise.all([getAdminSettings(), cyberLabGate(user.id)]);
 
   return NextResponse.json({
-    enabled: settings.cyberlabEnabled,
-    entitled: decision.allowed,
-    entitlementReason: decision.reason,
+    // Kept top-level for the C1-scaffolding consumers (nav/card) that read it.
+    enabled: gate.enabled,
+    entitled: gate.entitled,
+    entitlementReason: gate.entitlementReason,
+    gate: {
+      open: gate.open,
+      termsVersion: gate.termsVersion,
+      consented: gate.consented,
+      consentedAt: gate.consent?.signedAt ?? null,
+    },
     caps: {
       freeMaxConcurrentRanges: settings.cyberlabFreeMaxConcurrentRanges,
       freeMaxRangeMinutes: settings.cyberlabFreeMaxRangeMinutes,
@@ -41,6 +54,12 @@ export async function GET() {
       hostRamBudgetMb: settings.cyberlabHostRamBudgetMb,
       maxTargetsPerScenario: settings.cyberlabMaxTargetsPerScenario,
       maxEpisodesPerMonth: settings.cyberlabMaxEpisodesPerMonth,
+      // TASK_156 C1 — the §12 sentinel/research dials, surfaced so the panel shows
+      // the full envelope from day one.
+      maxTargetsPerUser: settings.cyberlabMaxTargetsPerUser,
+      maxRunsPerDay: settings.cyberlabMaxRunsPerDay,
+      toolStaleAfterDays: settings.cyberlabToolStaleAfterDays,
+      researchRefreshDays: settings.cyberlabResearchRefreshDays,
     },
   });
 }

@@ -37,6 +37,7 @@
     "test:monitorctx": "tsx --test tests/monitor-agent-context.test.ts",
     "test:hosting": "tsx --test tests/hosting-files.test.ts tests/hosting-links-credentials.test.ts",
     "test:pages": "tsx --test tests/hosting-pages.test.ts",
+    "test:lab": "tsx --test tests/lab-gate.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
     "typecheck:engine": "tsc -p local-engine/tsconfig.json",
     "tauri": "tauri",

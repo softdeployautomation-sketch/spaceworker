@@ -466,6 +466,37 @@ model AdminSetting {
   cyberlabMaxTargetsPerScenario     Int     @default(10)
   cyberlabMaxEpisodesPerMonth       Int     @default(20)
   cyberlabModulePriceUsd            Float   @default(29)
+
+  // TASK_156 C1 — the Lab* cap family: the §5.2 sentinel dials + the §12.1 research
+  // cadence + the C0 consent-gate version. ADDITIVE to the D1-P2 `cyberlab*` dials
+  // above (do not re-do the `cyberlab*` dials) and driven by the §12.8 ruling: C1
+  // gains the LabToolCatalog + the read-only Research page, so the sentinel/research
+  // dials land with it. Same mechanism as every other cap (CROSS-TRACK RULE 7): named
+  // AdminSetting fields, read server-side on every request, admin-editable live, so a
+  // limit change needs no redeploy. Nothing here is enforced yet (the engine is C2+);
+  // the values are read by lib/lab/* and shown in admin/panel from day one.
+  //
+  //   cyberlabConsentTermsVersion         = the AUP version the gate enforces (§12.9 /
+  //                                         C0). Bump it and EVERY user must re-accept,
+  //                                         because the acceptance is recorded per version.
+  //   cyberlabMaxTargetsPerUser           = total attested targets one user may hold
+  //                                         (the allow-list size; §5.2.1).
+  //   cyberlabMaxRunsPerDay               = runs one user may start per calendar day.
+  //   cyberlabSentinelDnsQueriesPerMinute = §5.2.4/§12.3 DNS velocity dial.
+  //   cyberlabSentinelEntropyThreshold    = §12.3 DNS-entropy exfil score, 0–100.
+  //   cyberlabSentinelFreezeOnRefusals    = §5.2.1/§8.2 non-attested-target refusals
+  //                                         before the account auto-freezes.
+  //   cyberlabToolStaleAfterDays          = §12.1 default stale-after window applied to
+  //                                         a LabToolCatalog row when none is given.
+  //   cyberlabResearchRefreshDays         = §12.1 research cadence (feed re-pull window).
+  cyberlabConsentTermsVersion         String @default("2026-10-02")
+  cyberlabMaxTargetsPerUser           Int    @default(50)
+  cyberlabMaxRunsPerDay               Int    @default(10)
+  cyberlabSentinelDnsQueriesPerMinute Int    @default(600)
+  cyberlabSentinelEntropyThreshold    Int    @default(40)
+  cyberlabSentinelFreezeOnRefusals    Int    @default(3)
+  cyberlabToolStaleAfterDays          Int    @default(180)
+  cyberlabResearchRefreshDays         Int    @default(30)
 }
 
 model Mailbox {
@@ -2787,3 +2818,246 @@ model HostingJob {
   @@index([userId, status])
 }
 
+
+// ===========================================================================
+// TASK_156 C1 — the Cyber Lab schema (PLAN_TASK_156 §6, extended by §12.1/§12.8).
+// ===========================================================================
+//
+// Purely ADDITIVE: ten new EMPTY tables. Applying the C1 migration rewrites no
+// existing row and changes no existing behaviour — nothing reads these yet (the
+// engine is C2+, gated behind the AUP and the premium `cyberlab` entitlement).
+//
+// Every `userId`/`*Id` column is a plain scalar with an index and NO foreign key,
+// on purpose — the same rule HostingSite / AgentActionAudit already follow: a lab
+// attestation, consent record or evidence bundle must survive the deletion of the
+// thing it describes, and a run must never be cascade-deleted by an unrelated
+// cleanup. There is deliberately no "delete history" path (§5.2.6).
+//
+// §12.9 — where a field is named `author` or `audience` and documented "staff", read
+// it as an AUDIENCE/tier label (internal/operator, usable before the L4 fences), NOT
+// a staff-role gate. C1 builds no staff badge; the gate is the premium entitlement.
+
+// §6 — a machine the engine may run on. NEVER the production VPS: enforced in code
+// (lib/lab/gate.ts refuses a LabHost that resolves to the app host) AND surfaced as a
+// warning in the admin Research page.
+model LabHost {
+  id          String   @id @default(cuid())
+  label       String
+  // "caldera" | "victim" | "relay" | "collector".
+  kind        String
+  // Never public: a private/LAN address or a device id. Admin-visible only.
+  address     String
+  // A reference to a secret (e.g. a HostingCredential id or an env key name) used to
+  // reach the host — never the secret itself.
+  authRef     String?
+  enabled     Boolean  @default(false)
+  ramBudgetMb Int      @default(2048)
+  tags        Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([kind, enabled])
+}
+
+// §6 — an allow-listed scenario: the unit a user runs. `techniqueIds` are ATT&CK ids
+// and `author` is an AUDIENCE/tier label (§12.9), not a role gate.
+model LabScenario {
+  id                   String   @id @default(cuid())
+  slug                 String   @unique
+  name                 String
+  // The lab class: "email" | "dns" | "server" | "network".
+  klass                String
+  // ATT&CK technique ids this scenario exercises (Json array of strings).
+  techniqueIds         Json?
+  adversaryProfile     String?
+  requiredCapabilities Json?
+  // Plain-language statement of the worst thing this can touch.
+  blastRadius          String?
+  cleanup              String?
+  enabled              Boolean  @default(false)
+  // §12.9 — an AUDIENCE label ("staff" = internal/operator tier), not a role.
+  author               String   @default("staff")
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([klass, enabled])
+}
+
+// §6 — one run instance of a scenario (the "range"): the pending→provisioning→active
+// →tearing_down→torn_down|failed state machine, with a hard TTL and a verified teardown.
+model LabRange {
+  id                 String   @id @default(cuid())
+  userId             String
+  scenarioId         String
+  // pending | provisioning | active | tearing_down | torn_down | failed.
+  state              String   @default("pending")
+  ttlExpiresAt       DateTime?
+  // The LabConsent row in force when this run started (provenance for the audit).
+  consentId          String?
+  credentialRef      String?
+  // The resource-governor slot this run holds (TASK_105 requestSlot). RECORDED here so
+  // the later governor task can see the load — never a second admission authority.
+  queuedSlotId       String?
+  // Set only when a teardown was VERIFIED (§8.5); a failed teardown raises an incident.
+  teardownVerifiedAt DateTime?
+  error              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([userId, state])
+  @@index([state, ttlExpiresAt])
+}
+
+// §6 — THE attested inventory item: the legal spine of the product (§5). Every
+// scenario target must match a row here for that user, checked pre-flight.
+// `kind` is "host" | "network" | "url" | "domain" | "email" — the last two are the
+// §12.2/§12.3 email + DNS classes the owner's addendum added.
+model LabTarget {
+  id            String   @id @default(cuid())
+  userId        String
+  rangeId       String?
+  kind          String
+  value         String
+  attestedAt    DateTime @default(now())
+  attestationId String?
+  createdAt     DateTime @default(now())
+
+  @@unique([userId, kind, value])
+  @@index([userId])
+}
+
+// §6 — the evidence bundle for a run: the timeline, the ATT&CK techniques observed,
+// the telemetry signatures, and a signed manifest of the raw evidence files. C3 fills
+// it; C1 only creates the table.
+model LabEpisode {
+  id                  String    @id @default(cuid())
+  rangeId             String
+  userId              String
+  startedAt           DateTime?
+  endedAt             DateTime?
+  timeline            Json?
+  techniques          Json?
+  telemetrySignatures Json?
+  outcome             String?
+  // Paths + SHA-256 of the raw evidence (Json) — the artefact a simulator cannot fake.
+  evidenceManifest    Json?
+  // Signature over the manifest so an episode cannot be edited after the fact.
+  signedHash          String?
+  createdAt           DateTime  @default(now())
+
+  @@index([rangeId])
+  @@index([userId, createdAt])
+}
+
+// §6 — one finding from an episode, with a self-relation so a RETEST can point at the
+// finding it re-tests (retest tracking without a second table).
+model LabFinding {
+  id          String    @id @default(cuid())
+  episodeId   String
+  userId      String
+  severity    String
+  title       String
+  detail      String?
+  // The finding this one re-tests (NULL = an original finding).
+  retestOf    String?
+  exportedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([episodeId])
+  @@index([retestOf])
+}
+
+// §6 — a Sigma-class detection pack derived from an episode (C5). `audience` is an
+// AUDIENCE/tier label (§12.9): "staff" | "pro" | "all".
+model DetectionPack {
+  id                   String    @id @default(cuid())
+  version              String
+  rulesJson            Json
+  // The episode that validated this pack (C5 detect-then-defend loop).
+  validatedByEpisodeId String?
+  shippedAt            DateTime?
+  audience             String    @default("staff")
+  createdAt            DateTime  @default(now())
+
+  @@index([audience])
+}
+
+// §6 — the AUP/consent record (C0). APPEND-ONLY: never updated, only superseded by a
+// new row when the terms version changes. `hash` is a SHA-256 over the canonical terms
+// text + userId + termsVersion, so the exact text a user accepted is provable later.
+model LabConsent {
+  id           String   @id @default(cuid())
+  userId       String
+  // The AUP version accepted (matches AdminSetting.cyberlabConsentTermsVersion).
+  termsVersion String
+  // What the user consented to: "lab" today (the AUP covers hosting + lab, §13.5).
+  scope        String   @default("lab")
+  signedAt     DateTime @default(now())
+  ip           String?
+  hash         String
+
+  @@index([userId, termsVersion])
+}
+
+// §5.2 — the abuse sentinel's output: a refusal/anomaly becomes a report, the admin is
+// notified, and the account may auto-freeze. Append-only; the status is the review state.
+model LabAbuseReport {
+  id               String    @id @default(cuid())
+  userId           String
+  rangeId          String?
+  reason           String
+  evidenceJson     Json?
+  severity         String    @default("low")
+  // open | frozen | cleared.
+  status           String    @default("open")
+  reviewedByAdminId String?
+  createdAt        DateTime  @default(now())
+  reviewedAt       DateTime?
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+// §12.1 — THE research gate: one row per capability, added because it is CURRENT, not
+// because it is famous. A row whose `staleAfter` has passed is HIDDEN from the UI
+// automatically and shows "refresh required" in admin. This is the table that makes
+// "not stale tools" a timestamp we can show rather than a claim.
+//
+// `audience` is an AUDIENCE/tier label (§12.9) — "staff" (internal/operator) | "pro" |
+// "all" — NOT a role gate. `legalBasis` is the plain-language reason we may run it
+// (every row carries one; email/DNS rows additionally carry an allow-list check).
+model LabToolCatalog {
+  id           String    @id @default(cuid())
+  // The upstream capability this row describes, e.g. "nmap", "nuclei", "caldera".
+  slug         String    @unique
+  name         String
+  // The lab class it serves: "email" | "dns" | "server" | "network".
+  klass        String
+  // "offensive" | "defensive" — the §5 matrix's Gate column reads off this.
+  kind         String
+  // ATT&CK technique id(s) this capability exercises (Json array of strings).
+  techniqueIds Json?
+  // The upstream version pinned at last review + when that version was released.
+  upstreamVersion    String?
+  upstreamReleasedAt DateTime?
+  // ISO date of the last review — the acceptance evidence for the research gate.
+  lastReviewedAt     DateTime?
+  // §12.1 — a capability whose staleAfter has passed is hidden from the UI. NULL falls
+  // back to `now + AdminSetting.cyberlabToolStaleAfterDays` when a row is minted.
+  staleAfter         DateTime?
+  // CVE history (Json array) + SPDX-ish licence id.
+  cveHistory   Json?
+  licence      String?
+  // Which real-world campaigns/APT reports used it in the last 12–18 months.
+  derivation   String?
+  // §12.9 — an AUDIENCE label, not a role gate.
+  audience     String    @default("staff")
+  // Why we may run it (the §5 legal-basis note; not optional).
+  legalBasis   String
+  enabled      Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([klass, kind])
+  @@index([enabled, staleAfter])
+}
