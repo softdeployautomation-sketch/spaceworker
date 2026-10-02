@@ -12,6 +12,7 @@ import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegra
 import { ExeLicensePanel } from "./exe-license-panel";
 import { LicensesSection } from "./licenses-section";
 import { SendRegionSettings } from "@/components/send-region-settings";
+import { HostingCredentialsSettings } from "@/components/hosting-credentials-settings";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -114,6 +115,20 @@ export default async function SettingsPage() {
         <h2 className="text-lg font-semibold text-fg">Security</h2>
         <p className="mt-1 text-sm text-fg-muted">Change your password.</p>
         <ChangePasswordForm />
+      </Card>
+
+      {/* Owner ask (2026-10-02) — the Cloudflare account token lives in
+          Settings; once saved it becomes an option across all hosting (the
+          Hosting page's engine picker reads it via /api/hosting/status). */}
+      <Card className="max-w-2xl p-6">
+        <h2 className="text-lg font-semibold text-fg">Hosting accounts</h2>
+        <p className="mt-1 text-sm text-fg-muted">
+          Bring your own Cloudflare account for premium hosting. The token is encrypted and never shown — only
+          the last 4 characters. The default account powers new premium deploys.
+        </p>
+        <div className="mt-4">
+          <HostingCredentialsSettings />
+        </div>
       </Card>
 
       {/* TASK_134 (premium) — deliberately just the region toggle, not the

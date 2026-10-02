@@ -46,6 +46,8 @@ export interface HostingCapSource {
   hostingPlatformTokenTtlHours: number;
   /** TASK_155 P2 — per-user cap on user-owned redirect links (AdminSetting). */
   hostingFreeMaxLinks: number;
+  /** TASK_155 P4 — the premium twin of the dial above (PLAN §17.2). */
+  hostingPremiumMaxLinks: number;
   // TASK_155 P3 — the premium/site dials (§16.3/§16.6).
   hostingPremiumMaxProjects: number;
   hostingPremiumMaxFilesPerProject: number;
@@ -108,8 +110,9 @@ export const CLOUDFLARE_HARD_ASSET_MB = 25;
 
 /**
  * Resolve the caps for one user. `premium` swaps the storage quota for the
- * (larger) premium figure; every other dial is shared so free and premium can't
- * drift apart on the numbers that matter for abuse (file size, count, bandwidth).
+ * (larger) premium figure AND the link count (PLAN §17.2 — links get premium the
+ * same way files do); file size, count and bandwidth stay shared so free and
+ * premium can't drift apart on the numbers that matter for abuse.
  * An unknown stored provider falls back to "local" (schema contract) — a typo in
  * admin must never break uploads.
  */
@@ -123,7 +126,7 @@ export function resolveHostingCaps(src: HostingCapSource, opts: { premium: boole
     maxBandwidthGbPerMonth: src.hostingFreeMaxBandwidthGbPerMonth,
     pagesMaxAssetMb: Math.min(src.hostingPagesMaxAssetMb, CLOUDFLARE_HARD_ASSET_MB),
     platformTokenTtlHours: src.hostingPlatformTokenTtlHours,
-    maxLinks: src.hostingFreeMaxLinks,
+    maxLinks: opts.premium ? src.hostingPremiumMaxLinks : src.hostingFreeMaxLinks,
     // TASK_155 P3 — the premium/site dials (shared; premium only swaps the quota).
     premiumMaxProjects: src.hostingPremiumMaxProjects,
     premiumMaxFilesPerProject: src.hostingPremiumMaxFilesPerProject,

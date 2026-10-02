@@ -137,7 +137,6 @@ export function HostingPanel() {
   // TASK_155 P2 — the short links + BYO credentials surfaces.
   const [links, setLinks] = useState<HostedLink[]>([]);
   const [linkForm, setLinkForm] = useState({ target: "", label: "", slug: "" });
-  const [credForm, setCredForm] = useState({ accountId: "", label: "", token: "" });
   const fileInput = useRef<HTMLInputElement>(null);
   // TASK_155 P3 — the Sites surface (folder → preview → publish + engine picker).
   const [sites, setSites] = useState<HostingSite[]>([]);
@@ -148,6 +147,10 @@ export function HostingPanel() {
   });
   const [revisions, setRevisions] = useState<Record<string, HostingRevision[]>>({});
   const [openSite, setOpenSite] = useState<string | null>(null);
+
+  // Owner ask (2026-10-02) — the hosting page was one long scroll; split it
+  // into three tabs: Sites / Links / Files (the upload box lives with Files).
+  const [tab, setTab] = useState<"sites" | "links" | "files">("sites");
   const revisionInput = useRef<HTMLInputElement>(null);
 
   const loadStatus = useCallback(async () => {
@@ -297,6 +300,13 @@ export function HostingPanel() {
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
       if (!siteForm.name.trim()) return;
+      // §17.4 — the picker disables Premium (Cloudflare) while there is no
+      // account yet; this guard covers stale state (an account removed while
+      // this form sat open). The token itself lives in Settings now.
+      if (siteForm.engine === "cloudflare" && (status?.credentials.length ?? 0) === 0) {
+        setError("Add a Cloudflare account in Settings first — then premium hosting unlocks here.");
+        return;
+      }
       setBusy(true);
       setError("");
       setNotice("");
@@ -324,7 +334,7 @@ export function HostingPanel() {
         setBusy(false);
       }
     },
-    [loadSites, siteForm]
+    [loadSites, siteForm, status]
   );
 
   const onUploadRevision = useCallback(
@@ -407,75 +417,6 @@ export function HostingPanel() {
     [loadRevisions, openSite]
   );
 
-  const onAddCredential = useCallback(
-    async (e: React.FormEvent<HTMLFormElement>) => {
-      e.preventDefault();
-      setBusy(true);
-      setError("");
-      setNotice("");
-      try {
-        const res = await fetch("/api/hosting/credentials", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(credForm),
-        });
-        const data = (await res.json()) as { error?: string };
-        if (!res.ok) {
-          setError(data.error ?? "Couldn’t save that account.");
-          return;
-        }
-        setCredForm({ accountId: "", label: "", token: "" });
-        setNotice("Account saved.");
-        await loadStatus();
-      } catch {
-        setError("Couldn’t save that account — try again.");
-      } finally {
-        setBusy(false);
-      }
-    },
-    [credForm, loadStatus]
-  );
-
-  const onUseCredential = useCallback(
-    async (id: string) => {
-      const res = await fetch(`/api/hosting/credentials/${id}/default`, { method: "POST" });
-      if (!res.ok) {
-        const data = (await res.json()) as { error?: string };
-        setError(data.error ?? "Couldn’t switch accounts.");
-        return;
-      }
-      setNotice("That account will be used for new premium deploys.");
-      await loadStatus();
-    },
-    [loadStatus]
-  );
-
-  // TASK_155 P3 — §16.4 "verify now": re-confirm a stored token and refresh its
-  // stamp. A dead token comes back as a red row (200), not an error.
-  const onVerifyCredential = useCallback(
-    async (id: string) => {
-      setError("");
-      setNotice("");
-      try {
-        const res = await fetch(`/api/hosting/credentials/${id}/verify`, { method: "POST" });
-        const data = (await res.json()) as { credential?: HostingCredential; error?: string };
-        if (!res.ok || !data.credential) {
-          setError(data.error ?? "Couldn’t verify that account.");
-          return;
-        }
-        setNotice(
-          data.credential.verifyError
-            ? `That account isn’t working: ${data.credential.verifyError}`
-            : "Account verified — the token works."
-        );
-        await loadStatus();
-      } catch {
-        setError("Couldn’t verify that account — check your connection and try again.");
-      }
-    },
-    [loadStatus]
-  );
-
   const onAddLink = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
@@ -510,6 +451,90 @@ export function HostingPanel() {
     [linkForm, loadLinks, loadStatus]
   );
 
+
+  // Owner ask (2026-10-02) — the Links tab can re-target and delete, and the
+  // Files tab can flip a file between public and private, without touching the
+  // other tabs. Both PATCH routes only ever see rows owned by the caller.
+  const onEditLink = useCallback(
+    async (link: HostedLink) => {
+      const next = window.prompt("New destination URL:", link.target);
+      if (!next || !next.trim() || next.trim() === link.target) return;
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/links/${link.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target: next.trim() }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t update that link.");
+          return;
+        }
+        setNotice("Link updated — the short address stays the same.");
+        await loadLinks();
+      } catch {
+        setError("Couldn’t update that link — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadLinks]
+  );
+
+  const onDeleteLink = useCallback(
+    async (link: HostedLink) => {
+      if (!window.confirm(`Delete the short link ${link.shortPath}? Existing shares of it will stop working.`)) return;
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/links/${link.id}`, { method: "DELETE" });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t delete that link.");
+          return;
+        }
+        setNotice("Link deleted.");
+        await Promise.all([loadLinks(), loadStatus()]);
+      } catch {
+        setError("Couldn’t delete that link — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadLinks, loadStatus]
+  );
+
+  const onToggleVisibility = useCallback(
+    async (file: HostedFile) => {
+      const next = file.visibility === "private" ? "public" : "private";
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/files/${file.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ visibility: next }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t change visibility.");
+          return;
+        }
+        setNotice(next === "public" ? "File is public — anyone with the link can open it." : "File is private — only you can open it.");
+        await loadFiles();
+      } catch {
+        setError("Couldn’t change visibility — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadFiles]
+  );
 
   if (!status) {
     return <div className="p-6 text-sm text-zinc-500">Loading hosting…</div>;
@@ -575,12 +600,40 @@ export function HostingPanel() {
         </div>
       </section>
 
+      {/* Owner ask (2026-10-02) — Sites / Links / Files tabs with live counts. */}
+      <div className="flex flex-wrap gap-1 rounded-lg border border-zinc-200 p-1 dark:border-zinc-800" role="tablist">
+        {(
+          [
+            ["sites", `Sites (${sites.length})`],
+            ["links", `Links (${status.usage.linkCount} / ${status.caps.maxLinks})`],
+            ["files", `Files (${status.usage.fileCount} / ${status.caps.maxFiles})`],
+          ] as const
+        ).map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={tab === id}
+            onClick={() => setTab(id)}
+            className={`rounded-md px-3 py-1.5 text-sm font-medium ${
+              tab === id
+                ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
+                : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* TASK_155 P3 — Sites: zip a folder → PREVIEW → PUBLISH, per-item engine. */}
+      {tab === "sites" && (
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Sites</h2>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
           Zip a folder, check the preview, then publish. Pick the engine per site — our server is free and instant;
-          premium (Cloudflare) gives a global edge and custom domains.
+          premium (Cloudflare) gives a global edge and custom domains. Manage the Cloudflare account token under
+          Settings → Hosting accounts.
         </p>
 
         <form
@@ -604,8 +657,19 @@ export function HostingPanel() {
               className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             >
               <option value="local">Our server (free)</option>
-              <option value="cloudflare">Premium (Cloudflare)</option>
+              {status.credentials.length > 0 ? (
+                <option value="cloudflare">Premium (Cloudflare)</option>
+              ) : (
+                <option value="cloudflare" disabled>
+                  Premium (Cloudflare) — add an account in Settings
+                </option>
+              )}
             </select>
+            {siteForm.engine === "cloudflare" && status.credentials.length === 0 && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                No account yet — add your Cloudflare token in Settings; it becomes an option here right away.
+              </span>
+            )}
           </label>
           {siteForm.engine === "cloudflare" && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
@@ -675,6 +739,14 @@ export function HostingPanel() {
                 </div>
               </div>
 
+              {/* §17.3 — the preview IS the test step; make it impossible to miss. */}
+              <p className="mt-2 text-xs text-zinc-500">
+                1. Upload zip → preview · 2. Check it, then Publish.
+                {revs.some((r) => r.state !== "published")
+                  ? ` Previews expire after ${status.caps.previewTtlHours}h.`
+                  : ""}
+              </p>
+
               {open && (
                 <div className="mt-3 space-y-3 border-t border-zinc-100 pt-3 dark:border-zinc-800">
                   <form
@@ -720,7 +792,7 @@ export function HostingPanel() {
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="min-w-0">
                             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                              {isLive ? "live" : "not live"}
+                              {isLive ? "live" : `preview · expires in ${status.caps.previewTtlHours}h`}
                             </span>
                             <span className="ml-2 text-xs text-zinc-500">
                               {rev.fileCount} file{rev.fileCount === 1 ? "" : "s"} · {formatBytes(rev.bytes)}
@@ -758,8 +830,10 @@ export function HostingPanel() {
           );
         })}
       </section>
+      )}
 
       {/* Upload */}
+      {tab === "files" && (
       <section className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
         <form onSubmit={onUpload} className="flex flex-wrap items-center gap-3">
           <input
@@ -779,112 +853,10 @@ export function HostingPanel() {
           Any file up to {status.caps.maxFileSizeMb} MB. Executables are fine — scripts and pages aren’t.
         </p>
       </section>
-
-      {/* TASK_155 P3 — Connection: the §16.4 account chooser. */}
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Connection</h2>
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">
-          One row per account. Tokens are encrypted and never shown — only the last 4 characters. The default account
-          powers new premium deploys; an existing site keeps the account it was built on.
-        </p>
-
-        {status.credentials.length === 0 && (
-          <p className="text-sm text-zinc-500">No Cloudflare account yet. Add one to host on premium.</p>
-        )}
-
-        {status.credentials.map((c) => (
-          <div
-            key={c.id}
-            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-          >
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-zinc-900 dark:text-zinc-100">{c.label}</span>
-                {c.isDefault && (
-                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200">
-                    default
-                  </span>
-                )}
-                {/* TASK_155 P3 — §16.4 the last-verified stamp, red when broken. */}
-                {c.verifyError ? (
-                  <span
-                    className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-800 dark:bg-red-950 dark:text-red-200"
-                    title={c.verifyError}
-                  >
-                    not working
-                  </span>
-                ) : c.lastVerifiedAt ? (
-                  <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                    verified {new Date(c.lastVerifiedAt).toLocaleDateString()}
-                  </span>
-                ) : (
-                  <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-800 dark:bg-amber-950 dark:text-amber-200">
-                    never verified
-                  </span>
-                )}
-              </div>
-              <div className="mt-0.5 truncate text-xs text-zinc-500">
-                {c.accountId} · token …{c.tokenHint} · {c.projectCount ?? 0} site
-                {(c.projectCount ?? 0) === 1 ? "" : "s"}
-              </div>
-              {c.verifyError && (
-                <div className="mt-0.5 text-xs text-red-600 dark:text-red-300">{c.verifyError}</div>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              <button onClick={() => void onVerifyCredential(c.id)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
-                Re-verify
-              </button>
-              {!c.isDefault && (
-                <button onClick={() => void onUseCredential(c.id)} className="text-xs text-emerald-600 hover:underline">
-                  Use for new deploys
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-
-        <form
-          onSubmit={onAddCredential}
-          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-        >
-          <label className="flex flex-col gap-1 text-xs text-zinc-500">
-            Label
-            <input
-              value={credForm.label}
-              onChange={(e) => setCredForm((s) => ({ ...s, label: e.target.value }))}
-              placeholder="Work"
-              className="w-32 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-zinc-500">
-            Account id
-            <input
-              value={credForm.accountId}
-              onChange={(e) => setCredForm((s) => ({ ...s, accountId: e.target.value }))}
-              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-zinc-500">
-            API token
-            <input
-              type="password"
-              value={credForm.token}
-              onChange={(e) => setCredForm((s) => ({ ...s, token: e.target.value }))}
-              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-          </label>
-          <button
-            type="submit"
-            disabled={busy}
-            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
-          >
-            Add account
-          </button>
-        </form>
-      </section>
+      )}
 
       {/* TASK_155 P2 — Links: user-owned short links (/r/<slug|token>). */}
+      {tab === "links" && (
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Links</h2>
         <p className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -937,15 +909,25 @@ export function HostingPanel() {
                   → {link.target} · {link.clickCount} click{link.clickCount === 1 ? "" : "s"}
                 </div>
               </div>
-              <button onClick={() => copy(shortUrl)} className="text-xs text-zinc-500 hover:underline">
-                Copy
-              </button>
+              <div className="flex items-center gap-2">
+                <button onClick={() => copy(shortUrl)} className="text-xs text-zinc-500 hover:underline">
+                  Copy
+                </button>
+                <button onClick={() => void onEditLink(link)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
+                  Edit
+                </button>
+                <button onClick={() => void onDeleteLink(link)} className="text-xs text-red-600 hover:underline">
+                  Delete
+                </button>
+              </div>
             </div>
           );
         })}
       </section>
+      )}
 
       {/* Files */}
+      {tab === "files" && (
       <section className="space-y-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Your files</h2>
         {files.length === 0 && <p className="text-sm text-zinc-500">Nothing hosted yet. Upload a file above.</p>}
@@ -955,7 +937,18 @@ export function HostingPanel() {
             <div key={file.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <div className="min-w-0">
-                  <div className="truncate font-medium text-zinc-900 dark:text-zinc-100">{file.dispositionFilename}</div>
+                  <div className="flex min-w-0 items-center gap-2 font-medium text-zinc-900 dark:text-zinc-100">
+                    <span className="truncate">{file.dispositionFilename}</span>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-xs ${
+                        file.visibility === "private"
+                          ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                          : "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                      }`}
+                    >
+                      {file.visibility}
+                    </span>
+                  </div>
                   <div className="mt-0.5 text-xs text-zinc-500">
                     {formatBytes(file.bytes)} · {file.downloadCount} download{file.downloadCount === 1 ? "" : "s"} ·{" "}
                     <span className="font-mono">{file.sha256.slice(0, 12)}…</span>
@@ -976,6 +969,9 @@ export function HostingPanel() {
                     className="text-xs text-zinc-500 hover:underline"
                   >
                     Rename
+                  </button>
+                  <button onClick={() => void onToggleVisibility(file)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
+                    {file.visibility === "private" ? "Make public" : "Make private"}
                   </button>
                   <button onClick={() => void onDelete(file)} className="text-xs text-red-600 hover:underline">
                     Delete
@@ -999,6 +995,7 @@ export function HostingPanel() {
           );
         })}
       </section>
+      )}
     </div>
   );
 }

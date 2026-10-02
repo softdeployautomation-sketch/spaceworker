@@ -1888,6 +1888,8 @@ type HostingCaps = {
   modulePriceUsd: number;
   // TASK_155 P2 — the per-user cap on user-owned short links.
   freeMaxLinks: number;
+  // TASK_155 P4 — its premium twin (PLAN §17.2).
+  premiumMaxLinks: number;
   // TASK_155 P3 — the §16.3 premium/site dials + §16.6 heavy-load dials.
   premiumMaxProjects: number;
   premiumMaxFilesPerProject: number;
@@ -1980,6 +1982,14 @@ const HOSTING_CAP_ROWS: Array<{
     label: "Max short links (per user)",
     unit: "links",
     hint: "How many /r/ redirect links one user may create in the Hosting tab. Campaign links are not counted.",
+  },
+  // TASK_155 P4 — premium swaps to this dial the moment the account is premium
+  // (PLAN §17.2: links get premium the same way files get the premium quota).
+  {
+    field: "premiumMaxLinks",
+    label: "Max short links — premium (per user)",
+    unit: "links",
+    hint: "Same as above but for premium accounts — links get a premium cap exactly like file storage does.",
   },
   // TASK_155 P3 — the premium/site family (§16.3). "Premium is capped too" is a
   // product rule: premium has its OWN envelope, separate from the free file dials.

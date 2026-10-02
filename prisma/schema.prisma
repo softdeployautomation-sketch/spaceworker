@@ -402,6 +402,9 @@ model AdminSetting {
   hostingModulePriceUsd             Float   @default(9)
   // TASK_155 P2 — user-owned redirect links (the /r/<token> promotion). Per free user.
   hostingFreeMaxLinks               Int     @default(50)
+  // TASK_155 P4 — links get premium the same way files do (PLAN §17.2): premium
+  // swaps to this dial, free keeps hostingFreeMaxLinks above. Same §14 mechanism.
+  hostingPremiumMaxLinks            Int     @default(500)
 
   // TASK_155 P3 — the Pages/premium + folder→preview→publish dials (PLAN §16.3/§16.6,
   // owner 2026-10-02: "nothing that using premium is capped" is a PRODUCT rule, not

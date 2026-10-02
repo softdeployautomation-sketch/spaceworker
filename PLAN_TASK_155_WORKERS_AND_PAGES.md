@@ -792,3 +792,71 @@ load and adjust users accordingly."*
   the governor task lands it must see **both** families through the same `AdminSetting` mechanism
   (§14 rule 1) — one mechanism for hosting caps, lab caps and governor dials, never three.
 
+## 17. Owner additions 2026-10-02 (after the P3 deploy) — BINDING, this IS the P4 run
+
+Owner (verbatim): *"The hosting page ui needs to be better, the site should be a tab, and the links
+and the files as well, separate tab, and more functionalities, the links redirect should be able to
+use the premium same with the file, and we need preview like a test before deploying to production,
+if that's going to be easy. Add this to the task.. lets fix it.. and make sure all hosting wrks..
+also the cloudflare account token should be in settings. and as soon as user adds it, it becomes an
+option during all hosting."*
+
+### 17.1 Tabs — Sites | Links | Files are separate tabs on the Hosting page
+
+- The single scrolling panel becomes **a tab bar under the status strip**: `Sites`, `Links`, `Files`
+  (counts as badges: sites count, `linkCount / maxLinks`, `fileCount / maxFiles`).
+- The **status strip** (storage used / files / storage engine) stays visible above the tabs — it is
+  the "what am I allowed to do" read (P1 contract, unchanged).
+- **"More functionalities"** concretely means the capabilities the APIs already have but the UI
+  doesn't expose: **links → open / edit target / delete** (P2 ships `PATCH`/`DELETE /api/hosting/
+  links/<id>`, the panel only renders Copy); **files → visibility toggle (public/private)** (P1
+  ships it in `PATCH /api/hosting/files/<id>`, the panel never shows it).
+
+### 17.2 Premium applies to LINKS the same way it applies to files
+
+- Files already swap their main dial free→premium (`hostingPremiumStorageQuotaMb`). Links get the
+  same treatment: new **`hostingPremiumMaxLinks`** `AdminSetting` column (default **500**), resolved
+  in `resolveHostingCaps` when `premium` is true — **free users keep `hostingFreeMaxLinks` (50)**.
+- Same mechanism as every cap (§14): named AdminSetting field, read server-side on every create,
+  admin-editable live, additive migration only.
+
+### 17.3 Preview as the test step — surfaced, not rebuilt
+
+- The §16.1 **zip → preview → publish** flow already IS the "test before deploying to production".
+  This run makes it **impossible to miss**: every site card shows the two-step hint inline
+  ("1. Upload zip → preview · 2. Check it, then Publish"), the preview badge states the TTL, and the
+  preview link + "Publish to live" are the primary actions on every unpublished revision.
+- No new mechanism. If a flow change would require a new mechanism, it is out of scope for P4.
+
+### 17.4 The Cloudflare account token lives in Settings, and unlocks premium everywhere
+
+- The **Connection section moves off the Hosting page into `dashboard/settings`** (own card:
+  add account / verify / set-default / remove — same `/api/hosting/credentials/*` routes, token
+  never echoed, 4-char hint only).
+- **"As soon as user adds it, it becomes an option during all hosting"** = the moment
+  `status.credentials.length > 0`:
+  - the Sites tab's **engine picker offers `Premium (Cloudflare)`** (with the account chooser);
+  - with **zero** accounts the picker shows a disabled "Premium (Cloudflare) — add an account in
+    Settings" option + a direct hint, so the option visibly *arrives* when the token lands.
+  - The Hosting page keeps a read-only one-line pointer ("Accounts are managed in Settings").
+- **Scope note (assumption, flagged):** file UPLOADS keep the admin-global engine (`hostingProvider`,
+  P1 contract §9) — "all hosting" covers every place a *user* picks an engine (sites). Making the
+  file-storage engine per-user is a separate decision; do NOT silently change upload storage.
+
+### 17.5 "Make sure all hosting works" = the acceptance bar for P4
+
+- `prisma validate` + migration applies to a scratch DB; `tsc --noEmit` 0; eslint clean on touched
+  files; **`test:hosting` green** (with a new assertion: premium swaps `maxLinks` like it swaps the
+  storage quota); `CI=1 next build` exit 0.
+- **Live after deploy:** `GET /api/hosting/status` 200 with `caps.maxLinks 500` for a premium user;
+  upload → link → redirect works; `/hf/<token>` serves; Settings card renders; the engine option
+  appears the moment an account exists.
+- **NOT DONE / not tracked in P4 (flagged for the lead):** (a) a *diff* view or on-demand
+  *re-run* of a preview (before/after comparison between revisions) — the owner's "preview like a
+  test before deploying" is satisfied by the EXISTING zip→preview→publish flow made impossible to
+  miss (§17.3); a diffing/re-run subsystem would be a NEW mechanism and needs its own plan.
+  (b) per-user file-upload storage engine — uploads stay on the admin-global `hostingProvider`
+  (§17.4 scope note); only sites expose the engine choice to users. Both are deliberate scope
+  decisions, not regressions.
+
+

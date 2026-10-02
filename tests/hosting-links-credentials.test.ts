@@ -242,6 +242,7 @@ beforeEach(() => {
     hostingFreeMaxFiles: 500,
     hostingFreeMaxBandwidthGbPerMonth: 50,
     hostingFreeMaxLinks: 3,
+    hostingPremiumMaxLinks: 8,
     hostingPremiumStorageQuotaMb: 10240,
     hostingPagesMaxAssetMb: 20,
     hostingPlatformTokenTtlHours: 24,
@@ -298,6 +299,20 @@ test("createHostedLink: the per-user link cap is enforced (admin dial), and CAMP
   // The campaign link is untouched and still out of the user's list.
   assert.equal(links.find((r) => r.id === "link-campaign")?.clickCount, 7);
   assert.equal((await linksMod.listHostedLinks(USER)).length, 2);
+});
+
+test("createHostedLink: a PREMIUM user gets hostingPremiumMaxLinks, not the free dial (PLAN §17.2)", async () => {
+  adminRow.hostingFreeMaxLinks = 2;
+  adminRow.hostingPremiumMaxLinks = 3;
+  // The fake lib/premium swaps in considers tier >= 5 premium.
+  userRow = { tier: 5, premiumExpiresAt: null };
+  assert.ok((await linksMod.createHostedLink({ userId: USER, target: "https://one.test" })).ok);
+  assert.ok((await linksMod.createHostedLink({ userId: USER, target: "https://two.test" })).ok);
+  assert.ok((await linksMod.createHostedLink({ userId: USER, target: "https://three.test" })).ok);
+  // The FREE dial (2) would already have refused the third link above.
+  const fourth = await linksMod.createHostedLink({ userId: USER, target: "https://four.test" });
+  assert.ok(!fourth.ok && fourth.status === 400 && fourth.code === "quota_links");
+  assert.match(fourth.ok ? "" : fourth.message, /limit of 3 links/);
 });
 
 test("updateHostedLink / deleteHostedLink: a user can only touch their OWN link, never a campaign link", async () => {

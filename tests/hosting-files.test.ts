@@ -76,6 +76,7 @@ function baseCapsSrc(overrides: Partial<HostingCapSource> = {}): HostingCapSourc
     hostingPagesMaxAssetMb: 20,
     hostingPlatformTokenTtlHours: 24,
     hostingFreeMaxLinks: 50,
+    hostingPremiumMaxLinks: 500,
     // TASK_155 P3 — the premium/site dials (defaults mirror the AdminSetting schema).
     hostingPremiumMaxProjects: 25,
     hostingPremiumMaxFilesPerProject: 2000,
@@ -90,12 +91,15 @@ function baseCapsSrc(overrides: Partial<HostingCapSource> = {}): HostingCapSourc
   };
 }
 
-test("resolveHostingCaps: premium swaps ONLY the storage quota, engine picked from admin", () => {
+test("resolveHostingCaps: premium swaps the storage quota AND the link count (PLAN §17.2), engine from admin", () => {
   const src = baseCapsSrc({ hostingProvider: "cloudflare" });
   const free = resolveHostingCaps(src, { premium: false });
   const premium = resolveHostingCaps(src, { premium: true });
   assert.equal(free.storageQuotaMb, 1024);
   assert.equal(premium.storageQuotaMb, 10240);
+  // TASK_155 P4 — links get premium the same way files do.
+  assert.equal(free.maxLinks, 50);
+  assert.equal(premium.maxLinks, 500);
   assert.equal(free.provider, "cloudflare");
   // Abuse dials must NOT differ between tiers.
   assert.equal(free.maxFileSizeMb, premium.maxFileSizeMb);

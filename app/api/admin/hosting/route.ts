@@ -55,6 +55,8 @@ const WRITABLE_FIELDS = {
   modulePriceUsd: { column: "hostingModulePriceUsd", kind: "money" },
   // TASK_155 P2 — the per-user redirect-link cap.
   freeMaxLinks: { column: "hostingFreeMaxLinks", kind: "int" },
+  // TASK_155 P4 — the premium twin (PLAN §17.2): premium links swap to this dial.
+  premiumMaxLinks: { column: "hostingPremiumMaxLinks", kind: "int" },
   // TASK_155 P3 — the §16.3 premium cap family + the §16.6 heavy-load dials, so
   // the later resource-governor task has knobs to turn WITHOUT a schema change.
   premiumMaxProjects: { column: "hostingPremiumMaxProjects", kind: "int" },
@@ -82,6 +84,7 @@ type HostingSettingRow = {
   hostingPlatformTokenTtlHours: number;
   hostingModulePriceUsd: number;
   hostingFreeMaxLinks: number;
+  hostingPremiumMaxLinks: number;
   hostingPremiumMaxProjects: number;
   hostingPremiumMaxFilesPerProject: number;
   hostingPremiumMaxBandwidthGbPerMonth: number;
@@ -111,6 +114,7 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       modulePriceUsd: settings.hostingModulePriceUsd,
       // TASK_155 P2 — the per-user redirect-link cap (see the write hook below).
       freeMaxLinks: settings.hostingFreeMaxLinks,
+      premiumMaxLinks: settings.hostingPremiumMaxLinks,
       // TASK_155 P3 — the premium/site dials (§16.3) + heavy-load dials (§16.6).
       premiumMaxProjects: settings.hostingPremiumMaxProjects,
       premiumMaxFilesPerProject: settings.hostingPremiumMaxFilesPerProject,
