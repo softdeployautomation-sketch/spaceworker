@@ -1,20 +1,26 @@
 # PLAN — Task 155: Workers & Pages (hosting, redirects, files, converters)
 
-**Status: SCOPED + UNBLOCKED + T0 DONE — owner answered §13 on 2026-10-01, supplied a throwaway
-Cloudflare account/token (§13.2), and the T0 spikes are **PASSED with raw evidence** (§9).
-**P1 is BUILT + PROVEN + PUSHED (`a131835`, 2026-10-01) but NOT deployed.** Next:
-**P2 (redirects) → P3 (Pages).**
-**v1 = FREE-FIRST on our own metal** (files + redirects; no Cloudflare needed). Cloudflare
-(Pages, custom domains, bulk redirects, R2) is a *later* engine, never the only path.
-**All caps are admin-editable (§14) — decided by the engineer, changed by the owner in admin.**
+**Status: P1 + P2 BUILT, PROVEN, DEPLOYED and LIVE (2026-10-02) — the Hosting tab is public and
+`hostingEnabled = true`. Next: **P3 (the Pages engine + folder/zip → preview → publish + the
+server/premium engine switch)** — §16 BINDS that build.**
+**v1 = BOTH engines, side by side** — our own metal (free) **and** Cloudflare/Pages (premium,
+platform token). The user picks per item; the picker is in the tab, never a config file.
+**All caps are admin-editable (§14) — decided by the engineer, changed by the owner in admin —
+and they apply to the PREMIUM engine too (§16.3): our Cloudflare account is a shared, finite
+resource, so "premium" is capped as well.**
 **User files are served from the instaweb public family, never the main `spaceworker` host (§15).**
+**Folders go up as a ZIP, we extract them, and they land on a PREVIEW URL first — the user then
+presses Publish and only then does production change (§16.1).**
+**Converters are OFF (§16.5 — decided 2026-10-02): rename-with-unchanged-bytes is the whole file
+feature until the box gets more RAM.**
 **Companion doc: `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` — these two ship hand in hand.**
 
 **Owner's one-line version:** give every SpaceWorker user **one place to put something on
 the internet and get a link** — a web page, a redirect/short link, a file (including a
-*renameable* EXE), a converted file — with **Cloudflare Workers/Pages** as the engine, our
+*renameable* EXE) — with **Cloudflare Workers/Pages** as the engine, our
 own **`dl.*` host** as the free tier, and **the agent doing the work**, so a user with zero
-hosting experience never sees a dashboard, a CLI, or a token.
+hosting experience never sees a dashboard, a CLI, or a token. *(File conversion is deferred —
+§16.5.)*
 
 ---
 
@@ -70,6 +76,16 @@ redirect infra) on the *same* rails, which is why Task 155 and Task 156 are a pa
 | R14 | Token model | **Account API tokens** (service tokens, preferred) vs **user tokens**; permission groups named per product (**Pages**, **Workers Scripts**, **Workers Routes**, **Bulk URL Redirects**, **Account Filter Lists**, **DNS** …) each Read/Edit; tokens can be created **via API** (`POST /accounts/{acct}/tokens`) and verified via `GET /user/tokens/verify` | `/fundamentals/api/...` |
 | R15 | Workers **free plan** | Documented as **100,000 requests/day** + **10 ms CPU**/invocation. **NOT re-verified in this pass** — the pricing page's free-plan table cell was truncated on fetch. Confirm before sizing quotas | (to confirm) |
 | R16 | `wrangler` is CI-safe | Non-interactive when `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` are set; supports versions + rollback | `/workers/wrangler/commands/` |
+| R17 | Pages **preview vs production** (Direct Upload) | Chosen **per deployment**. A **non-production branch** ⇒ preview at **`<hash>.<project>.pages.dev`** plus a **branch alias** **`<branch>.<project>.pages.dev`** (branch lowercased, `/`→`-`). **Every preview carries `X-Robots-Tag: noindex` by default.** | `/pages/configuration/preview-deployments/` — fetched **2026-10-02**, page updated 2026-06-03 |
+| R18 | Promoting a preview → **there is no promote API** | *"Rollbacks allow you to instantly revert your project to a previous **production** deployment… **preview deployments are not valid rollback targets**."* ⇒ **"Publish" = create a NEW production deployment with the same asset hashes**, not a promotion. | `/pages/configuration/rollbacks/` — fetched **2026-10-02**, page updated 2026-04-21 |
+| R19 | **Zip / folder upload** | Wrangler takes **a single folder — "Zip files are not supported"**. Drag-and-drop takes **a zip OR a folder**. Limits: Wrangler **20,000 files**, drag-and-drop **1,000 files**, both **25 MiB/file**. | `/pages/get-started/direct-upload/` — fetched **2026-10-02**, page updated 2026-04-21 |
+| R20 | **Production branch** on a **Direct Upload** project | Not settable in the dashboard — *"you will need to manually call the Update Project endpoint"*: `PATCH /accounts/{acct}/pages/projects/{project}` `{"production_branch":"main"}` | same page, *Troubleshoot → Production branch configuration* |
+
+**R17–R20 are what make the owner's "folder → extract → preview → then live" flow (§16.1) mechanical:**
+we cannot hand Cloudflare a zip (R19), so **we extract it ourselves** (`7z` is already on the box) and
+push the file set with the raw REST flow proven in T0; we get a **preview** by deploying on a
+non-production branch (R17); and "Publish" is **a second, production deployment of the same bytes**
+(R18) — never a promotion call that does not exist.
 
 **What I could NOT verify from the docs in this pass (do not treat as settled):** R4
 (Direct-Upload/build-quota interaction), R15 (Workers free daily/CPU numbers), the exact
@@ -201,7 +217,10 @@ step.
 | **Bulk redirects** | Upload/import a CSV of thousands of redirects | A + CF Bulk Redirects (R11) | BYO + zone |
 | **File hosting** | Upload any file, get a link; set expiry; make public/private | C | ✅ (our `dl.*`) |
 | **Rename without rebuild** | Serve the same bytes under a new filename (`Content-Disposition`), hash unchanged (§4) | C | ✅ |
-| **File type converter** | images (png/jpg/webp/avif, resize), docs (pdf→text, xlsx→csv via existing `xlsx`), archives (7z/zip) | C | ✅ (see §12 gating) |
+| **Folder → site** | Drop a **`.zip`** → we **extract** it → a **preview** URL → **Publish** to a live URL (§16.1); last 3 revisions undoable | B or C | ✅ (our host) / premium (Pages) |
+| **Engine switch, per item** | "Our server (free)" or "Premium (Cloudflare)" — a **migration**, never a silent fallback (§16.2) | B ↔ C | both available |
+| **Bring your own Cloudflare** | Add your own account id + scoped token; stored encrypted; **several accounts**, one default (§16.4) | B | ✅ |
+| ~~**File type converter**~~ | **OFF (§16.5)** — images/docs/video conversion is deferred until the box is upgraded; rename-with-unchanged-bytes is the whole file story for now | — | — |
 | **Agent does it all** | "host this, rename it, give me the link" as one gated action | all | ✅ |
 
 **Template library is a real deliverable, not a folder of HTML.** It ships in-repo
@@ -236,17 +255,27 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
 
 ## 8. UI
 
-- **New nav item "Hosting"** — one entry in `NAV_ITEMS` (`components/dashboard-nav.tsx:36`),
-  icon e.g. `Cloud`. NB the dock/mobile nav are generated from that single array, so this is a
-  one-line change that cannot drift.
-- **Sections:** *Sites* (cards w/ thumbnail + URL + open/copy), *Links* (list + create),
-  *Files* (upload, rename, convert, expiry), *Connection* (token mode, BYO token, scopes
-  checklist, health), *Templates* (gallery).
+- **Nav item "Hosting"** — one entry in `NAV_ITEMS` (`components/dashboard-nav.tsx`) + a matching
+  **dashboard card**; the dock/mobile nav are generated from that single array, so this is a
+  one-line change that cannot drift. **Shipped in P1/P2** (with **Cyber Lab** alongside it).
+- **Sections (P3 final shape):**
+  - ***Sites*** — cards with thumbnail + engine badge (**"Our server"** / **"Premium"**) + URL + open/copy.
+  - ***Folder*** — the §16.1 flow: drop a **`.zip`** → **Extract + analyse** (file tree, total bytes,
+    *"3 files skipped, 1 over the limit"*) → **Preview** (badged *"not live"*) → **Publish**; the last
+    **3 published revisions** are listed with a one-click **undo**.
+  - ***Links*** — list + create (P2: user-owned `/r/<slug|token>`, hit counts).
+  - ***Files*** — upload, **rename** (bytes provably unchanged), **delete**, expiry. **No convert** (§16.5).
+  - ***Connection*** — the §16.4 **account chooser**: one row per credential (platform + each BYO),
+    label · account id · **4-char token hint only** · last-verified stamp · project count · **"Use for
+    new deploys"** radio. Health is green/red from a verify-on-save; a dead token fails **closed**.
+  - ***Templates*** — the P4 gallery (seeded with a few; a template deploys in two clicks).
 - **Zero-experience path first:** the top of the tab is **not** a dashboard — it is a
   one-sentence box ("What do you want to put online?") that hands off to the agent.
-- **EXE build target:** hosting is web-only → add these hrefs to the EXE exclusion logic the
-  same way `BUILD_ALLOWED_HREFS` (`components/dashboard-nav.tsx:52`) already narrows the
-  extractor build.
+- **One picker per item, never a global toggle** (§16.2): *Our server (free)* vs *Premium (Cloudflare)*.
+  Switching engines is an explicit **migration** (preview on the new engine → publish → retire the old),
+  never a silent fallback, and is **locked for the duration of a running job**.
+- **EXE build target:** hosting is web-only → these hrefs are added to the EXE exclusion logic the
+  same way `BUILD_ALLOWED_HREFS` (`components/dashboard-nav.tsx`) already narrows the extractor build.
 
 ---
 
@@ -321,20 +350,59 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
   `external` engines are **registered, not implemented**. `prisma migrate deploy` on production is
   unrun. **Next: P2.**
 
-### P2 — Redirects, user-owned (free, no Cloudflare)
-- Promote the existing `/r/<token>` machinery to user-owned links + custom slugs + hits.
-- **Exit:** create a link in the tab, click it from a real browser, see the click counted.
+### P2 — Redirects, user-owned + BYO credential store + Cyber Lab scaffolding — ✅ **DONE + DEPLOYED + LIVE (2026-10-02, `435d419`)**
+- Shipped: user-owned `/r/<slug|token>` on the Task 30 `LinkRedirect` row (two NULLABLE columns —
+  campaign links untouched); `HostingCredential` (AES-256-GCM, 4-char hint only, one default per
+  provider); the Cyber Lab nav item + dashboard card + dark panel; `hosting` entitlement live.
+- **Proven:** `test:hosting` **39/39**, all **26** `test:*` suites green, `tsc` **0**, `next build`
+  **0**, and a **live authenticated** production `GET /api/hosting/status` → **200 `enabled:true`**.
+  Deploy run **`36933764632`**; nginx **`location /hf/`** added; `HOSTING_PUBLIC_BASE_URL=https://dl.instaweb.top`.
 
-### P3 — Pages engine (BYO token)
-- Connection pane + scoped-token checklist + verify-on-save; deploy a site from a template;
-  return the live `*.pages.dev` URL. **Agent can do it** via a gated proposal.
-- **Exit:** "build me a landing page for X" → a real public URL, produced end-to-end by the agent.
+### P3 — Pages engine + folder→preview→publish + the engine switch (**§16 BINDS this — it is the next build**)
+- **One tab, two engines.** An **Engine** picker on every deployable item: **Our server (free)** or
+  **Premium (Cloudflare)**, premium defaulting to the platform account and accepting a BYO credential
+  (§16.2/16.4). The picker is **data**, not a build flag — flipping it needs no redeploy.
+- **Folder/zip upload → extract → PREVIEW → PUBLISH** (§16.1). The preview is a real, `noindex` URL;
+  Publish is a separate, deliberate act; the last **3 published revisions** are kept for one-click undo.
+- Connection pane + scoped-token **verify on save**; a template deploys in two clicks; the **agent**
+  can do the whole thing as a **gated** `AgentPendingAction` kind `"hosting"`.
+- **Premium is capped too** (§16.3) — platform-account caps are separate, admin-editable, enforced
+  server-side.
+- **Exit:** (a) a user zips a folder, opens the **preview** URL, presses **Publish**, and the
+  production URL serves the same bytes; (b) the same folder on the **premium** engine returns a
+  `*.pages.dev` URL; (c) the agent does it end-to-end from one sentence.
+- **Deliverables (the map — where the code goes):**
+  - `lib/hosting/providers.ts` — **implement the `cloudflare` engine** behind the existing
+    `HostingProvider` interface (the `external` slot may stay a typed `NotReady`): `listProjects`,
+    `createProject` (R20 `production_branch`), `deployFiles` (the raw REST Direct-Upload flow proven
+    in T0), `deployFromTree`, `getDeployment`.
+  - `lib/hosting/extract.ts` (new) — run the §16.1 pipeline: `7z` list → cap check (`hostingMaxZipMb`,
+    `hostingMaxZipEntries`) → `7z` extract into a **staging dir outside the deploy dir** → the §11.1
+    scan → a file tree. Streams; never loads the archive into RSS.
+  - `lib/hosting/sites.ts` (new) — a `HostingSite`/`HostingRevision` state machine:
+    `uploaded → extracted → previewed → published | rejected | expired`, with the single-slot job lock
+    (`hostingMaxHeavyJobsPerUser`) and the `bytesProcessed/entries/durationMs/peakRssMb` metrics (§16.6).
+  - `app/api/hosting/sites/**` (new) — list/upload/analyse/preview/publish/rollback/delete.
+  - `app/api/hosting/credentials/**` — P2 shipped the store; P3 adds the **verify-on-save** wiring
+    used by the chooser (re-verify, stamp `lastVerifiedAt`, mark red on failure).
+  - `app/pv/<token>/route.ts` (new) — the **preview** serve route (our engine), `X-Robots-Tag: noindex`.
+  - `components/hosting-panel.tsx` — add the **Sites**, **Folder**, **Connection (chooser)** and
+    **Engine picker** sections (§8).
+  - `app/api/admin/hosting/route.ts` + the admin **Hosting limits** panel — the new `hostingPremium*`
+    /`hostingMaxZip*`/`hostingPreviewTtlHours`/… caps (§14 P3 table).
+  - **One additive migration** for `HostingSite`/`HostingRevision` (+ any new `AdminSetting` columns),
+    hand-written SQL per HOW_WE_MOVE_FAST rule 2. **Never edit an applied migration.**
+  - `tests/hosting-pages.test.ts` (new) + extend `tests/hosting-files.test.ts`. The `7z` extract and
+    the tree→manifest mapping are **pure** and unit-testable without Cloudflare; mock the REST client.
 
-### P4 — Templates + converters + bulk redirects
-- Template gallery; image/doc/archive conversion; CSV → Bulk Redirects (R11) on a custom zone.
+### P4 — Templates gallery + bulk redirects (**converters are OFF — §16.5**)
+- Template gallery (curated, versioned, agent-readable); CSV → Bulk Redirects (R11) on a custom zone.
+- Image/doc/video conversion is **deferred until the box is upgraded** (owner, 2026-10-02): the
+  rename-with-unchanged-bytes feature (P1) is the entire file story until then.
 
-### P5 — Platform-token "try it" tier + managed pool
-- Cap, quota, reclaim idle platform projects; the multi-account pool + switcher.
+### P5 — Platform-token "try it" tier + managed pool + multi-account switcher
+- Cap, quota, reclaim idle platform projects; the multi-account pool; **switching accounts *during* a
+  job** (§16.2) — *"lets start with one first"* (P2's store is already multi-account capable).
 
 **Ordering rationale:** P1/P2 need **no third party**, so they are fully shippable and
 testable this week; P3 unlocks the "real hosting" story with the user's own free account; P4/P5
@@ -351,6 +419,9 @@ are breadth and scale.
 - **Free tier** = platform token, capped (P5) + our `dl.*` files + our `/r/` links.
 - **Premium** = BYO/managed token, custom domains, R2, bulk redirects. Pricing is
   **configuration**, never code (COMMERCIAL C3).
+- **"Premium is not capped" is a product rule, not a licence** (§16.3): premium has its **own**
+  cap family (`hostingPremium*`), separate from free, admin-editable, enforced server-side — the
+  platform Cloudflare account is a shared asset we own and pay the blast radius for.
 
 ---
 
@@ -373,6 +444,12 @@ safety net **with** it.
    hosting AUP must be accepted at first use.
 5. **Never claim "anonymous".** Links are opaque, not untraceable; do not market this as
    hiding who published.
+6. **Heavy loads are queued and measured, not fired at the box** (§16.6). A zip extract, a Pages
+   deploy and a multi-hundred-file upload run one at a time per user, shell out (`7z`) with a hard
+   timeout + output cap, and record `bytesProcessed`/`entries`/`durationMs`/`peakRssMb` on the job
+   row so the later **resource-governor** task can see and shape them. The **dial** for each is an
+   `AdminSetting` field (§14 rule 1), so the governor task needs no schema change. The governor
+   itself is **out of scope here** — `lib/resource-governor.ts` is not touched in the P3 run.
 
 ---
 
@@ -386,10 +463,11 @@ safety net **with** it.
 | Entitlements + store | ✅ core live (`cyberlab` key already present; `products.ts`) | add `hosting` key + product |
 | Nav/tab plumbing | ✅ single array (`dashboard-nav.tsx`) | one entry |
 | Agent tool calling | ✅ live (`lib/agent.ts`, `AgentPendingAction`) | add `hosting` action kinds |
-| **Image conversion** | ❌ **no `sharp`** in deps; **no ImageMagick** on VPS | add `sharp` (pure npm, no sysdeps) **or** install `imagemagick` |
-| **Doc conversion** | ❌ **no LibreOffice/pandoc** on VPS | install `libreoffice --headless` in the deploy image, or scope to what `xlsx`/`pdfjs-dist` already do |
-| **Archive** | ⚠️ `7z` **present**, `zip`/`unzip` **absent** | prefer the `7z` already installed |
-| **Video** | ❌ `ffmpeg` **absent** | out of scope until demand (heavy dep) |
+| **Image conversion** | ❌ **no `sharp`** in deps; **no ImageMagick** on VPS | **OFF (§16.5)** — not added |
+| **Doc conversion** | ❌ **no LibreOffice/pandoc** on VPS | **OFF (§16.5)** — not added |
+| **Archive** | ⚠️ `7z` **present**, `zip`/`unzip` **absent** | ✅ use the installed **`7z`** for the §16.1 zip extract (never `unzip`) |
+| **Video** | ❌ `ffmpeg` **absent** | **OFF (§16.5)** — deferred until the RAM upgrade |
+| **Folder / zip upload + preview** | ❌ no upload-folder path exists; Cloudflare Direct Upload **refuses zips** (R19) | P3: accept a zip, **extract with `7z`** into a staging dir, preview, then publish (R17/R18) |
 | **R2** | ❌ not configured; needs billing (R13) | premium/BYO path only |
 | **Cloudflare account + token** | ✅ **throwaway account/token supplied 2026-10-01** (§13.2); Account ID `4c822d…0492` | The token verifies `active` and — with the Account ID — `/pages/projects` and `/workers/scripts` return **200** (R2 → **403**, no scope). The **T0 spikes** (25 MiB rejection, Direct-Upload REST, R4/R15) are **DONE + PASSED 2026-10-01** (§9); the custom-domain endpoint was identified but **not** executed (premium-only). The real **platform** token is a production decision. |
 
@@ -475,10 +553,17 @@ P4 (templates/converters/bulk) and P5 (platform tier/pool) are **NOT v1**.
 
 ### 13.3 Still open after 2026-10-01 (do NOT invent answers)
 
-- **Q4 — converters:** heavy binaries (`libreoffice`, `ffmpeg`) on the VPS vs dependency-free
-  (`sharp`, `7z`, `xlsx`, `pdfjs`). **Owner did not answer.** P4 only; recommend dependency-free.
+- ~~**Q4 — converters**~~ → **ANSWERED 2026-10-02: OFF.** Owner: *"for now we dont need converters,
+  just the rename of file upload is enough for file store, we will add converstion later when we
+  upgrade the ram."* So `sharp`/ImageMagick/`libreoffice`/`ffmpeg` are **not** added; the §12
+  conversion rows below are retained only as a record of what a future (post-RAM) phase would need.
 - **R15 (Workers free requests/day)** — not cleanly captured; confirm before P5. *(R4, R5, R1, R3,
-  R7 and the custom-domain endpoint are now RESOLVED — see §9 T0.)*
+  R7 and the custom-domain endpoint are now RESOLVED — see §9 T0; R17–R20 are the 2026-10-02
+  preview/publish/webhook anchors — see §2.)*
+- **NEW (2026-10-02) — the platform Cloudflare account is a *throwaway*.** §16.4 lets a user choose
+  the platform account or their own; the **real production platform token + account** is still an
+  owner decision. Until it is made, premium deploys are **throwaway-account only** and must be
+  labelled as such to the admin (never to the customer).
 
 *Historical (pre-answer) questions retained for provenance:*
 1. Wedge for v1: files+redirects on our own metal (P1/P2), or Pages (P3)? *Rec: P1→P2→P3.*
@@ -518,6 +603,20 @@ D2 (Task 156, Cyber Lab):**
 | `hostingPagesMaxAssetMb` | **20** | MB / file | **Must stay `< 25`** — Cloudflare 500s above 25 MiB (§9). Pre-validate; never forward oversize. |
 | `hostingPlatformTokenTtlHours` | **24** | hours | Owner: free platform-token tier ≤ 1 day before reclaim (§13 Q2). |
 
+**P3 (premium/folder) defaults** — added 2026-10-02, same mechanism, same rules (§16.3/§16.6):
+
+| Field | Default | Unit | Why this number |
+|---|---|---|---|
+| `hostingPremiumMaxProjects` | **25** | projects / user | The account holds only **100** (R1); 25 keeps four heavy users from consuming it. |
+| `hostingPremiumMaxFilesPerProject` | **2000** | files / project | One fifth of the **20 000** Direct-Upload ceiling (R19); bounds upload time + manifest size. |
+| `hostingPremiumMaxBandwidthGbPerMonth` | **200** | GB / month | Soft alert threshold — Pages static egress is free, so this exists to catch abuse, not to bill. |
+| `hostingPremiumDeploymentsPerDay` | **50** | deploys / user / day | Preview + publish are 2 deploys; 50 is generous for a builder, hostile to a script. |
+| `hostingPreviewTtlHours` | **72** | hours | A preview the user never publishes is swept (§16.1); long enough for a weekend review. |
+| `hostingMaxZipMb` | **2048** (2 GB) | MB / archive | Above any realistic site; the extract is streamed via `7z` with a hard timeout + output cap. |
+| `hostingMaxZipEntries` | **20000** | entries / archive | **Exactly the Direct-Upload ceiling** (R19) — refuse above it *before* extracting, with a count. |
+| `hostingMaxHeavyJobsPerUser` | **1** | concurrent jobs | The §16.6 single-slot lock: a zip extract and a deploy never run at once for one tenant. |
+| `hostingPublishedRevisionsKept` | **3** | revisions / project | Enables one-click "undo my last publish" (§16.1) without unbounded storage. |
+
 **D2 (Cyber Lab) defaults** follow the same mechanism and are enumerated in
 `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` §10, but the *mechanism* is decided here: caps go on
 `AdminSetting`, are admin-editable, and are enforced server-side. D2 must not invent a second
@@ -539,6 +638,7 @@ and shorter link straight to download the file."*
 
 1. **Never serve user-uploaded bytes from the main `spaceworker.top` app host.** The hosting
    surface lives on the **`instaweb` public family** (`*.instaweb.top`, wildcard TLS already
+
    covers any single label — see TASK_122 §9), exactly like the public agent
    (`agent.instaweb.top`) and the installer-download host (`dl.instaweb.top`). Measured live
    2026-10-01: `dl.instaweb.top → 404` (host + TLS present, no root content — the natural
@@ -556,4 +656,139 @@ and shorter link straight to download the file."*
 
 **Consequence for §9 phasing:** P1's serving route is built host-agnostic (`/dl/<token>`-style)
 and reads `HOSTING_PUBLIC_BASE_URL`; the owner flips the host in admin/env, not in code.
+
+
+---
+
+## 16. Owner additions 2026-10-02 — BINDING (this IS the P3 build spec)
+
+Owner, verbatim: *"for the workers and pages, no option to upload folder and we extract and push to
+preview first and then live, and they should be option to switch between the server and the premium,
+we use the cf throway i gave you for premium, nothing that using premium is capped… we need both
+option available and option for users to add there own cf tokens and id, and if users add multiple
+like 3, we should be able to switch between them for hosting and give a smooth page, lets start with
+one first… yes use the throway cf acct for p3… for now we dont need converters, just the rename of
+file upload is enough for file store, we will add converstion later when we upgrade the ram."*
+
+Five decisions follow. **P3 is the build; P4/P5 sit behind it.**
+
+### 16.1 A folder goes up as a ZIP, is extracted, and lands on a PREVIEW first — then Publish
+
+The owner's exact flow — *"no option to upload folder … we extract and push to preview first and then
+live"* — is **four states**, and nothing is *live* until the user says so:
+
+| # | State | What the user sees | What the server does |
+|---|---|---|---|
+| 1 | **Upload** | drops a `.zip` **or** multi-selects files | stores the archive **outside** the app dir; never extracts in place |
+| 2 | **Extract + analyse** | a file tree, total bytes, and *"3 files skipped, 1 over the limit"* | `7z` (already on the box) into a **staging dir outside the deploy dir**, then the §11.1 scan + §14 caps |
+| 3 | **Preview** | a **preview URL**, badged **"not live"** | our engine: `https://dl.instaweb.top/pv/<token>/…`; premium: a **non-production branch** deployment → `<hash>.<project>.pages.dev` (R17). Both **`X-Robots-Tag: noindex`** |
+| 4 | **Publish** | *"Publish to live"* → the **production** URL | **a second deployment of the SAME asset hashes** on the production branch (R18) — never a re-upload, never a "promote" call (it does not exist) |
+
+**Rules that make this safe and testable:**
+- **The preview is a real URL the user can open, share and re-open later.** For the free engine it
+  lives on the **same `dl.*` origin as their files** (one link style for the whole product); for
+  premium it is the `*.pages.dev` preview URL. **It is never the URL we advertise as "your site".**
+- **Publish is deliberate, idempotent and reversible.** Keep the **last 3 published revisions** per
+  project; "undo my last publish" is one click (a DB pointer change we own, not a Cloudflare delete).
+- **The zip is never trusted.** Zip-slip (`../`), absolute paths, symlinks, hardlinks, nested zips,
+  >20,000 entries, and per-file `> hostingPagesMaxAssetMb` are **rejected by name**, before extraction
+  completes. A rejected archive leaves **zero** partial state (staging dir is wiped).
+- **Preview → Publish must not move bytes twice.** Publish reuses the uploaded asset hashes
+  (the T0 flow: `check-missing` → `upload` → `upsert-hashes` → `deployments`); if the bytes are
+  already on Cloudflare, publish is a **manifest-only** call.
+- **A preview costs a cap slot but not a "live site".** `hostingFreeMaxFiles`/quota count the
+  extracted set; the preview URL is inside `hostingPreviewTtlHours` (default **72 h**) and is swept
+  when it expires without a publish.
+
+**The free engine gets the same shape.** `/pv/<token>/…` is a *staging* tree served by the same
+`/hf/`-style nginx location; publishing promotes the staging tree to the live tree (an atomic rename
+inside `HOSTING_STORAGE_DIR`) and mints the stable `/hf/<token>` link. Same four states, no
+Cloudflare, no third party — so the flow can be built and proven **before** the Cloudflare path.
+
+### 16.2 One picker, two engines — "our server" vs "premium", per item
+
+Owner: *"they should be option to switch between the server and the premium."*
+
+- **Engine is a per-item column, not a global setting.** `HostedAsset.engine` (`local` | `cloudflare`)
+  already exists for files; P3 adds the same idea for **sites** (`HostingProject.engine`).
+  A user can host page A on our metal and page B on Cloudflare, in the same tab, at the same time.
+- **The picker shows the truth, live.** Each option carries what it actually costs and does:
+  *Our server — free, instantly live, files served from `dl.instaweb.top`, custom domains not
+  available* vs *Premium (Cloudflare) — global edge, `*.pages.dev` and custom domains, subject to the
+  premium caps (§16.3)*. **Never a silent fallback**: if premium fails, the item stays on premium and
+  the error is plain language; we do **not** quietly host it on our metal.
+- **Switching an item's engine is an explicit migration**, not a toggle: *"Move this site to Premium"*
+  → a preview deploy on the new engine → the user publishes → the old engine's copy is retired after
+  the new one is verified 200. Until then **both URLs work** (that is the safe rollback).
+- **Which credential powers premium** is a separate, adjacent choice (§16.4): the **platform**
+  account (ours, capped) or one of the user's **own** accounts.
+- **During a *job*** (a running multi-hundred-file deploy) the account is **locked** for that job,
+  because a switch mid-upload would split a manifest across two accounts. Switching *between* jobs is
+  free. *(That lock is the only "start with one first" concession left, owner A5.)*
+
+### 16.3 Premium is capped too — "nothing that using premium is capped" is a *product* rule, not a licence
+
+Owner: *"nothing that using premium is capped"* = premium **is what users pay for**, so its caps must
+not be the free tier's caps. It does **not** mean "no limits": the platform Cloudflare account is a
+shared, finite asset we own and pay the blast radius for.
+
+- **Separate cap family**, admin-editable, enforced server-side, exactly like §14:
+  `hostingPremiumMaxProjects`, `hostingPremiumMaxFilesPerProject`, `hostingPagesMaxAssetMb` (**hard
+  `< 25`**), `hostingPremiumMaxBandwidthGbPerMonth`, `hostingPremiumDeploymentsPerDay`.
+- **One platform account, many tenants.** Every premium deploy is recorded (`HostingProject`) so
+  admin can see, per user and per project, what the shared account is carrying, and revoke/reclaim.
+- **A user's own account is capped by *us* too, but generously** — an abuse ceiling, not a paywall:
+  we refuse to exceed *their* limits silently, and we surface Cloudflare's own error in plain words.
+- **The 100-project ceiling is real** (R1). `hostingPremiumMaxProjects` is the lever; a project is
+  reclaimed only when its last published revision is idle past `hostingPlatformTokenTtlHours` (§14).
+
+### 16.4 Multiple credentials, and a smooth switch "between them"
+
+Owner: *"option for users to add there own cf tokens and id, and if users add multiple like 3, we
+should be able to switch between them for hosting and give a smooth page, lets start with one
+first."*
+
+- **The store is already multi-account** (P2: `HostingCredential`, one `isDefault` per provider).
+  P3 adds the **chooser** and the **project↔account binding**.
+- **The smooth page = one row per account**, each with: label, account id, **4-char token hint only**
+  (never the token), last-verified stamp, project count, and **"Use for new deploys"**. Switching is
+  a **radio**, not a form: pick account → the next deploy binds to it → existing projects keep the
+  account they were built on (a project's account is **immutable**; moving it is the §16.2 migration).
+- **Verify on save, and re-verify on use.** `GET /user/tokens/verify` + a cheap
+  `GET /accounts/{id}/pages/projects?per_page=10` (the `per_page=50` gotcha is a **trap** — see §13.2).
+  A dead token marks the row red and **fails closed** with plain language; it never silently falls
+  back to the platform account.
+- **Exactly one default.** Setting a new default clears the old one in the same transaction (§P2).
+- **"Start with one first"** is honoured: P3 ships the chooser + binding + verify; **switching during
+  a live job stays locked** and the managed pool is P5.
+- **Never echo a token.** Not in a response, a log, an AI prompt, an error, a screenshot, or a
+  support bundle. The 4-char hint is the maximum that ever crosses the wire (§11). Tokens at rest are
+  AES-256-GCM via the existing `lib/mailbox-crypto.ts` — **do not fork the helper**.
+
+### 16.5 Converters are OFF (owner, 2026-10-02)
+
+*"for now we dont need converters, just the rename of file upload is enough for file store, we will
+add converstion later when we upgrade the ram."* ⇒ **P4's converters are cancelled, not merely
+deferred-with-a-date.** `ffmpeg`/`libreoffice`/ImageMagick stay **off** the box; `sharp` is not added.
+The file feature is: **upload → rename (Content-Disposition, sha256 unchanged) → link → delete**, plus
+the §16.1 folder/preview flow. Any doc or prompt that implies conversion exists is **wrong** — fix it.
+
+### 16.6 The RAM shadow over all of this (recorded, not built — owner A8)
+
+Owner: *"we need every hard load monitored and queued properly, so the governor can also adjust to
+everything… lets build first, and when we are done, we will update the governor to understand the
+load and adjust users accordingly."*
+
+- **Do not touch `lib/resource-governor.ts` in the P3 run.** *(That is the separate, later task.)*
+- **Do** make P3's heavy steps **measurable and queueable**: a zip extract, a Pages deploy, and a
+  multi-hundred-file upload are exactly the loads the governor will need to see. P3 therefore:
+  (a) runs them behind a **single-slot lock per user** (no two heavy hosting ops for one tenant);
+  (b) records `bytesProcessed`, `entries`, `durationMs`, `peakRssMb` on the job row;
+  (c) exposes the **concurrency dials** as `hosting*` `AdminSetting` fields so the governor task has
+  a knob to turn **without a schema change**;
+  (d) never runs an extract **inside the Next.js request process** if it can shell out to `7z` with a
+  hard timeout + output cap (a 1 GB zip must not become 1 GB of RSS).
+- **The Cyber Lab is the other heavy consumer.** Its RAM dials are already recorded (D2 caps); when
+  the governor task lands it must see **both** families through the same `AdminSetting` mechanism
+  (§14 rule 1) — one mechanism for hosting caps, lab caps and governor dials, never three.
 

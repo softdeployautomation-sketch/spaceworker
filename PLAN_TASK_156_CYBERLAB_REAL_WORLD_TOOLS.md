@@ -1,6 +1,9 @@
 # PLAN — Task 156: Cyber Lab, real-world (attack + defense, inside the law)
 
 **Status: RESEARCH / SCOPING — not started. Owner-requested 2026-10-01.**
+**§12 (owner addendum 2026-10-02) is BINDING for what the lab must actually be** — the research gate,
+the email/DNS/server classes, the on-your-own-VM customer shape, the easy-plus-powerful UX and the
+Linux tooling charter. Read §12 before §5.
 **Companion doc: `PLAN_TASK_155_WORKERS_AND_PAGES.md` — owner: *"the cyberlaw and
 workers/pages features go hand in hand… the workers need to be ready so the Cyber Lab has
 enough tools to use."* 155 is a **hard dependency** for the lab's simulation infrastructure
@@ -156,6 +159,8 @@ where it runs, who may use it, its license, and what evidence it produces.**
 | Class | Tools | Runs on | Gate | Note |
 |---|---|---|---|---|
 | **Recon / surface** | `nmap`, `nuclei`, `httpx`, `testssl.sh`, `ffuf` | lab host → attested targets | staff now; pro later | `nmap` is apt-installable on this box (candidate 7.91) |
+| **Email** (§12.2 — NEW 2026-10-02) | `checkdmarc`/`dkimpy`/`swaks` (auth+analysis); **GoPhish** (phishing-sim); `smtp-user-enum`/`hydra` (range only) | lab host + range mail VM | auth/analysis = all; campaign = staff→customer post-L4; SMTP attack = range+attested | the class the matrix under-served; every row carries a legal-basis note |
+| **DNS** (§12.3 — NEW 2026-10-02) | `dnsrecon`, `fierce`, `dnsx` (recon); `dnscat2`-class (exfil demo, range only); resolver audit | lab host + range resolver | recon/audit = attested only; exfil demo = range only | DNS volume+entropy watched by the §5.2.2 egress sentinel |
 | **Adversary emulation** | **MITRE Caldera** (Apache-2.0) + **Atomic Red Team** | lab host | staff | the engine; must stay isolated (its own docs warn the UI is not hardened) |
 | **Exploitation** | Metasploit-class, Impacket, BloodHound/SharpHound, kerbrute | lab host | **range + attested only** | highest blast radius |
 | **C2 / post-ex** | Sliver/Havoc-class frameworks | disposable range VMs | **staff-only, v1** | never customer-facing in v1 |
@@ -327,3 +332,175 @@ deployed, ≥2 victim VMs with the Vantra agent, and the C0 AUP text.
 - **`PLAN_TASK_91_CYBER_LAB_RED_TEAM.md`** stays **superseded**.
 - **`PLAN_TASK_155_WORKERS_AND_PAGES.md`** is a **dependency**, not merely a related doc: build
   155's P1/P2 (files + redirects on our own metal) before the lab's simulation infrastructure.
+
+---
+
+## 12. Owner addendum 2026-10-02 — BINDING (what the lab must actually *be*)
+
+Owner, verbatim: *"let me see what the cyberlab would be all about and be sure it meets todays hackers
+world attack and not some stale tools, we need to be able to simulate all kind of emails, dns, server
+attack, we need to make research and since we use a linux box, there should be enough hacking tools we
+can add from there, and make it easy for users and powerful, a to end simulation on the users personal
+vm =, we just create the attack simulation from spaceworker."*
+
+Seven rulings follow. They **refine** §5's matrix and add the classes it under-served (email + DNS);
+they do **not** overturn §5.2 (the abuse sentinel), §4 (where the machines are) or §7 (the phasing).
+**C0–C6 still gate everything.** The one addition is that C2+ now has a **required research step
+(§12.1)** before a tool is offered, and the customer-facing shape is the **§12.5 on-your-own-VM**
+model, not a shared range.
+
+### 12.1 "Not stale tools" — a research gate, not a wishlist
+
+*"be sure it meets todays hackers world attack and not some stale tools … we need to make research."*
+
+A tool is **not** added because it is famous; it is added because it is **current**. The gate is a
+repeatable, auditable artefact we own, not a vibe:
+
+- **One row per capability in a `LabToolCatalog`** (C1 schema, §6) with: MITRE ATT&CK technique id(s),
+  **last-reviewed date**, **upstream version + release date**, CVE history, licence, derivation
+  (which real-world campaigns/APT reports used it in the last 12–18 months), and a **stale-after**
+  date. A capability whose `staleAfter` has passed is **hidden from the UI automatically** and shows
+  "refresh required" in admin — the exact opposite of a tool list that quietly rots.
+- **A Research cadence** (a small scheduled job + an admin page): refresh ATT&CK (its releases are the
+  versioned spine), pull the newest Sigma/YARA rule packs, newest `nuclei` templates, and the current
+  Atomic Red Team atomics; record every pull with a diff + date, so "we are current" is a **timestamp
+  we can show**, not a claim. This is *the* answer to "not stale".
+- **Research is a lab capability, not a background chore:** the same page is where an operator notes
+  *"this TTP is trending — add it"* and mints a `LabToolCatalog` draft. It is the research→tool→test
+  loop the owner asked for.
+- **Nothing in this gate runs an attack.** It reads public feeds and writes catalog rows.
+
+> Provenance note: this is a **plan**, so the ATT&CK "current release" figure is asserted here, **not
+> measured live in this session** — C1 must pin the actual current ATT&CK release when it builds the
+> catalog, and record the date it did.
+
+### 12.2 Email — the class the plan under-served (simulate **all kinds of emails**)
+
+*"simulate all kind of emails."* The plan had a one-line mention of a "phishing-sim page"; that is not
+enough. Email is now a **first-class class**, splitting into **defence training** (safe, runs anywhere,
+→ a `DetectionPack`) and **attack emulation** (attested-target only, staff-first):
+
+| Sub-class | What we simulate | Tools / how | Gate |
+|---|---|---|---|
+| **Deliverability / auth** | SPF · DKIM · DMARC · **BIMI** · MTA-STS · DANE: *why* a spoof fails vs lands | `checkdmarc`, `dkimpy`/`opendkim-testmsg`, `swaks`, our own header parser | **all tiers, on YOUR own domain** — pure analysis, no sending |
+| **Header / phishing analysis** | parse a real `.eml`, score it, show the *exact* spoof tell | `mailspoof`-class checks, `emailhop`-class chain tracing, the 155 extractor rail | all tiers, **defensive** |
+| **Phishing simulation (campaign)** | send a **watermarked, range-only** lure to **consenting** in-org addresses; track opens/clicks/reports | **GoPhish** (self-hosted on the lab host) for orchestration + the 155 template library for the landing page | **staff now; customer only post-L4 fences**; recipients must be attested `LabConsent` addresses |
+| **SMTP/IMAP attack emulation** | relay abuse, auth brute, STARTTLS downgrade, header injection — **against a disposable range mail VM** | `swaks`, `smtp-user-enum`, `hydra` (**range only**), `openssl s_client` | **range + attested only** |
+| **Email-borne payload hygiene** | does *this* attachment actually detonate? | ClamAV + **YARA** on the range VM (never a real inbox) | all tiers, sandboxed |
+
+**Hard lines (§5.2, restated because email is abuse-prone):** we never send to a third party's inbox,
+never spoof a domain we/the user do not control, never build spam/fraud tooling. A phishing
+*simulation* targets **consenting, attested recipients of the tenant's own organisation**; anything
+else is refused and reported. The `LabToolCatalog` row for a spoof-class tool must record the legal
+basis and the allow-list check.
+
+### 12.3 DNS — simulation we own, not a rented bypass
+
+*"…dns… attack."* DNS is both an attack surface and *the* exfiltration channel, so it gets its own
+class (§5.1's matrix had none):
+
+| Sub-class | What we simulate | Tools / how | Gate |
+|---|---|---|---|
+| **Recon / zone discovery** | enumerate a name's records; find dangling records (takeover) | `dnsrecon`, `fierce`, `dig`/`dnsx`, our own resolver | **attested names only** |
+| **DNS exfil / tunneling** | detect (and, in a range, demonstrate) covert exfil over DNS | `dnscat2`-class + **Zeek/Suricata DNS logs** to prove detection | **range + attested only**; the *demo* runs on our own lab domain |
+| **Poisoning / rebinding (education)** | why rebinding/poisoning works, in a **closed range resolver** | a range-local resolver; **no real recursion** | **range only** |
+| **Resolver / config audit** | open resolver, DNSSEC missing, weak NS — the *defensive* checklist | `dnsdiag`-class, `delv`, our own checks | all tiers, on **your** zones |
+
+**Rule:** DNS offensive tooling may only resolve/query **domains in the attested inventory**, and the
+egress sentinel (§5.2.2) watches DNS volume + entropy to catch exfil attempts even inside a range.
+
+### 12.4 Server / host + network attack simulation
+
+*"…server attack."* §5.1 already lists these tools; the ruling here is that they are organised as
+**scenarios a user can run**, not a bag of binaries:
+
+- **Reconnaissance → exploitation → post-ex → detection** as a **chain** (that is what a real attack
+  is), each stage emitting its evidence into the one `LabEpisode` (§5, §8). Caldera + Atomic Red Team
+  are the emulation engine; `nmap`/`nuclei`/`ffuf` are the surface stage; Metasploit/Impacket-class is
+  the exploitation stage; Sliver-class C2 is **staff-only v1** (§5.1).
+- **Server attacks are run against a range VM or an attested host, never a third party** — the §5.2.1
+  pre-flight allowlist is the gate, and the §8.2 refusal demo proves it fires.
+- **Network-layer evidence is mandatory** (`tcpdump` already on the box; Zeek/Suricata to add) so a
+  "landed" claim is backed by packets, not by the tool's own output.
+
+### 12.5 End-to-end on the **user's own VM** — SpaceWorker authors, the VM executes
+
+*"a to end simulation on the users personal vm =, we just create the attack simulation from
+spaceworker."* This is the **customer-facing shape** and it is deliberately different from the staff
+lab range:
+
+```
+  ┌────────────────────────┐   author + gate    ┌──────────────────────────────┐
+  │ SpaceWorker (prod VPS) │──────────────────▶ │  USER'S OWN VM (their RAM)    │
+  │  author the simulation │  AgentPendingAction │   - Vantra agent installed    │
+  │  scenario catalog·audit │  signed, one-time   │   - runs the scenario         │
+  │  landing pages (155)   │◀────────────────── │   - streams telemetry back    │
+  └────────────────────────┘   LabEpisode evid.  └──────────────────────────────┘
+```
+
+- **We create the simulation; their VM is the execution substrate.** The heavy RAM (VMs, C2, cracking)
+  lives **on the user's machine**, not on our box — which is exactly the owner's A8 "monitor the load"
+  story: the governor (§16.6 of 155) sees a *signed job*, not a VM on our metal.
+- **Delivery is the same gated primitive as everything else:** an `AgentPendingAction` kind
+  `"lab-action"` → human approves → the Vantra agent **pulls** the scenario (outbound, no inbound
+  port) → runs it in the user's sandbox → streams `LabEpisode` evidence back → we audit + map to ATT&CK.
+- **Their VM is their attestation.** Onboarding the VM = the user attesting *"this machine is mine and
+  I authorise simulations on it"* (`LabConsent`, scoped to that device id). That single act is what
+  makes firing at it lawful **and** keeps us from ever touching a third party.
+- **Still gated at C6 for customers** (L4 fences + AUP + lawyer) — the personal-VM model does **not**
+  replace the AUP; it makes the customer track *implementable* without us hosting attack VMs.
+- **Honest limit:** "end-to-end on your VM" is the **target customer model**; v1 (staff) may still use
+  owner-LAN VMs (§4). Do not claim the customer path works until C6 is built and a real
+  user-authored→user-VM→evidence loop is watched end-to-end (§8).
+
+### 12.6 "Easy for users and powerful" — the UX contract
+
+*"make it easy for users, and powerful."* Power with a wall of flags is not a product. The contract:
+
+- **One sentence in, a scenario out.** The Assistant (Task 155's agent rail) turns *"simulate a
+  credential-phishing email against my office and show me what a defender would see"* into a **draft
+  scenario**: chosen class (email/DNS/server), chosen tools, chosen targets, expected evidence. The
+  user reviews and approves; nothing runs from chat directly.
+- **Scenario cards, not a terminal.** Each card shows: class, what it does, **which attested targets it
+  will touch**, the caps it consumes, and the evidence it will produce. "Powerful" = the full
+  capability matrix; "easy" = the catalog + the card + the assistant do the selection.
+- **Every run ends with a report a human can act on**: an **ATT&CK coverage matrix**, the raw evidence
+  chain, and a **retest** button (§8). That report is the payoff that makes the power legible.
+- **Guardrails are part of the UX, not hidden:** a refused target shows *why* (not attested) in plain
+  language, with the one action that would make it lawful (add it to your inventory). This is §5.2.3's
+  intent classification made visible.
+
+### 12.7 The Linux box — the tooling charter
+
+*"since we use a linux box, there should be enough hacking tools we can add from there."* True, and it
+is a **charter**, not a free-for-all:
+
+- **Where tools go (unchanged, §4/§9):** the **lab host** (second VPS / LAN box) and the **user's own
+  VM** (§12.5) — **never the production app host**. Prod keeps `tcpdump` and (optionally) purely
+  **defensive** tools.
+- **Every install is a catalog row** (§12.1) with licence + version + ATT&CK mapping + a `staleAfter`
+  date. No tool appears in the UI without one.
+- **Packaging:** prefer distro packages / pinned containers over curl-pipe-bash; the lab host is
+  isolated and token-auth only (§4). A tool that cannot be versioned cannot be catalogued, and is
+  therefore not added.
+- **The governor is watching (A8).** Nothing here is built to run two heavy things at once; the lab
+  inherits the same single-slot/queue discipline as hosting (155 §16.6) and `requestSlot()` remains the
+  single admission authority (TASK_105 rule).
+
+### 12.8 Effect on the phasing (§7) — what actually changes
+
+- **C1** gains the **`LabToolCatalog`** table + `staleAfter`/last-reviewed columns and the **Research
+  admin page** (read-only feeds; no attack). This is additive to §6.
+- **C2** is unchanged in shape (Caldera on a non-production host, one smoke scenario) but the smoke
+  scenario must be a **documented catalog row**, and a **Zeek/Suricata** capture must be part of its
+  evidence.
+- **C3** (episode + evidence chain) is where the **email/DNS/server** classes first produce a real
+  report; email-auth and DNS-audit (the *defensive* rows) can ship **before** any offensive row.
+- **C4–C6** unchanged: sentinel → detection pipeline → gated customer track. §12.5's personal-VM model
+  is what C6 *is* for customers.
+- **Unchanged absolute:** nothing customer-facing until C0's AUP + lawyer sign-off. §12 expands *what*
+  the lab can do; it does not move the fences.
+
+**What this addendum explicitly does NOT authorise:** targeting third parties, mass internet scanning,
+spam/fraud tooling, spoofing domains the tenant does not control, or any customer-facing offensive run
+before C0/C4/C6. Those are §5.2 "hard lines" and remain non-configurable.
