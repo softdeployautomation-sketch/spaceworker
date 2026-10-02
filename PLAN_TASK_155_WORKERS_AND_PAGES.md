@@ -860,3 +860,290 @@ option during all hosting."*
   decisions, not regressions.
 
 
+
+
+## 18. Owner addition 2026-10-02 (after P4) — Domains tab. SCOPED, NOT BUILT (this IS the P5 spec)
+
+Owner, verbatim: *"i am thinking we should be able to allow users add domain, if there is an automation
+we can do or if the user needs to add something or whatever. lets try to add domain tab as well, so
+users can choose that domain instead of the link. we can scope this for the next task so its well
+grounded."*
+
+This section is the **grounded scope**. It is written so P5 can start with zero further discovery.
+It is deliberately NOT binding until the lead answers §18.9 — the delivery path (§18.2) has a
+VPS-side consequence that is a genuine decision, not a detail.
+
+### 18.0 The ask, restated as a build target
+
+A **Domains** tab (a 4th tab beside Sites | Links | Files) where a user:
+1. **adds a domain they own** (`go.acme.com`, `links.acme.io`, …),
+2. **proves they own it** (one DNS record — the pattern already exists, §18.1),
+3. **binds it to something they already have** — a short **link** (the primary ask: "choose that
+   domain instead of the link"), and, in the same shape, a **hosted site** or a **file**,
+4. after which the thing is reachable at **their** domain instead of `spaceworker.top/r/<slug>`.
+
+"if there is an automation we can do or if the user needs to add something or whatever" is answered
+concretely in §18.3: **exactly one DNS record is unavoidable** (nobody can add a record in a zone
+they don't control), and **everything after that record is automatable** — and we already run the
+exact automation primitive needed (§18.1, the `sudo -n` helper).
+
+### 18.1 What exists today vs what is missing (all verified in-tree, 2026-10-02)
+
+**Exists — reuse, do not rebuild:**
+
+| Thing | Where | Why it matters here |
+|---|---|---|
+| **DNS TXT verification, live** | `lib/sending-domains.ts` (`txtRecords()` via `node:dns/promises`, `verifySendingDomainDns`) | The ownership-proof engine already exists, including the *"a transient SERVFAIL reads as not-published; verify is explicit + repeatable"* philosophy (comment at `txtRecords`). Domains must use the **same** shape, not a new one. |
+| **Privileged host commands from app code** | `lib/sending-domains.ts` → `sudo(args)` = `execFile("sudo", ["-n", …])`, used for `/bin/cp`, `/bin/chown`, `systemctl reload opendkim` | **This is the automation primitive.** `sudo -n` fails fast (never hangs on a prompt). Whatever nginx/certbot automation P5 does runs through this same helper — no new privilege mechanism. |
+| **Premium cap resolution** | `lib/hosting/rules.ts` → `resolveHostingCaps(src, { premium })` (§17.2 just extended it for `maxLinks`) | Domains get a cap dial the same way (§18.6). |
+| **Public base URL** | `lib/hosting/providers.ts` → `hostingPublicBase()`; `PUBLIC_LINK_BASE_URL` in `lib/env.ts` | Every "your URL is X" string already flows through here; a domain swap must route through it too. |
+| **The tab skeleton** | `components/hosting-panel.tsx:153` → `useState<"sites" \| "links" \| "files">` | Adding `"domains"` is a one-word change to the union + a tab body. |
+
+**Missing — the real work:**
+
+1. **No `Host`-aware serving anywhere.** Every public route is token-in-path: `app/r/[token]/route.ts`,
+   `app/hs/[token]/…`, `app/pv/[token]/…`, `app/hf/[token]`. A custom domain arrives as a **`Host`
+   header**, so a resolver that maps `Host → binding` is genuinely new code. `grep` for
+   `x-forwarded-host` / `headers().get("host")` across `app/` and `lib/` returns **nothing** today.
+2. **No Next.js middleware.** No `middleware.ts` at any level. Host-based routing must be introduced
+   deliberately (see §18.2 — it may not need middleware at all).
+3. **nginx is single-host and applied by hand.** `deploy/nginx-spaceworker.conf` has exactly one
+   `server_name spaceworker.top;`, one shared cert (`/etc/letsencrypt/live/instaweb.top/…`), and its
+   own header says it is **"NOT part of the automated Build & Deploy pipeline — applied by hand
+   (`nginx -t` then `systemctl reload nginx`)."** A custom domain cannot reach the app through this
+   config as-is: an unknown `Host` gets no matching vhost.
+4. **No wildcard / catch-all cert.** Let's Encrypt per-domain issuance (or a CF edge) is required
+   for TLS on a user's domain; there is no wildcard today.
+5. **The Cloudflare client is Pages-only.** `lib/hosting/cloudflare.ts` exposes `verifyCredential`,
+   `ensureProject`, `deployTree` — **no** zone/DNS/custom-domain calls.
+6. **No `HostingDomain` model.** `prisma/schema.prisma` has `HostingSite`, `HostedAsset`,
+   `LinkRedirect` (with `slug`), `HostingCredential` — and nothing that stores a hostname.
+### 18.2 The delivery path — the ONE decision that shapes everything (§18.9 Q1)
+
+A custom domain can reach content two ways. Both are buildable; they are NOT equivalent in
+cost, risk, or how many moving parts live on our VPS.
+
+**Path A — "Cloudflare edge" (user's domain is already on Cloudflare).**
+The user's domain is in *their* Cloudflare account (the same account we already hold a
+`HostingCredential` token for — `hostingCredentialId`). We add the hostname as a **custom domain
+on the CF project** via the Pages API (`POST /accounts/{id}/pages/projects/{project}/domains`,
+new call in `lib/hosting/cloudflare.ts`). Cloudflare then owns **DNS + the TLS certificate** for
+that hostname. **Zero new nginx work, zero certbot, zero new privileged commands** — all of it
+happens inside the user's own CF account, which they own and can revoke.
+- Pro: cheapest, safest, no VPS change, self-scoped to the user's account, TLS is CF's problem.
+- Con: **only works for CF-engine sites** (Pages), so v1 would cover Sites, not the Links that are
+  the owner's actual ask. And it needs the domain to be on CF + our token to carry the
+  `Zone: DNS: Edit` / `Pages: Edit` scopes.
+- **Feasibility must be probed live before promising it** (§18.9 Q1): does the BYO token scopes
+  permit the domains call, and does Pages custom-domain attach need the user to add the CNAME it
+  returns, or does CF auto-create it? The Pages domains endpoint historically returns the
+  DNS record the user must add — so this path is **"one DNS record the user adds"**, exactly
+  consistent with §18.3.
+
+**Path B — "our metal" (domain points at our VPS).**
+The user points an `A`/`CNAME` at `spaceworker.top` (or the VPS IP). Then WE must:
+   (a) **accept the unknown `Host` in nginx** — a catch-all `server_name _` vhost with a default
+       cert, or a per-domain vhost written on activation; and
+   (b) **present a valid cert for THEIR domain** — Let's Encrypt per-domain issuance
+       (`certbot`/`acme.sh`, DNS-01 or HTTP-01) and an `nginx` reload.
+- Pro: **works for Links, Sites and Files uniformly** — one mechanism covers the whole product,
+  and the owner's headline ask ("choose that domain instead of the link") is a Link.
+- Con: **this is where all the cost and risk is.** It means (i) a hand-applied nginx change first
+  (today's config has no catch-all — §18.1.3), (ii) per-domain cert automation running as
+  privileged (`sudo -n` — the primitive exists, §18.1, but it must be granted for `certbot`,
+  `nginx -t` and `systemctl reload nginx` in sudoers, which is a **deploy-time/hand** action on
+  the box, not something the app can grant itself), and (iii) an abuse surface: a user who points
+  a hostile/parked domain at us is now served by our metal.
+- **Feasibility must be probed live** (§18.9 Q1): confirm whether `certbot` is even installed, what
+  the current sudoers grant is, and whether the maintenance-vhost pattern in
+  `deploy/nginx-spaceworker.conf` generalises cleanly to a wildcard catch-all.
+
+**Recommendation (for the lead to ratify, §18.9 Q1): phase the delivery path.**
+- **P5a = the whole tab, the model, verification, and BINDING — with Path A wired for Sites**
+  (CF custom domain, one returning DNS record the user adds) **and the Links half specified but
+  inert** until Path B lands. Everything except *serving a Link on our metal* is fully deliverable
+  in P5a, and it is deployable (additive, NULLABLE, no serving change, no nginx change).
+- **P5b = Path B** (nginx catch-all + per-domain cert + the `Host`→Link/Site/File resolver). This
+  is the piece with the hand-applied nginx change and the sudoers grant, so it is its own run with
+  its own live-verification bar. Do NOT bundle it into P5a.
+
+This keeps the promise truthful: the tab ships, verification ships, binding ships, CF-hosted sites
+get real custom domains — and the Link-on-our-metal half is built as soon as the box is prepared,
+not faked in the meantime.
+
+### 18.3 "what can we automate vs what must the user do" — the honest split
+
+| Step | Who | Automatable? | Mechanism |
+|---|---|---|---|
+| Add the domain to the tab | **user** | — | the new Domains tab form |
+| Prove ownership / point it at us | **user** | ❌ **unavoidable** — no one can write a record in a zone they do not control | **one** DNS record (a `TXT` ownership proof reusing the `lib/sending-domains.ts` pattern, and/or the CF-returned CNAME for Path A) |
+| Verify the record landed | **us** | ✅ | `node:dns/promises` TXT/CNAME/A lookups, same "explicit + repeatable, transient SERVFAIL reads as not-published" rule as `lib/sending-domains.ts` |
+| Bind domain → link / site / file | **us** | ✅ | a `Host`→binding lookup (§18.4) |
+| Issue TLS | **us** | ✅ for Path A (Cloudflare does it); ✅ for Path B **only once** `certbot` + a sudoers entry exist on the box | Path A: CF Pages domains API. Path B: `sudo -n certbot …` + `sudo -n systemctl reload nginx` via the existing `sudo()` helper |
+| Accept the unknown `Host` | **us** | ✅ Path A (CF proxies to the project's own hostname, we never see a foreign Host); Path B needs a one-time hand-applied nginx catch-all | §18.2 |
+| Serve the content at the domain | **us** | ✅ | `Host` resolver → 302 (Link) or a file (Site/File), mirroring the existing `/r`, `/hs` handlers |
+
+**Blunt answer to the owner's question:** *there is no way to avoid the user adding one DNS record.*
+Everything else we can automate — and for CF-hosted sites we can automate the whole TLS journey
+today via the account token we already store. For Links/Sites on our metal, we can automate it too,
+but only after a one-time privileged setup on the VPS (§18.2 Path B, §18.9 Q1).
+### 18.4 Schema draft (P5a) — additive + NULLABLE, same discipline as P1–P4
+
+One new model. No edits to `HostingSite` / `HostedAsset` / `LinkRedirect` / `User` — the binding
+lives on the DOMAIN row (so one domain binds to one target, and every existing model stays
+untouched, exactly like `LinkRedirect.userId` was added as a plain scalar in P2).
+
+```prisma
+// TASK_155 P5 — a user's own hostname, verified and bound to one thing they host.
+// Path A (Cloudflare, §18.2) is fully automated; Path B (our metal) is P5b.
+model HostingDomain {
+  id       String  @id @default(cuid())
+  // Plain scalar, matching HostedAsset.userId / LinkRedirect.userId, so the
+  // User model needs NO edit (the P2 precedent).
+  userId   String
+
+  // The hostname the user added, lowercased + validated (a shared validator,
+  // the way lib/hosting/rules.ts owns SLUG_RE — never trust the raw input).
+  hostname String  @unique
+
+  // How it reaches us. "cloudflare" = CF edge owns DNS+TLS (§18.2 A);
+  // "local" = points at our VPS, P5b only.
+  path     String  @default("cloudflare")
+
+  // Where the domain is pointed. "link" is the owner's ask; "site"/"file"
+  // reuse the identical shape so the tab is general, not link-only.
+  targetType String          // "link" | "site" | "file"
+  targetId   String          // LinkRedirect.id / HostingSite.id / HostedAsset.id
+  // Denormalised read-only label for the tab list ("-> go.acme.com", "My site").
+  targetLabel String?
+
+  // Ownership proof (reuses the lib/sending-domains.ts DNS-check philosophy).
+  // pending_verify -> active -> (error) ; "disabled" = user turned it off.
+  status     String  @default("pending_verify")
+  // The record the USER must add, echoed back for the UI. Never a secret:
+  // a TXT proof value is public by nature (same as a DKIM p=).
+  verifyRecordName  String?
+  verifyRecordValue String?
+  // Last check roll-up + when, mirroring SendingDomain.lastCheckDetail/lastCheckedAt.
+  lastCheckDetail   String?
+  lastCheckedAt     DateTime?
+
+  // Path A only: the CF project the hostname was attached to, and the DNS record
+  // CF told us the user (or we) must add.
+  cfProject String?
+  cfRecordName String?
+  cfRecordValue String?
+
+  // Path B only (P5b): the cert/nginx state, so a reload is idempotent.
+  certIssuedAt   DateTime?
+  nginxAppliedAt DateTime?
+  lastError      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([hostname])
+}
+```
+
+Notes that matter:
+- **`hostname @unique` is load-bearing.** Two users must never claim the same hostname. The unique
+  index is the arbiter, not a pre-check (a check-then-insert race would let the second claim slip).
+- **No secret is stored.** A `TXT` proof value and a CF-returned CNAME target are public; the one
+  thing that must never be echoed is the **credential token**, which already lives in
+  `HostingCredential` and is never read back out (the P4 Settings rule).
+- The migration is **additive + NULLABLE** → deployable via `deploy.yml` in-window, same as P4's
+  `20261030120000_task155_p4_premium_links`.
+
+### 18.5 The Domains tab (UX) — mirrors the existing tabs, one new idea
+
+`components/hosting-panel.tsx`: extend the union at line 153 to
+`"sites" | "links" | "files" | "domains"`, add a 4th tab button with a count badge
+(`domainCount / caps.maxDomains`), and a `tab === "domains"` body. The body has:
+
+1. **Add a domain** — one input (`go.acme.com`), client-validated against the shared hostname rule.
+2. **A "what to do next" card, per domain**, showing the EXACT record to add — this is the whole
+   UX, and it must be as copy-pasteable as the sending-domains DKIM card already is:
+   - Path A: "Add this CNAME at your DNS provider -> `...pages.dev`" (the record CF returns), plus
+     a **Check** button;
+   - Path B (P5b): "Add `TXT sw-verify=<value>`", then "point `A` at `<VPS IP>`".
+3. **Bind** — pick what the domain serves: a **Link** (the primary case), a **Site**, or a **File**,
+   from dropdowns listing the user's own rows (same lists the other tabs already render).
+4. **Status + actions** — `pending` / `checking` / `active` / `error`, a **Check** button (explicit
+   + repeatable, never auto-polls aggressively), **Copy** on the record values, and **Remove**
+   (which must also release the CF custom domain in Path A).
+5. **The one-line promise, made concrete**: once active, the tab shows the final URL
+   (`https://go.acme.com` -> target) so the user sees the domain *replacing* the
+   `spaceworker.top/r/<slug>` link.
+
+Premium + cap messaging is identical in shape to the existing tabs (a locked state + "Premium" hint
+when over the cap or not entitled).
+
+### 18.6 Premium gate + admin dials (the §14/§17.2 mechanism — reuse, do not invent)
+
+- **Dials** (new `AdminSetting` columns, additive migration, same as §17.2):
+  `hostingFreeMaxDomains` (**default 0** — domains are a premium feature on day one, per the
+  owner's *"links redirect should be able to use the premium same with the file"* framing) and
+  `hostingPremiumMaxDomains` (**default 3**).
+- `lib/hosting/rules.ts` → `resolveHostingCaps` swaps `maxDomains` on `{ premium }` exactly the way
+  it now swaps `maxLinks`. The new test mirrors the §17.2 one: *a PREMIUM user gets
+  `hostingPremiumMaxDomains`, not the free dial.*
+- **Premium** means the same entitlement resolution the Links/Files caps already use
+  (`ENTITLEMENT_KEYS` / the `hosting` entitlement). **No staff badge, no staff gate** — the owner's
+  A14 rule carries over (see §17 and `PROMPT_NEXT_AGENT.md` A14).
+
+### 18.7 Phasing
+
+- **P5a (deliverable, deployable, no serving-path risk):** the `HostingDomain` model + migration;
+  the shared hostname validator + TXT/CNAME verification engine (reusing `node:dns/promises`);
+  the **Domains tab** (add / verify / bind / status / remove); **Path A wiring** for CF-engine
+  sites (attach the custom domain via the Pages API — a new call in `lib/hosting/cloudflare.ts`);
+  premium caps + the two dials; the `/api/hosting/domains` routes; tests. **No nginx change, no
+  cert work, no `Host` resolver.**
+- **P5b (its own run, has a VPS prerequisite):** the `Host`→binding resolver, the nginx catch-all
+  vhost (hand-applied once, like every nginx change), per-domain TLS via `sudo -n certbot` +
+  `sudo -n nginx -t` + `sudo -n systemctl reload nginx`, and Link/Site/File serving on our metal.
+  **Blocked until §18.9 Q1 is answered and the sudoers grant + catch-all vhost are in place.**
+- **P5c (optional, later):** apex/naked-domain handling, per-domain analytics, a custom 404 page —
+  explicitly out of scope for P5a/P5b.
+
+### 18.8 Acceptance bar (P5a)
+
+- `prisma validate` clean; the new migration applies to a scratch DB; `tsc --noEmit` 0; eslint at
+  HEAD parity on touched files; `CI=1 next build` exit 0; **`npm run test:hosting` green** with new
+  cases: (a) premium swaps `maxDomains`; (b) the hostname validator rejects bad hosts and accepts
+  real ones; (c) verifying a domain whose TXT is absent → `pending`, present → `active`; (d)
+  `hostname` uniqueness (a second user cannot claim the same host).
+- **Live after deploy:** `GET /api/hosting/status` exposes `caps.maxDomains`; a premium user can
+  add a domain, see its record, hit **Check**, and bind it to a link; a CF-engine site can be given
+  a real custom domain end-to-end (Path A) once the CF scopes allow it.
+- **Explicitly NOT in P5a (so nobody reports it as a bug):** a Link/Site/File *served on our metal
+  at a custom domain* — that is P5b and needs the box prepared first (§18.9 Q1/Q2).
+
+### 18.9 Open questions for the lead — ANSWER BEFORE P5a BINDS
+
+1. **Path A vs B, and the phased recommendation in §18.2** — ratify *"P5a = tab + model +
+   verification + binding + CF-Path-A for sites; P5b = our-metal serving"*. If the lead instead
+   wants the our-metal Link path FIRST (the owner's literal ask), then P5 must start with the VPS
+   prerequisite: a hand-applied nginx catch-all vhost + a sudoers grant for `certbot` /
+   `nginx -t` / `systemctl reload nginx`. **Confirm the box is open to that.**
+2. **Is `certbot` installed, and what is the current sudoers grant for the app user?** NOT verified
+   from this machine — `~/.ssh/vps_key` does not exist locally and the live host prompted for a
+   password when probed. Answer this ON the VPS before P5b is planned (it decides whether Path B is
+   a day or a week).
+3. **Does the BYO Cloudflare token carry the scopes Path A needs** (`Zone:DNS:Edit` and
+   `Pages:Edit` on the domain's zone)? If not, Path A still works but the user may have to add the
+   returned CNAME by hand — confirm that's acceptable as "one DNS record".
+4. **Which entitlement gates domains** — the existing `hosting` entitlement (my default, §18.6),
+   or a new `domains` key in `ENTITLEMENT_KEYS`?
+5. **Apex vs subdomain in v1** — the owner wrote *"choose that domain instead of the link"*; most
+   short-link use is a subdomain (`go.acme.com`). Subdomain-only for v1 is my default, which skips
+   the naked-domain/ALIAS problem entirely.
+6. **Abuse posture for Path B** — once our metal serves user hostnames, a hostile domain pointed at
+   us is served by our IP. Confirm the guardrails (rate limits, a takedown path, the §5.2-style
+   sentinel hook) before P5b, not after.
+
+---
+*End of §18. Scope only — no P5 code exists yet. Nothing above is implemented; the only changes on
+disk today are this section and the P4 work committed at `d79eee6`.*
