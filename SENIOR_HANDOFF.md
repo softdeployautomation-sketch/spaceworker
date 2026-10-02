@@ -378,34 +378,45 @@ missing token look identical. Proved the proxy is live by the **body, not the st
 proxy_pass http://127.0.0.1:3500; … }` in `/etc/nginx/sites-available/dl.instaweb.top.conf` (app port is
 **3500**, from `spaceworker.service`; the generator behind `/d/` + `/e/` is **4000** — do not confuse them).
 
-
+**22. `7z l` prints an archive-HEADER block that is NOT an entry — a naive parser reads
+`Path = <archive>.zip` and rejects EVERY real archive as a nested zip.** *(Hit + fixed
+2026-10-02 on Task 155 P3.)* `lib/hosting/extract.ts` lists a `.zip` with `7z l -slt` and parses the
+`----------`-delimited records. The **first** block, printed *before* the first `----------`, is the
+**archive** header (`Path = site.zip`, `Type = zip`, `Physical Size = …`) — not a member. A parser that
+starts collecting `Path =` the moment it sees one therefore recorded the *archive itself* as entry #1,
+so the "no nested archives" guard saw a `.zip` inside the zip and **refused every genuine archive**.
+The unit test that only fed a hand-written listing (no header block) passed, which is exactly why it
+survived. Fixed: skip everything up to the first `----------` line before collecting members
+(`extract.ts` `parseSevenZipListing`). **Lesson: drive a REAL `7z` binary in the test** — the new
+`tests/hosting-pages.test.ts` shells out to `7z` to build an actual archive, which is what caught it.
+Same family as trap 16: a hand-typed fixture is a draft, not the tool's real output.
 
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-01 (Task 155 **P2 DEPLOYED + MIGRATED + VERIFIED LIVE, master switch FLIPPED ON** — `main` @ `435d419`, deployed build `9RVryDnQoHNZL4NL-Zdy6` (`BUILD_ID` mtime `2026-10-02 00:15:49 CEST`), deploy run **36933764632** (`workflow_dispatch`, in-window `prisma migrate deploy` reported *"Database schema is up to date!"*). The **Hosting tab is now live and public** at `https://spaceworker.top/dashboard/hosting`, serving files from `https://dl.instaweb.top/hf/<token>` (new nginx `location /hf/` → `127.0.0.1:3500`; `HOSTING_PUBLIC_BASE_URL=https://dl.instaweb.top`, bytes on disk at `/opt/spaceworker-hosting`, outside the deploy tar). `AdminSetting.hostingEnabled=true`. P2 added user-owned short links (`/r/<slug|token>`, reusing the Task 30 `LinkRedirect` with two NULLABLE columns so campaign links are untouched), a BYO-credential store (`HostingCredential`, AES-256-GCM via `lib/mailbox-crypto.ts`, list returns a 4-char hint only, one default per provider) and the Cyber Lab nav/card/panel + admin RAM dials (still dark, `cyberlabEnabled=false`). Proven: `npx tsc --noEmit` → **0**, `CI=1 npx next build` → **exit 0** (all 15 new routes in the manifest + **shipped in the VPS client chunks**), **all 26 `test:*` suites pass** (`test:hosting` now **39/39**), and a **live authenticated** hit of production `/api/hosting/status` → **HTTP 200** (`enabled:true`, `entitled:true` reason `premium`, `publicBase https://dl.instaweb.top`, caps `storageQuotaMb 10240 / maxFileSizeMb 512 / maxLinks 50`) plus SSR-proved nav + dashboard cards for **Hosting** and **Cyber Lab**. Earlier this day: Task 155 **P1** built+proven+pushed (`a131835`); T0 spikes passed (26 MiB → 500); owner answered §13, supplied the throwaway Cloudflare account/token, ruled **all caps are admin-editable** (§14) and **user files served from the instaweb public family** (§15). TASK_150 closed (T6 waived).)**
+**Last verified: 2026-10-02 (Task 155 **P3 DEPLOYED + MIGRATED + VERIFIED LIVE** — `main` @ `bb6ff6c`, deployed build `LjgrTG69r2eiN-w07Hj-i` (`BUILD_ID` mtime `2026-10-02 06:56:12 CEST`), deploy run **36966548887** (`workflow_dispatch`, in-window `prisma migrate deploy` reported *"Database schema is up to date!"*, migration `20261029000000_task155_p3_pages_sites` recorded `finished_at 2026-10-02 06:58:17 CEST`). P3 makes the **folder/zip → PREVIEW → PUBLISH** flow real and the engine **per-site**: LOCAL (free) serves the extracted tree from our metal at `/pv/<token>/` (preview, noindex, TTL) and `/hs/<token>/` (live, immutable); CLOUDFLARE (premium) runs the four-call Direct-Upload deploy against a per-item credential (user BYO account, else platform). Every new cap is an admin-editable `AdminSetting` (premiumMaxProjects / MaxFilesPerProject / MaxBandwidthGbPerMonth / DeploymentsPerDay / PreviewTtlHours / MaxZipMb / MaxZipEntries / MaxHeavyJobsPerUser / PublishedRevisionsKept); the heavy extract is serialised behind the §16.6 job lock; a dead token fails **closed** (§16.4). **ADDITIVE** migration: 9 `AdminSetting` columns + 2 NULLABLE `HostingCredential` columns + 3 new empty tables (`HostingSite`/`HostingRevision`/`HostingJob`) — no row rewritten. Proven: `npx tsc --noEmit` → **0**, `CI=1 npx next build` → **exit 0** (all P3 routes in the manifest + the P3 UI strings present in the shipped client chunk), `npm run test:hosting` → **39/39** incl. the new `tests/hosting-pages.test.ts` that builds a **real `7z` archive** and drives the real extract/serve path (which caught a real parser bug — trap 22). Live this session: `https://spaceworker.top/` → **200**, `/dashboard/hosting` → **307** (auth), `/api/hosting/sites` → **401** (auth-gated, route exists), `/pv/<bad>` and `/hs/<bad>` → **404** (new public handlers exist, no 500); `systemctl --failed` → **empty**; all three services **active**.**
 
-**⚠ The one thing NOT true yet:** no user has clicked *Upload* on production. The live proof above is
-**reads** (status + SSR nav/card); the **write** path (multipart upload → `/hf/<token>` 200 → rename →
-delete) was proven on the scratch DB, not on prod. That is the first thing to do by hand (see §6.4).
+**⚠ The one thing NOT true yet:** no user has clicked *Upload a zip → preview → publish* on production. The live proof above is **reads** (routes exist, auth enforced, public handlers return 404 not 500); the **write** path (create site → zip → preview 200 → publish → live 200) was proven on the scratch DB + real `7z`/`next start`, **not** on prod, and the **premium/Cloudflare** leg was proven against the **throwaway** account only. That is the first thing to do by hand (see §6.4).
 
+*(Previous, P2 — kept for the record:)* **Last verified: 2026-10-01 (Task 155 **P2 DEPLOYED + MIGRATED + VERIFIED LIVE, master switch FLIPPED ON** — `main` @ `435d419`, deployed build `9RVryDnQoHNZL4NL-Zdy6` (`BUILD_ID` mtime `2026-10-02 00:15:49 CEST`), deploy run **36933764632** (`workflow_dispatch`, in-window `prisma migrate deploy` reported *"Database schema is up to date!"*). The **Hosting tab is now live and public** at `https://spaceworker.top/dashboard/hosting`, serving files from `https://dl.instaweb.top/hf/<token>` (new nginx `location /hf/` → `127.0.0.1:3500`; `HOSTING_PUBLIC_BASE_URL=https://dl.instaweb.top`, bytes on disk at `/opt/spaceworker-hosting`, outside the deploy tar). `AdminSetting.hostingEnabled=true`. P2 added user-owned short links (`/r/<slug|token>`, reusing the Task 30 `LinkRedirect` with two NULLABLE columns so campaign links are untouched), a BYO-credential store (`HostingCredential`, AES-256-GCM via `lib/mailbox-crypto.ts`, list returns a 4-char hint only, one default per provider) and the Cyber Lab nav/card/panel + admin RAM dials (still dark, `cyberlabEnabled=false`). Proven: `npx tsc --noEmit` → **0**, `CI=1 npx next build` → **exit 0** (all 15 new routes in the manifest + **shipped in the VPS client chunks**), **all 26 `test:*` suites pass** (`test:hosting` now **39/39**), and a **live authenticated** hit of production `/api/hosting/status` → **HTTP 200** (`enabled:true`, `entitled:true` reason `premium`, `publicBase https://dl.instaweb.top`, caps `storageQuotaMb 10240 / maxFileSizeMb 512 / maxLinks 50`) plus SSR-proved nav + dashboard cards for **Hosting** and **Cyber Lab**. Earlier this day: Task 155 **P1** built+proven+pushed (`a131835`); T0 spikes passed (26 MiB → 500); owner answered §13, supplied the throwaway Cloudflare account/token, ruled **all caps are admin-editable** (§14) and **user files served from the instaweb public family** (§15). TASK_150 closed (T6 waived).)**
 
 ### 6.1 Live app — `main`
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ **`435d419`** (TASK_155 P2). The last code commits before it: `a131835` (P1) and `181e0e7`/`5c7bf4c`/`17577bb` (docs). Run `git log --oneline -1` to re-check — §6 can lag (trap 14). |
-| Sync | in sync with `origin/main` (`a131835..435d419` pushed); working tree **clean** |
-| Deployed to production | **`9RVryDnQoHNZL4NL-Zdy6`**, `BUILD_ID` mtime **`2026-10-02 00:15:49 CEST`**, from `main` @ **`435d419`** — includes **P1 + P2** (hosting files engine, user-owned links, BYO credential store, Cyber Lab nav/card/panel). Verified live this session: `/dashboard/hosting` and `/dashboard/cyberlab` → **307 → /login** (auth-gated pages exist), `dl.instaweb.top/hf/deadbeef` → **404 `application/json` `{"error":"Not found.","code":"not_found"}`** (the **app**, not nginx — proves the `location /hf/` proxy is live). |
-| Deploy run | **`36933764632`** (`workflow_dispatch` @ `435d419`). |
-| CI on current HEAD | push run for `435d419`: `Build & typecheck` green; `Deploy to production (manual only)` = skipped (workflow_dispatch-gated). |
-| Migrations applied | **`20261028000000_task155_p1_hosting_files`** AND **`20261028000001_task155_p2_links_credentials_caps`** are **applied to production** — the P2 deploy's in-window `prisma migrate deploy` reported *"Database schema is up to date!"*. Production now has `HostedAsset`, `HostingUsageMonthly`, `HostingCredential` and the `AdminSetting.hosting*` columns. `AdminSetting.hostingEnabled = true`. |
+| Branch / HEAD | `main` @ **`bb6ff6c`** (TASK_155 P3). The last code commits before it: `435d419` (P2) and `a131835` (P1). Run `git log --oneline -1` to re-check — §6 can lag (trap 14). |
+| Sync | in sync with `origin/main` (`282ee9a..bb6ff6c` pushed); working tree **clean** |
+| Deployed to production | **`LjgrTG69r2eiN-w07Hj-i`**, `BUILD_ID` mtime **`2026-10-02 06:56:12 CEST`**, from `main` @ **`bb6ff6c`** — includes **P1 + P2 + P3** (hosting files engine, user-owned links, BYO credential store, **Pages engine: folder/zip → preview → publish, per-site engine picker, account chooser**). Verified live this session: `https://spaceworker.top/` → **200**, `/dashboard/hosting` → **307** (auth), `/api/hosting/sites` → **401** (auth-gated route exists), `/pv/<bad>` and `/hs/<bad>` → **404** (new public P3 handlers exist, no 500). |
+| Deploy run | **`36966548887`** (`workflow_dispatch` @ `bb6ff6c`). |
+| CI on current HEAD | push run for `bb6ff6c`: `Build & typecheck` green; `Deploy to production (manual only)` = skipped (workflow_dispatch-gated). |
+| Migrations applied | **`20261028000000_task155_p1_hosting_files`**, **`20261028000001_task155_p2_links_credentials_caps`** AND **`20261029000000_task155_p3_pages_sites`** are **applied to production** — the P3 deploy's in-window `prisma migrate deploy` reported *"Database schema is up to date!"* and the P3 migration is recorded (`finished_at 2026-10-02 06:58:17 CEST`). Production now has `HostedAsset`, `HostingUsageMonthly`, `HostingCredential`, **`HostingSite`, `HostingRevision`, `HostingJob`** and the extended `AdminSetting.hosting*` columns. `AdminSetting.hostingEnabled = true`. |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
 
-**The current deployed build is `9RVryDnQoHNZL4NL-Zdy6` (`main` @ `435d419`) — it adds Task 155
-P1 + P2 on top of everything below (hosting files engine, user-owned links, BYO credentials, Cyber
-Lab nav/card/panel).** The bullets in this sub-section describe the *earlier* build
-`iyIlFSwZhjQ_1Rap4MFWC` (`3d484af`) and remain accurate for what is still live from that deploy:
+**The current deployed build is `LjgrTG69r2eiN-w07Hj-i` (`main` @ `bb6ff6c`) — it adds Task 155
+**P3** on top of everything below (the Pages engine: folder/zip → preview → publish, the per-site
+engine picker + account chooser, `/pv/` + `/hs/` public handlers).** The bullets in this sub-section
+describe the *earlier* build `iyIlFSwZhjQ_1Rap4MFWC` (`3d484af`) and remain accurate for what is
+still live from that deploy:
 
 *Describes the build `iyIlFSwZhjQ_1Rap4MFWC` (`main` @ `3d484af`), which was the
 previous build `4-aARmhO-lJKtaX2Lx-9y` (N1+N2) **plus the screen-capture failure-message fix**.*
@@ -437,44 +448,50 @@ previous build `4-aARmhO-lJKtaX2Lx-9y` (N1+N2) **plus the screen-capture failure
 
 ### 6.3 Production health (checked this session)
 
-`systemctl --failed` → **empty** (after the transient below cleared). Running:
+`systemctl --failed` → **empty** (re-checked 2026-10-02 after the P3 deploy). Running:
 `spaceworker`, `spaceworker-browser`, `extraction-worker` all **active** (plus `screenshot-capture`,
 `exit-node-us1`, `exit-node-us2`). Timers armed: `dispatcher`, `mail-queue-drain`,
 `screenshot-sweep`, `screen-notify-sweep`, `payment-verify`, `automations-sweep`,
 `device-onboarding-sweep`.
 
-**Post-deploy caveat (proved this session):** right after this deploy, `systemctl --failed`
-showed **`device-onboarding-sweep.service` failed** — its 5-minute tick had collided with the
+**Post-deploy caveat (proved 2026-10-01, still applies):** right after a deploy, `systemctl --failed`
+can show **`device-onboarding-sweep.service` failed** — its 5-minute tick collided with the
 deploy's stop/extract window and `curl` exited **7 (connection refused)**. The journal showed
 every earlier tick `{"ok":true,...}`; the *next* tick (15:30:40) exited `status=0/SUCCESS` and
 `--failed` returned empty. **A post-deploy oneshot failure is a false alarm unless it survives
-the next clean tick** — see §5 trap 15.
+the next clean tick** — see §5 trap 15. (On the 2026-10-02 P3 deploy `--failed` was empty
+immediately, so the transient did not recur.)
 
 ### 6.4 Known-unverified (do not claim these work)
 
-- **TASK_155 P1+P2 (hosting) — what is live vs what is only proven locally.** *Stated plainly so no
+- **TASK_155 P3 (Pages engine) — what is live vs what is only proven locally.** *Stated plainly so no
   later reader mistakes a local proof for a production fact:*
-  - **LIVE and proven this session:** the code is deployed (`9RVryDnQoHNZL4NL-Zdy6` @ `435d419`), the
-    migrations are **applied to production**, `/dashboard/hosting` + `/dashboard/cyberlab` exist
-    (307 → /login), and the **`dl.*` `location /hf/` proxy works** — proved by the **body**:
-    `GET https://dl.instaweb.top/hf/deadbeef` → `application/json` `{"error":"Not found.","code":"not_found"}`
-    (the app; nginx's own catch-all would be a plain `404`). `HOSTING_PUBLIC_BASE_URL` **is** set on the
-    box (`https://dl.instaweb.top`), so the plan-§15 trap is closed.
-  - **NOT verified — the production *write* path.** No user has uploaded a file on production. The
-    upload → `/hf/<token>` 200 → rename → delete flow was proven on a **local `next start` (port 3999)
-    + scratch Postgres** (`spaceworker_t155`), **not** on the VPS: the E2E **36/36** and the
-    headed-browser proof **23/23** are **real HTTP, real Postgres, real browser** (screenshots in
-    `/tmp/t155-ui/`) but **not** the deployed host. **First manual check for the lead:** upload one
-    file in the live tab and fetch its minted URL from the public internet.
-  - **`cloudflare` and `external` storage engines are REGISTERED BUT NOT IMPLEMENTED.** They are
-    listed in `/api/hosting/status` + the admin picker (`implemented:false`) and selecting one for
-    an upload throws the typed `HostingProviderNotReadyError` ("Switch back to “This server”") —
-    proven by `tests/hosting-files.test.ts`. Direct Upload over that path is **not** wired; only the
-    T0 spike proved the protocol works. **This is exactly what P3 implements.**
-  - **Premium/BYO quota path:** `resolveHostingCaps` swaps the storage quota for premium and is
-    unit-tested, but no real premium user has uploaded through it live.
+  - **LIVE and proven this session:** the code is deployed (`LjgrTG69r2eiN-w07Hj-i` @ `bb6ff6c`), the
+    `20261029000000_task155_p3_pages_sites` migration is **applied to production** (3 new tables exist),
+    `/dashboard/hosting` exists (307 → /login), the write routes exist and are auth-gated
+    (`/api/hosting/sites` → **401**), and the **new public P3 handlers are live and not 500** —
+    `GET /pv/<bad>` and `/hs/<bad>` → **404** via the app (a missing route would be a 404 too but the
+    handlers are present in the built manifest — see §8's "grep the built chunks" rule).
+  - **NOT verified — the production *write* path.** No user has run *create site → zip → preview 200 →
+    publish → live 200* on production. That flow (and the ZIP parse/`7z` extract/quota logic) was proven
+    on the scratch DB + `next start` with the real `7z` binary (`tests/hosting-pages.test.ts`), **not**
+    on the VPS. **First manual check for the lead:** create one site, upload a small zip, open the
+    preview URL, press Publish, fetch the live URL from the public internet.
+  - **Premium/Cloudflare leg is proven against the THROWAWAY account only.** The four-call Pages
+    Direct-Upload deploy ran against `CLOUDFLARE_ACCOUNT_ID_DEV`/`CLOUDFLARE_API_TOKEN_DEV`; no real
+    customer BYO token has driven a deploy. The **platform** credential is the throwaway account
+    (`lib/hosting/cloudflare.ts`), and a dead/manifest-mismatched token fails **closed** (§16.4) rather
+    than falling back to LOCAL — proven by tests, not by a live customer run.
+  - **`external` storage engine is still REGISTERED BUT NOT IMPLEMENTED** (only `local` and `cloudflare`
+    are implemented). Selecting `external` throws the typed `HostingProviderNotReadyError`.
   - **Cyber Lab** is **dark** (`cyberlabEnabled=false`): nav item + dashboard card + panel + admin RAM
     dials exist, but no lab capability runs. Task 156 C2+ is not started.
+
+- **TASK_155 P1/P2 (hosting) — legacy local proofs (still valid for those features).** The P1/P2 *write*
+  path (file upload → `/hf/<token>` 200 → rename → delete) and the local links/credentials proofs were
+  run on the scratch DB + `next start :3999` (`spaceworker_t155`), **not** on prod; the `dl.*`
+  `location /hf/` proxy **is** proven live by the body of `GET https://dl.instaweb.top/hf/deadbeef`
+  (`application/json` app 404, not nginx's plain 404).
 
 - **TASK_154 N3 was EVALUATED, not built (2026-10-01).** Its gate — *“only if
   hostname-keying demonstrably bites”* — was tested against the **LIVE** fleet and **FAILS**.
@@ -546,6 +563,10 @@ banner, decides what runs next.
 | ~~1~~ | ✅ ~~**TASK_150 T6** — confirm/fix changing the test email mid-send~~ **WAIVED by the owner 2026-10-01** — *"we can add another test email during send, that's enough for now; I tested that."* **NOT queued** | `TASK_150_...md` §3 T6 | Closes TASK_150 (T1–T5 done). Do not re-open unless the owner reports it again. |
 | ~~4~~ | ✅ ~~**TASK_155 P1** — hosting FILES engine (`/hf/<token>`, admin-capped)~~ **DONE + PUSHED 2026-10-01 (`a131835`) + DEPLOYED 2026-10-02 (live in `435d419`)** | `PLAN_TASK_155_...md` §9 P1 | Code + one additive migration (applied to production) + `tests/hosting-files.test.ts`. The `dl.*` nginx `location /hf/` was added on the P2 deploy. |
 | ~~5~~ | ✅ ~~**TASK_155 P2** — user-owned redirects + BYO credential store + Cyber Lab scaffolding~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`435d419`, run `36933764632`)** | `PLAN_TASK_155_...md` §9 P2 | `hostingEnabled` flipped **on**; Hosting tab public; Cyber Lab dark. Next build is **P3** (see the owner-requested table below). |
+| ~~7~~ | ✅ ~~**TASK_155 P3** — Pages engine (folder/zip → preview → publish) + per-site engine picker + account chooser~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`bb6ff6c`, run `36966548887`)** | `PLAN_TASK_155_...md` §16/§9 P3 | Additive migration applied; `test:hosting` **39/39**. Next build is **D2 / Task 156 C0→C1** (see the owner-requested table below). |
+
+
+| | ~~6~~ | ✅ ~~**TASK_155 P3** — Pages engine + folder→preview→publish + the engine switch + the account chooser~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`bb6ff6c`, run `36966548887`, build `LjgrTG69r2eiN-w07Hj-i`)** | `PLAN_TASK_155_...md` §16/§9 P3 | `cloudflare` engine implemented (raw REST Direct Upload, fail-closed §16.4); zip → `7z` extract → **preview** (`/pv/<token>/`) → **publish** (`/hs/<token>/`); per-site engine picker + §16.4 account chooser; premium has its own `hostingPremium*` cap family (§16.3); job lock + metrics recorded for the later governor (§16.6). 9 new `AdminSetting` columns + 2 NULLABLE `HostingCredential` cols + `HostingSite`/`HostingRevision`/`HostingJob` in one **additive** migration (applied to production). `tests/hosting-pages.test.ts` + `test:hosting` **39/39**. |
 
 **N2 outcome (what shipped, so the next reader is not re-deriving it).** N2 consumes only the
 **always-on** top-level `idle: { state, asOf }` + `onlineWindowMs`; it does **not** request
@@ -559,20 +580,21 @@ positively-active reading (< 60 s, matching `formatIdle`).
 scoped yet. It needs its own safety work; the observability half (M1–M7) had to land first.
 Do not fold M8 into any of the above.
 
-**Owner-requested design work (Task 155 **P1 + P2 are DEPLOYED and LIVE**, `435d419`; P3 below is the next build):**
+**Owner-requested design work (Task 155 **P1 + P2 + P3 are DEPLOYED and LIVE**, `bb6ff6c`; **D2/Task 156 C0→C1 is the next build**):**
 
 | # | Task | Doc | Notes |
 |---|---|---|---|
 | ~~1~~ | ✅ ~~**D1 — Task 155 P1** (files engine on our own metal)~~ **DONE + PROVEN + PUSHED + DEPLOYED 2026-10-02 (`a131835`, live in `435d419`)** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` §9 P1 | `/hf/<token>` upload/list/rename/delete behind the new `hosting` entitlement; rename rewrites only `dispositionFilename`/`mime` so **sha256 is provably unchanged**; every cap is an admin-editable `AdminSetting` (live change, no redeploy — proven in a real browser); engine registry `local` implemented / `cloudflare`+`external` registered. `tests/hosting-files.test.ts` (**26/26**), E2E **36/36**, browser **23/23**. Migration applied to production. |
-| ~~2~~ | ✅ ~~**D1 — Task 155 P2** (user-owned redirects, BYO credential store, Cyber Lab scaffolding)~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`435d419`)** | same doc §9 P2 | `/r/<slug|token>` user-owned links (two NULLABLE `LinkRedirect` columns — campaign links untouched); `HostingCredential` (AES-256-GCM, 4-char hint only, one default per provider); Cyber Lab nav/card/panel (`cyberlabEnabled=false`) + admin RAM dials. `test:hosting` **39/39**, all 26 suites green, live prod `/api/hosting/status` → 200 `enabled:true`. `hostingEnabled` flipped **on**. |
-| **1** | **D1 — Task 155 P3** (Pages engine + folder→preview→publish + the engine switch + the account chooser) — **NEXT, start now** | same doc **§16 BINDS it** + §8/§9 P3/§14 | Implement the `cloudflare` engine (raw REST Direct Upload, T0-proven); **zip → extract (`7z`) → preview → publish** with the last 3 revisions undoable; **per-item engine picker** ("Our server" vs "Premium"); the §16.4 **account chooser** (platform + BYO, verify-on-save). Premium has its **own** cap family (§16.3). Job lock + metrics recorded for the later governor (§16.6). **~10 new `AdminSetting` columns + `HostingSite`/`HostingRevision`** in one additive migration. |
-| 2 | **D2 — Task 156 "Cyber Lab, real-world"** (offensive + defensive tooling, "not simulation", abuse sentinel) | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Depends on 155 P1/P2** (owner: *"the workers need to be ready so the lab has enough tools"*). Adds the tooling matrix, the abuse sentinel, the `Lab*` schema deltas and phasing C0–C6. Governing doc for *what* is built; `TASK_98_...md` remains the build spec + Michael's MT-2/MT-3 artefacts. Gated on D1 P1/P2 **and** its §10 (5 Qs). **Caps mechanism decided in 155 §14 rule 1 — reuse it, do not invent a second.** |
+| ~~2~~ | ✅ ~~**D1 — Task 155 P2** (user-owned redirects, BYO credential store, Cyber Lab scaffolding)~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`435d419`)** | same doc §9 P2 | `/r/<slug\|token>` user-owned links (two NULLABLE `LinkRedirect` columns — campaign links untouched); `HostingCredential` (AES-256-GCM, 4-char hint only, one default per provider); Cyber Lab nav/card/panel (`cyberlabEnabled=false`) + admin RAM dials. `test:hosting` **39/39**, all 26 suites green, live prod `/api/hosting/status` → 200 `enabled:true`. `hostingEnabled` flipped **on**. |
+| ~~3~~ | ✅ ~~**D1 — Task 155 P3** (Pages engine + folder→preview→publish + the engine switch + the account chooser)~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`bb6ff6c`, run `36966548887`)** | same doc **§16 BINDS it** + §8/§9 P3/§14 | `cloudflare` engine implemented (raw REST Direct Upload); **zip → extract (`7z`) → preview → publish**; **per-site engine picker** ("Our server" vs "Premium"); the §16.4 **account chooser** (platform + BYO, verify-on-save); premium's **own** cap family (§16.3); job lock + metrics recorded for the later governor (§16.6). `tests/hosting-pages.test.ts` added (real `7z`); `test:hosting` **39/39**. New trap 22. |
+| **1** | **D2 — Task 156 "Cyber Lab, real-world"** — **NEXT, start now at C0 → C1 ONLY** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (owner addendum 2026-10-02, BINDING)** | **Depends on 155 P1/P2/P3 (ALL DONE + LIVE).** C0 = AUP + LabConsent text (screen + repo doc; nothing runs before it exists). C1 = one **additive** schema migration + the `cyberlab` gate (key already in `ENTITLEMENT_KEYS`) + staff badge + admin `Lab*` limits + `LabToolCatalog` rows (§12.1) + the read-only Research admin page. **C2+ is NOT this run.** Reuse 155 §14's cap mechanism; reuse the existing panic switch / `AgentActionAudit` / `UserEntitlement`; **never the prod VPS**; **do not edit `lib/resource-governor.ts`**. See `PROMPT_NEXT_AGENT.md`. |
 
-*D1's P1 **and** P2 are **deployed and live** (`435d419`, build `9RVryDnQoHNZL4NL-Zdy6`); the
-`dl.*` `location /hf/` proxy is added and proven live, and `hostingEnabled=true`. **P3 is the next
-live-app item.** D2 waits on D1 P1/P2 **and** its §10. **Converters are OFF (§16.5)** — do not install
-`sharp`/`ffmpeg`/`libreoffice`; rename-with-unchanged-bytes is the whole file story for now.
-**`lib/resource-governor.ts` is out of scope** — the governor task comes after P3 (§16.6).*
+*D1's P1, P2 **and** P3 are **deployed and live** (`bb6ff6c`, build `LjgrTG69r2eiN-w07Hj-i`); the
+`dl.*` `location /hf/` proxy is live and proven, `hostingEnabled=true`, and the Pages flow serves from
+`/pv/` + `/hs/`. **D2 / Task 156 C0→C1 is the next live-app item** (its own doc §12). **Converters are
+OFF (§16.5)** — do not install `sharp`/`ffmpeg`/`libreoffice`; rename-with-unchanged-bytes is the whole
+file story for now. **`lib/resource-governor.ts` is out of scope** — the governor task comes later
+(155 §16.6).*
 
 **Self-hosted line:** T10 → T11 (the live kill — highest value) → T12 → T13 → T14 → T15,
 per `TASK_145_...JUNIOR_TRACK.md`.
@@ -1090,3 +1112,44 @@ half-done. A half-done change with no note is worse than no change.
   scope** — the governor task comes after P3 (§16.6). See `PROMPT_NEXT_AGENT.md`.
 
 
+
+### 2026-10-02 — TASK_155 P3 BUILT + DEPLOYED + VERIFIED LIVE (Pages engine: folder/zip → preview → publish); new trap 22; D2/Task 156 promoted to NEXT
+
+- **Did:** Task 155 **P3** — the Cloudflare **Pages engine** + the **folder/zip → PREVIEW → PUBLISH**
+  flow + the **per-site engine picker** + the **§16.4 account chooser**, per plan §16 (binding) / §9 P3 /
+  §8 / §14 / §15. New/changed: `lib/hosting/{cloudflare,extract,serve,sites}.ts`, `lib/hosting/rules.ts`,
+  `lib/hosting/credentials.ts`, `lib/hosting/providers.ts`, `app/api/hosting/sites/**` (create/list/get
+  + revisions + publish), `app/api/hosting/credentials/[id]/verify/route.ts`,
+  `app/api/hosting/status/route.ts`, `app/pv/[token]/[[...path]]/route.ts` (**preview**, noindex, TTL),
+  `app/hs/[token]/[[...path]]/route.ts` (**live**, immutable), `components/hosting-panel.tsx`
+  (engine picker + zip upload + preview/publish + account chooser), `app/api/admin/hosting/route.ts` +
+  `app/admin/(protected)/admin-panel.tsx` (the new `hostingPremium*`/`hostingMaxZip*` dials),
+  `prisma/schema.prisma` (9 `AdminSetting` cols + 2 NULLABLE `HostingCredential` cols +
+  `HostingSite`/`HostingRevision`/`HostingJob`), migration
+  `20261029000000_task155_p3_pages_sites`, `tests/hosting-pages.test.ts`, `package.json`
+  (`test:pages`). **Additive only** — no existing column/row touched. Commits **`bb6ff6c`** (25 files,
+  +3448/−13), pushed `282ee9a..bb6ff6c`; deploy run **`36966548887`** (`gh workflow run deploy.yml
+  --ref main`).
+- **Verified (raw):** `npx prisma validate` OK · `npx prisma generate` OK · `npx tsc --noEmit` → **0** ·
+  `CI=1 npx next build` → **exit 0** (P3 routes in the manifest; P3 UI strings present in the shipped
+  client chunk) · `npm run test:hosting` → **39/39** and the new `npm run test:pages` (real `7z`
+  archive; caught trap 22) green. **Deploy:** both jobs `completed/success`; on the VPS
+  `cat /opt/spaceworker/.next/BUILD_ID` → **`LjgrTG69r2eiN-w07Hj-i`** (mtime `2026-10-02 06:56:12 CEST`);
+  `prisma migrate status` → *"Database schema is up to date!"*; `_prisma_migrations` shows
+  `20261029000000_task155_p3_pages_sites` `finished_at 2026-10-02 06:58:17 CEST`; `pg_tables` shows
+  `HostingSite`/`HostingRevision`/`HostingJob`/`HostingCredential`/`HostingUsageMonthly`;
+  `systemctl --failed` → **empty**; `systemctl is-active spaceworker spaceworker-browser
+  extraction-worker` → **active/active/active**. **Live behaviour (`spaceworker.top`):** `/` → **200**,
+  `/dashboard/hosting` → **307**, `/api/hosting/sites` → **401** (auth-gated route exists),
+  `/pv/<bad>` and `/hs/<bad>` → **404** (new public handlers exist, no 500).
+- **NOT verified:** the production **write** path — no user has run *create site → zip → preview 200 →
+  publish → live 200* on prod (proven on the scratch DB + real `7z`/`next start` only); the
+  **premium/Cloudflare** leg ran against the **throwaway** account (`CLOUDFLARE_*_DEV`) only, no real
+  BYO token; `external` storage engine still registered-not-implemented. **SIMULATION: none.**
+- **State left behind:** `main` @ **`bb6ff6c`**, pushed to `origin/main`; deployed build
+  **`LjgrTG69r2eiN-w07Hj-i`**; `hostingEnabled=true`; P1+P2+P3 migrations all applied to production;
+  bytes at `/opt/spaceworker-hosting`; `self-hosted-build` untouched.
+- **Next:** **D2 / Task 156 "Cyber Lab, real-world" — C0 (AUP/consent) → C1 (schema + gate + staff
+  badge + admin `Lab*` limits + `LabToolCatalog` + read-only Research admin page) ONLY.** Build spec
+  `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (owner addendum 2026-10-02, BINDING)**. C2+ is a
+  separate assignment. See `PROMPT_NEXT_AGENT.md`.

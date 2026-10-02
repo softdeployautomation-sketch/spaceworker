@@ -323,7 +323,7 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
 - **Deliverable:** this note. **Nothing user-facing was built.** The throwaway project was
   **deleted** (account back to 6 projects).
 
-### P1 — Files engine on our own metal (free, no Cloudflare at all) — ✅ **DONE + PROVEN 2026-10-01 (`a131835`), NOT deployed**
+### P1 — Files engine on our own metal (free, no Cloudflare at all) — ✅ **DONE + PROVEN 2026-10-01 (`a131835`) + DEPLOYED 2026-10-02 (live in `435d419`)**
 - Upload/list/rename/delete; `Content-Disposition` rename with `sha256` unchanged;
   expiry; per-user quota (AdminSetting). Ships behind the `hosting` entitlement, **dark**.
 - **Exit:** a user uploads an EXE, renames it, downloads it, and the hash matches.
@@ -358,7 +358,7 @@ user"* — is satisfied by this being **curated, branded, and versioned**, not g
   **0**, and a **live authenticated** production `GET /api/hosting/status` → **200 `enabled:true`**.
   Deploy run **`36933764632`**; nginx **`location /hf/`** added; `HOSTING_PUBLIC_BASE_URL=https://dl.instaweb.top`.
 
-### P3 — Pages engine + folder→preview→publish + the engine switch (**§16 BINDS this — it is the next build**)
+### P3 — Pages engine + folder→preview→publish + the engine switch — ✅ **DONE + DEPLOYED + LIVE 2026-10-02 (`bb6ff6c`, run `36966548887`, build `LjgrTG69r2eiN-w07Hj-i`)**
 - **One tab, two engines.** An **Engine** picker on every deployable item: **Our server (free)** or
   **Premium (Cloudflare)**, premium defaulting to the platform account and accepting a BYO credential
   (§16.2/16.4). The picker is **data**, not a build flag — flipping it needs no redeploy.
