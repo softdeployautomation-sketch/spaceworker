@@ -3,7 +3,11 @@ import { NextResponse } from "next/server";
 
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
-import { assertSafeFramePath, frameAbsPath } from "@/lib/device-screenshots";
+import {
+  assertSafeFramePath,
+  deleteFrameForUser,
+  frameAbsPath,
+} from "@/lib/device-screenshots";
 
 export const dynamic = "force-dynamic";
 
@@ -65,4 +69,39 @@ export async function GET(
       "X-Content-Type-Options": "nosniff",
     },
   });
+}
+
+/**
+ * TASK_157 — the owner permanently deletes one frame.
+ *
+ * THE BUG THIS FIXES: the "×" on a timeline card had no endpoint behind it. The
+ * route only ever exported GET, so the button could not do anything — which is
+ * exactly the symptom reported ("I clicked the × on each frame and it won't
+ * leave"). The frames that could not be captured, and the ones nobody wants
+ * sitting in the timeline, had no way out.
+ *
+ * Gates, in the same order and shape as the GET above:
+ *   1. SESSION — no session, 401.
+ *   2. OWNERSHIP — resolved inside deleteFrameForUser by (frameId, device.userId).
+ *      A frame that is not the caller's is a 404, never a 403, so the endpoint
+ *      cannot be used to discover that an id exists.
+ *
+ * Deleting the row and the PNG is permanent and there is no undo, so the UI
+ * confirms first. We deliberately do NOT add a soft-delete/recycle-bin: nothing
+ * else in the product has one, retention is already the "it goes away" mechanism,
+ * and a second lifecycle would be a much larger change than the reported bug.
+ */
+export async function DELETE(
+  _req: Request,
+  { params }: { params: Promise<{ deviceId: string; frameId: string }> },
+) {
+  const session = await getSession();
+  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const { frameId } = await params;
+
+  const outcome = await deleteFrameForUser(frameId, session.userId);
+  if (outcome === "not_found") {
+    return NextResponse.json({ error: "Not found" }, { status: 404 });
+  }
+  return NextResponse.json({ ok: true, frameId });
 }

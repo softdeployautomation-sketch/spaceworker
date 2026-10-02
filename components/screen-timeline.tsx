@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 // ---------------------------------------------------------------------------
 // TASK_152 M3 — the Screen monitoring TIMELINE (the owner's "summary section").
 //
@@ -30,6 +32,11 @@ export interface ScreenTimelineFrame {
   summaryError: string | null;
   /** Set when retention deleted the raw image but KEPT the summary row. */
   imagePurgedAt: string | null;
+  // TASK_157 — the free local extraction, shown behind the "Full extraction"
+  // toggle. null = never read; "" WITH ocrAt = read, and there were no words.
+  ocrText: string | null;
+  ocrAt: string | null;
+  ocrConfidence: number | null;
 }
 
 /** Why a CAPTURED frame has no summary, in human words (neutral, never red). */
@@ -120,16 +127,90 @@ function failureCode(reason: string): string {
   return /^[a-z][a-z0-9_]{2,40}$/i.test(raw) ? raw.toLowerCase() : "capture_failed";
 }
 
+/**
+ * TASK_157 — the per-frame readout: a SUMMARY by default, and a full EXTRACTION
+ * behind a toggle, on the same line.
+ *
+ * WHY BOTH (the owner's requirement): the two legs have completely different
+ * dependencies. Extraction is local OCR — free, no key, no meter, no network — so
+ * it is there even when the AI is unconfigured, over budget, or down. The summary
+ * is the paid, best-effort layer on top. Showing only the summary meant a day with
+ * no AI looked like a day with no information at all.
+ *
+ * The toggle only appears when there is actually text to show. We do not offer a
+ * view that is empty.
+ */
+export function FrameReadout({ frame }: { frame: ScreenTimelineFrame }) {
+  const hasText = frame.ocrText !== null && frame.ocrText !== undefined && frame.ocrText !== "";
+  const [showText, setShowText] = useState(false);
+  const lowConfidence = frame.ocrConfidence !== null && frame.ocrConfidence < 45;
+
+  return (
+    <div className="mt-0.5">
+      {showText && hasText ? (
+        <>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowText(false)}
+              data-frame-toggle="summary"
+              className="rounded border border-border px-1 text-[10px] text-fg-muted"
+            >
+              Summary
+            </button>
+            <span className="text-[10px] text-fg-muted">Full extraction</span>
+            {lowConfidence && (
+              <span title="The OCR read is uncertain; the words may be wrong.">
+                {frame.ocrConfidence}% confident
+              </span>
+            )}
+          </div>
+          {/* Long desktop OCR output gets its own scroll box rather than a wall
+              of text — the timeline is already a max-h-80 scroller. */}
+          <pre
+            data-frame-ocr=""
+            className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border bg-bg-subtle p-2 text-xs text-fg"
+          >
+            {frame.ocrText}
+          </pre>
+        </>
+      ) : (
+        <>
+          {frame.summary ? (
+            <p className="mt-0.5 text-sm text-fg">{frame.summary}</p>
+          ) : (
+            <p className="mt-0.5 text-sm text-fg-muted">
+              {summaryPendingCopy(frame.summaryError)}
+            </p>
+          )}
+          {hasText && (
+            <button
+              type="button"
+              onClick={() => setShowText(true)}
+              data-frame-toggle="extraction"
+              className="mt-1 rounded border border-border px-1 text-[10px] text-fg-muted hover:bg-bg-subtle"
+            >
+              Full extraction
+            </button>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ScreenTimeline({
   deviceId,
   frames,
   openFrameId,
   onToggleFrame,
+  onDeleteFrame,
 }: {
   deviceId: string;
   frames: ScreenTimelineFrame[];
   openFrameId: string | null;
   onToggleFrame: (frameId: string) => void;
+  onDeleteFrame?: (frameId: string) => void;
 }) {
   return (
     <div
@@ -172,12 +253,23 @@ export function ScreenTimeline({
               )}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs text-fg-muted">{at.toLocaleString()}</p>
-              {frame.status === "captured" && frame.summary && (
-                <p className="mt-0.5 text-sm text-fg">{frame.summary}</p>
-              )}
-              {frame.status === "captured" && !frame.summary && (
-                <p className="mt-0.5 text-sm text-fg-muted">{summaryPendingCopy(frame.summaryError)}</p>
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-xs text-fg-muted">{at.toLocaleString()}</p>
+                {onDeleteFrame && (
+                  <button
+                    type="button"
+                    onClick={() => onDeleteFrame(frame.id)}
+                    data-frame-delete=""
+                    aria-label="Delete this frame"
+                    title="Delete this frame"
+                    className="shrink-0 rounded px-1 text-sm leading-none text-fg-muted hover:bg-bg-subtle hover:text-red-500"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              {frame.status === "captured" && (
+                <FrameReadout frame={frame} />
               )}
               {frame.status !== "captured" && (
                 <p className="mt-0.5 text-sm text-red-500">

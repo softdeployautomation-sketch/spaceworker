@@ -2298,6 +2298,31 @@ model DeviceScreenshot {
   summaryModel  String?
   summarisedAt  DateTime?
   imagePurgedAt DateTime?
+  // ---------------------------------------------------------------------
+  // TASK_157 — the FREE TEXT LAYER (OCR), which is now the PRIMARY source
+  // for a summary rather than a fallback.
+  //
+  // The relay's vision leg is DOWN (live probe 2026-10-02: messages+tools+
+  // image_url returns 502 "AI service temporarily unavailable"), while the
+  // same relay answers plain TEXT calls with a 200. So the image can no longer
+  // be the thing we send. Instead we read the words OFF the frame locally
+  // (tesseract.js — no network, no key, no meter) and summarise THAT.
+  //
+  // This is the owner's "if the summary doesn't work, users still get the
+  // extraction" guarantee made real: ocrText survives cap_exhausted,
+  // ai_unavailable and a bad day, because nothing about producing it depends
+  // on the AI at all.
+  //
+  // ocrText is deliberately NULLABLE and additive: a frame captured before this
+  // column existed simply has null here and is rendered as before.
+  ocrText       String?
+  // Set when the frame's text was read. Separate from ocrText's own emptiness
+  // so "OCR ran and found nothing on a black screen" (ocrText = "") is
+  // distinguishable from "OCR has not run yet" (null).
+  ocrAt         DateTime?
+  // 0-100 OCR engine confidence, kept for the UI to explain a poor read and
+  // for triage (a frame below ~40 is usually a blank/locked screen).
+  ocrConfidence Int?
   // TASK_152 M5 — set the moment this frame's summary has been CHECKED against
   // the owner's triggers (whether or not one fired). This is what makes the
   // trigger pass a one-shot work queue instead of re-scanning every summary on

@@ -22,15 +22,17 @@ import { join, relative } from "node:path";
 // that, it would be testing its own mock instead of the mechanism that protects
 // the owner's money.
 //
-// THE AI CALL IS FAKED (it is injected — see SummariseFn): no network, no
-// Chromium. What it CANNOT prove is that the pooled relay accepts images at all;
-// that stays an owner-run live check and is stated as such in the task writeup.
+// THE AI CALL IS FAKED (it is injected — see SummariseFn) and so is OCR (see
+// OcrFn): no network, no Chromium, no tesseract. What they CANNOT prove is that
+// the pooled relay accepts the call, nor that tesseract reads a real desktop
+// screenshot correctly; both stay owner-run live checks on the box.
 
 import type {
   SummariseCallInput,
   SummariseCallResult,
   SummariseFn,
 } from "../lib/screenshot-summaries";
+import type { OcrFn } from "../lib/screenshot-ocr";
 
 process.env.DATABASE_URL = "postgresql://t152:t152@localhost:5432/task152_placeholder";
 process.env.SESSION_SECRET = "task152-test-session-secret";
@@ -69,6 +71,10 @@ interface FrameRow {
   summaryModel: string | null;
   summarisedAt: Date | null;
   imagePurgedAt: Date | null;
+  // TASK_157 — the free extraction, written before any AI call.
+  ocrText: string | null;
+  ocrAt: Date | null;
+  ocrConfidence: number | null;
   summaryDate: Date;
   capturedAt: Date | null;
   createdAt: Date;
@@ -87,7 +93,14 @@ let frames: FrameRow[] = [];
 let usage: UsageRow[] = [];
 let users: Array<{ id: string; aiDailyCapHundredthsCent: number }> = [];
 let idSeq = 0;
-let clock = new Date("2026-10-01T12:00:00.000Z");
+// The test clock is pinned to NOON OF THE REAL CURRENT UTC DAY, never a fixed
+// date. `getUsedAiTodayHundredthsCent()` sums against the real clock's "today"
+// (lib/ai-metering.ts:startOfTodayUTC), so a fixed date silently rots: the day
+// after the hard-coded date, usage rows stop counting as "today" and the
+// mid-pass cap test stops tripping. Every other test computes retention
+// relative to `clock`, so anchoring it to today is safe everywhere.
+const TODAY_NOON_UTC = `${new Date().toISOString().slice(0, 10)}T12:00:00.000Z`;
+let clock = new Date(TODAY_NOON_UTC);
 let adminRow: Record<string, unknown> = {};
 
 function nextId(prefix: string): string {
@@ -316,6 +329,9 @@ async function makeFrame(deviceId: string, over: Partial<FrameRow> = {}): Promis
     summaryModel: null,
     summarisedAt: null,
     imagePurgedAt: null,
+    ocrText: null,
+    ocrAt: null,
+    ocrConfidence: null,
     summaryDate: startOfUtcDay(clock),
     capturedAt: new Date(clock.getTime()),
     createdAt: new Date(clock.getTime()),
@@ -348,6 +364,19 @@ function deadSummarise(): SummariseFn {
   };
 }
 
+// ---------------------------------------------------------------------------
+// TASK_157 — OCR. Always injected, never the real tesseract: tests must be
+// deterministic and offline. The real engine is exercised on the box instead.
+// ---------------------------------------------------------------------------
+
+/** OCR text recorded per frame, so a test can assert exactly what was stored. */
+const ocrTexts = new Map<string, string>();
+
+/** An OCR stub that reads canned text keyed by the frame id it is asked about. */
+function stubOcr(defaultText = "Visible text on screen"): OcrFn {
+  return async (png: Buffer) => ({ text: ocrTexts.get(png.toString("base64")) ?? defaultText, confidence: 92 });
+}
+
 beforeEach(() => {
   devices = [];
   frames = [];
@@ -355,7 +384,8 @@ beforeEach(() => {
   users = [];
   idSeq = 0;
   calls = [];
-  clock = new Date("2026-10-01T12:00:00.000Z");
+  ocrTexts.clear();
+  clock = new Date(TODAY_NOON_UTC);
   adminRow = {
     screenshotMonitoringEnabled: true,
     screenshotCapturesMaxConcurrent: 2,
@@ -399,9 +429,10 @@ test("the cost gate is stated in code: 3 frames/call, <=8 calls/device/day, <=52
 // ---------------------------------------------------------------------------
 
 test("parseSummaries maps 1-based indices back to frames and tolerates chatty JSON", () => {
+  // TASK_157 — frames now carry OCR text, not an image data URL.
   const callFrames = [
-    { id: "f1", dataUrl: "data:image/png;base64,AA" },
-    { id: "f2", dataUrl: "data:image/png;base64,BB" },
+    { id: "f1", text: "Gmail inbox" },
+    { id: "f2", text: "Yahoo Expedia" },
   ];
 
   // The shape the prompt asked for.
@@ -437,7 +468,7 @@ test("a pass summarises a device's frames IN BATCHES OF 3 and writes each summar
   await makeFrame("d1");
   await makeFrame("d1");
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   // 5 frames / 3 per call = 2 metered calls, never 5 (the whole point of M3's
   // cost gate: the owner wanted a summary PER IMAGE, not a call per image).
@@ -479,7 +510,7 @@ test("a frame with NO summary yet is NORMAL: it is pending, not failed, and capt
   const pending = await listPendingSummaryFrames(clock, 14);
   assert.equal(pending.length, 1, "a captured, unsummarised frame is the normal pending state");
 
-  await runSummaryPass(okSummarise(62), { now: clock });
+  await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   // AFTER: it has text, and the capture record is exactly as the capture left it.
   assert.equal(frame.status, "captured");
@@ -494,7 +525,7 @@ test("the per-device daily budget caps a device at 24 frames/day and MARKS the r
   // 30 frames in one day — a 1-minute cadence would produce far more.
   for (let i = 0; i < 30; i++) await makeFrame("d1");
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   // 24 frames / 3 = 8 calls, the documented worst case.
   assert.equal(SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY, 24);
@@ -524,7 +555,7 @@ test("when the per-user daily cap is exhausted, frames are left UNSUMMARISED, ma
   await makeFrame("d1");
   await makeFrame("d1");
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   // The guard FIRED: no model call at all, and every frame records the reason.
   assert.equal(calls.length, 0, "an exhausted cap must spend nothing");
@@ -552,7 +583,7 @@ test("a cap that is crossed MID-pass is caught: the first call spends, the rest 
   addDevice("d1");
   for (let i = 0; i < 6; i++) await makeFrame("d1");
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   assert.equal(calls.length, 1, "the cap is re-read before EVERY call");
   assert.equal(result.summarised, 3);
@@ -569,7 +600,7 @@ test("a summarisation failure NEVER fails the capture: the frames keep their ima
   const pathsBefore = [a.filePath, b.filePath];
 
   // The AI leg dies. runSummaryPass must still RESOLVE (never throw to the sweep).
-  const result = await runSummaryPass(deadSummarise(), { now: clock });
+  const result = await runSummaryPass(deadSummarise(), { now: clock }, stubOcr());
 
   assert.equal(result.calls, 0, "a failed call is not a metered call");
   assert.equal(result.summarised, 0);
@@ -596,7 +627,7 @@ test("a frame whose image file is missing is marked TERMINAL and is not retried 
   // A row that claims an image which is not on disk.
   await makeFrame("d1", { filePath: join("d1", "missing", "gone.png") });
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
 
   assert.equal(result.unreadable, 1);
   assert.equal(calls.length, 0, "an unreadable image never reaches the paid model");
@@ -626,7 +657,7 @@ test("summaries are only ever written inside the retention window", async () => 
     "a frame about to be purged is never sent to a paid model",
   );
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
   assert.equal(result.summarised, 1);
   assert.equal(stale.summary, null);
 });
@@ -721,7 +752,7 @@ test("the read model keeps the SUMMARY axis separate from the CAPTURE axis for t
     failureReason: "device_offline",
     filePath: null,
   });
-  await runSummaryPass(okSummarise(62), { now: clock, limit: 1 });
+  await runSummaryPass(okSummarise(62), { now: clock, limit: 1 }, stubOcr());
 
   const view = await listRecentFrames("d1", 50);
   assert.equal(view.length, 3);
@@ -751,7 +782,7 @@ test("the pass is a no-op when monitoring is off, and 401s are the route's job n
   await makeFrame("d1");
   adminRow.screenshotMonitoringEnabled = false;
 
-  const result = await runSummaryPass(okSummarise(62), { now: clock });
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
   assert.equal(result.skipped, "disabled");
   assert.equal(calls.length, 0, "off means off — no AI is asked to look at anything");
   assert.equal(frames[0].summary, null);
@@ -760,7 +791,7 @@ test("the pass is a no-op when monitoring is off, and 401s are the route's job n
   // switch on — consent is per device.
   adminRow.screenshotMonitoringEnabled = true;
   devices[0].screenshotMonitoringEnabled = false;
-  const result2 = await runSummaryPass(okSummarise(62), { now: clock });
+  const result2 = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
   assert.equal(result2.skipped, "no_frames");
   assert.equal(calls.length, 0);
 });

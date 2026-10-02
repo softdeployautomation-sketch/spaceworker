@@ -1163,6 +1163,14 @@ export interface FrameView {
   summarisedAt: string | null;
   /** Set when the raw image was deleted by retention but the summary was KEPT. */
   imagePurgedAt: string | null;
+  // TASK_157 — the FREE extraction. Written before any AI call, so it survives a
+  // dead relay, an exhausted cap, or an unconfigured key. `ocrText === null`
+  // means "never read"; `ocrText === ""` WITH `ocrAt` set means "read, and the
+  // screen genuinely had no words" — the UI must say those two things
+  // differently rather than showing a blank card forever.
+  ocrText: string | null;
+  ocrAt: string | null;
+  ocrConfidence: number | null;
   bytes: number | null;
   width: number | null;
   height: number | null;
@@ -1191,6 +1199,9 @@ export async function listRecentFrames(deviceId: string, limit = 20): Promise<Fr
       summaryModel: true,
       summarisedAt: true,
       imagePurgedAt: true,
+      ocrText: true,
+      ocrAt: true,
+      ocrConfidence: true,
       bytes: true,
       width: true,
       height: true,
@@ -1208,6 +1219,9 @@ export async function listRecentFrames(deviceId: string, limit = 20): Promise<Fr
     summaryModel: row.summaryModel ?? null,
     summarisedAt: iso(row.summarisedAt),
     imagePurgedAt: iso(row.imagePurgedAt),
+    ocrText: row.ocrText ?? null,
+    ocrAt: iso(row.ocrAt),
+    ocrConfidence: row.ocrConfidence ?? null,
     bytes: row.bytes,
     width: row.width,
     height: row.height,
@@ -1230,6 +1244,48 @@ export async function deleteFrameFile(relPath: string): Promise<void> {
   } catch {
     // Already gone (or unsafe) — nothing to do.
   }
+}
+
+/**
+ * TASK_157 — delete ONE frame, permanently, for its owner.
+ *
+ * Returns "not_found" for a frame that does not exist OR belongs to somebody
+ * else. Those two are deliberately indistinguishable: a caller must not be able
+ * to probe for the existence of another user's frame id.
+ *
+ * The ownership gate is the SAME shape as the GET that serves the image — the row
+ * is matched on its id AND the device's userId. There is no "admin can delete any
+ * frame" path here, because there is no such need and it widens the blast radius.
+ *
+ * Order matters: the file goes first, then the row. If the unlink fails we still
+ * delete the row, because the user's intent is "this frame is gone from my
+ * timeline" and a stale row pointing at a missing file would render as a
+ * permanently broken thumbnail. (The reverse order would leak the image forever
+ * if the row delete then failed.)
+ */
+export async function deleteFrameForUser(
+  frameId: string,
+  userId: string,
+): Promise<"deleted" | "not_found"> {
+  const frame = await db.deviceScreenshot.findFirst({
+    where: { id: frameId, device: { userId } },
+    select: { id: true, filePath: true },
+  });
+  if (!frame) return "not_found";
+
+  if (frame.filePath) {
+    try {
+      const abs = frameAbsPath(frame.filePath);
+      assertSafeFramePath(abs);
+      await unlink(abs);
+    } catch {
+      // Already gone, or an unsafe stored path — either way the row must still
+      // go, so the user stops seeing a frame they asked us to remove.
+    }
+  }
+
+  await db.deviceScreenshot.delete({ where: { id: frame.id } });
+  return "deleted";
 }
 
 /** Delete a device's whole frame tree from disk. */

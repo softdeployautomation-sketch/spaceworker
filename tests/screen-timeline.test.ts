@@ -26,6 +26,11 @@ function frame(over: Partial<ScreenTimelineFrame> & { id: string }): ScreenTimel
     summary: null,
     summaryError: null,
     imagePurgedAt: null,
+    // TASK_157 — default to "never read", which is what every pre-TASK_157 row
+    // looks like. The toggle must not appear for these.
+    ocrText: null,
+    ocrAt: null,
+    ocrConfidence: null,
     ...over,
   };
 }
@@ -158,4 +163,95 @@ test("every summaryError code maps to calm, specific copy", () => {
   assert.match(summaryPendingCopy("temporarily_unavailable"), /retried/);
   assert.match(summaryPendingCopy("image_missing"), /could not be read/);
   assert.match(summaryPendingCopy("something_new"), /something_new/);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_157 — the extraction toggle, and the delete affordance.
+//
+// Render assertions on the returned React element tree (this file already works
+// that way), so the test needs no renderer dependency.
+// ---------------------------------------------------------------------------
+
+/** Pull out the per-frame row elements by their data-frame-row marker. */
+function frameRows(tree: unknown): Array<Record<string, unknown>> {
+  const found: Array<Record<string, unknown>> = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (!node || typeof node !== "object") return;
+    const props = (node as { props?: Record<string, unknown> }).props;
+    if (props && typeof props["data-frame-row"] === "string") {
+      found.push(props as Record<string, unknown>);
+    }
+    if (props) walk(Object.values(props));
+  };
+  walk(tree);
+  return found;
+}
+
+test("a frame that was never read still renders, with no extraction toggle", () => {
+  // ocrText === null is what every pre-TASK_157 row looks like. We must not show
+  // the user a button that opens onto nothing.
+  const rows = frameRows(
+    ScreenTimeline({
+      deviceId: "d1",
+      frames: [frame({ id: "f1" })],
+      openFrameId: null,
+      onToggleFrame: () => {},
+    }),
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]["data-frame-status"], "captured");
+});
+
+test("a frame read as EMPTY (locked screen) renders, with no extraction toggle", () => {
+  // "" WITH an ocrAt means "read it, there were no words" — a different state
+  // from "never read", and neither one is worth a toggle that shows nothing.
+  const rows = frameRows(
+    ScreenTimeline({
+      deviceId: "d1",
+      frames: [frame({ id: "f1", ocrText: "", ocrAt: "2026-10-01T12:00:00.000Z" })],
+      openFrameId: null,
+      onToggleFrame: () => {},
+    }),
+  );
+  assert.equal(rows.length, 1);
+});
+
+test("a frame with BOTH a summary and extracted text stays mounted and shows the summary", () => {
+  const rows = frameRows(
+    ScreenTimeline({
+      deviceId: "d1",
+      frames: [
+        frame({
+          id: "f1",
+          summary: "An email was open in Gmail.",
+          ocrText: "Inbox (3)\nSubject: Hello",
+          ocrAt: "2026-10-01T12:00:00.000Z",
+          ocrConfidence: 61,
+        }),
+      ],
+      openFrameId: null,
+      onToggleFrame: () => {},
+    }),
+  );
+  assert.equal(rows.length, 1, "having text does not change whether the frame is shown");
+});
+
+test("a FAILED frame is still listed and still deletable — the dead frames can be cleared", () => {
+  // The reported symptom: frames that could not be captured, each with a × that
+  // did nothing. The row must render and the delete control must be wired.
+  const rows = frameRows(
+    ScreenTimeline({
+      deviceId: "d1",
+      frames: [frame({ id: "f1", status: "failed", failureReason: "device_offline" })],
+      openFrameId: null,
+      onToggleFrame: () => {},
+      onDeleteFrame: () => {},
+    }),
+  );
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]["data-frame-status"], "failed");
 });

@@ -16,7 +16,8 @@ import {
   resolveScreenshotSettings,
   startOfUtcDay,
 } from "./device-screenshots";
-import { channelryAiChat, type ChannelryAiMessageContent } from "./channelry-ai";
+import { channelryAiChat } from "./channelry-ai";
+import { extractText, ocrViaTesseract, type OcrFn } from "./screenshot-ocr";
 
 // ---------------------------------------------------------------------------
 // TASK_152 M3 — per-frame screen summaries (the owner's "summary section").
@@ -148,6 +149,25 @@ export const RETRYABLE_SUMMARY_ERRORS = new Set([
   "daily_call_budget", // transient: the device's budget resets at UTC midnight
   "ai_unavailable", // transient: the relay was briefly down (502/network)
   "temporarily_unavailable",
+  // TASK_157 — the two that used to strand frames forever, and must not any more.
+  //
+  // "bad_request" was NOT retryable, so the 8 frames that hit the relay's broken
+  // vision path were permanently excluded: every sweep skipped them, so they could
+  // never recover even once the payload was fixed. It is a client-side shape error
+  // (fixed in summariseViaRelay), so re-attempting is exactly right.
+  //
+  // "ocr_failed"/"ocr_empty" are about the FREE leg: retrying costs nothing but a
+  // few seconds of CPU, and a frame that read as empty on a locked screen often
+  // reads fine later.
+  //
+  // "image_missing" is DELIBERATELY absent and stays terminal: the file is gone
+  // from disk, so no amount of retrying will ever produce text or a summary.
+  // Retrying it would just re-mark it on every sweep, forever. The user deletes
+  // such a frame from the timeline instead (TASK_157 delete path).
+  "bad_request",
+  "ocr_failed",
+  "ocr_empty",
+  "summary_parse_failed",
 ]);
 
 export interface PendingSummaryFrame {
@@ -214,8 +234,16 @@ export async function countSummarisedToday(deviceId: string): Promise<number> {
 
 export interface SummariseCallFrame {
   id: string;
-  /** A `data:image/png;base64,...` URL — the relay takes an OpenAI-style image_url. */
-  dataUrl: string;
+  /**
+   * TASK_157 — the TEXT read off this frame by OCR (lib/screenshot-ocr.ts).
+   *
+   * This replaced the image. The relay's vision leg answers 502 to any image
+   * payload (verified live 2026-10-02), so an image is no longer something we can
+   * send. `dataUrl` is kept only for the legacy image path and is normally null.
+   */
+  text: string;
+  /** Legacy image payload. Retained so an image-capable relay can be re-enabled. */
+  dataUrl?: string;
 }
 
 export interface SummariseCallInput {
@@ -241,37 +269,42 @@ const SUMMARY_SYSTEM_PROMPT =
   "locked, or unreadable, say exactly that. Do not moralise. Do not add commentary.";
 
 /**
- * The REAL summariser: one metered relay call per batch, with the frames attached
- * as OpenAI-style `image_url` parts. It returns ONLY the text + the real cost —
- * the caller owns metering and persistence, so there is exactly one place that
- * decides what a call is allowed to cost.
+ * The REAL summariser: one metered relay call per batch.
  *
- * `model` is forwarded as a hint. If the pooled relay does not currently honour
- * model selection it ignores the field; the batching ceiling still applies.
+ * TASK_157 — this now sends TEXT (the OCR read of each frame), not the image, and
+ * in the `system` + `user` shape. Both changes are forced by live evidence, not
+ * preference. Probes run 2026-10-02 from the VPS against the real endpoint with
+ * the real key:
+ *
+ *   messages[] + tools + image_url  -> 502 "AI service temporarily unavailable"
+ *                                      (the relay's vision leg is DOWN)
+ *   messages[] (no tools)           -> 400 "system and user are required"
+ *                                      (messages-mode needs tools — or system/user)
+ *   system + user, TEXT, no json    -> 200 + {"summary":"Viewing Gmail inbox..."}
+ *
+ * The text shape is also ~30x cheaper: a frame is ~900 characters of OCR (a few
+ * hundred tokens) rather than a 2048-token image, and it needs no vision model at
+ * all. json_mode is deliberately NOT set: the relay passes it through as
+ * Groq `response_format`, and Groq rejects that unless the literal word "json"
+ * appears in the messages (observed 502: "'messages' must contain the word 'json'").
+ * The prompt already asks for JSON and parseSummaries is tolerant, so the flag
+ * buys nothing and can only fail.
  */
 export const summariseViaRelay: SummariseFn = async ({ userId, model, frames }) => {
-  const parts: ChannelryAiMessageContent = [
-    {
-      type: "text",
-      text:
-        `Summarise each of the ${frames.length} screenshots below. ` +
-        `Return ONLY JSON of the form {"summaries":[{"index":1,"summary":"..."}]} ` +
-        `with one entry per image, index starting at 1, in the order given.`,
-    },
-  ];
-  for (const frame of frames) {
-    parts.push({ type: "image_url", image_url: { url: frame.dataUrl } });
-  }
+  const blocks = frames.map((frame, i) => `--- Screen ${i + 1} ---\n${frame.text}`);
+  const body =
+    `Here is the text read from ${frames.length} screenshot(s) of a computer screen, ` +
+    `in order.\n\n${blocks.join("\n\n")}\n\n` +
+    `For EACH screen write ONE short plain sentence (at most 20 words) saying what ` +
+    `was on it: the app or website, and what was being done. ` +
+    `Return ONLY json of the form {"summaries":[{"index":1,"summary":"..."}]} with ` +
+    `one entry per screen, index starting at 1, in the order given.`;
 
   const result = await channelryAiChat({
-    messages: [
-      { role: "system", content: SUMMARY_SYSTEM_PROMPT },
-      { role: "user", content: parts },
-    ],
+    system: SUMMARY_SYSTEM_PROMPT,
+    user: body,
     max_tokens: 400,
     temperature: 0.2,
-    json_mode: true,
-    model,
     external_user_id: userId,
   });
 
@@ -340,7 +373,7 @@ function extractJson(content: string): unknown | null {
 
 export interface SummaryPassOptions {
   now?: Date;
-  /** Cap on frames considered in one pass (bounds memory: each holds a data URL). */
+  /** Cap on frames considered in one pass (bounds memory: each holds its OCR text). */
   limit?: number;
 }
 
@@ -381,6 +414,7 @@ function classifySummaryError(err: unknown): string {
 export async function runSummaryPass(
   summarise: SummariseFn,
   opts: SummaryPassOptions = {},
+  ocr: OcrFn = ocrViaTesseract,
 ): Promise<SummaryPassResult> {
   const now = opts.now ?? new Date();
   const result: SummaryPassResult = {
@@ -466,23 +500,56 @@ export async function runSummaryPass(
         break;
       }
 
-      // Read the images. A frame whose file is gone is marked, never sent.
+      // TASK_157 — read each frame's TEXT locally (free, no network, no key).
+      //
+      // This is the primary path now, not a fallback: the relay cannot read images
+      // (502), so without text there is nothing to summarise. OCR runs BEFORE the
+      // AI call and its output is PERSISTED regardless of whether the AI call
+      // then succeeds, which is what guarantees the owner still has the full
+      // extraction on a day the AI is down, capped, or unconfigured.
+      //
+      // A frame whose file is gone is marked, never sent. A frame whose OCR throws
+      // is marked "ocr_failed" and skipped for this batch, but the pass continues.
       const callFrames: SummariseCallFrame[] = [];
       for (const frame of batch) {
+        let bytes: Buffer;
         try {
           const abs = frameAbsPath(frame.filePath);
           assertSafeFramePath(abs);
-          const bytes = await readFile(abs);
-          callFrames.push({
-            id: frame.id,
-            dataUrl: `data:image/png;base64,${bytes.toString("base64")}`,
-          });
+          bytes = await readFile(abs);
         } catch {
           await markFrames([frame.id], "image_missing");
           result.unreadable += 1;
           deviceStatus = "partial";
           deviceReason = "one or more frame images were unreadable";
+          continue;
         }
+
+        let text: string;
+        try {
+          const extracted = await extractText(ocr, bytes);
+          if (!extracted) {
+            // OCR ran and the screen genuinely had no words (black/locked screen).
+            // Record that it RAN, so the UI can say "nothing readable on this
+            // screen" instead of "not read yet".
+            await markOcr(frame.id, "", 0);
+            await markFrames([frame.id], "ocr_empty");
+            result.unreadable += 1;
+            deviceStatus = "partial";
+            deviceReason = "a frame had no readable text";
+            continue;
+          }
+          text = extracted.text;
+          await markOcr(frame.id, extracted.text, extracted.confidence);
+        } catch {
+          await markFrames([frame.id], "ocr_failed");
+          result.unreadable += 1;
+          deviceStatus = "partial";
+          deviceReason = "text extraction failed on one or more frames";
+          continue;
+        }
+
+        callFrames.push({ id: frame.id, text });
       }
       if (callFrames.length === 0) continue;
 
@@ -555,6 +622,24 @@ async function writeSummaries(
 async function markFrames(ids: string[], summaryError: string): Promise<void> {
   if (ids.length === 0) return;
   await db.deviceScreenshot.updateMany({ where: { id: { in: ids } }, data: { summaryError } });
+}
+
+/**
+ * TASK_157 — persist one frame's extracted text.
+ *
+ * Written the moment OCR succeeds, BEFORE any AI call, so the extraction survives
+ * independently of the summary. This is the owner's "users still get the
+ * extraction" guarantee: cap_exhausted / ai_unavailable / bad_request only ever
+ * affect the `summary` columns and never touch `ocrText`.
+ *
+ * `text: ""` is a legitimate stored value (OCR ran, screen had no words) — the
+ * paired `ocrAt` is what distinguishes it from "never read".
+ */
+async function markOcr(id: string, text: string, confidence: number): Promise<void> {
+  await db.deviceScreenshot.update({
+    where: { id },
+    data: { ocrText: text, ocrAt: new Date(), ocrConfidence: confidence },
+  });
 }
 
 

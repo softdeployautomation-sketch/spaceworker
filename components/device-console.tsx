@@ -138,6 +138,11 @@ type ScreenMonitorView = {
     /** Set when retention deleted the raw image but KEPT the summary row: there
      *  is text to show and no file to fetch, so the UI must not render an <img>. */
     imagePurgedAt: string | null;
+    // TASK_157 — the free local extraction, behind the "Full extraction" toggle.
+    // null = never read; "" WITH ocrAt set = read, and the screen had no words.
+    ocrText: string | null;
+    ocrAt: string | null;
+    ocrConfidence: number | null;
   }>;
 };
 
@@ -1965,6 +1970,38 @@ function ScreenMonitoringCard({
     load();
   }, [load]);
 
+  /**
+   * TASK_157 — delete one frame permanently.
+   *
+   * Optimistic removal from local state, then ONE re-read of the list from the
+   * server. The re-read is the part that matters: it means the card disappears
+   * because the row is actually gone, not because we hid it, so a failed delete
+   * cannot leave a "deleted" frame sitting in the timeline looking deleted.
+   *
+   * We do NOT remove it optimistically-then-revert. The window where a delete has
+   * failed but the card is gone is confusing; the DELETE is fast and local.
+   */
+  async function deleteFrame(frameId: string) {
+    // Permanent, with no undo and no recycle bin — so ask first.
+    if (!confirm("Delete this frame? The picture and its text are removed for good.")) return;
+    setBusy(`delete:${frameId}`);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/screenshots/${frameId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok && res.status !== 404) {
+        throw new Error(res.status === 401 ? "please sign in again" : "could not delete that frame");
+      }
+      // A 404 means it is already gone, which is the outcome the user wanted.
+      if (openFrame === frameId) setOpenFrame(null);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "could not delete that frame");
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function setOptIn(enabled: boolean) {
     setBusy("optin");
     try {
@@ -2234,6 +2271,7 @@ function ScreenMonitoringCard({
                 frames={view.frames}
                 openFrameId={openFrame}
                 onToggleFrame={(id) => setOpenFrame(openFrame === id ? null : id)}
+                onDeleteFrame={(id) => void deleteFrame(id)}
               />
             </>
           )}
