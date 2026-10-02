@@ -7,9 +7,9 @@ import { readFileSync } from "node:fs";
 // WilkSF9 — "capture_service_http_500: {…locator.click: Timeout 10000ms…}").
 //
 // Two things are proven here, both against the REAL leaf:
-//   1. `connectRefusal` reports the console's DISABLED Connect button as
-//      `offline` — WITHOUT ever paying the 10s click timeout that produced the
-//      dump — and still rethrows a genuine, non-offline click failure.
+//   1. `connectRefusal` reports a Connect button that stays DISABLED through a
+//      click timeout as `offline` — WITHOUT letting the raw Playwright dump
+//      escape — and still rethrows a genuine, non-offline click failure.
 //   2. The leaf's import graph stays free of `lib/` and `server-only`, because
 //      it runs as its own bare-Node process on the VPS where a `server-only`
 //      import THROWS at load (browser-capture/capture.ts, header). Importing it
@@ -17,7 +17,15 @@ import { readFileSync } from "node:fs";
 //      assertions below pin the reason.
 //
 // This is the check the task doc requires to be able to FAIL: if `connectRefusal`
-// ever stops guarding, test 1 (the disabled case) goes red.
+// ever stops guarding, tests 3 (the disabled case) and 4 (the rethrow case) go red.
+//
+// 2026-10-02 — there is deliberately NO instant `isDisabled()` pre-check, after
+// a regression proved it reads the console's LOADING state as offline (the
+// button is `disabled={!isOnline}` while `device` is still `null`; capture's
+// `visible` wait resolves on SSR'd HTML before hydration). An instant guard
+// reported every ONLINE machine offline, so `connectRefusal` now always lets
+// the click — which natively waits for enabled — attempt first and only maps a
+// timed-out click on a still-disabled button to offline.
 
 import { connectRefusal, captureScreen, type ConnectButton } from "../browser-capture/capture";
 
@@ -51,21 +59,30 @@ function fakeConnect(opts: {
   };
 }
 
-test("a DISABLED Connect button is reported offline WITHOUT burning the click timeout", async () => {
-  const fake = fakeConnect({ disabled: true });
+test("a click that times out on a DISABLED Connect button is reported offline", async () => {
+  // The console's button is disabled while the page still loads an online
+  // machine (device state starts null), so the click must be ATTEMPTED —
+  // Playwright waits for enabled and lands it — and only a timeout on a button
+  // that is STILL disabled counts as offline.
+  const fake = fakeConnect({ disabled: true, clickThrows: true });
 
   const outcome = await connectRefusal(fake.button);
 
   assert.equal(outcome, "offline");
-  assert.equal(fake.clicks(), 0, "the click that produced the raw dump is never attempted");
-  assert.equal(fake.disabledChecks(), 1, "the guard reads isDisabled() exactly once");
+  assert.equal(fake.clicks(), 1, "an instant skip would mistake loading for offline");
+  assert.equal(fake.disabledChecks(), 1, "the re-check after the timeout reads isDisabled() once");
 });
 
-test("an ENABLED Connect button is clicked normally", async () => {
+test("an ENABLED Connect button is clicked without an upfront disabled read", async () => {
   const fake = fakeConnect({ disabled: false });
 
   assert.equal(await connectRefusal(fake.button), "clicked");
   assert.equal(fake.clicks(), 1);
+  assert.equal(
+    fake.disabledChecks(),
+    0,
+    "no instant pre-check: the click itself waits for enabled, because a read before hydration mistakes LOADING for offline",
+  );
 });
 
 test("a click that times out while the button goes disabled is STILL reported offline", async () => {

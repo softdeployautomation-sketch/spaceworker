@@ -173,12 +173,20 @@ export interface ConnectButton {
  * `capture_service_http_500: {"ok":false,"failureReason":"locator.click: …"}`
  * and the one fact that mattered — the machine was offline — was buried in it.
  *
- * So: if the button is already disabled, or a click timeout shows it disabled
- * (the machine can go offline between the two), report it as offline instead of
- * letting the raw dump escape. Returns `true` when the click actually landed.
+ * There is deliberately NO instant `isDisabled()` pre-check here (2026-10-02
+ * regression: pre-check reported every ONLINE machine as offline). The console
+ * derives `disabled` from a `device` state that starts as `null` and is only
+ * filled by `loadDevice()` after hydration, while capture waits for
+ * `visible` — which resolves on SSR'd HTML before hydration even runs — so an
+ * instant read mistakes "still loading" for "offline". Playwright's click
+ * already waits for the button to become enabled, which is exactly the path
+ * that worked before: hydration + fetch land in ~1s, the button enables, the
+ * click lands. Only when the click itself times out do we re-check disabled —
+ * the machine can go offline between the liveness check and now — and report
+ * it as offline instead of letting the raw dump escape. Returns `true` when
+ * the click actually landed.
  */
 export async function connectRefusal(button: ConnectButton): Promise<"clicked" | "offline"> {
-  if (await button.isDisabled().catch(() => false)) return "offline";
   try {
     await button.click({ timeout: 10_000 });
     return "clicked";
