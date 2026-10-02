@@ -587,7 +587,7 @@ Do not fold M8 into any of the above.
 | ~~1~~ | ✅ ~~**D1 — Task 155 P1** (files engine on our own metal)~~ **DONE + PROVEN + PUSHED + DEPLOYED 2026-10-02 (`a131835`, live in `435d419`)** | `PLAN_TASK_155_WORKERS_AND_PAGES.md` §9 P1 | `/hf/<token>` upload/list/rename/delete behind the new `hosting` entitlement; rename rewrites only `dispositionFilename`/`mime` so **sha256 is provably unchanged**; every cap is an admin-editable `AdminSetting` (live change, no redeploy — proven in a real browser); engine registry `local` implemented / `cloudflare`+`external` registered. `tests/hosting-files.test.ts` (**26/26**), E2E **36/36**, browser **23/23**. Migration applied to production. |
 | ~~2~~ | ✅ ~~**D1 — Task 155 P2** (user-owned redirects, BYO credential store, Cyber Lab scaffolding)~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`435d419`)** | same doc §9 P2 | `/r/<slug\|token>` user-owned links (two NULLABLE `LinkRedirect` columns — campaign links untouched); `HostingCredential` (AES-256-GCM, 4-char hint only, one default per provider); Cyber Lab nav/card/panel (`cyberlabEnabled=false`) + admin RAM dials. `test:hosting` **39/39**, all 26 suites green, live prod `/api/hosting/status` → 200 `enabled:true`. `hostingEnabled` flipped **on**. |
 | ~~3~~ | ✅ ~~**D1 — Task 155 P3** (Pages engine + folder→preview→publish + the engine switch + the account chooser)~~ **DONE + DEPLOYED + LIVE 2026-10-02 (`bb6ff6c`, run `36966548887`)** | same doc **§16 BINDS it** + §8/§9 P3/§14 | `cloudflare` engine implemented (raw REST Direct Upload); **zip → extract (`7z`) → preview → publish**; **per-site engine picker** ("Our server" vs "Premium"); the §16.4 **account chooser** (platform + BYO, verify-on-save); premium's **own** cap family (§16.3); job lock + metrics recorded for the later governor (§16.6). `tests/hosting-pages.test.ts` added (real `7z`); `test:hosting` **39/39**. New trap 22. |
-| **1** | **D2 — Task 156 "Cyber Lab, real-world"** — **NEXT, start now at C0 → C1 ONLY** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (owner addendum 2026-10-02, BINDING)** | **Depends on 155 P1/P2/P3 (ALL DONE + LIVE).** C0 = AUP + LabConsent text (screen + repo doc; nothing runs before it exists). C1 = one **additive** schema migration + the `cyberlab` gate (key already in `ENTITLEMENT_KEYS`) + staff badge + admin `Lab*` limits + `LabToolCatalog` rows (§12.1) + the read-only Research admin page. **C2+ is NOT this run.** Reuse 155 §14's cap mechanism; reuse the existing panic switch / `AgentActionAudit` / `UserEntitlement`; **never the prod VPS**; **do not edit `lib/resource-governor.ts`**. See `PROMPT_NEXT_AGENT.md`. |
+| **1** | **D2 — Task 156 "Cyber Lab, real-world"** — **NEXT, start now at C0 → C1 ONLY** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (owner addendum 2026-10-02, BINDING)** | **Depends on 155 P1/P2/P3 (ALL DONE + LIVE).** C0 = AUP + LabConsent text (screen + repo doc; nothing runs before it exists). C1 = one **additive** schema migration + the `cyberlab` gate (key already in `ENTITLEMENT_KEYS`) + admin `Lab*` limits + `LabToolCatalog` rows (§12.1) + the read-only Research admin page. **NO staff badge — owner A14 / PLAN_156 §12.9: gate by the PREMIUM `cyberlab` entitlement (SpaceWorker has no staff gate; only Vantra did).** **C2+ is NOT this run.** Reuse 155 §14's cap mechanism; reuse the existing panic switch / `AgentActionAudit` / `UserEntitlement`; **never the prod VPS**; **do not edit `lib/resource-governor.ts`**. See `PROMPT_NEXT_AGENT.md`. |
 
 *D1's P1, P2 **and** P3 are **deployed and live** (`bb6ff6c`, build `LjgrTG69r2eiN-w07Hj-i`); the
 `dl.*` `location /hf/` proxy is live and proven, `hostingEnabled=true`, and the Pages flow serves from
@@ -1149,7 +1149,29 @@ half-done. A half-done change with no note is worse than no change.
 - **State left behind:** `main` @ **`bb6ff6c`**, pushed to `origin/main`; deployed build
   **`LjgrTG69r2eiN-w07Hj-i`**; `hostingEnabled=true`; P1+P2+P3 migrations all applied to production;
   bytes at `/opt/spaceworker-hosting`; `self-hosted-build` untouched.
-- **Next:** **D2 / Task 156 "Cyber Lab, real-world" — C0 (AUP/consent) → C1 (schema + gate + staff
-  badge + admin `Lab*` limits + `LabToolCatalog` + read-only Research admin page) ONLY.** Build spec
+- **Next:** **D2 / Task 156 "Cyber Lab, real-world" — C0 (AUP/consent) → C1 (schema + PREMIUM `cyberlab`
+  gate (NO staff badge - owner A14 / PLAN_156 §12.9) + admin `Lab*` limits + `LabToolCatalog` +
+  read-only Research admin page) ONLY.** Build spec
   `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` **§12 (owner addendum 2026-10-02, BINDING)**. C2+ is a
   separate assignment. See `PROMPT_NEXT_AGENT.md`.
+
+### 2026-10-02 — owner A14: Cyber Lab gated by PREMIUM, not a staff badge (docs only, no code)
+
+- **Did:** recorded the owner's access ruling — *"we dont have staff gate in spaceworker yet, so just
+  build it premium gated … we only had it in vantra. lets not make this a blocker"* — as **PLAN_156
+  §12.9 (BINDING)** and propagated it into the C1 scope everywhere it appeared:
+  `PROMPT_NEXT_AGENT.md` (new ask **A14**, the `TASK:`/`DEPLOY?` lines, the C1 scope block, the
+  non-negotiable list, the acceptance line, the commit message), `PLAN_TASK_156…` (§2 cell, §5 matrix
+  note, §6 field note, §7 C1 row, §10 Q2 → RESOLVED, §11, §12 intro "Seven→Eight rulings", §12.8), and
+  this handoff's §7/§12 next-task text. Also **fixed a broken code fence** in `PROMPT_NEXT_AGENT.md`
+  (the TASK BLOCK's closing fence had swallowed the `## OWNER'S ASKS` heading; an orphan fragment sat
+  after A13) — fences now pair cleanly (20/61, 65/121, 212/223, 252/261).
+- **Verified:** `grep -c '^```' PROMPT_NEXT_AGENT.md` → even and paired; `cyberlab` present in
+  `lib/entitlements.ts` `ENTITLEMENT_KEYS` (the gate key already exists); no staff helper in `lib/*.ts`
+  (only `admin`-named surfaces), confirming §12.9's premise.
+- **NOT verified:** nothing runtime — this is a **docs/scope change**, no code paths touched.
+  **SIMULATION: none.**
+- **State left behind:** `main` @ `78252a6` (+ this docs commit); deployed build unchanged
+  (`LjgrTG69r2eiN-w07Hj-i`). No deploy needed.
+- **Next:** unchanged — D2 / Task 156 **C0 → C1**, now with the **PREMIUM `cyberlab` gate** instead of
+  a staff badge.

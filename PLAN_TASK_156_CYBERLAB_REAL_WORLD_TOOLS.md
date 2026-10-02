@@ -63,7 +63,7 @@ exist.** That ordering is the entire safety argument and it is not negotiable.
 | **Every `Lab*` model** | `grep '^model Lab' prisma/schema.prisma` → **no matches** |
 | **`AgentPendingAction` kind `"lab-action"`** | only `"browser-clone"` appears in `lib/` |
 | **Any detection / Sigma / YARA infrastructure** | `grep -l 'sigma\|yara\|DetectionPack' lib/ app/` → **no matches** |
-| **Staff badge (plan M4)** | no staff-badge helper found in `lib/*.ts` by grep (only `admin`-named surfaces). **Treat M4 as unbuilt until verified**, not as an existing primitive |
+| **Staff badge (plan M4)** | no staff-badge helper found in `lib/*.ts` by grep (only `admin`-named surfaces). **Treat M4 as unbuilt until verified**, not as an existing primitive. **Per §12.9 the owner has ruled C1 does NOT build it — the gate is the PREMIUM `cyberlab` entitlement** |
 | **A lab host** | no Caldera anywhere; production VPS is explicitly excluded (§4) |
 | **Security tooling on the VPS** | only **`tcpdump`** is installed. **MISSING**: `nmap`, `nuclei`, `masscan`, `tshark`, `suricata`, `zeek`, `clamscan`, `osqueryi`, `yara`, `hashcat`, `hydra`, `msfconsole`. (`nmap` is apt-installable — candidate `7.91`) |
 | **AUP / `LabConsent` text** | not written |
@@ -172,6 +172,11 @@ where it runs, who may use it, its license, and what evidence it produces.**
 | **Compliance / hardening** | OpenSCAP, Lynis, CIS benchmarks | victim VM | all | MT-3's hardening checks become toolbelt entries |
 | **Threat intel / case mgmt** | MISP, TheHive/IRIS | lab host | staff/pro | feeds reports + IOC packs |
 
+> **Reading the "Gate" column (owner §12.9):** `staff` / `staff-only` here is an **audience/tier label**
+> (*internal/operator, usable before the L4 customer fences*) — **not** a staff-role gate. SpaceWorker
+> has no staff badge (only Vantra did); **C1 gates the Cyber Lab by the PREMIUM `cyberlab`
+> entitlement**, and the customer rows still wait for the C6 L4 fences.
+
 **Why this beats "simulation-only" products:** each tool run emits a **hash-chained evidence
 artifact** into `LabEpisode`. The user gets an ATT&CK coverage matrix, a retest tracker, and an
 exportable findings report — the deliverables a red team actually bills for. That is the
@@ -237,6 +242,11 @@ To add:
 - `LabAbuseReport` — the sentinel's output: `userId`, `rangeId`, `reason`, `evidenceJson`,
   `severity`, `status` (`open`|`frozen`|`cleared`), `reviewedByAdminId`.
 
+> **§12.9 note on the `staff` field values above** (`LabScenario.author`, `DetectionPack.audience`):
+> `staff` is an **audience/tier label** meaning *internal/operator, usable before the L4 fences*, **not**
+> a staff-role gate. **C1 does not build a staff badge** — the Cyber Lab panel is gated by the PREMIUM
+> `cyberlab` entitlement. Keep the field values; read them as tier labels.
+
 **Reuse, never duplicate** (CROSS-TRACK RULE 5): approval → `AgentPendingAction` (add kind
 `"lab-action"` — **not implemented today**; only `"browser-clone"` exists), audit →
 `AgentActionAudit`, entitlement → `UserEntitlement` key `cyberlab` (**already present in
@@ -251,7 +261,7 @@ Ordered so that **the safety net exists before the first real attack runs** — 
 | Phase | What ships | Depends on |
 |---|---|---|
 | **C0** | **AUP + `LabConsent` text** (lawyer-reviewed, versioned), the "Authorized targets only" onboarding, the legal-boundary page. *Nothing runs before this exists.* | lawyer |
-| **C1** | **Schema + gate**: all `Lab*` models, `AgentPendingAction` kind `"lab-action"`, the staff badge (M4), lab limits as `AdminSetting` (CROSS-TRACK RULE 7), admin panel page with live counts | — |
+| **C1** | **Schema + gate**: all `Lab*` models, `AgentPendingAction` kind `"lab-action"`, **the PREMIUM `cyberlab` gate (§12.9 — NO staff badge; §10 Q2 resolved by the owner)**, lab limits as `AdminSetting` (CROSS-TRACK RULE 7), admin panel page with live counts | — |
 | **C2** | **Lab host**: Caldera on a **non-production** host (isolated, token auth, never public), Vantra agent on victim VMs, one hard-coded smoke scenario end-to-end | C1 |
 | **C3** | **Episode recorder + evidence chain**: `LabEpisode`/`LabFinding`, signed manifests, ATT&CK mapping, findings-report export | C2 |
 | **C4** | **Abuse sentinel** (§5.2): target allowlist enforcement, egress monitor, intent classifier, `LabAbuseReport` → admin notify → auto-freeze. **Demo-able refusal test** (§8). | C3 |
@@ -310,8 +320,9 @@ deployed, ≥2 victim VMs with the Vantra agent, and the C0 AUP text.
 
 1. **Lab host:** the second (Vantra) VPS, or a box on the LAN? (Caldera must not touch the
    production app host either way.)
-2. **Staff badge (M4):** confirm it does not exist yet — should C1 build it, or is the existing
-   admin role sufficient for the staff-only phase?
+2. **Staff badge (M4):** ✅ **RESOLVED 2026-10-02 PM — see §12.9.** SpaceWorker has no staff gate and
+   will not get one in v1; **C1 gates by the PREMIUM `cyberlab` entitlement** instead. Do not build a
+   staff badge. (The user-tier model is still under review as a separate question.)
 3. **Customer track timing:** is the Cyber Lab sold at all before the L4 fences land, or
    staff-only until the AUP clears a lawyer?
 4. **Credential/C2 tools:** acceptable for **staff-only** v1, or excluded until the customer
@@ -327,8 +338,9 @@ deployed, ≥2 victim VMs with the Vantra agent, and the C0 AUP text.
   **schema deltas (§6)** and the phasing (§7). Where they disagree, **this doc wins for _what_ is
   built** and TASK_98 wins for *Michael's contract artefacts*.
 - **`PLAN_NOW_ASSISTANT_AND_CYBER_LAB.md`** §CYBER LAB TRACK + **M5** remain the governing
-  product decisions (personal-VM start, staff-badge live access, egress gate deferred for staff,
-  audited, panic switch; L4 fences for customers). **M4's staff badge is currently unbuilt (§2).**
+  product decisions (personal-VM start, live lab access, egress gate deferred for the internal tier,
+  audited, panic switch; L4 fences for customers). **M4's staff badge is unbuilt (§2) and, per §12.9,
+  is NOT built in C1** — the gate is the PREMIUM `cyberlab` entitlement instead.
 - **`PLAN_TASK_91_CYBER_LAB_RED_TEAM.md`** stays **superseded**.
 - **`PLAN_TASK_155_WORKERS_AND_PAGES.md`** is a **dependency**, not merely a related doc: build
   155's P1/P2 (files + redirects on our own metal) before the lab's simulation infrastructure.
@@ -343,11 +355,13 @@ attack, we need to make research and since we use a linux box, there should be e
 can add from there, and make it easy for users and powerful, a to end simulation on the users personal
 vm =, we just create the attack simulation from spaceworker."*
 
-Seven rulings follow. They **refine** §5's matrix and add the classes it under-served (email + DNS);
+**Eight** rulings follow (§12.1–§12.8 from the owner's addendum, plus **§12.9 — the access ruling,
+added the same day**). They **refine** §5's matrix and add the classes it under-served (email + DNS);
 they do **not** overturn §5.2 (the abuse sentinel), §4 (where the machines are) or §7 (the phasing).
 **C0–C6 still gate everything.** The one addition is that C2+ now has a **required research step
 (§12.1)** before a tool is offered, and the customer-facing shape is the **§12.5 on-your-own-VM**
-model, not a shared range.
+model, not a shared range. **§12.9 is binding on C1: the gate is the PREMIUM entitlement, not a staff
+badge.**
 
 ### 12.1 "Not stale tools" — a research gate, not a wishlist
 
@@ -490,7 +504,8 @@ is a **charter**, not a free-for-all:
 ### 12.8 Effect on the phasing (§7) — what actually changes
 
 - **C1** gains the **`LabToolCatalog`** table + `staleAfter`/last-reviewed columns and the **Research
-  admin page** (read-only feeds; no attack). This is additive to §6.
+  admin page** (read-only feeds; no attack), and gates the panel by the **PREMIUM `cyberlab`
+  entitlement (no staff badge — §12.9)**. This is additive to §6.
 - **C2** is unchanged in shape (Caldera on a non-production host, one smoke scenario) but the smoke
   scenario must be a **documented catalog row**, and a **Zeek/Suricata** capture must be part of its
   evidence.
@@ -500,6 +515,37 @@ is a **charter**, not a free-for-all:
   is what C6 *is* for customers.
 - **Unchanged absolute:** nothing customer-facing until C0's AUP + lawyer sign-off. §12 expands *what*
   the lab can do; it does not move the fences.
+
+### 12.9 Access ruling (owner, 2026-10-02 PM) — **PREMIUM-gated, no staff gate in v1** — BINDING
+
+Owner, verbatim: *"we dont have staff gate in spaceworker yet, so just build it premium gated … we
+are still going to evaluate how the users tier work instead and decide whether to add the staff gate
+to spaceworker; we only had it in vantra. lets not make this a blocker."*
+
+This **resolves §10 Q2** and **supersedes the "staff badge (M4)" deliverable in C1** (§7). It is an
+access-gating decision, so it binds C1 directly:
+
+- **SpaceWorker has no staff badge and no staff-role gate today.** Confirmed by grep: no staff-badge
+  helper exists in `lib/*.ts` (only `admin`-named surfaces). The "staff track" was a **Vantra** concept;
+  SpaceWorker never inherited it. **Do not build a staff badge, and do not block C1 on one.**
+- **C1 gates the Cyber Lab by the PREMIUM entitlement.** The key is **`cyberlab`, already in
+  `ENTITLEMENT_KEYS`** (`lib/entitlements.ts`) and already flowing through the `UserEntitlement` path —
+  the *same* gate the `hosting` module uses. The panel is reachable by a **premium / granted** user (and
+  by anyone holding a `UserEntitlement` grant of key `cyberlab`); a non-entitled user is refused
+  server-side. No second role, no second gate.
+- **Wherever this doc — or §5 — says "staff"** (the tool-audience column, "staff-only v1", "staff now;
+  pro later"), read it as the **audience label** = *internal / operator tier, usable before the L4
+  fences exist*, **not** a code-level staff gate. `LabScenario.author`, `DetectionPack.audience` and the
+  tool-matrix "Gate" column keep their **field values**, but their meaning is **audience/tier**, not an
+  authorization role.
+- **The user-tier model is under review.** Whether SpaceWorker ever needs its own staff gate is a
+  **later** owner decision. The deferred **L4 customer fences** (heavier AUP, lawyer sign-off,
+  disposable no-egress ranges) are unchanged and still gate the **customer** track — §12.9 changes
+  *how C1 opens the door*, not *what the fence is*.
+- **Honest limit:** premium gating is **authorization hygiene**, not a legal fence. It does **not**
+  replace the C0 AUP/consent, the §5.2 abuse sentinel, or the C6 L4 work.
+
+---
 
 **What this addendum explicitly does NOT authorise:** targeting third parties, mass internet scanning,
 spam/fraud tooling, spoofing domains the tenant does not control, or any customer-facing offensive run

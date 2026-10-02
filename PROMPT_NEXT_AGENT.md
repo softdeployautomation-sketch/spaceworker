@@ -23,8 +23,9 @@ TASK:            D2 / Task 156 - "Cyber Lab, real-world": offensive + defensive 
                  TODAY'S attacks (simulate all kinds of emails / DNS / server attacks, research),
                  built on the Linux box, EASY for users and POWERFUL, with the end-to-end
                  simulation running on the USER'S OWN VM (SpaceWorker authors it).
-                 YOU START AT:  C0 (AUP/consent text) then C1 (schema + gate + staff badge +
-                 admin limits + LabToolCatalog + the read-only Research admin page) ONLY.
+                 YOU START AT:  C0 (AUP/consent text) then C1 (schema + PREMIUM gate + admin
+                 limits + LabToolCatalog + the read-only Research admin page) ONLY. NO staff
+                 badge/gate (owner A14 - SpaceWorker has none today).
                  C2+ is a separate assignment - do NOT start it.
 TASK DOC:        PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md   read section 12 FIRST (owner
                                                               addendum 2026-10-02 - BINDS the lab:
@@ -50,12 +51,14 @@ DEPENDS ON:      D1 / Task 155 P1 + P2 + P3 are DONE, DEPLOYED and LIVE (`bb6ff6
                  not answered there that would change C1's schema/gate - ASK THE LEAD BEFORE YOU
                  COMMIT IT. C1 is otherwise UNGATED.
 BRANCH:          main
-DEPLOY?          C0 = docs + a screen only, NO deploy. C1 = schema + gate + staff badge + admin
-                 limits + LabToolCatalog + read-only Research admin page: ADDITIVE + NULLABLE,
+DEPLOY?          C0 = docs + a screen only, NO deploy. C1 = schema + PREMIUM gate (no staff gate) +
+                 admin limits + LabToolCatalog + read-only Research admin page: ADDITIVE + NULLABLE,
                  deployable via deploy.yml in-window exactly as D1's P3 deploy was (follow
                  SENIOR_HANDOFF section 9 verbatim: dispatch, verify BUILD_ID, grep the BUILT
                  chunks under /opt/spaceworker/.next/static - components/ and lib/ are NOT
                  shipped). C2+ (anything that actually attacks a host) = LEAD decision, on a
+                 NON-production host, NEVER the prod VPS.
+```
 
 ## OWNER'S ASKS (these BIND; do not re-litigate)
 
@@ -103,9 +106,18 @@ A13 (NEW 2026-10-02) Cyber Lab must meet today's hacker world (simulate all kind
     SpaceWorker)
       ->  THIS RUN. It is D2 / Task 156. Build spec = PLAN_TASK_156 section 12 (BINDING). Phases
           C0-C6; YOU DO C0 then C1 ONLY.
-```
-
-                 NON-production host, NEVER the prod VPS.
+A14 (NEW 2026-10-02) "we dont have staff gate in spaceworker yet, so just build it premium gated ...
+     we are still going to evaluate how the users tier work instead and decide whether to add the
+     staff gate to spaceworker; we only had it in vantra. lets not make this a blocker"
+       ->  THIS RUN. SpaceWorker has NO staff badge and NO staff-role gate today (only Vantra ever
+           had a "staff track"; grep finds no staff helper in lib/*.ts). C1 therefore gates the
+           Cyber Lab by the PREMIUM entitlement (the `cyberlab` key, ALREADY in ENTITLEMENT_KEYS and
+           already wired through UserEntitlement) - NOT a staff badge, NOT the admin role. Do NOT
+           build a staff gate and do NOT block C1 on one. The user-tier model is under review;
+           whether SpaceWorker needs its own staff gate is a LATER decision. Wherever PLAN_156 says
+           "staff" (the tool-audience column, "staff-only v1"), read it as AUDIENCE ("internal /
+           operator only until the tier model is decided"), not a second gate.
+           Build spec = PLAN_TASK_156 section 12.9 (BINDING).
 ```
 
 ## VERIFIED STATE AT HANDOFF (read this before you touch anything)
@@ -144,7 +156,8 @@ is up to date!"*; `_prisma_migrations` shows the P3 migration; `pg_tables` shows
 3. **No `LabToolCatalog`** — there is no catalogue of capabilities (ATT&CK id, last-reviewed, upstream
    version, CVE history, licence, `staleAfter`).
 4. **No Research admin page** (read-only feeds only — it does NOT run an attack).
-5. **No staff badge** and no `Lab*` admin limits beyond D1-P2's RAM dials.
+5. **No `Lab*` admin limits** beyond D1-P2's RAM dials — and **no staff badge/gate** (SpaceWorker
+   has none; owner A14 says gate the lab by PREMIUM instead — do not build a staff gate).
 6. **`cyberlabEnabled=false`** — the nav item + card + panel are dark on purpose. C1 flips it at the END,
    **behind the AUP gate**, never before.
 7. The governor knows **nothing** about lab RAM (A8 — deliberately deferred). **Record dials only.**
@@ -164,7 +177,7 @@ prod; the **premium/Cloudflare** leg ran against the **throwaway** account only;
    with any of it, say so with evidence — do not silently work around it.
 3. **C0 — write the AUP + LabConsent text** as a repo doc **and** a screen that gates the lab; record the
    acceptance. Nothing runs before it exists.
-4. **C1 — build the gate + schema + badge + limits + catalogue + Research page.** Reuse the 155 §14 cap
+4. **C1 — build the PREMIUM gate + schema + limits + catalogue + Research page (NO staff badge).** Reuse the 155 §14 cap
    mechanism (named `AdminSetting` fields, server-enforced, admin-editable, shipped with defaults) and the
    existing `cyberlab` entitlement key. One **additive** migration. Smallest correct diff per file; match
    the neighbours' conventions (read `lib/entitlements.ts`, `lib/admin-settings.ts`, `lib/hosting/rules.ts`
@@ -175,15 +188,16 @@ prod; the **premium/Cloudflare** leg ran against the **throwaway** account only;
    - every `test:*` suite that touches what you changed (CI does NOT run `test:*` — you must). Add a
      `tests/cyberlab-*.test.ts` for the gate + the `staleAfter` hiding. A check that cannot fail is not
      evidence.
-6. **PROVE IT VISIBLY.** With a real browser (Playwright is installed) show: the AUP screen blocks the lab
-   until accepted; after accepting, the panel opens; the staff badge shows; and a live admin PATCH flips a
-   `Lab*` limit **without a redeploy** (same proof pattern as the hosting caps). A green build that changed
-   nothing the user can see is the exact failure that produced TASK_153.
+6. **PROVE IT VISIBLY.** With a real browser (Playwright is installed) show: a **non-premium** user is
+   blocked at the `cyberlab` entitlement (and the AUP screen blocks until accepted); after accepting (and,
+   for a premium user, being entitled), the panel opens; and a live admin PATCH flips a `Lab*` limit
+   **without a redeploy** (same proof pattern as the hosting caps). **No staff badge** — owner A14. A green
+   build that changed nothing the user can see is the exact failure that produced TASK_153.
 7. **BROKEN-NOTHING CHECK.** BEFORE and AFTER, `curl` the live `/e/...`, `/downloads/...`, an existing
    campaign `/r/<token>` redirect, and the D1 `/hf/<token>` + `/pv/<token>/` + `/hs/<token>/` paths —
    identical behaviour. Run every `test:*` suite that touches what you changed.
 8. **COMMIT** — explicit paths only, never `-A`, never `.`:
-   `git add <path1> <path2> ...` → `git commit -m "feat(cyberlab): Task 156 C0+C1 - AUP consent gate, Lab* schema, staff badge, LabToolCatalog, read-only Research admin"` → `git push origin main:main`.
+   `git add <path1> <path2> ...` → `git commit -m "feat(cyberlab): Task 156 C0+C1 - AUP consent gate, Lab* schema, premium gate, LabToolCatalog, read-only Research admin"` → `git push origin main:main`.
 9. **DEPLOY** — **C1 only** (C0 is docs + a screen; deploy after C1 is green). Follow handoff section 9
    verbatim; run the additive migration in-window; verify the BUILD_ID + a **BUILT chunk** grep (a
    source-tree grep proves nothing — `components/` and `lib/` are NOT shipped). **Beware trap 15**: a
@@ -201,15 +215,20 @@ C0  AUP + LabConsent text. NOTHING runs before it exists. (Legal, not code - but
     (e.g. docs/ or a markdown under the task doc) AND (b) a screen that gates the lab -
     reaching the lab requires accepting it, and the acceptance is recorded.
 C1  schema (PLAN_156 section 6, one ADDITIVE migration) + the entitlement/gate (key "cyberlab"
-    ALREADY in ENTITLEMENT_KEYS) + the staff badge + the admin limits (Lab*) + the section 12.1
-    LabToolCatalog (a row per capability: ATT&CK id, last-reviewed, upstream version, CVE
-    history, licence, staleAfter) + the read-only Research admin page (feeds only - it does NOT
-    run an attack).
+    ALREADY in ENTITLEMENT_KEYS) - PREMIUM gated, NO staff badge (owner A14) + the admin limits
+    (Lab*) + the section 12.1 LabToolCatalog (a row per capability: ATT&CK id, last-reviewed,
+    upstream version, CVE history, licence, staleAfter) + the read-only Research admin page
+    (feeds only - it does NOT run an attack).
     STOP HERE.
 ```
 
 ## D2 — non-negotiable (these BIND; from PLAN_156 §12/§5.2 + 155 §14 rule 1)
 
+- **The gate is the PREMIUM entitlement, not a staff role (owner A14).** SpaceWorker has **no staff
+  badge and no staff gate** today (only Vantra did; grep finds no staff helper in `lib/*.ts`). Gate the
+  Cyber Lab with the `cyberlab` key in `ENTITLEMENT_KEYS` via the existing `UserEntitlement` path — the
+  same gate `hosting` uses. Do **not** invent a staff/second role; the user-tier model is under review.
+  PLAN_156's "staff" wording = tool **audience** (internal/operator), not a code gate.
 - **One cap mechanism, never a second.** All lab limits are named `AdminSetting` fields, enforced
   **server-side**, editable in the **admin UI**, shipped with defaults — **exactly** the 155 §14
   pattern. Do **not** invent a parallel config. (`hosting` proved this works live without a redeploy.)
@@ -245,8 +264,9 @@ MUST NOT:    lib/resource-governor.ts, lib/agent.ts, lib/clone*.ts, any already-
 
 > C0: the AUP/consent text exists as a screen + a repo doc and gates the lab (nothing runs without
 > accepting it). C1: the schema is applied (additive, no data loss), the `cyberlab` entitlement gates
-> the panel, the staff badge shows, every lab limit is an admin-editable `AdminSetting` **live without
-> a redeploy**, and `LabToolCatalog` rows render with a **`staleAfter`** date that hides a stale row.
+> the panel (PREMIUM - no staff badge, owner A14), every lab limit is an admin-editable `AdminSetting`
+> **live without a redeploy**, and `LabToolCatalog` rows render with a **`staleAfter`** date that hides
+> a stale row.
 > Capture: the raw `prisma migrate` output, the live admin PATCH (status+body), the panel DOM text,
 > and `npx tsc --noEmit` → 0 + `CI=1 npx next build` → 0 + `npm run test:<relevant>` green.
 > **C2+ is NOT in this run** — do not scan, spoof, or fire anything.
