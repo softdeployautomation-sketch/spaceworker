@@ -15,10 +15,30 @@ const nextConfig: NextConfig = {
   // additive/harmless for a `next start` deploy — conditioning it here removes
   // that risk for the hosted app without touching the EXE build at all.
   output: process.env.BUILD_TARGET ? "standalone" : undefined,
-  // Only native-binding packages need to be externalized (bcrypt, Prisma); do NOT
-  // add "server-only"/"jose"/"resend" here — those are pure JS and if externalized
-  // the real npm "server-only" resolves to its throwing index.js and breaks builds.
-  serverExternalPackages: ["bcrypt", "@prisma/client"],
+  // Native-binding packages (bcrypt, Prisma) must be externalized. So must
+  // "tesseract.js": do NOT add "server-only"/"jose"/"resend" here — those are
+  // pure JS and if externalized the real npm "server-only" resolves to its
+  // throwing index.js and breaks builds.
+  //
+  // 2026-10-03 — WHY tesseract.js IS EXTERNALIZED (live incident; the reason the
+  // Screen monitoring summaries and transcripts were empty for days):
+  // tesseract.js spawns its OCR engine in a `worker_threads` Worker whose script
+  // path is computed at RUNTIME from `__dirname`
+  // (src/worker/node/defaultOptions.js: `path.join(__dirname, '..', '..',
+  // 'worker-script', 'node', 'index.js')`). When Turbopack INLINES the package it
+  // freezes `__dirname` at BUILD time to its own virtual root, so the shipped
+  // bundle literally contained
+  //   workerPath: "/ROOT/node_modules/tesseract.js/src/worker/node"
+  // `/ROOT` exists on the CI machine but NOT on the VPS, so the Worker could never
+  // start: `createWorker()` hung forever, `runSummaryPass` never returned, and
+  // systemd killed the sweep at its 300s timeout every minute. The result was
+  // frames with no `summary`, no `ocrText`, and therefore no transcript toggle —
+  // and because the prior code path could not hang, the hang was invisible.
+  // Externalizing keeps a real runtime `require`, so `__dirname` resolves to the
+  // actual install dir and the worker script is found. Verified against the live
+  // box: `/ROOT` was absent and `node_modules/tesseract.js/src/worker/node` was
+  // present.
+  serverExternalPackages: ["bcrypt", "@prisma/client", "tesseract.js"],
   // Pin the workspace root explicitly — an unrelated package.json in the parent
   // home directory otherwise confuses Turbopack's root inference, causing bogus
   // "/ROOT/..." module resolution errors that abort the production build.

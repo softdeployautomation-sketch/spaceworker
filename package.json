@@ -28,6 +28,7 @@
     "test:governor": "tsx --test tests/resource-governor.test.ts",
     "test:screenshots": "tsx --test tests/device-screenshots.test.ts",
     "test:summaries": "tsx --test tests/screenshot-summaries.test.ts",
+    "test:tesseract": "tsx --test tests/tesseract-external.test.ts",
     "test:timeline": "tsx --test tests/screen-timeline.test.ts",
     "test:capturefail": "tsx --test tests/screen-capture-failure.test.ts",
     "test:screennotify": "tsx --test tests/screen-notifications.test.ts",
