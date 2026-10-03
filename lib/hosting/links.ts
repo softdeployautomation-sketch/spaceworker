@@ -1,7 +1,7 @@
 import { prisma } from "../prisma";
 import { isValidLinkTarget, isValidSlug, newHostingToken } from "./rules";
 import { resolveCapsForUser, type HostingResult } from "./files";
-import { publishUserMap, teardownUserMap } from "./links-engine";
+import { mapIdentityFor, publishUserMap, teardownUserMap } from "./links-engine";
 import { healthyPlatformAccountCount } from "./platform-accounts";
 
 // TASK_155 P2 — user-owned short links.
@@ -423,7 +423,17 @@ async function removeLinkFromWorkerMap(
     });
     return;
   }
-  await teardownUserMap(userId, row.credentialId, row.workerName ?? "", row.routePattern);
+  // Prefer what the row recorded, but fall back to the derived identity. The route
+  // is keyed by USER+HOST, not by this one link, and a row whose own publish failed
+  // has workerName/routePattern still NULL — taking those at face value skips route
+  // deletion and orphans a live route that 500s at the edge forever.
+  const identity = mapIdentityFor(userId, row.customHost);
+  await teardownUserMap(
+    userId,
+    row.credentialId,
+    row.workerName || identity.workerName,
+    row.routePattern || identity.routePattern
+  );
 }
 
 /**

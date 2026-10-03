@@ -213,11 +213,19 @@ export async function publishUserMap(
   // link is dead on arrival. That is the failure this call exists to prevent.
   const record = await ensureProxiedRecord(cf, zoneId, host);
   if (!record.ok) {
+    // A token that can publish Workers but NOT touch DNS is the common case, and
+    // it is not obvious from the dashboard: DNS sits behind its OWN permission
+    // group, so a token built from "Workers Scripts" + "Workers Routes" alone
+    // fails right here with a bare "Authentication error" that names no cause.
+    // Say exactly what to add, because there is nothing else the owner can act on.
+    const needsDns = record.status === 403;
     return {
       ok: false,
       status: record.status,
-      code: "cf_error",
-      message: record.error ?? "Could not point DNS at Cloudflare for this hostname.",
+      code: needsDns ? "dns_permission_missing" : "cf_error",
+      message: needsDns
+        ? `That Cloudflare token cannot manage DNS for ${host}. Add DNS:Edit and DNS:Read to it, then publish again.`
+        : record.error ?? "Could not point DNS at Cloudflare for this hostname.",
     };
   }
 
@@ -234,6 +242,28 @@ export async function publishUserMap(
   }
 
   return { ok: true, value: { workerName, routePattern: pattern, customHost: host, credentialId: cf.credentialId } };
+}
+
+/**
+ * The deterministic identity of a user's map on a host: ONE script and ONE route
+ * per user+host, both pure functions of those inputs.
+ *
+ * This exists because the LinkRedirect row we are tearing down is NOT a reliable
+ * source for these. A link whose own publish FAILED (say the token lacked DNS
+ * permission) has workerName and routePattern still NULL — it never got as far as
+ * creating anything. Deleting that row must still remove the route its SIBLINGS
+ * published, and `routePattern: null` makes teardown skip route deletion entirely
+ * and leave a live route behind that answers 500 at the edge forever.
+ */
+export function mapIdentityFor(
+  userId: string,
+  customHost: string | null
+): { workerName: string; routePattern: string | null } {
+  const host = customHost?.trim().toLowerCase() || null;
+  return {
+    workerName: workerNameForUser(userId),
+    routePattern: host ? routePatternFor(host) : null,
+  };
 }
 
 /**

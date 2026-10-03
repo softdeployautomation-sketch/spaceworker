@@ -944,7 +944,7 @@ test("P6c: an ALREADY-proxied record is left completely alone", async () => {
   assert.ok(firstIndexOf("POST", "/workers/routes") >= 0, "and the publish still completes");
 });
 
-test("P6c: a DNS failure fails the publish and creates NO route", async () => {
+test("P6c: a DNS 403 names the missing permission instead of a bare Authentication error", async () => {
   defaultRoutes([
     { method: "GET", match: "/workers/routes", result: [] },
     { method: "POST", match: "/dns_records", status: 403, result: [] },
@@ -952,10 +952,75 @@ test("P6c: a DNS failure fails the publish and creates NO route", async () => {
   const out = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: HOST });
 
   assert.equal(out.ok, false, "a link we cannot make resolve is not a link");
+  if (!out.ok) {
+    assert.equal(out.code, "dns_permission_missing");
+    assert.match(out.message, /DNS:Edit/, "the owner is told exactly what to add");
+    assert.match(out.message, /DNS:Read/);
+  }
   assert.equal(
     firstIndexOf("POST", "/workers/routes"),
     -1,
     "and no route is left pointing at a hostname that does not resolve"
+  );
+});
+
+test("P6c: a non-403 DNS failure is a plain cf_error and still creates NO route", async () => {
+  defaultRoutes([
+    { method: "GET", match: "/workers/routes", result: [] },
+    { method: "POST", match: "/dns_records", status: 500, result: [] },
+  ]);
+  const out = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: HOST });
+  assert.equal(out.ok, false);
+  if (!out.ok) assert.equal(out.code, "cf_error");
+  assert.equal(firstIndexOf("POST", "/workers/routes"), -1);
+});
+
+test("P6c: deleting a link whose OWN publish failed still tears down the shared route", async () => {
+  // Reproduces the live bug exactly. The route belongs to the USER+HOST, not to any
+  // one link, so it can outlive the link that recorded it:
+  //   1. link B is created while the token cannot touch DNS → its publish FAILS, so
+  //      B records no workerName and no routePattern.
+  //   2. link A publishes fine and creates the route for this user+host.
+  //   3. A is deleted → B is still there, so the map is REPUBLISHED and the route stays.
+  //   4. B is deleted last → remaining=0, so this is the teardown path — and it must
+  //      still find and delete the route, which it can only do by deriving the
+  //      pattern from the host. Taking B's NULL pattern skips route deletion and
+  //      orphans a live route that answers 500 at the edge forever.
+  defaultRoutes([{ method: "POST", match: "/dns_records", status: 403, result: [] }]);
+  const bad = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://bad.example/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: HOST,
+  });
+  assert.ok(bad.ok);
+  assert.equal(bad.value.deployStatus, "error", "B never got as far as publishing");
+
+  defaultRoutes();
+  const good = await makeWorkerLink("https://good.example/");
+  assert.ok(good.ok);
+
+  // Step 3 — delete the healthy link; B keeps the map alive.
+  const goodRow = linkRows.find((r) => r.id === good.value.id)!;
+  assert.ok(goodRow.routePattern, "A did publish and record the pattern");
+  assert.ok((await links.deleteHostedLink("user_1", goodRow.id)).ok);
+
+  calls = [];
+  const res = await links.deleteHostedLink("user_1", bad.value.id);
+  assert.ok(res.ok, "the local delete succeeds regardless of Cloudflare");
+
+  const routeDelete = calls.find((c) => c.method === "DELETE" && c.url.includes("/workers/routes"));
+  assert.ok(routeDelete, "the shared route is deleted even though B recorded no pattern");
+  assert.ok(
+    routeDelete!.url.includes("/zones/zone_1/workers/routes"),
+    "and it is the zone-scoped delete, recovered from the host B does still know"
+  );
+  const scriptDelete = calls.find((c) => c.method === "DELETE" && c.url.includes("/workers/scripts/"));
+  assert.ok(scriptDelete, "then the shared script");
+  assert.ok(
+    calls.indexOf(routeDelete!) < calls.indexOf(scriptDelete!),
+    "route before script, so the domain never points at a deleted script"
   );
 });
 
