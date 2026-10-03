@@ -1588,6 +1588,25 @@ CREATE INDEX "LinkRedirect_engine_idx" ON "LinkRedirect" ("engine");
 
 ### 19.12.5 Acceptance bar (P6c — links only)
 
+**Correctness review of 2026-11-02 — three real lifecycle bugs, all fixed and pinned by test.** These were
+found while reviewing the engine before first deploy; each was silent, and each would have shipped a
+Worker that is live but wrong:
+
+1. **The first link a user ever created was not in its own map.** When `customHost` was omitted, the row
+   was created with `customHost` NULL while the publish inferred the host from the zone and filtered the
+   map by it — so the row could not match itself. Fixed with `publishUserMap({ includeLinkId })`, which
+   re-fetches that one row by id (scoped to the user) regardless of its stored host.
+2. **A platform-published link recorded a platform account id in `LinkRedirect.credentialId`.** Teardown
+   resolves that column through `getHostingCredentialById`, which matches on the user's own rows, so it
+   found nothing: the route and script leaked with no error anywhere. Platform links now record NULL,
+   as the schema comment already said they should.
+3. **Moving a live link to a different host left the old route serving the old target.** Now the old host
+   is torn down first, then the new one is published — and the order is forced, because there is ONE
+   script per user: tearing down second would delete the script the new route was about to point at.
+
+Also fixed: zone queries (`/zones`) are now scoped with `account.id=<the credential's account>`, so a
+token that can see more than one account cannot match a domain belonging to another.
+
 **Links (P6c)**
 
 * The generated script is asserted to contain **this user's** map and **no other user's** target.

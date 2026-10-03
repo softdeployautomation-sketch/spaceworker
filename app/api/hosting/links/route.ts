@@ -22,6 +22,11 @@ const postSchema = z.object({
   target: z.string().min(1).max(2048),
   label: z.string().max(200).nullable().optional(),
   slug: z.string().max(63).nullable().optional(),
+  // TASK_155 P6c — "local" (free) or "cloudflare" (premium Worker). Anything else
+  // is coerced to local by the engine, so a junk value cannot reach Cloudflare.
+  engine: z.enum(["local", "cloudflare"]).optional(),
+  customHost: z.string().max(253).nullable().optional(),
+  credentialId: z.string().max(64).nullable().optional(),
 });
 
 export async function POST(request: Request) {
@@ -49,6 +54,9 @@ export async function POST(request: Request) {
     target: parsed.target,
     label: parsed.label,
     slug: parsed.slug,
+    engine: parsed.engine,
+    customHost: parsed.customHost,
+    credentialId: parsed.credentialId,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

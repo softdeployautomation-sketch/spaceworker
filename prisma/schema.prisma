@@ -1327,8 +1327,31 @@ model LinkRedirect {
   clickCount Int            @default(0)
   createdAt  DateTime       @default(now())
 
+  // TASK_155 P6c — the LINKS engine. Additive only, every column has a default or
+  // is nullable, so all 12 Task 30 campaign links (userId NULL) read back as
+  // engine "local" and keep resolving on /r/<token> exactly as they did.
+  // "local"   — our metal, resolved by app/r/[token] (always still available)
+  // "cloudflare" — a per-user Cloudflare Worker serves the 302 on <customHost>
+  engine String @default("local")
+  // Which credential published it: a HostingCredential id (BYO), or NULL when the
+  // platform roster served it. attribution only — never a secret.
+  credentialId String?
+  // The one-script-per-user name (sw-<hash>) and the route pattern it is bound to.
+  // Both are needed at TEARDOWN to find what to delete, which is why they are
+  // stored rather than recomputed from the zone.
+  workerName   String?
+  routePattern String?
+  // The host the Worker answers on, e.g. "go.instaweb.top".
+  customHost String?
+  // "pending" | "live" | "error". An error here must NOT hide the link: /r still
+  // works, so the user's link exists either way.
+  deployStatus String @default("pending")
+  // Plain-language reason from Cloudflare, safe to show the user. No tokens.
+  deployError String?
+
   @@index([campaignId])
   @@index([userId])
+  @@index([engine])
 }
 
 // TASK_155 P2 — a user's own hosting credential (BYO Cloudflare account id +

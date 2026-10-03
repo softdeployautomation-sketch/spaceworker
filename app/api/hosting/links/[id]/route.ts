@@ -15,6 +15,10 @@ const patchSchema = z
     target: z.string().min(1).max(2048).optional(),
     label: z.string().max(200).nullable().optional(),
     slug: z.string().max(63).nullable().optional(),
+    // TASK_155 P6c — switching engines re-runs the premium gate server-side.
+    engine: z.enum(["local", "cloudflare"]).optional(),
+    customHost: z.string().max(253).nullable().optional(),
+    credentialId: z.string().max(64).nullable().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
@@ -38,6 +42,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     target: parsed.target,
     label: parsed.label,
     slug: parsed.slug,
+    engine: parsed.engine,
+    customHost: parsed.customHost,
+    credentialId: parsed.credentialId,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

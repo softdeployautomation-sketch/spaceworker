@@ -1,6 +1,8 @@
 import { prisma } from "../prisma";
 import { isValidLinkTarget, isValidSlug, newHostingToken } from "./rules";
 import { resolveCapsForUser, type HostingResult } from "./files";
+import { publishUserMap, teardownUserMap } from "./links-engine";
+import { healthyPlatformAccountCount } from "./platform-accounts";
 
 // TASK_155 P2 — user-owned short links.
 //
@@ -29,6 +31,14 @@ export interface HostedLinkView {
   /** The public short URL the user shares (/r/<slug> when set, else /r/<token>). */
   shortPath: string;
   createdAt: string;
+  // TASK_155 P6c — the engine. `shortPath` (our own /r/…) is ALWAYS valid, even for
+  // a cloudflare link, which is what §19.12.2 guarantees.
+  engine: string;
+  customHost: string | null;
+  /** The Worker address the user can share, or null until it is live. */
+  publicUrl: string | null;
+  deployStatus: string;
+  deployError: string | null;
 }
 
 type LinkRedirectRow = {
@@ -39,6 +49,10 @@ type LinkRedirectRow = {
   target: string;
   clickCount: number;
   createdAt: Date;
+  engine: string;
+  customHost: string | null;
+  deployStatus: string;
+  deployError: string | null;
 };
 
 export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
@@ -51,6 +65,16 @@ export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
     clickCount: row.clickCount,
     shortPath: `/r/${row.slug ?? row.token}`,
     createdAt: row.createdAt.toISOString(),
+    engine: row.engine,
+    customHost: row.customHost,
+    publicUrl:
+      row.engine === "cloudflare" && row.customHost && row.deployStatus === "live"
+        ? `https://${row.customHost}/${row.slug ?? row.token}`
+        : null,
+    deployStatus: row.deployStatus,
+    // Cloudflare's message is already plain language and contains no secrets, but
+    // it is only shown when something actually went wrong.
+    deployError: row.deployError ?? null,
   };
 }
 
@@ -72,12 +96,72 @@ export interface CreateHostedLinkInput {
   label?: string | null;
   /** Optional friendly slug; an invalid one is a 400, never silently dropped. */
   slug?: string | null;
+  /** TASK_155 P6c — "local" (our metal, the free default) or "cloudflare" (Worker). */
+  engine?: string;
+  /** The host the Worker answers on; defaults to go.<first active zone>. */
+  customHost?: string | null;
+  /** A BYO HostingCredential id, or null to use the platform roster. */
+  credentialId?: string | null;
+}
+
+/**
+ * TASK_155 P6c — the engine gate, checked at CREATION as well as at publish.
+ *
+ * Copied verbatim from the sites gate (sites.ts:210) so the wording, the code and
+ * the STATUS are identical between the two premium engines: only `local` is free,
+ * for everyone. Checking at create means a downgrade between create and publish
+ * cannot buy a Worker.
+ */
+function premiumGate(): HostingResult<never> {
+  return {
+    ok: false,
+    status: 403,
+    code: "premium_required",
+    message:
+      "Premium hosting is part of the premium plan — upgrade to use it, or host this link on our free server.",
+  };
+}
+
+/** A hostname is a plain DNS label set — nothing that could smuggle a path or a scheme. */
+function isValidLinkHost(host: string): boolean {
+  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(host);
 }
 
 export async function createHostedLink(input: CreateHostedLinkInput): Promise<HostingResult<HostedLinkView>> {
-  const { caps } = await resolveCapsForUser(input.userId);
+  const { caps, premium } = await resolveCapsForUser(input.userId);
   if (!caps.enabled) {
     return { ok: false, status: 403, code: "disabled", message: "Hosting is not enabled on this account yet." };
+  }
+
+  // TASK_155 P6c — the premium gate, BEFORE the row exists. A free user asking for
+  // a Worker gets the same 403 as a free user asking for a Pages site, so there is
+  // no way to reach the premium engine by picking a different tab.
+  const engine = input.engine === "cloudflare" ? "cloudflare" : "local";
+  const credentialId = input.credentialId ?? null;
+  if (engine === "cloudflare" && !premium) return premiumGate();
+  if (engine === "cloudflare" && !credentialId) {
+    // Do not let someone start a Worker link we cannot finish: with no healthy
+    // platform account it would fail at publish with a worse message.
+    const healthy = await healthyPlatformAccountCount();
+    if (healthy === 0) {
+      return {
+        ok: false,
+        status: 403,
+        code: "platform_empty",
+        message:
+          "Premium hosting is being set up right now — try again shortly, or connect your own Cloudflare account in Settings.",
+      };
+    }
+  }
+
+  const customHost = input.customHost?.trim().toLowerCase() || null;
+  if (customHost && !isValidLinkHost(customHost)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_host",
+      message: "Enter a plain domain, for example go.example.com.",
+    };
   }
 
   const target = input.target.trim();
@@ -119,11 +203,22 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const token = newHostingToken();
+    let row: LinkRedirectRow;
     try {
-      const row = await prisma.linkRedirect.create({
-        data: { token, userId: input.userId, slug: attempt === 0 ? slug : null, target, label },
+      const created = await prisma.linkRedirect.create({
+        data: {
+          token,
+          userId: input.userId,
+          slug: attempt === 0 ? slug : null,
+          target,
+          label,
+          engine,
+          credentialId: engine === "cloudflare" ? credentialId : null,
+          customHost: engine === "cloudflare" ? customHost : null,
+          deployStatus: engine === "cloudflare" ? "pending" : "live",
+        },
       });
-      return { ok: true, value: toHostedLinkView(row) };
+      row = created as LinkRedirectRow;
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       // A slug collision is the user's to fix; a token collision is ours to
@@ -131,7 +226,36 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
       if (slug) {
         return { ok: false, status: 409, code: "slug_taken", message: "That link name is already taken. Pick another." };
       }
+      continue;
     }
+
+    if (engine === "local") return { ok: true, value: toHostedLinkView(row) };
+
+    // TASK_155 P6c — the row EXISTS before we touch Cloudflare, on purpose. A
+    // publish failure must leave the user with a working /r/<token> link and a
+    // readable error, never with a link that silently vanished. This is the whole
+    // reason §19.12.2 keeps local resolution alive for cloudflare links.
+    const published = await publishUserMap(input.userId, {
+      credentialId,
+      customHost,
+      // The row exists but its customHost may still be NULL when the host was
+      // inferred from the zone — name it so it is in the map it is publishing.
+      includeLinkId: row.id,
+    });
+    const updated = await prisma.linkRedirect.update({
+      where: { id: row.id },
+      data: published.ok
+        ? {
+            deployStatus: "live",
+            deployError: null,
+            workerName: published.value.workerName,
+            routePattern: published.value.routePattern,
+            customHost: published.value.customHost,
+            credentialId: published.value.credentialId,
+          }
+        : { deployStatus: "error", deployError: published.message },
+    });
+    return { ok: true, value: toHostedLinkView(updated as LinkRedirectRow) };
   }
   return { ok: false, status: 500, code: "unknown", message: "Could not save the link." };
 }
@@ -142,6 +266,10 @@ export interface UpdateHostedLinkInput {
   target?: string;
   label?: string | null;
   slug?: string | null;
+  /** TASK_155 P6c — switching a link between our metal and a Worker. */
+  engine?: string;
+  customHost?: string | null;
+  credentialId?: string | null;
 }
 
 /** Re-label / re-target / re-slug a link. Never touches token or clickCount. */
@@ -183,11 +311,89 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
     }
   }
 
+  // TASK_155 P6c — an engine switch re-runs the gate on the way IN, exactly like
+  // create. Otherwise a downgrade would let a free user flip an existing premium
+  // link to a Worker and keep serving from it.
+  const wasCloudflare = row.engine === "cloudflare";
+  let nowCloudflare = wasCloudflare;
+  if (input.engine !== undefined) {
+    nowCloudflare = input.engine === "cloudflare";
+    if (nowCloudflare) {
+      const { premium } = await resolveCapsForUser(input.userId);
+      if (!premium) return premiumGate();
+    }
+    data.engine = input.engine === "cloudflare" ? "cloudflare" : "local";
+    data.deployStatus = nowCloudflare ? "pending" : "live";
+    data.deployError = null;
+  }
+  if (input.customHost !== undefined) {
+    const host = input.customHost?.trim().toLowerCase() || null;
+    if (host && !isValidLinkHost(host)) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_host",
+        message: "Enter a plain domain, for example go.example.com.",
+      };
+    }
+    data.customHost = host;
+  }
+  if (input.credentialId !== undefined) data.credentialId = input.credentialId ?? null;
+
   if (Object.keys(data).length === 0) return { ok: true, value: toHostedLinkView(row) };
 
   try {
     const updated = await prisma.linkRedirect.update({ where: { id: row.id }, data });
-    return { ok: true, value: toHostedLinkView(updated) };
+
+    // Re-publish only when the thing that lives in the Worker changed. A pure
+    // re-label must not cost a Cloudflare round trip, and a switch AWAY from
+    // cloudflare must not leave this link in the script.
+    const mapChanged =
+      data.target !== undefined || data.slug !== undefined || data.engine !== undefined || data.customHost !== undefined;
+    if (mapChanged && nowCloudflare) {
+      // TASK_155 P6c — leaving the host or the account re-publishes on the new one,
+      // but the OLD route keeps serving the old target until it is removed. Because
+      // there is ONE script per user, that cleanup has to happen BEFORE the new
+      // publish: the old teardown deletes sw-<hash>, and doing it second would
+      // delete the script we had just written.
+      const nextHost = (input.customHost ?? row.customHost ?? null) as string | null;
+      const nextCred = (input.credentialId ?? row.credentialId ?? null) as string | null;
+      const movedHost = (nextHost?.trim().toLowerCase() || null) !== (row.customHost ?? null);
+      const movedCred = nextCred !== row.credentialId;
+      if (movedHost || movedCred) {
+        await removeLinkFromWorkerMap(input.userId, row);
+      }
+
+      const published = await publishUserMap(input.userId, {
+        credentialId: nextCred,
+        customHost: nextHost,
+        includeLinkId: row.id,
+      });
+      if (!published.ok) {
+        // The database change is kept and the error is recorded: the link still
+        // resolves on /r, and the user can see why the Worker did not update.
+        const marked = await prisma.linkRedirect.update({
+          where: { id: row.id },
+          data: { deployStatus: "error", deployError: published.message },
+        });
+        return { ok: true, value: toHostedLinkView(marked as LinkRedirectRow) };
+      }
+      const marked = await prisma.linkRedirect.update({
+        where: { id: row.id },
+        data: {
+          deployStatus: "live",
+          deployError: null,
+          workerName: published.value.workerName,
+          routePattern: published.value.routePattern,
+          customHost: published.value.customHost,
+        },
+      });
+      return { ok: true, value: toHostedLinkView(marked as LinkRedirectRow) };
+    }
+    if (mapChanged && !nowCloudflare && wasCloudflare) {
+      await removeLinkFromWorkerMap(input.userId, row);
+    }
+    return { ok: true, value: toHostedLinkView(updated as LinkRedirectRow) };
   } catch (err) {
     if (isUniqueViolation(err)) {
       return { ok: false, status: 409, code: "slug_taken", message: "That link name is already taken. Pick another." };
@@ -197,13 +403,52 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
 }
 
 /**
+ * Drop ONE link out of the user's Worker map, tearing the script down entirely
+ * when it was the last cloudflare link on that host.
+ *
+ * Shared by delete and by an engine switch, because both leave the same situation:
+ * the link is gone locally and must also be gone from the script.
+ */
+async function removeLinkFromWorkerMap(
+  userId: string,
+  row: { id: string; customHost: string | null; workerName: string | null; routePattern: string | null; credentialId: string | null }
+): Promise<void> {
+  const remaining = await prisma.linkRedirect.count({
+    where: { userId, engine: "cloudflare", ...(row.customHost ? { customHost: row.customHost } : {}) },
+  });
+  if (remaining > 0) {
+    await publishUserMap(userId, {
+      credentialId: row.credentialId,
+      customHost: row.customHost,
+    });
+    return;
+  }
+  await teardownUserMap(userId, row.credentialId, row.workerName ?? "", row.routePattern);
+}
+
+/**
  * Delete ONLY a user's own link. `userId` is in the WHERE clause, so this can
  * never remove a campaign link (userId NULL) or another user's link.
  */
 export async function deleteHostedLink(userId: string, id: string): Promise<HostingResult<{ id: string }>> {
   const row = await prisma.linkRedirect.findFirst({ where: { id, userId } });
   if (!row) return { ok: false, status: 404, code: "not_found", message: "Link not found." };
+
+  // The local delete happens FIRST and is never conditional on Cloudflare. The
+  // user's link is theirs to remove; a Worker we failed to clean up is our mess to
+  // reconcile, and blocking the delete would leave them stuck with a link they
+  // cannot remove at all.
   await prisma.linkRedirect.delete({ where: { id: row.id } });
+
+  if (row.engine === "cloudflare") {
+    try {
+      await removeLinkFromWorkerMap(userId, row as Parameters<typeof removeLinkFromWorkerMap>[1]);
+    } catch {
+      // The link is already gone locally and /r resolution is unaffected. A
+      // teardown failure is logged by Cloudflare's side, never surfaced to the user
+      // as a failed delete.
+    }
+  }
   return { ok: true, value: { id: row.id } };
 }
 

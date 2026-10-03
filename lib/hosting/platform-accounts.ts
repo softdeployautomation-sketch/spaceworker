@@ -311,7 +311,16 @@ export async function isPlatformEngineEnabled(): Promise<boolean> {
  * `verifyCredential`; the call site is shared with BYO, not forked.
  */
 export async function resolvePlatformCredential(
-  verify: (cred: { accountId: string; token: string }) => Promise<{ ok: boolean; error?: string }>
+  verify: (cred: { accountId: string; token: string }) => Promise<{ ok: boolean; error?: string }>,
+  /**
+   * TASK_155 P6c — the Workers engine needs a token that can publish a SCRIPT, which
+   * is a different permission set from the Pages token these rows already carry.
+   * When set, rows with no encrypted Workers token are skipped during rotation
+   * instead of being picked and failing the publish: a roster where row A is
+   * Pages-only and row B has a Workers token must resolve to B, not to A. Default
+   * (omitted) keeps the Pages behaviour byte-for-byte unchanged.
+   */
+  opts: { requireWorkerToken?: boolean } = {}
 ): Promise<PlatformResolveResult> {
   if (!(await isPlatformEngineEnabled())) {
     return { ok: false, code: "platform_disabled", message: SETUP_MESSAGE };
@@ -333,7 +342,18 @@ export async function resolvePlatformCredential(
     return { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
   }
 
-  for (const row of candidates) {
+  // Pages-only rows are dropped ONLY for a Workers publish, and they are dropped
+  // without a decrypt or a network call — same cheapness as the red-row skip above.
+  // Falling through to an empty list reports `platform_exhausted`, whose message
+  // already tells the user to add their own account, so no new error code is needed.
+  const usable = opts.requireWorkerToken
+    ? candidates.filter((row) => !!row.workerTokenCiphertext)
+    : candidates;
+  if (usable.length === 0) {
+    return { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
+  }
+
+  for (const row of usable) {
     let token: string;
     try {
       token = decryptSecretOrThrow(row.tokenCiphertext, row.tokenIv, row.tokenTag, "hosting platform account");

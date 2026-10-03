@@ -45,12 +45,18 @@ interface CfEnvelope<T> {
   errors?: Array<{ code: number; message: string }>;
 }
 
-function firstError(body: unknown): string | undefined {
+/**
+ * TASK_155 P6c — the Workers engine (lib/hosting/workers.ts) is a SIBLING of the
+ * Pages one, not a fork of it. Exporting these three lets a Worker call fail with
+ * byte-identical wording to a Pages call ("Cloudflare returned 403." / Cloudflare's
+ * own first error message), instead of a second, subtly different error path.
+ */
+export function firstError(body: unknown): string | undefined {
   const env = body as CfEnvelope<unknown> | undefined;
   return env?.errors?.[0]?.message;
 }
 
-async function cfFetch<T>(
+export async function cfFetch<T>(
   cred: CfCredential,
   method: string,
   path: string,

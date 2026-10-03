@@ -36,7 +36,7 @@
     "test:idle": "tsx --test tests/vantra-idle-provenance.test.ts",
     "test:idlechip": "tsx --test tests/device-idle-chip.test.ts",
     "test:monitorctx": "tsx --test tests/monitor-agent-context.test.ts",
-    "test:hosting": "tsx --test tests/hosting-files.test.ts tests/hosting-links-credentials.test.ts tests/hosting-platform-accounts.test.ts tests/hosting-platform-admin-route.test.ts",
+    "test:hosting": "tsx --test tests/hosting-files.test.ts tests/hosting-links-credentials.test.ts tests/hosting-platform-accounts.test.ts tests/hosting-platform-admin-route.test.ts tests/hosting-worker-token.test.ts tests/hosting-workers.test.ts",
     "test:pages": "tsx --test tests/hosting-pages.test.ts",
     "test:lab": "tsx --test tests/lab-gate.test.ts",
     "check:workflows": "node scripts/check-workflow-syntax.mjs",
