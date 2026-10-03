@@ -101,6 +101,20 @@ platform-account priority, so a priority change cannot strand a published site.
 back to `go.<zone>` then to `*.workers.dev`. Free links skip DNS and routes entirely.
 Route creation becomes zone-optional.
 
+**Phase 3b — Per-purpose account pinning (owner 2026-11-04).** Implemented ahead of the
+site custom-domain work because the owner wants premium LINKS on a dedicated
+Cloudflare account and did not want the free/Pages side moved. `AdminSetting`
+`hostingPremiumLinksAccountId` / `hostingPremiumSitesAccountId` name one Cloudflare
+account per purpose; `resolvePlatformCredential({ pinAccountId })` honours it.
+
+Priority alone could not express this: both `sites.ts` and `links-engine.ts` walk the
+same ascending-priority roster, so an account placed first to win links also wins
+sites. Pins are values the admin can edit live, and a pin **fails loudly**
+(`pinned_account_missing` / `pinned_account_unavailable`) rather than rotating on —
+silently serving premium links from the free account's subdomain is the exact mixing
+the pin exists to prevent. Default `""` leaves every existing install byte-for-byte
+unchanged.
+
 **Phase 4 — Domain onboarding wizard.** BYO or platform → create pending zone → show the
 two assigned nameservers → poll to `active` → offer active zones for host selection.
 Bounded by the one unavoidable registrar action.

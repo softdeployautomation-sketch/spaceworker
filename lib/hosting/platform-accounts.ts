@@ -295,12 +295,42 @@ export interface ResolvedPlatformCredential {
 
 export type PlatformResolveResult =
   | { ok: true; value: ResolvedPlatformCredential }
-  | { ok: false; code: "platform_disabled" | "platform_empty" | "platform_exhausted"; message: string };
+  | {
+      ok: false;
+      /**
+       * TASK_157 Phase 2 — `pinned_account_missing` / `pinned_account_unavailable`
+       * mean an admin PINNED this purpose to one Cloudflare account and that
+       * account could not serve it. They are deliberately NOT folded into
+       * `platform_exhausted`: that message tells the user to "add your own
+       * Cloudflare account", which is useless advice for an operator whose own
+       * account is merely disabled or red. The admin is the one who can fix this,
+       * and the message says so.
+       */
+      code:
+        | "platform_disabled"
+        | "platform_empty"
+        | "platform_exhausted"
+        | "pinned_account_missing"
+        | "pinned_account_unavailable";
+      message: string;
+    };
 
 /** The exhausted-roster message, shared so both branches read identically. */
 const EXHAUSTED_MESSAGE =
   "Premium hosting is being set up right now — try again shortly, or add your own Cloudflare account.";
 const SETUP_MESSAGE = "Premium hosting is being set up right now — try again shortly.";
+
+/**
+ * TASK_157 Phase 2 — pin-failure messages. Both are ADMIN-facing on purpose: the
+ * user cannot fix a pinned account, so they must not be told to go add their own
+ * Cloudflare account the way `EXHAUSTED_MESSAGE` does. Phrased as "try again
+ * shortly" rather than naming the account id, which is infrastructure detail the
+ * end user has no way to act on.
+ */
+const PIN_MISSING_MESSAGE =
+  "Premium hosting is being set up right now — try again shortly.";
+const PIN_DISABLED_MESSAGE =
+  "Premium hosting is being set up right now — try again shortly.";
 
 /**
  * Is the master kill-switch on? Read on EVERY deploy so an admin can take the
@@ -329,27 +359,62 @@ export async function resolvePlatformCredential(
    * instead of being picked and failing the publish: a roster where row A is
    * Pages-only and row B has a Workers token must resolve to B, not to A. Default
    * (omitted) keeps the Pages behaviour byte-for-byte unchanged.
+   *
+   * TASK_157 Phase 2 — `pinAccountId` narrows rotation to ONE Cloudflare account,
+   * chosen by an AdminSetting rather than by priority. Omitted/empty = today's
+   * ascending-priority rotation, unchanged.
+   *
+   * A pin is a HARD constraint, not a preference: if the pinned account is
+   * missing, disabled, red or fails to verify, this returns
+   * `pinned_account_missing`/`pinned_account_unavailable` and NEVER rotates on to
+   * the next row. That is the entire point. The owner is running a dedicated
+   * Cloudflare account purely for premium links, and if it falls over the only
+   * acceptable outcomes are "fail and tell the admin" or "serve the links from
+   * the pinned account" — publishing them to some other account instead would
+   * put premium links on the free account's subdomain, which is the exact
+   * mixing-up the pin exists to prevent.
    */
-  opts: { requireWorkerToken?: boolean } = {}
+  opts: { requireWorkerToken?: boolean; pinAccountId?: string | null } = {}
 ): Promise<PlatformResolveResult> {
   if (!(await isPlatformEngineEnabled())) {
     return { ok: false, code: "platform_disabled", message: SETUP_MESSAGE };
   }
 
-  // One query fetches the whole roster in rotation order; the loop trims it.
+  // A pin is matched on the Cloudflare ACCOUNT ID, not the row id, so the setting
+  // survives deleting and re-adding a roster row. The `status: "active"` filter is
+  // deliberately NOT applied when pinned: a disabled row must be REPORTED as
+  // unavailable, not silently omitted so the query returns nothing.
+  const pin = opts.pinAccountId?.trim() || null;
   const roster = await prisma.hostingPlatformAccount.findMany({
-    where: { status: "active" },
+    where: pin ? { accountId: pin } : { status: "active" },
     orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
   });
   if (roster.length === 0) {
-    return { ok: false, code: "platform_empty", message: SETUP_MESSAGE };
+    return pin
+      ? { ok: false, code: "pinned_account_missing", message: PIN_MISSING_MESSAGE }
+      : { ok: false, code: "platform_empty", message: SETUP_MESSAGE };
   }
+  if (pin && roster[0].status !== "active") {
+    return { ok: false, code: "pinned_account_unavailable", message: PIN_DISABLED_MESSAGE };
+  }
+
+  /**
+   * The one place a "nothing usable" outcome is reported. With a pin, that is a
+   * PIN failure and must carry the pin code + admin-facing message; without one it
+   * stays today's `platform_exhausted`. Routing every sub-case through this
+   * closure is what stops a pinned account from being misreported as a general
+   * outage (which would send the user off to add their own Cloudflare account).
+   */
+  const nothingUsable = (): PlatformResolveResult =>
+    pin
+      ? { ok: false, code: "pinned_account_unavailable", message: PIN_DISABLED_MESSAGE }
+      : { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
 
   // Rows already marked red are skipped WITHOUT a decrypt (and without a network
   // call) — that is what makes rotation cheap once an account dies.
   const candidates = roster.filter((row) => !row.verifyError);
   if (candidates.length === 0) {
-    return { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
+    return nothingUsable();
   }
 
   // Pages-only rows are dropped ONLY for a Workers publish, and they are dropped
@@ -360,7 +425,7 @@ export async function resolvePlatformCredential(
     ? candidates.filter((row) => !!row.workerTokenCiphertext)
     : candidates;
   if (usable.length === 0) {
-    return { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
+    return nothingUsable();
   }
 
   for (const row of usable) {
@@ -390,8 +455,9 @@ export async function resolvePlatformCredential(
   }
 
   // Every candidate was tried and every one failed: each is now marked red (above)
-  // and we report the exhaustion — never a silent local fallback.
-  return { ok: false, code: "platform_exhausted", message: EXHAUSTED_MESSAGE };
+  // and we report the exhaustion — never a silent local fallback. A pin that got
+  // this far means its account's own token failed verification.
+  return nothingUsable();
 }
 
 /**

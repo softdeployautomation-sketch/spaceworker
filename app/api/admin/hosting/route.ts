@@ -84,6 +84,19 @@ const WRITABLE_FIELDS = {
   //                exactly what becomes the Worker route.
   siteDomain: { column: "hostingPremiumSiteDomain", kind: "host" },
   linkDomain: { column: "hostingPremiumLinkDomain", kind: "host" },
+
+  // TASK_157 Phase 2 — the per-purpose account PINS. `kind: "accountId"` validates
+  // the SHAPE only ("" = unpinned, else Cloudflare's 32-hex account id); it
+  // deliberately does NOT check that a roster row exists for it. Splitting the
+  // two jobs is the point: a typo is caught here at SAVE time, while a
+  // well-formed id whose row was later deleted is reported at USE time by the
+  // resolver as `pinned_account_missing`. Validating existence here too would
+  // make a healthy account impossible to configure before its row exists.
+  //
+  //   premiumLinksAccountId = the Cloudflare account dedicated to premium LINKS.
+  //   premiumSitesAccountId = the Cloudflare account dedicated to premium SITES.
+  premiumLinksAccountId: { column: "hostingPremiumLinksAccountId", kind: "accountId" },
+  premiumSitesAccountId: { column: "hostingPremiumSitesAccountId", kind: "accountId" },
 } as const;
 
 const WRITABLE_KEYS = Object.keys(WRITABLE_FIELDS) as Array<keyof typeof WRITABLE_FIELDS>;
@@ -113,6 +126,10 @@ type HostingSettingRow = {
   // TASK_157 Phase 1 — the premium domain registry (empty string = not set).
   hostingPremiumSiteDomain: string;
   hostingPremiumLinkDomain: string;
+  // TASK_157 Phase 2 — the per-purpose Cloudflare account pins, by ACCOUNT id.
+  // Empty string = unpinned = automatic priority rotation.
+  hostingPremiumLinksAccountId: string;
+  hostingPremiumSitesAccountId: string;
 };
 
 // The full state the panel renders, always returned fresh from both GET and PATCH
@@ -158,6 +175,11 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       siteDomainCoversSsl: settings.hostingPremiumSiteDomain
         ? universalSslCovered(`example.${normalizeHostInput(settings.hostingPremiumSiteDomain) ?? ""}`)
         : true,
+      // TASK_157 Phase 2 — the per-purpose Cloudflare account pins, by ACCOUNT id.
+      // "" means "not pinned": the panel renders that as "Automatic (priority
+      // rotation)" so nobody mistakes an unpinned default for a chosen account.
+      premiumLinksAccountId: settings.hostingPremiumLinksAccountId,
+      premiumSitesAccountId: settings.hostingPremiumSitesAccountId,
     },
     // The Cloudflare per-asset ceiling is a HARD platform limit, not a dial — the
     // panel shows it so nobody sets pagesMaxAssetMb above it expecting it to hold.
@@ -233,6 +255,33 @@ export async function PATCH(req: Request) {
           );
         }
         data[column] = host;
+      }
+    } else if (kind === "accountId") {
+      // "" unpins, exactly like `kind: "host"`: an admin clears the box to go
+      // back to automatic priority rotation.
+      if (typeof value !== "string") {
+        return NextResponse.json({ error: `${key} must be a string` }, { status: 400 });
+      }
+      const trimmed = value.trim();
+      if (trimmed === "") {
+        data[column] = "";
+      } else if (!/^[0-9a-f]{32}$/i.test(trimmed)) {
+        // Cloudflare account ids are exactly 32 hex chars. A truncated paste is by
+        // far the most likely mistake (the dashboard and our own roster label both
+        // show shortened ids), so report the length back: without it "must be 32
+        // characters" is read as "this is broken" rather than "you pasted half of
+        // it", and the admin has nothing to compare against.
+        const looksTruncated = /^[0-9a-f]+$/i.test(trimmed);
+        return NextResponse.json(
+          {
+            error: looksTruncated
+              ? `${key} is ${trimmed.length} characters — a Cloudflare account ID is 32. Copy the whole ID from the account row.`
+              : `${key} must be a Cloudflare account ID (32 hex characters) — or empty for automatic rotation`,
+          },
+          { status: 400 }
+        );
+      } else {
+        data[column] = trimmed.toLowerCase();
       }
     } else if (kind === "money") {
       const n = Number(value);

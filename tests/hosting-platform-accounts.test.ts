@@ -276,6 +276,135 @@ test("rotation: the served token is the decrypted real token, and the row is sta
 });
 
 // ---------------------------------------------------------------------------
+// TASK_157 Phase 2 — per-purpose account PINS
+//
+// The rule that made these necessary: rotation walks ONE priority list, and BOTH
+// sites.ts and links-engine.ts walk it. So an account placed first to win premium
+// LINKS also wins premium SITES. A pin names an account per purpose instead.
+//
+// Each test below pairs a pin with a MORE attractive row at a better priority, so
+// a resolver that ignored the pin would pick the wrong row and fail. The negative
+// cases matter more than the positive one: a pin that quietly FELL BACK would put
+// premium links on the wrong Cloudflare account, which is the exact bug.
+// ---------------------------------------------------------------------------
+
+test("pin: names an account per purpose, beating a higher-priority row", async () => {
+  seed({ accountId: "acct_pages", priority: 1, label: "Pages" });
+  seed({ accountId: "acct_links", priority: 2, label: "Links" });
+
+  // The same roster, asked the same question twice, with a different pin.
+  const forLinks = await resolvePlatformCredential(async () => ok, {
+    pinAccountId: "acct_links",
+  });
+  const forSites = await resolvePlatformCredential(async () => ok, {
+    pinAccountId: "acct_pages",
+  });
+
+  assert.ok(forLinks.ok && forSites.ok, JSON.stringify([forLinks, forSites]));
+  if (forLinks.ok) {
+    assert.equal(forLinks.value.accountId, "acct_links", "links go to the links account, not the priority winner");
+  }
+  if (forSites.ok) {
+    assert.equal(forSites.value.accountId, "acct_pages", "sites stay on the Pages account");
+  }
+});
+
+test("pin: NO rotation when the pinned account is disabled", async () => {
+  seed({ accountId: "acct_links", priority: 1, status: "disabled" });
+  seed({ accountId: "acct_other", priority: 2 });
+
+  const res = await resolvePlatformCredential(async () => ok, { pinAccountId: "acct_links" });
+
+  assert.equal(res.ok, false, "a pinned account that cannot serve must not be skipped");
+  if (!res.ok) assert.equal(res.code, "pinned_account_unavailable");
+});
+
+test("pin: NO rotation when the pinned account id is not in the roster", async () => {
+  seed({ accountId: "acct_other", priority: 1 });
+
+  const res = await resolvePlatformCredential(async () => ok, { pinAccountId: "acct_deleted" });
+
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.code, "pinned_account_missing", "a deleted row is a CONFIG problem, not a general outage");
+  }
+});
+
+test("pin: NO rotation when the pinned account is already red", async () => {
+  seed({ accountId: "acct_links", priority: 1, verifyError: "Token expired." });
+  seed({ accountId: "acct_other", priority: 2 });
+
+  const res = await resolvePlatformCredential(async () => ok, { pinAccountId: "acct_links" });
+
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.code, "pinned_account_unavailable");
+});
+
+test("pin: NO rotation when the pinned account's own token fails verification", async () => {
+  seed({ accountId: "acct_links", priority: 1 });
+  seed({ accountId: "acct_other", priority: 2 });
+
+  let calls = 0;
+  const res = await resolvePlatformCredential(async (cred) => {
+    calls++;
+    return cred.accountId === "acct_links" ? bad("Authentication error.") : ok;
+  }, { pinAccountId: "acct_links" });
+
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.code, "pinned_account_unavailable");
+  assert.equal(calls, 1, "only the pinned account is ever tried — no probing of the rest of the roster");
+});
+
+test("pin: a Workers publish cannot fall back to a row that has the token", async () => {
+  // The links case with the teeth in it: the pinned account has no Workers token,
+  // and a DIFFERENT row does. Rotation would happily use the other row; a pin
+  // must not, or premium links would be published to the wrong account.
+  seed({ accountId: "acct_links", priority: 1 });
+  seed({
+    accountId: "acct_has_worker",
+    priority: 2,
+    workerTokenCiphertext: "cipher",
+    workerTokenIv: "iv",
+    workerTokenTag: "tag",
+    workerTokenHint: "9999",
+  });
+
+  const res = await resolvePlatformCredential(async () => ok, {
+    requireWorkerToken: true,
+    pinAccountId: "acct_links",
+  });
+
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.code, "pinned_account_unavailable");
+});
+
+test("pin: an EMPTY pin leaves today's rotation untouched", async () => {
+  // Regression guard. Every existing install stores "" for both settings, so if
+  // this test ever needs changing it means the default path moved.
+  seed({ accountId: "acct_first", priority: 1 });
+  seed({ accountId: "acct_second", priority: 2 });
+
+  const blank = await resolvePlatformCredential(async () => ok, { pinAccountId: "" });
+  const whitespace = await resolvePlatformCredential(async () => ok, { pinAccountId: "   " });
+  const omitted = await resolvePlatformCredential(async () => ok, { pinAccountId: undefined });
+
+  for (const res of [blank, whitespace, omitted]) {
+    assert.ok(res.ok, JSON.stringify(res));
+    if (res.ok) assert.equal(res.value.accountId, "acct_first", "unpinned still means lowest healthy priority");
+  }
+});
+
+test("pin: the kill switch still beats a pin", async () => {
+  seed({ accountId: "acct_links", priority: 1 });
+  adminRow = { hostingPlatformCfEnabled: false };
+
+  const res = await resolvePlatformCredential(async () => ok, { pinAccountId: "acct_links" });
+
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.code, "platform_disabled", "a pin must never become a way around the master switch");
+});
+
+// ---------------------------------------------------------------------------
 // Fail-CLOSED (PLAN §19.2) — never a silent fallback
 // ---------------------------------------------------------------------------
 

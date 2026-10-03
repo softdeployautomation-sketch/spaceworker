@@ -623,7 +623,19 @@ export async function resolveDeployCredential(
   // platform selection that quietly used their own token would make the "ours vs
   // yours" badge a lie and burn their Cloudflare quota instead of ours.
 
-  const platform = await resolvePlatformCredential((cred) => verifyCredential(cred));
+  // TASK_157 Phase 2 — `pinAccountId` dedicates one Cloudflare account to premium
+  // SITES. The counterpart to the links pin: sites.ts otherwise picks the first
+  // healthy row of the SAME roster links-engine walks, so priority alone cannot
+  // keep a dedicated links account from also capturing site deploys. Empty by
+  // default, which leaves the existing priority rotation untouched.
+  //
+  // Only reached in the platform branch, so a user who connected their OWN account
+  // is never affected by platform routing — the "premium means OUR account"
+  // contract below is preserved exactly.
+  const settings = await getAdminSettings();
+  const platform = await resolvePlatformCredential((cred) => verifyCredential(cred), {
+    pinAccountId: settings.hostingPremiumSitesAccountId,
+  });
   if (!platform.ok) {
     // Fail CLOSED with plain language. Never a silent `local` fallback for a
     // cloudflare site, and never a raw Cloudflare error string.

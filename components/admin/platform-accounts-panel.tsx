@@ -33,6 +33,8 @@ export interface PlatformAccountView {
   workerTokenHint: string;
   hasWorkerToken: boolean;
   workerTokenError: string | null;
+  /** TASK_157 Phase 1 — the account's workers.dev subdomain (public, not a secret). */
+  workersDevSubdomain: string | null;
   priority: number;
   status: string;
   lastVerifiedAt: string | null;
@@ -165,6 +167,90 @@ export default function PlatformAccountsPanel() {
 
   const healthy = (state?.accounts ?? []).filter((a) => a.status === "active" && !a.verifyError).length;
 
+  // ---------------------------------------------------------------------------
+  // TASK_157 Phase 2 — the per-purpose account pins.
+  //
+  // These live in AdminSetting (saved through /api/admin/hosting), NOT on the
+  // roster rows, because they are a routing DECISION about the whole roster
+  // rather than a property of one account. That is also why the values are
+  // Cloudflare ACCOUNT ids: the decision names an account, and must survive the
+  // roster row being deleted and re-added.
+  //
+  // Loaded from a different endpoint than `load()` on purpose — the roster and the
+  // pins are saved independently, and a stale roster must never imply a stale pin.
+  const [pins, setPins] = useState<{ links: string; sites: string } | null>(null);
+
+  const loadPins = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/hosting");
+      if (!res.ok) return;
+      const data = await res.json().catch(() => ({}));
+      const domains = (data?.domains ?? {}) as {
+        premiumLinksAccountId?: string;
+        premiumSitesAccountId?: string;
+      };
+      setPins({ links: domains.premiumLinksAccountId ?? "", sites: domains.premiumSitesAccountId ?? "" });
+    } catch {
+      // Non-fatal: the roster above is still usable, and a pin that cannot be
+      // LOADED must not be presented as "unpinned" — that would hide the very
+      // routing this card exists to make visible.
+    }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- both setState calls are behind fetch awaits, not synchronous
+    void loadPins();
+  }, [loadPins]);
+
+  async function savePin(which: "links" | "sites", accountId: string) {
+    const field = which === "links" ? "premiumLinksAccountId" : "premiumSitesAccountId";
+    setBusy("pin:" + which);
+    setError("");
+    try {
+      const res = await fetch("/api/admin/hosting", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        // "" is a MEANINGFUL value here, not a no-op: it unpins and returns the
+        // purpose to automatic priority rotation.
+        body: JSON.stringify({ [field]: accountId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to save");
+        return;
+      }
+      // Re-read instead of trusting the value we sent: the route normalises, and
+      // echoing an un-normalised draft would show the admin something the engine
+      // is not actually using.
+      await loadPins();
+    } catch {
+      setError("Network error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  /** The row a pin points at, by Cloudflare account id. */
+  const rowForAccount = (accountId: string) => (state?.accounts ?? []).find((a) => a.accountId === accountId);
+
+  /**
+   * The two ways a pin is wrong, said in the admin's own terms rather than left
+   * to be discovered on a live link:
+   *   links → no Workers token = premium links will 403 on script upload;
+   *   any   → not active or already red = publishes fail instead of rotating.
+   */
+  function pinWarning(which: "links" | "sites", accountId: string): string | null {
+    if (!accountId) return null;
+    const row = rowForAccount(accountId);
+    if (!row) return "No account in the roster has this ID — premium publishes will fail.";
+    if (row.status !== "active") return "This account is switched off — premium publishes will fail.";
+    if (row.verifyError) return `This account is marked red (${row.verifyError}) — premium publishes will fail.`;
+    if (which === "links" && !row.hasWorkerToken) {
+      return "This account has no Workers token — premium links cannot be published to it.";
+    }
+    return null;
+  }
+
   const inputClass =
     "rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950";
   const ghostClass =
@@ -205,6 +291,64 @@ export default function PlatformAccountsPanel() {
               Turning this off makes every premium Cloudflare publish fail with a clear message. It never falls back to the
               free server behind your back.
             </p>
+          </div>
+
+          {/* TASK_157 Phase 2 — the per-purpose pins. Rendered BEFORE the roster so
+              the admin reads "these two things route separately" before "here are
+              the accounts", which is the opposite of how the priority list reads. */}
+          <div className="rounded-xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <p className="font-medium text-zinc-900 dark:text-zinc-100">Where premium links and sites are published</p>
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              By default both follow the account order above. Pin one account for links and another for sites to keep
+              them apart — a pinned account is used for that purpose only, and never backs it up with another account.
+            </p>
+            {!pins ? (
+              <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+            ) : (
+              <div className="mt-3 flex flex-col gap-3">
+                {(
+                  [
+                    { which: "links" as const, label: "Premium links", hint: "Redirect workers, e.g. swdocs.workers.dev" },
+                    { which: "sites" as const, label: "Premium sites", hint: "Pages projects and their domains" },
+                  ] satisfies Array<{ which: "links" | "sites"; label: string; hint: string }>
+                ).map(({ which, label, hint }) => {
+                  const current = pins[which];
+                  const warning = pinWarning(which, current);
+                  const chosen = rowForAccount(current);
+                  return (
+                    <div key={which} className="flex flex-wrap items-center gap-3">
+                      <div className="min-w-0">
+                        <p className="text-sm text-zinc-800 dark:text-zinc-200">{label}</p>
+                        <p className="text-xs text-zinc-500 dark:text-zinc-400">{hint}</p>
+                      </div>
+                      <select
+                        aria-label={`Cloudflare account for ${label.toLowerCase()}`}
+                        value={current}
+                        disabled={busy !== ""}
+                        onChange={(e) => savePin(which, e.target.value)}
+                        className={inputClass}
+                      >
+                        <option value="">Automatic (account order above)</option>
+                        {(state?.accounts ?? []).map((a) => (
+                          <option key={a.id} value={a.accountId}>
+                            {a.label} — {a.accountId.slice(0, 8)}…{a.status === "active" ? "" : " (off)"}
+                            {a.hasWorkerToken ? "" : " (no Workers token)"}
+                          </option>
+                        ))}
+                      </select>
+                      {chosen && chosen.workersDevSubdomain && (
+                        <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400">
+                          {chosen.workersDevSubdomain}
+                        </span>
+                      )}
+                      {warning && (
+                        <p className="w-full text-xs text-amber-600 dark:text-amber-400">{warning}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {state.accounts.length === 0 && (

@@ -8,6 +8,12 @@ const callLog: string[] = [];
 
 /** The admin's premium link domain, per test. */
 let premiumLinkDomain = "";
+// TASK_157 Phase 2 — the admin's links-account pin, and the `opts` the engine
+// actually hands the resolver. Recording the call is the only way to prove the
+// pin is FORWARDED: a stub that always returns a fixed account would pass every
+// host test even if the engine had stopped passing the pin altogether.
+let premiumLinksAccountId = "";
+let lastResolveOpts: { requireWorkerToken?: boolean; pinAccountId?: string | null } | null = null;
 
 const USER_WORKER = `sw-${createHash("sha256").update(USER).digest("hex").slice(0, 32)}`;
 
@@ -74,7 +80,12 @@ function installRequireHook(): void {
     // `../admin-settings` is server-only + prisma. Stubbed by NAME rather than
     // exact specifier so the stub holds however tsx resolves it.
     if (request.includes("admin-settings")) {
-      return { getAdminSettings: async () => ({ hostingPremiumLinkDomain: premiumLinkDomain }) };
+      return {
+        getAdminSettings: async () => ({
+          hostingPremiumLinkDomain: premiumLinkDomain,
+          hostingPremiumLinksAccountId: premiumLinksAccountId,
+        }),
+      };
     }
     if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
       if (request === "../prisma") {
@@ -84,11 +95,17 @@ function installRequireHook(): void {
       if (request === "./credentials") return { getHostingCredentialById: async () => null };
       if (request === "./platform-accounts") {
         return {
-          resolvePlatformCredential: async () => ({
+          resolvePlatformCredential: async (
+          _verify: unknown,
+          opts?: { requireWorkerToken?: boolean; pinAccountId?: string | null }
+        ) => {
+          lastResolveOpts = opts ?? null;
+          return {
             ok: true,
             status: 200,
             value: { accountId: "cf-1", workerToken: "tok" },
-          }),
+          };
+        },
         };
       }
       if (request === "./workers") return fakeWorkers();
@@ -106,6 +123,8 @@ const engine = require("../lib/hosting/links-engine") as typeof import("../lib/h
 beforeEach(() => {
   callLog.length = 0;
   premiumLinkDomain = "";
+  premiumLinksAccountId = "";
+  lastResolveOpts = null;
 });
 
 test("a workers.dev premium domain publishes by uploading the script ALONE", async () => {
@@ -165,4 +184,48 @@ test("a ZONED premium domain still takes the full DNS + route publish", async ()
 
 test("mapIdentityFor still returns a route pattern for a zoned host", () => {
   assert.equal(engine.mapIdentityFor(USER, "go.instaweb.top").routePattern, "go.instaweb.top/*");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 2 — the links-account pin is FORWARDED to the resolver.
+// ---------------------------------------------------------------------------
+
+test("a premium platform publish forwards the admin's links-account pin", async () => {
+  premiumLinksAccountId = "43b24dc00bea90102ede000000000000";
+
+  // credentialId null = the platform roster, which is the only branch that routes.
+  const res = await engine.resolveWorkerCredential(USER, null);
+
+  assert.equal(res.ok, true);
+  assert.ok(lastResolveOpts, "the resolver must actually have been asked");
+  assert.equal(lastResolveOpts?.pinAccountId, "43b24dc00bea90102ede000000000000");
+  assert.equal(
+    lastResolveOpts?.requireWorkerToken,
+    true,
+    "the pin is ADDED to the existing Workers-token requirement, never in place of it"
+  );
+});
+
+test("with no pin configured the resolver is asked for rotation, not a pin", async () => {
+  const res = await engine.resolveWorkerCredential(USER, null);
+
+  assert.equal(res.ok, true);
+  assert.ok(lastResolveOpts, "the resolver must actually have been asked");
+  assert.equal(
+    lastResolveOpts?.pinAccountId,
+    "",
+    "an unset pin must arrive as empty so the resolver does automatic rotation"
+  );
+});
+
+test("a BYO publish never consults the platform pin at all", async () => {
+  premiumLinksAccountId = "43b24dc00bea90102ede000000000000";
+
+  // The stub returns no credential, so this takes the "no such credential" branch
+  // — but it must have taken it WITHOUT asking the platform roster. Routing a
+  // user's own Cloudflare account by an admin pin would be the "ours vs yours"
+  // contract breaking.
+  await engine.resolveWorkerCredential(USER, "cred_does_not_exist");
+
+  assert.equal(lastResolveOpts, null, "BYO must not reach the platform resolver");
 });

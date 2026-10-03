@@ -1,0 +1,22 @@
+-- TASK_157 Phase 2 — per-purpose platform-account PINNING.
+--
+-- Strictly ADDITIVE and behaviour-preserving, exactly like the Phase 1 domain
+-- migration: both columns default to the EMPTY STRING, and an empty pin means
+-- "no pin" = the existing ascending-priority rotation. Applying this therefore
+-- changes nothing until an admin types a Cloudflare account id.
+--
+--   hostingPremiumLinksAccountId = the Cloudflare account that publishes premium
+--                                 LINK redirects. The owner wants these on a
+--                                 dedicated account so the free/Pages side is
+--                                 never mixed into them.
+--   hostingPremiumSitesAccountId = the Cloudflare account that publishes premium
+--                                 SITES (the Pages side).
+--
+-- Values are Cloudflare ACCOUNT IDs rather than roster row ids, so deleting and
+-- re-adding a row does not silently unpin the setting.
+--
+-- A pin never falls back to another account when its own account is missing,
+-- disabled or unhealthy — see resolvePlatformCredential() in
+-- lib/hosting/platform-accounts.ts.
+ALTER TABLE "AdminSetting" ADD COLUMN "hostingPremiumLinksAccountId" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "AdminSetting" ADD COLUMN "hostingPremiumSitesAccountId" TEXT NOT NULL DEFAULT '';

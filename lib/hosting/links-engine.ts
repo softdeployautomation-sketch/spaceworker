@@ -81,7 +81,23 @@ export async function resolveWorkerCredential(
   // Platform roster. `requireWorkerToken: true` makes rotation SKIP any healthy but
   // Pages-only row instead of landing on one and failing the publish — a roster
   // where row A has no Workers token and row B does must still work.
-  const resolved = await resolvePlatformCredential(verifyCredential, { requireWorkerToken: true });
+  //
+  // TASK_157 Phase 2 — `pinAccountId` lets an admin dedicate ONE Cloudflare account
+  // to premium LINKS. Without it this call is pure ascending-priority rotation, and
+  // priority alone cannot separate links from sites: sites.ts picks the first
+  // healthy row from the same list, so any account placed first to win links would
+  // silently take over site deploys too. With the pin set, links are served by that
+  // account and ONLY that account — a failure there surfaces as an error rather
+  // than quietly landing premium links on the free/Pages account.
+  //
+  // Read here rather than at the call site because BYO credentials never consult
+  // the pin: a user who connected their own Cloudflare account is unaffected by
+  // platform routing, which is the "ours vs yours" contract in resolveDeployCredential.
+  const settings = await getAdminSettings();
+  const resolved = await resolvePlatformCredential(verifyCredential, {
+    requireWorkerToken: true,
+    pinAccountId: settings.hostingPremiumLinksAccountId,
+  });
   if (!resolved.ok) {
     return { ok: false, status: 503, code: resolved.code, message: resolved.message };
   }

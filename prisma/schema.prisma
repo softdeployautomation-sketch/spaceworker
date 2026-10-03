@@ -464,6 +464,29 @@ model AdminSetting {
   hostingPremiumSiteDomain          String  @default("")
   hostingPremiumLinkDomain          String  @default("")
 
+  // TASK_157 Phase 2 — per-purpose platform-account PINNING.
+  //
+  // WHY THIS EXISTS. One HostingPlatformAccount row carries BOTH a Pages token
+  // and an optional Workers/DNS token, and rotation picks the lowest-priority
+  // healthy row for BOTH callers: sites.ts asks for the first healthy row,
+  // links-engine asks for the first healthy row that has a Workers token. So a
+  // dedicated links account cannot be expressed by priority alone — whichever
+  // order the admin picks, the new account either serves links too but also
+  // silently takes over site deploys, or it never wins links at all. The owner
+  // asked for exactly one thing here: premium LINKS on their own Cloudflare
+  // account, with the Pages/free side left alone. Priority cannot say that; two
+  // explicit pins can.
+  //
+  // Values are Cloudflare ACCOUNT IDs (not row ids) because that is the identity
+  // Cloudflare itself understands, and it survives deleting/re-adding a row.
+  // Empty = unpinned = today's priority rotation, byte-for-byte unchanged.
+  //
+  // A pin FAILS LOUDLY when its account is missing, disabled or unhealthy. It
+  // never falls back to another row: silently publishing premium links to the
+  // free account's subdomain is precisely the mixing these pins exist to stop.
+  hostingPremiumLinksAccountId     String  @default("")
+  hostingPremiumSitesAccountId     String  @default("")
+
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
   // asked for "all caps for the workers and cyberlab ... available for edit in
