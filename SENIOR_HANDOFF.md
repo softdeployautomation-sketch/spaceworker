@@ -416,6 +416,45 @@ is stale: fix the reference, not the design. The general trap: *"files need a CD
 storage"* — a hosted file already has a stable public `/hf/<token>` URL, which is a perfectly good
 redirect **target**, so a link can be accelerated at the edge while the bytes stay on our disk.
 
+**25. A green push run does NOT mean the code deployed. `deploy.yml`'s deploy job is
+`workflow_dispatch`-gated — pushes only build.**
+*(Recorded 2026-10-03, and it produced a false "deployed and verified" claim.)*
+`.github/workflows/deploy.yml` triggers on `push: [main]` **and** `workflow_dispatch`, but the
+deploy job carries `if: github.event_name == 'workflow_dispatch'`. So a push run goes **green**
+with `Build & typecheck: success` and `Deploy to production: skipped`, and `gh run watch` exits
+**0**. Proof it did not land: `systemctl show spaceworker -p ActiveEnterTimestamp` still pointed at
+the *previous* deploy while `/opt/spaceworker/.next/BUILD_ID` was unchanged. **A push is a lint/type
+gate, not a release.** To actually ship:
+
+```
+git push origin main
+gh workflow run deploy.yml --ref main        # then watch THAT run id
+gh run watch <run-id> --exit-status
+gh run view <run-id> --json jobs -q '.jobs[] | "\(.name): \(.conclusion)"'   # BOTH must be success
+```
+
+Always confirm the box actually moved: `systemctl show spaceworker -p ActiveEnterTimestamp` and
+`cat /opt/spaceworker/.next/BUILD_ID`. §10 says "only state what you actually saw" — a green
+`gh run watch` on a push run is **not** evidence of a deploy, and this is the second-order trap:
+the run id from `gh run list` is the **push** run unless you explicitly `gh workflow run`.
+
+**26. A link row's `workerName`/`routePattern` are only set if THAT row's own publish
+succeeded — never use them as the teardown key.**
+*(Recorded 2026-10-03 on Task 155 P6c; this orphaned a live route in production.)*
+The Worker route is keyed by **user + custom host**, not by any individual link, so the route a
+row *records* is shared with all of its siblings. But `workerName`/`routePattern` are only written
+when that row's publish reaches the end — a link created while the token lacked `DNS:Edit` fails
+at the DNS step and records **NULL for both**. Deleting that row therefore passed
+`routePattern=null` into teardown, which skipped route deletion entirely: the script was deleted,
+the route survived, and Cloudflare served **500 on the customer's live domain** indefinitely. This
+was not hypothetical — a real route (`go.instaweb.top/*` → `sw-027970396cd46c94fd3b39e958bbd5c5`)
+was stranded that way and had to be swept manually. The irony: the failed row is the one most
+likely to be deleted **last**, which is exactly the delete that triggers teardown. Fix:
+`mapIdentityFor(userId, customHost)` in `lib/hosting/links-engine.ts` recomputes the identity
+(it is a pure function of those two inputs); recorded values are a fallback only. **Generalise: any
+teardown keyed on a per-row column is wrong when that column is nullable and the resource is
+shared — derive shared-resource identity from its real inputs.**
+
 ## 6. Current state — revise this block every session
 
 **Last verified: 2026-10-02 (Task 155 **P4** + Task 156 **C1** DEPLOYED + MIGRATED + VERIFIED LIVE — `main` @ `cab860a`, deployed build **`BWRMBHG8mkpIrzUPTQ8-t`** (`BUILD_ID` mtime `2026-10-02 12:33:13 CEST`), deploy run **36995895931** (`workflow_dispatch`, **success**, 5m16s). Two migrations applied **in-window** and recorded in `_prisma_migrations`: `20261030000000_task156_c1_lab_schema` and `20261030120000_task155_p4_premium_links` (both `finished_at 2026-10-02 12:35:49 CEST`) — **NULLABLE / additive, no row rewritten**. **P4** = the Hosting page is now a **Sites | Links | Files** tabbed surface (counts shown as badges; the P1 status strip is unchanged and stays the "what am I allowed" contract), the **premium link cap** is a new `AdminSetting.hostingPremiumMaxLinks` (default **500**, free keeps `hostingFreeMaxLinks` **50**) resolved through the SAME `resolveHostingCaps` mechanism as the free dial, the **Cloudflare account token moved to `dashboard/settings`** (new *Hosting accounts* card — same `/api/hosting/credentials/*` routes, token never echoed), and **zip → preview → publish** is surfaced as the *"test before production"* step. **Task 156 C0+C1** = the Cyber Lab is **PREMIUM-gated** (`cyberlab` entitlement — owner **A14**: there is **NO staff badge and NO staff gate** anywhere in SpaceWorker; a grep finds none, so do not add one), ten additive `Lab*` models + `AdminSetting.cyberlab*` dials, `lib/lab/**` (gate/consent/tools/catalog-seed/research), `LabToolCatalog` seeded with **16 rows** and a `staleAfter` date that hides a stale row, the **AUP/consent** recorded server-side (hashed) before anything runs, and the **read-only Research** admin page (feeds only — never an attack). **C0** = `TASK_156_CYBER_LAB_AUP.md` + the consent screen (`components/cyberlab-aup.tsx`). Proven this session: `npx prisma validate` OK · `npx tsc --noEmit` → **0** · `CI=1 npx next build` → **exit 0** · `npm run test:hosting` → **40/40**, `test:pages` → **19/19**, `test:lab` → **10/10** · **eslint at HEAD parity on every touched file** (the only errors are the pre-existing `react-hooks/set-state-in-effect` warnings in `admin-panel.tsx` / `hosting-panel.tsx`, which are present at HEAD too). Live: `BUILD_ID` + mtime above; the P4 UI string **`Hosting accounts`** is present in the **shipped client chunk** (`/opt/spaceworker/.next/static/chunks/3yoy8celt_47q.js`); both new migrations are in `_prisma_migrations`. **⚠ NOT verified live:** the P3/P4 **write** path — no real user has clicked *upload → preview → publish* on production (see §6.4); and the **email/password login** on prod was not re-confirmed this session. **⚠ NEW environment finding (not a regression, not yet fixed):** a **fresh** database cannot replay migration history in order — at least **5 migrations are out-of-order** (e.g. `20260914150000_add_license_claim_token` references the `ExeLicense` table that a *later* timestamped migration creates; `20260921000000_device_tools_v2` references `Device`). The **live DB is unaffected** (its history is already recorded, so deploys are safe); only **brand-new DBs** hit it. Worked around on scratch with `prisma migrate resolve --applied`; **the other tasks' migrations were NOT edited.** This deserves its own cleanup task (see §7).
@@ -619,7 +658,7 @@ Do not fold M8 into any of the above.
 | **3** | **Task 155 P6a — the THREE-option engine model** (Free = ours · **Premium = OUR Cloudflare, zero setup** · BYO = yours) | same doc **§19 BINDS it** | Answers the owner's *"no more premium links unless the user adds their cloudflare"*. NEW additive `HostingPlatformAccount` table + the **platform branch** in `resolveDeployCredential` (its comment already promises it, the code does not do it) + a **premium gate** on `engine=cloudflare, credentialId=NULL` + the three-option picker/badges + the **admin rotation** surface (multiple accounts, priority order — answers §19.9 Q4/Q5) + the `hostingPlatformCfEnabled` kill-switch dial. |
 | **4** | **Task 155 P5a — Domains tab** (user adds a domain; we automate DNS + TLS) | same doc **§18** | New additive `HostingDomain` model + TXT/CNAME verification (`lib/sending-domains.ts` already does live `node:dns` TXT proof) + binding. **§18.9 Q2 ANSWERED on the box this session** (certbot **1.21.0**, nginx **1.30.4**, app `User=trmm`, `/etc/sudoers.d/trmm` = **`NOPASSWD:ALL`**, and **NO default vhost** → the catch-all is a NEW file). Recommendation: **Path A first (CF edge, `provider=platform` default per §19.10 rule 5)**, then Path B (our metal). It needs a healthy `HostingPlatformAccount` → **do P6a first**. |
 | **5** | **Task 155 P6d — upload inputs: file / folder / zip** | same doc **§20 BINDS it** | The owner's *"not only zip option should be available for site upload"*. **BINDING recommendation = client-side normalization to the ONE existing zip pipeline** (§20.2) so all of `analyseArchive`'s guards stay in one tested place; optional loose-file server path (§20.4); **NO migration** (§20.5). Independent of P6a/P5a, but **sequence it against P6a (they touch the same panel)**. Closes the §6.4 write-path gap when verified live. |
-| **5b** | **Task 155 P6c — LINKS on Cloudflare Workers (the ONLY remaining §19 item)** | same doc **§19.12.3 BINDS it** | The owner's revised decision closed the files question: **files stay LOCAL (instaweb), only SITES + LINKS get Free/Premium/Yours.** So this is a **Worker that 302s on the user's custom host** — **NOT Pages, NOT R2**. Schema = seven `LinkRedirect` columns (`engine` default `'local'`, `credentialId`, `workerName`, `routePattern`, `customHost`, `deployStatus`, `deployError`) + one index. **One script per USER** (`sw-<hash>`, a `MAP` of token→target), verified-zone check BEFORE any route call, route-then-script deletion order, and **`/r/<token>` local fallback must keep working even when the Worker is live**. **⚠️ P6b (files→R2) is CANCELLED — its uncommitted code was reverted 2026-10-03 and migration `20261032000000_task155_p6bc_r2_workers` is deleted. Do NOT recreate R2 and do NOT apply it.** Blocked on: an active CF DNS zone in the platform account + the token holding Workers Scripts/Routes edit. |
+| **5b** | **Task 155 P6c — LINKS on Cloudflare Workers (the ONLY remaining §19 item)** | same doc **§19.12.3 BINDS it** | The owner's revised decision closed the files question: **files stay LOCAL (instaweb), only SITES + LINKS get Free/Premium/Yours.** So this is a **Worker that 302s on the user's custom host** — **NOT Pages, NOT R2**. Schema = seven `LinkRedirect` columns (`engine` default `'local'`, `credentialId`, `workerName`, `routePattern`, `customHost`, `deployStatus`, `deployError`) + one index. **One script per USER** (`sw-<hash>`, a `MAP` of token→target), verified-zone check BEFORE any route call, route-then-script deletion order, and **`/r/<token>` local fallback must keep working even when the Worker is live**. **⚠️ P6b (files→R2) is CANCELLED — its uncommitted code was reverted 2026-10-03 and migration `20261032000000_task155_p6bc_r2_workers` is deleted. Do NOT recreate R2 and do NOT apply it.** **STATUS 2026-10-03: BUILT, DEPLOYED and LIVE-VERIFIED — `main` @ `24c55b2`, deploy run `37121991416` (`workflow_dispatch`), `BUILD_ID GYb1KlxCj5lZBJNfNWBUs`.** The owner added DNS edit to the platform token, and the full create→edit→delete lifecycle was verified **through the deployed HTTP API** on the real custom host: create → `302`, edit → `302` with the new `Location`, delete → **no route and no script left in Cloudflare**, host then `522`, `/r/<token>` `404`. Two real bugs were found and fixed live along the way: routes are **zone-scoped** (`/zones/{zoneId}/workers/routes`, not the account-scoped URL), and deleting a link whose **own publish failed** orphaned the route (fixed in `24c55b2`; `workerName`/`routePattern` are NULL on such a row, so teardown now derives the identity from user+host — see §5 trap 26). **Remaining: BYO ("Yours") credential flow still needs a real browser test, and domain onboarding for a brand-new domain is NOT implemented** (existing Cloudflare zones work; adding a new domain needs a registrar nameserver change, and platform-managed domains without one would need Cloudflare for SaaS/custom hostnames — a separate paid/product decision). |
 | **6** | **Hygiene — fresh-DB migration replay is broken (≥5 out-of-order migrations)** | **needs its own task doc** | Live DB + deploys are **unaffected**; only brand-new DBs (scratch/CI/local) hit it — see **trap 23**. Fix = reorder/repair **or** a documented `migrate resolve` cheat-sheet. **Do NOT silently edit another task's migration.** |
 
 *D2 / Task 156 **C0 + C1 are now deployed and live**, and **Task 155 P4 is live** (`d79eee6` +
@@ -783,6 +822,34 @@ half-done. A half-done change with no note is worse than no change.
 | `app/AGENTS.md`, `app/CLAUDE.md` | Repo-local agent conventions |
 
 ## 12. Log
+
+### 2026-10-03 — Task 155 P6c: fix orphaned Worker route on delete; P6c now LIVE-VERIFIED end-to-end
+- **Did:** fixed the last live P6c bug — deleting a link whose own publish had failed left its
+  shared Cloudflare route behind (500s forever). `mapIdentityFor(userId, customHost)` in
+  `lib/hosting/links-engine.ts` derives the route identity; `removeLinkFromWorkerMap` in
+  `lib/hosting/links.ts` now prefers recorded values and falls back to that. Same commit turned
+  DNS `403`s into an actionable "add DNS:Edit/DNS:Read" message instead of a bare auth error.
+  Commit **`24c55b2`**; swept the orphaned production route `go.instaweb.top/*` →
+  `sw-027970396cd46c94fd3b39e958bbd5c5`. Also fixed the **platform Cloudflare account ID**, which
+  was missing its final `b`, and corrected route calls to the zone-scoped endpoint.
+- **Verified:** `npx tsc --noEmit` 0; `npm run test:hosting` **136/136** (was 135 — added a
+  regression test that walks the real sequence and **fails against the old behaviour**);
+  `npm run test:pages` **26/26**; focused ESLint exit 0; `CI=1 npm run build` exit 0. Live, through
+  the **deployed HTTP API** (`POST/PATCH/DELETE /api/hosting/links`) on the real custom host:
+  create → `302`, edit → `302` with `Location: https://example.org/deployed-two`, delete → **0 rows,
+  0 routes in Cloudflare**, host `522`, `/r/<token>` `404`. Production **clean**: no `sw*` rows.
+- **NOT verified:** the **BYO ("Yours") credential flow has never been exercised in a real browser**
+  — it is unit-tested only. **Domain onboarding for a brand-new domain is not implemented**: existing
+  Cloudflare zones work, but `POST /zones` for a new domain needs a registrar nameserver change, and
+  platform-managed domains without one would need Cloudflare for SaaS/custom hostnames (a paid,
+  separate product decision — not started). The owner-facing Monk reply is still outstanding.
+- **State left behind:** `main` @ **`24c55b2`**, in sync with `origin/main`, tree **clean**,
+  `BUILD_ID GYb1KlxCj5lZBJNfNWBUs` (service restarted 14:14:39 CEST). All `tmp-*.ts` diagnostics
+  deleted; the port-15432 tunnel is down and `/tmp/.swprod.env` (mode 600) has been securely
+  removed. The `go.instaweb.top` **DNS record is intentionally kept** — future Worker links need it.
+- **Next:** decide the domain-onboarding approach (registrar-nameserver vs Cloudflare for SaaS),
+  then browser-test the BYO credential flow. See §5 traps **25** (a green push run does not deploy)
+  and **26** (never key a shared-resource teardown on a nullable per-row column).
 
 ### 2026-10-01 — Handoff established; TASK_152 deployed; TASK_153 recovery; TASK_154 scoped
 - **Did:** verified TASK_152 M1–M7 are all committed and on `origin/main` (M6 = `f1d3aa0`,
