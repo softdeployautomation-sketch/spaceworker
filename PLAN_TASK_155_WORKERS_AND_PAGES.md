@@ -1328,10 +1328,10 @@ per-asset provider column — that is **P6b**, its own slice, NOT in P6a.
   `resolveDeployCredential`; premium gate on option 2 (create + deploy); the three-option picker +
   badges + §17.4 relabel; the admin rotation block (+ kill-switch dial); tests for the §19.2 matrix;
   deploy (additive, §9 procedure).
-- **P6b:** option 2 for FILES/uploads — per-user engine resolution instead of the single global
-  `hostingProvider` dial (needs a `HostedAsset.provider` column; own decision, own run).
-- **P6c (only if §19.9 Q2 answers "literally links"):** CF-Worker-backed redirect base, or defer to
-  §18 P5 domains.
+- **P6b — CANCELLED 2026-10-03 by owner.** Option 2 for FILES never happens: files stay **local
+  only** (`dl.*` / instaweb) with no engine dial at all. See §19.12.0 and §19.12.2.
+- **P6c — CONFIRMED, in progress:** links on CF Workers on a custom host. This is the only
+  remaining item of §19.11 #4. Spec is §19.12.3.
 
 ### 19.8 Acceptance bar (P6a)
 
@@ -1440,13 +1440,14 @@ Recorded here because these answered §19.9 and they bind every hosting screen f
    *Read the owner's "per month" as the bandwidth dial; storage is a standing cap, not a reset.*
 4. **Platform + BYO apply to FILES, LINKS and SITES — not sites only.** P6a ships **sites**
    (the resource the owner was testing). The same three-way choice must reach:
-   - **files** — today the global `hostingProvider` dial picks the upload engine for everyone;
-     per-user choice needs a provider column on the asset row → **P6b**;
-   - **links** — a redirect has no engine today; a CF edge base is **P6c** *only if* §19.9 Q2
-     confirms "premium links" meant the Links tab literally (still open). Until then links keep
-     their P4 premium cap (500).
-   Nobody should report "files/links don't have the three options" as a P6a bug — it is declared
-   scope, tracked here.
+   - **files** — **RESOLVED 2026-10-03: files get NO three-way choice.** They stay local
+     (instaweb) permanently; the `hostingProvider` dial remains the global uploader selector and
+     gains no per-user column. See §19.12.2;
+   - **links** — **CONFIRMED**: a redirect gets a per-link engine, CF Workers on a custom host →
+     **P6c**, spec §19.12.3. The Links premium cap (500) still applies on top.
+   Nobody should report "links don't have the three options" as a P6a bug — it is declared scope.
+   And nobody should report "files have no Cloudflare option" as a bug either — that is the
+   owner's decision, not an oversight.
 
 **P6a status:** built (schema + migration, resolver, create/deploy gates, three-option picker,
 per-site *ours/yours* badge, admin roster route + panel, kill switch, status fields) and covered by
@@ -1461,8 +1462,170 @@ exists (see the P6a status above); P4 (deployed, live), §18 (P5, scoped), §19.
 
 ---
 
-## 20. Owner addition 2026-10-02 (after P4 deploy) — SITE UPLOAD INPUTS: not only `.zip`. SCOPED, NOT BUILT (this IS the P6d spec)
+## 19.12 Owner decision, BINDING (2026-10-02, REVISED 2026-10-03) — FILES stay LOCAL; LINKS run on Cloudflare Workers. THIS IS THE P6c SPEC
 
+### 19.12.0 The decision, verbatim — and the CORRECTION it makes to the first draft
+
+> **(REVISED 2026-10-03 — this SUPERSEDES the R2 draft that stood here before.)**
+> "files should stay local instaweb … only sites and links get the cloudflare option … links
+> should be workers on custom hosts … a link can just point at our own /hf/<token> url, so no
+> bucket is needed."
+
+The FIRST draft of this section (2026-10-02) put FILES on Cloudflare R2. The owner has since
+decided against that. This section therefore now reads:
+
+* **FILES — one engine only: `local` (our own metal).** No R2, no S3 credentials, no bucket, no
+  presigned URLs, no public R2 hostname. The P1 implementation is untouched and **P6b does not
+  exist as a work item any more**. Nothing in `HostedAsset`, `HostingCredential` or
+  `HostingPlatformAccount` changes shape.
+* **SITES — `local` | platform Cloudflare Pages | BYO Cloudflare Pages.** Already built and live
+  (§19.1–§19.11); unchanged by this revision.
+* **LINKS — `local` | platform Cloudflare Worker (edge redirect) | BYO Cloudflare Worker.** This
+  is the whole of the remaining work, and it is P6c.
+
+Grounded, not guessed:
+
+* **Pages is static sites only.** It cannot hold a generic binary and it cannot 302, so the
+  three-option model must extend to links with a *different* engine: an edge redirect Worker on
+  a custom host.
+* **Files need no edge engine for links to work.** A Cloudflare link may simply target our own
+  stable `/hf/<token>` URL — that URL is already public and already served by us — so there is
+  no reason to move bytes to R2 merely to have something to redirect to. This is exactly why the
+  R2 layer was cut: it added a second storage system, a second credential type and a second
+  failure mode in order to solve a problem a plain redirect already solves.
+* The Cloudflare branch stays **premium-only**, exactly like sites (§19.11 rule 1).
+* **Free** keeps `local` for links — unchanged, no migration surprise.
+* The **resolution rule does not change** (§19.2 verbatim, generalised): a named credential
+  means *yours* and only yours; a null credential means the platform roster; anything else is a
+  plain-language 403 and **never a silent downgrade to local**.
+
+### 19.12.1 Schema — additive, LINKS ONLY. No `HostedAsset` and no credential column changes shape.
+
+```sql
+-- Links: per-link engine + where its Worker lives.
+ALTER TABLE "LinkRedirect"  ADD COLUMN "engine"        TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE "LinkRedirect"  ADD COLUMN "credentialId"  TEXT;   -- NULL = platform roster
+ALTER TABLE "LinkRedirect"  ADD COLUMN "workerName"    TEXT;   -- the deployed script
+ALTER TABLE "LinkRedirect"  ADD COLUMN "routePattern"  TEXT;   -- e.g. "go.acme.com/*"
+ALTER TABLE "LinkRedirect"  ADD COLUMN "customHost"    TEXT;   -- "go.acme.com"
+ALTER TABLE "LinkRedirect"  ADD COLUMN "deployStatus"  TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE "LinkRedirect"  ADD COLUMN "deployError"   TEXT;   -- plain language, never a raw CF error
+CREATE INDEX "LinkRedirect_engine_idx" ON "LinkRedirect" ("engine");
+```
+
+**That is the entire schema change of P6c.** Nothing else.
+
+**Rules that are not negotiable:**
+
+* **No `HostedAsset` column is added and no storage credential column is added** anywhere. The R2
+  draft's `HostedAsset.credentialId` and the sixteen `storage*` columns across
+  `HostingCredential`/`HostingPlatformAccount` are **cancelled** — they existed only to serve
+  files, and files are local. A migration carrying any of them must never be applied.
+* Campaign `LinkRedirect` rows (`userId IS NULL`) get `engine = 'local'` by the DEFAULT and keep
+  resolving on `/r/<token>` exactly as in Task 30 — **P2 acceptance is not disturbed.**
+* `engine` is `local` by DEFAULT so **every existing link row keeps working untouched**; only a
+  newly created link can opt into Workers.
+
+### 19.12.2 Files — UNCHANGED. `local` is the only engine, by owner decision.
+
+* `lib/hosting/files.ts` and `app/hf/[token]/route.ts` keep serving bytes straight off our own
+  disk with the P1 semantics intact: same `sha256` anchor, same public/private refusal, same
+  rename-touches-only-`dispositionFilename` rule, same `/hf/<token>` stable URL.
+  **P6c makes no code change to either file.**
+* The single consequence links depend on: a hosted file's shareable URL is
+  `<PUBLIC_LINK_BASE_URL>/hf/<token>`, and that is already a perfectly good redirect **target**
+  for a Cloudflare link. So "Premium file" is not a thing, and it does not need to be.
+* Because nothing moves to the edge, **there is no R2 quota to meter and no bucket to create**,
+  and the Files UI does **not** grow a Free/Premium/Yours switcher. Files are simply "Hosted
+  files" — one engine, no dial. Sites and Links carry the three-option model; Files does not.
+
+### 19.12.3 Links — Workers on custom hosts
+
+* New `lib/hosting/workers.ts`, all over the REST API with the **account token** we already hold:
+  * `PUT /accounts/{id}/workers/scripts/{name}` — **multipart** with a `metadata` part
+    (`main_module` + `bindings`) and a `script` part. A JSON body is refused, same class of trap
+    as the Pages `manifest` field.
+  * `POST /accounts/{id}/workers/routes` — `{ pattern, script }`.
+  * `GET /accounts/{id}/workers/routes` for teardown.
+* **One script per USER**, not per link: `sw-<hash of userId>`, holding a `const MAP = {...}` of
+  `token|slug → target` for that user's `engine = 'cloudflare'` links. Rewriting one map on every
+  link change keeps the Workers bill and the route count flat instead of linear per link.
+* **Route lifecycle, in order, and each step is verified before the next:**
+  1. the user's **custom host** must be a verified zone in the same Cloudflare account
+     (`GET /zones?name=<host>` + `zone.status === "active"`), else the link stays
+     `deployStatus = "no_host"` with that exact plain-language message;
+  2. upload the script (idempotent — a 409/"already exists" is success);
+  3. create the route `host/*` → script; an existing identical route is success;
+  4. only then set `deployStatus = "live"` and return a URL. **A link is never reported live
+     before its route exists** — the same rule the Pages readiness gate taught us.
+* A `cloudflare`-engine link **also** stays resolvable on our own `/r/<slug>` route while it is
+  deploying, and forever after: the edge is an accelerator, never the single point of failure.
+  Editing or deleting a link re-writes the user's map.
+* Deleting the last `cloudflare` link on a user deletes the route and then the script (in that
+  order), so a half-deleted route can never outlive its script.
+
+### 19.12.4 Caps, rotation and migration defaults
+
+| Dial | Free | Premium / Yours |
+|---|---|---|
+| Storage quota | `hostingFreeStorageQuotaMb` | `hostingPremiumStorageQuotaMb` — **local bytes only; there is no R2** |
+| Per-file size | `hostingFreeMaxFileSizeMb` | same (shared, so the numbers cannot drift) |
+| Max files | `hostingFreeMaxFiles` | same |
+| Bandwidth | `hostingFreeMaxBandwidthGbPerMonth` | `hostingPremiumMaxBandwidthGbPerMonth` |
+| Max links | `hostingFreeMaxLinks` | `hostingPremiumMaxLinks` |
+
+* **Workers cost no storage quota.** A Cloudflare link stores only a map entry; the target is
+  somebody else's URL. So publishing a Worker link must **not** consume file quota or count against
+  bandwidth — the same rule as a Pages deploy, which was never metered either.
+* Rotation is the platform roster, ascending priority, skipping red rows, verified on use. **A
+  premium Workers link that cannot be deployed fails with a plain-language reason; it never
+  silently stays `local` while the UI says Premium.**
+* **Migration defaults:** existing files are untouched (no column changed); existing links keep
+  `engine = "local"`. Nothing moves, nothing re-uploads, no downtime, no user-visible change. Only
+  a **new** link opts into Workers.
+* The `hostingPlatformCfEnabled` kill switch turns down Pages **and** Workers together — one
+  switch, no half-on premium. Files are unaffected by the switch entirely.
+
+### 19.12.5 Acceptance bar (P6c — links only)
+
+**Links (P6c)**
+
+* The generated script is asserted to contain **this user's** map and **no other user's** target.
+* Route creation is ordered: no verified zone → `no_host` and **no** route call is made.
+* Editing a live link rewrites the map; deleting the last link removes route then script, in that
+  order.
+* A campaign link (`userId NULL`) still resolves on `/r/<token>` with zero behaviour change.
+* A `cloudflare` link is still reachable on our own `/r/<token>` — **the local fallback must work
+  even when the Worker is live**, which is asserted by test, not assumed.
+* The premium gate bites twice: free user + `engine: "cloudflare"` → 403 `premium_required`; and a
+  BYO credential that fails verification → 403 in plain language, **never** a local fallback.
+* **Files are proven UNCHANGED**: the existing file tests stay green byte-for-byte, and a
+  regression test asserts no file row gains an engine/credential column.
+
+**Repo-wide**
+
+* `tsc --noEmit` 0 · focused ESLint at HEAD parity · `npm run test:hosting` and
+  `npm run test:pages` green · no secret ever appears in a view, a log line or an API response
+  (asserted by test).
+* Live, against the real account: mint a link, confirm the Worker route answers a real **302** on
+  the custom host.
+
+### 19.12.6 Explicitly out of scope
+
+**Cloudflare R2 / any object storage, for any resource** (cancelled by the owner revision above —
+no bucket, no S3 keys, no presigned URLs) · files on the edge · Workers KV analytics · per-link
+click attribution through the Worker · moving an EXISTING local link onto a Worker (that is
+§16.2-style migration work, owner-gated) · private (authorised-download) files.
+
+---
+
+*End of §19.12. This section BINDS P6c (Links→Workers). P6b (Files→R2) is **cancelled** by the
+2026-10-03 owner revision; Files stay local and gain no engine dial. §19.1–§19.11 and §20 are
+unaffected by it.*
+
+---
+
+## 20. Owner addition 2026-10-02 (after P4 deploy) — SITE UPLOAD INPUTS: not only `.zip`. SCOPED, NOT BUILT (this IS the P6d spec)
 ### 20.0 The ask, verbatim (binding)
 
 > "also add to the plan, not only zip option should be available for site upload,, i think we should

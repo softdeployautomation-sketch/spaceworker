@@ -8,9 +8,10 @@
 >
 > **Nothing in this file is work you must finish in one run.** It is the *full pending queue*, with
 > the grounding each item needs and the exact gate that must clear before it binds. Take them **one at
-> a time**, in the order in §5 — the recommended first item is **Task 155 P5a (Domains)**, now that
-> P6a has landed. Two items are awaiting a LIVE human check: TASK_157's OCR/summary (when a device
-> comes online) and the hosting write path (§1.2 / queue item 6).
+> a time**, in the order in §5. **One live human check is now CLOSED:** TASK_157's OCR/summary was
+> **verified by the owner on production** (11 frames OCR'd + summarised, ~0.1s sweep). Still
+> awaiting a live human check: the hosting write path (§1.2 / queue item 6) and the BYO "Yours"
+> credential UX (§2b).
 
 ---
 
@@ -18,9 +19,10 @@
 
 ```
 TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 0452397)
-WHAT IS PENDING: the hosting workstream (Task 155 P5a / P5b / P6b / P6c / P6d) AND the Cyber Lab
+WHAT IS PENDING: the hosting workstream (Task 155 P6c = LINKS on Workers, P5a, P6d) AND the Cyber Lab
                  follow-on (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
-                 RECOMMENDED FIRST ITEM: Task 155 P5a — the Domains tab (PLAN_155 section 18 — BINDS it).
+                 THE FILES/FILES-ON-R2 QUESTION IS CLOSED: files stay LOCAL, only sites+links get the
+                 three engines (section 2b is the binding answer; P6b is CANCELLED). Do not build R2.
                  P6a (three-option engine) + the Pages deployTree fix are DONE + LIVE — see section 8.
                  Platform roster ALREADY HAS row #1 ("Primary cf", verifyError NULL — healthy); the owner
                  adds the rest. Two items await LIVE human checks: TASK_157 OCR/summary when a device comes
@@ -69,6 +71,7 @@ DEPLOY?          Task 155 P6a + Pages fix: DONE + LIVE (migration 20261031200000
 | Task 155 **P6a** three-option engine (Free/Premium/Yours) + platform roster | `0cd23f5` | ✅ deployed + live (build `3KsVSvBvE284eXpdv5dkn`) |
 | **Pages `deployTree` fix** (upload-token + `/pages/assets/*` + multipart; fixes live 405/8000013) | `7e380da` | ✅ deployed + live (build **`2c8IJxhMyyYVVEgJh0wlt`**, run **`37051772321`**, success) |
 | **Pages root-404 fix** (unwrap a zipped FOLDER + deployment-readiness gate) | `0452397` | ✅ tests green, **live-verified end-to-end** against the real account; deployed in run `37084380902` |
+| **OCR/summary fix** — `tesseract.js` added to `serverExternalPackages` so Turbopack stops baking a nonexistent `/ROOT/...` worker path | `f63a335` | ✅ **LIVE + OWNER-VERIFIED** — 11 frames gained OCR text + summaries, sweep ~0.1s (was a 300s hang). Run `36996482708` ok; `.next` removal before extraction landed in the same deploy |
 
 **Platform roster row #1 ALREADY EXISTS — the owner pasted their Cloudflare details into the
 admin panel before this commit, so nothing for the next agent to insert:** one row, label
@@ -230,21 +233,50 @@ loose-file server path (~30 lines, no traversal surface). **§20.5: NO migration
 **Q1** (fflate vs a store-only writer we own), **Q2** (folder is desktop-only — OK?), **Q3** (build
 §20.4?). Sequence against P6a — **they touch the same panel.**
 
-### 2b — OWNER'S NEWEST ASK (answer before P5a starts): Links + Files get the THREE engines too
+### 2b — OWNER'S ASK, NOW ANSWERED (2026-10-03): **SITES + LINKS get the THREE engines. FILES STAY LOCAL.**
 
-- The owner just noticed P6a landed on **sites only**: links + files still route through our server
-  only, with no Free/Premium/Yours choice — and they want all three surfaces on the same model:
-  **Free = our link (instancelink), Premium = Ours (platform roster), Yours = BYO.**
-- §19.12 documents this as of 2026-10-02; it is **scoped but NOT YET IN §19's binding text**.
-  Before building: (a) walk the links + files + providers libs and prove on paper which engine
-  each call-site can actually honour — files go through the provider put/remove interface
-  (needs an R2/Workers-shaped provider, NOT Pages), links are our-DB rows served from our metal
-  (needs a custom-hostname story, NOT raw Pages);
-  (b) write the missing §19.x design (per-asset engine columns? which Cloudflare API for
-  files/links? what serves a Cloudflare-backed link?) and get the owner/lead to sign it;
-  (c) only then build, additive + gated, same fail-CLOSED + premium-gate rules as P6a.
-- **Do NOT promise Cloudflare for links/files until the design exists.** Pages deploys static sites;
-  files/links need a different Cloudflare surface. Saying it just works without the design is the trap.
+**This item is CLOSED as a design question. Do not re-open it. The owner answered it:**
+
+> "files should stay local instaweb … only sites and links get the cloudflare option … links
+> should be workers on custom hosts … a link can just point at our own `/hf/<token>` url, so no
+> bucket is needed."
+
+**The final engine matrix — this is BINDING:**
+
+| Surface | Free | Premium (platform) | Yours (BYO) |
+|---|---|---|---|
+| **Sites** | `local` | Cloudflare **Pages** | Cloudflare **Pages** — ✅ ALREADY SHIPPED (P6a) |
+| **Links** | `local` `/r/<token>` | Cloudflare **Worker** redirect on a custom host | Cloudflare **Worker** redirect on your own host |
+| **Files** | `local` / instaweb — **the only engine** | — | — |
+
+**What this means, concretely:**
+
+* **Files get NO engine dial at all.** One engine, one code path, no schema column. `HostedAsset`
+  does **not** gain `credentialId`; `HostingCredential`/`HostingPlatformAccount` gain **no**
+  `storage*` columns. There is **no R2, no bucket, no S3 keys, no presigned URLs, no R2
+  subscription** anywhere in this plan. The Files UI gets no Free/Premium/Yours switcher.
+* **Links are the only remaining build item** — call it **P6c**, spec in `PLAN_TASK_155` **§19.12.3**.
+  A `cloudflare`-engine link gets a Worker that 302s on the user's custom host. Its target may be
+  any URL — **including our own `/hf/<token>`**, which is precisely why no object storage is needed.
+* **The local fallback must survive**: a `cloudflare` link stays resolvable on `/r/<token>` forever,
+  including while it is deploying. The edge is an accelerator, never the single point of failure.
+* Spec + schema (the ONLY schema change: seven `LinkRedirect` columns + one index) is written and
+  binding in **§19.12.1–§19.12.3**. Acceptance bar: **§19.12.5**.
+
+**⚠️ A cancelled R2 implementation existed in the working tree and has been REVERTED.** Do not
+re-create it, and do **NOT** apply migration `20261032000000_task155_p6bc_r2_workers` (it is
+deleted from disk). `lib/hosting/r2.ts` and `lib/hosting/storage-credentials.ts` are **gone**. If
+you find any of these referenced anywhere, that is stale — fix the reference, do not resurrect the
+code.
+
+**Before P6c can be verified live (blocking, needs the owner):**
+
+1. An **active Cloudflare DNS zone** on the platform account, so a custom hostname can be tested
+   (`GET /zones?name=<host>` + `status === "active"` must pass before any route is created).
+2. The platform token confirmed to hold **Workers Scripts:Edit + Workers Routes:Edit** (it has
+   Pages; Workers is a separate scope).
+3. `HostingCredential` currently has **zero rows** and `/api/hosting/credentials` logged no
+   requests — the **"Yours" (BYO) credential UX is unverified in a browser**. Test it.
 
 ---
 
@@ -357,6 +389,17 @@ assignment).
   **107/107**, `tsc` + `eslint` clean. Live-verified end-to-end against the real account.
 - **Still open after this session:** the P3/P4 prod **write** path (§1.2), prod login re-check, and the
   fresh-DB migration replay (trap 23).
+- **2026-10-03 — R2 REVERTED, docs corrected (no code shipped).** The owner's revised decision
+  ("files stay local instaweb; only sites and links get Cloudflare; links are workers on custom
+  hosts; a link can point at our own `/hf/<token>`") cancelled the uncommitted R2 work. Reverted
+  `lib/hosting/{r2,storage-credentials}.ts`, the `20261032000000_task155_p6bc_r2_workers` migration,
+  and every R2 hunk in `schema.prisma`, `providers.ts`, `files.ts`, `rules.ts`, `hf/[token]/route.ts`,
+  `api/hosting/files/route.ts`, `tests/hosting-files.test.ts`. **Nothing was deployed** — the revert
+  returns the tree to committed `0452397` + the already-live `f63a335`. Verified after the revert:
+  `tsc --noEmit` 0, hosting suites **40/40**. Rewrote PLAN §19.12 (link-only schema, files-local,
+  acceptance bar) and §19.7/§19.11 P6b → **CANCELLED**, P6c → **CONFIRMED**.
+- **`WilkSF9` monitoring was re-enabled** during the OCR diagnosis. The owner must confirm whether
+  that is the desired FINAL state.
 
 
 
