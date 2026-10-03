@@ -17,7 +17,7 @@
 ## TASK BLOCK (paste from here)
 
 ```
-TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 7e380da)
+TREE:            /Users/mikeolab/spaceworker        (branch: main; synced with origin/main @ 0452397)
 WHAT IS PENDING: the hosting workstream (Task 155 P5a / P5b / P6b / P6c / P6d) AND the Cyber Lab
                  follow-on (Task 156 C2+). Take them ONE AT A TIME, in the order in section 5 below.
                  RECOMMENDED FIRST ITEM: Task 155 P5a — the Domains tab (PLAN_155 section 18 — BINDS it).
@@ -51,11 +51,11 @@ DEPLOY?          Task 155 P6a + Pages fix: DONE + LIVE (migration 20261031200000
 
 ---
 
-## 1. VERIFIED STATE AT HANDOFF (2026-10-02, updated after the P6a deploy)
+## 1. VERIFIED STATE AT HANDOFF (2026-10-03, updated after the Pages root-404 fix)
 
-**`main` @ `0cd23f5`, synced with `origin/main`, working tree clean.** Live build
-**`3KsVSvBvE284eXpdv5dkn`** (`/opt/spaceworker/.next/BUILD_ID`), deploy run **`37038272028`**
-(`workflow_dispatch`, **success**).
+**`main` @ `0452397`, synced with `origin/main`, working tree clean.** Live build
+**`2c8IJxhMyyYVVEgJh0wlt`** (`/opt/spaceworker/.next/BUILD_ID`), deploy run **`37051772321`**
+(`workflow_dispatch`, **success**); the `0452397` Pages-404 fix deployed in run **`37084380902`**.
 
 | Item | Commit | State |
 |---|---|---|
@@ -68,6 +68,7 @@ DEPLOY?          Task 155 P6a + Pages fix: DONE + LIVE (migration 20261031200000
 | Task **157** OCR text layer + Summary/Extraction toggle + frame delete | `503c8be` | ✅ deployed + live — **owner still must eyeball it when a device comes online** |
 | Task 155 **P6a** three-option engine (Free/Premium/Yours) + platform roster | `0cd23f5` | ✅ deployed + live (build `3KsVSvBvE284eXpdv5dkn`) |
 | **Pages `deployTree` fix** (upload-token + `/pages/assets/*` + multipart; fixes live 405/8000013) | `7e380da` | ✅ deployed + live (build **`2c8IJxhMyyYVVEgJh0wlt`**, run **`37051772321`**, success) |
+| **Pages root-404 fix** (unwrap a zipped FOLDER + deployment-readiness gate) | `0452397` | ✅ tests green, **live-verified end-to-end** against the real account; deployed in run `37084380902` |
 
 **Platform roster row #1 ALREADY EXISTS — the owner pasted their Cloudflare details into the
 admin panel before this commit, so nothing for the next agent to insert:** one row, label
@@ -98,6 +99,9 @@ at HEAD — do not "fix" them by suppressing; they are a separate, pre-existing 
    on the live site yet.** The pipeline is proven on a scratch DB + a real `7z` + `next start`, and the
    **premium/Cloudflare** leg only against a **throwaway** account. **This is the first thing to prove
    by hand** (queue item 6), and §20.8 makes it an acceptance item for whichever hosting item ships next.
+   **2026-10-03 update:** the Cloudflare leg itself is now proven *outside* the app — a zipped folder was
+   unwrapped, Direct-Uploaded and readiness-polled with the real account, and the deployment root returned
+   **200** with the marker content (`/assets/a.css` → **200 text/css**). Only the in-app click remains.
 2. **P6a on prod needs one human step:** the admin must paste a real platform Cloudflare account into
    Admin → Hosting → Platform accounts (the roster is empty; the Premium picker says *"coming online
    shortly"* until then), then deploy one real Premium site end-to-end (this doubles as proof of #1).
@@ -341,6 +345,16 @@ assignment).
   **`2c8IJxhMyyYVVEgJh0wlt`**): `upload-token` + `/pages/assets/*` + multipart form (the account-token
   calls hit live 405/8000013). Verified server-side on the box (lib is server-only, not in client
   chunks) + `hosting_status=401`/`spaceworker active`.
+- **Pages root-404 fix** — commit `0452397`, deploy run `37084380902`. The live preview
+  `https://c01095fa.testsite-735.pages.dev/` 404'd at the ROOT while its deployment said
+  `deploy:success`; the deployed manifest was `{"/inn/index.html", …}`, i.e. the *zipped folder*
+  wrapper became the root's only child (the real page answered at `/inn/` with **200**). Fixes:
+  `singleRootPrefix` + `flattenSingleRootDir` collapse ONE unambiguous wrapper before the tree is
+  scanned (a genuine multi-root site is untouched; `.DS_Store` can no longer reach a manifest or the
+  extracted tree — it is also passed to `7z -x!`), and `waitForDeployment` polls a deployment to a
+  **terminal** stage so `deployTree` never returns a URL it has not seen succeed (failure → 502,
+  timeout → 504, plain language). `tests/hosting-pages.test.ts` **26/26**, all five hosting suites
+  **107/107**, `tsc` + `eslint` clean. Live-verified end-to-end against the real account.
 - **Still open after this session:** the P3/P4 prod **write** path (§1.2), prod login re-check, and the
   fresh-DB migration replay (trap 23).
 
