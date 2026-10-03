@@ -67,6 +67,13 @@ interface HostedLink {
   clickCount: number;
   shortPath: string;
   createdAt: string;
+  /** TASK_155 P6c — "local" (our server, free) or "cloudflare" (a Worker). */
+  engine: string;
+  customHost: string | null;
+  /** The Worker address, once it is live; null for a local link or a failed deploy. */
+  publicUrl: string | null;
+  deployStatus: string;
+  deployError: string | null;
 }
 
 /** TASK_155 P2 — a BYO Cloudflare credential (account id + encrypted token). */
@@ -145,7 +152,16 @@ export function HostingPanel() {
   const [slugs, setSlugs] = useState<Record<string, string>>({});
   // TASK_155 P2 — the short links + BYO credentials surfaces.
   const [links, setLinks] = useState<HostedLink[]>([]);
-  const [linkForm, setLinkForm] = useState({ target: "", label: "", slug: "" });
+  // TASK_155 P6c — links pick an engine too: "local" (our server, free) or
+  // "cloudflare" (a Worker on the premium/BYO edge). Same shape as siteForm.
+  const [linkForm, setLinkForm] = useState({
+    target: "",
+    label: "",
+    slug: "",
+    engine: "local",
+    credentialId: "",
+    customHost: "",
+  });
   const fileInput = useRef<HTMLInputElement>(null);
   // TASK_155 P3 — the Sites surface (folder → preview → publish + engine picker).
   const [sites, setSites] = useState<HostingSite[]>([]);
@@ -459,15 +475,41 @@ export function HostingPanel() {
             target: linkForm.target.trim(),
             label: linkForm.label.trim() || null,
             slug: linkForm.slug.trim() || null,
+            engine: linkForm.engine,
+            // Premium is engine:"cloudflare" with no credentialId; "Yours" adds one.
+            credentialId:
+              linkForm.engine === "cloudflare" && linkForm.credentialId ? linkForm.credentialId : null,
+            customHost:
+              linkForm.engine === "cloudflare" && linkForm.customHost.trim()
+                ? linkForm.customHost.trim()
+                : null,
           }),
         });
-        const data = (await res.json()) as { error?: string };
+        const data = (await res.json()) as { error?: string; link?: HostedLink };
         if (!res.ok) {
           setError(data.error ?? "Couldn’t create that link.");
           return;
         }
-        setLinkForm({ target: "", label: "", slug: "" });
-        setNotice("Link created.");
+        setLinkForm({
+          target: "",
+          label: "",
+          slug: "",
+          engine: "local",
+          credentialId: "",
+          customHost: "",
+        });
+        // A Worker link can be saved and still not be live — say so plainly
+        // instead of claiming success (the /r/ fallback works either way).
+        const made = data.link;
+        if (made && made.engine === "cloudflare" && made.deployStatus !== "live") {
+          setNotice(
+            `Link created, but its Worker isn’t live yet — ${made.deployError ?? "still deploying"}. Its /r/ link works in the meantime.`
+          );
+        } else if (made && made.engine === "cloudflare") {
+          setNotice("Link created and live on the edge. The /r/ link still works.");
+        } else {
+          setNotice("Link created.");
+        }
         await Promise.all([loadLinks(), loadStatus()]);
       } catch {
         setError("Couldn’t create that link — try again.");
@@ -953,6 +995,80 @@ export function HostingPanel() {
               className="w-40 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
             />
           </label>
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Engine
+            <select
+              value={linkForm.engine === "cloudflare" && linkForm.credentialId ? "byo" : linkForm.engine}
+              onChange={(e) => {
+                // Same wire mapping as the Sites picker: "Yours" is
+                // engine:"cloudflare" plus a credentialId; Premium is
+                // engine:"cloudflare" with none.
+                const v = e.target.value;
+                setLinkForm((s) => ({
+                  ...s,
+                  engine: v === "byo" ? "cloudflare" : v,
+                  credentialId: v === "byo" ? s.credentialId || status.credentials[0]?.id || "" : "",
+                }));
+              }}
+              className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            >
+              <option value="local">Free — on our server</option>
+              <option value="cloudflare" disabled={!status.premium || !status.platformReady}>
+                {status.premium
+                  ? status.platformReady
+                    ? "Premium — our global edge"
+                    : "Premium — coming online shortly"
+                  : "Premium — upgrade to unlock"}
+              </option>
+              {status.credentials.length > 0 ? (
+                <option value="byo" disabled={!status.premium}>
+                  {status.premium ? "Yours — your own account" : "Yours — upgrade to unlock"}
+                </option>
+              ) : (
+                <option value="byo" disabled>
+                  Yours — connect an account in Settings
+                </option>
+              )}
+            </select>
+            {!status.premium && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Edge links need the premium plan. Free links run on our server.
+              </span>
+            )}
+            {status.premium && !status.platformReady && (
+              <span className="text-xs text-amber-600 dark:text-amber-400">
+                Our edge accounts are being set up — use your own account below.
+              </span>
+            )}
+          </label>
+          {linkForm.engine === "cloudflare" && (
+            <label className="flex flex-col gap-1 text-xs text-zinc-500">
+              Account
+              <select
+                value={linkForm.credentialId}
+                onChange={(e) => setLinkForm((s) => ({ ...s, credentialId: e.target.value }))}
+                className="rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              >
+                <option value="">Ours (premium)</option>
+                {status.credentials.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label} · …{c.tokenHint}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {linkForm.engine === "cloudflare" && (
+            <label className="flex flex-col gap-1 text-xs text-zinc-500">
+              Your domain (optional)
+              <input
+                value={linkForm.customHost}
+                onChange={(e) => setLinkForm((s) => ({ ...s, customHost: e.target.value }))}
+                placeholder="go.example.com"
+                className="w-48 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              />
+            </label>
+          )}
           <button
             type="submit"
             disabled={busy || !status.enabled || !status.entitled}
@@ -961,33 +1077,87 @@ export function HostingPanel() {
             Create link
           </button>
         </form>
+        {linkForm.engine === "cloudflare" && (
+          <p className="text-xs text-zinc-500">
+            The link is served by a Cloudflare Worker on your domain. The{" "}
+            <span className="font-mono">{status.linksBase}/r/…</span> address always keeps working, so a link
+            never goes dark.
+          </p>
+        )}
         {links.length === 0 && <p className="text-sm text-zinc-500">No links yet.</p>}
         {links.map((link) => {
-          const shortUrl = `${status.linksBase}/r/${link.slug ?? link.token}`;
+          const fallbackUrl = `${status.linksBase}/r/${link.slug ?? link.token}`;
+          const onEdge = link.engine === "cloudflare";
+          const liveUrl = onEdge && link.deployStatus === "live" ? link.publicUrl : null;
+          // Share the Worker address once it is live; otherwise the /r/ address,
+          // which §19.12.2 guarantees always resolves.
+          const shareUrl = liveUrl ?? fallbackUrl;
           return (
-            <div
-              key={link.id}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
-            >
-              <div className="min-w-0">
-                <a href={shortUrl} target="_blank" rel="noreferrer" className="truncate text-sm text-emerald-600 hover:underline">
-                  {shortUrl}
-                </a>
-                <div className="mt-0.5 truncate text-xs text-zinc-500">
-                  → {link.target} · {link.clickCount} click{link.clickCount === 1 ? "" : "s"}
+            <div key={link.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <a href={shareUrl} target="_blank" rel="noreferrer" className="truncate text-sm text-emerald-600 hover:underline">
+                      {shareUrl}
+                    </a>
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-xs ${
+                        onEdge
+                          ? "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200"
+                          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
+                      }`}
+                    >
+                      {onEdge ? "edge" : "our server"}
+                    </span>
+                    {onEdge && (
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-xs ${
+                          link.deployStatus === "live"
+                            ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200"
+                            : link.deployStatus === "error"
+                              ? "bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200"
+                              : "bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-200"
+                        }`}
+                      >
+                        {link.deployStatus === "live"
+                          ? "live"
+                          : link.deployStatus === "error"
+                            ? "not deployed"
+                            : "deploying…"}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 truncate text-xs text-zinc-500">
+                    → {link.target} · {link.clickCount} click{link.clickCount === 1 ? "" : "s"}
+                    {onEdge && link.customHost ? ` · ${link.customHost}` : ""}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button onClick={() => copy(shareUrl)} className="text-xs text-zinc-500 hover:underline">
+                    Copy
+                  </button>
+                  <button onClick={() => void onEditLink(link)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
+                    Edit
+                  </button>
+                  <button onClick={() => void onDeleteLink(link)} className="text-xs text-red-600 hover:underline">
+                    Delete
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button onClick={() => copy(shortUrl)} className="text-xs text-zinc-500 hover:underline">
-                  Copy
-                </button>
-                <button onClick={() => void onEditLink(link)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
-                  Edit
-                </button>
-                <button onClick={() => void onDeleteLink(link)} className="text-xs text-red-600 hover:underline">
-                  Delete
-                </button>
-              </div>
+              {onEdge && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-2 text-xs text-zinc-500 dark:border-zinc-800">
+                  <span className="shrink-0">Always works:</span>
+                  <a href={fallbackUrl} target="_blank" rel="noreferrer" className="truncate font-mono text-emerald-600 hover:underline">
+                    {fallbackUrl}
+                  </a>
+                  <button onClick={() => copy(fallbackUrl)} className="text-xs text-zinc-500 hover:underline">
+                    Copy
+                  </button>
+                </div>
+              )}
+              {onEdge && link.deployError && (
+                <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{link.deployError}</p>
+              )}
             </div>
           );
         })}

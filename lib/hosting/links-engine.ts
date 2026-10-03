@@ -226,21 +226,38 @@ export async function teardownUserMap(
   const cf = cred.value;
 
   let routeDeleted = false;
+  // `routeClear` means "we KNOW nothing of ours is bound to that pattern any more" —
+  // either the route was confirmed deleted, or there was nothing matching to begin
+  // with, or no route was ever recorded. Anything else (a failed route list, a
+  // failed delete) leaves it false, and that is what gates the script below.
+  let routeClear = !routePattern;
   if (routePattern) {
     const routes = await listWorkerRoutes(cf);
     if (routes.ok) {
       const mine = (routes.value ?? []).filter((r) => r.pattern === routePattern && r.script === workerName);
+      // Nothing matching is a confirmed clear: the goal is already met.
+      routeClear = mine.length === 0;
+      let allGone = true;
       for (const route of mine) {
         // One failing delete must not stop the rest — a partially-torn-down route
         // set is better than a half-finished loop.
         const del = await deleteWorkerRoute(cf, route.id);
         if (del.ok || del.status === 404) routeDeleted = true;
+        else allGone = false;
       }
+      if (mine.length > 0) routeClear = allGone;
     }
+    // !routes.ok → routeClear stays false: we could not learn what is out there.
   }
 
-  // Only now, with no route left pointing at it, does the script go. Deleting it
-  // first would be the one order that can strand a 500 on the customer's domain.
+  // FAIL-CLOSED. Delete the script ONLY once the route is confirmed gone. If route
+  // discovery or deletion failed, deleting the script would leave a route pointing
+  // at a script that no longer exists — a 500 on the customer's domain, which is
+  // exactly the outcome the route-then-script order above exists to prevent. A
+  // left-behind script is inert and invisible; a stranded route is neither. So we
+  // stop here, report it, and let the next teardown for this user finish the job.
+  if (!routeClear) return { routeDeleted, scriptDeleted: false };
+
   const delScript = await deleteWorkerScript(cf, workerName);
   const scriptDeleted = delScript.ok || delScript.status === 404;
 

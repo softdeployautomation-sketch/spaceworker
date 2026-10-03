@@ -776,3 +776,71 @@ test("P6c: a local link's delete makes no Cloudflare call at all", async () => {
   assert.equal(calls.length, 0);
   assert.equal(linkRows.length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Fail-closed teardown — the route gates the script.
+//
+// These three exist because the ROUTE-before-SCRIPT ORDER test above cannot catch a
+// teardown that never learned the route state at all: an engine that deletes the
+// script anyway passes every ordering assertion while leaving the customer's domain
+// pointing at a script that no longer exists. That is a 500 at the edge, and it is
+// silent everywhere else, so the failure mode is pinned here rather than reasoned about.
+// ---------------------------------------------------------------------------
+
+test("P6c: a FAILED route listing leaves the script alone (never strand a route)", async () => {
+  await makeWorkerLink("https://example.com/");
+  // The route list is the only way to find out what is bound to the pattern. If it
+  // errors we are blind, and blind must mean "do not delete the script".
+  defaultRoutes([{ method: "GET", match: "/workers/routes", status: 500 }]);
+  calls = [];
+
+  const result = await engine.teardownUserMap(
+    "user_1",
+    linkRows[0].credentialId,
+    linkRows[0].workerName ?? "",
+    linkRows[0].routePattern
+  );
+
+  assert.equal(result.scriptDeleted, false, "an unreadable route set must NOT free the script");
+  assert.equal(
+    firstIndexOf("DELETE", "/workers/scripts/"),
+    -1,
+    "the script delete is never even attempted when the route state is unknown"
+  );
+});
+
+test("P6c: a FAILED route delete leaves the script alone (never strand a route)", async () => {
+  await makeWorkerLink("https://example.com/");
+  // The list succeeds and shows our route, but removing it fails at the edge. The
+  // route is still there — so the script it points at has to stay too.
+  defaultRoutes([{ method: "DELETE", match: "/workers/routes/", status: 500 }]);
+  calls = [];
+
+  const result = await engine.teardownUserMap(
+    "user_1",
+    linkRows[0].credentialId,
+    linkRows[0].workerName ?? "",
+    linkRows[0].routePattern
+  );
+
+  assert.equal(result.scriptDeleted, false, "the script survives while its route still exists");
+  assert.equal(firstIndexOf("DELETE", "/workers/scripts/"), -1, "no script delete is attempted");
+});
+
+test("P6c: an ALREADY-absent route still frees the script (no leak on a re-run)", async () => {
+  await makeWorkerLink("https://example.com/");
+  // Nothing matching in the list: the route is already gone, so the goal is met and
+  // the script must still be removed. Fail-closed must not become "never delete".
+  defaultRoutes([{ method: "GET", match: "/workers/routes", result: [] }]);
+  calls = [];
+
+  const result = await engine.teardownUserMap(
+    "user_1",
+    linkRows[0].credentialId,
+    linkRows[0].workerName ?? "",
+    linkRows[0].routePattern
+  );
+
+  assert.equal(result.scriptDeleted, true, "an absent route is a confirmed clear");
+  assert.ok(firstIndexOf("DELETE", "/workers/scripts/") >= 0, "the script is still torn down");
+});
