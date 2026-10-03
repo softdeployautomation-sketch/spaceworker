@@ -35,6 +35,8 @@ process.env.APP_BASE_URL = "https://spaceworker.test";
 // import time; a real 32-byte hex key keeps that real AES path loadable.
 process.env.MAILBOX_ENCRYPTION_KEY = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
 const STORAGE_DIR = path.join(os.tmpdir(), `sw-t155-pages-${process.pid}-${randomUUID()}`);
+// Repo root, for the source-level regression assertions at the foot of this file.
+const ROOT = path.resolve(__dirname, "..");
 process.env.HOSTING_STORAGE_DIR = STORAGE_DIR;
 
 after(async () => {
@@ -706,5 +708,50 @@ test("resolveSiteServe: the live tree resolves via the site's liveToken to the l
 test("slugifyProject: a Cloudflare project name is a lowercase slug, never empty", () => {
   assert.equal(slugifyProject("My Cool Site!"), "my-cool-site");
   assert.equal(slugifyProject("   "), "site");
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION — publish sent an EMPTY manifest for Cloudflare sites.
+//
+// Symptom (live, 2026-10-03): after "Publish to live" the site showed a DIFFERENT
+// url, and opening it gave a Cloudflare 404 while the preview still served.
+//
+// Cause: publishRevision re-read the extracted tree behind
+//   `if (site.engine !== "cloudflare" && revision.storagePath)`
+// so for the cloudflare engine `files` stayed `[]` and deployTree POSTed an empty
+// manifest to branch "main" -> a brand-new `<hash>.pages.dev` with no assets.
+// Second half of the same defect: the live url was recorded as the deployment's
+// one-off hash url, so it changed on every publish.
+//
+// These read the SOURCE, deliberately. The bug lived in an `if` that only ever
+// mattered once real Cloudflare credentials were in play — exactly the kind of
+// thing a mocked unit test cannot see. Asserting on the published text keeps the
+// regression loud without a network or a DB.
+// ---------------------------------------------------------------------------
+
+test("regression: publish rebuilds the file tree for BOTH engines (no cloudflare-shaped 404)", async () => {
+  const src = await fs.readFile(path.join(ROOT, "lib", "hosting", "sites.ts"), "utf8");
+  const fn = src.slice(src.indexOf("export async function publishRevision"));
+  assert.ok(fn.length > 0, "publishRevision must exist");
+
+  // The old guard silently emptied the Cloudflare tree. It must not come back.
+  assert.ok(
+    !/engine\s*!==\s*"cloudflare"\s*&&\s*revision\.storagePath/.test(src),
+    "the publish path must not gate the tree rebuild on the LOCAL engine"
+  );
+  // Publish must re-scan from storagePath and refuse an empty tree.
+  assert.match(fn, /scanExtractedTree\(storagePath/, "publish must re-read the extracted tree");
+  assert.match(fn, /files\.length === 0/, "publish must refuse to deploy an empty tree");
+});
+
+test("regression: a Cloudflare live url is the stable <project>.pages.dev, not the deploy hash", async () => {
+  const src = await fs.readFile(path.join(ROOT, "lib", "hosting", "sites.ts"), "utf8");
+  // The publish bookkeeping lives in deployRevision (publishRevision only calls it).
+  const fn = src.slice(src.indexOf("async function deployRevision"));
+  assert.match(fn, /const liveUrl = `https:\/\/\$\{project\}\.pages\.dev`/);
+  assert.ok(
+    !/data:\s*\{\s*status:\s*"published",\s*liveUrl:\s*dv\.url\s*\}/.test(src),
+    "liveUrl must not be the per-deployment hash url"
+  );
 });
 

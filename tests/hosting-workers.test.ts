@@ -1047,3 +1047,113 @@ test("P6c: teardown lists and deletes routes ZONE-scoped too", async () => {
     "never the account-scoped URL"
   );
 });
+
+// ---------------------------------------------------------------------------
+// RESERVED ZONES — the broks.beauty guard.
+//
+// The owner removed broks.beauty from the platform token's Zone Resources. That is
+// the real fix, but a token is re-issued over time and the next one may be broader.
+// This is the code-side backstop: an over-broad token must not be able to install a
+// proxied DNS record or a Worker route on a reserved zone just because it can SEE
+// the zone.
+// ---------------------------------------------------------------------------
+
+test("normalizeZoneName: a host, a URL, a port and a trailing dot all normalise", () => {
+  assert.equal(workers.normalizeZoneName("Broks.Beauty"), "broks.beauty");
+  assert.equal(workers.normalizeZoneName("  go.broks.beauty  "), "go.broks.beauty");
+  assert.equal(workers.normalizeZoneName("https://go.broks.beauty/mylink"), "go.broks.beauty");
+  assert.equal(workers.normalizeZoneName("go.broks.beauty:443"), "go.broks.beauty");
+  assert.equal(workers.normalizeZoneName("broks.beauty."), "broks.beauty");
+  assert.equal(workers.apexOf("go.broks.beauty"), "broks.beauty");
+});
+
+test("normalizeZoneName: junk is null, NOT a permissive value", () => {
+  // A bare label is not a zone. Anything unparseable must fail closed downstream.
+  assert.equal(workers.normalizeZoneName("localhost"), null);
+  assert.equal(workers.normalizeZoneName(""), null);
+  assert.equal(workers.normalizeZoneName("   "), null);
+  assert.equal(workers.normalizeZoneName(null), null);
+  assert.equal(workers.normalizeZoneName(undefined), null);
+  assert.equal(workers.normalizeZoneName("not a host!"), null);
+});
+
+test("isReservedZone: broks.beauty and anything under it are refused, others are not", () => {
+  assert.equal(workers.isReservedZone("broks.beauty"), true);
+  // The publish path always works in terms of a HOST — go.<zone> must be caught too.
+  assert.equal(workers.isReservedZone("go.broks.beauty"), true);
+  assert.equal(workers.isReservedZone("GO.BROKS.BEAUTY"), true);
+  // Near-misses must NOT be caught: a denylist that over-matches is its own outage.
+  assert.equal(workers.isReservedZone("notbroks.beauty"), false);
+  assert.equal(workers.isReservedZone("broks.beauty.example.com"), false);
+  assert.equal(workers.isReservedZone("example.com"), false);
+  assert.equal(workers.isReservedZone("go.example.com"), false);
+});
+
+test("assertZoneWritable fails CLOSED — an unparseable host is refused, not allowed", () => {
+  assert.deepEqual(workers.assertZoneWritable("go.example.com"), { ok: true });
+  assert.equal(workers.assertZoneWritable("localhost").ok, false, "junk must not pass the guard");
+  assert.equal(workers.assertZoneWritable(null).ok, false);
+  const reserved = workers.assertZoneWritable("go.broks.beauty");
+  assert.equal(reserved.ok, false);
+  assert.equal(reserved.zone, "broks.beauty", "the refusal names the zone");
+});
+
+test("reservedZoneMessage: says which domain, and never leaks a token", () => {
+  assert.match(workers.reservedZoneMessage("broks.beauty"), /broks\.beauty/);
+  assert.match(workers.reservedZoneMessage(undefined), /could not be verified/);
+  assert.ok(!/token|secret|bearer/i.test(workers.reservedZoneMessage("broks.beauty")));
+});
+
+test("publishUserMap REFUSES a reserved zone before any DNS/Worker write", async () => {
+  calls = [];
+  defaultRoutes([
+    { method: "GET", match: "/zones?per_page", result: [{ id: "zone_private", name: "broks.beauty", status: "active" }] },
+    { method: "GET", match: "/zones?name=broks.beauty", result: [{ id: "zone_private", name: "broks.beauty", status: "active" }] },
+  ]);
+  const res = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: null });
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.code, "reserved_zone");
+  assert.match(res.message, /broks\.beauty/);
+  // The whole point: nothing was WRITTEN. No DNS record, no script, no route.
+  assert.equal(calls.some((c) => c.method === "POST" && c.url.includes("/dns_records")), false, "no DNS write");
+  assert.equal(calls.some((c) => c.method === "PUT" && c.url.includes("/workers/scripts")), false, "no script write");
+  assert.equal(calls.some((c) => c.method === "POST" && c.url.includes("/workers/routes")), false, "no route write");
+});
+
+test("publishUserMap refuses an EXPLICIT reserved host too (not just the default pick)", async () => {
+  calls = [];
+  defaultRoutes([
+    { method: "GET", match: "/zones?name=broks.beauty", result: [{ id: "zone_private", name: "broks.beauty", status: "active" }] },
+  ]);
+  const res = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: "go.broks.beauty" });
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.code, "reserved_zone");
+  assert.equal(calls.some((c) => c.method === "POST" && c.url.includes("/dns_records")), false, "no DNS write");
+});
+
+test("publishUserMap skips a reserved zone when DEFAULTING, and picks a usable one", async () => {
+  // broks.beauty is listed FIRST — the old code took zones[0] and would have
+  // published straight onto the owner's private domain.
+  calls = [];
+  defaultRoutes([
+    {
+      method: "GET",
+      match: "/zones?per_page",
+      result: [
+        { id: "zone_private", name: "broks.beauty", status: "active" },
+        { id: "zone_1", name: "instaweb.top", status: "active" },
+      ],
+    },
+  ]);
+  const res = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: null });
+  assert.ok(res.ok, JSON.stringify(res));
+  if (!res.ok) return;
+  assert.equal(res.value.customHost, "go.instaweb.top", "the reserved zone was skipped, not picked");
+  assert.equal(
+    calls.some((c) => c.url.includes("zone_private")),
+    false,
+    "broks.beauty's zone id is never used for a write"
+  );
+});

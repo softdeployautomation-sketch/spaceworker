@@ -716,6 +716,14 @@ async function deployRevision(
     return { ok: true, value: toRevisionView(updated, dv.url) };
   }
 
+  // The LIVE url is the stable `<project>.pages.dev`, which follows branch main.
+  //
+  // A production deployment's own `url` is its own one-off `<hash>.<project>.pages.dev`.
+  // Recording THAT as the site's liveUrl meant the "live" link changed on every
+  // publish and went 404 once the deployment aged out — while the stable project
+  // URL, which is what actually keeps serving main, went unused. cfUrl on the
+  // revision still keeps the hash URL, so the exact deployment stays auditable.
+  const liveUrl = `https://${project}.pages.dev`;
   const updated = await prisma.hostingRevision.update({
     where: { id: revision.id },
     data: {
@@ -727,10 +735,10 @@ async function deployRevision(
   });
   await prisma.hostingSite.update({
     where: { id: site.id },
-    data: { status: "published", liveUrl: dv.url },
+    data: { status: "published", liveUrl },
   });
   await prunePublishedRevisions(site.id, caps.publishedRevisionsKept);
-  return { ok: true, value: toRevisionView(updated, dv.url) };
+  return { ok: true, value: toRevisionView(updated, liveUrl) };
 }
 
 /**
@@ -793,11 +801,20 @@ export async function publishRevision(input: PublishInput): Promise<HostingResul
   const startedAt = Date.now();
 
   try {
-    let files: Array<{ path: string; absPath: string }> = [];
-    if (site.engine !== "cloudflare" && revision.storagePath) {
-      const tree = await scanExtractedTree(revision.storagePath, { maxAssetMb: caps.pagesMaxAssetMb });
-      if (tree.ok) files = tree.files;
+    // Both engines need the extracted tree at publish time. Cloudflare included:
+    // the preview deploy was handed `tree.files` in memory, but publish re-reads
+    // the tree from disk — gating that on the LOCAL engine shipped a MANIFEST-ONLY
+    // production deploy (empty tree -> a new `<hash>.pages.dev` that 404s while the
+    // preview still serves). Never let an empty tree reach the network.
+    const storagePath = revision.storagePath;
+    if (!storagePath) {
+      throw new Error("This revision’s files are no longer on the server. Upload the zip again.");
     }
+    const tree = await scanExtractedTree(storagePath, { maxAssetMb: caps.pagesMaxAssetMb });
+    if (!tree.ok || tree.files.length === 0) {
+      throw new Error(tree.ok ? "That revision contains no files." : tree.message);
+    }
+    const files = tree.files;
     const result = await deployRevision(site, revision, files, "publish");
     await finishHeavyJob(lock.value.jobId, {
       status: result.ok ? "done" : "failed",

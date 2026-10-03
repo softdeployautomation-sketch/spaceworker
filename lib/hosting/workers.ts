@@ -27,9 +27,114 @@ import { cfFetch, firstError, type CfCredential, type CfResult } from "./cloudfl
 // logged, never persisted in this file, and never returned — same rule as
 // cloudflare.ts.
 
+// TASK_155 P6c — RESERVED ZONES (the broks.beauty guard).
+//
+// WHAT THIS IS FOR. The platform Workers token used to reach every zone in the
+// account, including private ones the owner never intended to expose. Nothing in
+// the code stopped a publish from choosing such a zone: the default host was
+// `go.<first active zone>`, so a token that could see a private zone could also
+// WRITE to it (create a proxied DNS record, install a Worker route). Narrowing the
+// token's Zone Resources is the real fix, but a token is a bearer secret that gets
+// re-issued, and the next one may again be broader than intended. This is the
+// belt to that braces: a config-driven denylist that fails CLOSED, so an
+// over-broad token cannot reach a reserved zone even by accident.
+//
+// A denylist (block these) rather than an allowlist (permit these) is deliberate for
+// a guard whose job is to protect a named few domains: a denylist protects the
+// owner's private zone the day it is added, without anyone having to remember to
+// add every future platform domain to an allowlist. The allowlist is still the right
+// long-term shape and is tracked separately — see the handoff.
+//
+// FAIL CLOSED. If this module cannot answer, callers must refuse. A guard that
+// fails OPEN on an unexpected shape is worse than no guard at all.
+//
+// Pure module: no DB, no network. Safe to import from anywhere.
+
 /** The default host a premium link is published under: go.<zone>. */
 export function defaultLinkHost(zoneName: string): string {
   return `go.${zoneName.replace(/^\.+/, "")}`;
+}
+
+/**
+ * Domains the platform must NEVER write to, whatever a token can reach.
+ * Lower-case, apex form. `broks.beauty` is the owner's private domain — its DNS is
+ * not ours to manage.
+ */
+export const RESERVED_ZONES: readonly string[] = ["broks.beauty"];
+
+/** A normalised apex domain, or null when the input is not a usable hostname. */
+export function normalizeZoneName(input: string | null | undefined): string | null {
+  if (!input) return null;
+  let host = input.trim().toLowerCase();
+  if (!host) return null;
+  // Accept a full URL or a host:port by keeping only the authority.
+  if (host.includes("://")) {
+    try {
+      host = new URL(host).hostname;
+    } catch {
+      return null;
+    }
+  }
+  host = host.split("/")[0].split(":")[0];
+  // Drop a trailing dot ("example.com." is the same zone, spelled absolutely).
+  host = host.replace(/\.+$/, "");
+  if (!host || !/^[a-z0-9.-]+$/.test(host)) return null;
+  if (!host.includes(".")) return null; // a bare label is never a zone apex
+  return host;
+}
+
+/** The registrable apex of a host: `go.records.example.com` → `example.com`. */
+export function apexOf(input: string | null | undefined): string | null {
+  const host = normalizeZoneName(input);
+  if (!host) return null;
+  const parts = host.split(".");
+  if (parts.length <= 2) return host;
+  // Good enough for the reserved set below, which is all apex (2-label) domains.
+  return parts.slice(-2).join(".");
+}
+
+/**
+ * Is this zone reserved? Matches the zone ITSELF and any host under it, so
+ * `go.broks.beauty` and `broks.beauty` are both refused — the publish path always
+ * works in terms of a HOST (go.<zone>), never a bare apex.
+ */
+export function isReservedZone(input: string | null | undefined): boolean {
+  const host = normalizeZoneName(input);
+  if (!host) return false;
+  const apex = apexOf(host);
+  if (!apex) return false;
+  return RESERVED_ZONES.includes(apex);
+}
+
+export interface ZoneGuardResult {
+  ok: boolean;
+  /** The apex that was refused — for the error message. */
+  zone?: string;
+}
+
+/**
+ * The guard to call before ANY zone-scoped write (route, script, DNS record,
+ * zone create/delete). Returns ok:false with a message naming the zone.
+ *
+ * Kept separate from isReservedZone so the reason a caller failed is always
+ * explicit at the call site, and so a future policy (allowlist, per-account
+ * consent) can return a different message without touching every caller.
+ */
+export function assertZoneWritable(input: string | null | undefined): ZoneGuardResult {
+  const host = normalizeZoneName(input);
+  // An unparseable host is NOT allowed to proceed. Fail closed.
+  if (!host) return { ok: false };
+  const apex = apexOf(host);
+  if (!apex) return { ok: false };
+  if (RESERVED_ZONES.includes(apex)) return { ok: false, zone: apex };
+  return { ok: true };
+}
+
+/** The operator-facing message for a refusal. Never contains a token. */
+export function reservedZoneMessage(zone: string | undefined): string {
+  return zone
+    ? `${zone} is a reserved domain and cannot be used for links. Pick another domain.`
+    : "That domain could not be verified and cannot be used for links.";
 }
 
 /** The route pattern for a host. EXACT host + everything under it — never a wildcard subdomain. */

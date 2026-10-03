@@ -5,6 +5,7 @@ import type { HostingResult } from "./files";
 import { resolvePlatformCredential } from "./platform-accounts";
 import {
   buildWorkerMapSource,
+  assertZoneWritable,
   defaultLinkHost,
   deleteWorkerRoute,
   deleteWorkerScript,
@@ -14,6 +15,7 @@ import {
   listActiveZones,
   listWorkerRoutes,
   putWorkerRoute,
+  reservedZoneMessage,
   routePatternFor,
   uploadWorkerScript,
   workerNameForUser,
@@ -170,13 +172,21 @@ export async function publishUserMap(
     if (!zones.ok) {
       return { ok: false, status: zones.status, code: "cf_error", message: zones.error ?? "Could not read your Cloudflare zones." };
     }
-    const first = zones.value?.[0];
+    // Skip reserved zones when defaulting. Picking `zones[0]` blindly meant a
+    // token that could SEE the owner's private domain could be steered onto it,
+    // and the resulting DNS record + Worker route would live on that domain.
+    // If the ONLY active zone is reserved, say so instead of failing obscurely.
+    const usable = (zones.value ?? []).filter((z) => assertZoneWritable(z.name).ok);
+    const first = usable[0];
     if (!first) {
+      const onlyReserved = (zones.value ?? []).some((z) => !assertZoneWritable(z.name).ok);
       return {
         ok: false,
-        status: 400,
-        code: "no_zone",
-        message: "Add a domain to your Cloudflare account and try again — we need somewhere to publish the link.",
+        status: onlyReserved ? 403 : 400,
+        code: onlyReserved ? "reserved_zone" : "no_zone",
+        message: onlyReserved
+          ? reservedZoneMessage((zones.value ?? []).map((z) => z.name).find((n) => !assertZoneWritable(n).ok) ?? undefined)
+          : "Add a domain to your Cloudflare account and try again — we need somewhere to publish the link.",
       };
     }
     host = defaultLinkHost(first.name);
@@ -185,6 +195,22 @@ export async function publishUserMap(
   const zone = await ensureZoneActive(cf, host);
   if (!zone.ok) {
     return { ok: false, status: zone.status, code: "no_zone", message: zone.error ?? "That domain is not ready yet." };
+  }
+
+  // The RESERVED-ZONE GUARD, before any write. Narrowing the platform token is the
+  // real fix, but an over-broad token must not be able to install a DNS record and
+  // a Worker route on a private zone just because it can SEE the zone. Checked on
+  // the HOST (which is what becomes the route) and again on the resolved zone.
+  for (const candidate of [host, zone.value?.zoneName]) {
+    const guard = assertZoneWritable(candidate);
+    if (!guard.ok) {
+      return {
+        ok: false,
+        status: 403,
+        code: "reserved_zone",
+        message: reservedZoneMessage(guard.zone),
+      };
+    }
   }
 
   // CfResult is not a discriminated union, so `zone.value` is optional by type even
