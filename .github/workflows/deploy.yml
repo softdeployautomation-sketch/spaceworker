@@ -214,6 +214,21 @@ jobs:
             systemctl stop spaceworker-browser
             systemctl stop extraction-worker
             cd /opt/spaceworker
+            # 2026-10-03 — REMOVE THE OLD .next BEFORE EXTRACTING. Do NOT drop this.
+            # tar xzf overwrites and adds but NEVER deletes, so every previous
+            # build's chunks stayed on disk forever. Turbopack names chunks by
+            # content hash, so a retired chunk is normally unreachable — but
+            # "normally" is not "always", and on this incident it was not: after
+            # shipping the tesseract.js externalization fix, the OLD inlined
+            # chunk (the one holding the broken "/ROOT/…" OCR worker path) was
+            # still present and was still referenced by two other stale chunks
+            # in a lazily-loaded chain. That made a fixed, working deploy
+            # *look* unfixed while debugging, and is precisely the trap that
+            # lets a resolved bug appear to persist in production. Only .next is
+            # removed: .env / static / engine-dist are NOT in the tar and must
+            # never be touched (see scripts/deploy-vps.sh's header for the
+            # 2026-09-24 incident where a --delete deploy wiped them).
+            rm -rf /opt/spaceworker/.next
             tar xzf /tmp/spaceworker-ci-deploy.tar.gz -C /opt/spaceworker
             chown -R trmm:trmm /opt/spaceworker
             rm -f /tmp/spaceworker-ci-deploy.tar.gz
