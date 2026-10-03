@@ -38,6 +38,17 @@ export function routePatternFor(host: string): string {
 }
 
 /**
+ * The host out of a route pattern: `go.example.com/*` → `go.example.com`.
+ *
+ * Teardown is handed only a stored pattern, and since Routes is a ZONE-scoped
+ * API the zone has to be recovered from that pattern before a route can be
+ * listed or deleted at all.
+ */
+export function hostFromRoutePattern(pattern: string): string {
+  return pattern.replace(/\/\*+$/, "").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
  * A stable, DNS-label-safe Worker name for one user: `sw-` + 32 hex chars.
  *
  * 32 hex chars of the userId is enough that two users never collide, and keeping
@@ -58,6 +69,12 @@ interface ZoneResult {
   id: string;
   name: string;
   status: string;
+}
+
+interface DnsRecord {
+  id: string;
+  name: string;
+  proxied: boolean;
 }
 
 /** A bare hostname to its registrable zone name (go.instaweb.top → instaweb.top). */
@@ -122,6 +139,71 @@ export async function listActiveZones(cred: CfCredential): Promise<CfResult<Zone
   if (!res.ok) return { ok: false, status: res.status, error: res.error };
   return { ok: true, status: res.status, value: (res.value ?? []).filter((z) => z.status === "active") };
 }
+/**
+ * Step 1b: make the custom host actually RESOLVE, by ensuring it has a proxied
+ * DNS record in its zone.
+ *
+ * A Worker route is not a host. It only runs for requests that ALREADY reach
+ * Cloudflare's edge, and a hostname with no DNS record never gets there —
+ * Cloudflare's Workers routes docs state it outright: "All domains and
+ * subdomains must have a DNS record to be proxied on Cloudflare and used to
+ * invoke a Worker... any request to myname.example.com will result in the error
+ * ERR_NAME_NOT_RESOLVED."
+ *
+ * This is why "the route was created" is NOT "the link works": before this call
+ * existed, publishing a link reported success while the hostname resolved to
+ * nothing at all. A live check of the owner's zone confirmed the gap — the zone
+ * was active and proxied, `go.instaweb.top` had no record, and `dig` returned
+ * empty for it.
+ *
+ * The record is ORIGINLESS — `AAAA 100::`, the reserved IPv6 discard prefix —
+ * so it never names a real server. The Worker answers before origin resolution
+ * is ever attempted, which is precisely why a discard-prefix address is safe
+ * here and why it costs nothing.
+ *
+ * An existing record is never overwritten. If the user already points
+ * `go.example.com` somewhere real we ADOPT theirs and simply make sure it is
+ * proxied; replacing someone's address with 100:: would take their host down.
+ */
+export async function ensureProxiedRecord(
+  cred: CfCredential,
+  zoneId: string,
+  host: string
+): Promise<CfResult<{ id: string; created: boolean }>> {
+  const name = host.toLowerCase();
+
+  const existing = await cfFetch<DnsRecord[]>(
+    cred,
+    "GET",
+    `/zones/${zoneId}/dns_records?name=${encodeURIComponent(name)}&per_page=1`
+  );
+  if (!existing.ok) return { ok: false, status: existing.status, error: existing.error };
+
+  const record = (existing.value ?? [])[0];
+  if (record) {
+    if (record.proxied) return { ok: true, status: 200, value: { id: record.id, created: false } };
+    // Their record, not ours — only the proxy flag is ours to set.
+    const flipped = await cfFetch<DnsRecord>(
+      cred,
+      "PATCH",
+      `/zones/${zoneId}/dns_records/${record.id}`,
+      { proxied: true }
+    );
+    if (!flipped.ok) return { ok: false, status: flipped.status, error: flipped.error };
+    return { ok: true, status: flipped.status, value: { id: record.id, created: false } };
+  }
+
+  const created = await cfFetch<DnsRecord>(cred, "POST", `/zones/${zoneId}/dns_records`, {
+    type: "AAAA",
+    name,
+    content: "100::",
+    proxied: true,
+    ttl: 1,
+    comment: "SpaceWorker link redirect",
+  });
+  if (!created.ok) return { ok: false, status: created.status, error: created.error };
+  return { ok: true, status: created.status, value: { id: created.value?.id ?? "", created: true } };
+}
 
 /**
  * Step 2: PUT the script. A plain `PUT` on an existing name OVERWRITES it, which
@@ -175,9 +257,26 @@ export async function uploadWorkerScript(
   return { ok: true, status: res.status, value: { name } };
 }
 
-/** Every route on the account — used to find ours by pattern before deleting it. */
-export async function listWorkerRoutes(cred: CfCredential): Promise<CfResult<WorkerRoute[]>> {
-  const res = await cfFetch<WorkerRoute[]>(cred, "GET", `/accounts/${cred.accountId}/workers/routes`);
+/**
+ * Every route on the ZONE — used to find ours by pattern before deleting it.
+ *
+ * ZONE-SCOPED, NOT ACCOUNT-SCOPED — corrected 2026-10-03 against a live account.
+ * With a correct account id and a valid `Workers Scripts:Edit` +
+ * `Workers Routes:Edit` token, `GET /accounts/{id}/workers/routes` answers
+ * **400 / code 7000 "No route for that URI"**, while
+ * `GET /zones/{zoneId}/workers/routes` answers **200** for every zone in the same account.
+ *
+ * `Workers Routes` is a ZONE permission group, so
+ * a token built the way the help text tells the owner to build it can never reach
+ * an account-scoped routes endpoint. The old path failed EVERY publish and EVERY
+ * teardown, and the 7000 message reads like an auth fault rather than a wrong URL
+ * — which is exactly why it survived review.
+ */
+export async function listWorkerRoutes(
+  cred: CfCredential,
+  zoneId: string
+): Promise<CfResult<WorkerRoute[]>> {
+  const res = await cfFetch<WorkerRoute[]>(cred, "GET", `/zones/${zoneId}/workers/routes`);
   if (!res.ok) return { ok: false, status: res.status, error: res.error };
   return { ok: true, status: res.status, value: res.value ?? [] };
 }
@@ -191,29 +290,30 @@ export async function listWorkerRoutes(cred: CfCredential): Promise<CfResult<Wor
  */
 export async function putWorkerRoute(
   cred: CfCredential,
+  zoneId: string,
   pattern: string,
   script: string
 ): Promise<CfResult<{ pattern: string }>> {
-  const existing = await listWorkerRoutes(cred);
+  const existing = await listWorkerRoutes(cred, zoneId);
   if (existing.ok) {
     const same = existing.value?.find((r) => r.pattern === pattern);
     if (same) {
       if (same.script === script) return { ok: true, status: 200, value: { pattern } };
       // A DIFFERENT script already owns this host — steal the binding rather than
       // failing, so switching accounts on a host actually takes effect.
-      const del = await deleteWorkerRoute(cred, same.id);
+      const del = await deleteWorkerRoute(cred, zoneId, same.id);
       if (!del.ok) return { ok: false, status: del.status, error: del.error };
     }
   }
 
-  const res = await cfFetch<unknown>(cred, "POST", `/accounts/${cred.accountId}/workers/routes`, {
+  const res = await cfFetch<unknown>(cred, "POST", `/zones/${zoneId}/workers/routes`, {
     pattern,
     script,
   });
   if (res.ok) return { ok: true, status: res.status, value: { pattern } };
 
   // Lost a race with a concurrent publish for the same user: re-read and accept.
-  const reread = await listWorkerRoutes(cred);
+  const reread = await listWorkerRoutes(cred, zoneId);
   if (reread.ok && reread.value?.some((r) => r.pattern === pattern)) {
     return { ok: true, status: 200, value: { pattern } };
   }
@@ -257,8 +357,12 @@ export function buildWorkerMapSource(entries: WorkerMapEntry[]): string {
   );
 }
 /** Delete the route by id. Always called BEFORE the script is removed. */
-export async function deleteWorkerRoute(cred: CfCredential, id: string): Promise<CfResult<unknown>> {
-  return cfFetch<unknown>(cred, "DELETE", `/accounts/${cred.accountId}/workers/routes/${id}`);
+export async function deleteWorkerRoute(
+  cred: CfCredential,
+  zoneId: string,
+  id: string
+): Promise<CfResult<unknown>> {
+  return cfFetch<unknown>(cred, "DELETE", `/zones/${zoneId}/workers/routes/${id}`);
 }
 
 /** Remove the script entirely. Only reached once the route is gone. */

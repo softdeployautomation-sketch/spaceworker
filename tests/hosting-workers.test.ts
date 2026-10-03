@@ -269,6 +269,14 @@ function defaultRoutes(over: Route[] = []): void {
     },
     { method: "GET", match: "/user/tokens/verify", result: { status: "active" } },
     { method: "GET", match: "/pages/projects?per_page", result: [] },
+    // TASK_155 P6c — a route is not a host. The custom hostname needs a PROXIED
+    // DNS record to resolve at all, so every publish now writes one first. The
+    // default models a brand-new subdomain (no record yet → we create it); a test
+    // that cares about ADOPTING an existing record shadows the GET with an
+    // override, because overrides are matched first.
+    { method: "GET", match: "/dns_records", result: [] },
+    { method: "POST", match: "/dns_records", result: { id: "dns_1" } },
+    { method: "PATCH", match: "/dns_records/", result: { id: "dns_1" } },
     { method: "PUT", match: "/workers/scripts/", result: { success: true } },
     { method: "POST", match: "/workers/routes", result: { id: "route_1" } },
     { method: "DELETE", match: "/workers/routes/", result: {} },
@@ -843,4 +851,134 @@ test("P6c: an ALREADY-absent route still frees the script (no leak on a re-run)"
 
   assert.equal(result.scriptDeleted, true, "an absent route is a confirmed clear");
   assert.ok(firstIndexOf("DELETE", "/workers/scripts/") >= 0, "the script is still torn down");
+});
+
+// ---------------------------------------------------------------------------
+// P6c — the two live-account fixes, both found by probing the owner's REAL
+// Cloudflare account and both silent: the routes URL 400s with code 7000 ("No
+// route for that URI"), which reads like an auth fault rather than a wrong
+// endpoint; and a missing DNS record leaves the hostname unresolvable while
+// every publish step reports success. Neither would fail a link test, so each is
+// pinned here.
+// ---------------------------------------------------------------------------
+
+test("P6c: routes are created ZONE-scoped, never /accounts/{id}/workers/routes", async () => {
+  defaultRoutes([{ method: "GET", match: "/workers/routes", result: [] }]);
+  await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: HOST,
+  });
+
+  const routeCall = calls.find((c) => c.url.includes("/workers/routes") && c.method !== "DELETE");
+  assert.ok(routeCall, "a routes call was made");
+  assert.ok(
+    routeCall.url.includes("/zones/zone_1/workers/routes"),
+    "Routes is a ZONE-scoped Cloudflare API — the account-scoped form 400s (code 7000)"
+  );
+  assert.equal(
+    calls.some((c) => c.url.includes("/accounts/") && c.url.includes("/workers/routes")),
+    false,
+    "the account-scoped routes URL must never be called again"
+  );
+});
+
+test("P6c: publish writes a PROXIED originless DNS record BEFORE the route", async () => {
+  defaultRoutes([{ method: "GET", match: "/workers/routes", result: [] }]);
+  await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: HOST,
+  });
+
+  const dns = firstIndexOf("POST", "/dns_records");
+  const route = firstIndexOf("POST", "/workers/routes");
+  assert.ok(dns >= 0, "a DNS record is created — without it the host is ERR_NAME_NOT_RESOLVED");
+  assert.ok(dns < route, "DNS comes first, so the name resolves by the time the route is live");
+
+  const body = bodies.find((b) => b.includes('"100::"'));
+  assert.ok(body, "the record is the originless IPv6 discard prefix — no real origin is named");
+  assert.ok(body.includes('"proxied":true'), "and proxied, which is what puts it on Cloudflare's edge");
+  assert.ok(body.includes(`"name":"${HOST}"`), `for the custom host ${HOST}`);
+});
+
+test("P6c: an EXISTING unproxied record is ADOPTED, never overwritten", async () => {
+  defaultRoutes([
+    { method: "GET", match: "/workers/routes", result: [] },
+    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: HOST, proxied: false }] },
+  ]);
+  await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: HOST,
+  });
+
+  assert.equal(firstIndexOf("POST", "/dns_records"), -1, "we never create a record the user already has");
+  assert.ok(
+    firstIndexOf("PATCH", "/dns_records/rec_1") >= 0,
+    "we only flip THEIR record to proxied — replacing the address would take their host down"
+  );
+});
+
+test("P6c: an ALREADY-proxied record is left completely alone", async () => {
+  defaultRoutes([
+    { method: "GET", match: "/workers/routes", result: [] },
+    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: HOST, proxied: true }] },
+  ]);
+  await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: HOST,
+  });
+
+  assert.equal(firstIndexOf("POST", "/dns_records"), -1, "nothing created");
+  assert.equal(firstIndexOf("PATCH", "/dns_records/"), -1, "nothing touched");
+  assert.ok(firstIndexOf("POST", "/workers/routes") >= 0, "and the publish still completes");
+});
+
+test("P6c: a DNS failure fails the publish and creates NO route", async () => {
+  defaultRoutes([
+    { method: "GET", match: "/workers/routes", result: [] },
+    { method: "POST", match: "/dns_records", status: 403, result: [] },
+  ]);
+  const out = await engine.publishUserMap("user_1", { credentialId: "hc_1", customHost: HOST });
+
+  assert.equal(out.ok, false, "a link we cannot make resolve is not a link");
+  assert.equal(
+    firstIndexOf("POST", "/workers/routes"),
+    -1,
+    "and no route is left pointing at a hostname that does not resolve"
+  );
+});
+
+test("P6c: teardown lists and deletes routes ZONE-scoped too", async () => {
+  await makeWorkerLink("https://example.com/");
+  calls = [];
+
+  await engine.teardownUserMap(
+    "user_1",
+    linkRows[0].credentialId,
+    linkRows[0].workerName ?? "",
+    linkRows[0].routePattern
+  );
+
+  const list = calls.find((c) => c.method === "GET" && c.url.includes("/workers/routes"));
+  assert.ok(list, "route discovery happened");
+  assert.ok(
+    list.url.includes("/zones/zone_1/workers/routes"),
+    "the zone is recovered from the stored pattern, because routes are zone-scoped"
+  );
+  assert.equal(
+    calls.some((c) => c.url.includes("/accounts/") && c.url.includes("/workers/routes")),
+    false,
+    "never the account-scoped URL"
+  );
 });

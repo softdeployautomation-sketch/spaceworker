@@ -8,7 +8,9 @@ import {
   defaultLinkHost,
   deleteWorkerRoute,
   deleteWorkerScript,
+  ensureProxiedRecord,
   ensureZoneActive,
+  hostFromRoutePattern,
   listActiveZones,
   listWorkerRoutes,
   putWorkerRoute,
@@ -185,9 +187,39 @@ export async function publishUserMap(
     return { ok: false, status: zone.status, code: "no_zone", message: zone.error ?? "That domain is not ready yet." };
   }
 
+  // CfResult is not a discriminated union, so `zone.value` is optional by type even
+  // after an `ok` check. Bind it ONCE here, with a guard, instead of scattering a
+  // non-null assertion over every later use — and because every remaining step of
+  // the publish is zone-scoped now, an empty zone id would silently produce
+  // nonsense URLs rather than an obvious failure.
+  const zoneId = zone.value?.zoneId;
+  if (!zoneId) {
+    return {
+      ok: false,
+      status: 502,
+      code: "no_zone",
+      message: "Cloudflare did not return a zone for that domain. Try again in a moment.",
+    };
+  }
+
   const entries = await mapEntriesFor(userId, host, opts.includeLinkId ? [opts.includeLinkId] : []);
   const workerName = workerNameForUser(userId);
   const pattern = routePatternFor(host);
+
+  // Step 1b — the DNS record that makes `host` RESOLVE. A route is not a host: a
+  // Worker route only runs for requests that already reach Cloudflare's edge, so
+  // without this record the route below is created perfectly and the hostname
+  // still answers ERR_NAME_NOT_RESOLVED — every step reports success while the
+  // link is dead on arrival. That is the failure this call exists to prevent.
+  const record = await ensureProxiedRecord(cf, zoneId, host);
+  if (!record.ok) {
+    return {
+      ok: false,
+      status: record.status,
+      code: "cf_error",
+      message: record.error ?? "Could not point DNS at Cloudflare for this hostname.",
+    };
+  }
 
   // Step 2 — the script.
   const uploaded = await uploadWorkerScript(cf, workerName, buildWorkerMapSource(entries));
@@ -196,7 +228,7 @@ export async function publishUserMap(
   }
 
   // Step 3 — the route, LAST. So the script a route points at always exists.
-  const routed = await putWorkerRoute(cf, pattern, workerName);
+  const routed = await putWorkerRoute(cf, zoneId, pattern, workerName);
   if (!routed.ok) {
     return { ok: false, status: routed.status, code: "cf_error", message: routed.error ?? "Could not create the route." };
   }
@@ -232,8 +264,16 @@ export async function teardownUserMap(
   // failed delete) leaves it false, and that is what gates the script below.
   let routeClear = !routePattern;
   if (routePattern) {
-    const routes = await listWorkerRoutes(cf);
-    if (routes.ok) {
+    // Routes are a ZONE-scoped API, so the zone has to be recovered from the
+    // recorded pattern before anything can be listed at all. A zone we cannot
+    // resolve is treated exactly like a list that failed: we could not learn
+    // what is out there, so routeClear stays false and the script is left alone.
+    const zone = await ensureZoneActive(cf, hostFromRoutePattern(routePattern));
+    const zoneId = zone.ok ? zone.value?.zoneId : undefined;
+    const routes = zoneId
+      ? await listWorkerRoutes(cf, zoneId)
+      : { ok: false as const, status: zone.status, error: zone.error };
+    if (zoneId && routes.ok) {
       const mine = (routes.value ?? []).filter((r) => r.pattern === routePattern && r.script === workerName);
       // Nothing matching is a confirmed clear: the goal is already met.
       routeClear = mine.length === 0;
@@ -241,7 +281,7 @@ export async function teardownUserMap(
       for (const route of mine) {
         // One failing delete must not stop the rest — a partially-torn-down route
         // set is better than a half-finished loop.
-        const del = await deleteWorkerRoute(cf, route.id);
+        const del = await deleteWorkerRoute(cf, zoneId, route.id);
         if (del.ok || del.status === 404) routeDeleted = true;
         else allGone = false;
       }
