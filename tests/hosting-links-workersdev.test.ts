@@ -1,0 +1,168 @@
+import { test, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import Module from "node:module";
+import { createHash } from "node:crypto";
+
+const USER = "user-t157";
+const callLog: string[] = [];
+
+/** The admin's premium link domain, per test. */
+let premiumLinkDomain = "";
+
+const USER_WORKER = `sw-${createHash("sha256").update(USER).digest("hex").slice(0, 32)}`;
+
+function fakeWorkers() {
+  return {
+    buildWorkerMapSource: (entries: unknown[]) => {
+      callLog.push(`buildSource:${entries.length}`);
+      return "// script";
+    },
+    assertZoneWritable: () => ({ ok: true }),
+    defaultLinkHost: (z: string) => `go.${z}`,
+    deleteWorkerRoute: async () => ({ ok: true, status: 200 }),
+    deleteWorkerScript: async () => ({ ok: true, status: 200 }),
+    ensureProxiedRecord: async () => {
+      callLog.push("ensureRecord");
+      return { ok: true, status: 200 };
+    },
+    ensureZoneActive: async (_c: unknown, host: string) => {
+      callLog.push(`ensureZone:${host}`);
+      // A workers.dev host is NOT in any zone, which is exactly what the real
+      // call reports — so a test that wrongly let the zoned path run for one
+      // fails loudly here instead of silently passing.
+      if (host.endsWith(".workers.dev")) {
+        return { ok: false, status: 404, error: `No zone for ${host}` };
+      }
+      return { ok: true, status: 200, value: { zoneId: "zone-1", zoneName: "instaweb.top" } };
+    },
+    hostFromRoutePattern: (p: string) => p.replace(/\/\*+$/, ""),
+    listActiveZones: async () => {
+      callLog.push("listZones");
+      return { ok: true, status: 200, value: [{ id: "z1", name: "instaweb.top", status: "active" }] };
+    },
+    listWorkerRoutes: async () => ({ ok: true, status: 200, value: [] }),
+    putWorkerRoute: async () => {
+      callLog.push("putRoute");
+      return { ok: true, status: 200 };
+    },
+    reservedZoneMessage: () => "reserved",
+    routePatternFor: (h: string) => `${h}/*`,
+    uploadWorkerScript: async (_c: unknown, name: string) => {
+      callLog.push(`upload:${name}`);
+      return { ok: true, status: 200 };
+    },
+    workerNameForUser: (id: string) => `sw-${createHash("sha256").update(id).digest("hex").slice(0, 32)}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Require hook: only this module's own dependencies are swapped.
+// ---------------------------------------------------------------------------
+
+type Loader = { _load: (r: string, p: NodeModule | undefined, m: boolean) => unknown };
+const MODULE_UNDER_TEST = "lib/hosting/links-engine.ts";
+
+function installRequireHook(): void {
+  const loader = Module as unknown as Loader;
+  const original = loader._load;
+  loader._load = function patched(request, parent, isMain) {
+    const from = parent?.filename ?? "";
+    // `server-only` throws on import by design. Stubbed globally (as the vantra
+    // suite does) so a module that slips past a path check fails loudly on its
+    // OWN logic instead of on this sentinel.
+    if (request === "server-only") return {};
+    // `../admin-settings` is server-only + prisma. Stubbed by NAME rather than
+    // exact specifier so the stub holds however tsx resolves it.
+    if (request.includes("admin-settings")) {
+      return { getAdminSettings: async () => ({ hostingPremiumLinkDomain: premiumLinkDomain }) };
+    }
+    if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
+      if (request === "../prisma") {
+        return { prisma: { linkRedirect: { findMany: async () => [], findFirst: async () => null } } };
+      }
+      if (request === "./cloudflare") return { verifyCredential: async () => ({ ok: true, status: 200 }) };
+      if (request === "./credentials") return { getHostingCredentialById: async () => null };
+      if (request === "./platform-accounts") {
+        return {
+          resolvePlatformCredential: async () => ({
+            ok: true,
+            status: 200,
+            value: { accountId: "cf-1", workerToken: "tok" },
+          }),
+        };
+      }
+      if (request === "./workers") return fakeWorkers();
+    }
+    return original.call(this, request, parent, isMain);
+  };
+}
+
+installRequireHook();
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+const engine = require("../lib/hosting/links-engine") as typeof import("../lib/hosting/links-engine");
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+beforeEach(() => {
+  callLog.length = 0;
+  premiumLinkDomain = "";
+});
+
+test("a workers.dev premium domain publishes by uploading the script ALONE", async () => {
+  premiumLinkDomain = "swdocs.workers.dev";
+
+  const res = await engine.publishUserMap(USER, { credentialId: null });
+
+  assert.equal(res.ok, true, `publish failed: ${JSON.stringify(res)}`);
+  assert.deepEqual(
+    callLog,
+    ["buildSource:0", "upload:" + USER_WORKER],
+    "no zone lookup, no DNS record, no route — the whole publish is the upload"
+  );
+  assert.equal(res.ok && res.value.customHost, `${USER_WORKER}.swdocs.workers.dev`);
+});
+
+test("the workers.dev publish records NO route, so teardown cannot strand the script", async () => {
+  premiumLinkDomain = "swdocs.workers.dev";
+
+  const published = await engine.publishUserMap(USER, { credentialId: null });
+  assert.equal(published.ok, true);
+  const pattern = published.ok ? published.value.routePattern : "unreachable";
+  assert.equal(pattern, null, "a route pattern here would send teardown after a route that never existed");
+
+  // mapIdentityFor MUST agree with the publish. Teardown is handed only a stored
+  // pattern and is fail-closed on "route not confirmed gone", so a mismatch here
+  // leaves the user's Worker alive forever after they delete their last link.
+  const identity = engine.mapIdentityFor(USER, `${USER_WORKER}.swdocs.workers.dev`);
+  assert.equal(identity.routePattern, null, "identity and publish must both say 'no route'");
+  assert.equal(identity.workerName, USER_WORKER);
+});
+
+test("a workers.dev host is per-USER, so two users cannot overwrite each other", async () => {
+  premiumLinkDomain = "swdocs.workers.dev";
+
+  await engine.publishUserMap(USER, { credentialId: null });
+  const mine = engine.mapIdentityFor(USER, `${USER_WORKER}.swdocs.workers.dev`).workerName;
+  const theirs = engine.mapIdentityFor("user-elsewhere", "sw-theirs.swdocs.workers.dev").workerName;
+
+  assert.notEqual(theirs, mine, "a shared host would let the last publish clobber everyone else");
+});
+
+test("a ZONED premium domain still takes the full DNS + route publish", async () => {
+  // The regression guard for the fast path: adding it must not divert the
+  // existing instaweb behaviour onto the wrong branch.
+  premiumLinkDomain = "go.instaweb.top";
+
+  const res = await engine.publishUserMap(USER, { credentialId: null });
+
+  assert.equal(res.ok, true);
+  assert.ok(callLog.includes("ensureZone:go.instaweb.top"), "a zoned host must still resolve its zone");
+  assert.ok(callLog.includes("ensureRecord"), "and still create the DNS record");
+  assert.ok(callLog.includes("putRoute"), "and still install the route");
+  assert.equal(res.ok && res.value.customHost, "go.instaweb.top");
+  assert.equal(res.ok && res.value.routePattern, "go.instaweb.top/*");
+});
+
+test("mapIdentityFor still returns a route pattern for a zoned host", () => {
+  assert.equal(engine.mapIdentityFor(USER, "go.instaweb.top").routePattern, "go.instaweb.top/*");
+});

@@ -14,6 +14,16 @@ import { useCallback, useEffect, useState } from "react";
 
 import { WorkerTokenHelp } from "../hosting-worker-token-help";
 
+/** The workers.dev state the route reports for one account (PLAN_TASK_157 §4). */
+interface WorkersDevSubdomainStateView {
+  /** What WE last stamped on the row. */
+  configured: string | null;
+  /** What Cloudflare answers with right now. Null if the read failed. */
+  live: string | null;
+  /** True when the row has no Workers/DNS token, so the live read was skipped. */
+  needsWorkerToken: boolean;
+}
+
 export interface PlatformAccountView {
   id: string;
   accountId: string;
@@ -48,6 +58,46 @@ export default function PlatformAccountsPanel() {
   const [workerToken, setWorkerToken] = useState("");
   /** Which row's replace-worker-token box is open ("" = none). */
   const [replacingWorkerFor, setReplacingWorkerFor] = useState("");
+  // TASK_157 Phase 1 — the workers.dev account subdomain. Keyed by account ROW id
+  // (not Cloudflare accountId) because that is what the route takes, and kept
+  // per-row so renaming one account never shows another account's value.
+  const [subdomainDraft, setSubdomainDraft] = useState<Record<string, string>>({});
+  /**
+   * The live state last read from Cloudflare, per row. NOT a plain string: the
+   * service reports what we last stamped (`configured`), what Cloudflare answers
+   * with today (`live`), and whether the row even has a Workers token to ask
+   * with. Collapsing that to one string here would hide exactly the out-of-band
+   * rename this dial exists to make visible.
+   */
+  const [subdomainLive, setSubdomainLive] = useState<
+    Record<string, WorkersDevSubdomainStateView>
+  >({});
+
+  /**
+   * Read one account's LIVE workers.dev subdomain. Deliberately a separate call
+   * from `load`: this hits Cloudflare, and the roster renders on every panel open,
+   * so it is opt-in per row rather than a cost paid by every account at once.
+   */
+  async function readSubdomain(id: string) {
+    setBusy("GET:" + id);
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/hosting/platform-accounts?subdomain=${encodeURIComponent(id)}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Failed to read the subdomain");
+        return;
+      }
+      const read = data.workersDevSubdomain;
+      if (read && typeof read === "object") {
+        setSubdomainLive((prev) => ({ ...prev, [id]: read as WorkersDevSubdomainStateView }));
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setBusy("");
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -88,6 +138,19 @@ export default function PlatformAccountsPanel() {
         return;
       }
       setState(data as PlatformAccountsState);
+      // A successful rename comes back with the LIVE value Cloudflare confirms,
+      // so show that rather than the text the admin typed — the two can differ.
+      if (data.workersDevSubdomain && typeof data.workersDevSubdomain === "object" && body.id) {
+        setSubdomainLive((prev) => ({
+          ...prev,
+          [String(body.id)]: data.workersDevSubdomain as WorkersDevSubdomainStateView,
+        }));
+        setSubdomainDraft((prev) => {
+          const next = { ...prev };
+          delete next[String(body.id)];
+          return next;
+        });
+      }
       // Clear BOTH secret inputs on success, so a pasted token is never left
       // sitting in the DOM (or in a screenshot) after the row is saved.
       setToken("");
@@ -153,6 +216,13 @@ export default function PlatformAccountsPanel() {
           {state.accounts.map((a, i) => {
             const dead = !!a.verifyError;
             const off = a.status !== "active";
+            const read = subdomainLive[a.id];
+            const shown = subdomainDraft[a.id] ?? read?.live ?? read?.configured ?? "";
+            // Cloudflare disagreeing with our stamp is the one thing worth flagging here:
+            // it means someone renamed the account in the dashboard, and every link we
+            // publish under the stamped name is now broken.
+            const drifted =
+              !!read && read.live !== null && read.configured !== null && read.live !== read.configured;
             return (
               <div
                 key={a.id}
@@ -189,6 +259,50 @@ export default function PlatformAccountsPanel() {
                     </p>
                     {a.workerTokenError && (
                       <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.workerTokenError}</p>
+                    )}
+                    {/* TASK_157 Phase 1 — the workers.dev subdomain for this account.
+                        Free short links publish at <worker>.<this>.workers.dev, so
+                        this is the one dial that decides what a FREE link looks like.
+                        Reading it costs a live Cloudflare call, hence the explicit
+                        "Read" button instead of an automatic fetch per row. */}
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <input
+                        placeholder="workers.dev subdomain — e.g. spaceworker"
+                        value={shown}
+                        onChange={(e) => setSubdomainDraft((prev) => ({ ...prev, [a.id]: e.target.value }))}
+                        className={inputClass}
+                      />
+                      <button
+                        onClick={() => readSubdomain(a.id)}
+                        disabled={busy !== ""}
+                        className={ghostClass}
+                      >
+                        {busy === "GET:" + a.id ? "Reading…" : "Read current"}
+                      </button>
+                      <button
+                        onClick={() =>
+                          call({
+                            id: a.id,
+                            workersDevSubdomain: shown.trim(),
+                          })
+                        }
+                        disabled={busy !== "" || shown.trim() === ""}
+                        className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+                      >
+                        {busy === "PATCH:" + a.id ? "Renaming…" : "Set subdomain"}
+                      </button>
+                    </div>
+                    <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">
+                      {read?.needsWorkerToken
+                        ? "Needs a Workers/DNS token above — that token is what reads and changes this name."
+                        : "Account-wide: renaming re-points EVERY Worker in this account, so existing links start serving the new host. Names are checked for availability before the write."}
+                    </p>
+                    {drifted && (
+                      <p className="mt-1 text-xs font-medium text-red-600 dark:text-red-400">
+                        Cloudflare reports <strong>{read?.live}</strong> but we stamped{" "}
+                        <strong>{read?.configured}</strong> — it was renamed in the Cloudflare dashboard. Free links
+                        published under the stamped name are broken until you save the live value.
+                      </p>
                     )}
                     {/* The replace box is per-row and collapsed by default: the Pages
                         token and the Workers token rotate independently, so replacing

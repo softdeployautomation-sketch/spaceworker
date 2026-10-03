@@ -244,6 +244,113 @@ export async function listActiveZones(cred: CfCredential): Promise<CfResult<Zone
   if (!res.ok) return { ok: false, status: res.status, error: res.error };
   return { ok: true, status: res.status, value: (res.value ?? []).filter((z) => z.status === "active") };
 }
+
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 1 — the account's workers.dev subdomain.
+//
+// Cloudflare scopes this to the ACCOUNT, not to a Worker, so one call re-points
+// EVERY Worker in the account at once. That blast radius is why the admin panel
+// warns before changing it — but it is also why it is the cheapest possible way to
+// give the FREE tier a real hostname: `<worker>.<sub>.workers.dev` answers with no
+// DNS record, no zone and no registrar action at all.
+//
+// This is public information — it is literally part of the hostname — so it is
+// never treated as a secret and never redacted. The TOKEN is the secret; this is
+// a domain name.
+// ---------------------------------------------------------------------------
+
+export interface WorkersDevSubdomain {
+  /** The subdomain Cloudflare currently has configured for this account. */
+  subdomain: string;
+  /** Whether the account has workers.dev enabled at all. */
+  enabled: boolean;
+}
+
+/** The account's current workers.dev subdomain, or null when never configured. */
+export async function getWorkersDevSubdomain(
+  cred: CfCredential
+): Promise<CfResult<WorkersDevSubdomain | null>> {
+  const res = await cfFetch<{ subdomain?: string; enabled?: boolean }>(
+    cred,
+    "GET",
+    `/accounts/${cred.accountId}/workers/subdomain`
+  );
+  // A 403 here is the cold-start state: the account has never opened the Workers
+  // dashboard, so no subdomain exists yet. That is not an error — it is the
+  // "nothing configured" answer the caller renders as "not set up yet".
+  if (res.status === 403) return { ok: true, status: 403, value: null };
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+  const subdomain = res.value?.subdomain;
+  if (!subdomain) return { ok: true, status: res.status, value: null };
+  return { ok: true, status: res.status, value: { subdomain, enabled: res.value?.enabled !== false } };
+}
+
+export interface SubdomainAvailability {
+  /** True when Cloudflare says this name can be claimed. */
+  available: boolean;
+  /** True when the name is already the one configured on THIS account. */
+  current: boolean;
+  /** Cloudflare's own wording, shown verbatim when the name is taken. */
+  message?: string;
+}
+
+/**
+ * Ask Cloudflare whether a candidate subdomain can be claimed.
+ *
+ * `ok: true` on this function means "the question was answered", NOT "the name is
+ * free" — the verdict is in `value.available`. Cloudflare answers with a bare
+ * status code rather than an `available` boolean, and the codes are inverted from
+ * what you would expect (see the comments below), so they are translated once,
+ * here, instead of at every call site.
+ */
+export async function checkWorkersDevSubdomain(
+  cred: CfCredential,
+  name: string
+): Promise<CfResult<SubdomainAvailability>> {
+  const res = await cfFetch<{ subdomain?: string; enabled?: boolean }>(
+    cred,
+    "GET",
+    `/accounts/${cred.accountId}/workers/subdomains/${encodeURIComponent(name)}`
+  );
+  if (res.ok) {
+    const isCurrent = res.value?.subdomain === name;
+    return { ok: true, status: res.status, value: { available: true, current: isCurrent } };
+  }
+  // 404 (code 10032) is Cloudflare's "available but not configured" — i.e. FREE.
+  if (res.status === 404) {
+    return { ok: true, status: res.status, value: { available: true, current: false } };
+  }
+  // 403 (code 10031) is "unavailable, pick another". Any other status is treated
+  // the same way: fail CLOSED, because claiming a name Cloudflare rejects would
+  // leave the account in a half-configured state.
+  return {
+    ok: true,
+    status: res.status,
+    value: { available: false, current: false, message: res.error },
+  };
+}
+
+/**
+ * Claim (or rename to) a workers.dev subdomain for the whole account.
+ *
+ * Callers MUST check availability first and MUST refuse a reserved-looking name;
+ * this function deliberately does not re-validate, so a single source of truth
+ * (lib/hosting/domains.ts) decides what a legal name is.
+ */
+export async function setWorkersDevSubdomain(
+  cred: CfCredential,
+  name: string
+): Promise<CfResult<WorkersDevSubdomain>> {
+  const res = await cfFetch<{ subdomain?: string }>(
+    cred,
+    "PUT",
+    `/accounts/${cred.accountId}/workers/subdomain`,
+    { subdomain: name }
+  );
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+  return { ok: true, status: res.status, value: { subdomain: res.value?.subdomain ?? name, enabled: true } };
+}
+
 /**
  * Step 1b: make the custom host actually RESOLVE, by ensuring it has a proxied
  * DNS record in its zone.

@@ -1908,6 +1908,12 @@ type HostingCapsState = {
   provider: string;
   providers: Array<{ id: string; label: string; implemented: boolean }>;
   caps: HostingCaps;
+  // TASK_157 Phase 1 — the premium domain registry. An empty string is the
+  // documented "premium off" state: every user keeps the free Cloudflare host.
+  // `siteDomainCoversSsl` is computed SERVER-side (it depends on Cloudflare's
+  // certificate rules, not on anything the browser can know) so the warning below
+  // can never disagree with what the API actually accepted.
+  domains: { siteDomain: string; linkDomain: string; siteDomainCoversSsl: boolean };
   hardPagesMaxAssetMb: number;
   live: { activeFiles: number; storageBytes: number; owners: number; sites: number };
 };
@@ -2052,6 +2058,37 @@ const HOSTING_CAP_ROWS: Array<{
   },
 ];
 
+
+// TASK_157 Phase 1 — the two premium DOMAIN dials, rendered from data the same
+// way the caps above are, so the API and the UI cannot drift on what a row means.
+//
+// Both are OPTIONAL and both share one rule the owner asked for explicitly: the
+// free Cloudflare host is always kept as the fallback, so clearing a box is a
+// safe, reversible action rather than a way to break every published link.
+type PremiumDomainField = "siteDomain" | "linkDomain";
+
+const PREMIUM_DOMAIN_ROWS: Array<{
+  field: PremiumDomainField;
+  label: string;
+  unit: string;
+  hint: string;
+  placeholder: string;
+}> = [
+  {
+    field: "siteDomain",
+    label: "Premium site domain",
+    unit: "a zone — e.g. instaweb.top",
+    hint: "A premium site is published as <slug>.<this>. It must be an apex zone in the SAME Cloudflare account as the Pages project, or the domain can never activate. Empty = premium sites use the free <project>.pages.dev host.",
+    placeholder: "instaweb.top",
+  },
+  {
+    field: "linkDomain",
+    label: "Premium link host",
+    unit: "a host — e.g. go.instaweb.top",
+    hint: "Where premium redirect links publish. A zoned host (go.instaweb.top) becomes the Worker route and needs DNS. Or name a workers.dev host (swdocs.workers.dev) and each user publishes to <worker>.swdocs.workers.dev with no DNS or route at all. Empty = fall back to go.<zone>.",
+    placeholder: "go.instaweb.top",
+  },
+];
 
 function HostingCapsPanel() {
   const [state, setState] = useState<HostingCapsState | null>(null);
@@ -2211,6 +2248,74 @@ function HostingCapsPanel() {
               </div>
             );
           })}
+
+          {/* TASK_157 Phase 1 — the premium domain registry. Rendered after the caps
+              because it is not a cap: it is a switch between two URL models, and the
+              numeric caps above apply to both models. */}
+          <div className="rounded-xl border border-amber-300 bg-amber-50/40 p-4 dark:border-amber-800 dark:bg-amber-950/20">
+            <p className="font-medium text-zinc-900 dark:text-zinc-100">Premium domains</p>
+            <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+              Free accounts always keep their Cloudflare host — these two boxes only change what a PREMIUM account
+              publishes under. Clearing a box is safe: the resolver falls back to the free host, so a published URL never
+              ends up pointing nowhere.
+            </p>
+            <div className="mt-3 flex flex-col gap-3">
+              {PREMIUM_DOMAIN_ROWS.map((row) => {
+                const saved = state.domains[row.field];
+                const draft = drafts[row.field];
+                const dirty = draft !== undefined && draft.trim() !== saved;
+                return (
+                  <div
+                    key={row.field}
+                    className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-800 dark:bg-zinc-900"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                        {row.label} <span className="text-xs font-normal text-zinc-400">({row.unit})</span>
+                      </p>
+                      <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">{row.hint}</p>
+                      {row.field === "siteDomain" && saved && (
+                        <p
+                          className={`mt-1 text-xs font-medium ${
+                            state.domains.siteDomainCoversSsl
+                              ? "text-emerald-600 dark:text-emerald-400"
+                              : "text-amber-600 dark:text-amber-400"
+                          }`}
+                        >
+                          {state.domains.siteDomainCoversSsl
+                            ? `Apex zone — Cloudflare's free certificate covers every <slug>.${saved}.`
+                            : "Not an apex domain — site URLs would sit too deep for Cloudflare's free certificate."}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder={`${row.placeholder} — empty = off`}
+                        value={draft ?? saved}
+                        onChange={(e) => setDrafts((prev) => ({ ...prev, [row.field]: e.target.value }))}
+                        className="w-56 rounded-lg border border-zinc-300 bg-white px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+                      />
+                      <button
+                        onClick={() => patch(row.field, { [row.field]: (draft ?? saved).trim() })}
+                        disabled={saving === row.field || !dirty}
+                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                      >
+                        Save
+                      </button>
+                      <button
+                        onClick={() => patch(row.field, { [row.field]: "" })}
+                        disabled={saving === row.field || !saved}
+                        className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
     </div>

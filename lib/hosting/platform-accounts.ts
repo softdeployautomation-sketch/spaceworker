@@ -52,6 +52,13 @@ export interface HostingPlatformAccountView {
   hasWorkerToken: boolean;
   /** Plain-language reason the Workers token failed, or NULL when healthy/unset. */
   workerTokenError: string | null;
+  // --- TASK_157 Phase 1 — the workers.dev hostname for the FREE tier.
+  /**
+   * The workers.dev account subdomain we have configured (e.g. "spaceworker"),
+   * or NULL when never set. Public data — it is part of the hostname — so it is
+   * returned plainly; the TOKEN is the secret, not this.
+   */
+  workersDevSubdomain: string | null;
   createdAt: string;
 }
 
@@ -68,6 +75,8 @@ type PlatformAccountRow = {
   workerTokenCiphertext?: string | null;
   workerTokenHint?: string | null;
   workerTokenError?: string | null;
+  // TASK_157 Phase 1 — the workers.dev account subdomain (public, not a secret).
+  workersDevSubdomain?: string | null;
   createdAt: Date;
 };
 
@@ -80,6 +89,7 @@ export function toPlatformAccountView(row: PlatformAccountRow): HostingPlatformA
     workerTokenHint: row.workerTokenHint ?? "",
     hasWorkerToken: !!row.workerTokenCiphertext && !!(row.workerTokenHint ?? ""),
     workerTokenError: row.workerTokenError ?? null,
+    workersDevSubdomain: row.workersDevSubdomain ?? null,
     priority: row.priority,
     status: row.status,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
@@ -422,4 +432,161 @@ export async function verifyPlatformAccount(
 export async function healthyPlatformAccountCount(): Promise<number> {
   if (!(await isPlatformEngineEnabled())) return 0;
   return prisma.hostingPlatformAccount.count({ where: { status: "active", verifyError: null } });
+}
+
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 1 — the workers.dev account subdomain, from the admin panel.
+//
+// WHY THIS EXISTS: the FREE tier needs a real hostname that costs nothing, needs
+// no domain, no zone and no registrar action. Cloudflare gives exactly that at
+// `<worker>.<account-subdomain>.workers.dev` — but the middle label is an
+// ACCOUNT-level setting, chosen once and shared by every Worker in the account.
+// The owner asked for it by name: "rename the workers subdomain to be something
+// like documents.workers.dev ... and can it be automated in the admin to change
+// the name". So it is a first-class admin action, not a manual dashboard chore.
+//
+// BLAST RADIUS: renaming re-points EVERY Worker in the account at once. There is
+// no per-Worker override. The route therefore warns before saving and requires
+// the availability check to pass — claiming a name Cloudflare rejects would leave
+// the account half-configured, and every free link would 404 at the edge.
+//
+// The subdomain is PUBLIC (it is literally in the hostname) so it is stored and
+// returned plainly. The TOKEN stays decrypt-on-the-fly, never returned.
+// ---------------------------------------------------------------------------
+
+export interface WorkersDevSubdomainState {
+  /** What WE have configured on this row, or null when never set here. */
+  configured: string | null;
+  /** What Cloudflare reports for the account right now, or null if unset/unknown. */
+  live: string | null;
+  /** True when the row has no Workers token, so we cannot read or change this. */
+  needsWorkerToken: boolean;
+}
+
+/**
+ * Read the subdomain state for one account WITHOUT changing anything.
+ *
+ * `configured` comes from our own row (so the panel can show what we set even if
+ * the live read fails); `live` comes from Cloudflare (the authority). Showing
+ * both means an out-of-band dashboard rename is visible instead of silently
+ * disagreeing with what the panel claims.
+ */
+export async function getWorkersDevSubdomainState(
+  id: string
+): Promise<HostingResult<WorkersDevSubdomainState>> {
+  const row = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
+  if (!row) return { ok: false, status: 404, code: "not_found", message: "Account not found." };
+
+  const configured = row.workersDevSubdomain ?? null;
+
+  const workerToken = readWorkerToken(row);
+  if (!workerToken) {
+    // Pages-only row: honest empty state rather than an error — the admin simply
+    // has not given us a Workers token yet.
+    return { ok: true, value: { configured, live: null, needsWorkerToken: true } };
+  }
+
+  // Lazy import keeps this module network-free at load time, exactly like
+  // verifyPlatformAccount above.
+  const { getWorkersDevSubdomain } = await import("./workers");
+  const res = await getWorkersDevSubdomain({ accountId: row.accountId, token: workerToken });
+  const live = res.ok ? (res.value?.subdomain ?? null) : null;
+
+  return { ok: true, value: { configured, live, needsWorkerToken: false } };
+}
+
+export interface SetWorkersDevSubdomainResult {
+  subdomain: string;
+  /** True when the account already answered on this name, so nothing changed. */
+  unchanged: boolean;
+}
+
+/**
+ * Claim (or rename to) the workers.dev subdomain, then stamp the row.
+ *
+ * ORDER IS LOAD-BEARING, the same discipline as the Worker publish path:
+ *   1. read + decrypt the Workers token — no token, no subdomain, refuse clearly
+ *   2. validate the NAME locally — a dot or a leading dash is rejected before the
+ *      network call, so the admin gets an instant, specific message
+ *   3. check availability with Cloudflare — never attempt a name that is taken
+ *   4. only then PUT, and stamp the row with what Cloudflare confirms
+ *
+ * Step 3 is not optional: Cloudflare's namespace is global across every account,
+ * so a plausible-looking name like `documents` or `securefile` is almost always
+ * gone. Failing at step 3 produces "that name is taken, try another"; skipping it
+ * produces a confusing provider error at step 4.
+ */
+export async function setAccountWorkersDevSubdomain(
+  id: string,
+  subdomain: string
+): Promise<HostingResult<SetWorkersDevSubdomainResult>> {
+  const row = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
+  if (!row) return { ok: false, status: 404, code: "not_found", message: "Account not found." };
+
+  const workerToken = readWorkerToken(row);
+  if (!workerToken) {
+    return {
+      ok: false,
+      status: 409,
+      code: "no_worker_token",
+      message:
+        "Add a Workers/DNS token to this account first — it is needed to read and change the workers.dev subdomain.",
+    };
+  }
+
+  const { isValidAccountSubdomain } = await import("./domains");
+  const name = subdomain.trim().toLowerCase();
+  if (!isValidAccountSubdomain(name)) {
+    return {
+      ok: false,
+      status: 400,
+      code: "invalid_subdomain",
+      message:
+        "Use one DNS label: letters, digits and dashes only — no dots, and it cannot start or end with a dash.",
+    };
+  }
+
+  const cred = { accountId: row.accountId, token: workerToken };
+  // Lazy import, same reason as getWorkersDevSubdomainState above.
+  const { checkWorkersDevSubdomain, setWorkersDevSubdomain } = await import("./workers");
+
+  const check = await checkWorkersDevSubdomain(cred, name);
+  if (!check.ok) {
+    return {
+      ok: false,
+      status: check.status || 502,
+      code: "cf_unreachable",
+      message: check.error ?? "Could not reach Cloudflare — try again.",
+    };
+  }
+  if (!check.value?.available) {
+    return {
+      ok: false,
+      status: 409,
+      code: "subdomain_taken",
+      // Prefer Cloudflare's own wording, exactly like the BYO verifier does.
+      message: check.value?.message ?? `"${name}" is already taken. Try another name.`,
+    };
+  }
+  if (check.value.current && row.workersDevSubdomain === name) {
+    // Already ours and already stamped — a no-op, so a double-click is harmless.
+    return { ok: true, value: { subdomain: name, unchanged: true } };
+  }
+
+  const saved = await setWorkersDevSubdomain(cred, name);
+  if (!saved.ok) {
+    return {
+      ok: false,
+      status: saved.status || 502,
+      code: "cf_rejected",
+      message: saved.error ?? "Cloudflare refused that subdomain.",
+    };
+  }
+
+  const confirmed = saved.value?.subdomain ?? name;
+  await prisma.hostingPlatformAccount.update({
+    where: { id },
+    data: { workersDevSubdomain: confirmed },
+  });
+  return { ok: true, value: { subdomain: confirmed, unchanged: false } };
 }

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { requireAdminSession } from "@/lib/admin-auth";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { CLOUDFLARE_HARD_ASSET_MB } from "@/lib/hosting/rules";
+import { normalizeHostInput, universalSslCovered } from "@/lib/hosting/domains";
 import { listProviders } from "@/lib/hosting/providers";
 
 // TASK_155 P1 (PLAN §14) — the admin dials for the FILES/hosting engine, mirroring
@@ -68,6 +69,21 @@ const WRITABLE_FIELDS = {
   maxZipEntries: { column: "hostingMaxZipEntries", kind: "int" },
   maxHeavyJobsPerUser: { column: "hostingMaxHeavyJobsPerUser", kind: "int" },
   publishedRevisionsKept: { column: "hostingPublishedRevisionsKept", kind: "int" },
+  // TASK_157 Phase 1 — the platform-premium DOMAIN REGISTRY (PLAN_TASK_157 §3).
+  // `kind: "host"` is its own validation case because "" is a MEANINGFUL value
+  // here — it means "premium off, fall back to the free Cloudflare dev host" —
+  // whereas every numeric kind above rejects anything below 1. So this is the one
+  // pair of dials an admin turns OFF by clearing the box.
+  //
+  //   siteDomain = the base zone premium SITES publish under, so a site becomes
+  //                <slug>.<siteDomain>. Must be an apex in the SAME Cloudflare
+  //                account as the Pages project, or the custom domain can never
+  //                activate (PLAN_TASK_157 §2.1).
+  //   linkDomain = the full HOST premium LINK redirects publish under, e.g.
+  //                go.instaweb.top — a host, not a zone, because the host is
+  //                exactly what becomes the Worker route.
+  siteDomain: { column: "hostingPremiumSiteDomain", kind: "host" },
+  linkDomain: { column: "hostingPremiumLinkDomain", kind: "host" },
 } as const;
 
 const WRITABLE_KEYS = Object.keys(WRITABLE_FIELDS) as Array<keyof typeof WRITABLE_FIELDS>;
@@ -94,6 +110,9 @@ type HostingSettingRow = {
   hostingMaxZipEntries: number;
   hostingMaxHeavyJobsPerUser: number;
   hostingPublishedRevisionsKept: number;
+  // TASK_157 Phase 1 — the premium domain registry (empty string = not set).
+  hostingPremiumSiteDomain: string;
+  hostingPremiumLinkDomain: string;
 };
 
 // The full state the panel renders, always returned fresh from both GET and PATCH
@@ -125,6 +144,20 @@ function toPayload(settings: HostingSettingRow, live: LiveCounts) {
       maxZipEntries: settings.hostingMaxZipEntries,
       maxHeavyJobsPerUser: settings.hostingMaxHeavyJobsPerUser,
       publishedRevisionsKept: settings.hostingPublishedRevisionsKept,
+    },
+    // TASK_157 Phase 1 — the premium domain registry, plus the ONE derived fact
+    // the panel cannot compute for itself: whether a site published under this
+    // base domain would actually get a free certificate.
+    domains: {
+      siteDomain: settings.hostingPremiumSiteDomain,
+      linkDomain: settings.hostingPremiumLinkDomain,
+      // <slug>.<siteDomain> is only covered by Cloudflare's free Universal SSL
+      // when the base IS an apex. Compute the depth of a REAL example host (not
+      // the base itself) so the panel can warn before anyone publishes a
+      // certificate-less site. True while unset — "off" is never a warning.
+      siteDomainCoversSsl: settings.hostingPremiumSiteDomain
+        ? universalSslCovered(`example.${normalizeHostInput(settings.hostingPremiumSiteDomain) ?? ""}`)
+        : true,
     },
     // The Cloudflare per-asset ceiling is a HARD platform limit, not a dial — the
     // panel shows it so nobody sets pagesMaxAssetMb above it expecting it to hold.
@@ -178,6 +211,29 @@ export async function PATCH(req: Request) {
         return NextResponse.json({ error: `${key} must be one of: ${PROVIDER_IDS.join(", ")}` }, { status: 400 });
       }
       data[column] = value;
+    } else if (kind === "host") {
+      // "" is first-class here: it means "premium off, use the free dev host".
+      // Anything else must be a real hostname, so a typo fails loudly at SAVE
+      // time instead of silently publishing links to a host that never resolves.
+      // The value is NORMALISED ("https://Go.InstaWeb.top/" -> "go.instaweb.top")
+      // so the resolver and the panel never disagree about the stored string.
+      if (typeof value !== "string") {
+        return NextResponse.json({ error: `${key} must be a string` }, { status: 400 });
+      }
+      if (value.trim() === "") {
+        data[column] = "";
+      } else {
+        const host = normalizeHostInput(value);
+        if (!host) {
+          return NextResponse.json(
+            {
+              error: `${key} must be a domain like instaweb.top — leave it empty to use the free Cloudflare host`,
+            },
+            { status: 400 }
+          );
+        }
+        data[column] = host;
+      }
     } else if (kind === "money") {
       const n = Number(value);
       if (!Number.isFinite(n) || n < 0) {

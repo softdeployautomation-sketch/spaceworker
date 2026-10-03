@@ -1,8 +1,10 @@
 import { prisma } from "../prisma";
+import { getAdminSettings } from "../admin-settings";
 import { verifyCredential, type CfCredential } from "./cloudflare";
 import { getHostingCredentialById } from "./credentials";
 import type { HostingResult } from "./files";
 import { resolvePlatformCredential } from "./platform-accounts";
+import { isWorkersDevHost } from "./domains";
 import {
   buildWorkerMapSource,
   assertZoneWritable,
@@ -167,6 +169,28 @@ export async function publishUserMap(
   // a fresh BYO account with no domain gets a clear message instead of a hostname
   // that will never resolve.
   let host = opts.customHost?.trim().toLowerCase() || null;
+
+  // TASK_157 — the admin's PREMIUM link domain wins over the zone default. This is
+  // the "instaweb or anything I can change from admin" dial: it is read here, at
+  // the one place a link's host is actually decided, so changing it in the panel
+  // changes where the next publish lands. An empty value is the default "" and
+  // must fall through, not produce a link on the empty host.
+  if (!host) {
+    const settings = await getAdminSettings();
+    const premium = settings.hostingPremiumLinkDomain?.trim().toLowerCase() || null;
+    if (premium) {
+      // A workers.dev "domain" is a SUFFIX, not a host: Cloudflare answers
+      // `<script>.workers.dev`, so the admin's `swdocs.workers.dev` becomes
+      // `sw-<userhash>.swdocs.workers.dev`. Without this prefix every user in the
+      // account would claim the SAME host and the last publish would overwrite
+      // everyone else's links. A zoned host like `go.instaweb.top` needs no
+      // prefix — that name is genuinely shared, and is the point of a zone.
+      host = isWorkersDevHost(premium)
+        ? `${workerNameForUser(userId)}.${premium}`
+        : premium;
+    }
+  }
+
   if (!host) {
     const zones = await listActiveZones(cf);
     if (!zones.ok) {
@@ -190,6 +214,30 @@ export async function publishUserMap(
       };
     }
     host = defaultLinkHost(first.name);
+  }
+
+  // TASK_157 — the workers.dev FAST PATH, placed BEFORE every zone-scoped step
+  // below. A workers.dev host is served by Cloudflare's own edge: the script named
+  // `<worker>` answers on `<worker>.<sub>.workers.dev` the moment it is uploaded.
+  // There is no zone to resolve, no DNS record to create and no route to install,
+  // so the zoned steps are not merely unnecessary here — each one FAILS (no such
+  // zone; not your DNS) and aborts the publish before the script is ever uploaded.
+  //
+  // That ordering is the whole reason this block sits here and not beside the
+  // script upload further down: `ensureZoneActive` below would otherwise reject a
+  // perfectly valid workers.dev host with "That domain is not ready yet."
+  if (isWorkersDevHost(host)) {
+    const entries = await mapEntriesFor(userId, host, opts.includeLinkId ? [opts.includeLinkId] : []);
+    const workerName = workerNameForUser(userId);
+    const uploaded = await uploadWorkerScript(cf, workerName, buildWorkerMapSource(entries));
+    if (!uploaded.ok) {
+      return { ok: false, status: uploaded.status, code: "cf_error", message: uploaded.error ?? "Could not upload the link." };
+    }
+    // routePattern is null BY DESIGN, not "unknown": teardown reads it to decide
+    // whether a route needs deleting, and there is no route. Reporting a pattern
+    // here would send teardown hunting for a route that never existed, and its
+    // fail-closed rule would then refuse to delete the script.
+    return { ok: true, value: { workerName, routePattern: null, customHost: host, credentialId: cf.credentialId } };
   }
 
   const zone = await ensureZoneActive(cf, host);
@@ -288,7 +336,12 @@ export function mapIdentityFor(
   const host = customHost?.trim().toLowerCase() || null;
   return {
     workerName: workerNameForUser(userId),
-    routePattern: host ? routePatternFor(host) : null,
+    // TASK_157 — a workers.dev host has no route, exactly as publishUserMap
+    // reports. This must stay in step with it: a pattern recorded here but never
+    // created would make teardown hunt for a route that does not exist, fail to
+    // clear it, and then refuse to delete the script — leaving the user's Worker
+    // alive forever after they deleted their last link.
+    routePattern: host && !isWorkersDevHost(host) ? routePatternFor(host) : null,
   };
 }
 

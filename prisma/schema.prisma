@@ -448,6 +448,22 @@ model AdminSetting {
   // roster (setup message), not on a dark master switch.
   hostingPlatformCfEnabled          Boolean @default(true)
 
+  // TASK_157 Phase 1 — the platform-premium domain registry (PLAN_TASK_157 §3).
+  // Empty string means "not configured yet": the resolver then serves the free
+  // Cloudflare host, exactly as before this migration, so both dials are additive
+  // and OFF by default. Edited live from the admin panel, read server-side on
+  // every publish — the same §14 mechanism as every other dial.
+  //
+  //   hostingPremiumSiteDomain = base zone for premium SITES: a site becomes
+  //                              <slug>.<hostingPremiumSiteDomain>. It must be a
+  //                              zone in the SAME Cloudflare account as the Pages
+  //                              project, or the custom domain can never activate.
+  //   hostingPremiumLinkDomain = full HOST for premium LINK redirects
+  //                              (e.g. go.instaweb.top) — a host, not a zone,
+  //                              because the host is what becomes the Worker route.
+  hostingPremiumSiteDomain          String  @default("")
+  hostingPremiumLinkDomain          String  @default("")
+
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
   // asked for "all caps for the workers and cyberlab ... available for edit in
@@ -1449,6 +1465,13 @@ model HostingPlatformAccount {
   workerTokenTag        String?
   // Last 4 chars of the Workers token, for a non-secret UI hint only.
   workerTokenHint String @default("")
+  // TASK_157 Phase 1 — the workers.dev subdomain we have CONFIGURED for this
+  // account (e.g. "spaceworker"). This is ACCOUNT-scoped in Cloudflare, not
+  // per-Worker, so it lives here and not on a single link. It is public data (it
+  // is part of the hostname), never a secret. NULL = we never set it; Cloudflare's
+  // own value is authoritative. Set live from the admin panel; changing it
+  // re-points every Worker in the account at once, which is why the panel warns.
+  workersDevSubdomain String?
   // Plain-language reason the Workers token failed to verify, or NULL when
   // healthy/absent. Never contains the token.
   workerTokenError String?

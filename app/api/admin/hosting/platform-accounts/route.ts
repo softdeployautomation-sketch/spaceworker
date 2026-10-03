@@ -7,7 +7,9 @@ import { prisma } from "@/lib/prisma";
 import {
   createPlatformAccount,
   disablePlatformAccount,
+  getWorkersDevSubdomainState,
   listPlatformAccounts,
+  setAccountWorkersDevSubdomain,
   updatePlatformAccount,
   verifyPlatformAccount,
 } from "@/lib/hosting/platform-accounts";
@@ -38,9 +40,34 @@ async function payload() {
   };
 }
 
-export async function GET() {
+export async function GET(request?: Request) {
   if (!(await requireAdminSession())) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  // TASK_157 Phase 1 — `?subdomain=<accountRowId>` reads the workers.dev state for
+  // ONE account. It is a query parameter rather than part of the roster payload
+  // because answering it costs a live Cloudflare call, and the panel should not
+  // pay that for every row on every render.
+  //
+  // The request is optional and the parse is guarded for the same reason DELETE
+  // guards its own: the roster still renders for any caller that has a session but
+  // no URL, instead of the whole panel breaking on a malformed request.
+  let subdomainFor: string | null = null;
+  try {
+    subdomainFor = request ? new URL(request.url).searchParams.get("subdomain") : null;
+  } catch {
+    subdomainFor = null;
+  }
+  if (subdomainFor) {
+    const state = await getWorkersDevSubdomainState(subdomainFor);
+    if (!state.ok) {
+      return NextResponse.json({ error: state.message, code: state.code }, { status: state.status });
+    }
+    // The WHOLE state, not just `live`. `configured` is what we last stamped and
+    // `live` is what Cloudflare answers with today, so an out-of-band rename in
+    // the dashboard shows up here instead of the panel quietly asserting a name
+    // that no longer exists. The panel decides what to display.
+    return NextResponse.json({ workersDevSubdomain: state.value });
   }
   return NextResponse.json(await payload());
 }
@@ -97,6 +124,12 @@ const patchSchema = z.object({
   status: z.enum(["active", "disabled"]).optional(),
   /** Verify right now and stamp the row, the way the BYO card does. */
   verify: z.boolean().optional(),
+  /**
+   * TASK_157 Phase 1 — set the account's workers.dev subdomain. One DNS label;
+   * the service validates it again and checks availability with Cloudflare before
+   * writing, so a taken name is a clean 409 rather than a half-configured account.
+   */
+  workersDevSubdomain: z.string().min(1).max(63).optional(),
 });
 
 export async function PATCH(request: Request) {
@@ -123,10 +156,29 @@ export async function PATCH(request: Request) {
     return NextResponse.json(await payload());
   }
 
-  const { id, verify, ...fields } = parsed;
+  const { id, verify, workersDevSubdomain, ...fields } = parsed;
 
   if (!id) {
     return NextResponse.json({ error: "Missing id" }, { status: 400 });
+  }
+
+  // TASK_157 Phase 1 — the workers.dev subdomain is an ACCOUNT-LEVEL Cloudflare
+  // setting, not a plain column: it needs a live availability check before the
+  // write, and a rename re-points EVERY Worker in the account at once. So it is
+  // its own verb here rather than a field in `fields`, which stays a pure DB
+  // subset patch with no network call in it.
+  if (workersDevSubdomain !== undefined) {
+    const result = await setAccountWorkersDevSubdomain(id, workersDevSubdomain);
+    if (!result.ok) {
+      return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
+    }
+    // Return the fresh LIVE state alongside the roster, so the panel renders what
+    // Cloudflare confirms rather than what we hoped we set.
+    const state = await getWorkersDevSubdomainState(id);
+    return NextResponse.json({
+      ...(await payload()),
+      workersDevSubdomain: state.ok ? state.value : null,
+    });
   }
 
   // Edit first, then verify — so "save a new token AND check it" is one action.
