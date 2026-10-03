@@ -115,6 +115,62 @@ export function isJunkEntry(entryPath: string): boolean {
   return p.startsWith("__MACOSX/") || p.endsWith("/.DS_Store") || p === ".DS_Store";
 }
 
+/**
+ * The wrapping-folder prefix to strip, or "" for none. PURE.
+ *
+ * Users "zip a folder" — macOS/Finder and Windows Explorer both put ONE top-level
+ * directory in the archive — so the extracted tree is `mysite/index.html`, not
+ * `index.html`. Deploying that verbatim produces a site whose ROOT has no
+ * `index.html`, and Cloudflare Pages answers the site root with **404** while the
+ * real page sits at `/mysite/`. That exact 404 is what a live preview showed, so
+ * the pipeline now unwraps the single wrapper.
+ *
+ * The prefix is stripped ONLY when it is unambiguous: every non-junk path starts
+ * with the same `seg/`, and there are no files at the top level. A site that
+ * genuinely has two top-level folders (or a top-level file beside them) is left
+ * exactly as the user zipped it.
+ */
+export function singleRootPrefix(paths: string[]): string {
+  const real = paths
+    .map((p) => p.replace(/\\/g, "/").replace(/^\/+/, ""))
+    .filter((p) => p !== "" && !isJunkEntry(p));
+  if (real.length === 0) return "";
+  // A top-level FILE (not just dirs) means there is no single wrapper.
+  if (real.some((p) => !p.includes("/"))) return "";
+  const first = real[0].split("/")[0];
+  if (!first) return "";
+  const prefix = `${first}/`;
+  return real.every((p) => p.startsWith(prefix)) ? prefix : "";
+}
+
+/**
+ * Collapse a wrapping folder on disk: when `destDir` contains exactly one child
+ * and it is a directory, its CONTENTS become the root. Called after extraction,
+ * before the tree is scanned, so both engines (local `/pv|/hs` and the Cloudflare
+ * manifest) see the same flattened paths.
+ */
+export async function flattenSingleRootDir(destDir: string): Promise<string> {
+  let items: import("node:fs").Dirent[];
+  try {
+    items = await fs.readdir(destDir, { withFileTypes: true });
+  } catch {
+    return "";
+  }
+  if (items.length !== 1 || !items[0].isDirectory()) return "";
+  const inner = items[0].name;
+  const staging = path.join(destDir, ".flatten");
+  // Move the wrapper's contents up one level, via a staging dir INSIDE destDir so
+  // the move never crosses a filesystem boundary. `.flatten` itself is hidden from
+  // the scan because it is removed before we return.
+  await fs.rename(path.join(destDir, inner), staging);
+  const moved = await fs.readdir(staging, { withFileTypes: true });
+  for (const item of moved) {
+    await fs.rename(path.join(staging, item.name), path.join(destDir, item.name));
+  }
+  await fs.rm(staging, { recursive: true, force: true });
+  return `${inner}/`;
+}
+
 export interface ArchiveCaps {
   /** hostingMaxZipEntries — the Direct-Upload ceiling (R19). */
   maxEntries: number;
@@ -259,7 +315,7 @@ export async function extractArchive(
   await fs.mkdir(destDir, { recursive: true });
   const started = Date.now();
   const { code, stderr } = await run7z(
-    ["x", archivePath, `-o${destDir}`, "-y", "-bso0", "-bsp0", "-x!__MACOSX"],
+    ["x", archivePath, `-o${destDir}`, "-y", "-bso0", "-bsp0", "-x!__MACOSX", "-x!.DS_Store"],
     timeoutMs
   );
   const durationMs = Date.now() - started;
@@ -326,6 +382,9 @@ export async function scanExtractedTree(
         continue;
       }
       if (!item.isFile()) continue;
+      // OS junk that survived extraction is never part of a site (a `.DS_Store`
+      // in a manifest is what a live deploy shipped once).
+      if (isJunkEntry(childRel)) continue;
 
       const verdict = scanSiteFile(item.name);
       if (!verdict.ok) {

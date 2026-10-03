@@ -48,9 +48,9 @@ const cloudflare = require("../lib/hosting/cloudflare") as typeof import("../lib
 const serve = require("../lib/hosting/serve") as typeof import("../lib/hosting/serve");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-const { parseSevenZipListing, isZipSlip, isJunkEntry, analyseArchive, manifestFromTree, listArchive, extractArchive, scanExtractedTree } = extract;
+const { parseSevenZipListing, isZipSlip, isJunkEntry, analyseArchive, manifestFromTree, listArchive, extractArchive, scanExtractedTree, singleRootPrefix, flattenSingleRootDir } = extract;
 const { scanSiteFile, MB } = rules;
-const { pagesAssetKey, deployTree } = cloudflare;
+const { pagesAssetKey, deployTree, waitForDeployment } = cloudflare;
 const { mimeForPath } = serve;
 
 
@@ -218,7 +218,13 @@ function jsonRes(body: unknown, status = 200): Response {
 }
 
 /** Drive the REAL deployTree against a stubbed fetch that records every call. */
-async function runDeployTree(opts: { missing: (keys: string[]) => string[] }) {
+async function runDeployTree(opts: {
+  missing: (keys: string[]) => string[];
+  /** The deployment-status stages returned by the readiness poll, in order. */
+  stages?: Array<{ name: string; status: string }>;
+  /** Skip the readiness gate entirely (wire-contract-only runs). */
+  awaitReady?: boolean;
+}) {
   const cred = { accountId: "acct-123", token: "ACCOUNT_TOKEN" } as Parameters<typeof deployTree>[0];
   const project = "demo";
   const html = Buffer.from("<h1>hi</h1>");
@@ -261,11 +267,19 @@ async function runDeployTree(opts: { missing: (keys: string[]) => string[] }) {
     if (url.endsWith(`/pages/projects/${project}/deployments`)) {
       return jsonRes({ success: true, result: { id: "dep-1", url: "https://demo.pages.dev" } });
     }
+    if (url.endsWith(`/pages/projects/${project}/deployments/dep-1`)) {
+      const queue = opts.stages ?? [{ name: "deploy", status: "success" }];
+      const stage = queue.shift() ?? queue[queue.length - 1] ?? { name: "deploy", status: "success" };
+      return jsonRes({
+        success: true,
+        result: { id: "dep-1", url: "https://demo.pages.dev", environment: "production", latest_stage: stage },
+      });
+    }
     return jsonRes({ success: false, errors: [{ message: `unexpected ${url}` }] }, 500);
   }) as typeof globalThis.fetch;
 
   try {
-    const res = await deployTree(cred, project, files, "main");
+    const res = await deployTree(cred, project, files, "main", { awaitReady: opts.awaitReady !== false });
     return { res, calls, htmlKey, cssKey, project };
   } finally {
     globalThis.fetch = realFetch;
@@ -343,6 +357,110 @@ test("deployTree: an already-uploaded tree is a manifest-only deploy — the byt
   assert.equal(res.value?.reused, 2);
   assert.equal(calls.filter((c) => c.url.endsWith("/pages/assets/upload")).length, 0, "nothing uploads when nothing is missing");
   assert.equal(calls.filter((c) => c.url.endsWith("/pages/projects/demo/deployments")).length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// The readiness gate. A 200 from POST …/deployments only means CREATED; the URL
+// was handed out before the deploy finished and the preview 404'd. The poll must
+// wait for a terminal stage and must NEVER return a URL it has not seen succeed.
+// ---------------------------------------------------------------------------
+
+test("deployTree: polls the deployment until its stage is terminal before returning the URL", async () => {
+  const { res, calls } = await runDeployTree({
+    missing: (keys) => keys,
+    stages: [
+      { name: "queued", status: "active" },
+      { name: "build", status: "active" },
+      { name: "deploy", status: "success" },
+    ],
+  });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.url, "https://demo.pages.dev");
+  const polls = calls.filter((c) => c.url.endsWith("/pages/projects/demo/deployments/dep-1"));
+  assert.equal(polls.length, 3, "must poll until the stage is terminal, not return on creation");
+  assert.equal(polls[0].method, "GET");
+  assert.equal(polls[0].authorization, "Bearer ACCOUNT_TOKEN");
+});
+
+test("deployTree: a FAILED deployment stage is an error, never a URL", async () => {
+  const { res } = await runDeployTree({
+    missing: (keys) => keys,
+    stages: [{ name: "deploy", status: "failure" }],
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 502);
+  assert.match(res.error ?? "", /could not finish the deploy/i);
+});
+
+test("waitForDeployment: a deployment stuck mid-queue times out with plain language", async () => {
+  const cred = { accountId: "acct-123", token: "ACCOUNT_TOKEN" };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    jsonRes({
+      success: true,
+      result: { id: "dep-1", url: "https://demo.pages.dev", latest_stage: { name: "build", status: "active" } },
+    })) as typeof globalThis.fetch;
+  try {
+    const res = await waitForDeployment(cred, "demo", "dep-1", {
+      timeoutMs: 0,
+      sleep: async () => {},
+    });
+    assert.equal(res.ok, false);
+    assert.equal(res.status, 504);
+    assert.match(res.error ?? "", /still deploying/i);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The wrapping-folder unwrap. A live preview 404'd at the site ROOT because the
+// zipped folder's single top-level directory became the only child of the root, so
+// there was no /index.html to serve and the real page sat at /<folder>/.
+// ---------------------------------------------------------------------------
+
+test("singleRootPrefix: strips a single wrapping folder, never a real multi-root site", () => {
+  assert.equal(singleRootPrefix(["mysite/index.html", "mysite/style.css", "mysite/app.js"]), "mysite/");
+  assert.equal(singleRootPrefix(["mysite/", "mysite/index.html"]), "mysite/");
+  // Two top-level folders = a real layout. Leave the user's zip alone.
+  assert.equal(singleRootPrefix(["a/index.html", "b/index.html"]), "");
+  // A top-level FILE beside a folder = no single wrapper.
+  assert.equal(singleRootPrefix(["README.md", "site/index.html"]), "");
+  // Nothing to unwrap.
+  assert.equal(singleRootPrefix(["index.html", "style.css"]), "");
+  assert.equal(singleRootPrefix([]), "");
+  // OS junk must not decide whether there is a wrapper.
+  assert.equal(singleRootPrefix(["__MACOSX/._x", "mysite/.DS_Store", "mysite/index.html"]), "mysite/");
+});
+
+test("scanExtractedTree + flatten: a zipped folder becomes a root index.html (no .DS_Store in the tree)", async () => {
+  const dir = path.join(STORAGE_DIR, `unwrap-${randomUUID()}`);
+  await fs.mkdir(path.join(dir, "mysite", "sub"), { recursive: true });
+  await fs.writeFile(path.join(dir, "mysite", "index.html"), "<h1>root</h1>");
+  await fs.writeFile(path.join(dir, "mysite", ".DS_Store"), "junk");
+  await fs.writeFile(path.join(dir, "mysite", "sub", "page.html"), "x");
+
+  const before = await scanExtractedTree(dir, { maxAssetMb: 25 });
+  assert.ok(before.ok);
+  assert.ok(before.files.some((f) => f.path === "/mysite/index.html"), "pre-flatten the wrapper is present");
+
+  await flattenSingleRootDir(dir);
+  const after = await scanExtractedTree(dir, { maxAssetMb: 25 });
+  assert.ok(after.ok);
+  assert.ok(after.files.some((f) => f.path === "/index.html"), "the wrapper must be gone — this is the 404 fix");
+  assert.equal(
+    after.files.filter((f) => f.path.includes(".DS_Store")).length,
+    0,
+    "OS junk never reaches the manifest"
+  );
+
+  // A tree that is ALREADY at the root (index.html + a sibling folder) is untouched.
+  const flatDir = path.join(STORAGE_DIR, `noUnwrap-${randomUUID()}`);
+  await fs.mkdir(path.join(flatDir, "assets"), { recursive: true });
+  await fs.writeFile(path.join(flatDir, "index.html"), "<h1>hi</h1>");
+  await fs.writeFile(path.join(flatDir, "assets", "a.css"), "a{}");
+  const prefix = singleRootPrefix(["index.html", "assets/a.css"]);
+  assert.equal(prefix, "", "a real site root must never be unwrapped");
 });
 
 test("mimeForPath: serves the right Content-Type for the file kinds a site ships", () => {

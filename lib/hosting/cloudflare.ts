@@ -261,6 +261,88 @@ export interface DeployResult {
   deploymentId: string;
   uploaded: number;
   reused: number;
+  /** The alias Cloudflare minted for this deployment (preview env), when any. */
+  alias: string | null;
+}
+
+export interface DeploymentStage {
+  name: string;
+  status: string;
+}
+
+/**
+ * The readiness gate: poll `GET …/pages/projects/{p}/deployments/{id}` until the
+ * deployment reaches a TERMINAL stage.
+ *
+ * WHY THIS EXISTS: `POST …/deployments` returns 200 as soon as the deployment is
+ * CREATED — it is queued, not deployed. Returning that URL immediately means
+ * handing the user a link that may still 404. A deployment is only usable once
+ * its `deploy` stage is `success`; a stage that goes to `failure` (or the poll
+ * timing out) is a hard error with plain language, never a URL that lies.
+ */
+export async function waitForDeployment(
+  cred: CfCredential,
+  project: string,
+  deploymentId: string,
+  opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<CfResult<{ url: string; alias: string | null }>> {
+  const timeoutMs = opts.timeoutMs ?? 120_000;
+  const intervalMs = opts.intervalMs ?? 3_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + timeoutMs;
+
+  interface Dep {
+    id?: string;
+    url?: string;
+    environment?: string;
+    aliases?: string[];
+    latest_stage?: DeploymentStage;
+    stages?: DeploymentStage[];
+  }
+
+  let lastSeen = "";
+  for (;;) {
+    const res = await cfFetch<Dep>(
+      cred,
+      "GET",
+      `/accounts/${cred.accountId}/pages/projects/${project}/deployments/${deploymentId}`
+    );
+    if (!res.ok || !res.value) {
+      const transient = res.status === 429 || res.status >= 500;
+      if (!transient || Date.now() >= deadline) {
+        return { ok: false, status: res.status, error: res.error ?? "Cloudflare would not report the deployment status." };
+      }
+    } else {
+      const dep = res.value;
+      // A deployment's `url` is the hash URL (`https://<id>.<sub>.pages.dev`); a
+      // preview deployment also gets a stable ALIAS we prefer to show the user.
+      const url = dep.url ?? "";
+      const alias = dep.aliases?.[0] ?? null;
+      const stage = dep.latest_stage ?? dep.stages?.slice(-1)[0];
+      lastSeen = stage ? `${stage.name}:${stage.status}` : "unknown";
+      if (stage?.status === "success") {
+        return { ok: true, status: 200, value: { url, alias } };
+      }
+      if (stage?.status === "failure") {
+        return {
+          ok: false,
+          status: 502,
+          error: `Cloudflare could not finish the deploy (stage “${stage.name}”). Try again in a moment.`,
+        };
+      }
+    }
+
+    if (Date.now() >= deadline) {
+      return {
+        ok: false,
+        status: 504,
+        error: lastSeen
+          ? `Cloudflare is still deploying your site (stage “${lastSeen}”). Try again in a moment.`
+          : "Cloudflare is still deploying your site. Try again in a moment.",
+      };
+    }
+    await sleep(intervalMs);
+  }
 }
 
 /**
@@ -287,7 +369,13 @@ export async function deployTree(
   cred: CfCredential,
   project: string,
   files: DeployFile[],
-  branch: string
+  branch: string,
+  /**
+   * Readiness gate. Defaults ON: a created-but-queued deployment is exactly what
+   * produced a 404 preview URL, so we block until the stage is terminal. Only
+   * tests that stub the deployment-status endpoint pass false.
+   */
+  opts: { awaitReady?: boolean; readyTimeoutMs?: number } = {}
 ): Promise<CfResult<DeployResult>> {
   // 1. Build the manifest + the key→file map. Each file is read ONCE here, to
   //    compute its blake3 asset key, then released.
@@ -385,15 +473,43 @@ export async function deployTree(
     return { ok: false, status: deployRes.status, error: firstError(deployBody) ?? "Cloudflare rejected the deploy." };
   }
   const result = deployEnv?.result;
-  const url = result?.url ?? result?.aliases?.[0] ?? "";
+  const deploymentId = result?.id ?? "";
+  const createdUrl = result?.url ?? result?.aliases?.[0] ?? "";
+
+  // 6. READINESS. The 200 above only means "created". Poll the deployment until
+  //    its stage is terminal, and only then hand back a URL we can vouch for.
+  if (opts.awaitReady !== false) {
+    if (!deploymentId) {
+      return { ok: false, status: 502, error: "Cloudflare created the deploy but returned no deployment id." };
+    }
+    const ready = await waitForDeployment(cred, project, deploymentId, {
+      timeoutMs: opts.readyTimeoutMs ?? 120_000,
+    });
+    if (!ready.ok || !ready.value) {
+      return { ok: false, status: ready.status, error: ready.error ?? "Cloudflare never finished the deploy." };
+    }
+    return {
+      ok: true,
+      status: 200,
+      value: {
+        url: ready.value.url || createdUrl,
+        deploymentId,
+        uploaded,
+        reused: hashes.length - uploaded,
+        alias: ready.value.alias,
+      },
+    };
+  }
+
   return {
     ok: true,
     status: 200,
     value: {
-      url,
-      deploymentId: result?.id ?? "",
+      url: createdUrl,
+      deploymentId,
       uploaded,
       reused: hashes.length - uploaded,
+      alias: result?.aliases?.[0] ?? null,
     },
   };
 }

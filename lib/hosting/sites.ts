@@ -10,8 +10,10 @@ import { resolveCapsForUser, type HostingResult } from "./files";
 import {
   analyseArchive,
   extractArchive,
+  flattenSingleRootDir,
   listArchive,
   scanExtractedTree,
+  singleRootPrefix,
 } from "./extract";
 import { newHostingToken, sha256Hex } from "./rules";
 import { deployTree, ensureProject, verifyCredential, type CfCredential, type DeployFile } from "./cloudflare";
@@ -436,6 +438,12 @@ export async function createRevisionFromArchive(
 
     // 2. Extract into the staging dir (outside the deploy dir), then scan the tree.
     const extracted = await extractArchive(input.archivePath, destDir);
+    // A zipped FOLDER carries one wrapping top-level directory. Left in place it
+    // becomes the site root's only child, so the root has no index.html and every
+    // static host (Cloudflare included) answers the root with 404 while the real
+    // page hides under /<folder>/. Collapse it before anything reads the tree.
+    const wrapper = singleRootPrefix(entries.filter((e) => !e.isDir).map((e) => e.path));
+    if (wrapper) await flattenSingleRootDir(destDir);
     const tree = await scanExtractedTree(destDir, { maxAssetMb: caps.pagesMaxAssetMb });
     if (!tree.ok) {
       await fs.rm(destDir, { recursive: true, force: true }).catch(() => {});
@@ -688,7 +696,9 @@ async function deployRevision(
     return { ok: false, status: 502, code: "cf_project", message: ensured.error ?? "Cloudflare rejected the project." };
   }
   const branch = mode === "publish" ? "main" : `preview-${revision.id}`;
-  const deployed = await deployTree(credRes.value, project, treeDeployFiles(files), branch);
+  const deployed = await deployTree(credRes.value, project, treeDeployFiles(files), branch, {
+    awaitReady: true,
+  });
   if (!deployed.ok || !deployed.value) {
     return { ok: false, status: 502, code: "cf_deploy", message: deployed.error ?? "Cloudflare rejected the deploy." };
   }
