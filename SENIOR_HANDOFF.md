@@ -1311,7 +1311,62 @@ half-done. A half-done change with no note is worse than no change.
   throwaway account. **SIMULATION: none** — nothing offensive was run.
 - **State left behind:** `main` @ `cab860a` **synced with `origin/main`**; tree **clean**; prod build
   `BWRMBHG8mkpIrzUPTQ8-t`.
-- **Next:** **Task 155 P6a (§19 — the three-option engine model)** is the top live-app item, then
-  **P5a (§18 — Domains)**, then **P6d (§20 — upload inputs)**; each is gated on its own "open questions"
-  section. Also: close the P3/P4 **write-path** gap by hand on prod as part of whichever hosting item
-  ships first.
+---
+
+## 2026-10-03 — LIVE TRIAGE: Pages 404, broks.beauty, domain onboarding, account rotation
+
+Full evidence + exact commands: **`TRIAGE_2026-10-03_HOSTING.md`** (read it before touching any
+of this work). HEAD `71ca4d7`, tree clean. Read-only investigation except one tunnel.
+
+- **THE PAGES "SSL ERROR" WAS A MIS-DIAGNOSIS — the real bug was already fixed.** The preview
+  `c01095fa.testsite-735.pages.dev` returns **404**, not a TLS failure: `curl` shows
+  `ssl_verify_result=0`, and the cert (`CN=test2-bli.pages.dev`, SAN `*.test2-bli.pages.dev`,
+  notBefore `Oct 3 11:33`) predates the deploy. The deployment's manifest is
+  `{"/inn/.DS_Store":…, "/inn/index.html":…}` — **no `/index.html` at the root**, because the
+  owner zipped a *folder*, so the wrapper directory shipped verbatim. Proof: `/inn/` → **200**,
+  `/` → 404, same deployment. Commit `0452397` ("unwrap the zipped folder", `singleRootPrefix()`
+  at `lib/hosting/extract.ts:133`, wired at `lib/hosting/sites.ts:445`) fixed exactly this — and
+  it landed at `2026-10-03 00:59`, **38 minutes AFTER** the failing `00:21` deploy. `0452397` is
+  an ancestor of the deployed `24c55b2`, so **production already has the fix**; the `test2` site
+  uploaded at `12:29` serves `/` → 200. **Ask the owner to re-upload the zip.** No code needed.
+- **`broks.beauty` — the one live link is the owner's own and works**: `mylink` →
+  `go.broks.beauty` → 302 → `/r/REyVckus…` → 302 → `dl.instaweb.top/hf/…`. The deployed Worker
+  MAP keys are that link's **token + slug** (by design, `links-engine.ts:131-134`), not stale.
+  **THE REAL RISK**: the platform token in account `9bc97c44…` can read/write all four zones —
+  `broks.beauty` (the owner's **private device domain**), `instaweb.top`, `mainaccess.top`,
+  `spaceworker.top` — so **any premium user could point a custom host at the private domain and
+  succeed.** Fix in three layers: (a) narrow the token's Zone Resources to the three platform
+  zones (dashboard, 2 min); (b) server-side **reserved-host denylist** on link create/edit,
+  config-driven, own error code; (c) zone allowlist in the Worker publish path. Delete
+  `cmusdejvt0013kpiz8fd9awns` to remove `go.broks.beauty` now (P6c teardown is fail-closed).
+- **DOMAIN ONBOARDING: yes, one `POST /zones` + ONE unavoidable manual step.** The zone is
+  created `pending` and returns 2 nameservers; the user pastes them at their registrar (no API
+  can do this — it is not a product limitation), then we poll until `active`. **Cloudflare for
+  SaaS is NOT required** — it would only be needed to avoid transferring nameservers, and it is
+  a separate, likely paid product. ⚠️ **UNVERIFIED: whether our tokens can even create zones** —
+  that is an account-level `Zone:Edit` permission our Pages/Workers tokens likely lack. Probe it
+  with a throwaway domain **the owner controls**; never against `broks.beauty` or a domain we
+  don't own. Also: adding to the *platform* account means **we control that domain's DNS** —
+  owner must choose the trust posture (recommend BYO by default).
+- **"2 of 2 accounts usable" = healthy ROWS, not capacity or round-robin.**
+  `platform-accounts-panel.tsx:103` counts `status==="active" && !verifyError`; rotation takes
+  the **first** healthy row by ascending `priority` (verified on use), and Worker publishing
+  additionally skips rows with no Workers token. **It currently hides a split-brain**: account A
+  ("Primary cf") has the **Pages** token + both Pages projects but **no Workers token and no
+  zones**; account B ("New Prod") has the **Workers/DNS** token + all four zones but **no Pages
+  token**. So sites go to A and links go to B, while the panel reads healthy. Fix = report
+  health **per capability** (`Pages 1/1 · Workers 1/1`). ⚠️ **UNVERIFIED: re-ordering priority
+  is believed to affect FUTURE deployments only and does NOT migrate existing projects/links —
+  confirm before shipping any "current account" selector.**
+- **Tickets: none exist** (searched `app/`, `lib/`, `components/`). Scoped in the triage §5 —
+  attach zone metadata (name/status/name_servers/account), threaded replies, `open→resolved`,
+  and **never store Cloudflare tokens on a ticket**.
+- **Verified live:** Worker route inventory across all four zones; the deployed script body; both
+  Pages projects' manifests, stages and URLs; TLS/cert on both hosts; the redirect chain; the
+  DB link row; git history of the fix. **No production writes.**
+- **Cleanup done:** removed `/tmp/.swprod.env`, `/tmp/.accts.txt`, `/tmp/.cfprobe.mjs`,
+  `/tmp/.cfpages.mjs`, `/tmp/.cfdeploy.mjs`, `/tmp/.cfscript.mjs`, `/tmp/.cftestsite.mjs`,
+  `/tmp/.cfassets.mjs`, `/tmp/.cfdep.mjs`; killed the `15432` → prod Postgres SSH tunnel.
+- **Next:** (1) tell the owner to re-upload the zip; (2) narrow the CF token's zones;
+  (3) implement the reserved-host denylist + tests; (4) verify zone-create permission;
+  (5) then the domain wizard; (6) then per-capability health; (7) then tickets.

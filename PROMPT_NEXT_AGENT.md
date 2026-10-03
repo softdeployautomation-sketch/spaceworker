@@ -1,5 +1,17 @@
 # PROMPT — NEXT SENIOR AGENT (Task 155 hosting P5 / P6 / P6d **and** Task 156 C2+ — the WHOLE pending queue)
 
+> ## ⚠️ READ `TRIAGE_2026-10-03_HOSTING.md` FIRST (2026-10-03, live prod investigation)
+>
+> Five owner questions were triaged against production, the DB and both real Cloudflare accounts.
+> **Headline: the "Pages error" is NOT SSL and NOT Cloudflare — it was root-caused and is ALREADY
+> FIXED** (`0452397`, on production). The preview the owner tested was deployed **38 minutes
+> before** that fix. `/inn/` returns 200 while `/` returns 404 because the zipped wrapper folder
+> was deployed verbatim. **The fix for the owner is simply: re-upload the zip.**
+>
+> Also triaged: the `broks.beauty` private-domain exposure (a real governance hole — §2), the
+> domain-onboarding answer (§3: one `POST /zones` + one unavoidable registrar step, **no
+> CF-for-SaaS needed**), what "2 of 2 accounts usable" actually means (§4), and ticket scope
+> (§5). §3.3 and §4.5 are **unverified open questions — do not assume them.**
 > **Self-contained, copy-paste prompt.** Paste the `TASK BLOCK` below into the next senior agent.
 > It **supersedes** the previous `PROMPT_NEXT_AGENT.md`, which scoped D2 / Task 156 **C0 → C1 ONLY**
 > — that work is **DONE, DEPLOYED and LIVE** (commit `5485fdc`, deploy run `36995895931`). It also
