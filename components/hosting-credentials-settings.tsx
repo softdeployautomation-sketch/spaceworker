@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { WorkerTokenHelp } from "./hosting-worker-token-help";
+
 // Owner ask (2026-10-02): "the cloudflare account token should be in settings,
 // and as soon as user adds it, it becomes an option during all hosting."
 //
@@ -18,6 +20,10 @@ interface HostingCredential {
   accountId: string;
   label: string;
   tokenHint: string;
+  // --- TASK_155 P6c — the optional Workers/DNS token, as a HINT only.
+  workerTokenHint: string;
+  hasWorkerToken: boolean;
+  workerTokenError: string | null;
   isDefault: boolean;
   status: string;
   lastVerifiedAt: string | null;
@@ -30,7 +36,12 @@ export function HostingCredentialsSettings() {
   const [credentials, setCredentials] = useState<HostingCredential[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loadError, setLoadError] = useState("");
-  const [form, setForm] = useState({ label: "", accountId: "", token: "" });
+  const [form, setForm] = useState({ label: "", accountId: "", token: "", workerToken: "" });
+  // TASK_155 P6c — the per-row "add / replace my Workers token" flow, keyed by
+  // credential id ("" = closed). Kept separate from the add form because it edits
+  // an EXISTING credential and must never touch the Pages token.
+  const [workerEditFor, setWorkerEditFor] = useState("");
+  const [workerEditToken, setWorkerEditToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
@@ -77,7 +88,7 @@ export function HostingCredentialsSettings() {
           setError(data.error ?? "Couldn’t save that account.");
           return;
         }
-        setForm({ label: "", accountId: "", token: "" });
+        setForm({ label: "", accountId: "", token: "", workerToken: "" });
         setNotice("Account saved — it’s now an option everywhere you host.");
         await load();
       } catch {
@@ -109,6 +120,38 @@ export function HostingCredentialsSettings() {
       }
     },
     [load]
+  );
+
+  /**
+   * TASK_155 P6c — save a Workers/DNS token on an EXISTING credential. Sends only
+   * `{ workerToken }`, so the PATCH leaves the stored Pages token and label
+   * untouched (same rule as editing any other field).
+   */
+  const onSaveWorkerToken = useCallback(
+    async (id: string) => {
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/credentials/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workerToken: workerEditToken }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t save that token.");
+          return;
+        }
+        // Clear the input the moment it is stored, so the secret isn't left in the DOM.
+        setWorkerEditToken("");
+        setWorkerEditFor("");
+        setNotice("Saved — your links can now use your own domain.");
+        await load();
+      } catch {
+        setError("Couldn’t save that token — try again.");
+      }
+    },
+    [load, workerEditToken]
   );
 
   return (
@@ -166,7 +209,61 @@ export function HostingCredentialsSettings() {
               {(c.projectCount ?? 0) === 1 ? "" : "s"}
             </div>
             {c.verifyError && <div className="mt-0.5 text-xs text-red-600 dark:text-red-300">{c.verifyError}</div>}
+          {/* TASK_155 P6c — the Workers/DNS token's own line. "Not set" is NOT an
+              error: links keep working through the plain /r/… address without it. */}
+          <div className="mt-0.5 text-xs text-fg-muted">
+            Links (Worker + DNS):{" "}
+            {c.hasWorkerToken ? (
+              <span className="text-emerald-600 dark:text-emerald-400">token …{c.workerTokenHint} set</span>
+            ) : (
+              <span>not set — links use the plain /r/… address</span>
+            )}
           </div>
+          {c.workerTokenError && (
+            <div className="mt-0.5 text-xs text-red-600 dark:text-red-300">{c.workerTokenError}</div>
+          )}
+          {workerEditFor === c.id ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <input
+                type="password"
+                autoComplete="off"
+                value={workerEditToken}
+                onChange={(e) => setWorkerEditToken(e.target.value)}
+                placeholder="Workers + DNS token"
+                className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm text-fg dark:border-zinc-700 dark:bg-zinc-900"
+              />
+              <button
+                type="button"
+                onClick={() => void onSaveWorkerToken(c.id)}
+                disabled={workerEditToken.trim() === ""}
+                className="rounded bg-zinc-900 px-3 py-1 text-sm text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+              >
+                Save token
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkerEditFor("");
+                  setWorkerEditToken("");
+                }}
+                className="text-xs text-fg-muted hover:underline"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setWorkerEditFor(c.id);
+                setWorkerEditToken("");
+              }}
+              className="mt-1 text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+            >
+              {c.hasWorkerToken ? "Replace Workers + DNS token" : "Add Workers + DNS token"}
+            </button>
+          )}
+        </div>
           <div className="flex items-center gap-3">
             <button
               type="button"
@@ -223,13 +320,27 @@ export function HostingCredentialsSettings() {
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-fg-muted">
-          API token
+          Pages API token
           <input
             type="password"
             value={form.token}
             onChange={(e) => setForm((s) => ({ ...s, token: e.target.value }))}
             placeholder="…"
             required
+            autoComplete="off"
+            className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm text-fg dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+        {/* TASK_155 P6c — optional second token. NOT required, because a user
+            without it still gets Pages hosting and working /r/… links; only custom
+            domains on their own Cloudflare need this. */}
+        <label className="flex flex-col gap-1 text-xs text-fg-muted">
+          Workers + DNS token <span className="opacity-70">(optional)</span>
+          <input
+            type="password"
+            value={form.workerToken}
+            onChange={(e) => setForm((s) => ({ ...s, workerToken: e.target.value }))}
+            placeholder="…"
             autoComplete="off"
             className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm text-fg dark:border-zinc-700 dark:bg-zinc-900"
           />
@@ -241,6 +352,7 @@ export function HostingCredentialsSettings() {
         >
           {busy ? "Saving…" : "Add account"}
         </button>
+        <WorkerTokenHelp audience="user" className="w-full" />
       </form>
     </div>
   );

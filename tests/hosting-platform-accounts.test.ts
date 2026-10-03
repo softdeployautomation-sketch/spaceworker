@@ -1,5 +1,6 @@
 import { test, beforeEach, after } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import Module from "node:module";
 import { randomUUID } from "node:crypto";
 
@@ -61,6 +62,13 @@ type Row = {
   status: string;
   lastVerifiedAt: Date | null;
   verifyError: string | null;
+  // TASK_155 P6c — the optional Workers/DNS token columns. Optional in the fake
+  // too, so the pre-P6c seed rows below stay valid exactly as they were.
+  workerTokenCiphertext?: string | null;
+  workerTokenIv?: string | null;
+  workerTokenTag?: string | null;
+  workerTokenHint?: string | null;
+  workerTokenError?: string | null;
   createdAt: Date;
 };
 
@@ -660,4 +668,144 @@ test("resolve: the kill switch takes the platform branch down with a clean 403",
   }
 
   adminRow = { hostingEnabled: true, hostingPlatformCfEnabled: true };
+});
+
+// ---------------------------------------------------------------------------
+// TASK_155 P6c (PLAN §19.12) — the platform roster's Workers/DNS token.
+//
+// The owner needs to REPLACE this token from the admin panel (it was created on
+// a test account), so the two properties that make that safe are pinned here:
+// the replacement never disturbs the Pages token or the rotation order, and the
+// token is never readable from a view.
+
+// Synthetic, never a real credential — a pasted live token must never reach git.
+const WORKER_TOKEN = "cfut_FAKE_TOKEN_FOR_TESTS_0000";
+
+test("P6c: a platform account created without a worker token still serves (Pages only)", async () => {
+  const res = await createPlatformAccount({ accountId: "acct_x", label: "Pages only", token: TOKEN });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value.hasWorkerToken, false, "no worker token is not an error state");
+  assert.equal(res.value.workerTokenHint, "");
+
+  // Rotation must not notice the absence: the row still resolves for a deploy.
+  const resolved = await resolvePlatformCredential(async () => ({ ok: true }));
+  assert.ok(resolved.ok, "a Pages-only row still serves the premium engine");
+  if (resolved.ok) assert.equal(resolved.value.workerToken, null, "and reports no worker token");
+});
+
+test("P6c: the roster stores the Workers token encrypted and resolves it decrypted", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_w",
+    label: "With links",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.ok(row);
+  assert.notEqual(row.workerTokenCiphertext, WORKER_TOKEN, "never stored in plaintext");
+  assert.ok(!row.workerTokenCiphertext?.includes(WORKER_TOKEN));
+
+  // The view the admin panel renders carries a 4-char hint and nothing else.
+  const view = (await listPlatformAccounts()).find((a) => a.id === created.value.id);
+  assert.ok(view);
+  assert.equal(view.hasWorkerToken, true);
+  assert.equal(view.workerTokenHint, WORKER_TOKEN.slice(-4));
+  assert.ok(!JSON.stringify(view).includes(WORKER_TOKEN), "the admin payload must not carry the token");
+
+  // And a link publish gets the DECRYPTED value from the same row.
+  const resolved = await resolvePlatformCredential(async () => ({ ok: true }));
+  assert.ok(resolved.ok);
+  if (resolved.ok) {
+    assert.equal(resolved.value.token, TOKEN, "the Pages token is unchanged");
+    assert.equal(resolved.value.workerToken, WORKER_TOKEN, "the Workers token decrypts for the engine");
+  }
+});
+
+test("P6c: replacing the Workers token leaves the Pages token and priority intact", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_r",
+    label: "Rotating",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+    priority: 1,
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+
+  const rotated = await updatePlatformAccount({
+    id: created.value.id,
+    workerToken: "cfut_REPLACEMENT_token_9999",
+  });
+  assert.ok(rotated.ok, JSON.stringify(rotated));
+  assert.equal(rotated.value.priority, 1, "rotation order is untouched by a token swap");
+  assert.equal(rotated.value.workerTokenHint, "9999", "the hint follows the new token");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.tokenCiphertext, row!.tokenIv, row!.tokenTag),
+    TOKEN,
+    "the Pages token must survive a Workers-token replacement"
+  );
+  assert.equal(
+    crypto.decryptSecret(row!.workerTokenCiphertext!, row!.workerTokenIv!, row!.workerTokenTag!),
+    "cfut_REPLACEMENT_token_9999",
+    "the new Workers token is what got stored"
+  );
+});
+
+test("P6c: a Pages-token rotation does NOT clear the stored Workers token", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_p",
+    label: "Both",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+  });
+  assert.ok(created.ok);
+
+  const rotated = await updatePlatformAccount({ id: created.value.id, token: "cf-PAGES-ROTATED_0000" });
+  assert.ok(rotated.ok);
+  assert.equal(rotated.value.hasWorkerToken, true, "rotating Pages leaves Workers alone");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.workerTokenCiphertext!, row!.workerTokenIv!, row!.workerTokenTag!),
+    WORKER_TOKEN
+  );
+});
+
+test("P6c: an empty Workers token on replace is refused, keeping the old one", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_e",
+    label: "Both",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+  });
+  assert.ok(created.ok);
+
+  const bad = await updatePlatformAccount({ id: created.value.id, workerToken: "  " });
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.equal(bad.code, "invalid_worker_token");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.workerTokenCiphertext!, row!.workerTokenIv!, row!.workerTokenTag!),
+    WORKER_TOKEN,
+    "a rejected replacement must not blank the working token"
+  );
+});
+
+test("P6c: the admin route's schema accepts workerToken and never echoes it", async () => {
+  // Guards the contract the panel depends on: the field is accepted on POST and
+  // PATCH, and the response body (which echoes the whole roster) has no token.
+  const src = readFileSync(
+    new URL("../app/api/admin/hosting/platform-accounts/route.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(src.includes("workerToken"), "the route must accept workerToken");
+  assert.equal(
+    /JSON\.stringify\([^)]*workerTokenCiphertext/.test(src),
+    false,
+    "the route must never serialise the ciphertext"
+  );
 });

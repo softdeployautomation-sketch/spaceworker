@@ -1359,6 +1359,21 @@ model HostingCredential {
   tokenTag        String
   // Last 4 chars of the token, for a non-secret UI hint only.
   tokenHint String
+  // TASK_155 P6c — the SECOND Cloudflare token: the one that can publish
+  // Worker scripts and edit DNS (`Workers Scripts:Edit` + `DNS:Edit`). The
+  // Pages token above is scoped to Pages and CANNOT upload a Worker script, so
+  // links get their own credential rather than widening the Pages token.
+  // OPTIONAL and independently encrypted with the same AES-256-GCM helpers;
+  // NULL = the user never added one, and the link engine stays on its local
+  // /r/<token> fallback. Never plaintext, never returned — only the hint.
+  workerTokenCiphertext String?
+  workerTokenIv         String?
+  workerTokenTag        String?
+  // Last 4 chars of the Workers token, for a non-secret UI hint only.
+  workerTokenHint String   @default("")
+  // Plain-language reason the Workers token failed to verify, or NULL when
+  // healthy/absent. Never contains the token.
+  workerTokenError String?
   // The credential used when a request does not name one. Exactly one row per
   // user+provider is default; the API clears the previous default on switch.
   isDefault Boolean  @default(false)
@@ -1399,6 +1414,21 @@ model HostingPlatformAccount {
   tokenTag        String
   // Last 4 chars of the token, for a non-secret UI hint only.
   tokenHint String @default("")
+  // TASK_155 P6c — the SECOND token for this platform account: the one that can
+  // publish Worker scripts and edit DNS (`Workers Scripts:Edit` + `DNS:Edit`).
+  // The Pages token above cannot upload a Worker script, so the owner pastes a
+  // Workers/DNS token here and can REPLACE it from this panel at any time
+  // without disturbing the Pages rotation. OPTIONAL and independently encrypted
+  // with the same AES-256-GCM helpers; NULL = links keep the local /r/<token>
+  // fallback. Never plaintext, never returned by any route — only the hint.
+  workerTokenCiphertext String?
+  workerTokenIv         String?
+  workerTokenTag        String?
+  // Last 4 chars of the Workers token, for a non-secret UI hint only.
+  workerTokenHint String @default("")
+  // Plain-language reason the Workers token failed to verify, or NULL when
+  // healthy/absent. Never contains the token.
+  workerTokenError String?
   // Rotation order: the healthy row with the LOWEST priority serves. 1 = primary.
   priority  Int      @default(100)
   // "active" | "disabled" — disabled rows are kept, never used.

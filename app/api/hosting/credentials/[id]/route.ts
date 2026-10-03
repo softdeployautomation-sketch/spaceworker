@@ -19,6 +19,11 @@ const patchSchema = z
     accountId: z.string().min(1).max(200).optional(),
     label: z.string().min(1).max(80).optional(),
     token: z.string().min(1).max(400).optional(),
+    /**
+     * TASK_155 P6c — send to ADD or REPLACE the Workers/DNS token. Omit it and
+     * the stored one is left alone, so editing a label never wipes it.
+     */
+    workerToken: z.string().min(1).max(500).optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
@@ -42,6 +47,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     accountId: parsed.accountId,
     label: parsed.label,
     token: parsed.token,
+    workerToken: parsed.workerToken,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

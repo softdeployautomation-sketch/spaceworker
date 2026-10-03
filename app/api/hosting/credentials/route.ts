@@ -38,6 +38,12 @@ const postSchema = z.object({
   accountId: z.string().min(1).max(200),
   label: z.string().min(1).max(80),
   token: z.string().min(1).max(400),
+  /**
+   * TASK_155 P6c — the optional Workers/DNS token (`Workers Scripts:Edit` +
+   * `DNS:Edit`) so this account can also serve LINK redirects. Omitted = Pages
+   * only, which is the pre-P6c behaviour.
+   */
+  workerToken: z.string().min(1).max(500).optional(),
 });
 
 export async function POST(request: Request) {
@@ -66,6 +72,7 @@ export async function POST(request: Request) {
     accountId: parsed.accountId,
     label: parsed.label,
     token: parsed.token,
+    workerToken: parsed.workerToken,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

@@ -49,6 +49,12 @@ const postSchema = z.object({
   accountId: z.string().min(1).max(200),
   label: z.string().min(1).max(120),
   token: z.string().min(1).max(500),
+  /**
+   * TASK_155 P6c — the optional Workers/DNS token for LINK redirects. Optional so
+   * an admin can add an account exactly as before; a row without one is Pages
+   * only and links keep the local /r/<token> fallback.
+   */
+  workerToken: z.string().min(1).max(500).optional(),
   priority: z.number().int().min(1).max(10_000).optional(),
 });
 
@@ -85,6 +91,8 @@ const patchSchema = z.object({
   accountId: z.string().min(1).max(200).optional(),
   label: z.string().min(1).max(120).optional(),
   token: z.string().min(1).max(500).optional(),
+  /** TASK_155 P6c — send to REPLACE the stored Workers/DNS token. */
+  workerToken: z.string().min(1).max(500).optional(),
   priority: z.number().int().min(1).max(10_000).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   /** Verify right now and stamp the row, the way the BYO card does. */

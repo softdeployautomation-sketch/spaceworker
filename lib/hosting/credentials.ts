@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import { encryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
+import { encryptSecret, decryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
 import type { HostingResult } from "./files";
 
 // TASK_155 P2 — user-owned hosting credentials (BYO Cloudflare).
@@ -34,6 +34,13 @@ export interface HostingCredentialView {
   lastVerifiedAt: string | null;
   /** Plain-language reason the last verify failed, or NULL when healthy. */
   verifyError: string | null;
+  // --- TASK_155 P6c — the optional Workers/DNS token, NEVER the token itself.
+  /** Non-secret hint: the last 4 chars of the Workers token, or "" when unset. */
+  workerTokenHint: string;
+  /** True when a Workers/DNS token is stored (the hint is only meaningful then). */
+  hasWorkerToken: boolean;
+  /** Plain-language reason the Workers token failed, or NULL when healthy/unset. */
+  workerTokenError: string | null;
   createdAt: string;
 }
 
@@ -43,6 +50,10 @@ type CredentialRow = {
   accountId: string;
   label: string;
   tokenHint: string;
+  // Present so the view can report `hasWorkerToken` truthfully. NEVER surfaced.
+  workerTokenCiphertext?: string | null;
+  workerTokenHint?: string | null;
+  workerTokenError?: string | null;
   isDefault: boolean;
   status: string;
   lastVerifiedAt?: Date | null;
@@ -57,6 +68,12 @@ export function toHostingCredentialView(row: CredentialRow): HostingCredentialVi
     accountId: row.accountId,
     label: row.label,
     tokenHint: row.tokenHint,
+    // A row with no worker token has NULL ciphertext and hint "" — report that
+    // honestly as "not set" rather than as an empty-looking token the UI might
+    // render as a broken one.
+    workerTokenHint: row.workerTokenHint ?? "",
+    hasWorkerToken: !!row.workerTokenCiphertext && !!(row.workerTokenHint ?? ""),
+    workerTokenError: row.workerTokenError ?? null,
     isDefault: row.isDefault,
     status: row.status,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
@@ -68,6 +85,77 @@ export function toHostingCredentialView(row: CredentialRow): HostingCredentialVi
 /** Last 4 characters, for a non-secret UI hint. Never stores the full token. */
 function hintOf(token: string): string {
   return token.length <= 4 ? token : token.slice(-4);
+}
+
+// ---------------------------------------------------------------------------
+// TASK_155 P6c — the Workers/DNS token, the SECOND Cloudflare credential.
+//
+// A Cloudflare API token is scoped: the Pages token stored above CANNOT upload a
+// Worker script (that needs `Workers Scripts:Edit`), and a Workers token does not
+// deploy Pages projects the same way. Rather than widen the Pages token to
+// everything — which would hand every site deploy a DNS-scoped credential — the
+// Workers/DNS token is stored SEPARATELY and OPTIONALLY.
+//
+// These helpers are shared with the platform roster (lib/hosting/platform-accounts
+// .ts) so the admin side and the BYO side enforce the SAME discipline in one
+// place:
+//   * encrypted with the same AES-256-GCM MAILBOX_ENCRYPTION_KEY helpers
+//   * NEVER returned in a view — only `workerTokenHint` (last 4 chars)
+//   * OPTIONAL: absent means "Pages only", and the link engine keeps its local
+//     /r/<token> fallback rather than failing.
+//
+// The hint column defaults to "" so a row with no worker token reads as "not set"
+// rather than as a 4-character token.
+
+/** Last 4 characters of a Workers token, for a non-secret UI hint. */
+export function workerTokenHintOf(token: string): string {
+  return hintOf(token);
+}
+
+/**
+ * Encrypt a Workers/DNS token into the Prisma columns that hold it. Returns
+ * `undefined` when no token was supplied, so an update that omits the field
+ * leaves the stored token untouched (the same rule the Pages token follows).
+ */
+export function buildWorkerTokenFields(token: string | undefined):
+  | {
+      workerTokenCiphertext: string;
+      workerTokenIv: string;
+      workerTokenTag: string;
+      workerTokenHint: string;
+      workerTokenError: string | null;
+    }
+  | undefined {
+  const trimmed = (token ?? "").trim();
+  if (!trimmed) return undefined;
+  const { ciphertext, iv, tag } = encryptSecret(trimmed);
+  return {
+    workerTokenCiphertext: ciphertext,
+    workerTokenIv: iv,
+    workerTokenTag: tag,
+    workerTokenHint: workerTokenHintOf(trimmed),
+    // A freshly entered token gets a clean slate: without clearing the red mark
+    // here, a row that was fixed would keep being reported as broken forever.
+    workerTokenError: null,
+  };
+}
+
+/**
+ * Decrypt a row's Workers/DNS token, or null when none was ever stored or the
+ * stored copy can no longer be read (the caller treats both as "no token").
+ * Deliberately does NOT throw, so one unreadable row cannot take down a publish.
+ */
+export function readWorkerToken(row: {
+  workerTokenCiphertext: string | null;
+  workerTokenIv: string | null;
+  workerTokenTag: string | null;
+}): string | null {
+  if (!row.workerTokenCiphertext || !row.workerTokenIv || !row.workerTokenTag) return null;
+  try {
+    return decryptSecret(row.workerTokenCiphertext, row.workerTokenIv, row.workerTokenTag);
+  } catch {
+    return null;
+  }
 }
 
 export async function listHostingCredentials(userId: string): Promise<HostingCredentialView[]> {
@@ -84,6 +172,12 @@ export interface CreateHostingCredentialInput {
   accountId: string;
   label: string;
   token: string;
+  /**
+   * TASK_155 P6c — the optional Workers/DNS token (`Workers Scripts:Edit` +
+   * `DNS:Edit`). Omit it and the credential is Pages-only, which is exactly what
+   * it was before P6c, so this stays strictly additive.
+   */
+  workerToken?: string;
 }
 
 export async function createHostingCredential(
@@ -108,6 +202,9 @@ export async function createHostingCredential(
   // single-credential case needs no extra action from the user.
   const existing = await prisma.hostingCredential.count({ where: { userId: input.userId, provider, status: "active" } });
   const { ciphertext, iv, tag } = encryptSecret(token);
+  // Optional second credential — spread `undefined` in and Prisma keeps its
+  // column defaults (NULL ciphertext, "" hint), i.e. "Pages only".
+  const workerFields = buildWorkerTokenFields(input.workerToken) ?? {};
 
   const row = await prisma.hostingCredential.create({
     data: {
@@ -120,6 +217,7 @@ export async function createHostingCredential(
       tokenTag: tag,
       tokenHint: hintOf(token),
       isDefault: existing === 0,
+      ...workerFields,
     },
   });
   return { ok: true, value: toHostingCredentialView(row) };
@@ -132,6 +230,11 @@ export interface UpdateHostingCredentialInput {
   label?: string;
   /** Only sent when the user re-enters a token; absent leaves the stored one. */
   token?: string;
+  /**
+   * TASK_155 P6c — the Workers/DNS token. Only sent when the user re-enters it;
+   * absent leaves the stored one alone, so fixing a label can never wipe it.
+   */
+  workerToken?: string;
 }
 
 export async function updateHostingCredential(
@@ -161,6 +264,20 @@ export async function updateHostingCredential(
     data.tokenIv = iv;
     data.tokenTag = tag;
     data.tokenHint = hintOf(token);
+  }
+  // The owner's replace-a-token flow: sending `workerToken` swaps the stored
+  // Workers/DNS token and clears its red mark. Omitting it changes nothing.
+  if (input.workerToken !== undefined) {
+    const workerFields = buildWorkerTokenFields(input.workerToken);
+    if (!workerFields) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_worker_token",
+        message: "Enter the Workers/DNS API token, or leave the field empty to keep the current one.",
+      };
+    }
+    Object.assign(data, workerFields);
   }
 
   if (Object.keys(data).length === 0) return { ok: true, value: toHostingCredentialView(row) };
@@ -211,6 +328,12 @@ export interface DecryptedCredential {
   id: string;
   accountId: string;
   token: string;
+  /**
+   * TASK_155 P6c — the decrypted Workers/DNS token, or null when this
+   * credential has none (Pages-only). Server-side engine calls only; like
+   * `token` it must never reach a route response.
+   */
+  workerToken: string | null;
 }
 
 /**
@@ -230,7 +353,7 @@ export async function getDefaultHostingCredential(
   });
   if (!row) return null;
   const token = decryptSecretOrThrow(row.tokenCiphertext, row.tokenIv, row.tokenTag, "hosting credential");
-  return { id: row.id, accountId: row.accountId, token };
+  return { id: row.id, accountId: row.accountId, token, workerToken: readWorkerToken(row) };
 }
 
 /**
@@ -245,7 +368,7 @@ export async function getHostingCredentialById(
   const row = await prisma.hostingCredential.findFirst({ where: { id, userId, status: "active" } });
   if (!row) return null;
   const token = decryptSecretOrThrow(row.tokenCiphertext, row.tokenIv, row.tokenTag, "hosting credential");
-  return { id: row.id, accountId: row.accountId, token };
+  return { id: row.id, accountId: row.accountId, token, workerToken: readWorkerToken(row) };
 }
 
 // ---------------------------------------------------------------------------

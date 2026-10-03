@@ -1,6 +1,10 @@
 import { prisma } from "../prisma";
 import { getAdminSettings } from "../admin-settings";
 import { encryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
+// TASK_155 P6c — the Workers/DNS-token helpers live with the credential module
+// that owns the encryption discipline, so the roster and the BYO credential can
+// never drift apart on how a second token is stored.
+import { buildWorkerTokenFields, readWorkerToken } from "./credentials";
 import type { HostingResult } from "./files";
 
 // TASK_155 P6a (PLAN §19) — OUR Cloudflare accounts: the premium engine's
@@ -41,6 +45,13 @@ export interface HostingPlatformAccountView {
   lastVerifiedAt: string | null;
   /** Plain-language reason the last verify failed, or NULL when healthy. */
   verifyError: string | null;
+  // --- TASK_155 P6c — the optional Workers/DNS token, NEVER the token itself.
+  /** Non-secret hint: the last 4 chars of the Workers token, or "" when unset. */
+  workerTokenHint: string;
+  /** True when a Workers/DNS token is stored on this row. */
+  hasWorkerToken: boolean;
+  /** Plain-language reason the Workers token failed, or NULL when healthy/unset. */
+  workerTokenError: string | null;
   createdAt: string;
 }
 
@@ -53,6 +64,10 @@ type PlatformAccountRow = {
   status: string;
   lastVerifiedAt?: Date | null;
   verifyError?: string | null;
+  // Present so the view can report `hasWorkerToken`; never surfaced.
+  workerTokenCiphertext?: string | null;
+  workerTokenHint?: string | null;
+  workerTokenError?: string | null;
   createdAt: Date;
 };
 
@@ -62,6 +77,9 @@ export function toPlatformAccountView(row: PlatformAccountRow): HostingPlatformA
     accountId: row.accountId,
     label: row.label,
     tokenHint: row.tokenHint,
+    workerTokenHint: row.workerTokenHint ?? "",
+    hasWorkerToken: !!row.workerTokenCiphertext && !!(row.workerTokenHint ?? ""),
+    workerTokenError: row.workerTokenError ?? null,
     priority: row.priority,
     status: row.status,
     lastVerifiedAt: row.lastVerifiedAt ? row.lastVerifiedAt.toISOString() : null,
@@ -87,6 +105,12 @@ export interface CreatePlatformAccountInput {
   accountId: string;
   label: string;
   token: string;
+  /**
+   * TASK_155 P6c — the optional Workers/DNS token (`Workers Scripts:Edit` +
+   * `DNS:Edit`) for this account. Omitted = Pages-only, which is exactly the
+   * pre-P6c behaviour.
+   */
+  workerToken?: string;
   /** Optional explicit rotation slot; defaults to one past the current max. */
   priority?: number;
 }
@@ -116,6 +140,9 @@ export async function createPlatformAccount(
   }
 
   const { ciphertext, iv, tag } = encryptSecret(token);
+  // Optional second credential — `undefined` spreads to nothing, so Prisma keeps
+  // the column defaults (NULL ciphertext, "" hint) = "Pages only".
+  const workerFields = buildWorkerTokenFields(input.workerToken) ?? {};
   const row = await prisma.hostingPlatformAccount.create({
     data: {
       accountId,
@@ -126,6 +153,7 @@ export async function createPlatformAccount(
       tokenHint: hintOf(token),
       priority,
       status: "active",
+      ...workerFields,
     },
   });
   return { ok: true, value: toPlatformAccountView(row) };
@@ -143,6 +171,12 @@ export interface UpdatePlatformAccountInput {
   label?: string;
   /** Only sent when the admin re-enters a token; absent keeps the stored one. */
   token?: string;
+  /**
+   * TASK_155 P6c — the Workers/DNS token. This is the owner's REPLACE path: send
+   * a new value and the stored Workers/DNS credential is swapped and its red
+   * mark cleared, without touching the Pages token or the rotation order.
+   */
+  workerToken?: string;
   priority?: number;
   /** "active" | "disabled" — disabled rows are kept, never used. */
   status?: string;
@@ -176,6 +210,18 @@ export async function updatePlatformAccount(
     // A re-entered token gets a fresh chance — clear the red mark with it, or the
     // row would keep being skipped by rotation forever after being fixed.
     data.verifyError = null;
+  }
+  if (input.workerToken !== undefined) {
+    const workerFields = buildWorkerTokenFields(input.workerToken);
+    if (!workerFields) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_worker_token",
+        message: "Enter the Workers/DNS API token, or leave the field empty to keep the current one.",
+      };
+    }
+    Object.assign(data, workerFields);
   }
   if (input.priority !== undefined) {
     const priority = Math.trunc(input.priority);
@@ -228,6 +274,13 @@ export interface ResolvedPlatformCredential {
   /** The platform row that served, so the caller can attribute the deploy. */
   platformAccountId: string;
   label: string;
+  /**
+   * TASK_155 P6c — the row's decrypted Workers/DNS token, or null when the
+   * account is Pages-only. A link publish needs this to upload a Worker script;
+   * null means "keep the local /r/<token> fallback". Server-side engine calls
+   * only — never a route response, exactly like `token`.
+   */
+  workerToken: string | null;
 }
 
 export type PlatformResolveResult =
@@ -296,7 +349,13 @@ export async function resolvePlatformCredential(
     await markPlatformAccountVerified(row.id, null);
     return {
       ok: true,
-      value: { accountId: row.accountId, token, platformAccountId: row.id, label: row.label },
+      value: {
+        accountId: row.accountId,
+        token,
+        platformAccountId: row.id,
+        label: row.label,
+        workerToken: readWorkerToken(row),
+      },
     };
   }
 

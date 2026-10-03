@@ -12,11 +12,17 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { WorkerTokenHelp } from "../hosting-worker-token-help";
+
 export interface PlatformAccountView {
   id: string;
   accountId: string;
   label: string;
   tokenHint: string;
+  /** TASK_155 P6c — the optional Workers/DNS token, as a HINT only. */
+  workerTokenHint: string;
+  hasWorkerToken: boolean;
+  workerTokenError: string | null;
   priority: number;
   status: string;
   lastVerifiedAt: string | null;
@@ -37,6 +43,11 @@ export default function PlatformAccountsPanel() {
   const [label, setLabel] = useState("");
   const [accountId, setAccountId] = useState("");
   const [token, setToken] = useState("");
+  // TASK_155 P6c — the Workers/DNS token has its own input so it can be pasted
+  // or REPLACED on its own, without touching the Pages token above it.
+  const [workerToken, setWorkerToken] = useState("");
+  /** Which row's replace-worker-token box is open ("" = none). */
+  const [replacingWorkerFor, setReplacingWorkerFor] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -77,7 +88,11 @@ export default function PlatformAccountsPanel() {
         return;
       }
       setState(data as PlatformAccountsState);
+      // Clear BOTH secret inputs on success, so a pasted token is never left
+      // sitting in the DOM (or in a screenshot) after the row is saved.
       setToken("");
+      setWorkerToken("");
+      setReplacingWorkerFor("");
     } catch {
       setError("Network error");
     } finally {
@@ -159,6 +174,57 @@ export default function PlatformAccountsPanel() {
                       {a.lastVerifiedAt ? `verified ${new Date(a.lastVerifiedAt).toLocaleString()}` : "never verified"}
                     </p>
                     {dead && <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.verifyError}</p>}
+                    {/* TASK_155 P6c — the Workers/DNS token's own status line. A row
+                        without one is fine (links use the local /r/ fallback), so it
+                        reads as neutral, not as an error. */}
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      Links (Worker + DNS):{" "}
+                      {a.hasWorkerToken ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          token …{a.workerTokenHint} set
+                        </span>
+                      ) : (
+                        <span>not set — links use the plain /r/… address</span>
+                      )}
+                    </p>
+                    {a.workerTokenError && (
+                      <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.workerTokenError}</p>
+                    )}
+                    {/* The replace box is per-row and collapsed by default: the Pages
+                        token and the Workers token rotate independently, so replacing
+                        one must never imply replacing the other. */}
+                    {replacingWorkerFor === a.id ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          placeholder="New Workers + DNS token"
+                          type="password"
+                          autoComplete="off"
+                          value={workerToken}
+                          onChange={(e) => setWorkerToken(e.target.value)}
+                          className={inputClass}
+                        />
+                        <button
+                          onClick={() => call({ id: a.id, workerToken }, "PATCH")}
+                          disabled={busy !== "" || workerToken.trim() === ""}
+                          className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+                        >
+                          {busy === "PATCH:" + a.id ? "Saving…" : "Replace token"}
+                        </button>
+                        <button onClick={() => setReplacingWorkerFor("")} className={ghostClass}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setReplacingWorkerFor(a.id);
+                          setWorkerToken("");
+                        }}
+                        className="mt-2 text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+                      >
+                        {a.hasWorkerToken ? "Replace Workers + DNS token" : "Add Workers + DNS token"}
+                      </button>
+                    )}
                     {off && (
                       <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">Disabled — never used.</p>
                     )}
@@ -230,15 +296,30 @@ export default function PlatformAccountsPanel() {
                 className={inputClass}
               />
               <input
-                placeholder="API token"
+                placeholder="Pages API token"
                 type="password"
+                autoComplete="off"
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
                 className={inputClass}
               />
             </div>
+            {/* TASK_155 P6c — the Workers/DNS token is a SEPARATE, optional input.
+                The Pages token cannot upload a Worker script, so it cannot be
+                reused here; leaving this blank simply keeps links on /r/…. */}
+            <div className="mt-2 grid gap-2 sm:grid-cols-3">
+              <input
+                placeholder="Workers + DNS token (optional)"
+                type="password"
+                autoComplete="off"
+                value={workerToken}
+                onChange={(e) => setWorkerToken(e.target.value)}
+                className={inputClass}
+              />
+            </div>
+            <WorkerTokenHelp audience="admin" className="mt-3" />
             <button
-              onClick={() => call({ accountId, label, token }, "POST")}
+              onClick={() => call({ accountId, label, token, workerToken }, "POST")}
               disabled={busy === "POST:new" || !label.trim() || !accountId.trim() || !token.trim()}
               className="mt-3 rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
             >
