@@ -33,6 +33,10 @@ export interface PlatformAccountView {
   workerTokenHint: string;
   hasWorkerToken: boolean;
   workerTokenError: string | null;
+  /** TASK_158 W0 — the optional Zones token, as a HINT only. */
+  zoneTokenHint: string;
+  hasZoneToken: boolean;
+  zoneTokenError: string | null;
   /** TASK_157 Phase 1 — the account's workers.dev subdomain (public, not a secret). */
   workersDevSubdomain: string | null;
   priority: number;
@@ -60,6 +64,12 @@ export default function PlatformAccountsPanel() {
   const [workerToken, setWorkerToken] = useState("");
   /** Which row's replace-worker-token box is open ("" = none). */
   const [replacingWorkerFor, setReplacingWorkerFor] = useState("");
+  // TASK_158 W0 — the Zones token is a THIRD, independent credential with its own
+  // input and its own per-row replace box. It rotates on its own, exactly like the
+  // Workers token: pasting a new one must never imply replacing Pages or Workers.
+  const [zoneToken, setZoneToken] = useState("");
+  /** Which row's replace-zone-token box is open ("" = none). */
+  const [replacingZoneFor, setReplacingZoneFor] = useState("");
   // TASK_157 Phase 1 — the workers.dev account subdomain. Keyed by account ROW id
   // (not Cloudflare accountId) because that is what the route takes, and kept
   // per-row so renaming one account never shows another account's value.
@@ -404,6 +414,58 @@ export default function PlatformAccountsPanel() {
                     {a.workerTokenError && (
                       <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.workerTokenError}</p>
                     )}
+                    {/* TASK_158 W0 — the Zones token's status line. A row WITHOUT one
+                        is the normal state today (every Cloudflare token we hold is
+                        refused zone creation), so it reads as neutral rather than as
+                        an error: custom domains simply stay on the manual path. */}
+                    <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                      Custom domains (zone create):{" "}
+                      {a.hasZoneToken ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          token …{a.zoneTokenHint} set
+                        </span>
+                      ) : (
+                        <span>not set — domains are added in the Cloudflare dashboard</span>
+                      )}
+                    </p>
+                    {a.zoneTokenError && (
+                      <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.zoneTokenError}</p>
+                    )}
+                    {/* The Zones replace box is per-row and collapsed by default, for
+                        the same reason the Workers one is: three credentials rotate
+                        independently, so replacing one must never imply the others. */}
+                    {replacingZoneFor === a.id ? (
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <input
+                          placeholder="New Zones (account-scoped) token"
+                          type="password"
+                          autoComplete="off"
+                          value={zoneToken}
+                          onChange={(e) => setZoneToken(e.target.value)}
+                          className={inputClass}
+                        />
+                        <button
+                          onClick={() => call({ id: a.id, zoneToken }, "PATCH")}
+                          disabled={busy !== "" || zoneToken.trim() === ""}
+                          className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
+                        >
+                          {busy === "PATCH:" + a.id ? "Saving…" : "Replace token"}
+                        </button>
+                        <button onClick={() => setReplacingZoneFor("")} className={ghostClass}>
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setReplacingZoneFor(a.id);
+                          setZoneToken("");
+                        }}
+                        className="mt-2 text-xs text-zinc-600 hover:underline dark:text-zinc-300"
+                      >
+                        {a.hasZoneToken ? "Replace Zones token" : "Add Zones token"}
+                      </button>
+                    )}
                     {/* TASK_157 Phase 1 — the workers.dev subdomain for this account.
                         Free short links publish at <worker>.<this>.workers.dev, so
                         this is the one dial that decides what a FREE link looks like.
@@ -574,10 +636,27 @@ export default function PlatformAccountsPanel() {
                 onChange={(e) => setWorkerToken(e.target.value)}
                 className={inputClass}
               />
+              {/* TASK_158 W0 — the Zones token is a THIRD, separate, optional input.
+                  Neither of the two above can create a zone, so it cannot be reused
+                  here; leaving this blank keeps domains on the manual path. */}
+              <input
+                placeholder="Zones / account-scoped token (optional)"
+                type="password"
+                autoComplete="off"
+                value={zoneToken}
+                onChange={(e) => setZoneToken(e.target.value)}
+                className={inputClass}
+              />
             </div>
             <WorkerTokenHelp audience="admin" className="mt-3" />
+            <p className="mt-2 text-xs text-zinc-500 dark:text-zinc-400">
+              The Zones token is the only one of the three that can add a domain to a
+              Cloudflare account automatically. Until one is pasted here, custom domains
+              are connected by adding them in the Cloudflare dashboard — everything else
+              works the same.
+            </p>
             <button
-              onClick={() => call({ accountId, label, token, workerToken }, "POST")}
+              onClick={() => call({ accountId, label, token, workerToken, zoneToken }, "POST")}
               disabled={busy === "POST:new" || !label.trim() || !accountId.trim() || !token.trim()}
               className="mt-3 rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
             >

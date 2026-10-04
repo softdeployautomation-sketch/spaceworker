@@ -4,7 +4,7 @@ import { encryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
 // TASK_155 P6c — the Workers/DNS-token helpers live with the credential module
 // that owns the encryption discipline, so the roster and the BYO credential can
 // never drift apart on how a second token is stored.
-import { buildWorkerTokenFields, readWorkerToken } from "./credentials";
+import { buildWorkerTokenFields, readWorkerToken, buildZoneTokenFields, readZoneToken } from "./credentials";
 import type { HostingResult } from "./files";
 
 // TASK_155 P6a (PLAN §19) — OUR Cloudflare accounts: the premium engine's
@@ -52,6 +52,17 @@ export interface HostingPlatformAccountView {
   hasWorkerToken: boolean;
   /** Plain-language reason the Workers token failed, or NULL when healthy/unset. */
   workerTokenError: string | null;
+  // --- TASK_158 W0 — the optional Zones token, NEVER the token itself.
+  /** Non-secret hint: the last 4 chars of the Zones token, or "" when unset. */
+  zoneTokenHint: string;
+  /**
+   * True when a Zones token is stored on this row. False is the NORMAL state —
+   * it only means this account cannot auto-create zones, so custom domains stay
+   * on the manual two-step path. It is never treated as a failure.
+   */
+  hasZoneToken: boolean;
+  /** Plain-language reason the Zones token failed, or NULL when healthy/unset. */
+  zoneTokenError: string | null;
   // --- TASK_157 Phase 1 — the workers.dev hostname for the FREE tier.
   /**
    * The workers.dev account subdomain we have configured (e.g. "spaceworker"),
@@ -75,6 +86,12 @@ type PlatformAccountRow = {
   workerTokenCiphertext?: string | null;
   workerTokenHint?: string | null;
   workerTokenError?: string | null;
+  // Present so the view can report `hasZoneToken`; never surfaced.
+  zoneTokenCiphertext?: string | null;
+  zoneTokenIv?: string | null;
+  zoneTokenTag?: string | null;
+  zoneTokenHint?: string | null;
+  zoneTokenError?: string | null;
   // TASK_157 Phase 1 — the workers.dev account subdomain (public, not a secret).
   workersDevSubdomain?: string | null;
   createdAt: Date;
@@ -89,6 +106,9 @@ export function toPlatformAccountView(row: PlatformAccountRow): HostingPlatformA
     workerTokenHint: row.workerTokenHint ?? "",
     hasWorkerToken: !!row.workerTokenCiphertext && !!(row.workerTokenHint ?? ""),
     workerTokenError: row.workerTokenError ?? null,
+    zoneTokenHint: row.zoneTokenHint ?? "",
+    hasZoneToken: !!row.zoneTokenCiphertext && !!(row.zoneTokenHint ?? ""),
+    zoneTokenError: row.zoneTokenError ?? null,
     workersDevSubdomain: row.workersDevSubdomain ?? null,
     priority: row.priority,
     status: row.status,
@@ -121,6 +141,13 @@ export interface CreatePlatformAccountInput {
    * pre-P6c behaviour.
    */
   workerToken?: string;
+  /**
+   * TASK_158 W0 — the optional account-scoped Zones token (zone CREATE +
+   * `Zone:DNS:Edit`). Omitted = this account cannot auto-create zones, which is
+   * the normal state and not an error; user domains then stay on the manual
+   * two-step path.
+   */
+  zoneToken?: string;
   /** Optional explicit rotation slot; defaults to one past the current max. */
   priority?: number;
 }
@@ -153,6 +180,9 @@ export async function createPlatformAccount(
   // Optional second credential — `undefined` spreads to nothing, so Prisma keeps
   // the column defaults (NULL ciphertext, "" hint) = "Pages only".
   const workerFields = buildWorkerTokenFields(input.workerToken) ?? {};
+  // Same deal for the third token: `undefined` spreads to nothing, so Prisma keeps
+  // the column defaults (NULL ciphertext, "" hint) = "cannot create zones".
+  const zoneFields = buildZoneTokenFields(input.zoneToken) ?? {};
   const row = await prisma.hostingPlatformAccount.create({
     data: {
       accountId,
@@ -164,6 +194,7 @@ export async function createPlatformAccount(
       priority,
       status: "active",
       ...workerFields,
+      ...zoneFields,
     },
   });
   return { ok: true, value: toPlatformAccountView(row) };
@@ -187,6 +218,14 @@ export interface UpdatePlatformAccountInput {
    * mark cleared, without touching the Pages token or the rotation order.
    */
   workerToken?: string;
+  /**
+   * TASK_158 W0 — the Zones token. This is the owner's REPLACE path: send a new
+   * value and the stored Zones credential is swapped and its red mark cleared,
+   * without touching the Pages token, the Workers token, or the rotation order.
+   * An empty string is REFUSED rather than treated as "clear it", so a stray
+   * space can never blank a working zone credential.
+   */
+  zoneToken?: string;
   priority?: number;
   /** "active" | "disabled" — disabled rows are kept, never used. */
   status?: string;
@@ -232,6 +271,18 @@ export async function updatePlatformAccount(
       };
     }
     Object.assign(data, workerFields);
+  }
+  if (input.zoneToken !== undefined) {
+    const zoneFields = buildZoneTokenFields(input.zoneToken);
+    if (!zoneFields) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invalid_zone_token",
+        message: "Enter the Zones API token, or leave the field empty to keep the current one.",
+      };
+    }
+    Object.assign(data, zoneFields);
   }
   if (input.priority !== undefined) {
     const priority = Math.trunc(input.priority);
@@ -291,6 +342,15 @@ export interface ResolvedPlatformCredential {
    * only — never a route response, exactly like `token`.
    */
   workerToken: string | null;
+  /**
+   * TASK_158 W0 — the row's decrypted Zones token, or null when this account has
+   * none. This is the credential that can actually CREATE a zone, which nothing
+   * else in the roster can do. Null is normal (it is the state of every account
+   * today) and callers fall back to the manual two-step path rather than
+   * failing. Server-side engine calls only — never a route response, exactly
+   * like `token` and `workerToken`.
+   */
+  zoneToken: string | null;
 }
 
 export type PlatformResolveResult =
@@ -450,6 +510,7 @@ export async function resolvePlatformCredential(
         platformAccountId: row.id,
         label: row.label,
         workerToken: readWorkerToken(row),
+        zoneToken: readZoneToken(row),
       },
     };
   }

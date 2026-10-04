@@ -1498,6 +1498,27 @@ model HostingPlatformAccount {
   // Plain-language reason the Workers token failed to verify, or NULL when
   // healthy/absent. Never contains the token.
   workerTokenError String?
+  // TASK_158 W0 — the THIRD token: the account-scoped ZONES token, the one that
+  // can CREATE a zone and manage its DNS (`Account -> Zone Settings:Edit` +
+  // `Zone:DNS:Edit` + zone create). Probing showed every token we hold is
+  // REFUSED zone creation with `403 com.cloudflare.api.account.zone.create`, so
+  // until one of these exists, user-owned custom domains stay a two-step job
+  // (verify ownership, then the owner adds the domain in Cloudflare).
+  //
+  // Stored SEPARATELY and OPTIONALLY for exactly the reason the Pages and Workers
+  // tokens are: a Cloudflare token is scoped, and widening one of the others to
+  // reach zones would hand every site deploy a zone-admin credential. NULL = this
+  // row cannot create zones, which is NOT an error — it is the normal state until
+  // an account-scoped token is configured. Same AES-256-GCM helpers, never
+  // plaintext, never returned by any route — the view carries only the hint.
+  zoneTokenCiphertext String?
+  zoneTokenIv         String?
+  zoneTokenTag        String?
+  // Last 4 chars of the Zones token, for a non-secret UI hint only.
+  zoneTokenHint String @default("")
+  // Plain-language reason the Zones token failed to verify, or NULL when
+  // healthy/absent. Never contains the token.
+  zoneTokenError String?
   // Rotation order: the healthy row with the LOWEST priority serves. 1 = primary.
   priority  Int      @default(100)
   // "active" | "disabled" — disabled rows are kept, never used.

@@ -82,6 +82,12 @@ const postSchema = z.object({
    * only and links keep the local /r/<token> fallback.
    */
   workerToken: z.string().min(1).max(500).optional(),
+  /**
+   * TASK_158 W0 — the optional account-scoped Zones token (zone CREATE +
+   * `Zone:DNS:Edit`). Omitted = the account cannot auto-create zones, which is the
+   * normal state until an account-scoped token is configured.
+   */
+  zoneToken: z.string().min(1).max(500).optional(),
   priority: z.number().int().min(1).max(10_000).optional(),
 });
 
@@ -120,6 +126,8 @@ const patchSchema = z.object({
   token: z.string().min(1).max(500).optional(),
   /** TASK_155 P6c — send to REPLACE the stored Workers/DNS token. */
   workerToken: z.string().min(1).max(500).optional(),
+  /** TASK_158 W0 — send to REPLACE the stored Zones token. */
+  zoneToken: z.string().min(1).max(500).optional(),
   priority: z.number().int().min(1).max(10_000).optional(),
   status: z.enum(["active", "disabled"]).optional(),
   /** Verify right now and stamp the row, the way the BYO card does. */

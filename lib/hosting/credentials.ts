@@ -158,6 +158,77 @@ export function readWorkerToken(row: {
   }
 }
 
+// ---------------------------------------------------------------------------
+// TASK_158 W0 — the ZONES token, the THIRD Cloudflare credential.
+//
+// A Cloudflare API token is scoped, and none of the two tokens above can create a
+// zone: the Pages token deploys Pages projects, the Workers token uploads scripts
+// and edits DNS inside zones that ALREADY exist. Creating a zone is a third,
+// separate grant (`Account -> Zone Settings:Edit` + `Zone:DNS:Edit` + zone create),
+// so it gets its own slot rather than a widened one of the others — widening
+// either existing token to reach zones would hand every site deploy a
+// zone-administration credential.
+//
+// These helpers are shared with the platform roster for the same reason the
+// Workers ones are: one place that owns the encryption discipline means the
+// admin side and any future BYO side cannot drift apart on how a third token is
+// stored. The properties hold for all three tokens:
+//   * encrypted with the same AES-256-GCM MAILBOX_ENCRYPTION_KEY helpers
+//   * NEVER returned in a view — only `zoneTokenHint` (last 4 chars)
+//   * OPTIONAL: absent means "this row cannot create zones", which callers treat
+//     as the normal state and NOT a failure.
+
+/** Last 4 characters of a Zones token, for a non-secret UI hint. */
+export function zoneTokenHintOf(token: string): string {
+  return hintOf(token);
+}
+
+/**
+ * Encrypt a Zones token into the Prisma columns that hold it. Returns
+ * `undefined` when no token was supplied, so an update that omits the field
+ * leaves the stored token untouched (the same rule the other two tokens follow).
+ */
+export function buildZoneTokenFields(token: string | undefined):
+  | {
+      zoneTokenCiphertext: string;
+      zoneTokenIv: string;
+      zoneTokenTag: string;
+      zoneTokenHint: string;
+      zoneTokenError: string | null;
+    }
+  | undefined {
+  const trimmed = (token ?? "").trim();
+  if (!trimmed) return undefined;
+  const { ciphertext, iv, tag } = encryptSecret(trimmed);
+  return {
+    zoneTokenCiphertext: ciphertext,
+    zoneTokenIv: iv,
+    zoneTokenTag: tag,
+    zoneTokenHint: zoneTokenHintOf(trimmed),
+    // A freshly entered token gets a clean slate: without clearing the red mark
+    // here, a row that was fixed would keep being reported as broken forever.
+    zoneTokenError: null,
+  };
+}
+
+/**
+ * Decrypt a row's Zones token, or null when none was ever stored or the stored
+ * copy can no longer be read (the caller treats both as "no zone token").
+ * Deliberately does NOT throw, so one unreadable row cannot take down a publish.
+ */
+export function readZoneToken(row: {
+  zoneTokenCiphertext: string | null;
+  zoneTokenIv: string | null;
+  zoneTokenTag: string | null;
+}): string | null {
+  if (!row.zoneTokenCiphertext || !row.zoneTokenIv || !row.zoneTokenTag) return null;
+  try {
+    return decryptSecret(row.zoneTokenCiphertext, row.zoneTokenIv, row.zoneTokenTag);
+  } catch {
+    return null;
+  }
+}
+
 export async function listHostingCredentials(userId: string): Promise<HostingCredentialView[]> {
   const rows = await prisma.hostingCredential.findMany({
     where: { userId, status: "active" },

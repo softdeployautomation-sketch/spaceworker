@@ -69,6 +69,13 @@ type Row = {
   workerTokenTag?: string | null;
   workerTokenHint?: string | null;
   workerTokenError?: string | null;
+  // TASK_158 W0 — the optional Zones token columns, optional in the fake too so
+  // every pre-existing seed row stays valid exactly as it was.
+  zoneTokenCiphertext?: string | null;
+  zoneTokenIv?: string | null;
+  zoneTokenTag?: string | null;
+  zoneTokenHint?: string | null;
+  zoneTokenError?: string | null;
   // TASK_157 Phase 1 — what we have RECORDED for this account's workers.dev name.
   // NULL is the normal state for an account whose subdomain was claimed directly
   // in the Cloudflare dashboard, which is the case these tests cover.
@@ -938,6 +945,148 @@ test("P6c: the admin route's schema accepts workerToken and never echoes it", as
   assert.ok(src.includes("workerToken"), "the route must accept workerToken");
   assert.equal(
     /JSON\.stringify\([^)]*workerTokenCiphertext/.test(src),
+    false,
+    "the route must never serialise the ciphertext"
+  );
+});
+
+// Synthetic, never a real credential — a pasted live token must never reach git.
+const ZONE_TOKEN = "cfut_FAKE_ZONE_TOKEN_FOR_TESTS_7777";
+
+test("W0: a platform account created without a Zones token still serves", async () => {
+  const res = await createPlatformAccount({ accountId: "acct_z0", label: "No zones", token: TOKEN });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value.hasZoneToken, false, "no zone token is not an error state");
+  assert.equal(res.value.zoneTokenHint, "");
+
+  // Rotation must not notice the absence — the row still serves the premium engine.
+  const resolved = await resolvePlatformCredential(async () => ({ ok: true }));
+  assert.ok(resolved.ok, "a row without a Zones token still serves the premium engine");
+  if (resolved.ok) assert.equal(resolved.value.zoneToken, null, "and reports no zone token");
+});
+
+test("W0: the roster stores the Zones token encrypted and resolves it decrypted", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_z1",
+    label: "With zones",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+    zoneToken: ZONE_TOKEN,
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.ok(row);
+  assert.notEqual(row.zoneTokenCiphertext, ZONE_TOKEN, "never stored in plaintext");
+  assert.ok(!row.zoneTokenCiphertext?.includes(ZONE_TOKEN));
+
+  const view = (await listPlatformAccounts()).find((a) => a.id === created.value.id);
+  assert.ok(view);
+  assert.equal(view.hasZoneToken, true);
+  assert.equal(view.zoneTokenHint, ZONE_TOKEN.slice(-4));
+  assert.ok(!JSON.stringify(view).includes(ZONE_TOKEN), "the admin payload must not carry the token");
+
+  // A server-side zone create gets the DECRYPTED value from the same row, and the
+  // other two credentials come through untouched.
+  const resolved = await resolvePlatformCredential(async () => ({ ok: true }));
+  assert.ok(resolved.ok);
+  if (resolved.ok) {
+    assert.equal(resolved.value.zoneToken, ZONE_TOKEN, "the Zones token decrypts for the engine");
+    assert.equal(resolved.value.token, TOKEN, "the Pages token is unchanged");
+    assert.equal(resolved.value.workerToken, WORKER_TOKEN, "the Workers token is unchanged");
+  }
+});
+
+test("W0: replacing the Zones token leaves Pages, Workers and priority intact", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_z2",
+    label: "Rotating zones",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+    zoneToken: ZONE_TOKEN,
+    priority: 1,
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+
+  const rotated = await updatePlatformAccount({
+    id: created.value.id,
+    zoneToken: "cfut_REPLACEMENT_zone_8888",
+  });
+  assert.ok(rotated.ok, JSON.stringify(rotated));
+  assert.equal(rotated.value.priority, 1, "rotation order is untouched by a token swap");
+  assert.equal(rotated.value.zoneTokenHint, "8888", "the hint follows the new token");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.tokenCiphertext, row!.tokenIv, row!.tokenTag),
+    TOKEN,
+    "the Pages token must survive a Zones-token replacement"
+  );
+  assert.equal(
+    crypto.decryptSecret(row!.workerTokenCiphertext!, row!.workerTokenIv!, row!.workerTokenTag!),
+    WORKER_TOKEN,
+    "the Workers token must survive a Zones-token replacement"
+  );
+  assert.equal(
+    crypto.decryptSecret(row!.zoneTokenCiphertext!, row!.zoneTokenIv!, row!.zoneTokenTag!),
+    "cfut_REPLACEMENT_zone_8888",
+    "the new Zones token is what got stored"
+  );
+});
+
+test("W0: rotating Pages or Workers does NOT clear the stored Zones token", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_z3",
+    label: "All three",
+    token: TOKEN,
+    workerToken: WORKER_TOKEN,
+    zoneToken: ZONE_TOKEN,
+  });
+  assert.ok(created.ok);
+
+  const rotated = await updatePlatformAccount({ id: created.value.id, token: "cf-PAGES-ROTATED_0000" });
+  assert.ok(rotated.ok);
+  assert.equal(rotated.value.hasZoneToken, true, "rotating Pages leaves Zones alone");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.zoneTokenCiphertext!, row!.zoneTokenIv!, row!.zoneTokenTag!),
+    ZONE_TOKEN
+  );
+});
+
+test("W0: an empty Zones token on replace is refused, keeping the old one", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_z4",
+    label: "All three",
+    token: TOKEN,
+    zoneToken: ZONE_TOKEN,
+  });
+  assert.ok(created.ok);
+
+  const bad = await updatePlatformAccount({ id: created.value.id, zoneToken: "  " });
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.equal(bad.code, "invalid_zone_token");
+
+  const row = rows.find((r) => r.id === created.value.id);
+  assert.equal(
+    crypto.decryptSecret(row!.zoneTokenCiphertext!, row!.zoneTokenIv!, row!.zoneTokenTag!),
+    ZONE_TOKEN,
+    "a rejected replacement must not blank the working token"
+  );
+});
+
+test("W0: the admin route accepts zoneToken on POST and PATCH and never echoes it", async () => {
+  const src = readFileSync(
+    new URL("../app/api/admin/hosting/platform-accounts/route.ts", import.meta.url),
+    "utf8"
+  );
+  // Guards the contract the panel depends on: the field is accepted on both verbs,
+  // and the response body (which echoes the whole roster) carries no token.
+  const accepted = src.match(/zoneToken: z\.string\(\)\.min\(1\)\.max\(500\)\.optional\(\)/g) ?? [];
+  assert.equal(accepted.length, 2, "zoneToken must be accepted on POST and on PATCH");
+  assert.equal(
+    /JSON\.stringify\([^)]*zoneTokenCiphertext/.test(src),
     false,
     "the route must never serialise the ciphertext"
   );
