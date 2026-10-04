@@ -52,6 +52,48 @@ interface PlatformAccountsState {
   live: { platformSites: number };
 }
 
+/**
+ * TASK_158 W1 — did a token we just sent ACTUALLY LAND on the row?
+ *
+ * Returns a plain-language complaint when a token we sent is not readable on the row
+ * the server just returned, and "" when there is nothing to check.
+ *
+ * WHY THIS EXISTS. A token that is accepted, answers 200, and is then not stored is
+ * the worst outcome there is: the panel looks saved, the operator moves on, and the
+ * capability is silently absent — which is precisely how "I added the token and it
+ * disappeared" is experienced, and precisely what happened to the Zones token
+ * (verified by forensics on 2026-10-04: `zoneTokenHint` was length 0 on all three
+ * accounts while the equivalent Workers hint was length 4, so the write never
+ * happened — nothing removed it afterwards).
+ *
+ * The HINT is the right thing to check, and it is not a heuristic: it is written by
+ * the same helper, in the same statement, as the encrypted ciphertext, so a stored
+ * token ALWAYS carries a 4-character hint and a missing hint always means nothing was
+ * stored. The roster the server just returned is the authority, so this compares
+ * against it rather than trusting the status code.
+ *
+ * Deliberately scoped to a PATCH that names a row `id`. A POST ("Add and verify")
+ * cannot be checked the same way: the response has no id for the row it just made,
+ * and matching on accountId could land on a pre-existing row for the same account and
+ * report a false failure. The replace box is the path this guard exists for.
+ */
+function tokenSaveComplaint(body: Record<string, unknown>, next: PlatformAccountsState): string {
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) return "";
+  const checks = [
+    { field: "token", hint: "tokenHint", label: "Pages" },
+    { field: "workerToken", hint: "workerTokenHint", label: "Workers/DNS" },
+    { field: "zoneToken", hint: "zoneTokenHint", label: "Zones" },
+  ] as const;
+  const sent = checks.filter((c) => typeof body[c.field] === "string" && String(body[c.field]).trim() !== "");
+  if (sent.length === 0) return "";
+  const row = next.accounts?.find((a) => a.id === id);
+  if (!row) return "";
+  const missing = sent.filter((c) => !row[c.hint]);
+  if (missing.length === 0) return "";
+  return `The ${missing.map((c) => c.label).join(" and ")} token did not save. Paste it again and press Replace — if it still will not stick, the row is not being written.`;
+}
+
 export default function PlatformAccountsPanel() {
   const [state, setState] = useState<PlatformAccountsState | null>(null);
   const [error, setError] = useState("");
@@ -70,6 +112,15 @@ export default function PlatformAccountsPanel() {
   const [zoneToken, setZoneToken] = useState("");
   /** Which row's replace-zone-token box is open ("" = none). */
   const [replacingZoneFor, setReplacingZoneFor] = useState("");
+  // The CREATE form's two OPTIONAL tokens get their OWN state, deliberately
+  // separate from the per-row replace boxes above. They used to share one variable
+  // each, which is a real hazard rather than a style point: opening another row's
+  // box runs `setZoneToken("")`, so a token half-typed into the create form could be
+  // wiped by a click on an unrelated row — and a token typed into a row box silently
+  // appeared in the create form too, inviting it to be posted as a NEW account.
+  // Two different intentions must never share one variable.
+  const [newWorkerToken, setNewWorkerToken] = useState("");
+  const [newZoneToken, setNewZoneToken] = useState("");
   // TASK_157 Phase 1 — the workers.dev account subdomain. Keyed by account ROW id
   // (not Cloudflare accountId) because that is what the route takes, and kept
   // per-row so renaming one account never shows another account's value.
@@ -149,7 +200,14 @@ export default function PlatformAccountsPanel() {
         setError(typeof data.error === "string" ? data.error : "Failed to update");
         return;
       }
-      setState(data as PlatformAccountsState);
+      const next = data as PlatformAccountsState;
+      setState(next);
+      // TASK_158 W1 — never leave a "successful" save that stored nothing. The
+      // complaint goes into the SAME error line the panel already renders on failure,
+      // so a silent no-op becomes visible immediately instead of being discovered
+      // weeks later when domains refuse to provision.
+      const complaint = tokenSaveComplaint(body, next);
+      if (complaint) setError(complaint);
       // A successful rename comes back with the LIVE value Cloudflare confirms,
       // so show that rather than the text the admin typed — the two can differ.
       if (data.workersDevSubdomain && typeof data.workersDevSubdomain === "object" && body.id) {
@@ -165,9 +223,20 @@ export default function PlatformAccountsPanel() {
       }
       // Clear BOTH secret inputs on success, so a pasted token is never left
       // sitting in the DOM (or in a screenshot) after the row is saved.
+      // Clear EVERY secret input on success — all three tokens, on both the per-row
+      // replace boxes AND the create form. Two things go wrong when one is missed:
+      // a live credential is left sitting in the DOM (and in any screenshot), and the
+      // replace box stays OPEN after a successful save, which reads as "it didn't
+      // save" and is exactly how a token gets re-pasted somewhere it does not belong.
+      // The Zones pair was missing from this list; that gap is precisely the shape of
+      // a working save that looks like a silent failure.
       setToken("");
       setWorkerToken("");
       setReplacingWorkerFor("");
+      setZoneToken("");
+      setReplacingZoneFor("");
+      setNewWorkerToken("");
+      setNewZoneToken("");
     } catch {
       setError("Network error");
     } finally {
@@ -632,8 +701,8 @@ export default function PlatformAccountsPanel() {
                 placeholder="Workers + DNS token (optional)"
                 type="password"
                 autoComplete="off"
-                value={workerToken}
-                onChange={(e) => setWorkerToken(e.target.value)}
+                value={newWorkerToken}
+                onChange={(e) => setNewWorkerToken(e.target.value)}
                 className={inputClass}
               />
               {/* TASK_158 W0 — the Zones token is a THIRD, separate, optional input.
@@ -643,8 +712,8 @@ export default function PlatformAccountsPanel() {
                 placeholder="Zones / account-scoped token (optional)"
                 type="password"
                 autoComplete="off"
-                value={zoneToken}
-                onChange={(e) => setZoneToken(e.target.value)}
+                value={newZoneToken}
+                onChange={(e) => setNewZoneToken(e.target.value)}
                 className={inputClass}
               />
             </div>
@@ -656,7 +725,9 @@ export default function PlatformAccountsPanel() {
               works the same.
             </p>
             <button
-              onClick={() => call({ accountId, label, token, workerToken, zoneToken }, "POST")}
+              onClick={() =>
+                call({ accountId, label, token, workerToken: newWorkerToken, zoneToken: newZoneToken }, "POST")
+              }
               disabled={busy === "POST:new" || !label.trim() || !accountId.trim() || !token.trim()}
               className="mt-3 rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
             >
