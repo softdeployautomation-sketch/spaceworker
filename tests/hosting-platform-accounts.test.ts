@@ -69,6 +69,10 @@ type Row = {
   workerTokenTag?: string | null;
   workerTokenHint?: string | null;
   workerTokenError?: string | null;
+  // TASK_157 Phase 1 — what we have RECORDED for this account's workers.dev name.
+  // NULL is the normal state for an account whose subdomain was claimed directly
+  // in the Cloudflare dashboard, which is the case these tests cover.
+  workersDevSubdomain?: string | null;
   createdAt: Date;
 };
 
@@ -936,5 +940,101 @@ test("P6c: the admin route's schema accepts workerToken and never echoes it", as
     /JSON\.stringify\([^)]*workerTokenCiphertext/.test(src),
     false,
     "the route must never serialise the ciphertext"
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TASK_157 — the workers.dev subdomain claim.
+//
+// The production bug this locks down: `swdocs` was claimed by the OWNER in the
+// Cloudflare dashboard, so Cloudflare already held the name while our row still
+// said NULL. `PUT /accounts/:id/workers/subdomain` is CREATE-ONLY, so re-issuing
+// the name the account already has is rejected with Cloudflare error 10036 — a
+// hard failure reported against an account that was configured correctly.
+//
+// These drive `planWorkersDevSubdomainChange`, the PURE function that decides
+// between refusing / stamping / claiming. It is tested directly rather than
+// through `setAccountWorkersDevSubdomain` because that caller reaches
+// `checkWorkersDevSubdomain` via a DYNAMIC `import("./workers")`, which tsx
+// resolves internally and never passes through `Module._load` — so no
+// module-loader stub can intercept it, and an attempted stub silently let a real
+// Cloudflare call run. The rule itself needs no network to prove.
+// ---------------------------------------------------------------------------
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+// Required, not imported: `./workers` must be loaded AFTER installRequireHook()
+// so the fake Prisma is in place when the module reads it at load time.
+const plan = require("../lib/hosting/workers").planWorkersDevSubdomainChange as (
+  a: { available: boolean; current: boolean; message?: string },
+  recorded: string | null | undefined,
+  name: string
+) => { kind: string; message?: string };
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+const AVAIL = { available: true, current: false };
+
+test("subdomain: a genuinely NEW free name is claimed with the PUT", () => {
+  assert.equal(plan(AVAIL, null, "swdocs").kind, "claim");
+  assert.equal(plan(AVAIL, "myrate619", "swdocs").kind, "claim");
+});
+
+test("subdomain: a name Cloudflare ALREADY holds is stamped, never re-PUT", () => {
+  // The swdocs case exactly: Cloudflare has it, our row never recorded it.
+  const got = plan({ available: true, current: true }, null, "swdocs");
+  assert.equal(got.kind, "stamp", "the create-only PUT would fail with 10036 here");
+});
+
+test("subdomain: stamping applies to ANY recorded value, not just null", () => {
+  // A stale/different recorded value must be corrected to Cloudflare's truth.
+  assert.equal(plan({ available: true, current: true }, "myrate619", "swdocs").kind, "stamp");
+});
+
+test("subdomain: already recorded AND already current is a no-op", () => {
+  // The double-click case — must stay harmless.
+  assert.equal(plan({ available: true, current: true }, "swdocs", "swdocs").kind, "noop");
+});
+
+test("subdomain: a name held by ANOTHER account is refused, never claimed", () => {
+  const got = plan({ available: false, current: false, message: "already taken" }, null, "swdocs");
+  assert.equal(got.kind, "taken");
+  assert.equal(got.message, "already taken", "Cloudflare's own wording must survive");
+});
+
+test("subdomain: unavailable wins over current — an unavailable name is never stamped", () => {
+  // Guards the ordering: `available` is checked first on purpose.
+  assert.equal(plan({ available: false, current: true }, null, "swdocs").kind, "taken");
+});
+
+test("subdomain: the create-only PUT is reachable ONLY from the claim branch", () => {
+  // The regression in one assertion: if any pre-claimed path can return "claim",
+  // we are back to a 10036 failure on a working account.
+  const branches = [
+    plan({ available: true, current: true }, null, "swdocs"),
+    plan({ available: true, current: true }, "myrate619", "swdocs"),
+    plan({ available: true, current: true }, "swdocs", "swdocs"),
+    plan({ available: false, current: false }, null, "swdocs"),
+  ].map((b) => b.kind);
+  assert.equal(branches.includes("claim"), false, `no non-claim path may PUT: ${branches}`);
+});
+
+test("subdomain: the live caller actually uses the planner, not its own branch", () => {
+  // Guards the refactor itself: if setAccountWorkersDevSubdomain grows a private
+  // copy of this decision later, the tests above would still pass while the fix
+  // silently stopped applying. This is the assertion that keeps them honest.
+  const src = readFileSync(
+    new URL("../lib/hosting/platform-accounts.ts", import.meta.url),
+    "utf8"
+  );
+  assert.ok(
+    src.includes("planWorkersDevSubdomainChange"),
+    "setAccountWorkersDevSubdomain must delegate to the shared planner"
+  );
+  assert.ok(
+    /plan\.kind === "stamp"/.test(src),
+    "the stamp branch must be handled in the caller"
+  );
+  assert.ok(
+    /plan\.kind === "claim"[\s\S]{0,200}setWorkersDevSubdomain/.test(src),
+    "the create-only PUT must be reached ONLY from the claim branch"
   );
 });

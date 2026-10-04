@@ -330,6 +330,49 @@ export async function checkWorkersDevSubdomain(
   };
 }
 
+/** What the caller should do after Cloudflare has answered an availability check. */
+export type SubdomainPlan =
+  /** Refuse: Cloudflare says the name belongs to someone else. */
+  | { kind: "taken"; message?: string }
+  /** Nothing to do — Cloudflare has this name and we already recorded it. */
+  | { kind: "noop" }
+  /**
+   * Cloudflare ALREADY has this name but our row does not. Record Cloudflare's
+   * truth and stop — do NOT PUT. See the note below.
+   */
+  | { kind: "stamp" }
+  /** A genuinely new name: claim it with the create-only PUT. */
+  | { kind: "claim" };
+
+/**
+ * Decide what to do about a candidate workers.dev subdomain, given what
+ * Cloudflare reports and what WE have recorded.
+ *
+ * Extracted from `setAccountWorkersDevSubdomain` purely so the rule is provable
+ * without a network call: the caller reaches `checkWorkersDevSubdomain` through
+ * a DYNAMIC `import("./workers")`, which module-loader test stubs cannot
+ * intercept (tsx resolves it internally, so it never passes through
+ * `Module._load`). A pure function is directly testable; the loader problem is
+ * an artefact of the harness, not of the rule.
+ *
+ * The `stamp` case is the one that matters. Cloudflare's
+ * `PUT /accounts/:id/workers/subdomain` is CREATE-ONLY — it cannot rename, and
+ * pointing it at the name the account already holds is rejected with error
+ * 10036. An account whose subdomain was claimed directly in the Cloudflare
+ * dashboard (which is how `swdocs` was set up) therefore has Cloudflare holding
+ * the name while our row still says NULL, and falling through to the PUT would
+ * report a hard failure for an account that is in fact configured correctly.
+ */
+export function planWorkersDevSubdomainChange(
+  availability: SubdomainAvailability,
+  recordedSubdomain: string | null | undefined,
+  name: string
+): SubdomainPlan {
+  if (!availability.available) return { kind: "taken", message: availability.message };
+  if (!availability.current) return { kind: "claim" };
+  return recordedSubdomain === name ? { kind: "noop" } : { kind: "stamp" };
+}
+
 /**
  * Claim (or rename to) a workers.dev subdomain for the whole account.
  *

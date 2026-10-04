@@ -614,7 +614,7 @@ export async function setAccountWorkersDevSubdomain(
 
   const cred = { accountId: row.accountId, token: workerToken };
   // Lazy import, same reason as getWorkersDevSubdomainState above.
-  const { checkWorkersDevSubdomain, setWorkersDevSubdomain } = await import("./workers");
+  const { checkWorkersDevSubdomain, planWorkersDevSubdomainChange } = await import("./workers");
 
   const check = await checkWorkersDevSubdomain(cred, name);
   if (!check.ok) {
@@ -625,20 +625,43 @@ export async function setAccountWorkersDevSubdomain(
       message: check.error ?? "Could not reach Cloudflare — try again.",
     };
   }
-  if (!check.value?.available) {
+
+  // The decision is a PURE function in workers.ts so the create-only PUT can be
+  // proven unnecessary for a pre-claimed name — see planWorkersDevSubdomainChange.
+  const plan = planWorkersDevSubdomainChange(
+    {
+      available: check.value?.available === true,
+      current: check.value?.current === true,
+      message: check.value?.message,
+    },
+    row.workersDevSubdomain,
+    name
+  );
+
+  if (plan.kind === "taken") {
     return {
       ok: false,
       status: 409,
       code: "subdomain_taken",
       // Prefer Cloudflare's own wording, exactly like the BYO verifier does.
-      message: check.value?.message ?? `"${name}" is already taken. Try another name.`,
+      message: plan.message ?? `"${name}" is already taken. Try another name.`,
     };
   }
-  if (check.value.current && row.workersDevSubdomain === name) {
-    // Already ours and already stamped — a no-op, so a double-click is harmless.
+  if (plan.kind === "noop") {
     return { ok: true, value: { subdomain: name, unchanged: true } };
   }
+  if (plan.kind === "stamp") {
+    await prisma.hostingPlatformAccount.update({
+      where: { id },
+      data: { workersDevSubdomain: name },
+    });
+    // `unchanged: false` because OUR state did change — we went from not knowing
+    // the subdomain to knowing it. Cloudflare's configuration is untouched.
+    return { ok: true, value: { subdomain: name, unchanged: false } };
+  }
 
+  // plan.kind === "claim" — the only branch that touches Cloudflare.
+  const { setWorkersDevSubdomain } = await import("./workers");
   const saved = await setWorkersDevSubdomain(cred, name);
   if (!saved.ok) {
     return {
