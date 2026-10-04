@@ -9,6 +9,7 @@ import {
   type UserDomainView,
 } from "@/lib/hosting/domain-registry";
 import { getDefaultHostingCredential } from "@/lib/hosting/credentials";
+import { provisionDomainZone } from "@/lib/hosting/zone-provision";
 import { getZoneByName } from "@/lib/hosting/workers";
 
 // TASK_157 Phase 4 — GET  /api/hosting/domains   (only the caller's OWN domains)
@@ -109,34 +110,56 @@ async function refreshOne(
   userId: string,
   added: UserDomainView
 ): Promise<{ ok: boolean; domain: UserDomainView; note: string | null }> {
+  // The user's OWN Cloudflare account is authoritative for a domain they already
+  // put there — reconcile against it first so a live domain's real status, and
+  // nameservers, come from the account that actually hosts it.
   const cred = await getDefaultHostingCredential(userId);
-  if (!cred) {
-    return {
-      ok: false,
-      domain: added,
-      note: "Connect your Cloudflare account to finish setting up this domain.",
-    };
+  if (cred) {
+    const res = await getZoneByName(cred, added.apex);
+    if (!res.ok) {
+      return { ok: false, domain: added, note: res.error ?? "Could not reach Cloudflare." };
+    }
+    if (res.value) return recordFromCredential(userId, added, res.value);
   }
 
-  const res = await getZoneByName(cred, added.apex);
-  if (!res.ok) {
-    return { ok: false, domain: added, note: res.error ?? "Could not reach Cloudflare." };
+  // TASK_158 W1 — no BYO credential, or the user's own account does not have this
+  // zone: CREATE it in the platform account we publish from, using the dedicated
+  // Zones token. This is what replaces the dead-end "Add it there, then set the
+  // nameservers we show you" note with the ACTUAL assigned nameservers, which is the
+  // whole reason the token slot exists.
+  //
+  // Reached only AFTER the user's own account is checked: a domain already live in
+  // the user's Cloudflare must keep reconciling against THEIR account, and skipping
+  // straight to a create would either duplicate the zone (Cloudflare refuses) or,
+  // worse, report OUR account's state as theirs.
+  //
+  // A user with no Cloudflare account at all now lands here too, instead of being
+  // told to go and connect one — which is the point: the domain is provisioned FOR
+  // them.
+  const provisioned = await provisionDomainZone(userId, added.apex);
+  if (!provisioned.ok) {
+    return { ok: false, domain: added, note: provisioned.note };
   }
-  if (!res.value) {
-    return {
-      ok: false,
-      domain: added,
-      note: "This domain isn't in your Cloudflare account yet. Add it there, then set the nameservers we show you.",
-    };
-  }
+  // Re-read the row so the response carries the recorded zone id, nameservers and
+  // status. Falling back to `added` keeps every path returning a real row.
+  const rows = await listUserDomains(userId);
+  const fresh = rows.ok ? rows.value.find((d) => d.apex === added.apex) : undefined;
+  return { ok: provisioned.status === "active", domain: fresh ?? added, note: provisioned.note };
+}
 
-  // `added.apex` is passed, not `res.value.name`, because recordDomainZoneState
+/** Record the facts Cloudflare reports for a zone in the CALLER's own account. */
+async function recordFromCredential(
+  userId: string,
+  added: UserDomainView,
+  zone: { zoneId: string; status: string; nameservers: string[] }
+): Promise<{ ok: boolean; domain: UserDomainView; note: string | null }> {
+  // `added.apex` is passed, not `zone`'s name, because recordDomainZoneState
   // matches on the row's own apex — Cloudflare's spelling is not the authority on
   // which of our rows it is.
   const recorded = await recordDomainZoneState(userId, added.apex, {
-    zoneId: res.value.zoneId,
-    status: res.value.status,
-    nameservers: res.value.nameservers,
+    zoneId: zone.zoneId,
+    status: zone.status,
+    nameservers: zone.nameservers,
     note: null,
   });
   // A failed write is still not a reason to report failure of the ADD — fall back

@@ -16,7 +16,7 @@ import {
   singleRootPrefix,
 } from "./extract";
 import { newHostingToken, sha256Hex } from "./rules";
-import { deployTree, ensureProject, verifyCredential, type CfCredential, type DeployFile } from "./cloudflare";
+import { deployTree, ensureProject, pagesProjectUrl, verifyCredential, warmUpUrl, type CfCredential, type DeployFile } from "./cloudflare";
 import {
   getHostingCredentialById,
   markHostingCredentialVerified,
@@ -728,14 +728,29 @@ async function deployRevision(
     return { ok: true, value: toRevisionView(updated, dv.url) };
   }
 
-  // The LIVE url is the stable `<project>.pages.dev`, which follows branch main.
+  // The LIVE url is the stable PROJECT url, which follows branch main.
   //
   // A production deployment's own `url` is its own one-off `<hash>.<project>.pages.dev`.
   // Recording THAT as the site's liveUrl meant the "live" link changed on every
   // publish and went 404 once the deployment aged out — while the stable project
   // URL, which is what actually keeps serving main, went unused. cfUrl on the
   // revision still keeps the hash URL, so the exact deployment stays auditable.
-  const liveUrl = `https://${project}.pages.dev`;
+  //
+  // TASK_158 W1 — built from the subdomain Cloudflare GRANTED, never from the
+  // requested project name. `<name>.pages.dev` is only a request: when it is taken,
+  // Cloudflare appends a suffix and serves the project from `<name-c3t>.pages.dev`
+  // instead. Deriving the URL from `project` handed a user a hostname that does not
+  // belong to them at all — for `new-test` that was `https://new-test.pages.dev`,
+  // which answers 522 forever, while the real site sat at `new-test-c3t.pages.dev`.
+  const liveUrl = pagesProjectUrl(ensured.value ? ensured.value.subdomain : project);
+
+  // A brand-new project gets its `*.pages.dev` certificate issued on demand AFTER
+  // the project exists, so the live URL can fail TLS (ERR_SSL… in the browser) for
+  // the first seconds. Wait for the edge to answer BEFORE handing the URL over, so
+  // a successful publish never looks broken. Bounded and non-fatal: a timeout only
+  // means the link may take a moment, it never fails the deploy — the bytes really
+  // are live at that point, Cloudflare's certificate is simply still propagating.
+  await warmUpUrl(liveUrl);
   const updated = await prisma.hostingRevision.update({
     where: { id: revision.id },
     data: {

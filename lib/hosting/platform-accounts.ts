@@ -434,7 +434,7 @@ export async function resolvePlatformCredential(
    * put premium links on the free account's subdomain, which is the exact
    * mixing-up the pin exists to prevent.
    */
-  opts: { requireWorkerToken?: boolean; pinAccountId?: string | null } = {}
+  opts: { requireWorkerToken?: boolean; requireZoneToken?: boolean; pinAccountId?: string | null } = {}
 ): Promise<PlatformResolveResult> {
   if (!(await isPlatformEngineEnabled())) {
     return { ok: false, code: "platform_disabled", message: SETUP_MESSAGE };
@@ -481,9 +481,15 @@ export async function resolvePlatformCredential(
   // without a decrypt or a network call — same cheapness as the red-row skip above.
   // Falling through to an empty list reports `platform_exhausted`, whose message
   // already tells the user to add their own account, so no new error code is needed.
-  const usable = opts.requireWorkerToken
-    ? candidates.filter((row) => !!row.workerTokenCiphertext)
-    : candidates;
+  //
+  // TASK_158 W1 — `requireZoneToken` is the same idea for the one capability with
+  // its own dedicated slot: creating a ZONE. It drops rows with no Zones token for
+  // exactly the same reason (a row that would fail the call must never be chosen
+  // over one that can serve it), and it is checked INDEPENDENTLY of the Workers
+  // filter so a caller can ask for either, both, or neither.
+  const usable = candidates
+    .filter((row) => (opts.requireWorkerToken ? !!row.workerTokenCiphertext : true))
+    .filter((row) => (opts.requireZoneToken ? !!row.zoneTokenCiphertext : true));
   if (usable.length === 0) {
     return nothingUsable();
   }

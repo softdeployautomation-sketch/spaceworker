@@ -233,15 +233,207 @@ export async function verifyCredential(cred: CfCredential): Promise<CfResult<{ a
   return { ok: true, status: 200, value: { accountId: cred.accountId } };
 }
 
-/** Create a Pages project if it does not already exist. Idempotent. */
-export async function ensureProject(cred: CfCredential, project: string): Promise<CfResult<{ name: string }>> {
-  const existing = await cfFetch<{ name: string }>(cred, "GET", `/accounts/${cred.accountId}/pages/projects/${project}`);
-  if (existing.ok) return existing;
-  if (existing.status !== 404) return existing;
-  return cfFetch<{ name: string }>(cred, "POST", `/accounts/${cred.accountId}/pages/projects`, {
-    name: project,
-    production_branch: "main",
+/**
+ * The subdomain Cloudflare actually GRANTED a project, from whatever shape it
+ * arrived in. Defensive because Cloudflare has returned it BOTH ways on the Pages
+ * project endpoints — a singular `subdomain` label (`new-test-c3t`) and, on older
+ * responses, a `subdomains` array of full hostnames (`["new-test-c3t.pages.dev"]`)
+ * — and because a value has been seen as a bare label, a host, and a URL. PURE.
+ */
+export function normalizePagesSubdomain(raw: string | string[] | null | undefined, fallback: string): string {
+  // `subdomains` is an ARRAY of hostnames; the first entry is the production one on
+  // the `*.pages.dev` domain. Taking `[0]` (rather than joining) is deliberate: the
+  // extras are per-branch aliases and none of them is the stable project URL.
+  const single = Array.isArray(raw) ? raw[0] : raw;
+  const value = (single ?? "")
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "");
+  const label = value.replace(/\.pages\.dev$/i, "").trim();
+  return label || fallback;
+}
+
+/** The stable project URL. Everything we hand a user is built from this. PURE. */
+export function pagesProjectUrl(subdomain: string): string {
+  return `https://${subdomain}.pages.dev`;
+}
+
+/**
+ * Create a Pages project if it does not already exist. Idempotent.
+ *
+ * WHY `subdomain` IS RETURNED. The project name is a REQUEST; the subdomain is what
+ * Cloudflare actually GRANTED. When `<name>.pages.dev` is already taken Cloudflare
+ * silently appends a suffix — the real `new-test` project serves at
+ * `new-test-c3t.pages.dev` — and deriving the live URL from the requested name
+ * produced `https://new-test.pages.dev`, which answered **522** (and would have been
+ * somebody else's project had it existed). This is the ONLY correct source for a
+ * `<x>.pages.dev` URL we show a user. The subdomain is public — it is literally part
+ * of the hostname — so it is never treated as a secret. Falls back to `name` when an
+ * older API response omits the field, which is exactly the previous behaviour.
+ */
+export async function ensureProject(
+  cred: CfCredential,
+  project: string
+): Promise<CfResult<{ name: string; subdomain: string }>> {
+  // Both response shapes are accepted: `subdomain` (current) and `subdomains`
+  // (older). Reading only one of them is what silently falls back to the requested
+  // name and re-creates the 522 bug on the accounts where the other is returned.
+  type ProjectBody = { name?: string; subdomain?: string; subdomains?: string[] };
+  const pick = (value: ProjectBody | undefined) => ({
+    name: value?.name ?? project,
+    subdomain: normalizePagesSubdomain(value?.subdomain ?? value?.subdomains, project),
   });
+
+  const existing = await cfFetch<ProjectBody>(
+    cred,
+    "GET",
+    `/accounts/${cred.accountId}/pages/projects/${project}`
+  );
+  if (existing.ok) return { ok: true, status: existing.status, value: pick(existing.value) };
+  if (existing.status !== 404) return { ok: false, status: existing.status, error: existing.error };
+
+  const created = await cfFetch<ProjectBody>(
+    cred,
+    "POST",
+    `/accounts/${cred.accountId}/pages/projects`,
+    { name: project, production_branch: "main" }
+  );
+  if (!created.ok) return { ok: false, status: created.status, error: created.error };
+  return { ok: true, status: created.status, value: pick(created.value) };
+}
+
+/**
+ * Is this URL answerable at the edge YET?
+ *
+ * WHY THIS EXISTS. A brand-new Pages project has its `*.pages.dev` certificate
+ * issued ON DEMAND, immediately after the project is created. The first request to
+ * a freshly minted host therefore fails the TLS handshake — which a browser reports
+ * as **ERR_SSL_VERSION_OR_CIPHER_MISMATCH**, not as a 404. The deploy itself is
+ * perfect; only the certificate is late. Handing the URL over during that window is
+ * what makes a working deploy look completely broken to the user, and it is the
+ * exact symptom seen on a fresh project on 2026-10-04.
+ *
+ * Returns true as soon as the host completes a TLS handshake and answers with ANY
+ * HTTP status — a 404 still proves the hostname is live at the edge, which is all
+ * the user's browser needs to stop showing an SSL error. The first probe is
+ * awaited only once, so the COMMON case (an already-warm project) costs one request
+ * and no delay at all; polling only happens when it genuinely is not ready.
+ *
+ * Never throws, never fatal: a `false` here means "the deploy is done but the link
+ * may take a moment", which the caller reports as a note rather than a failure.
+ */
+export async function warmUpUrl(
+  url: string,
+  opts: { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> } = {}
+): Promise<boolean> {
+  const timeoutMs = opts.timeoutMs ?? 45_000;
+  const intervalMs = opts.intervalMs ?? 3_000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    try {
+      await fetch(url, { method: "GET", redirect: "manual", cache: "no-store" });
+      return true;
+    } catch {
+      // TLS not provisioned yet, DNS not propagated, or a transient network blip —
+      // all of which are the same answer here: not ready, try again shortly.
+    }
+    if (Date.now() >= deadline) return false;
+    await sleep(intervalMs);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TASK_158 W1 — the ZONE-CREATE call. This is the single reason the dedicated
+// account-scoped Zones token (`HostingPlatformAccount.zoneToken`) exists.
+//
+// WHY A THIRD TOKEN AND NOT A WIDER ONE: creating a zone is an ACCOUNT grant
+// (`com.cloudflare.api.account.zone.create`). Neither the Pages token nor the
+// Workers/DNS token carries it — probed live on 2026-10-04, all three platform
+// accounts answered **403** for `zone.create` on both existing tokens. Widening
+// either one would hand every site deploy account-level zone administration, which
+// is precisely what the three-slot split exists to prevent.
+//
+// `cred.token` here MUST therefore be a Zones token. The function cannot check
+// that (only Cloudflare can), and it does not need to: a wrong token fails CLOSED
+// with Cloudflare's own 403, and every caller treats that as "cannot auto-create",
+// never as a reason to widen anything.
+// ---------------------------------------------------------------------------
+
+export interface CreatedZone {
+  zoneId: string;
+  /** The zone's own name, as Cloudflare spells it. */
+  name: string;
+  /** Cloudflare's status, passed through UNCHANGED (normalised by the caller). */
+  status: string;
+  /** The two nameservers the user must set at their registrar. */
+  nameservers: string[];
+}
+
+/**
+ * Create an apex zone inside one Cloudflare account.
+ *
+ * `jump_start: true` has Cloudflare import the DNS records it can already see for
+ * the domain at the registrar, so a domain that is already serving traffic does not
+ * go dark for the propagation window. It is the same thing the dashboard's "Add
+ * site" does, and it is harmless on a brand-new domain.
+ *
+ * `type: "full"` is the normal (nameserver) setup, which is what a user pointing
+ * their registrar at us needs. It is deliberately explicit: `partial` is the
+ * CNAME-based SaaS setup and would silently serve nothing without an extra
+ * hostname binding.
+ *
+ * A zone can live in exactly ONE account, so "already exists" is reported as a
+ * DISTINCT, non-throwing outcome (`code: "zone_exists"`) rather than a plain
+ * failure. That matters: the caller then falls back to READING the zone, which is
+ * how a domain the user had already put in their own Cloudflare account still
+ * resolves to a working row instead of an error.
+ */
+export async function createZone(
+  cred: CfCredential,
+  name: string
+): Promise<CfResult<CreatedZone> & { code?: "zone_exists" | "zone_create_failed" }> {
+  const res = await cfFetch<{ id: string; name: string; status?: string; name_servers?: string[] }>(
+    cred,
+    "POST",
+    "/zones",
+    { name, account: { id: cred.accountId }, jump_start: true, type: "full" }
+  );
+
+  if (!res.ok) {
+    // Cloudflare reports a zone that already exists with a duplicate-name error
+    // (code 1061/1049 family) rather than a clean 409, so the message is checked
+    // too. Both shapes mean the same thing to us: "somebody already owns this zone".
+    const exists = res.status === 409 || /\balready exists\b/i.test(res.error ?? "");
+    return {
+      ok: false,
+      status: res.status,
+      error: res.error,
+      code: exists ? "zone_exists" : "zone_create_failed",
+    };
+  }
+
+  const zone = res.value;
+  if (!zone?.id) {
+    return {
+      ok: false,
+      status: 502,
+      error: "Cloudflare accepted the request but returned no zone.",
+      code: "zone_create_failed",
+    };
+  }
+
+  return {
+    ok: true,
+    status: res.status,
+    value: {
+      zoneId: zone.id,
+      name: zone.name ?? name,
+      status: zone.status ?? "pending",
+      nameservers: zone.name_servers ?? [],
+    },
+  };
 }
 
 export interface DeployFile {

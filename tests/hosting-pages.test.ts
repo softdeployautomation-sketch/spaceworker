@@ -52,7 +52,7 @@ const serve = require("../lib/hosting/serve") as typeof import("../lib/hosting/s
 
 const { parseSevenZipListing, isZipSlip, isJunkEntry, analyseArchive, manifestFromTree, listArchive, extractArchive, scanExtractedTree, singleRootPrefix, flattenSingleRootDir } = extract;
 const { scanSiteFile, MB } = rules;
-const { pagesAssetKey, deployTree, waitForDeployment } = cloudflare;
+const { pagesAssetKey, deployTree, waitForDeployment, ensureProject, warmUpUrl, createZone, normalizePagesSubdomain, pagesProjectUrl } = cloudflare;
 const { mimeForPath } = serve;
 
 
@@ -465,6 +465,63 @@ test("scanExtractedTree + flatten: a zipped folder becomes a root index.html (no
   assert.equal(prefix, "", "a real site root must never be unwrapped");
 });
 
+// ---------------------------------------------------------------------------
+// TASK_158 W1 — the wrapper that macOS refused to collapse.
+//
+// `flattenSingleRootDir` required `items.length === 1`, but Finder puts a
+// top-level `.DS_Store` (and often a `__MACOSX/` folder) BESIDE the wrapper, so
+// staging had two children and NOTHING was unwrapped. The deployed root then had
+// no `/index.html` and the site 404'd at `/` while the page sat at `/mysite/`.
+// ---------------------------------------------------------------------------
+
+test("flatten: OS junk beside the wrapper must not block the unwrap", async () => {
+  const dir = path.join(STORAGE_DIR, `junk-${randomUUID()}`);
+  await fs.mkdir(path.join(dir, "mysite", "assets"), { recursive: true });
+  await fs.writeFile(path.join(dir, "mysite", "index.html"), "<h1>root</h1>");
+  await fs.writeFile(path.join(dir, "mysite", "assets", "app.js"), "console.log(1)");
+  // The two children that used to defeat the flatten.
+  await fs.writeFile(path.join(dir, ".DS_Store"), "junk");
+  await fs.mkdir(path.join(dir, "__MACOSX"), { recursive: true });
+  await fs.writeFile(path.join(dir, "__MACOSX", "._index.html"), "junk");
+
+  const moved = await flattenSingleRootDir(dir);
+  assert.equal(moved, "mysite/", "the wrapper must still be recognised");
+
+  const scanned = await scanExtractedTree(dir, { maxAssetMb: 25 });
+  assert.ok(scanned.ok);
+  const paths = scanned.files.map((f) => f.path).sort();
+  assert.deepEqual(paths, ["/assets/app.js", "/index.html"], "only the real site survives, at the ROOT");
+  // The junk must be GONE from disk too, not merely hidden from the scan.
+  await assert.rejects(fs.stat(path.join(dir, ".DS_Store")));
+  await assert.rejects(fs.stat(path.join(dir, "__MACOSX")));
+});
+
+test("flatten: two REAL roots still refuse to unwrap — that ambiguity is the user's", async () => {
+  const dir = path.join(STORAGE_DIR, `multi-${randomUUID()}`);
+  await fs.mkdir(path.join(dir, "site"), { recursive: true });
+  await fs.mkdir(path.join(dir, "assets"), { recursive: true });
+  await fs.writeFile(path.join(dir, "site", "index.html"), "<h1>a</h1>");
+  await fs.writeFile(path.join(dir, "assets", "a.css"), "a{}");
+
+  assert.equal(await flattenSingleRootDir(dir), "", "no single wrapper here");
+  const scanned = await scanExtractedTree(dir, { maxAssetMb: 25 });
+  assert.ok(scanned.ok);
+  const paths = scanned.files.map((f) => f.path).sort();
+  assert.deepEqual(paths, ["/assets/a.css", "/site/index.html"], "the user's layout is left alone");
+});
+
+test("flatten: a site already at the ROOT is untouched (index.html beside a folder)", async () => {
+  const dir = path.join(STORAGE_DIR, `flat-${randomUUID()}`);
+  await fs.mkdir(path.join(dir, "assets"), { recursive: true });
+  await fs.writeFile(path.join(dir, "index.html"), "<h1>hi</h1>");
+  await fs.writeFile(path.join(dir, "assets", "a.css"), "a{}");
+
+  assert.equal(await flattenSingleRootDir(dir), "", "a root index.html is not a wrapper");
+  const scanned = await scanExtractedTree(dir, { maxAssetMb: 25 });
+  assert.ok(scanned.ok);
+  assert.deepEqual(scanned.files.map((f) => f.path).sort(), ["/assets/a.css", "/index.html"]);
+});
+
 test("mimeForPath: serves the right Content-Type for the file kinds a site ships", () => {
   assert.match(mimeForPath("/x/index.html"), /text\/html/);
   assert.match(mimeForPath("app.js"), /javascript/);
@@ -744,14 +801,300 @@ test("regression: publish rebuilds the file tree for BOTH engines (no cloudflare
   assert.match(fn, /files\.length === 0/, "publish must refuse to deploy an empty tree");
 });
 
-test("regression: a Cloudflare live url is the stable <project>.pages.dev, not the deploy hash", async () => {
+test("regression: a Cloudflare live url is the stable PROJECT url, never the deploy hash", async () => {
   const src = await fs.readFile(path.join(ROOT, "lib", "hosting", "sites.ts"), "utf8");
   // The publish bookkeeping lives in deployRevision (publishRevision only calls it).
   const fn = src.slice(src.indexOf("async function deployRevision"));
-  assert.match(fn, /const liveUrl = `https:\/\/\$\{project\}\.pages\.dev`/);
   assert.ok(
     !/data:\s*\{\s*status:\s*"published",\s*liveUrl:\s*dv\.url\s*\}/.test(src),
     "liveUrl must not be the per-deployment hash url"
   );
+  // TASK_158 W1 — and it must not be hand-built from the REQUESTED project name
+  // either. `<name>.pages.dev` is only a wish: when the name is taken Cloudflare
+  // serves the project from `<name>-<suffix>.pages.dev`, so the old template handed
+  // out `https://new-test.pages.dev` (live 522) for a site that actually lived at
+  // `new-test-c3t.pages.dev`. The url now comes from the subdomain Cloudflare granted.
+  assert.ok(
+    !/const liveUrl = `https:\/\/\$\{project\}\.pages\.dev`/.test(fn),
+    "liveUrl must not be derived from the requested project name"
+  );
+  assert.match(fn, /pagesProjectUrl\(/, "liveUrl must be built from the granted subdomain");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_158 W1 — the granted-subdomain fix.
+//
+// Symptom (live, 2026-10-04): a real ZIP uploaded and deployed fine, the preview
+// `<hash>.new-test-c3t.pages.dev` returned 200, and the project itself served at
+// `new-test-c3t.pages.dev` — but the stored `liveUrl` was the hand-built
+// `https://new-test.pages.dev`, which answered **522**. Cloudflare had appended a
+// suffix because `new-test.pages.dev` was already taken, and nothing noticed.
+//
+// The fix has two halves and BOTH are asserted below: read the granted subdomain,
+// and never hand-build a hostname from the requested name.
+// ---------------------------------------------------------------------------
+
+test("normalizePagesSubdomain: takes whatever Cloudflare sent, always yields a bare label", () => {
+  assert.equal(normalizePagesSubdomain("new-test-c3t", "new-test"), "new-test-c3t");
+  assert.equal(normalizePagesSubdomain("demo.pages.dev", "fallback"), "demo");
+  assert.equal(normalizePagesSubdomain("https://demo.pages.dev/", "fallback"), "demo");
+  assert.equal(normalizePagesSubdomain("  demo  ", "fallback"), "demo");
+  // The OTHER real shape: `subdomains` is an array of full hostnames on older
+  // responses. Reading only the singular field is what lets the 522 come back on the
+  // accounts where this one is returned instead.
+  assert.equal(normalizePagesSubdomain(["demo.pages.dev"], "fallback"), "demo");
+  assert.equal(normalizePagesSubdomain(["demo.pages.dev", "b.demo.pages.dev"], "fallback"), "demo");
+  assert.equal(normalizePagesSubdomain([], "fallback"), "fallback");
+  // Absent/blank falls back to the requested name — the old behaviour exactly, so
+  // an API that omits the field cannot regress to an empty hostname.
+  assert.equal(normalizePagesSubdomain(undefined, "fallback"), "fallback");
+  assert.equal(normalizePagesSubdomain(null, "fallback"), "fallback");
+  assert.equal(normalizePagesSubdomain("", "fallback"), "fallback");
+  assert.equal(normalizePagesSubdomain("   ", "fallback"), "fallback");
+});
+
+test("pagesProjectUrl: builds the https project url", () => {
+  assert.equal(pagesProjectUrl("new-test-c3t"), "https://new-test-c3t.pages.dev");
+});
+
+/**
+ * Drive the REAL `ensureProject` against a stubbed fetch. This is the call whose
+ * response shape caused the 522, so it is asserted on the wire, not via a helper.
+ */
+async function runEnsureProject(
+  handler: (url: string, init: RequestInit) => Response | null
+): Promise<{ res: Awaited<ReturnType<typeof ensureProject>>; calls: string[] }> {
+  const calls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init: RequestInit = {}) => {
+    const url = String(input);
+    calls.push(`${init.method ?? "GET"} ${url}`);
+    return handler(url, init) ?? jsonRes({ success: false, errors: [{ message: `unexpected ${url}` }] }, 500);
+  }) as typeof globalThis.fetch;
+  try {
+    return { res: await ensureProject({ accountId: "acct_1", token: "tok_1" }, "new-test"), calls };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+test("ensureProject: an EXISTING project reports the subdomain Cloudflare granted, not the name we asked for", async () => {
+  const { res, calls } = await runEnsureProject((url) =>
+    url.endsWith("/pages/projects/new-test")
+      ? jsonRes({ success: true, result: { name: "new-test", subdomain: "new-test-c3t" } })
+      : null
+  );
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.subdomain, "new-test-c3t");
+  assert.equal(res.value?.name, "new-test");
+  assert.equal(calls.length, 1, "an existing project must never be re-POSTed");
+});
+
+test("ensureProject: a BRAND-NEW project reports its granted subdomain too", async () => {
+  const { res, calls } = await runEnsureProject((url, init) => {
+    if (init.method === "GET") return jsonRes({ success: false, errors: [{ message: "not found" }] }, 404);
+    if (url.endsWith("/pages/projects")) {
+      return jsonRes({ success: true, result: { name: "new-test", subdomain: "new-test-c3t" } }, 201);
+    }
+    return null;
+  });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.subdomain, "new-test-c3t");
+  assert.equal(calls.length, 2, "404 then create");
+});
+
+test("ensureProject: a response with no subdomain falls back to the requested name", async () => {
+  const { res } = await runEnsureProject((url) =>
+    url.endsWith("/pages/projects/new-test") ? jsonRes({ success: true, result: { name: "new-test" } }) : null
+  );
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.subdomain, "new-test");
+});
+
+test("ensureProject: the older `subdomains[]` shape is read too, not silently ignored", async () => {
+  const { res } = await runEnsureProject((url) =>
+    url.endsWith("/pages/projects/new-test")
+      ? jsonRes({ success: true, result: { name: "new-test", subdomains: ["new-test-c3t.pages.dev"] } })
+      : null
+  );
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.subdomain, "new-test-c3t", "the array form must not fall back to the requested name");
+});
+
+test("ensureProject: a singular `subdomain` wins over `subdomains` when both are present", async () => {
+  const { res } = await runEnsureProject((url) =>
+    url.endsWith("/pages/projects/new-test")
+      ? jsonRes({
+          success: true,
+          result: { name: "new-test", subdomain: "granted-c3t", subdomains: ["stale-old.pages.dev"] },
+        })
+      : null
+  );
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.subdomain, "granted-c3t");
+});
+
+test("ensureProject: a non-404 failure is reported, never retried as a create", async () => {
+  const { res, calls } = await runEnsureProject(() =>
+    jsonRes({ success: false, errors: [{ message: "Authentication error" }] }, 403)
+  );
+  assert.equal(res.ok, false);
+  assert.equal(calls.length, 1, "a 403 must not be followed by a create");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_158 W1 — the certificate race.
+//
+// A brand-new Pages project has its `*.pages.dev` certificate issued ON DEMAND,
+// so the very first request to the fresh host fails the TLS handshake. A browser
+// reports that as ERR_SSL_VERSION_OR_CIPHER_MISMATCH, not as a 404 — which makes a
+// perfectly good deploy look completely broken. These pin the two properties that
+// matter: an already-warm url costs nothing, and a cold one is waited for.
+// ---------------------------------------------------------------------------
+
+test("warmUpUrl: returns true on the first probe, with no sleeping at all", async () => {
+  const realFetch = globalThis.fetch;
+  let probes = 0;
+  let slept = 0;
+  globalThis.fetch = (async () => {
+    probes += 1;
+    return new Response("ok", { status: 200 });
+  }) as typeof globalThis.fetch;
+  try {
+    const warm = await warmUpUrl("https://demo.pages.dev", { sleep: async () => void (slept += 1) });
+    assert.equal(warm, true);
+    assert.equal(probes, 1);
+    assert.equal(slept, 0, "an already-warm url must not delay the publish");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("warmUpUrl: a TLS failure is retried, and ANY http status counts as live", async () => {
+  const realFetch = globalThis.fetch;
+  let probes = 0;
+  globalThis.fetch = (async () => {
+    probes += 1;
+    if (probes < 3) throw new Error("unable to verify the first certificate");
+    // A 404 still proves the hostname is live at the edge, which is all a browser
+    // needs to stop showing an SSL error.
+    return new Response("nope", { status: 404 });
+  }) as typeof globalThis.fetch;
+  try {
+    const warm = await warmUpUrl("https://fresh.pages.dev", { sleep: async () => {} });
+    assert.equal(warm, true);
+    assert.equal(probes, 3);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test("warmUpUrl: gives up at the deadline instead of hanging a deploy", async () => {
+  const realFetch = globalThis.fetch;
+  let probes = 0;
+  globalThis.fetch = (async () => {
+    probes += 1;
+    throw new Error("still not provisioned");
+  }) as typeof globalThis.fetch;
+  try {
+    // A zero timeout means the FIRST failure is already past the deadline.
+    const warm = await warmUpUrl("https://never.pages.dev", { timeoutMs: 0, sleep: async () => {} });
+    assert.equal(warm, false);
+    assert.equal(probes, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// TASK_158 W1 — ZONE CREATION, the single call the dedicated Zones token exists
+// for. Creating a zone is an ACCOUNT grant that neither the Pages token nor the
+// Workers token carries (both answer 403 for it), so these assertions are about
+// the exact request body and about telling "already exists" apart from a real
+// refusal — the difference between re-reading the user's own zone and reporting a
+// spurious error.
+// ---------------------------------------------------------------------------
+
+async function runCreateZone(
+  name: string,
+  handler: (url: string, init: RequestInit) => Response
+): Promise<{ res: Awaited<ReturnType<typeof createZone>>; calls: { url: string; method: string; body: string; authorization: string | null }[] }> {
+  const calls: { url: string; method: string; body: string; authorization: string | null }[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown, init: RequestInit = {}) => {
+    const url = String(input);
+    calls.push({
+      url,
+      method: init.method ?? "GET",
+      body: typeof init.body === "string" ? init.body : "",
+      authorization: new Headers(init.headers ?? {}).get("authorization"),
+    });
+    return handler(url, init);
+  }) as typeof globalThis.fetch;
+  try {
+    return { res: await createZone({ accountId: "acct_1", token: "zone_tok" }, name), calls };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+test("createZone: POSTs the account-scoped zone body and reports the assigned nameservers", async () => {
+  const { res, calls } = await runCreateZone("example.com", () =>
+    jsonRes({
+      success: true,
+      result: { id: "zone_9", name: "example.com", status: "pending", name_servers: ["ns1.cf.com", "ns2.cf.com"] },
+    })
+  );
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.value?.zoneId, "zone_9");
+  assert.equal(res.value?.status, "pending");
+  // The nameservers are the whole user-facing payoff: without them the UI can only
+  // say "go and create this yourself".
+  assert.deepEqual(res.value?.nameservers, ["ns1.cf.com", "ns2.cf.com"]);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.cloudflare.com/client/v4/zones");
+  assert.equal(calls[0].method, "POST");
+  assert.equal(calls[0].authorization, "Bearer zone_tok");
+  const body = JSON.parse(calls[0].body) as Record<string, unknown>;
+  assert.equal(body.name, "example.com");
+  assert.deepEqual(body.account, { id: "acct_1" });
+  // jump_start imports what the registrar already serves, so a domain that is
+  // already live does not go dark while the nameservers propagate.
+  assert.equal(body.jump_start, true);
+  // "full" is the nameserver setup; "partial" would serve nothing.
+  assert.equal(body.type, "full");
+});
+
+test("createZone: 'already exists' is a DISTINCT code, so the caller re-reads instead of erroring", async () => {
+  const { res } = await runCreateZone("example.com", () =>
+    jsonRes({ success: false, errors: [{ code: 1061, message: "Zone already exists." }] }, 400)
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "zone_exists");
+});
+
+test("createZone: a 409 is also 'already exists'", async () => {
+  const { res } = await runCreateZone("example.com", () =>
+    jsonRes({ success: false, errors: [{ message: "Duplicate zone" }] }, 409)
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "zone_exists");
+});
+
+test("createZone: a genuine refusal is a plain failure, never mistaken for 'already exists'", async () => {
+  // A 403 is exactly what a token WITHOUT the zone-create grant returns — the
+  // expected answer if the operator pasted a Pages token into the Zones slot.
+  const { res } = await runCreateZone("example.com", () =>
+    jsonRes({ success: false, errors: [{ message: "Authentication error" }] }, 403)
+  );
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "zone_create_failed");
+});
+
+test("createZone: a 200 with no zone id is a failure, not an empty success", async () => {
+  const { res } = await runCreateZone("example.com", () => jsonRes({ success: true, result: {} }));
+  assert.equal(res.ok, false);
+  assert.equal(res.code, "zone_create_failed");
 });
 

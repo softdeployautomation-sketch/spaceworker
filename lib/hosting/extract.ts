@@ -112,7 +112,10 @@ export function isZipSlip(entryPath: string): boolean {
 /** OS junk we never extract into a site (and never count as a "skipped file"). */
 export function isJunkEntry(entryPath: string): boolean {
   const p = entryPath.replace(/\\/g, "/");
-  return p.startsWith("__MACOSX/") || p.endsWith("/.DS_Store") || p === ".DS_Store";
+  // The bare name matters as well as the slash form: on disk `__MACOSX` is read
+  // back as a DIRECTORY name with no trailing slash, so matching only
+  // `__MACOSX/` left a real second root on disk that blocked the flatten.
+  return p === "__MACOSX" || p.startsWith("__MACOSX/") || p.endsWith("/.DS_Store") || p === ".DS_Store";
 }
 
 /**
@@ -144,10 +147,21 @@ export function singleRootPrefix(paths: string[]): string {
 }
 
 /**
- * Collapse a wrapping folder on disk: when `destDir` contains exactly one child
- * and it is a directory, its CONTENTS become the root. Called after extraction,
- * before the tree is scanned, so both engines (local `/pv|/hs` and the Cloudflare
- * manifest) see the same flattened paths.
+ * Collapse a wrapping folder on disk: when `destDir` contains exactly one REAL
+ * child and it is a directory, its CONTENTS become the root. Called after
+ * extraction, before the tree is scanned, so both engines (local `/pv|/hs` and the
+ * Cloudflare manifest) see the same flattened paths.
+ *
+ * WHY "REAL" CHILD. This used to require `items.length === 1`, which silently
+ * failed on every archive macOS produced: Finder leaves a top-level `.DS_Store`
+ * (and sometimes a `__MACOSX/` folder) BESIDE the wrapper directory, so staging had
+ * two children, nothing was unwrapped, and the deployed root had no `index.html` —
+ * the site 404'd at `/` with the real page stranded at `/mysite/index.html`. OS junk
+ * is never part of a site (`isJunkEntry`), so it must not count as a second root;
+ * it is removed afterwards instead, so the user cannot ship it either.
+ *
+ * Genuinely multiple REAL roots (`site/` and `assets/`) still refuse to unwrap —
+ * that ambiguity is the user's to resolve, not ours to guess at.
  */
 export async function flattenSingleRootDir(destDir: string): Promise<string> {
   let items: import("node:fs").Dirent[];
@@ -156,8 +170,13 @@ export async function flattenSingleRootDir(destDir: string): Promise<string> {
   } catch {
     return "";
   }
-  if (items.length !== 1 || !items[0].isDirectory()) return "";
-  const inner = items[0].name;
+  const junk = items.filter((item) => isJunkEntry(item.name));
+  const real = items.filter((item) => !isJunkEntry(item.name));
+  for (const item of junk) {
+    await fs.rm(path.join(destDir, item.name), { recursive: true, force: true }).catch(() => {});
+  }
+  if (real.length !== 1 || !real[0].isDirectory()) return "";
+  const inner = real[0].name;
   const staging = path.join(destDir, ".flatten");
   // Move the wrapper's contents up one level, via a staging dir INSIDE destDir so
   // the move never crosses a filesystem boundary. `.flatten` itself is hidden from

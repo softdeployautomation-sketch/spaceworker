@@ -333,6 +333,27 @@ const fakeWorkers = {
   },
 };
 
+/**
+ * TASK_158 W1 — the platform provisioner. Faked for the same reason the registry
+ * is: these tests are about the ROUTE's wiring (when it reaches for the platform
+ * token, and what it does with each answer), not about Cloudflare.
+ */
+let provisionResult: Record<string, unknown> = {
+  ok: false,
+  zoneId: null,
+  status: "pending",
+  nameservers: null,
+  note: "This domain isn't in the Cloudflare account we publish to yet.",
+};
+
+const fakeZoneProvision = {
+  MANUAL_ZONE_NOTE: "This domain isn't in the Cloudflare account we publish to yet.",
+  provisionDomainZone: async (userId: string, apex: string) => {
+    calls.push(`provision:${userId}:${apex}`);
+    return provisionResult;
+  },
+};
+
 /** A minimal NextResponse stand-in: these routes only return .json(...) bodies. */
 const fakeNextResponse = {
   json: (data: unknown, init?: { status?: number }) => ({
@@ -358,6 +379,7 @@ loader._load = function patched(request, parent, isMain) {
     if (request === "@/lib/hosting/domain-registry") return fakeRegistry;
     if (request === "@/lib/hosting/credentials") return fakeCredentials;
     if (request === "@/lib/hosting/workers") return fakeWorkers;
+    if (request === "@/lib/hosting/zone-provision") return fakeZoneProvision;
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -433,6 +455,13 @@ beforeEach(() => {
     { id: "user_b", email: "bob@sw.dev", tier: "FREE" },
   ];
   userFindManyArgs = {};
+  provisionResult = {
+    ok: false,
+    zoneId: null,
+    status: "pending",
+    nameservers: null,
+    note: "This domain isn't in the Cloudflare account we publish to yet.",
+  };
 });
 
 // ---------------------------------------------------------------------------
@@ -715,17 +744,63 @@ test("user route: a failed Cloudflare verify still 201s — the domain WAS added
   assert.equal(payload.verified, false);
   assert.equal(payload.domain?.apex, "example.com");
   assert.match(String(payload.verifyNote ?? ""), /Cloudflare/i);
+  // TASK_158 W1 — with no BYO account the route must still TRY the platform
+  // provisioner. The old code returned here, which is exactly why a user with no
+  // Cloudflare account could never get a domain set up for them.
+  assert.ok(calls.some((c) => c.startsWith("provision:user_a:")), "the platform provisioner must be reached");
 });
 
-test("user route: a domain not yet in Cloudflare is added as pending, not an error", async () => {
+test("user route: a domain not yet in the user's Cloudflare is PROVISIONED on the platform", async () => {
   hasCredential = true;
   zoneByApex = { "example.com": { ok: true, status: 200, value: null } };
+  // The platform created it and Cloudflare assigned these nameservers — the whole
+  // point of the Zones token. The user now has something actionable to paste at
+  // their registrar instead of a dead end.
+  provisionResult = {
+    ok: true,
+    zoneId: "z_9",
+    status: "pending",
+    nameservers: ["a.ns.cloudflare.com", "b.ns.cloudflare.com"],
+    note: "Set the nameservers below at your registrar to finish.",
+  };
+  // The re-read must see the row the provisioner just recorded.
+  listResult = {
+    ok: true,
+    value: [
+      {
+        ...DOMAIN_VIEW,
+        zoneId: "z_9",
+        nameservers: ["a.ns.cloudflare.com", "b.ns.cloudflare.com"],
+        status: "pending",
+      },
+    ],
+  };
 
   const res = await userRoute.POST(jsonReq(BASE, "POST", { domain: "example.com" }));
   assert.equal(res.status, 201);
   const payload = await readBody(res);
-  assert.equal(payload.verified, false);
-  assert.match(String(payload.verifyNote ?? ""), /isn't in your Cloudflare account/i);
+  assert.equal(payload.verified, false, "a pending zone is not 'ready'");
+  assert.equal(payload.domain?.zoneId, "z_9");
+  assert.deepEqual(payload.domain?.nameservers, ["a.ns.cloudflare.com", "b.ns.cloudflare.com"]);
+  assert.ok(calls.includes("provision:user_a:example.com"));
+});
+
+test("user route: a zone already in the USER's account is recorded there, never re-provisioned", async () => {
+  hasCredential = true;
+  zoneByApex = {
+    "example.com": {
+      ok: true,
+      status: 200,
+      value: { zoneId: "z_1", name: "example.com", status: "pending", nameservers: ["x.ns.cloudflare.com"] },
+    },
+  };
+
+  const res = await userRoute.POST(jsonReq(BASE, "POST", { domain: "example.com" }));
+  assert.equal(res.status, 201);
+  // The user's own account is authoritative — reaching for our token here would
+  // either duplicate the zone or report OUR account's state as theirs.
+  assert.ok(calls.some((c) => c.startsWith("record:")), "the user's own zone must be recorded");
+  assert.equal(calls.some((c) => c.startsWith("provision:")), false, "no platform write for a user-owned zone");
 });
 
 test("user route: an active zone marks the domain selectable", async () => {
