@@ -14,6 +14,14 @@
 On the VPS, `/opt/spaceworker/` is the **repo root** — `app/`, `components/`, `lib/`, `prisma/` all live directly under it. `/opt/spaceworker/app/` is the Next.js **router directory** (`app/api/...`, `app/dashboard/...`), NOT a second copy of the repo.
 
 - **rsync destination**: always `root@164.68.105.96:/opt/spaceworker/` (trailing slash, repo root) with an explicit `--files-from` list of repo-relative paths (e.g. `app/api/exe-license/auto-bind/route.ts`, `lib/products.ts`). Never a bare directory sync, never a relative `..` in the remote target — a `..`-containing remote path once resolved to the wrong directory and overwrote the real landing page mid-session. If a path needs `..`, stop and rewrite it as an absolute path instead.
+- **This workstation's `rsync` is 2.6.9 (macOS bundled) and is not trustworthy for trees.** `rsync --version` confirms it; there is no newer one on PATH (checked 2026-10-04). Simple workaround for everything in the bullet above: **ship with tar over ssh** — it sidesteps the under-recursion bug and the directory-entry trap entirely, and preserves relative paths untouched:
+  ```bash
+  printf 'lib/hosting/domains.ts\napp/api/hosting/domains/route.ts\n' > /tmp/files.txt
+  tar czf /tmp/ship.tar.gz -T /tmp/files.txt
+  cat /tmp/ship.tar.gz | ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96 \
+    'tar xzf - -C /opt/spaceworker && chown -R trmm:trmm /opt/spaceworker'
+  ```
+  Verify by **comparing hashes on both ends** (`md5 -q` locally, `md5sum` remotely) — never by trusting the transfer's exit code, and never with `git log` (no git on the VPS — §0).
 - **Commands that need the repo root** (prisma migrate/generate): run from `/opt/spaceworker`. (Not `git` — see §0, there's no git repo on the VPS at all.)
 - **Commands that need the Next app dir** (`npm run build`, `npm run dev`): run from **`/opt/spaceworker`** — the repo root IS the Next project root (that's where `package.json`, `next.config.ts` and `.next/` live, and `spaceworker.service` runs `next start` with `WorkingDirectory=/opt/spaceworker`). `/opt/spaceworker/app/` is the **router directory only** and has no `package.json`; running `npm run build` inside it fails. (Corrected 2026-09-23 after the stale "run from `/opt/spaceworker/app`" line below wasted a deploy attempt. Same shape in Vantra: build from `/opt/vantra`, its repo root.)
 - Confirm you're in the right one before running anything destructive: `pwd` first if unsure.
@@ -159,6 +167,26 @@ print('stale on prod:', len(stale), stale)
 Fix anything it finds by rsyncing the real directories over (`app/`, `lib/`, `components/` wholesale, not a hand-picked file list), rebuild, restart, then re-run the same check and confirm zero `missing`/`stale` before moving on. This is cheap (a few seconds) — run it any time you're about to tell the user a deploy is done, not just when something's already gone wrong.
 
 ## 3. Schema changes (Prisma migration)
+
+> **⚠️ CORRECTION 2026-10-04 — the VPS does NOT build. Do not run `npm run build` on it.**
+> Steps 5–7 below are **stale**. The real deploy path is the GitHub Actions workflow:
+> `gh workflow run "Build & Deploy" -R softdeployautomation-sketch/spaceworker`
+> (push to `main` only runs build/typecheck; the deploy is `workflow_dispatch`). CI builds
+> `.next`, tars it, and on the box `.github/workflows/deploy.yml` runs
+> `rm -rf /opt/spaceworker/.next` → extract → `sudo -u trmm npx prisma migrate deploy` →
+> restart. The box holds **only a partial source tree** (e.g. `/opt/spaceworker/lib/hosting/`
+> had just 4 of 14 files) because it never compiles anything.
+>
+> **Why this matters (lived 2026-10-04, TASK_157):** running `npm run build` on the box fails
+> with `Module not found: Can't resolve './cloudflare'` — not a real code error, just a
+> half-populated tree. Worse, it **clobbers the CI-built `.next`** (`BUILD_ID` disappears)
+> while the already-running `next start` keeps serving from memory. The site looks healthy
+> (`curl` = 200) and is one restart away from being down; the failure is **silent**. If you
+> have done this, fix forward by triggering the workflow — do not leave it.
+>
+> **To ship source changes:** rsync/tar the files, then let the workflow build and restart.
+> You still run `migrate deploy` yourself when you want the schema applied before the build
+> lands (it is additive and safe independently).
 
 No local Postgres in this dev environment — `npx prisma migrate dev` won't work locally. Instead:
 
