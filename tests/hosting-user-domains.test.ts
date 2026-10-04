@@ -37,6 +37,8 @@ process.env.MAILBOX_ENCRYPTION_KEY = randomUUID().replace(/-/g, "") + randomUUID
 const USER_ROUTE = "/app/api/hosting/domains/route.ts";
 const ID_ROUTE = "/app/api/hosting/domains/[id]/route.ts";
 const ADMIN_ROUTE = "/app/api/admin/hosting/domains/route.ts";
+// TASK_157 P4b — the user chooser for "add a domain on someone's behalf".
+const USERS_ROUTE = "/app/api/admin/hosting/domains/users/route.ts";
 
 let sessionUser: { id: string } | null = { id: "user_a" };
 let isAdmin = false;
@@ -51,6 +53,9 @@ let hasCredential = true;
 let calls: string[] = [];
 /** Existing user ids, for the admin route's owner guard (4). */
 let knownUserIds: string[] = ["user_a", "user_b"];
+/** TASK_157 P4b — rows the user-chooser returns, and the args it was called with. */
+let knownUsers: Array<Record<string, unknown>> = [];
+let userFindManyArgs: Record<string, unknown> = {};
 /** Rows the fake prisma wrote. */
 let prismaUpdates: Array<Record<string, unknown>> = [];
 
@@ -294,6 +299,15 @@ const fakePrisma = {
   user: {
     findUnique: async ({ where }: { where: { id: string } }) =>
       knownUserIds.includes(where.id) ? { id: where.id } : null,
+    /**
+     * TASK_157 P4b — the user chooser (`.../domains/users`). Records the args so a
+     * test can prove the route BOUNDS what it returns instead of trusting the caller's
+     * `limit`; an unbounded chooser endpoint is an account-dump primitive.
+     */
+    findMany: async (args: Record<string, unknown>) => {
+      userFindManyArgs = args;
+      return knownUsers.slice(0, Number((args.take as number) ?? knownUsers.length));
+    },
   },
   userDomain: {
     update: async ({ data }: { data: Record<string, unknown> }) => {
@@ -331,7 +345,12 @@ const loader = Module as unknown as { _load: (r: string, p: NodeModule | undefin
 const originalLoad = loader._load;
 loader._load = function patched(request, parent, isMain) {
   const from = parent?.filename ?? "";
-  if (from.endsWith(USER_ROUTE) || from.endsWith(ID_ROUTE) || from.endsWith(ADMIN_ROUTE)) {
+  if (
+    from.endsWith(USER_ROUTE) ||
+    from.endsWith(ID_ROUTE) ||
+    from.endsWith(ADMIN_ROUTE) ||
+    from.endsWith(USERS_ROUTE)
+  ) {
     if (request === "next/server") return { NextResponse: fakeNextResponse };
     if (request === "@/lib/session-user") return { getCurrentUser: async () => sessionUser };
     if (request === "@/lib/admin-auth") return { requireAdminSession: async () => isAdmin };
@@ -376,6 +395,10 @@ const adminRoute = require("../app/api/admin/hosting/domains/route") as {
   POST: (req: Request) => Promise<Res>;
   DELETE: (req: Request) => Promise<Res>;
 };
+/* TASK_157 P4b — the user chooser. */
+const usersRoute = require("../app/api/admin/hosting/domains/users/route") as {
+  GET: (req: Request) => Promise<Res>;
+};
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 const BASE = "https://spaceworker.test/api/hosting/domains";
@@ -405,6 +428,85 @@ beforeEach(() => {
   calls = [];
   knownUserIds = ["user_a", "user_b"];
   prismaUpdates = [];
+  knownUsers = [
+    { id: "user_a", email: "ada@sw.dev", tier: "PREMIUM" },
+    { id: "user_b", email: "bob@sw.dev", tier: "FREE" },
+  ];
+  userFindManyArgs = {};
+});
+
+// ---------------------------------------------------------------------------
+// TASK_157 P4b — the user chooser behind "add a domain for a user".
+//
+// Two things can go wrong here and BOTH are silent: the panel shows a stale list,
+// or it leaks. The first is cosmetic; the second hands any admin-session bug a
+// complete user export. So the tests pin the two halves: admins only, and always
+// bounded — the route must clamp `limit` itself rather than trusting the query
+// string, because that value arrives from a text input.
+// ---------------------------------------------------------------------------
+// Mirrors MAX_LIMIT in the route. Kept as a literal rather than imported so the test
+// fails if someone raises the cap without thinking about the dump surface.
+const CHOOSER_MAX_LIMIT = 200;
+const USERS_BASE = "https://spaceworker.test/api/admin/hosting/domains/users";
+interface UsersBody {
+  users?: Array<{ id?: string; email?: string; tier?: string }>;
+}
+
+test("user chooser refuses a non-admin", async () => {
+  isAdmin = false;
+  const res = await usersRoute.GET(new Request(`${USERS_BASE}?q=ada`));
+  assert.equal(res.status, 403);
+});
+
+test("user chooser refuses an anonymous caller", async () => {
+  sessionUser = null;
+  isAdmin = false;
+  const res = await usersRoute.GET(new Request(`${USERS_BASE}?q=ada`));
+  assert.equal(res.status, 403);
+  // And it must not have reached the database to decide that.
+  assert.equal(Object.keys(userFindManyArgs).length, 0);
+});
+
+test("user chooser returns the owner candidates for an admin", async () => {
+  isAdmin = true;
+  const res = await usersRoute.GET(new Request(`${USERS_BASE}?q=ada`));
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as UsersBody;
+  assert.equal(body.users?.length, 2);
+  assert.equal(body.users?.[0].email, "ada@sw.dev");
+});
+
+test("user chooser clamps a caller-supplied limit instead of obeying it", async () => {
+  isAdmin = true;
+  const res = await usersRoute.GET(new Request(`${USERS_BASE}?q=ada&limit=100000`));
+  assert.equal(res.status, 200);
+  const take = userFindManyArgs.take as number;
+  assert.ok(take > 0, "take must be positive");
+  assert.equal(take, CHOOSER_MAX_LIMIT, "a huge limit must clamp to the cap");
+});
+
+test("user chooser rejects a nonsense limit rather than defaulting to unbounded", async () => {
+  isAdmin = true;
+  const res = await usersRoute.GET(new Request(`${USERS_BASE}?q=ada&limit=abc`));
+  assert.equal(res.status, 200);
+  const take = userFindManyArgs.take as number;
+  assert.ok(take > 0 && take <= CHOOSER_MAX_LIMIT, `take must stay in range, got ${take}`);
+});
+
+test("user chooser never returns a password hash or token field", async () => {
+  isAdmin = true;
+  // The fake stands in for the DB and would hand back whatever the route selects.
+  // So the assertion is about the SELECT: the route must project explicit columns,
+  // not `include` the whole row. This is the assertion that would have caught a
+  // `findMany({ where })` with no `select`.
+  await usersRoute.GET(new Request(`${USERS_BASE}?q=ada`));
+  const select = userFindManyArgs.select as Record<string, boolean>;
+  assert.ok(select, "the route must pass an explicit `select`");
+  for (const leaked of ["passwordHash", "password", "token", "sessionToken"]) {
+    assert.equal(select[leaked], undefined, `must not select ${leaked}`);
+  }
+  assert.equal(select.id, true);
+  assert.equal(select.email, true);
 });
 
 // --- auth ------------------------------------------------------------------

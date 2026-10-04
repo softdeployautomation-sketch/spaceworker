@@ -62,6 +62,32 @@ type DomainRow = {
   createdAt: Date;
 };
 
+/**
+ * TASK_157 Phase 4b — what the ADMIN panel sees. A superset of `UserDomainView`
+ * carrying OWNERSHIP, which the user view deliberately omits because a user has
+ * exactly one owner (themselves) and showing it would be noise.
+ *
+ * The admin list spans every owner at once, so without `ownerEmail` the panel
+ * would be an undifferentiated pile of domains the owner cannot act on.
+ *
+ * `ownerUserId` is null for a platform zone; `ownerEmail` is then null too,
+ * never the string "platform" — so the UI can branch on the id alone.
+ */
+export interface AdminDomainView extends UserDomainView {
+  /** "user" | "platform". */
+  ownerKind: string;
+  /** The owning user's id, or null for a platform zone. */
+  ownerUserId: string | null;
+  /** The owner's email, or null for a platform zone / deleted user. */
+  ownerEmail: string | null;
+  /**
+   * The credential a publish onto this domain would use. TASK_157: carried but
+   * NOT yet enforced — see the `credentialId` note in PLAN_TASK_157 §4. Surfaced
+   * here so the admin can see whether a domain was ever bound to one.
+   */
+  credentialId: string | null;
+}
+
 /** Map a stored row to the view. `selectable` is derived, never stored. */
 function toView(row: DomainRow): UserDomainView {
   let nameservers: string[] | null = null;
@@ -130,11 +156,45 @@ export async function listUserDomains(userId: string): Promise<HostingResult<Use
  * This is the view the owner uses to see and manage every domain, which is why it
  * is deliberately NOT filtered by the platform-only guard: the owner must be able to
  * SEE the platform's own zones here.
+ *
+ * OWNERSHIP IS NOT A PRISMA RELATION — `ownerUserId` is a bare `String?` backed by
+ * a CHECK constraint, with no `owner` relation and no foreign key. So the emails are
+ * fetched in a SECOND query rather than an `include`. Two reasons that is right here
+ * rather than merely convenient:
+ *   1. Adding the relation would mean a migration, and would silently pick a
+ *      delete-semantics policy (cascade vs. SET NULL vs. RESTRICT) that the owner has
+ *      not chosen. A domain outliving its user is a legitimate admin-fixable state,
+ *      not something to decide as a side effect of drawing a UI.
+ *   2. The lookup is a single indexed `findMany` on ids we already hold, so it costs
+ *      one round trip and cannot fan out per row.
+ * A user id with no matching row yields `ownerEmail: null` — the domain still lists,
+ * so the owner can see and clean it up instead of it silently disappearing.
  */
-export async function listAllDomains(): Promise<HostingResult<UserDomainView[]>> {
+export async function listAllDomains(): Promise<HostingResult<AdminDomainView[]>> {
   try {
     const rows = await prisma.userDomain.findMany({ orderBy: { createdAt: "desc" } });
-    return { ok: true, value: rows.map((r) => toView(r as DomainRow)) };
+
+    const ownerIds = Array.from(
+      new Set(rows.map((r) => r.ownerUserId).filter((id): id is string => !!id))
+    );
+    const owners = ownerIds.length
+      ? await prisma.user.findMany({
+          where: { id: { in: ownerIds } },
+          select: { id: true, email: true },
+        })
+      : [];
+    const emailById = new Map(owners.map((u) => [u.id, u.email]));
+
+    return {
+      ok: true,
+      value: rows.map((r) => ({
+        ...toView(r as DomainRow),
+        ownerKind: r.ownerKind,
+        ownerUserId: r.ownerUserId,
+        ownerEmail: r.ownerUserId ? emailById.get(r.ownerUserId) ?? null : null,
+        credentialId: r.credentialId ?? null,
+      })),
+    };
   } catch (error) {
     return {
       ok: false,

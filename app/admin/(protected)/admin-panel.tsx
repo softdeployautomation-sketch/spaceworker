@@ -7,6 +7,7 @@ import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
+import DomainsPanel from "@/components/admin/domains-panel";
 
 type AdminUser = {
   id: string;
@@ -3081,6 +3082,10 @@ function InfrastructureTab() {
       {/* TASK_155 P6a (PLAN §19) — the premium engine's roster lives next to the
           caps it works with: the caps say WHAT is allowed, this says WHO serves. */}
       <PlatformAccountsPanel />
+      {/* TASK_157 Phase 4b — the domain registry. Directly after the account roster on
+          purpose: a `pending` domain cannot go live until one of THESE accounts' tokens
+          can create/edit its zone, so the two are one workflow, not two settings. */}
+      <DomainsPanel />
       <CyberLabCapsPanel />
       <VantraLinksPanel />
     </div>
