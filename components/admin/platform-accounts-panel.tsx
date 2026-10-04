@@ -53,6 +53,31 @@ interface PlatformAccountsState {
 }
 
 /**
+ * TASK_158 W1 — does this value look like a pasted API token rather than a subdomain?
+ *
+ * WHY. The workers.dev subdomain input sits DIRECTLY under the "Add Zones token"
+ * link, and its only label is a placeholder that vanishes the instant anything is
+ * typed — so a token pasted into the wrong box looks exactly like a correct entry.
+ * That is not hypothetical: on 2026-10-04 two Zones tokens were pasted into the
+ * subdomain box on Primary cf and New Prod and the clicks "did nothing".
+ *
+ * The server already rejects it (a valid workers.dev label is one DNS label and
+ * cannot contain `_`), but a bare rejection teaches the operator nothing. Catching
+ * it here turns a silent round trip into an instant message naming the right box.
+ *
+ * Real subdomains are short, lowercase, letters/digits/dashes. Cloudflare API tokens
+ * are long and carry `_` (e.g. `cfut__…`), which no valid label can contain — so an
+ * underscore is a reliable tell, and the length floor catches anything that somehow
+ * passed the label rules.
+ */
+function looksLikeApiToken(value: string): boolean {
+  const v = value.trim();
+  if (v === "") return false;
+  if (/_/.test(v)) return true;
+  return v.length >= 30;
+}
+
+/**
  * TASK_158 W1 — did a token we just sent ACTUALLY LAND on the row?
  *
  * Returns a plain-language complaint when a token we sent is not readable on the row
@@ -97,6 +122,14 @@ function tokenSaveComplaint(body: Record<string, unknown>, next: PlatformAccount
 export default function PlatformAccountsPanel() {
   const [state, setState] = useState<PlatformAccountsState | null>(null);
   const [error, setError] = useState("");
+  /**
+   * TASK_158 W1 — a NEUTRAL, success-shaped message: "read it, here is what Cloudflare
+   * says". The buttons in this panel that only READ state used to update a status line
+   * that already said the same thing, which is indistinguishable from a dead button —
+   * reported live on 2026-10-04 as "i clicked all and they just rolled and gave no
+   * response". Every action now says something out loud.
+   */
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState("");
   const [label, setLabel] = useState("");
   const [accountId, setAccountId] = useState("");
@@ -144,6 +177,7 @@ export default function PlatformAccountsPanel() {
   async function readSubdomain(id: string) {
     setBusy("GET:" + id);
     setError("");
+    setNotice("");
     try {
       const res = await fetch(`/api/admin/hosting/platform-accounts?subdomain=${encodeURIComponent(id)}`);
       const data = await res.json().catch(() => ({}));
@@ -152,8 +186,23 @@ export default function PlatformAccountsPanel() {
         return;
       }
       const read = data.workersDevSubdomain;
-      if (read && typeof read === "object") {
-        setSubdomainLive((prev) => ({ ...prev, [id]: read as WorkersDevSubdomainStateView }));
+      if (!read || typeof read !== "object") {
+        setError("Cloudflare returned no subdomain state for this account.");
+        return;
+      }
+      const view = read as WorkersDevSubdomainStateView;
+      setSubdomainLive((prev) => ({ ...prev, [id]: view }));
+      // SAY SOMETHING OUT LOUD. Re-rendering a line that already read exactly the same
+      // way is indistinguishable from a button that does nothing, which is how "Read
+      // current" was reported on 2026-10-04.
+      if (view.needsWorkerToken) {
+        setError(
+          "Nothing to read: this account has no Workers + DNS token yet, and that token is what reads the name. Add one below."
+        );
+      } else if (view.live) {
+        setNotice(`Cloudflare reports the workers.dev subdomain as "${view.live}".`);
+      } else {
+        setNotice("Cloudflare reports no workers.dev subdomain on this account yet.");
       }
     } catch {
       setError("Network error");
@@ -189,6 +238,7 @@ export default function PlatformAccountsPanel() {
   async function call(body: Record<string, unknown>, method: "POST" | "PATCH" | "DELETE" = "PATCH") {
     setBusy(method + ":" + String(body.id ?? "new"));
     setError("");
+    setNotice("");
     try {
       const res = await fetch("/api/admin/hosting/platform-accounts", {
         method,
@@ -208,6 +258,14 @@ export default function PlatformAccountsPanel() {
       // weeks later when domains refuse to provision.
       const complaint = tokenSaveComplaint(body, next);
       if (complaint) setError(complaint);
+      // A rename that succeeded must say so, and say what it MEANS: this is
+      // account-wide, and every already-published short link in the account starts
+      // serving the new host the moment it lands.
+      if (!complaint && typeof body.workersDevSubdomain === "string") {
+        setNotice(
+          `workers.dev subdomain set to "${body.workersDevSubdomain}". Every short link in this account now serves from that host.`
+        );
+      }
       // A successful rename comes back with the LIVE value Cloudflare confirms,
       // so show that rather than the text the admin typed — the two can differ.
       if (data.workersDevSubdomain && typeof data.workersDevSubdomain === "object" && body.id) {
@@ -344,6 +402,9 @@ export default function PlatformAccountsPanel() {
         Tokens are encrypted at rest and never shown again after saving.
       </p>
       {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+      {notice && (
+        <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-400">{notice}</p>
+      )}
       {!state ? (
         <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
       ) : (
@@ -540,6 +601,17 @@ export default function PlatformAccountsPanel() {
                         this is the one dial that decides what a FREE link looks like.
                         Reading it costs a live Cloudflare call, hence the explicit
                         "Read" button instead of an automatic fetch per row. */}
+                    {/* TASK_158 W1 — LABEL THIS BOX, and label it as NOT a token.
+                        This input sat directly under the "Add Zones token" link with
+                        nothing but a placeholder to identify it, and the placeholder
+                        disappears the instant anything is typed — so the only visible
+                        label above it was "Add Zones token". On 2026-10-04 two Zones
+                        tokens were pasted in here and the clicks appeared to do
+                        nothing. A permanent heading that names the field, and says
+                        outright that it is not a token, removes the ambiguity. */}
+                    <p className="mt-4 border-t border-zinc-200 pt-3 text-xs font-semibold text-zinc-700 dark:border-zinc-800 dark:text-zinc-200">
+                      workers.dev subdomain — not a token
+                    </p>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <input
                         placeholder="workers.dev subdomain — e.g. spaceworker"
@@ -555,12 +627,24 @@ export default function PlatformAccountsPanel() {
                         {busy === "GET:" + a.id ? "Reading…" : "Read current"}
                       </button>
                       <button
-                        onClick={() =>
+                        onClick={() => {
+                          // TASK_158 W1 — refuse a pasted API token BEFORE the round
+                          // trip, and name the box it belongs in. The server rejects it
+                          // too (a workers.dev label cannot contain `_`), but a bare
+                          // rejection teaches nothing: on 2026-10-04 that read as a
+                          // button that did nothing.
+                          if (looksLikeApiToken(shown)) {
+                            setNotice("");
+                            setError(
+                              'That is a Cloudflare API token, not a subdomain. Paste it into the "Add Zones token" box (custom domains) or the "Add Workers + DNS token" box (links) above. A workers.dev subdomain is one short word, like "spaceworker".'
+                            );
+                            return;
+                          }
                           call({
                             id: a.id,
                             workersDevSubdomain: shown.trim(),
-                          })
-                        }
+                          });
+                        }}
                         disabled={busy !== "" || shown.trim() === ""}
                         className="rounded-lg bg-zinc-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-zinc-100 dark:text-zinc-900"
                       >
