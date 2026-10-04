@@ -4,7 +4,7 @@ import { encryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
 // TASK_155 P6c — the Workers/DNS-token helpers live with the credential module
 // that owns the encryption discipline, so the roster and the BYO credential can
 // never drift apart on how a second token is stored.
-import { buildWorkerTokenFields, readWorkerToken, buildZoneTokenFields, readZoneToken } from "./credentials";
+import { buildWorkerTokenFields, readWorkerToken, buildZoneTokenFields, readZoneToken, verifyStoredSecret } from "./credentials";
 import type { HostingResult } from "./files";
 
 // TASK_155 P6a (PLAN §19) — OUR Cloudflare accounts: the premium engine's
@@ -152,6 +152,48 @@ export interface CreatePlatformAccountInput {
   priority?: number;
 }
 
+/**
+ * TASK_158 W2 — re-read a freshly written row from the DATABASE and prove each
+ * token that was just submitted is actually stored and readable.
+ *
+ * This is deliberately a SECOND query rather than a check on the object Prisma
+ * returned. Prisma echoes back what we asked it to write, so asserting on that
+ * object can only ever confirm our own intent — the exact illusion that made a
+ * lost token look saved three times. Reading the row back is the only assertion
+ * that can fail, and it is the one the owner can be shown.
+ *
+ * Returns a plain-language message for the FIRST token that did not land, or null
+ * when every submitted token round-tripped.
+ */
+async function confirmTokensStored(
+  id: string,
+  submitted: { token?: string; workerToken?: string; zoneToken?: string }
+): Promise<string | null> {
+  const fresh = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
+  if (!fresh) {
+    return "The account could not be read back after saving. Try again.";
+  }
+  const checks: Array<[string, string | undefined, { ciphertext: string | null; iv: string | null; tag: string | null; hint: string | null }]> = [
+    ["token", submitted.token, { ciphertext: fresh.tokenCiphertext, iv: fresh.tokenIv, tag: fresh.tokenTag, hint: fresh.tokenHint }],
+    [
+      "workerToken",
+      submitted.workerToken,
+      { ciphertext: fresh.workerTokenCiphertext ?? null, iv: fresh.workerTokenIv ?? null, tag: fresh.workerTokenTag ?? null, hint: fresh.workerTokenHint ?? null },
+    ],
+    [
+      "zoneToken",
+      submitted.zoneToken,
+      { ciphertext: fresh.zoneTokenCiphertext ?? null, iv: fresh.zoneTokenIv ?? null, tag: fresh.zoneTokenTag ?? null, hint: fresh.zoneTokenHint ?? null },
+    ],
+  ];
+  for (const [field, value, stored] of checks) {
+    if (value === undefined) continue; // not part of this write
+    const result = verifyStoredSecret(value, stored, field);
+    if (!result.ok) return result.message;
+  }
+  return null;
+}
+
 export async function createPlatformAccount(
   input: CreatePlatformAccountInput
 ): Promise<HostingResult<HostingPlatformAccountView>> {
@@ -197,6 +239,15 @@ export async function createPlatformAccount(
       ...zoneFields,
     },
   });
+  // Prove the write before telling anyone it worked.
+  const failure = await confirmTokensStored(row.id, {
+    token,
+    workerToken: input.workerToken,
+    zoneToken: input.zoneToken,
+  });
+  if (failure) {
+    return { ok: false, status: 500, code: "token_not_persisted", message: failure };
+  }
   return { ok: true, value: toPlatformAccountView(row) };
 }
 
@@ -301,6 +352,17 @@ export async function updatePlatformAccount(
 
   if (Object.keys(data).length === 0) return { ok: true, value: toPlatformAccountView(row) };
   const updated = await prisma.hostingPlatformAccount.update({ where: { id: row.id }, data });
+  // TASK_158 W2 — read the row back and prove every token in THIS write landed.
+  // This is the path the admin panel's "Replace token" button uses, i.e. exactly
+  // the one that was reported as silently not sticking.
+  const failure = await confirmTokensStored(row.id, {
+    token: input.token,
+    workerToken: input.workerToken,
+    zoneToken: input.zoneToken,
+  });
+  if (failure) {
+    return { ok: false, status: 500, code: "token_not_persisted", message: failure };
+  }
   return { ok: true, value: toPlatformAccountView(updated) };
 }
 

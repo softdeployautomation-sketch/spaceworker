@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "crypto";
+
 import { prisma } from "../prisma";
 import { encryptSecret, decryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
 import type { HostingResult } from "./files";
@@ -80,6 +82,67 @@ export function toHostingCredentialView(row: CredentialRow): HostingCredentialVi
     verifyError: row.verifyError ?? null,
     createdAt: row.createdAt.toISOString(),
   };
+}
+
+/**
+ * TASK_158 W2 — PROVE a token write actually landed, by reading it back.
+ *
+ * WHY THIS EXISTS. The owner reported, three times, that a Cloudflare token they
+ * pasted did not stick and had to be re-entered. Forensics could not reproduce a
+ * loss: the PATCH route, the service and the columns were all correct, and a
+ * token sent straight to the API was readable in the database immediately. What
+ * was missing was not storage — it was PROOF. A write path whose only evidence
+ * is the response body is indistinguishable from one that silently dropped the
+ * value, and "I checked and it is fine" is not evidence the admin can see.
+ *
+ * So every write of a token now round-trips: after Prisma returns, this re-reads
+ * the row from the DATABASE and decrypts the stored ciphertext, and checks that
+ * it equals what was submitted and that the hint column matches too. A mismatch
+ * is returned to the caller as a hard failure with plain language, so the panel
+ * can say "this did not save" instead of rendering a green row that will fail
+ * at 3am.
+ *
+ * Deliberately compares in constant time and NEVER puts the token in the error
+ * message — only the field name and the last four characters.
+ */
+export function verifyStoredSecret(
+  submitted: string,
+  stored: { ciphertext: string | null; iv: string | null; tag: string | null; hint: string | null },
+  field: string
+): { ok: true } | { ok: false; message: string } {
+  const label = field.replace(/Token$/, " token");
+  if (!stored.ciphertext || !stored.iv || !stored.tag) {
+    return {
+      ok: false,
+      message: `The ${label} did not save: the database has no stored copy. Try again, and if it keeps failing the write is being rejected downstream.`,
+    };
+  }
+  let roundTripped: string;
+  try {
+    roundTripped = decryptSecret(stored.ciphertext, stored.iv, stored.tag);
+  } catch {
+    return {
+      ok: false,
+      message: `The ${label} was written but cannot be read back — the stored copy is unreadable. Re-enter it so a fresh copy is stored.`,
+    };
+  }
+  const want = submitted.trim();
+  const a = Buffer.from(roundTripped, "utf8");
+  const b = Buffer.from(want, "utf8");
+  // Length first (timingSafeEqual throws on a length mismatch), then the compare.
+  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+    return {
+      ok: false,
+      message: `The ${label} did not save the value you pasted (stored copy ends …${roundTripped.slice(-4)}, pasted ends …${want.slice(-4)}). Try again.`,
+    };
+  }
+  if ((stored.hint ?? "") !== hintOf(want)) {
+    return {
+      ok: false,
+      message: `The ${label} stored correctly but its display hint is wrong. Try again.`,
+    };
+  }
+  return { ok: true };
 }
 
 /** Last 4 characters, for a non-secret UI hint. Never stores the full token. */
@@ -251,6 +314,42 @@ export interface CreateHostingCredentialInput {
   workerToken?: string;
 }
 
+/**
+ * TASK_158 W2 — the USER-side twin of `confirmTokensStored` in platform-accounts
+ * .ts. Same reasoning: Prisma's return value only echoes our own intent, so a
+ * user's token is re-read from the DATABASE and decrypted before the API reports
+ * success. The owner was right that this path had the same exposure as the admin
+ * one — an unverified save there is indistinguishable from a dropped token.
+ */
+async function confirmCredentialTokensStored(
+  id: string,
+  submitted: { token?: string; workerToken?: string }
+): Promise<string | null> {
+  const fresh = await prisma.hostingCredential.findUnique({ where: { id } });
+  if (!fresh) return "Your credential could not be read back after saving. Try again.";
+  const checks: Array<
+    [string, string | undefined, { ciphertext: string | null; iv: string | null; tag: string | null; hint: string | null }]
+  > = [
+    ["token", submitted.token, { ciphertext: fresh.tokenCiphertext, iv: fresh.tokenIv, tag: fresh.tokenTag, hint: fresh.tokenHint }],
+    [
+      "workerToken",
+      submitted.workerToken,
+      {
+        ciphertext: fresh.workerTokenCiphertext ?? null,
+        iv: fresh.workerTokenIv ?? null,
+        tag: fresh.workerTokenTag ?? null,
+        hint: fresh.workerTokenHint ?? null,
+      },
+    ],
+  ];
+  for (const [field, value, stored] of checks) {
+    if (value === undefined) continue; // not part of this write
+    const result = verifyStoredSecret(value, stored, field);
+    if (!result.ok) return result.message;
+  }
+  return null;
+}
+
 export async function createHostingCredential(
   input: CreateHostingCredentialInput
 ): Promise<HostingResult<HostingCredentialView>> {
@@ -291,6 +390,13 @@ export async function createHostingCredential(
       ...workerFields,
     },
   });
+  const failure = await confirmCredentialTokensStored(row.id, {
+    token,
+    workerToken: input.workerToken,
+  });
+  if (failure) {
+    return { ok: false, status: 500, code: "token_not_persisted", message: failure };
+  }
   return { ok: true, value: toHostingCredentialView(row) };
 }
 
@@ -353,6 +459,13 @@ export async function updateHostingCredential(
 
   if (Object.keys(data).length === 0) return { ok: true, value: toHostingCredentialView(row) };
   const updated = await prisma.hostingCredential.update({ where: { id: row.id }, data });
+  const failure = await confirmCredentialTokensStored(row.id, {
+    token: input.token,
+    workerToken: input.workerToken,
+  });
+  if (failure) {
+    return { ok: false, status: 500, code: "token_not_persisted", message: failure };
+  }
   return { ok: true, value: toHostingCredentialView(updated) };
 }
 

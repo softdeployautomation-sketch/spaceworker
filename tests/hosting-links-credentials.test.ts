@@ -156,6 +156,11 @@ const fakePrisma = {
   hostingCredential: {
     count: async ({ where }: { where?: Record<string, unknown> }) => creds.filter((r) => matches(r, where)).length,
     findMany: async ({ where }: { where?: Record<string, unknown> }) => creds.filter((r) => matches(r, where)),
+    // TASK_158 W2 — the read-back proof re-reads the row by id after every token
+    // write, so this stub needs `findUnique`. Its absence is what made six of these
+    // tests fail with "findUnique is not a function" when the guarantee landed —
+    // a useful reminder that a new read path is a real change to every fake.
+    findUnique: async ({ where }: { where: { id: string } }) => creds.find((r) => r.id === where.id) ?? null,
     findFirst: async ({ where, orderBy }: { where?: Record<string, unknown>; orderBy?: unknown }) => {
       let hit = creds.filter((r) => matches(r, where));
       hit = applyOrderBy(hit, orderBy);

@@ -1187,3 +1187,193 @@ test("subdomain: the live caller actually uses the planner, not its own branch",
     "the create-only PUT must be reached ONLY from the claim branch"
   );
 });
+
+// ---------------------------------------------------------------------------
+// TASK_158 W2 — the read-back guarantee.
+//
+// The owner reported THREE TIMES that a Cloudflare token they pasted did not
+// stick. Forensics could not reproduce a loss: the route, the service and the
+// columns were all correct, and a token sent straight to the API was readable in
+// the database immediately. The gap was PROOF, not storage — so every token write
+// now re-reads the row and decrypts it before reporting success, and these tests
+// pin that guarantee by simulating the write being silently dropped underneath.
+// ---------------------------------------------------------------------------
+
+test("TASK_158 W2: a token write is READ BACK and proven stored before it reports success", async () => {
+  const created = await createPlatformAccount({
+    accountId: "acct_readback",
+    label: "read-back",
+    token: TOKEN,
+    zoneToken: "zone-readback-token-9999",
+    workerToken: "worker-readback-token-8888",
+  });
+  assert.ok(created.ok, "a normal save still succeeds");
+  assert.ok(created.ok && created.value.hasZoneToken);
+  assert.ok(created.ok && created.value.hasWorkerToken);
+  // The hint is the non-secret proof the owner can actually look at, so it must
+  // reflect the token that was pasted rather than a stale value.
+  assert.equal(created.ok && created.value.zoneTokenHint, "9999");
+  assert.equal(created.ok && created.value.workerTokenHint, "8888");
+});
+
+test("TASK_158 W2: a SILENTLY DROPPED write is refused, not reported as saved", async () => {
+  // The exact failure the owner reported: Prisma reports success, the row comes
+  // back without the value, and nothing in the response says so.
+  const realUpdate = fakePrisma.hostingPlatformAccount.update;
+  fakePrisma.hostingPlatformAccount.update = (async (args: { where: { id: string }; data: Partial<Row> }) => {
+    const row = await realUpdate(args);
+    const stored = rows.find((r) => r.id === args.where.id);
+    if (stored) {
+      stored.zoneTokenCiphertext = null;
+      stored.zoneTokenIv = null;
+      stored.zoneTokenTag = null;
+      stored.zoneTokenHint = "";
+    }
+    return row;
+  }) as typeof fakePrisma.hostingPlatformAccount.update;
+  try {
+    const created = await createPlatformAccount({ accountId: "acct_x", label: "dropped", token: TOKEN });
+    assert.ok(created.ok);
+    const id = created.ok ? created.value.id : "";
+    const updated = await updatePlatformAccount({ id, zoneToken: "this-token-will-not-stick" });
+    assert.equal(updated.ok, false, "a dropped token must NOT be reported as saved");
+    assert.equal(updated.ok === false && updated.code, "token_not_persisted");
+    assert.match(updated.ok === false ? updated.message : "", /did not save|could not be read back/i);
+  } finally {
+    fakePrisma.hostingPlatformAccount.update = realUpdate;
+  }
+});
+
+test("TASK_158 W2: a dropped token is caught on CREATE too, not only on update", async () => {
+  const realCreate = fakePrisma.hostingPlatformAccount.create;
+  fakePrisma.hostingPlatformAccount.create = (async (args: { data: Partial<Row> }) => {
+    const row = await realCreate(args);
+    const stored = rows.find((r) => r.id === row.id);
+    if (stored) {
+      stored.workerTokenCiphertext = null;
+      stored.workerTokenIv = null;
+      stored.workerTokenTag = null;
+      stored.workerTokenHint = "";
+    }
+    return row;
+  }) as typeof fakePrisma.hostingPlatformAccount.create;
+  try {
+    const created = await createPlatformAccount({
+      accountId: "acct_y",
+      label: "dropped-worker",
+      token: TOKEN,
+      workerToken: "worker-token-that-vanishes-7777",
+    });
+    assert.equal(created.ok, false, "a dropped Workers token must not report success");
+    assert.equal(created.ok === false && created.code, "token_not_persisted");
+  } finally {
+    fakePrisma.hostingPlatformAccount.create = realCreate;
+  }
+});
+
+test("TASK_158 W2: the check compares the DECRYPTED value, and never leaks the token", async () => {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { verifyStoredSecret } = require("../lib/hosting/credentials") as typeof import("../lib/hosting/credentials");
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  const stored = crypto.encryptSecret("token-one-ending-1234");
+  assert.ok(verifyStoredSecret("token-one-ending-1234", { ...stored, hint: "1234" }, "zoneToken").ok);
+  // Two DIFFERENT tokens sharing a last-4 must be told apart. A hint-only
+  // comparison would pass a wrong token that merely looks right, which is how a
+  // bad credential would sit in the row looking healthy.
+  const wrong = verifyStoredSecret("token-TWO-ending-1234", { ...stored, hint: "1234" }, "zoneToken");
+  assert.equal(wrong.ok, false, "a different token with the same last 4 chars must be rejected");
+  // An absent stored copy is a FAILURE, never a silent pass — this is the exact
+  // state the owner's rows were found in.
+  const absent = verifyStoredSecret("token-one-ending-1234", { ciphertext: null, iv: null, tag: null, hint: "" }, "zoneToken");
+  assert.equal(absent.ok, false, "an absent stored copy must be a failure");
+  // A stored copy that cannot be decrypted (e.g. the encryption key changed) is
+  // also a failure, reported as unreadable rather than as a bad token.
+  const corrupt = verifyStoredSecret("token-one-ending-1234", { ciphertext: "garbage", iv: "garbage", tag: "garbage", hint: "1234" }, "zoneToken");
+  assert.equal(corrupt.ok, false, "an unreadable stored copy must be a failure");
+  // The messages must never carry the secret itself.
+  assert.ok(!wrong.ok && !wrong.message.includes("token-one-ending-1234"));
+  assert.ok(!absent.ok && !absent.message.includes("1234"));
+  assert.ok(!corrupt.ok && !corrupt.message.includes("token-one-ending-1234"));
+});
+
+test("TASK_158 W2: the USER credential path proves its writes too", async () => {
+  // The owner asked whether a user adding their own token would hit the same
+  // silent loss. It would have: the user path had the same unverified write.
+  const store = new Map<string, Record<string, unknown>>();
+  const fake = {
+    hostingCredential: {
+      count: async () => 0,
+      create: async ({ data }: { data: Record<string, unknown> }) => {
+        const row = {
+          id: "hc_1",
+          isDefault: true,
+          status: "active",
+          lastVerifiedAt: null,
+          verifyError: null,
+          createdAt: new Date(),
+          ...data,
+        };
+        store.set(row.id, row);
+        return row;
+      },
+      findUnique: async ({ where }: { where: { id: string } }) => store.get(where.id) ?? null,
+      // Must find the row: `updateHostingCredential` 404s on a miss BEFORE any
+      // write, which would make this test pass for the wrong reason (a guard, not
+      // the read-back proof) — the same trap as a test hitting a 404 and calling
+      // it a success.
+      findFirst: async ({ where }: { where?: Record<string, unknown> }) => {
+        const hit = [...store.values()].filter((r) =>
+          Object.entries(where ?? {}).every(([k, v]) => r[k] === v)
+        );
+        return hit[0] ?? null;
+      },
+      update: async ({ where }: { where: { id: string } }) => store.get(where.id) ?? null,
+    },
+  };
+  // The hook must be installed BEFORE the require: the module binds `prisma` at
+  // IMPORT time, so a patch applied afterwards is never consulted.
+  const loader = Module as unknown as { _load: (r: string, p: NodeModule | undefined, m: boolean) => unknown };
+  const original = loader._load;
+  loader._load = function patched(request, parent, isMain) {
+    const from = parent?.filename ?? "";
+    if (from.includes("/lib/hosting/") && request === "../prisma") return { prisma: fake };
+    return original.call(this, request, parent, isMain);
+  };
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  // Evict the CACHED module first. `platform-accounts` already required this file
+  // at the top of the suite, so a bare `require` hands back the copy already bound
+  // to the PLATFORM fake and the patch above would apply to a module nobody
+  // re-reads. Same lesson as reading the build's `.map` on the VPS: confirm you are
+  // inspecting the artifact you actually think you are.
+  const credsPath = require.resolve("../lib/hosting/credentials");
+  delete require.cache[credsPath];
+  const creds = require(credsPath) as typeof import("../lib/hosting/credentials");
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  try {
+    const created = await creds.createHostingCredential({
+      userId: "user_1",
+      accountId: "acct_user",
+      label: "mine",
+      token: "user-token-abcd1234",
+    });
+    assert.ok(created.ok, "a user's token still saves");
+
+    // Now break the store underneath the write and prove the USER path refuses
+    // instead of reporting a token it never kept.
+    fake.hostingCredential.update = async ({ where }: { where: { id: string } }) => {
+      const row = store.get(where.id) as Record<string, unknown>;
+      store.set(where.id, { ...row, tokenCiphertext: null, tokenIv: null, tokenTag: null, tokenHint: "" });
+      return store.get(where.id) ?? null;
+    };
+    const updated = await creds.updateHostingCredential({
+      userId: "user_1",
+      id: "hc_1",
+      token: "user-token-WXYZ9876",
+    });
+    assert.equal(updated.ok, false, "a dropped USER token must not report success");
+    assert.equal(updated.ok === false && updated.code, "token_not_persisted");
+  } finally {
+    loader._load = original;
+    delete require.cache[credsPath];
+  }
+});
