@@ -168,6 +168,9 @@ model User {
   screenDigestRollups      ScreenDigestRollup[]
   // TASK_152 M6 — the capture scheduler's persisted per-user rotation cursor.
   screenshotRotationCursors ScreenshotRotationCursor[]
+  // TASK_159 — support tickets this user opened. The userId ALWAYS comes from the
+  // session, never from a request body (PLAN_TASK_159_SUPPORT_TICKETS.md §2.2).
+  supportTickets           SupportTicket[]
 }
 
 model VerificationCode {
@@ -3331,4 +3334,90 @@ model UserDomain {
 
   @@index([ownerKind, ownerUserId])
   @@index([ownerUserId, status])
+}
+
+
+// ---------------------------------------------------------------------------
+// TASK_159 — SUPPORT TICKETS. Scope: PLAN_TASK_159_SUPPORT_TICKETS.md.
+//
+// Phase 1 = models + migration + user list/create/reply + admin queue/reply.
+// Attachments, email notification, SLA timers, assignment, search are
+// deliberately DEFERRED (plan §5) — none is needed to answer "my domain isn't
+// showing up", which is the whole point of the feature.
+//
+// THE RULE THE WHOLE FEATURE IS BUILT AROUND (plan §2.1): a ticket never holds a
+// credential. A domain is attached by ID REFERENCE, resolved server-side, never by
+// copying the apex or a token into the body. Ticket bodies are user text that gets
+// rendered in an admin UI and will eventually be emailed and searched; the moment a
+// body may hold a raw token, the platform has built a paste-target for its own
+// secrets.
+// ---------------------------------------------------------------------------
+
+model SupportTicket {
+  id          String    @id @default(cuid())
+  // Resolved from the SESSION on every write, never from a request body — reading
+  // it from the body is how a crafted POST files a ticket against another user
+  // (plan §2.2). Immutable: nothing in Phase 1 reassigns a ticket's owner.
+  userId      String
+  user        User      @relation(fields: [userId], references: [id])
+  // Deliberately a STRING, not a Postgres enum — same convention as
+  // NotificationLog.outcome and UserDomain.status. The plan is explicit that
+  // "waiting_on_customer" is inevitable, and an enum would make that state a
+  // migration. For that reason there is intentionally NO CHECK constraint pinning
+  // the set here: a CHECK would reintroduce exactly the migration the string was
+  // chosen to avoid. Readers must treat ONLY the exact value "resolved" as closed;
+  // anything else — including a value this code has never seen — still needs
+  // attention, so a future "waiting_on_customer" can never silently drop out of the
+  // admin queue.
+  status      String    @default("open")
+  subject     String
+  // Free-text classification for the admin queue filter. NULL = unclassified,
+  // which is distinct from "other" — a nil category means nobody has looked yet.
+  category    String?
+  priority    String?
+  // THE DOMAIN LINK (plan §3.3). Points at UserDomain.id; the admin view JOINS to
+  // read apex/status/owner. The apex is deliberately NOT copied here: a copied apex
+  // goes stale the moment the domain is removed and then tells the admin something
+  // false. Soft reference (no FK), matching UserDomain's own ownerUserId style; the
+  // "must belong to this ticket's user" rule is enforced in the write path.
+  domainRefId String?
+  // Phase-1 placeholder for the wallet boundary (plan §6): a billing ticket should
+  // reference a ledger entry by id, never copy an amount — a copied amount is a
+  // second source of truth that will disagree with the ledger. Unused until the
+  // wallet ships; present now so the seam is visible rather than retrofitted.
+  walletRefId String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  resolvedAt  DateTime?
+
+  messages SupportMessage[]
+
+  // The per-user listing ("my tickets, newest first") and the admin queue
+  // ("open first, newest first") — the only two reads that exist in Phase 1.
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
+}
+
+model SupportMessage {
+  id         String        @id @default(cuid())
+  ticketId   String
+  // Cascade on purpose: a message has no meaning without its ticket, and this is
+  // containment, not a retention policy. Deleting a ticket is an explicit act; it
+  // must not leave orphaned bodies behind that no UI can ever show or erase.
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  // Exactly two writers exist in the whole design, and every reader branches on
+  // this to decide how to render the bubble, so an unknown value has no correct
+  // rendering. Closed set — pinned with a CHECK in the migration. (Contrast
+  // SupportTicket.status above, which is deliberately EXTENSIBLE and therefore
+  // deliberately un-CHECKed.)
+  authorRole String
+  // NULLABLE on purpose (plan §3.2): an admin replying from a personal account must
+  // not become a hard dependency on that User row existing forever. There is no
+  // relation, so no FK can break when an admin's account is removed.
+  authorId   String?
+  body       String
+  createdAt  DateTime      @default(now())
+
+  // The thread read: one ticket's messages in order.
+  @@index([ticketId, createdAt])
 }

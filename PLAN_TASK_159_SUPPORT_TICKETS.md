@@ -1,6 +1,9 @@
-# TASK_159 — Support tickets: scope
+# TASK_159 — Support tickets
 
-Status: **SCOPE ONLY. NOTHING SHIPPED.** No model, no migration, no API, no UI.
+Status: **PHASE 1 SHIPPED — backend only.** Models, migration, service layer and the
+six authenticated API routes are live. **No UI and no email**: nothing renders a
+ticket to a human yet, and nothing mails anyone. This document remains the scope of
+record; §9 below records exactly what shipped.
 Companion to `PLAN_TASK_158_WALLET_BALANCE.md` (wallet) and
 `PLAN_TASK_157_PLATFORM_DOMAINS.md` (user domains).
 
@@ -211,8 +214,99 @@ from whenever the ticket was filed.
 
 Stated in advance so the scope cannot quietly expand:
 
-- A user can open a ticket about a domain they own, from the domain itself.
-- An admin sees it in a queue with the domain's live status attached.
-- The user and admin can reply to each other in a thread.
-- The admin can resolve it.
-- No credential appears anywhere in the flow.
+- A user can open a ticket about a domain they own, from the domain itself. ⏳ *backend done; no UI*
+- An admin sees it in a queue with the domain's live status attached. ⏳ *backend done; no UI*
+- The user and admin can reply to each other in a thread. ✅ **done**
+- The admin can resolve it. ✅ **done**
+- No credential appears anywhere in the flow. ✅ **done and enforced on write**
+
+---
+
+## 9. What shipped (Phase 1, backend)
+
+Everything below is deployed and verified. The design decisions in §3.1/§3.3/§4 are
+reproduced in the migration's own header comment, which is the better place to read
+them — a later reader will hit the SQL before this document.
+
+**Migration** `prisma/migrations/20261107000000_task159_support_tickets` — additive:
+two new tables, three indexes, two FKs, three CHECKs. **No existing table is touched
+and no existing row is rewritten.** Note it sorts to `20261107000000`, i.e. *after*
+the Task 158 hosting migrations on the same box.
+
+**Two tables, not one.** `SupportTicket` is the container (owner, status, subject,
+the domain it is about); `SupportMessage` is an append-only turn. Flattening them
+would put the ticket's status on every message row.
+
+**The two FKs have opposite delete rules, on purpose:**
+
+| FK | Rule | Why |
+|---|---|---|
+| `SupportTicket.userId` → `User.id` | `ON DELETE RESTRICT` | There is no account-deletion flow today, so this blocks nothing that exists. It guarantees support history cannot be destroyed as a *side effect* of removing a user: whoever builds deletion must decide explicitly rather than silently lose every message a customer ever sent. |
+| `SupportMessage.ticketId` → `SupportTicket.id` | `ON DELETE CASCADE` | A message has no meaning without its ticket. This is containment, not retention: deleting a ticket must not leave orphaned bodies no UI can show and no user can erase. |
+
+**A `CHECK` on `authorRole`, none on `status` — the asymmetry is deliberate.**
+`authorRole` is a closed set (`user` \| `admin`) with exactly two writers and no
+anticipated third value, and every reader branches on it to pick a bubble style, so
+an unknown value has no correct rendering. `status` is a bare string so that
+`waiting_on_customer` is an INSERT rather than a migration (§3.1); readers treat only
+the exact value `resolved` as closed, so an unfamiliar status still needs attention
+instead of silently dropping out of the admin queue.
+
+**`domainRefId` is a soft reference (no FK)**, matching how `UserDomain.ownerUserId`
+already works. A hard FK would make an admin unable to remove a stale domain while a
+ticket still mentions it. "This domain must belong to this ticket's user" is enforced
+in the **write path**, not by the schema. The attachment is an **id**, never a copied
+apex — a copied apex is a second source of truth that goes stale.
+
+**`walletRefId` exists and is unused** until the wallet ships, so the tickets/wallet
+boundary (§6) is a visible column rather than a retrofit. It is an id and never an
+amount.
+
+**`resolvedAt` is server-derived.** Neither write path accepts it from a caller.
+
+**Credential defence** is in `lib/support/redact.ts`, applied to subjects and bodies
+**before storage** — so a credential-shaped paste is never persisted, rather than
+stored-then-displayed-redacted. Pasting a Cloudflare token into a ticket is refused,
+not quietly masked. The client-side paste-redact from §2.1 is *not* shipped: it is a
+convenience, and refusing on write is the guarantee.
+
+**Routes** (all authenticated; ownership always comes from the session, never the body):
+
+| Route | |
+|---|---|
+| `GET/POST /api/support/tickets` | list own / create |
+| `GET /api/support/tickets/[id]` | read own |
+| `POST /api/support/tickets/[id]/messages` | reply as user — **reopens** a resolved ticket |
+| `GET /api/admin/support/tickets` | queue |
+| `GET /api/admin/support/tickets/[id]` | read any |
+| `POST /api/admin/support/tickets/[id]/messages` | reply as admin — does **not** reopen |
+
+A foreign ticket id and a nonexistent one both return an indistinguishable `404`, so
+the API cannot be used to probe which ticket ids exist.
+
+**Verification:** `tests/support-tickets.test.ts` → **30/30** (`npm run test:support`).
+`npm run test:hosting` → **320/320**, unchanged. `npx tsc --noEmit` → 0, ESLint clean
+on every touched file, `CI=true npm run build` → exit 0.
+
+**Migration was dry-run against a clone of production** (schema + the
+`_prisma_migrations` ledger, 92 applied), not an empty database — see the note in §10.
+
+### 9.1 Deferred, deliberately
+
+- **UI of any kind.** No page renders a ticket. Until then the feature is reachable by
+  `curl`, which is enough to prove the contract and useless to a customer. This is the
+  first thing Phase 2 should build, in this order: user composer + thread, then the
+  admin queue.
+- **Email notifications.** Tickets exist before anything mails about them.
+- **Attachments** — deferred in §5, and would inherit §2.1's scan-on-write rule.
+- **Rate limiting on ticket creation** (§7.2) — still undecided.
+- **SLA timers, assignment, macros, full-text search, public status page** — §5.
+- **Refund actions from a ticket** — §6. A ticket references a wallet entry; it never
+  moves money.
+
+### 9.2 Open questions this phase answered by choosing
+
+§7.1 (reopen vs. new ticket): a **user reply reopens** the ticket. An admin reply does
+not reopen — so replying to a customer can never silently undo your own resolution.
+§7.4 (retention) is untouched; the `RESTRICT` FK is what makes it a future *decision*
+rather than an accident.
