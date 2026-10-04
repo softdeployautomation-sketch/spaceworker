@@ -455,7 +455,74 @@ likely to be deleted **last**, which is exactly the delete that triggers teardow
 teardown keyed on a per-row column is wrong when that column is nullable and the resource is
 shared — derive shared-resource identity from its real inputs.**
 
+**27. A migration can be proven on an EMPTY database and still be wrong — clone production.**
+*(Recorded 2026-10-04 on Task 159.)* Trap 23 says history cannot replay onto an empty DB,
+and the tempting workaround is to "just test the SQL somewhere". An empty database
+proves only that the statements parse; it cannot catch a migration that conflicts with
+the 92 migrations already applied. What production actually does is *apply yours on top
+of those 92*, so reproduce that: `pg_dump --schema-only` into a scratch DB, copy the
+`_prisma_migrations` rows across, then `migrate deploy` against the clone. Four traps in
+that one exercise, each of which produced a **false PASS or a silent abort**:
+- **`npx prisma` from a scratch dir installs an unrelated npm package** called `prisma`
+  (`No command registered for 'migrate'`). Call `/opt/spaceworker/node_modules/.bin/prisma`
+  by absolute path.
+- **Prisma resolves the schema at `./prisma/schema.prisma`** — mirror that layout, don't
+  drop `schema.prisma` at the root.
+- **The app role cannot `CREATEDB`.** Create the scratch DB as `sudo -u postgres` and
+  hand it to the app role, so validation runs as the *same* role production uses.
+- **A bare failing command under `set -e` aborts the whole script mid-assertion**, so the
+  run looks like it passed the checks it never reached. Setup writes get `|| true`.
+
+Two of my assertions failed for reasons that were **my test's** fault, not the schema's:
+a fixture `User` insert omitted `"passwordHash"` (NOT NULL, no default) and — the nasty
+one — `"User"` has **no `"updatedAt"` column at all**, unlike most tables in this schema.
+Everything downstream that depended on that row failed too, which is exactly how a
+correct migration gets reported as broken. **Assert the fixture first, then assert on it.**
+
+**Generalise: assert the things you depend on, not just the thing you changed.** A schema
+test that silently skips its setup tells you nothing; one that fails for the wrong reason
+tells you something worse.
+
 ## 6. Current state — revise this block every session
+
+**Last verified: 2026-10-04 (Task 159 Phase 1 — support-ticket BACKEND — SHIPPED, MIGRATED, LIVE-VERIFIED).**
+`main` @ `8326220`, deployed build **`u6J4f3cE3JRIn6kSBYA8f`** (`/opt/spaceworker/.next/BUILD_ID`,
+mtime `2026-10-04 22:19:43 +0200`), deploy run **37231502875** (`workflow_dispatch`,
+**success**, 4m59s). Migration **`20261107000000_task159_support_tickets`** applied
+`2026-10-04 22:22:16 +0200`, ledger total **93** (was 92), `rolled_back_at` NULL.
+**ADDITIVE only**: two new tables (`SupportTicket`, `SupportMessage`), three indexes,
+two FKs, three CHECKs — **no existing table altered, no existing row rewritten**, and
+both ticket tables were empty (`0`/`0`) immediately after deploy.
+
+Live verification this session, against a **disposable user** that was created, used and
+deleted in the same script (leftovers confirmed `0`/`0`):
+
+| check | result |
+|---|---|
+| `POST /api/support/tickets` | `201`, `status=open`, `resolvedAt=null` |
+| `GET /api/support/tickets` | `200`, `count=1` |
+| credential-shaped subject (`cfut__OOujdCztZDuH8yrJ8xyzAbcDef123`) | **`422`**, *"That looks like a Cloudflare API token, so it was not saved"* — never stored |
+| ordinary prose subject | `201` — no false positive |
+| user reply → admin reply → admin resolve | `201` / `201` / `200`, `resolvedAt` set |
+| **user reply on a resolved ticket** | **reopens**: `status=open`, `resolvedAt` cleared to `null` |
+| **admin reply on a resolved ticket** | **stays resolved** |
+| `GET /api/admin/support/tickets?status=resolved` | `200`, ticket present |
+| foreign ticket id vs. unknown id | **both `404`** — indistinguishable |
+| message roles in DB | `user x3`, `admin x2` |
+| unauthenticated user/admin routes | `401` |
+
+Proven locally before deploy: `npm run test:support` → **30/30**,
+`npm run test:hosting` → **320/320** (unchanged), `npx tsc --noEmit` → **0**, ESLint
+clean on every touched file, `CI=true npm run build` → **exit 0**. The migration was
+additionally dry-run against a **clone of production** (schema + the 92-row
+`_prisma_migrations` ledger) with 19 structural and behavioural assertions — see trap 23.
+
+**⚠ The one thing NOT true yet: there is no UI.** The whole feature is reachable only by
+`curl`; no page renders a ticket and nothing is emailed. That is deliberate for Phase 1
+(it proves the contract before anything is shown to a human) but it means a customer
+cannot yet open one. Phase 2 = user composer + thread, then the admin queue.
+
+*(Previous entry, Task 158 W1 — kept for the record:)* **Last verified: 2026-10-04 (Task 158 W1: third Cloudflare token slot, auto zone creation, Pages on the granted subdomain, two repaired `liveUrl` rows, and the admin platform-account panel separated from the subdomain field. `main` @ `cd0e6cb`. ⚠️ The token UI bug is fixed, but the New Prod and Primary CF **zone tokens were never actually stored** — they had been pasted into the subdomain input. They must be re-entered via the real *Add Zones token* control. The premium-sites pin points at **New Prod**, not Hosting Premium.)*
 
 **Last verified: 2026-10-02 (Task 155 **P4** + Task 156 **C1** DEPLOYED + MIGRATED + VERIFIED LIVE — `main` @ `cab860a`, deployed build **`BWRMBHG8mkpIrzUPTQ8-t`** (`BUILD_ID` mtime `2026-10-02 12:33:13 CEST`), deploy run **36995895931** (`workflow_dispatch`, **success**, 5m16s). Two migrations applied **in-window** and recorded in `_prisma_migrations`: `20261030000000_task156_c1_lab_schema` and `20261030120000_task155_p4_premium_links` (both `finished_at 2026-10-02 12:35:49 CEST`) — **NULLABLE / additive, no row rewritten**. **P4** = the Hosting page is now a **Sites | Links | Files** tabbed surface (counts shown as badges; the P1 status strip is unchanged and stays the "what am I allowed" contract), the **premium link cap** is a new `AdminSetting.hostingPremiumMaxLinks` (default **500**, free keeps `hostingFreeMaxLinks` **50**) resolved through the SAME `resolveHostingCaps` mechanism as the free dial, the **Cloudflare account token moved to `dashboard/settings`** (new *Hosting accounts* card — same `/api/hosting/credentials/*` routes, token never echoed), and **zip → preview → publish** is surfaced as the *"test before production"* step. **Task 156 C0+C1** = the Cyber Lab is **PREMIUM-gated** (`cyberlab` entitlement — owner **A14**: there is **NO staff badge and NO staff gate** anywhere in SpaceWorker; a grep finds none, so do not add one), ten additive `Lab*` models + `AdminSetting.cyberlab*` dials, `lib/lab/**` (gate/consent/tools/catalog-seed/research), `LabToolCatalog` seeded with **16 rows** and a `staleAfter` date that hides a stale row, the **AUP/consent** recorded server-side (hashed) before anything runs, and the **read-only Research** admin page (feeds only — never an attack). **C0** = `TASK_156_CYBER_LAB_AUP.md` + the consent screen (`components/cyberlab-aup.tsx`). Proven this session: `npx prisma validate` OK · `npx tsc --noEmit` → **0** · `CI=1 npx next build` → **exit 0** · `npm run test:hosting` → **40/40**, `test:pages` → **19/19**, `test:lab` → **10/10** · **eslint at HEAD parity on every touched file** (the only errors are the pre-existing `react-hooks/set-state-in-effect` warnings in `admin-panel.tsx` / `hosting-panel.tsx`, which are present at HEAD too). Live: `BUILD_ID` + mtime above; the P4 UI string **`Hosting accounts`** is present in the **shipped client chunk** (`/opt/spaceworker/.next/static/chunks/3yoy8celt_47q.js`); both new migrations are in `_prisma_migrations`. **⚠ NOT verified live:** the P3/P4 **write** path — no real user has clicked *upload → preview → publish* on production (see §6.4); and the **email/password login** on prod was not re-confirmed this session. **⚠ NEW environment finding (not a regression, not yet fixed):** a **fresh** database cannot replay migration history in order — at least **5 migrations are out-of-order** (e.g. `20260914150000_add_license_claim_token` references the `ExeLicense` table that a *later* timestamped migration creates; `20260921000000_device_tools_v2` references `Device`). The **live DB is unaffected** (its history is already recorded, so deploys are safe); only **brand-new DBs** hit it. Worked around on scratch with `prisma migrate resolve --applied`; **the other tasks' migrations were NOT edited.** This deserves its own cleanup task (see §7).
 **Last verified: 2026-10-02 (Task 155 **P3 DEPLOYED + MIGRATED + VERIFIED LIVE** — `main` @ `bb6ff6c`, deployed build `LjgrTG69r2eiN-w07Hj-i` (`BUILD_ID` mtime `2026-10-02 06:56:12 CEST`), deploy run **36966548887** (`workflow_dispatch`, in-window `prisma migrate deploy` reported *"Database schema is up to date!"*, migration `20261029000000_task155_p3_pages_sites` recorded `finished_at 2026-10-02 06:58:17 CEST`). P3 makes the **folder/zip → PREVIEW → PUBLISH** flow real and the engine **per-site**: LOCAL (free) serves the extracted tree from our metal at `/pv/<token>/` (preview, noindex, TTL) and `/hs/<token>/` (live, immutable); CLOUDFLARE (premium) runs the four-call Direct-Upload deploy against a per-item credential (user BYO account, else platform). Every new cap is an admin-editable `AdminSetting` (premiumMaxProjects / MaxFilesPerProject / MaxBandwidthGbPerMonth / DeploymentsPerDay / PreviewTtlHours / MaxZipMb / MaxZipEntries / MaxHeavyJobsPerUser / PublishedRevisionsKept); the heavy extract is serialised behind the §16.6 job lock; a dead token fails **closed** (§16.4). **ADDITIVE** migration: 9 `AdminSetting` columns + 2 NULLABLE `HostingCredential` columns + 3 new empty tables (`HostingSite`/`HostingRevision`/`HostingJob`) — no row rewritten. Proven: `npx tsc --noEmit` → **0**, `CI=1 npx next build` → **exit 0** (all P3 routes in the manifest + the P3 UI strings present in the shipped client chunk), `npm run test:hosting` → **39/39** incl. the new `tests/hosting-pages.test.ts` that builds a **real `7z` archive** and drives the real extract/serve path (which caught a real parser bug — trap 22). Live this session: `https://spaceworker.top/` → **200**, `/dashboard/hosting` → **307** (auth), `/api/hosting/sites` → **401** (auth-gated, route exists), `/pv/<bad>` and `/hs/<bad>` → **404** (new public handlers exist, no 500); `systemctl --failed` → **empty**; all three services **active**.**
@@ -627,7 +694,7 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 |---|---|---|---|
 | **1** | **Domains** — hosting Domains section (BYO + platform), zone-create probe, pending-zone → nameservers → poll `active`, fallback to a prefilled ticket | `PLAN_TASK_157_PLATFORM_DOMAINS.md` §4 Phases 4–5 + `PLAN_TASK_155…` §18 | **Phase 4a SHIPPED + LIVE 2026-10-04** (`2805bb2`, migration `20261105000000_task157_user_domains` applied, deploy run `37192624610`). User self-service domains (list/add/delete/verify-one), admin list/add-on-behalf/delete, server-side ownership gating on link create/update, hosting Domains UI, DB CHECK constraints. Live-verified 28/28 route assertions + zero migration drift. ⚠️ **The `Zone:Edit` probe came back NEGATIVE (2026-10-03) — see §7.3**; automatic zone creation is still **not available**, so onboarding works for zones already in the account. Remaining: 4b ticket fallback, 4c, Phase 5 restructure, admin Domains UI, `credentialId` enforcement, site-publication wiring. |
 | **2** | **Wallet / balance-first billing** — top up, spend on premium **and on EXE licenses**, admin grant, immutable ledger | **`PLAN_TASK_158_WALLET_BALANCE.md`** (new this session) | **Designed, not started.** 6 phases W1–W6 |
-| **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | `PLAN_TASK_157…` §4 Phase 6 | **Scoped, not started.** No `SupportTicket` model exists yet |
+| **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | **`PLAN_TASK_159_SUPPORT_TICKETS.md`** (own doc, this session) | **Phase 1 (backend) SHIPPED + LIVE 2026-10-04** (`8326220`, migration `20261107000000_task159_support_tickets` applied, deploy run `37231502875`). `SupportTicket`/`SupportMessage`, a credential-rejecting write path, and six authenticated routes. Live-verified end to end with a disposable user. **No UI, no email** — next is the user composer + thread, then the admin queue. |
 | **4** | **Marketing** for the new tools (hosting domains, wallet, tickets) | **needs its own doc** | **Not started.** No doc yet — write one before coding |
 | **5** | **Cyber Lab C2+ completion** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | Deferred by the owner until #4 lands |
 
@@ -994,6 +1061,7 @@ half-done. A half-done change with no note is worse than no change.
 | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Scoping, not built** — the real-world Cyber Lab (tooling matrix + abuse sentinel). Depends on 155 P1/P2. Owner Qs in §10. |
 | **`PLAN_TASK_157_PLATFORM_DOMAINS.md`** | **Scoping, partly live** — platform domains, premium hostnames, hosting restructure, support tickets. §4 Phase 1 + 3b are **shipped and live**; Phases 4–6 (domains wizard, restructure, tickets) are **not started**. |
 | **`PLAN_TASK_158_WALLET_BALANCE.md`** | **Designed, not built** — the balance-first wallet. Top up, then spend on premium **and EXE licenses**; admin grants; an append-only ledger Vantra doesn't have. 6 phases W1–W6, 18 acceptance tests, 6 open questions. **See §7.1 and the money gate §8.0.** |
+| **`PLAN_TASK_159_SUPPORT_TICKETS.md`** | **Phase 1 SHIPPED (backend), Phase 2 not started** — `SupportTicket`/`SupportMessage` with deliberately opposite FK delete rules, a credential-rejecting write path, and six authenticated routes. **No UI, no email.** §9 records exactly what shipped and §9.1 what was deferred. |
 | `HANDOFF.md` (root) | **STALE** (Sep 2026, PR merge notes). Historical only — do not follow. |
 | `app/AGENTS.md`, `app/CLAUDE.md` | Repo-local agent conventions |
 
@@ -1574,6 +1642,40 @@ so §6b's drift check is now **mandatory** after the W1 migration, and the new F
   **Live:** `BUILD_ID` = `BWRMBHG8mkpIrzUPTQ8-t` (mtime `2026-10-02 12:33:13 CEST`); deploy run
   `36995895931` **success**; both new migrations in `_prisma_migrations` (`finished_at
   2026-10-02 12:35:49 CEST`); the P4 UI string `Hosting accounts` present in the shipped client chunk
+
+### 2026-10-04 — Task 159 Phase 1: support-ticket backend SHIPPED, MIGRATED, LIVE-VERIFIED
+- **Did:** added `SupportTicket`/`SupportMessage` (`prisma/schema.prisma`) plus migration
+  `20261107000000_task159_support_tickets`; credential detection in `lib/support/redact.ts`;
+  the service in `lib/support/tickets.ts`; six authenticated routes under
+  `app/api/support/**` and `app/api/admin/support/**`; `tests/support-tickets.test.ts`;
+  `test:support` script. Commit **`8326220`**, pushed to `main`.
+- **Verified:** `npm run test:support` **30/30**; `npm run test:hosting` **320/320**
+  (unchanged — no regression in the 12 hosting suites); `npx tsc --noEmit` **0**; ESLint
+  clean on all touched files; `CI=true npm run build` **exit 0**. Migration dry-run against
+  a **production clone** (schema + 92-row ledger): 19/19 assertions passed, including that
+  `status` accepts a brand-new value while `authorRole` refuses `robot`, that whitespace-only
+  subject/body are rejected, that `RESTRICT` blocks deleting a user with tickets, that
+  `CASCADE` leaves no orphan messages, and that an orphan ticket is refused. Scratch DB
+  dropped (verified absent). Deploy run **37231502875** success; ledger row
+  `20261107000000_task159_support_tickets` `finished_at 2026-10-04 22:22:16 +0200`,
+  total **93**, `rolled_back_at` NULL. Live smoke with a disposable user: create `201`
+  (`status=open`, `resolvedAt=null`), list `200`, credential-shaped subject **`422`**
+  and never stored, prose accepted `201`, user reply **reopens** (status `open`,
+  `resolvedAt` cleared), admin reply **does not** reopen (stays `resolved`), queue `200`,
+  foreign id and unknown id **both `404`**, roles `user x3` / `admin x2`, unauth routes `401`.
+  All smoke rows deleted: leftover tickets `0`, leftover users `0`.
+- **NOT verified:** **no UI exists.** Nothing renders a ticket and nothing is emailed, so no
+  customer can open one yet — the feature is proven by API only. Also unverified: the
+  `domainRefId` attachment against a *real* domain (the smoke user owned none), and the
+  `walletRefId` column, which is unused until the wallet ships.
+- **State left behind:** `main` @ `8326220`, in sync with `origin`, tree clean after this
+  doc commit. No worktrees, no branches. Scratch DB `sw_migcheck_159` dropped. Test scripts
+  left at `/tmp/validate-migration-159.sh` and `/tmp/t159-live-smoke.sh` (also on the VPS)
+  — they are **not** committed; copy them into `scripts/` if the next task needs them.
+- **Next:** Task 159 **Phase 2 UI** — user composer + thread first, then the admin queue —
+  then return to the owner-directed sequence (#2 wallet, then #4 marketing). Still open from
+  Task 158: the New Prod / Primary CF **zone tokens must be re-entered** through the real
+  *Add Zones token* control, because they were pasted into the subdomain field and never stored.
   (`/opt/spaceworker/.next/static/chunks/3yoy8celt_47q.js`). On the box: certbot **1.21.0**, nginx
   **1.30.4**, 13 vhosts, 8 certbot lineages, app `User=trmm`, `/etc/sudoers.d/trmm` = `NOPASSWD:ALL`,
   **no default vhost**.

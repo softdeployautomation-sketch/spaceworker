@@ -288,8 +288,24 @@ the API cannot be used to probe which ticket ids exist.
 `npm run test:hosting` → **320/320**, unchanged. `npx tsc --noEmit` → 0, ESLint clean
 on every touched file, `CI=true npm run build` → exit 0.
 
+**Live proof, not just local tests.** Beyond the 30 unit tests, a disposable user was
+created on production, drove the whole flow (create → list → user reply → admin reply →
+resolve → reopen → queue), and was deleted in the same script. Confirmed live: a
+credential-shaped subject is **rejected `422` and never stored** while ordinary prose is
+accepted (no false positive); a **user** reply reopens a resolved ticket and clears
+`resolvedAt`; an **admin** reply does not reopen it; a foreign ticket id and a
+nonexistent one both return **`404`**. Leftover rows after cleanup: `0`.
+
 **Migration was dry-run against a clone of production** (schema + the
-`_prisma_migrations` ledger, 92 applied), not an empty database — see the note in §10.
+`_prisma_migrations` ledger, 92 applied), not an empty database — replaying history
+onto an empty DB fails at an unrelated old migration and proves nothing about this
+one. All three indexes, both FKs (with their *opposite* delete rules) and all three
+CHECKs were asserted structurally **and** behaviourally: a whitespace-only subject and
+body are rejected, an unknown `authorRole` is rejected, an orphan ticket is refused,
+`waiting_on_customer` is storable without a migration, deleting a ticket leaves no
+orphan messages, and deleting a user with tickets is blocked. **19/19 passed.**
+The rationale and the four ways that exercise can silently pass for the wrong reason
+are in `SENIOR_HANDOFF.md` trap 27 — read it before writing another one.
 
 ### 9.1 Deferred, deliberately
 
