@@ -1,5 +1,49 @@
-# PROMPT — NEXT SENIOR AGENT (Task 155 hosting P5 / P6 / P6d **and** Task 156 C2+ — the WHOLE pending queue)
+# PROMPT — NEXT SENIOR AGENT (owner-set queue: **domains → wallet → tickets → marketing → Cyber Lab**)
 
+> ## ★ OWNER-SET BUILD ORDER (2026-10-03) — this supersedes the older item order in §3/§5
+>
+> The owner explicitly set this sequence. **Follow it; do not start Cyber Lab early**, even though
+> Task 156 C2+ is fully scoped and appears as the "next" item further down this file.
+>
+> | # | Workstream | Doc | State |
+> |---|---|---|---|
+> | **1** | **Domains** — Domains section + **active-zone picker** (Phase 4a) + restructure (Phase 5) + ticket fallback (4c) | `PLAN_TASK_157_PLATFORM_DOMAINS.md` §4 Phase 4 (now split 4a/4b/4c) + §7.4 | Scoped, **not started**. ⚠️ **The `zone.create` probe RAN and came back NEGATIVE — see below. NO LONGER BLOCKED: build 4a now.** |
+> | **2** | **Wallet / balance-first billing** — top up, spend on premium **and EXE licenses**, admin grant, immutable ledger | **`PLAN_TASK_158_WALLET_BALANCE.md`** | Designed, **not started**; phases W1–W6 |
+> | **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a token** | `PLAN_TASK_157…` §4 Phase 6 | Scoped, **not started** |
+> | **4** | **Marketing** for the new tools | **no doc yet — write one first** | Not started |
+> | **5** | **Cyber Lab C2+** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | Deferred until #4 |
+>
+> **Items 1 and 2 both touch the admin panel and `prisma/schema.prisma` ⇒ sequential, not parallel.**
+>
+> ### Item 2 is money-adjacent ⇒ §8.0 of `SENIOR_HANDOFF.md` is BINDING
+> "It typechecks" is **not** an acceptable report. The full gate is A (local: tsc / build / new tests
+> / hosting-regression / lint / migration replay), B (live on the VPS over real HTTP, including a
+> **concurrency** test and a **double-mint** test), C (the §6b drift check after `migrate deploy`),
+> D (honest unverified list).
+>
+> **Two gotchas already found for whoever builds it:**
+> `ExeLicense.paymentId` is `@unique` and **required**, so EXE-from-wallet needs a migration
+> (`paymentId` nullable + `walletEntryId` + a CHECK); and `issueExeLicense()`
+> (`lib/license-service.ts:130`) hardcodes `paymentId` — its `findUnique` is the **double-mint
+> guard**, which the wallet path must not bypass.
+>
+> Vantra already implements balance-first in production — **copy its shape, don't reinvent it**
+> (`vantra/app/api/admin/payments/[paymentId]/confirm/route.ts:70-86` credit, `:116-123` debit).
+> SpaceWorker already has the BTC/USDT/USDT-ERC20 addresses on `AdminSetting`, so **no new payment
+> infrastructure is needed**. We improve on Vantra with an **append-only ledger** it does not have.
+
+> **Item 1 is NO LONGER BLOCKED — the zone-permission probe already ran (2026-10-03), answer NO.**
+> All 3 platform accounts / all 5 tokens return
+> `403 Requires permission "com.cloudflare.api.account.zone.create"`. Full raw evidence:
+> `TRIAGE_2026-10-03_HOSTING.md` §3.5, `SENIOR_HANDOFF.md` §7.2, `PLAN_TASK_157…` §7.4.
+> **⇒ Build Phase 4a (the active-zone picker — existing zones need NO permission and NO
+> nameserver step), Phase 5 (restructure) and 4c (ticket fallback).** Do **NOT** build a
+> create-zone button; it is guaranteed to 403. Phase 4b stays gated on the owner granting
+> account-scoped Zone → Zone → Edit.
+> **Two carry-overs:** the `hosting Premium Links` account (`43b24dc0…`) has **zero zones**
+> (links only, never a domain), and **`broks.beauty` is still readable** by the `New Prod`
+> token — the reserved-host denylist is still mandatory and the picker must never offer it.
+>
 > ## ⚠️ READ `TRIAGE_2026-10-03_HOSTING.md` FIRST (2026-10-03, live prod investigation)
 >
 > Five owner questions were triaged against production, the DB and both real Cloudflare accounts.
@@ -229,6 +273,35 @@ resolver", not a week of provisioning. **Recommended phasing:** **P5a** = tab + 
 (additive, `hostname @unique`) + verification + binding, **Path A**, `provider = platform` **default**
 per §19.10 rule 5, BYO as the escape hatch; **P5b** = our-metal serving. **Gate:** §18.9 **Q1** (phased
 recommendation vs our-metal-first), **Q3** (BYO token's Pages custom-domain scope), **Q6** (abuse guardrails).
+
+### 2a — **Task 158: the WALLET / balance-first billing**  *(owner item #2 — full design)*
+
+**Doc:** **`PLAN_TASK_158_WALLET_BALANCE.md`** (new 2026-10-03).
+
+**The ask:** *"users can able to add balance to their account first, then decide what to use it for"*
++ *"users can top their wallet to purchase the exe licenses so our web app becomes a place they can
+come to fix and replace their license as well."*
+
+**The model inverts:** today a `Payment` *is* one product; under this plan the **wallet is the
+product**, and premium terms **and EXE licenses** are bought from it. Six phases W1–W6: W1 migration +
+`lib/wallet.ts` → W2 balance display → W3 admin grant → W4 top-up → W5 spend on premium →
+**W6 EXE-from-wallet + a replace/re-issue surface**.
+
+**Gate:** §8.0 of `SENIOR_HANDOFF.md` in full. Plus the plan's own **6 open questions** — **O5/O6 are
+blocking for W6** (what a replacement license costs; whether the old row is superseded).
+
+### 2c — **Task 157 Phase 6: SUPPORT TICKETS**  *(owner item #3)*
+
+**Doc:** `PLAN_TASK_157_PLATFORM_DOMAINS.md` §4 Phase 6. **No `SupportTicket` model exists yet.**
+User + admin, threaded, `open→resolved`, a persistent left-nav **Support** entry, and a **hard lint
+rule forbidding any Cloudflare token in a ticket body**. May carry zone metadata only. It is also
+the **fallback** for the domains wizard when automatic zone creation isn't available — build that
+fallback in.
+
+### 2d — **MARKETING for the new tools**  *(owner item #4 — NO DOC YET)*
+
+**Write the plan doc before any code.** Covers hosting domains, the wallet, and tickets. The owner
+wants the new tools marketed once they exist; the Cyber Lab return is blocked on this.
 
 ### 2 — Task 155 **P6d**: site upload inputs — file / folder / zip  *(independent)*
 

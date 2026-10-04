@@ -617,6 +617,123 @@ banner, decides what runs next.
 
 ## 7. Queue — what runs next, in order
 
+### ★★ OWNER-DIRECTED SEQUENCE (2026-10-03) — this supersedes the table below for what comes first
+
+The owner set this order explicitly: **domains → wallet → support tickets → marketing → then back to
+Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is done, even though
+`PLAN_TASK_156` is fully scoped and is otherwise the "next" item in the older table.
+
+| # | Workstream | Doc | State |
+|---|---|---|---|
+| **1** | **Domains** — hosting Domains section (BYO + platform), zone-create probe, pending-zone → nameservers → poll `active`, fallback to a prefilled ticket | `PLAN_TASK_157_PLATFORM_DOMAINS.md` §4 Phases 4–5 + `PLAN_TASK_155…` §18 | **Scoped, not started.** ⚠️ **The `Zone:Edit` probe RAN and came back NEGATIVE (2026-10-03) — see §7.3.** Automatic zone creation is **not available** with today's tokens; build active-zones + the ticket fallback, and treat re-probing as conditional on the owner granting `zone.create`. |
+| **2** | **Wallet / balance-first billing** — top up, spend on premium **and on EXE licenses**, admin grant, immutable ledger | **`PLAN_TASK_158_WALLET_BALANCE.md`** (new this session) | **Designed, not started.** 6 phases W1–W6 |
+| **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | `PLAN_TASK_157…` §4 Phase 6 | **Scoped, not started.** No `SupportTicket` model exists yet |
+| **4** | **Marketing** for the new tools (hosting domains, wallet, tickets) | **needs its own doc** | **Not started.** No doc yet — write one before coding |
+| **5** | **Cyber Lab C2+ completion** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | Deferred by the owner until #4 lands |
+
+**Sequencing note:** #1 and #2 both touch the admin panel and `prisma/schema.prisma`, so they are
+**sequential, not parallel** (this file's standing rule). #2's migration (W1) must also be the
+**first** thing that exercises the `ExeLicense.paymentId` nullable change, since that is the one
+schema edit with a live blast radius.
+
+### 7.1 Wallet / balance-first billing — what the owner actually asked for
+
+> "now i want the payment flow for spaceworker not to be mandatory for subscription, i want users
+> to be able to add balance to there account first, then they can decide to make use of that
+> balance for subscription or other things."
+
+Plus, this session:
+
+> "users can top there wallet to purchase the exe licenses so our web app becomes a place they can
+> come to fix and replace there license as well… so it's still the same"
+
+**So the model inverts.** Today every payment *is* one product (`Payment.product`, granted by
+`lib/license-service.ts` `handleApprovedPayment`). Under this plan the **wallet is the product of
+the payment** and everything else is bought *from* it — premium terms **and** EXE licenses. Full
+design, schema, API contracts, 18 acceptance tests and 6 open questions:
+**`PLAN_TASK_158_WALLET_BALANCE.md`.**
+
+**Two findings that will bite whoever builds it:**
+- **`ExeLicense.paymentId` is `@unique` and REQUIRED** (`prisma/schema.prisma`). A wallet
+  purchase has no payment row, so EXE-from-wallet costs a migration: `paymentId` becomes
+  nullable, a nullable `walletEntryId` is added, and a CHECK constraint enforces "exactly one
+  of the two". Plan decision **D9**.
+- **`issueExeLicense()` (`lib/license-service.ts:130`) hardcodes `paymentId`** and its
+  idempotency check is `findUnique({ where: { paymentId } })`. That is the **double-mint guard** —
+  one debit must yield exactly one key. Do not let the wallet path bypass it.
+
+**Reuse target is Vantra, which already works this way in production** — copy its guarded-update
+shape (credit `:70-86`, debit `:116-123` of
+`vantra/app/api/admin/payments/[paymentId]/confirm/route.ts`) and its "on-chain confirmation is
+not payment" discipline (`vantra/app/api/billing/manual/submit/route.ts:35-42`). SpaceWorker
+already has the three receiving addresses on `AdminSetting` (`btcWallet` / `usdtWallet` /
+`usdtErc20Wallet`), so **no new payment infrastructure is needed** — this is a ledger plus a
+spend path. SpaceWorker improves on Vantra in one place: an **append-only `WalletLedgerEntry`**
+with a per-row `balanceAfterCents`, which Vantra lacks (it mutates `walletBalanceCents` directly,
+so "where did my $20 go?" is unanswerable from the DB).
+
+**Do NOT** widen `Payment.amountUsd` from `Float` to cents — it has a wide blast radius and zero
+user benefit. New wallet maths uses **integer cents only** (decision **D3**).
+
+### 7.2 ⚠️ ZONE-CREATE PERMISSION PROBE — **RAN LIVE, ANSWER: NO** (2026-10-03)
+
+This was the open question blocking the domains wizard (`TRIAGE_2026-10-03_HOSTING.md`
+§3.3, previously "UNVERIFIED — do not assume"). **It is now settled, and the answer is
+negative.** Full raw evidence: **`TRIAGE_2026-10-03_HOSTING.md` §3.5.**
+
+**Result: all 3 platform accounts, all 5 configured tokens → `403`:**
+```
+Requires permission "com.cloudflare.api.account.zone.create" to create zones for the selected account
+```
+| Account | CF acct | Token | Zones readable | `POST /zones` |
+|---|---|---|---|---|
+| Primary cf | `4c822d3b…` | Pages | 0 | **403** |
+| New Prod | `9bc97c44…` | Pages | 0 | **403** |
+| New Prod | `9bc97c44…` | Workers/DNS | **3** | **403** |
+| hosting Premium Links | `43b24dc0…` | Pages | 0 | **403** |
+| hosting Premium Links | `43b24dc0…` | Workers/DNS | 0 | **403** |
+
+**How it was proven without risking a real domain:** the probe issued
+`POST /zones` with a **deliberately invalid** domain name. Cloudflare checks the
+**account permission before validating the domain**, so the request returned `403` on
+permission and could not have claimed anything. This required **no** throwaway domain on
+a domain the owner controls — the risk the triage doc was worried about never arose.
+Reusable rule: **a probe whose input is invalid-by-construction answers a permission
+question at zero risk.** It is only ambiguous when the answer is *positive* (then you
+need a real domain to confirm).
+
+**⇒ What this changes for the domains wizard:**
+- **Brand-new domains cannot be auto-onboarded today.** The wizard must not ship a
+  "create zone" step that is guaranteed to 403.
+- **Existing active zones work with zero setup** — `instaweb.top`, `mainaccess.top`,
+  `broks.beauty` (the last is the owner's and is **reserved — must stay denylisted**).
+  This is the day-to-day path and it needs **no** `zone.create` permission.
+- **Fallback = the support-ticket flow** for a brand-new domain. That makes **tickets
+  (owner item #3) a dependency of domains (item #1)**, not a parallel workstream.
+- **To unblock auto-creation**, the owner grants **Zone → Zone → Edit** scoped to the
+  **account** on a token, then this probe is re-run. Note a token scoped to specific
+  zone *resources* still cannot create new zones — it must be account-wide.
+
+**Two side-findings (also worth acting on):**
+1. **A third platform account exists** — `hosting Premium Links` (`43b24dc0…`), from
+   the per-purpose pinning. It has **zero zones**, so it can serve `workers.dev` links
+   only, never a custom domain. **Never pin a *domain* purpose to it.**
+2. **`broks.beauty` is still readable by the `New Prod` Workers/DNS token** — the §2.2
+   governance hole is **unremediated**. The reserved-host denylist remains required; do
+   not treat zone-create being blocked as any mitigation for it.
+
+**Cleanup done:** probe script, runner and the temp env file (which held
+`DATABASE_URL` + `MAILBOX_ENCRYPTION_KEY`) were removed from the VPS. No zones created,
+no DB writes, no token value ever printed, `spaceworker.service` still `active`.
+
+### 7.3 Support tickets — scope
+
+None exist (searched `app/`, `lib/`, `components/`). User + admin, threaded replies,
+`open→resolved`, persistent left-nav **Support** entry, and a **hard lint rule forbidding any
+Cloudflare token in a ticket body**. May carry zone metadata (name / status / nameservers /
+account id). ⚠️ **Per §7.2 this is now a DEPENDENCY of the domains work, not a parallel item:**
+a brand-new domain cannot be auto-created, so the ticket is the fallback path.
+
 **Live app (`main`)** — strictly sequential where files overlap:
 
 | # | Task | Doc | Notes |
@@ -678,6 +795,63 @@ are called out in each task doc.
 
 
 ## 8. How to verify — the standard the owner actually wants
+
+### 8.0 MONEY-ADJACENT WORK — the full gate (binding; no exceptions)
+
+`tsc` passing proves code **compiles**, not that it **works**. This repo's own history says so
+out loud: *"Typechecking proves the code compiles, not that it works. For anything security- or
+money-adjacent, write a disposable Node script that exercises the real deployed HTTP routes with
+real (throwaway, self-cleaning) data"* (`HOW_WE_MOVE_FAST.md` §4).
+
+**The owner was explicit: scope every possible test so we don't ship broken product.** For the
+wallet (`PLAN_TASK_158`) and any billing/licensing change, every one of these is required. "It
+typechecks" is not an acceptable report.
+
+**A — Local, before it can be considered finished**
+
+| # | Gate | Command |
+|---|---|---|
+| A1 | Types | `npx tsc --noEmit -p .` → exit 0 |
+| A2 | Build | `CI=1 npx next build` → succeeds |
+| A3 | New tests | the new `npm run test:wallet` / `test:wallet-exe` → all pass, **raw output** |
+| A4 | Blast-radius tests | `npm run test:hosting` (39/39 today) + the **licensing** tests — CI will **not** run these (trap 3) |
+| A5 | Lint | `npm run lint` |
+| A6 | Fresh-DB migration replay | the migration applies to an empty scratch DB — and against a clone of production's `_prisma_migrations` (**trap 23**; fresh-DB replay is *already* broken by ≥5 out-of-order migrations, so prove YOUR migration adds no new breakage and say so) |
+
+**B — Live on the VPS, against the real deployed routes** (`HOW_WE_MOVE_FAST.md` §4; run from
+`/opt/spaceworker`, app on `http://localhost:3500`)
+
+| # | Gate | How |
+|---|---|---|
+| B1 | Real HTTP, not the handler | `fetch("http://localhost:3500/api/...")` against the deployed app |
+| B2 | Disposable data | real `_e2e-<name>-test-${Date.now()}@spaceworker.test` rows via the real Prisma models |
+| B3 | Assert **DB state, not just the HTTP body** | read `User.balanceCents` / `WalletLedgerEntry` / `ExeLicense` back out of Postgres — the response saying `{"ok":true}` proves nothing |
+| B4 | **Concurrency** | fire two simultaneous spends of the full balance → exactly one wins, the other 402. **This is the single most important money test**; a race here is a silent overdraft |
+| B5 | **Double-mint** | one debit ⇒ exactly ONE `ExeLicense`; replay the `idempotencyKey` and assert no second key |
+| B6 | Admin gating | mint a session via `createAdminSessionToken()` from `lib/admin-auth.ts` — **never** pull a plaintext `ADMIN_TOKEN` into a script or transcript |
+| B7 | Full lifecycle | top-up → admin approves → balance credited → spend → entitlement granted, end to end, with a DB read after each hop |
+| B8 | **Cleanup** | delete every row you created (watch FK order — `PaymentVerificationAttempt` blocks a `Payment` delete) and delete the script + `stub-server-only.cjs` from the VPS. **Never leave test data in production.** |
+| B9 | Unambiguous outcome | one `RESULT: PASS` / `RESULT: FAIL` line, `process.exit(0/1)` |
+
+**C — After `migrate deploy` (every time, no exceptions)**
+
+The **§6b drift check** — `migrate deploy` exiting 0 does **not** prove the DB matches the
+datamodel:
+```bash
+cd /opt/spaceworker
+sudo -u trmm env HOME=/home/trmm npx prisma migrate diff \
+  --from-schema-datasource prisma/schema.prisma \
+  --to-schema-datamodel  prisma/schema.prisma --script
+```
+In sync ⇒ **exactly** `-- This is an empty migration.` Anything else is real drift. **Critical for
+the wallet:** the new `WalletLedgerEntry` has a **nullable-unique `idempotencyKey`** and a
+**CHECK constraint on `ExeLicense`** — both are objects hand-written SQL gets subtly wrong, and
+both are exactly what the diff will surface. **Do NOT add `ON DELETE CASCADE`** to the new FKs —
+trap 23's lesson is that a cascade on an audit-bearing FK silently destroys exactly the rows you
+kept the ledger to preserve.
+
+**D — Report honestly.** The list of what you could NOT verify is expected. Label anything
+simulated as **"SIMULATION"**. A claimed-but-unverified money path is worse than an unfinished one.
 
 Every task doc ends with an Evidence list. **Meet it, and meet the rules in §4.** Short form:
 
@@ -818,10 +992,107 @@ half-done. A half-done change with no note is worse than no change.
 | `PROMPTS_SENIOR_ENGINEERS.md` | **The assignment pack** — PROMPT L (onboard the lead), PROMPT E (per-engineer task template) and PROMPT V (the lead's independent verification). Use it to hand work out; it encodes §4/§5/§8/§9/§10 as copy-paste operations. |
 | `PLAN_TASK_155_WORKERS_AND_PAGES.md` | **Scoping, not built** — the Workers & Pages hosting tab (free-first). Owner Qs in §13. |
 | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | **Scoping, not built** — the real-world Cyber Lab (tooling matrix + abuse sentinel). Depends on 155 P1/P2. Owner Qs in §10. |
+| **`PLAN_TASK_157_PLATFORM_DOMAINS.md`** | **Scoping, partly live** — platform domains, premium hostnames, hosting restructure, support tickets. §4 Phase 1 + 3b are **shipped and live**; Phases 4–6 (domains wizard, restructure, tickets) are **not started**. |
+| **`PLAN_TASK_158_WALLET_BALANCE.md`** | **Designed, not built** — the balance-first wallet. Top up, then spend on premium **and EXE licenses**; admin grants; an append-only ledger Vantra doesn't have. 6 phases W1–W6, 18 acceptance tests, 6 open questions. **See §7.1 and the money gate §8.0.** |
 | `HANDOFF.md` (root) | **STALE** (Sep 2026, PR merge notes). Historical only — do not follow. |
 | `app/AGENTS.md`, `app/CLAUDE.md` | Repo-local agent conventions |
 
 ## 12. Log
+
+### 2026-10-03 — ZONE-CREATE PROBE RAN: **NO**, tokens lack `zone.create` (answers §6.4 / triage §3.3)
+
+**Read-only investigation. Zero production writes.** `main` still `32a280a`; nothing deployed.
+
+**Answered the open question** that was blocking the domains wizard: *can the platform
+tokens create a Cloudflare zone?* **No.** All **3 accounts / 5 tokens** returned
+```
+403  Requires permission "com.cloudflare.api.account.zone.create" to create zones for the selected account
+```
+Raw evidence: **`TRIAGE_2026-10-03_HOSTING.md` §3.5**; handoff **§7.2**.
+
+**The probe was safe by construction — worth reusing.** Rather than create a real zone
+on a domain the owner controls (the risk the triage doc flagged), the probe issued
+`POST /zones` with a **deliberately invalid domain name**. Cloudflare evaluates the
+**account permission before validating the domain**, so it returned `403` on permission and
+**could not have claimed anything**. Generalizable lesson, added to §5's method: *a probe
+whose input is invalid-by-construction answers a permission question at zero risk* — it is
+only ambiguous when the answer is **positive**, because then you still need a real domain
+to confirm.
+
+**How it ran:** on the VPS, decrypting the real tokens with the production helper
+(`lib/mailbox-crypto.ts` `decryptSecretOrThrow`) over the actual `HostingPlatformAccount`
+rows. **No token value was ever printed** — labels, ids, hints and statuses only. Needed
+`scripts/stub-server-only.cjs` (§4) and both `DATABASE_URL` + `MAILBOX_ENCRYPTION_KEY`
+injected server-side via `grep` (never printed). Two live errors, both fixed: the model
+field is `label` not `name`, and **`.env` is not `source`-able** (a value contains spaces)
+so keys must be extracted individually.
+
+**Two side-findings:**
+1. **A third platform account now exists** — `hosting Premium Links` (`43b24dc0…`), from
+   per-purpose pinning. **Zero zones** ⇒ it can serve `workers.dev` links only, never a
+   custom domain. **Never pin a domain purpose to it.**
+2. **`broks.beauty` is still readable by the `New Prod` Workers/DNS token** — the §2.2
+   governance hole is **unremediated**. Blocking zone-create mitigates **nothing** there.
+
+**Consequence — this reshapes the owner sequence.** Brand-new domains cannot be auto-created,
+so the domains wizard must **not** ship a create-zone step. But **existing active zones**
+(`instaweb.top`, `mainaccess.top`) work with **zero setup** — that is the day-to-day path and
+needs no permission. The fallback for a genuinely new domain is **the ticket flow**, which makes
+**tickets a dependency of domains** (§7.3), not a sibling. To restore auto-creation the owner
+grants **Zone → Zone → Edit** on the **account** (not on specific zone resources) and this probe
+is re-run.
+
+**Cleanup verified:** probe script, runner and temp env file removed from the VPS; no zones
+created; no DB rows written; `spaceworker.service` `active`.
+
+### 2026-10-03 — Wallet / balance-first billing SCOPED (`PLAN_TASK_158`); owner set the build order; money-adjacent test gate added to §8
+
+**Docs only — no code, no schema, no deploy.** `main` unchanged at `32a280a`.
+
+**Owner's request:** *"now i want the payment flow for spaceworker not to be mandatory for
+subscription, i want users to be able to add balance to there account first, then they can decide to
+make use of that balance for subscription or other things."* Follow-up this session: *"users can top
+there wallet to purchase the exe licenses so our web app becomes a place they can come to fix and
+replace there license as well… so it's still the same."*
+
+**Owner-set build order (binding, §7):** **domains → wallet → support tickets → marketing →
+back to Cyber Lab C2+.** Marketing has **no doc yet** — one must be written before that code starts.
+
+**New:** `PLAN_TASK_158_WALLET_BALANCE.md` — full wallet design. **`PLAN_TASK_157_PLATFORM_DOMAINS.md`**
+confirmed as the domains/tickets doc.
+
+**The model inverts.** Today a `Payment` row *is* one product and approval grants exactly that
+(`handleApprovedPayment`, `lib/license-service.ts:33`). Under the plan the **wallet is the product of
+the payment**, and premium terms + EXE licenses are bought *from* it.
+
+**Verified by reading the code (not assumed):**
+- Vantra already does balance-first **in production** — credit `confirm/route.ts:70-86` and debit
+  `:116-123` are both **guarded `updateMany`** calls whose `count === 0` is the race signal
+  (no read-then-write). `billing/manual/submit/route.ts:35-42` proves on-chain confirmation is
+  **not** payment — even a confirmed tx only reaches `pending_review`.
+- SpaceWorker has **no** `balanceCents`, **no** ledger, and `Payment.amountUsd` is **`Float`**.
+- SpaceWorker already has `AdminSetting.btcWallet` / `usdtWallet` / `usdtErc20Wallet` + the
+  `/api/billing/*` routes, so **no new payment infrastructure is needed** — this is a ledger + spend path.
+
+**Two findings that change the cost of the work:**
+1. **`ExeLicense.paymentId` is `@unique` and REQUIRED.** EXE-from-wallet therefore needs a
+   migration (`paymentId` nullable + `walletEntryId` + a CHECK enforcing exactly one) — decision **D9**.
+   A synthetic zero-value `Payment` row was rejected: it fakes money that never moved.
+2. **`issueExeLicense()` (`lib/license-service.ts:130`) hardcodes `paymentId`**, and its
+   `findUnique({ where: { paymentId } })` check is the **double-mint guard**. The wallet path must not
+   bypass it — one debit must yield exactly one key.
+
+**Where we beat the reference:** Vantra mutates `walletBalanceCents` directly, so "where did my $20
+go?" is unanswerable from the DB. The plan adds an **append-only `WalletLedgerEntry`** with a
+per-row `balanceAfterCents` and a nullable-unique `idempotencyKey`.
+
+**Deliberately NOT done:** widening `Payment.amountUsd` from `Float` to cents (decision **D3** — wide
+blast radius, zero user benefit; new wallet maths is integer cents only).
+
+**New trap-adjacent risk recorded for the builder:** the new nullable-unique index + the
+`ExeLicense` CHECK constraint are exactly the objects hand-written migration SQL gets subtly wrong,
+so §6b's drift check is now **mandatory** after the W1 migration, and the new FKs must **not** use
+`ON DELETE CASCADE` (trap 23's lesson).
 
 ### 2026-10-03 — Task 155 P6c: fix orphaned Worker route on delete; P6c now LIVE-VERIFIED end-to-end
 - **Did:** fixed the last live P6c bug — deleting a link whose own publish had failed left its

@@ -66,6 +66,94 @@ export function labelCount(host: string): number {
   return host.split(".").filter(Boolean).length;
 }
 
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 4 — accepting a domain the user OWNS.
+//
+// The owner (2026-10-03): "build it for now in a way users can add domain just the
+// way cloudflare would accept since that works". So this module's job is to
+// REJECT anything Cloudflare would refuse, and to accept everything it would —
+// because a domain that passes here and then fails at Cloudflare's API is a worse
+// experience than an inline error, and a future registrar integration must agree
+// with the same rules or the two paths will drift.
+//
+// The rules below mirror Cloudflare's zone-name requirements rather than
+// inventing stricter ones. Notably it does NOT try to be a public-suffix list:
+// `example.co.uk` is accepted as a 3-label apex, because Cloudflare accepts it,
+// and the API is the real authority on what is registrable. Being MORE permissive
+// here is safe — the write still fails closed at Cloudflare — whereas being
+// stricter would reject domains the user legitimately owns.
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalise a user-supplied domain into a bare lower-case apex, or null when it is
+ * not something Cloudflare would accept as a zone.
+ *
+ * Accepts a pasted URL or a trailing dot (via the same normalisation as a host),
+ * then applies the apex rules below.
+ */
+export function normalizeDomainInput(input: string | null | undefined): string | null {
+  const host = normalizeHostInput(input);
+  if (!host) return null;
+  // The apex of a user-typed domain: "www.example.com" is the same registrable
+  // domain as "example.com", and asking a user to distinguish them is a support
+  // ticket waiting to happen.
+  const apex = apexDomainOf(host);
+  if (!apex) return null;
+  return isValidDomainApex(apex) ? apex : null;
+}
+
+/**
+ * The registrable apex: the last two labels of an already-normalised host.
+ *
+ * Uses a small multi-part-TLD allowance rather than a full public suffix list. A
+ * complete PSL is a large, frequently-updated data file that we would then have to
+ * keep in step with reality; since Cloudflare is the actual authority (it rejects
+ * an unregistrable name with its own error), a pragmatic two-label rule with a
+ * few common two-part suffixes keeps the common cases exact and lets the rare one
+ * through to Cloudflare's own check.
+ */
+export function apexDomainOf(host: string): string | null {
+  const labels = host.split(".").filter(Boolean);
+  if (labels.length < 2) return null;
+  const lastTwo = labels.slice(-2).join(".");
+  // `example.co.uk` -> apex is `co.uk`, so take three labels for these suffixes.
+  const MULTI_PART_TLDS = new Set([
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk", "net.uk", "sch.uk",
+    "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au",
+    "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz",
+    "co.jp", "ne.jp", "or.jp", "ac.jp", "go.jp",
+    "com.br", "com.mx", "com.ar", "com.tr", "com.cn", "com.tw",
+    "co.in", "co.za", "co.kr", "com.sg", "com.hk", "com.my", "com.ph", "com.vn",
+  ]);
+  if (labels.length >= 3 && MULTI_PART_TLDS.has(lastTwo)) {
+    return labels.slice(-3).join(".");
+  }
+  return lastTwo;
+}
+
+/**
+ * Would Cloudflare accept this as a zone name?
+ *
+ * The rules, matching Cloudflare:
+ *   - at most 253 characters
+ *   - at least two labels, so a bare word like "localhost" is refused
+ *   - each label 1–63 chars, alphanumeric or dashes, NOT starting or ending with
+ *     a dash (this is DNS 1123, and it is the rule that rejects "_acme-challenge"
+ *     and "my_domain.com")
+ *   - a purely numeric TLD is refused — "192.168.0.1" is an IP, not a domain
+ */
+export function isValidDomainApex(domain: string): boolean {
+  if (!domain) return false;
+  if (domain.length > 253) return false;
+  const labels = domain.split(".");
+  if (labels.length < 2) return false;
+  if (!labels.every((l) => LABEL_RE.test(l))) return false;
+  // An all-numeric final label means this is an IP address, not a domain.
+  const tld = labels[labels.length - 1];
+  if (!/^[a-z]/i.test(tld)) return false;
+  return true;
+}
+
 /**
  * Whether Cloudflare's FREE Universal SSL covers this hostname.
  *
@@ -159,6 +247,29 @@ export function resolveLinkHost(sources: LinkHostSources): string | null {
 export function isWorkersDevHost(host: string | null | undefined): boolean {
   if (!host) return false;
   return host.toLowerCase().split(".").slice(-2).join(".") === "workers.dev";
+}
+
+/**
+ * Collapse Cloudflare's zone status onto our own three values: "pending" | "active".
+ *
+ * Cloudflare reports `initializing | pending | active | moved | deleted` — an OPEN
+ * enum. Storing its raw string verbatim is a real hazard, not a theoretical one: the
+ * database CHECK that pins `status` to our own set would reject `initializing`, so a
+ * routine reconcile would fail its write. That is worse than it sounds — the zone
+ * would then never update again, and the domain would sit unpublishable forever with
+ * no error anywhere the user can see.
+ *
+ * Everything that is not `active` becomes "pending", which is exactly what the UI
+ * already means by it ("not ready, come back later"). `deleted` and `moved` are
+ * states the user resolves at Cloudflare, not failures of our side, so "pending" is
+ * more honest than a red error.
+ *
+ * The important property is that this FAILS CLOSED: an unrecognised status is never
+ * "active". A status Cloudflare adds tomorrow must not silently grant permission to
+ * publish onto a host we have not confirmed is live.
+ */
+export function normalizeZoneStatus(raw: string | null | undefined): "pending" | "active" {
+  return raw === "active" ? "active" : "pending";
 }
 
 /**

@@ -3231,3 +3231,83 @@ model LabToolCatalog {
   @@index([klass, kind])
   @@index([enabled, staleAfter])
 }
+
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 4 — the USER'S OWN DOMAINS (the "Domains" wizard's target model).
+//
+// WHY THIS MODEL EXISTS (owner, 2026-10-03). The requirement is NOT "let users pick
+// from the platform's zones". It is:
+//
+//   1. A user may add a domain THEY OWN (BYO Cloudflare, or bought from a
+//      registrar the platform will later sync with).
+//   2. A user may only ever select a domain they own. Platform zones — including
+//      `instaweb.top` and `mainaccess.top` — are ADMIN-ONLY and must never appear
+//      in a user's picker.
+//   3. `mainaccess.top` is not to be used AT ALL (owner instruction).
+//
+// So the owning boundary is `ownerKind`, and it is enforced here in the schema as
+// well as in the access layer: `ownerUserId` is set for a user's own domain and
+// NULL for a platform one. A row is a USER's domain iff `ownerKind = "user"`, and
+// every read path filters on that pair together (see lib/hosting/domain-registry.ts).
+//
+// WHY A TABLE AT ALL, when the user's own Cloudflare account can be listed live?
+// Because the user may also buy a domain from an EXTERNAL REGISTRAR (planned). A
+// registrant's zone is NOT in the user's Cloudflare account, so live discovery
+// cannot see it — it has to be stored, then reconciled. `source` and
+// `externalRef` are the seam for that sync, and they are deliberately nullable so
+// the BYO path needs no merchant at all.
+//
+// `apex` is the registrable apex ("example.com") — the zone identity. `name` is the
+// apex too, kept as the natural column name; UNIQUE is case-insensitive-safe because
+// `apex` is always stored normalised lower-case by the registry before insert.
+// ---------------------------------------------------------------------------
+model UserDomain {
+  id          String   @id @default(cuid())
+  // The registrable apex, lower-cased: "example.com". UNIQUE across the whole
+  // platform — two users can never claim the same apex, which is what stops one
+  // user from taking a domain that belongs to another (or to the platform).
+  apex        String   @unique
+  // A user-facing label, defaulting to the apex.
+  label       String   @default("")
+  // --- THE OWNERSHIP BOUNDARY. "user" = that user owns it; "platform" = ours.
+  ownerKind   String   @default("user")
+  // Set ONLY when ownerKind = "user". NULL for a platform domain. Access checks
+  // compare BOTH fields together: a domain is readable by user U iff
+  // ownerKind = "user" AND ownerUserId = U. Never trust ownerKind alone.
+  ownerUserId String?
+  // How the domain entered the system:
+  //   "byo"        — the user pointed us at their own Cloudflare account
+  //   "registrar"  — bought through the external merchant (planned)
+  //   "manual"     — added by an admin on the user's behalf
+  source      String   @default("byo")
+  // The merchant's own identifier for this purchase (order/registration id), so a
+  // later sync can match rows without guessing. NULL for BYO/manual.
+  externalRef String?
+  // The Cloudflare zone id once we know it. NULL until Cloudflare reports one —
+  // for a registrar domain that has not been pushed yet, and for "not yet added to
+  // the user's Cloudflare account".
+  zoneId      String?
+  // "pending" (registered/added, not yet usable) | "active" | "error".
+  // A pending domain is listed but NOT selectable — publishing onto it would fail.
+  //
+  // Cloudflare's own status is an OPEN enum (initializing/moved/deleted/...), so it
+  // is NEVER stored raw: `normalizeZoneStatus` collapses it to pending/active on
+  // every write, failing closed so an unfamiliar status cannot read as "ready". The
+  // database CHECK refuses any value outside this set, which is why the collapse has
+  // to happen first — an unnormalised "initializing" would fail the write and the
+  // domain would then never update again.
+  status      String   @default("pending")
+  // The two Cloudflare-assigned nameservers, JSON array. Shown to the user so they
+  // can set them at their registrar. NULL until Cloudflare assigns them.
+  nameservers String?
+  // The BYO credential this domain is reachable through, when source = "byo".
+  // NULL for registrar domains (those use the platform's own account/merchant).
+  credentialId String?
+  // Plain-language status detail for the UI. Never contains a token.
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([ownerKind, ownerUserId])
+  @@index([ownerUserId, status])
+}

@@ -167,10 +167,67 @@ paid product. Do not build it for this ask.
 Existing **active** zones must be usable **immediately** — only brand-new domains need step 2.
 Add an **active-zone picker**; never silently use the first active zone.
 
-### 3.3 OPEN QUESTION — do NOT assume the token can create zones ⚠️
-**This has not been verified.** The Pages and Workers tokens in use today are scoped to
-*Pages* and *Workers/DNS*. Zone creation is an **account-level** permission (Zone resource with
-**Zone:Edit** on the account), which those tokens very likely lack.
+### 3.3 **RESOLVED 2026-10-03 — NO, the tokens CANNOT create zones** ⚠️ (probe ran; see §3.5)
+
+**Probed live against all 3 platform accounts / 5 configured tokens. Every one returned
+the same 403.** The tokens are scoped to Pages + Workers/DNS only; zone creation is a
+separate **account-level** permission they do not carry.
+
+### 3.5 The probe — what was run, and the exact answer
+
+Run **read-only / zero-write**, on the VPS, reusing production code
+(`lib/mailbox-crypto.ts` `decryptSecretOrThrow` + the real `HostingPlatformAccount`
+rows). **No token value was ever printed** — only labels, ids, hints and statuses.
+
+**Method (why this is conclusive without touching a real domain).** For each token:
+1. `GET /user/tokens/verify` — is the token even alive;
+2. `GET /zones?per_page=3` — can it *read* zones;
+3. **`POST /zones` with a deliberately INVALID domain name** — the probe.
+
+Step 3 is the trick. A create with an invalid name **cannot create a zone** — but
+Cloudflare evaluates the **account permission before validating the domain**, so the
+HTTP status answers the permission question with **zero risk of actually claiming a
+domain**. The trade-off: a `403` here is unambiguous (permission denied), while a `400`
+would only have been *suggestive* and would have required a real throwaway domain on a
+domain the owner controls to confirm.
+
+**Raw result — all 3 accounts, all 5 configured tokens, identical outcome:**
+
+| Account | Cloudflare acct id | Token | Zones readable | `POST /zones` |
+|---|---|---|---|---|
+| Primary cf | `4c822d3b…` | Pages `…fd99` | 0 | **403** |
+| New Prod | `9bc97c44…` | Pages `…6939` | 0 | **403** |
+| New Prod | `9bc97c44…` | Workers/DNS `…419f` | **3** (`broks.beauty`, `instaweb.top`, `mainaccess.top`, all `active`) | **403** |
+| hosting Premium Links | `43b24dc0…` | Pages `…177b` | 0 | **403** |
+| hosting Premium Links | `43b24dc0…` | Workers/DNS `…a5d7` | 0 | **403** |
+
+Exact Cloudflare error on all five:
+```
+403  0: Requires permission "com.cloudflare.api.account.zone.create"
+         to create zones for the selected account
+```
+
+**The exact permission needed** (for the record): `com.cloudflare.api.account.zone.create`
+— in the CF dashboard, **Zone → Zone → Edit** scoped to the **ACCOUNT**. A token scoped
+to specific zone *resources* cannot create a new zone at all; it needs account-wide
+zone scope.
+
+**Two side-findings from the same probe:**
+- **A THIRD platform account now exists**: `hosting Premium Links` (`43b24dc0…`) — the
+  per-purpose account pinning added earlier. It has **zero zones**, so it can serve
+  `workers.dev` links only, never a custom domain.
+- **`broks.beauty` is still visible to the Workers/DNS token on `New Prod`** — the
+  §2.2 governance hole is **unchanged**, still un-remediated.
+
+**Cleanup:** probe script + runner + the temp env file (holding `DATABASE_URL` and
+`MAILBOX_ENCRYPTION_KEY`) were `shred`ed/`rm`'d from the VPS. No zones created, no DB
+writes, `spaceworker.service` still `active`.
+
+**⇒ Consequence for the domains wizard:** automatic zone creation is **NOT available**
+with today's tokens. Either (a) the owner grants `zone.create` and this probe is re-run,
+or (b) ship the **support-ticket fallback** for brand-new domains — with **active zones
+in existing accounts** fully usable immediately (they need no creation at all). Option
+(b) is buildable today and covers the user's day-to-day need.
 ---
 
 ## 4. "2 of 2 accounts usable" — what that number actually means

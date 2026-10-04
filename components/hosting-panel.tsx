@@ -136,6 +136,20 @@ interface HostingRevision {
   createdAt: string;
 }
 
+/** TASK_157 Phase 4 — a domain the USER owns. Mirrors `UserDomainView` on the server. */
+interface UserDomain {
+  id: string;
+  apex: string;
+  label: string;
+  source: string;
+  status: string;
+  zoneId: string | null;
+  nameservers: string[] | null;
+  selectable: boolean;
+  note: string | null;
+  createdAt: string;
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -175,8 +189,18 @@ export function HostingPanel() {
 
   // Owner ask (2026-10-02) — the hosting page was one long scroll; split it
   // into three tabs: Sites / Links / Files (the upload box lives with Files).
-  const [tab, setTab] = useState<"sites" | "links" | "files">("sites");
+  // TASK_157 Phase 4 adds a fourth: Domains.
+  const [tab, setTab] = useState<"sites" | "links" | "files" | "domains">("sites");
   const revisionInput = useRef<HTMLInputElement>(null);
+
+  // TASK_157 Phase 4 — the user's OWN domains (never anybody else's; the route
+  // filters server-side, so this list is already scoped by the time it arrives).
+  const [domains, setDomains] = useState<UserDomain[]>([]);
+  const [domainInput, setDomainInput] = useState("");
+  // A single string rather than a global flag: "add" and "verify" are different
+  // buttons and both can be in flight, so one shared boolean would disable the
+  // wrong one while the other runs.
+  const [domainBusy, setDomainBusy] = useState<"" | "add" | `verify:${string}` | `delete:${string}`>("");
 
   const loadStatus = useCallback(async () => {
     const res = await fetch("/api/hosting/status");
@@ -218,12 +242,37 @@ export function HostingPanel() {
     setRevisions((r) => ({ ...r, [siteId]: data.revisions }));
   }, []);
 
+  // TASK_157 Phase 4 — the caller's own domains. Loaded eagerly (not lazily on
+  // tab click) so the tab badge can show a real count, and so an entitlement error
+  // surfaces while the user is still looking at Sites rather than after a click.
+  // TASK_157 Phase 4 — the domains this user may actually PUBLISH on.
+  //
+  // `selectable` is the server's own verdict (owned by you AND Cloudflare says the
+  // zone is active), so the picker does not re-derive the rule and drift from it. A
+  // pending or unverified domain is deliberately absent rather than shown-and-refused:
+  // offering a choice that always 403s is worse than not offering it.
+  //
+  // Platform zones are already excluded — the list route returns only the caller's
+  // own rows, and a platform row has no user owner, so it can never appear here.
+  const publishableDomains = useMemo(
+    () => domains.filter((d) => d.selectable),
+    [domains]
+  );
+
+  const loadDomains = useCallback(async () => {
+    const res = await fetch("/api/hosting/domains");
+    if (!res.ok) return;
+    const data = (await res.json()) as { domains: UserDomain[] };
+    setDomains(data.domains);
+  }, []);
+
   useEffect(() => {
     void loadStatus();
     void loadFiles();
     void loadLinks();
     void loadSites();
-  }, [loadStatus, loadFiles, loadLinks, loadSites]);
+    void loadDomains();
+  }, [loadStatus, loadFiles, loadLinks, loadSites, loadDomains]);
 
   const activeProvider = useMemo(
     () => status?.providers.find((p) => p.id === status.provider) ?? null,
@@ -460,6 +509,126 @@ export function HostingPanel() {
     [loadRevisions, openSite]
   );
 
+  // TASK_157 Phase 4 — add one of the user's own domains.
+  //
+  // The input is normalized SERVER-side (`normalizeDomainInput`), so pasting
+  // "https://www.shop.example.co.uk/" is fine and reduces to example.co.uk. The
+  // client deliberately does NOT try to pre-validate or trim labels: a second,
+  // weaker copy of the rules would drift from the server's and reject domains the
+  // server would accept.
+  const onAddDomain = useCallback(
+    async (e: React.FormEvent<HTMLFormElement>) => {
+      e.preventDefault();
+      const value = domainInput.trim();
+      if (!value) return;
+      setDomainBusy("add");
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch("/api/hosting/domains", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ domain: value }),
+        });
+        const data = (await res.json()) as {
+          domain?: UserDomain;
+          verified?: boolean;
+          verifyNote?: string | null;
+          error?: string;
+        };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t add that domain.");
+          // Keep the text ONLY on failure. On success the domain is in the list
+          // below, so clearing the box is what tells the user it worked.
+          return;
+        }
+        setDomainInput("");
+        // `verified: false` is NOT an error — the domain was added and the user
+        // owns it; Cloudflare just hasn't activated the zone yet. Say so plainly
+        // instead of showing a red message for a normal state.
+        setNotice(
+          data.verified
+            ? `Added ${data.domain?.apex ?? value} — it’s ready to publish on.`
+            : (data.verifyNote ?? `Added ${data.domain?.apex ?? value}.`)
+        );
+        await loadDomains();
+      } catch {
+        setError("Couldn’t add that domain — check your connection and try again.");
+      } finally {
+        setDomainBusy("");
+      }
+    },
+    // `setDomainInput` is listed even though a useState setter is stable: the React
+    // Compiler infers it from the clear-on-success call inside, and leaving it out
+    // makes the compiler skip memoizing this callback entirely
+    // (react-hooks/preserve-manual-memoization). Listing it is a no-op at runtime.
+    [domainInput, loadDomains, setDomainInput]
+  );
+
+  // Re-check one domain against Cloudflare. Users run out of patience waiting for
+  // a nameserver change to propagate, so this is an explicit button rather than a
+  // silent poll: we would rather make an API call the user asked for than burn
+  // Cloudflare rate limit on a timer.
+  const onVerifyDomain = useCallback(
+    async (domain: UserDomain) => {
+      setDomainBusy(`verify:${domain.id}`);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/domains/${domain.id}`, { method: "POST" });
+        const data = (await res.json()) as { domain?: UserDomain; error?: string };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t check that domain.");
+          return;
+        }
+        setNotice(
+          data.domain?.selectable
+            ? `${domain.apex} is active — you can publish on it now.`
+            : `${domain.apex} is still activating at Cloudflare. Try again shortly.`
+        );
+        await loadDomains();
+      } catch {
+        setError("Couldn’t reach Cloudflare — check your connection and try again.");
+      } finally {
+        setDomainBusy("");
+      }
+    },
+    [loadDomains]
+  );
+
+  const onDeleteDomain = useCallback(
+    async (domain: UserDomain) => {
+      // Spelled out what is and isn't lost: the row goes, but the domain and its
+      // DNS do not. A vague "are you sure?" on a destructive action next to a
+      // customer's real domain is not good enough.
+      if (
+        !window.confirm(
+          `Remove ${domain.apex} from your list?\n\nNothing at your registrar or Cloudflare changes — you can add it back later.`
+        )
+      ) {
+        return;
+      }
+      setDomainBusy(`delete:${domain.id}`);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/domains/${domain.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = (await res.json()) as { error?: string };
+          setError(data.error ?? "Couldn’t remove that domain.");
+          return;
+        }
+        setNotice(`Removed ${domain.apex}.`);
+        await loadDomains();
+      } catch {
+        setError("Couldn’t remove that domain — check your connection and try again.");
+      } finally {
+        setDomainBusy("");
+      }
+    },
+    [loadDomains]
+  );
+
   const onAddLink = useCallback(
     async (e: React.FormEvent<HTMLFormElement>) => {
       e.preventDefault();
@@ -677,6 +846,10 @@ export function HostingPanel() {
             ["sites", `Sites (${sites.length})`],
             ["links", `Links (${status.usage.linkCount} / ${status.caps.maxLinks})`],
             ["files", `Files (${status.usage.fileCount} / ${status.caps.maxFiles})`],
+            // TASK_157 Phase 4 — the count is the domains YOU own, not the
+            // platform's, so a user never sees a number that implies they can
+            // reach zones they cannot.
+            ["domains", `Domains (${domains.length})`],
           ] as const
         ).map(([id, label]) => (
           <button
@@ -965,6 +1138,142 @@ export function HostingPanel() {
       </section>
       )}
 
+      {/* TASK_157 Phase 4 — Domains: the user's OWN domains, and the setup
+          steps for each. The owner's rule is that a user may only publish on a
+          domain they own, so this list is the ONLY source of host choices — and it
+          is scoped server-side, so nothing here can widen it. */}
+      {tab === "domains" && (
+      <section className="space-y-3">
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-500">Your domains</h2>
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">
+          Publish on a domain you own. Add it here, point it at Cloudflare, then it becomes
+          available as a host for your links and sites. Each domain can belong to one account only.
+        </p>
+
+        <form
+          onSubmit={onAddDomain}
+          className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
+        >
+          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+            Domain you own
+            <input
+              value={domainInput}
+              onChange={(e) => setDomainInput(e.target.value)}
+              placeholder="example.com"
+              // Disabled mid-flight so a double-submit cannot fire two POSTs, which
+              // would race into a confusing 409 "already claimed".
+              disabled={domainBusy === "add"}
+              spellCheck={false}
+              autoComplete="off"
+              autoCapitalize="none"
+              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={domainBusy === "add" || !domainInput.trim()}
+            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+          >
+            {domainBusy === "add" ? "Adding…" : "Add domain"}
+          </button>
+        </form>
+
+        {domains.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-zinc-300 p-6 text-center text-sm text-zinc-500 dark:border-zinc-700">
+            No domains yet. Add one above to publish on your own address.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {domains.map((domain) => (
+              <li key={domain.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-medium text-zinc-900 dark:text-zinc-100">{domain.apex}</div>
+                    <div className="mt-0.5 text-xs text-zinc-500">
+                      {/* `selectable` is the server's own verdict, not a guess made
+                          here — true only when Cloudflare reports the zone
+                          `active`. A client-side "is it active?" would drift from
+                          the rule that actually gates publishing. */}
+                      {domain.selectable ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">Active — ready to publish on</span>
+                      ) : (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          {domain.status === "error" ? "Cloudflare reported a problem" : "Setting up…"}
+                        </span>
+                      )}
+                      {domain.source === "manual" && <span> · added for you by our team</span>}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void onVerifyDomain(domain)}
+                      disabled={domainBusy !== ""}
+                      className="rounded border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300"
+                    >
+                      {domainBusy === `verify:${domain.id}` ? "Checking…" : "Check status"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onDeleteDomain(domain)}
+                      disabled={domainBusy !== ""}
+                      className="rounded border border-zinc-300 px-3 py-1 text-xs font-medium text-red-600 disabled:opacity-50 dark:border-zinc-700 dark:text-red-400"
+                    >
+                      {domainBusy === `delete:${domain.id}` ? "Removing…" : "Remove"}
+                    </button>
+                  </div>
+                </div>
+                {/* The nameserver hint is the whole point of adding a domain, so it
+                    gets real space — this is the one thing the user cannot look up
+                    anywhere else, because it is specific to the zone Cloudflare
+                    created for them. Copied as text, never auto-submitted. */}
+                {!domain.selectable && domain.nameservers && domain.nameservers.length > 0 && (
+                  <div className="mt-3 rounded bg-zinc-50 p-3 text-xs dark:bg-zinc-900">
+                    <div className="font-medium text-zinc-700 dark:text-zinc-300">
+                      Point {domain.apex} at Cloudflare
+                    </div>
+                    <p className="mt-1 text-zinc-500">
+                      Set these two nameservers where you bought the domain, then wait a little and
+                      press Check status.
+                    </p>
+                    <ul className="mt-2 space-y-1 font-mono text-zinc-800 dark:text-zinc-200">
+                      {domain.nameservers.map((ns) => (
+                        <li key={ns} className="flex items-center gap-2">
+                          <span className="break-all">{ns}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              // Guarded rather than assumed: the EXE shell can refuse
+                              // clipboard access, and an uncaught throw here would
+                              // take down the whole panel.
+                              void navigator.clipboard
+                                ?.writeText(ns)
+                                .then(() => setNotice(`Copied ${ns}.`))
+                                .catch(() => setError("Couldn’t copy — select the text and copy it manually."));
+                            }}
+                            className="shrink-0 rounded border border-zinc-300 px-1.5 text-[10px] font-medium text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                          >
+                            Copy
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* The server's plain-language detail — e.g. "not in your Cloudflare
+                    account yet". Shown last, and only when it adds something the
+                    status line above does not already say. */}
+                {domain.note && !domain.selectable && (
+                  <p className="mt-2 text-xs text-zinc-500">{domain.note}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      )}
+
       {/* TASK_155 P2 — Links: user-owned short links (/r/<slug|token>). */}
       {tab === "links" && (
       <section className="space-y-3">
@@ -1061,12 +1370,28 @@ export function HostingPanel() {
           {linkForm.engine === "cloudflare" && (
             <label className="flex flex-col gap-1 text-xs text-zinc-500">
               Your domain (optional)
-              <input
+              {/* TASK_157 Phase 4 — a CHOICE, not a free-text box. The old text input
+                  let anyone type any host, which the server would now refuse anyway;
+                  offering only the domains this user owns and owns *usefully* (zone
+                  active) makes the picker and the server agree. Platform zones are not
+                  offered at all — they are ours, not theirs. */}
+              <select
                 value={linkForm.customHost}
                 onChange={(e) => setLinkForm((s) => ({ ...s, customHost: e.target.value }))}
-                placeholder="go.example.com"
                 className="w-48 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-              />
+              >
+                <option value="">Our edge address</option>
+                {publishableDomains.map((d) => (
+                  <option key={d.id} value={`go.${d.apex}`}>
+                    go.{d.apex}
+                  </option>
+                ))}
+              </select>
+              {publishableDomains.length === 0 && (
+                <span className="text-xs text-zinc-400">
+                  Add a domain on the Domains tab to publish on your own name.
+                </span>
+              )}
             </label>
           )}
           <button

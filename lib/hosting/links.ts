@@ -3,6 +3,7 @@ import { isValidLinkTarget, isValidSlug, newHostingToken } from "./rules";
 import { resolveCapsForUser, type HostingResult } from "./files";
 import { mapIdentityFor, publishUserMap, teardownUserMap } from "./links-engine";
 import { healthyPlatformAccountCount } from "./platform-accounts";
+import { assertUserOwnsHost } from "./domain-registry";
 
 // TASK_155 P2 — user-owned short links.
 //
@@ -162,6 +163,14 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
       code: "invalid_host",
       message: "Enter a plain domain, for example go.example.com.",
     };
+  }
+
+  // TASK_157 Phase 4 — the host must be one the caller OWNS and has activated.
+  // Shape validation above only proves it is a hostname; this proves the claim.
+  // Deliberately before the row exists, so a rejected host costs nothing.
+  if (engine === "cloudflare") {
+    const owns = await assertUserOwnsHost(input.userId, customHost);
+    if (!owns.ok) return owns;
   }
 
   const target = input.target.trim();
@@ -335,6 +344,13 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
         code: "invalid_host",
         message: "Enter a plain domain, for example go.example.com.",
       };
+    }
+    // TASK_157 Phase 4 — moving an existing link onto a host is the same ownership
+    // decision as creating one, and is checked here BEFORE the row is updated, so a
+    // rejected move leaves the link exactly where it was rather than half-applied.
+    if (host) {
+      const owns = await assertUserOwnsHost(input.userId, host);
+      if (!owns.ok) return owns;
     }
     data.customHost = host;
   }

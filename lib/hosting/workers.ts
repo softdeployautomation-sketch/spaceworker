@@ -59,8 +59,32 @@ export function defaultLinkHost(zoneName: string): string {
  * Domains the platform must NEVER write to, whatever a token can reach.
  * Lower-case, apex form. `broks.beauty` is the owner's private domain — its DNS is
  * not ours to manage.
+ *
+ * TASK_157 Phase 4 — `mainaccess.top` joined this list on the owner's explicit
+ * instruction (2026-10-03): "i don't want to use mainaccess at all". It is
+ * enforced here rather than merely hidden from the UI, so it is refused at every
+ * write path (DNS record, Worker route, script) exactly like `broks.beauty`.
  */
-export const RESERVED_ZONES: readonly string[] = ["broks.beauty"];
+export const RESERVED_ZONES: readonly string[] = ["broks.beauty", "mainaccess.top"];
+
+/**
+ * TASK_157 Phase 4 — zones that exist in a platform Cloudflare account but must
+ * never be OFFERED TO A USER, because a user may only ever select a domain they
+ * own.
+ *
+ * This is deliberately WEAKER than RESERVED_ZONES, and the difference matters:
+ *
+ *   RESERVED_ZONES        = never write here, by anyone, ever. A hard write guard.
+ *   PLATFORM_ONLY_ZONES   = we may publish here ourselves; a USER may not select
+ *                           it. A SELECTION filter only.
+ *
+ * `instaweb.top` is the platform's public host, so admin-driven publishes may
+ * still use it — the owner asked that users not be able to pick it, not that it
+ * be decommissioned. Keeping the two sets separate is what lets us honour both
+ * instructions; collapsing them into one list would either wrongly retire
+ * `instaweb.top` or wrongly expose it.
+ */
+export const PLATFORM_ONLY_ZONES: readonly string[] = ["instaweb.top"];
 
 /** A normalised apex domain, or null when the input is not a usable hostname. */
 export function normalizeZoneName(input: string | null | undefined): string | null {
@@ -137,6 +161,53 @@ export function reservedZoneMessage(zone: string | undefined): string {
     : "That domain could not be verified and cannot be used for links.";
 }
 
+// ---------------------------------------------------------------------------
+// TASK_157 Phase 4 — the SELECTION guard (a separate, weaker rule than the write
+// guard above).
+// ---------------------------------------------------------------------------
+
+/** Is this a platform zone a USER must not be offered? */
+export function isPlatformOnlyZone(input: string | null | undefined): boolean {
+  const host = normalizeZoneName(input);
+  if (!host) return false;
+  const apex = apexOf(host);
+  if (!apex) return false;
+  return PLATFORM_ONLY_ZONES.includes(apex);
+}
+
+export interface SelectionGuardResult {
+  ok: boolean;
+  /** The apex that was refused — for the error message. */
+  zone?: string;
+}
+
+/**
+ * May a USER select this domain for their own hosting?
+ *
+ * This is the rule behind "users can only select the domain they own or added"
+ * (owner, 2026-10-03). It refuses two different things, and the caller is told
+ * which via `reason`:
+ *
+ *   - a RESERVED zone            — nobody may write here, so offering it is wrong
+ *   - a PLATFORM-ONLY zone       — we may use it, the user may not
+ *
+ * Fail CLOSED, like `assertZoneWritable`: an unparseable host is not allowed.
+ *
+ * This checks the STATIC policy list only. Whether a domain is the user's OWN is a
+ * database question and is answered by the registry's per-user query — a domain
+ * being absent from this list never makes it claimable, it only makes it not
+ * forbidden BY NAME.
+ */
+export function assertZoneUserSelectable(input: string | null | undefined): SelectionGuardResult {
+  const host = normalizeZoneName(input);
+  if (!host) return { ok: false };
+  const apex = apexOf(host);
+  if (!apex) return { ok: false };
+  if (RESERVED_ZONES.includes(apex)) return { ok: false, zone: apex };
+  if (PLATFORM_ONLY_ZONES.includes(apex)) return { ok: false, zone: apex };
+  return { ok: true };
+}
+
 /** The route pattern for a host. EXACT host + everything under it — never a wildcard subdomain. */
 export function routePatternFor(host: string): string {
   return `${host.toLowerCase()}/*`;
@@ -174,6 +245,67 @@ interface ZoneResult {
   id: string;
   name: string;
   status: string;
+  /**
+   * TASK_157 Phase 4 — the two nameservers Cloudflare assigned. Present on the
+   * full zone resource; absent on the trimmed shape some list endpoints return,
+   * so callers must tolerate an absent array.
+   */
+  name_servers?: string[];
+}
+
+/**
+ * TASK_157 Phase 4 — read ONE zone by its exact apex, with the nameservers.
+ *
+ * Used by the domain registry to reconcile a user's own domain against their
+ * Cloudflare account: it answers "is this domain active yet, and what must the
+ * user set at their registrar?"
+ *
+ * Two details that make this safe to call with a user-supplied name:
+ *
+ *   1. `zoneScope(cred)` pins the query to THIS credential's account. Without it,
+ *      `/zones?name=` returns any zone the token can see, so a broad token could
+ *      match a domain in a DIFFERENT account and we would report "your domain is
+ *      ready" for a zone we cannot actually route. (Same rule as `zoneScope` on
+ *      `listActiveZones`.)
+ *   2. The result is matched on the EXACT name, not just "something came back".
+ *      Cloudflare treats `name` as a substring filter, so `example.com` also
+ *      matches `notexample.com`; trusting the length of the list would mark the
+ *      WRONG domain active.
+ *
+ * A 404 is returned as `{ ok: true, value: null }` — "this account does not have
+ * that domain" is a normal answer here, not an error, because the user may not
+ * have added it to Cloudflare yet.
+ */
+export async function getZoneByName(
+  cred: CfCredential,
+  apex: string
+): Promise<CfResult<{ zoneId: string; name: string; status: string; nameservers: string[] } | null>> {
+  const name = normalizeZoneName(apex);
+  if (!name) return { ok: false, status: 400, error: "That is not a domain name." };
+
+  const res = await cfFetch<ZoneResult[]>(
+    cred,
+    "GET",
+    `/zones?name=${encodeURIComponent(name)}&${zoneScope(cred)}&per_page=50`
+  );
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+
+  // The exact-name match above is the important part — see the note on (2).
+  const zone = (res.value ?? []).find((z) => z.name?.toLowerCase() === name);
+  if (!zone) return { ok: true, status: res.status, value: null };
+
+  return {
+    ok: true,
+    status: res.status,
+    value: {
+      zoneId: zone.id,
+      name: zone.name,
+      // Cloudflare's own status, passed through unchanged. `active` is the only
+      // one that can serve traffic; `pending` is still propagating nameservers.
+      status: zone.status ?? "unknown",
+      nameservers: zone.name_servers ?? [],
+    },
+  };
 }
 
 interface DnsRecord {

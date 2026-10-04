@@ -115,9 +115,46 @@ silently serving premium links from the free account's subdomain is the exact mi
 the pin exists to prevent. Default `""` leaves every existing install byte-for-byte
 unchanged.
 
-**Phase 4 — Domain onboarding wizard.** BYO or platform → create pending zone → show the
-two assigned nameservers → poll to `active` → offer active zones for host selection.
-Bounded by the one unavoidable registrar action.
+**Phase 4 — Domain onboarding wizard.** ⚠️ **REVISED 2026-10-03 after the live probe —
+see §7.4.** The original flow (BYO or platform → `POST /zones` → show the two assigned
+nameservers → poll to `active`) **cannot run**: the probe proved every platform token
+returns `403 com.cloudflare.api.account.zone.create`.
+
+**⚠️ REVISED AGAIN, 2026-10-03 (later) — the owner corrected the target model.** The
+first revision assumed users would pick from the platform's own active zones. The owner's
+actual requirement is the opposite, and it is an **ownership** rule:
+
+> "i don't want users too be able to pick instaweb or mainaccess.. and i don't want to use
+> mainaccess at all.. the platform domains are only selectable by admin, users can only
+> select the domain they own or added"
+
+So Phase 4 is **not** a zone picker over platform zones. It is:
+
+- **4a (BUILT, this session) — the `UserDomain` registry + the two guards.**
+  A user owns a domain; a user's list can contain ONLY domains they own. Enforcement is
+  in the data layer (`lib/hosting/domain-registry.ts`), never by hiding rows in the UI.
+  **Two deliberately SEPARATE guards**, because the two owner instructions are different
+  rules and merging them would break one of them:
+  - `RESERVED_ZONES` (a **write** guard) — `mainaccess.top` joins `broks.beauty` here:
+    nobody writes there, ever.
+  - `PLATFORM_ONLY_ZONES` (a **selection** guard) — `instaweb.top`: we may publish there,
+    a **user may not select it**. It is NOT retired, because the owner asked to hide it
+    from users, not to decommission it. A test pins that `instaweb.top` fails selection
+    while still passing writes — that is the proof the two guards are genuinely distinct.
+- **4b — the user's "add a domain" input**, accepted on **Cloudflare's own rules**
+  (`normalizeDomainInput` / `isValidDomainApex`: DNS 1123 labels, 1–63 chars, no
+  leading/trailing dash, alphabetic TLD, ≥2 labels), plus an apex reduction so
+  `www.shop.example.co.uk` → `example.co.uk`. Deliberately NOT a public-suffix list:
+  being *more* permissive than Cloudflare is safe (the write still fails closed), being
+  stricter would reject domains users legitimately own.
+- **4c — the merchant seam.** `source` (`byo` | `registrar` | `manual`) and `externalRef`
+  are on the row now, so the planned external domain merchant is a **sync**, not a
+  rewrite. A registrant's zone is not in the user's Cloudflare account, which is the
+  reason the table exists at all rather than pure live discovery.
+- **4d — routes + UI** (NOT yet built): a user-facing `/api/hosting/domains` and the
+  picker, plus the admin route that lets the owner add a domain for a user.
+
+Bounded by the one unavoidable registrar action — but only on the 4b path.
 
 **Phase 5 — Hosting restructure.** Dedicated **Domains** section; surface active zones
 and the chosen host; per-capability health (`Pages 1/2 · Workers 1/2`) instead of one
@@ -136,6 +173,47 @@ metadata only**. A hard lint rule forbids any Cloudflare token in a ticket body.
   Surface the state; do not report success as live.
 - **Token over-scope** — New Prod still sees `broks.beauty`. The reserved-zone guard is
   enforced before any DNS/script/route write and is not being weakened here.
-- **Unverified `Zone:Edit`** — creating a zone (`POST /zones`) is still unproven. Phase 4
-  depends on it. Prove it on a throwaway domain first, delete it after, never assume the
-  current token can.
+- **~~Unverified `Zone:Edit`~~ — RESOLVED NEGATIVE (2026-10-03).** The probe ran live
+  against all 3 accounts / 5 tokens: every one returns
+  `403 com.cloudflare.api.account.zone.create`. **Automatic zone creation is not available.**
+  Phase 4 is therefore split 4a/4b/4c (§4). This risk is **closed as a known constraint**,
+  not as a defect — re-open only if the owner grants account-scoped Zone → Zone → Edit.
+---
+
+## 7.4 Zone-create permission probe — RAW FINDINGS (2026-10-03)
+
+Run **read-only** on the VPS against the real `HostingPlatformAccount` rows, decrypting
+with the production helper (`lib/mailbox-crypto.ts` `decryptSecretOrThrow`). **No token
+value was ever printed.** Full method + cleanup in `TRIAGE_2026-10-03_HOSTING.md` §3.5 and
+`SENIOR_HANDOFF.md` §7.2 / §12.
+
+**VERDICT: no token can create a zone.** All 5 configured tokens across 3 accounts:
+```
+403  0: Requires permission "com.cloudflare.api.account.zone.create"
+         to create zones for the selected account
+```
+
+| Account | CF acct id | Token | Zones readable | `POST /zones` |
+|---|---|---|---|---|
+| Primary cf | `4c822d3b…` | Pages `…fd99` | 0 | **403** |
+| New Prod | `9bc97c44…` | Pages `…6939` | 0 | **403** |
+| New Prod | `9bc97c44…` | Workers/DNS `…419f` | **3** | **403** |
+| hosting Premium Links | `43b24dc0…` | Pages `…177b` | 0 | **403** |
+| hosting Premium Links | `43b24dc0…` | Workers/DNS `…a5d7` | 0 | **403** |
+
+The three readable zones (`New Prod` Workers/DNS token) are **`broks.beauty`,
+`instaweb.top`, `mainaccess.top`** — all `active`.
+
+**Why this was safe:** the probe posted an **invalid** domain name. Cloudflare checks the
+account permission *before* validating the name, so it returned `403` on permission and
+could not have claimed a domain — so **no throwaway domain on an owner-controlled domain was
+ever needed**. Reusable: a probe whose input is invalid-by-construction answers a permission
+question at zero risk; only a *positive* result needs a real domain to confirm.
+
+**Findings that change other parts of this doc:**
+- **A third account exists** — `hosting Premium Links` (`43b24dc0…`, §3b per-purpose pinning).
+  It has **zero zones** ⇒ `workers.dev` links only, **never a custom domain**. Phase 3's
+  "fall back to `go.<zone>`" has no zone to fall back to here.
+- **`broks.beauty` is still readable by the `New Prod` Workers/DNS token** — the §2.2
+  governance hole is unremediated and zone-create being blocked mitigates **nothing** for it.
+  The reserved-host denylist stays mandatory, and 4a must never offer `broks.beauty`.

@@ -28,6 +28,17 @@ const FAKE_PAGES_TOKEN = "cfut_FAKE_PAGES_TOKEN_FOR_TESTS_0";
 const ACCOUNT = "acct_1";
 const HOST = "go.instaweb.top";
 
+// TASK_157 — the USER-OWNED host the publish tests use.
+//
+// `HOST` above is a PLATFORM-ONLY zone: a user may never select it, so it can only
+// appear where the engine is driven directly (publishUserMap) or as a default the
+// engine infers. Anything that goes through links.createHostedLink/updateHostedLink
+// now asks the registry whether the caller OWNS the host, and instaweb.top is
+// correctly refused. So the link-level tests publish on a domain the fixture has
+// actually claimed for user_1, which is what a real user's setup looks like.
+const OWN_APEX = "mytest.example";
+const OWN_HOST = `go.${OWN_APEX}`;
+
 type LinkRow = {
   id: string;
   token: string;
@@ -51,6 +62,13 @@ let credRows: Array<Record<string, unknown>> = [];
 /** The platform roster. Empty by default; tests that publish without a named
  *  credential push a row here. */
 let platformRows: Array<Record<string, unknown>> = [];
+/**
+ * TASK_157 — the user's OWN domains. `createHostedLink` now asks the registry whether
+ * the caller may publish on a host, so these tests need a claim to stand on. The
+ * default is the apex of HOST, owned by user_1 and ACTIVE: a link on a host the user
+ * has not claimed is refused, which is the point of the check.
+ */
+let domainRows: Array<Record<string, unknown>> = [];
 let seq = 0;
 let premium = true;
 
@@ -156,6 +174,23 @@ const fakePrisma = {
     count: async ({ where }: { where?: Record<string, unknown> } = {}) =>
       linkRows.filter((r) => matches(r as unknown as Record<string, unknown>, where ?? {})).length,
   },
+  userDomain: {
+    findMany: async ({ where }: { where?: Record<string, unknown> } = {}) =>
+      domainRows.filter((r) => matches(r as unknown as Record<string, unknown>, where ?? {})),
+    findUnique: async ({ where }: { where: Record<string, unknown> }) =>
+      domainRows.find((r) => matches(r as unknown as Record<string, unknown>, where)) ?? null,
+    update: async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
+      const row = domainRows.find((r) => r.id === where.id);
+      if (!row) throw new Error("no such domain");
+      Object.assign(row, data);
+      return { ...row };
+    },
+    delete: async ({ where }: { where: { id: string } }) => {
+      const i = domainRows.findIndex((r) => r.id === where.id);
+      if (i < 0) throw new Error("no such domain");
+      return domainRows.splice(i, 1)[0];
+    },
+  },
   hostingCredential: {
     findFirst: async ({ where }: { where: Record<string, unknown> }) =>
       (credRows.find((r) => matches(r, where)) as never) ?? null,
@@ -259,13 +294,19 @@ function defaultRoutes(over: Route[] = []): void {
   routes = [
     ...over,
     { method: "GET", match: "/zones?name=instaweb.top", result: [{ id: "zone_1", name: "instaweb.top", status: "active" }] },
+    // TASK_157 — the zone behind the USER-OWNED apex, so a publish on OWN_HOST
+    // resolves a zone exactly the way it does for a real customer's domain.
+    { method: "GET", match: `/zones?name=${OWN_APEX}`, result: [{ id: "zone_own", name: OWN_APEX, status: "active" }] },
     { method: "GET", match: "/zones?per_page", result: [{ id: "zone_1", name: "instaweb.top", status: "active" }] },
     // Teardown matches the live route by BOTH pattern and script, so the list has
     // to actually contain this user's route or the delete loop finds nothing.
     {
       method: "GET",
       match: "/workers/routes",
-      result: [{ id: "route_1", pattern: `${HOST}/*`, script: workers.workerNameForUser("user_1") }],
+      result: [
+        { id: "route_1", pattern: `${HOST}/*`, script: workers.workerNameForUser("user_1") },
+        { id: "route_own", pattern: `${OWN_HOST}/*`, script: workers.workerNameForUser("user_1") },
+      ],
     },
     { method: "GET", match: "/user/tokens/verify", result: { status: "active" } },
     { method: "GET", match: "/pages/projects?per_page", result: [] },
@@ -341,6 +382,23 @@ beforeEach(() => {
   linkRows = [];
   credRows = [];
   platformRows = [];
+  // TASK_157 — the caller OWNS an active domain, so publishing on a subdomain of it
+  // is allowed. Without this row every publish test would be (correctly) refused.
+  domainRows = [
+    {
+      id: "ud_1",
+      apex: OWN_APEX,
+      label: OWN_APEX,
+      source: "byo",
+      status: "active",
+      ownerKind: "user",
+      ownerUserId: "user_1",
+      zoneId: "zone_own",
+      nameservers: JSON.stringify(["a.ns.cloudflare.com", "b.ns.cloudflare.com"]),
+      note: null,
+      createdAt: new Date(),
+    },
+  ];
   calls = [];
   bodies = [];
   premium = true;
@@ -478,7 +536,7 @@ test("P6c: publish order is zone → script → route", async () => {
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   const zone = firstIndexOf("GET", "/zones?name=");
   const script = firstIndexOf("PUT", "/workers/scripts/");
@@ -535,7 +593,7 @@ test("P6c: a link live on a Worker STILL resolves on /r/<token>", async () => {
     slug: "promo",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(res.ok);
   assert.equal(linkRows[0].deployStatus, "live");
@@ -557,6 +615,121 @@ test("P6c: a campaign link (userId NULL) is untouched by the engine and still re
   assert.equal(linkRows[0].engine, "local");
 });
 
+// ---------------------------------------------------------------------------
+// TASK_157 — publishing is restricted to domains the CALLER OWNS.
+//
+// This is the owner's rule ("users can only select the domain they own or added")
+// enforced in the data layer. The UI already offers only the user's own domains,
+// so without these tests a crafted request naming any host at all would pass
+// unnoticed — which is exactly the case a UI filter cannot protect.
+// ---------------------------------------------------------------------------
+
+test("TASK_157: a link on a host the user has NOT claimed is refused, with no row written", async () => {
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: "go.someone-elses-domain.test",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.code, "host_not_owned");
+    assert.equal(res.status, 403);
+  }
+  assert.equal(linkRows.length, 0, "a refused host must not leave a half-made link");
+  // Cloudflare is never contacted for a host we already know we may not use.
+  assert.equal(calls.length, 0, "no script, no route, no DNS record for a foreign host");
+});
+
+test("TASK_157: another user's claimed domain is refused just the same", async () => {
+  // Same shape as the previous test but the domain EXISTS and belongs to user_2 —
+  // the ownership filter is on the owner pair, not on whether the name is known.
+  domainRows.push({
+    id: "ud_other",
+    apex: "theirs.test",
+    label: "theirs.test",
+    source: "byo",
+    status: "active",
+    ownerKind: "user",
+    ownerUserId: "user_2",
+    zoneId: "zone_theirs",
+    nameservers: null,
+    note: null,
+    createdAt: new Date(),
+  });
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: "go.theirs.test",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    assert.equal(res.code, "host_not_owned");
+    // The message must not confirm the domain exists — that would make this an
+    // enumeration oracle for other users' domains.
+    assert.doesNotMatch(res.message, /exists|already claimed|owned by/i);
+  }
+  assert.equal(linkRows.length, 0);
+});
+
+test("TASK_157: a domain that is still PENDING cannot be published on yet", async () => {
+  domainRows[0].status = "pending";
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    engine: "cloudflare",
+    credentialId: "hc_1",
+    customHost: OWN_HOST,
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) {
+    // A distinct code from "not yours": this one is the user's OWN domain and the
+    // fix is something they can do, so the message has to say so.
+    assert.equal(res.code, "domain_not_ready");
+    assert.equal(res.status, 409);
+    assert.match(res.message, /isn’t ready yet/i);
+  }
+  assert.equal(linkRows.length, 0);
+});
+
+test("TASK_157: moving a LIVE link onto a host the user does not own is refused, and the link stays put", async () => {
+  const created = await makeWorkerLink("https://example.com/");
+  assert.ok(created.ok);
+  const before = { host: linkRows[0].customHost, route: linkRows[0].routePattern };
+  calls = [];
+
+  const res = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    customHost: "go.not-mine.test",
+  });
+  assert.equal(res.ok, false);
+  if (!res.ok) assert.equal(res.code, "host_not_owned");
+
+  // The refusal happens BEFORE the row is touched, so nothing was torn down and the
+  // link is still serving from where it was.
+  assert.equal(linkRows[0].customHost, before.host, "the link did not move");
+  assert.equal(linkRows[0].routePattern, before.route);
+  assert.equal(calls.length, 0, "a refused move must not delete the live route");
+});
+
+test("TASK_157: the apex itself and any subdomain of it are both allowed", async () => {
+  for (const host of [OWN_APEX, `deep.nested.${OWN_APEX}`]) {
+    const res = await links.createHostedLink({
+      userId: "user_1",
+      target: "https://example.com/",
+      engine: "cloudflare",
+      credentialId: "hc_1",
+      customHost: host,
+    });
+    assert.ok(res.ok, `${host} should be allowed: ${JSON.stringify(res)}`);
+    assert.equal(linkRows.at(-1)!.customHost, host);
+  }
+});
+
 test("P6c: a FAILED publish leaves a working local link, flagged but not lost", async () => {
   defaultRoutes([
     { method: "GET", match: "/zones?name=instaweb.top", result: [{ id: "z", name: "instaweb.top", status: "active" }] },
@@ -570,7 +743,7 @@ test("P6c: a FAILED publish leaves a working local link, flagged but not lost", 
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(res.ok, "the user still gets their link");
   assert.equal(linkRows.length, 1, "the row exists");
@@ -586,7 +759,7 @@ test("P6c: the token never appears in anything the user is shown", async () => {
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(res.ok);
   const view = JSON.stringify(res.value);
@@ -600,11 +773,11 @@ test("P6c: our /r path and the Worker URL are both offered", async () => {
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(res.ok);
   assert.ok(res.value.shortPath.startsWith("/r/"), "our own path is always the fallback");
-  assert.equal(res.value.publicUrl, `https://${HOST}/${res.value.slug ?? res.value.token}`);
+  assert.equal(res.value.publicUrl, `https://${OWN_HOST}/${res.value.slug ?? res.value.token}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -646,7 +819,7 @@ test("P6c: a PLATFORM-published link keeps credentialId NULL", async () => {
     target: "https://example.com/",
     engine: "cloudflare",
     // no credentialId — the platform roster serves it
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(res.ok, JSON.stringify(res));
   assert.equal(linkRows[0].deployStatus, "live", String(linkRows[0].deployError));
@@ -662,7 +835,7 @@ test("P6c: a platform-published link can still be torn down", async () => {
     userId: "user_1",
     target: "https://example.com/",
     engine: "cloudflare",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   calls = [];
   await links.deleteHostedLink("user_1", linkRows[0].id);
@@ -679,15 +852,36 @@ test("P6c: moving a LIVE link to another host removes it from the OLD map", asyn
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   calls = [];
+  // The new host is a SECOND domain the same user owns — moving between your own
+  // domains is the real case. (A host the user does not own is refused outright, and
+  // there is a test for that below.)
+  const secondApex = "second.example";
+  domainRows.push({
+    id: "ud_2",
+    apex: secondApex,
+    label: secondApex,
+    source: "byo",
+    status: "active",
+    ownerKind: "user",
+    ownerUserId: "user_1",
+    zoneId: "zone_second",
+    nameservers: null,
+    note: null,
+    createdAt: new Date(),
+  });
+  defaultRoutes([
+    { method: "GET", match: `/zones?name=${secondApex}`, result: [{ id: "zone_second", name: secondApex, status: "active" }] },
+  ]);
+  const secondHost = `go.${secondApex}`;
   await links.updateHostedLink({
     userId: "user_1",
     id: linkRows[0].id,
-    customHost: "go2.instaweb.top",
+    customHost: secondHost,
   });
-  assert.equal(linkRows[0].customHost, "go2.instaweb.top");
+  assert.equal(linkRows[0].customHost, secondHost);
   // One script per user, so "clean the old host up, then publish the new one" is the
   // only order that leaves a working script. Doing it the other way round deletes
   // the script the new route is about to point at.
@@ -712,7 +906,7 @@ async function makeWorkerLink(target: string, userId = "user_1", credId = "hc_1"
     target,
     engine: "cloudflare",
     credentialId: credId,
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
 }
 
@@ -869,13 +1063,13 @@ test("P6c: routes are created ZONE-scoped, never /accounts/{id}/workers/routes",
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
 
   const routeCall = calls.find((c) => c.url.includes("/workers/routes") && c.method !== "DELETE");
   assert.ok(routeCall, "a routes call was made");
   assert.ok(
-    routeCall.url.includes("/zones/zone_1/workers/routes"),
+    routeCall.url.includes("/zones/zone_own/workers/routes"),
     "Routes is a ZONE-scoped Cloudflare API — the account-scoped form 400s (code 7000)"
   );
   assert.equal(
@@ -892,7 +1086,7 @@ test("P6c: publish writes a PROXIED originless DNS record BEFORE the route", asy
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
 
   const dns = firstIndexOf("POST", "/dns_records");
@@ -903,20 +1097,20 @@ test("P6c: publish writes a PROXIED originless DNS record BEFORE the route", asy
   const body = bodies.find((b) => b.includes('"100::"'));
   assert.ok(body, "the record is the originless IPv6 discard prefix — no real origin is named");
   assert.ok(body.includes('"proxied":true'), "and proxied, which is what puts it on Cloudflare's edge");
-  assert.ok(body.includes(`"name":"${HOST}"`), `for the custom host ${HOST}`);
+  assert.ok(body.includes(`"name":"${OWN_HOST}"`), `for the custom host ${OWN_HOST}`);
 });
 
 test("P6c: an EXISTING unproxied record is ADOPTED, never overwritten", async () => {
   defaultRoutes([
     { method: "GET", match: "/workers/routes", result: [] },
-    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: HOST, proxied: false }] },
+    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: OWN_HOST, proxied: false }] },
   ]);
   await links.createHostedLink({
     userId: "user_1",
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
 
   assert.equal(firstIndexOf("POST", "/dns_records"), -1, "we never create a record the user already has");
@@ -929,14 +1123,14 @@ test("P6c: an EXISTING unproxied record is ADOPTED, never overwritten", async ()
 test("P6c: an ALREADY-proxied record is left completely alone", async () => {
   defaultRoutes([
     { method: "GET", match: "/workers/routes", result: [] },
-    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: HOST, proxied: true }] },
+    { method: "GET", match: "/dns_records", result: [{ id: "rec_1", name: OWN_HOST, proxied: true }] },
   ]);
   await links.createHostedLink({
     userId: "user_1",
     target: "https://example.com/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
 
   assert.equal(firstIndexOf("POST", "/dns_records"), -1, "nothing created");
@@ -992,7 +1186,7 @@ test("P6c: deleting a link whose OWN publish failed still tears down the shared 
     target: "https://bad.example/",
     engine: "cloudflare",
     credentialId: "hc_1",
-    customHost: HOST,
+    customHost: OWN_HOST,
   });
   assert.ok(bad.ok);
   assert.equal(bad.value.deployStatus, "error", "B never got as far as publishing");
@@ -1013,7 +1207,7 @@ test("P6c: deleting a link whose OWN publish failed still tears down the shared 
   const routeDelete = calls.find((c) => c.method === "DELETE" && c.url.includes("/workers/routes"));
   assert.ok(routeDelete, "the shared route is deleted even though B recorded no pattern");
   assert.ok(
-    routeDelete!.url.includes("/zones/zone_1/workers/routes"),
+    routeDelete!.url.includes("/zones/zone_own/workers/routes"),
     "and it is the zone-scoped delete, recovered from the host B does still know"
   );
   const scriptDelete = calls.find((c) => c.method === "DELETE" && c.url.includes("/workers/scripts/"));
@@ -1038,7 +1232,7 @@ test("P6c: teardown lists and deletes routes ZONE-scoped too", async () => {
   const list = calls.find((c) => c.method === "GET" && c.url.includes("/workers/routes"));
   assert.ok(list, "route discovery happened");
   assert.ok(
-    list.url.includes("/zones/zone_1/workers/routes"),
+    list.url.includes("/zones/zone_own/workers/routes"),
     "the zone is recovered from the stored pattern, because routes are zone-scoped"
   );
   assert.equal(
