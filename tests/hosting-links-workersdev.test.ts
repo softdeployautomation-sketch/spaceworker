@@ -14,6 +14,9 @@ let premiumLinkDomain = "";
 // host test even if the engine had stopped passing the pin altogether.
 let premiumLinksAccountId = "";
 let lastResolveOpts: { requireWorkerToken?: boolean; pinAccountId?: string | null } | null = null;
+// Flipped by the fail-closed test: proves a publish that cannot switch the
+// workers.dev route on refuses, instead of reporting an unreachable link live.
+let enableFails = false;
 
 const USER_WORKER = `sw-${createHash("sha256").update(USER).digest("hex").slice(0, 32)}`;
 
@@ -27,6 +30,12 @@ function fakeWorkers() {
     defaultLinkHost: (z: string) => `go.${z}`,
     deleteWorkerRoute: async () => ({ ok: true, status: 200 }),
     deleteWorkerScript: async () => ({ ok: true, status: 200 }),
+    enableWorkerOnWorkersDev: async (_c: unknown, name: string) => {
+      callLog.push(`enable:${name}`);
+      return enableFails
+        ? { ok: false, status: 403, error: "Cloudflare returned 403." }
+        : { ok: true, status: 200 };
+    },
     ensureProxiedRecord: async () => {
       callLog.push("ensureRecord");
       return { ok: true, status: 200 };
@@ -125,6 +134,7 @@ beforeEach(() => {
   premiumLinkDomain = "";
   premiumLinksAccountId = "";
   lastResolveOpts = null;
+  enableFails = false;
 });
 
 test("a workers.dev premium domain publishes by uploading the script ALONE", async () => {
@@ -135,8 +145,8 @@ test("a workers.dev premium domain publishes by uploading the script ALONE", asy
   assert.equal(res.ok, true, `publish failed: ${JSON.stringify(res)}`);
   assert.deepEqual(
     callLog,
-    ["buildSource:0", "upload:" + USER_WORKER],
-    "no zone lookup, no DNS record, no route — the whole publish is the upload"
+    ["buildSource:0", "upload:" + USER_WORKER, "enable:" + USER_WORKER],
+    "no zone lookup, no DNS record, no route — but the workers.dev route IS switched on"
   );
   assert.equal(res.ok && res.value.customHost, `${USER_WORKER}.swdocs.workers.dev`);
 });
@@ -228,4 +238,50 @@ test("a BYO publish never consults the platform pin at all", async () => {
   await engine.resolveWorkerCredential(USER, "cred_does_not_exist");
 
   assert.equal(lastResolveOpts, null, "BYO must not reach the platform resolver");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_157 — the workers.dev route must be switched ON, never assumed on.
+//
+// Live bug, found 2026-10-04. A script uploaded through the API is created with
+// its workers.dev route DISABLED, so `<worker>.swdocs.workers.dev` answered
+// 404 / error code 1042 forever while every step of the publish reported success.
+// The Cloudflare dashboard enables the route for you when you click
+// "Create Worker"; the API does not. Verified end to end against the real
+// account: PUT 200 -> host 404 -> POST subdomain {enabled:true} -> host 200.
+// ---------------------------------------------------------------------------
+
+test("a ZONED publish never switches on a workers.dev route", async () => {
+  // The guard against over-applying the fix. The zoned path shares
+  // uploadWorkerScript, so enabling the workers.dev route there would expose a
+  // BYO user's worker on a public *.workers.dev hostname they never configured —
+  // a silent leak on top of the domain they actually asked for.
+  premiumLinkDomain = "go.instaweb.top";
+
+  const res = await engine.publishUserMap(USER, { credentialId: null });
+
+  assert.equal(res.ok, true, `publish failed: ${JSON.stringify(res)}`);
+  assert.equal(
+    callLog.some((c) => c.startsWith("enable:")),
+    false,
+    "a zoned publish must not touch the workers.dev route at all"
+  );
+});
+
+test("a publish that cannot switch the workers.dev route on FAILS CLOSED", async () => {
+  premiumLinkDomain = "swdocs.workers.dev";
+  enableFails = true;
+
+  const res = await engine.publishUserMap(USER, { credentialId: null });
+
+  assert.equal(
+    res.ok,
+    false,
+    "an unreachable worker must never be reported as successfully published"
+  );
+  assert.equal(!res.ok && res.code, "cf_error");
+  assert.ok(
+    callLog.includes("upload:" + USER_WORKER),
+    "the script upload is attempted first — the route cannot be enabled before it exists"
+  );
 });

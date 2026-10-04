@@ -11,6 +11,7 @@ import {
   defaultLinkHost,
   deleteWorkerRoute,
   deleteWorkerScript,
+  enableWorkerOnWorkersDev,
   ensureProxiedRecord,
   ensureZoneActive,
   hostFromRoutePattern,
@@ -248,6 +249,20 @@ export async function publishUserMap(
     const uploaded = await uploadWorkerScript(cf, workerName, buildWorkerMapSource(entries));
     if (!uploaded.ok) {
       return { ok: false, status: uploaded.status, code: "cf_error", message: uploaded.error ?? "Could not upload the link." };
+    }
+    // A script uploaded through the API lands with its workers.dev route OFF, so
+    // the hostname would 404 (error 1042) for as long as it lives. Turn it on
+    // before claiming success: "published but unreachable" is the one outcome the
+    // rest of this function exists to avoid, and it is invisible from the PUT's
+    // 200. Idempotent — republish just re-enables what is already enabled.
+    const exposed = await enableWorkerOnWorkersDev(cf, workerName);
+    if (!exposed.ok) {
+      return {
+        ok: false,
+        status: exposed.status,
+        code: "cf_error",
+        message: exposed.error ?? "Could not switch on the link's workers.dev address.",
+      };
     }
     // routePattern is null BY DESIGN, not "unknown": teardown reads it to decide
     // whether a route needs deleting, and there is no route. Reporting a pattern

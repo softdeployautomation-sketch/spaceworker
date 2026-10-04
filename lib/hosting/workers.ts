@@ -513,6 +513,46 @@ export async function uploadWorkerScript(
 }
 
 /**
+ * TASK_157 — switch ON the workers.dev route for a script we just uploaded.
+ *
+ * A script created through the API is born with its workers.dev route DISABLED
+ * (`GET .../subdomain` answers `{enabled:false}`). The dashboard turns it on for
+ * you when you click "Create Worker", which is precisely why the gap stayed
+ * invisible: the PUT returns 200, the script really does exist, and
+ * `<name>.<sub>.workers.dev` answers 404 / error code 1042 forever. Live-verified
+ * against the Premium Links account on 2026-10-04:
+ *
+ *   PUT  script                          -> 200; GET script/subdomain {enabled:false}
+ *   GET  <name>.swdocs.workers.dev       -> 404
+ *   POST script/subdomain {enabled:true} -> 200
+ *   GET  <name>.swdocs.workers.dev       -> 200
+ *
+ * Called ONLY from the workers.dev publish path. It is deliberately NOT folded
+ * into `uploadWorkerScript`, because the zoned/BYO path shares that function and
+ * enabling there would publish a user's worker on a public `*.workers.dev`
+ * hostname they never asked for — a silent exposure on top of the domain they
+ * actually configured.
+ *
+ * Idempotent: enabling an already-enabled script is a no-op, so a republish
+ * costs one extra call and can never flip anything off.
+ */
+export async function enableWorkerOnWorkersDev(
+  cred: CfCredential,
+  name: string
+): Promise<CfResult<{ name: string }>> {
+  const res = await cfFetch<{ enabled?: boolean }>(
+    cred,
+    "POST",
+    // The name is hashed but still user-derived, so encode it rather than
+    // trusting it to be URL-safe.
+    `/accounts/${cred.accountId}/workers/scripts/${encodeURIComponent(name)}/subdomain`,
+    { enabled: true }
+  );
+  if (!res.ok) return { ok: false, status: res.status, error: res.error };
+  return { ok: true, status: res.status, value: { name } };
+}
+
+/**
  * Every route on the ZONE — used to find ours by pattern before deleting it.
  *
  * ZONE-SCOPED, NOT ACCOUNT-SCOPED — corrected 2026-10-03 against a live account.
