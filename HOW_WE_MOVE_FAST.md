@@ -1157,6 +1157,45 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
     was never consulted and the test read a module bound to a different fake. Same
     family as reading the build's `.map` instead of `/opt/<app>/lib`: confirm you
     are inspecting the artifact you think you are.
+- **An error message is a CONTRACT with the operator — "budget exceeded" when the
+  budget is 99.98% unused is worse than no message at all.** Added 2026-10-04. The
+  owner reported that screenshot summaries said the budget was used up and that the
+  admin connection test failed. It was neither: the relay answered a live test with
+  `120/500000` hundredths of a cent used, and the sweep journal showed the real cause
+  was a **local** limit of 24 summaries per device per UTC day (8 frames hit it; all
+  were summarised fine after the midnight reset).
+  - **Read the relay's OWN source before mapping its statuses.** `lib/channelry-ai.ts`
+    mapped *every* 429 to `over_cap`. In
+    `faceless-channel-os/admin-server/worker/src/worker-full.ts` the `/external/ai-chat`
+    handler emits 429 for exactly one reason and always with both usage fields:
+    `return json({ detail: 'daily AI cost cap reached for this client',
+    used_hundredths_cent, cap_hundredths_cent, active }, active ? 429 : 403);`
+    It deliberately collapses **every** upstream Groq failure into a 502
+    (`error(e?.message || 'script service error', 502)`). So a 429 with **no usage
+    body** is Cloudflare back-pressure in front of the Worker, never money. Gate
+    `over_cap` on both fields being present; anything else is `rate_limited`.
+  - **Pin such a rule with a test that drives the real function with only `fetch`
+    stubbed** (`tests/channelry-error-classification.test.ts`), and assert the message
+    does NOT contain the money claim. Asserting the code alone is not enough — the
+    operator reads the sentence.
+  - **Watch for blunt negative assertions when you write the message yourself.** The
+    `rate_limited` copy deliberately says "**not** an exhausted budget", so a
+    `doesNotMatch(/budget/i)` assertion fails on the very copy written to fix it.
+    Forbid the CLAIM (`/cap is exhausted/i`), not the word.
+  - **The same word in three different systems is a trap.** "Budget" was doing duty
+    for a per-device daily frame cap, a per-user AI cap, and the relay's real spend
+    cap. Only the last is money, and only it may say "budget"; the local one now names
+    the limit and the reset (`24 frames … resets at 00:00 UTC`).
+  - **An error code absent from `RETRYABLE_SUMMARY_ERRORS` strands frames forever.**
+    `over_cap` was missing, so a frame that hit a genuine cap was skipped by every
+    later sweep despite the cap resetting daily — identical to the earlier
+    `bad_request` stranding. Both `over_cap` and `rate_limited` are retryable;
+    `image_missing` deliberately stays terminal.
+  - **`writeSummaries` stamps `summarisedAt` with the REAL `new Date()`, not the
+    injected `now`.** `countSummarisedToday` reads `startOfTodayUTC()`, which likewise
+    ignores any injected clock — so a test cannot roll the UTC day by moving `clock`.
+    Age the frames' `summarisedAt` by 24h instead, which is what a real rollover
+    produces. Both tests passed for the wrong reason until this was pinned down.
 
 
 
