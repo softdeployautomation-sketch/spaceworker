@@ -256,6 +256,19 @@ model AdminSetting {
   // Extractor is wired into CI today") — sellable now, buildable later.
   agentExePriceUsd               Float    @default(50) // one-time, 6-month term
 
+  // PLAN_TASK_167 W4 — the smallest wallet top-up a user may open, in whole
+  // DOLLARS (every other price on this model is a Float in dollars too, so a
+  // second unit in this one table would be the thing that confuses a future
+  // reader). A configured minimum and not a constant because the owner sets the
+  // commercial policy, not this codebase: a $0.01 top-up is not a mistake a user
+  // makes once, it is the cheapest way to occupy an admin's review queue.
+  //
+  // This is the ONLY reason TASK_167 needed a migration — W1 already created
+  // `Payment.creditedCents` / `adminNote`, so the credit path itself required
+  // none. Shipped alone, ahead of the routes that read it: a column with no
+  // reader is inert, whereas a route with no column is a broken build.
+  walletTopupMinUsd             Float    @default(5)
+
   // Task 46 — admin admission control for the two mechanisms that actually spend
   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
   // (each running job is a real Playwright+Chromium process, one per lane today)
