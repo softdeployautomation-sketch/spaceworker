@@ -1101,6 +1101,62 @@ migration (like TASK_113) touches live constraints — `pg_dump` first, always.
   suite failing with a byte-identical error and looked like the fix had not
   applied. The env stub also has to sit **outside** the parent gate, because by
   the time env is requested the parent is no longer the module under test.
+- **"I checked the database and it saved" is not evidence the OWNER can act on —
+  and a write path with no read-back is indistinguishable from one that silently
+  drops the value.** Added 2026-10-04 after the owner reported **three times**
+  that a Cloudflare token they pasted had not stuck and had to be re-typed.
+  Forensics could not reproduce a loss: the route, the service and the columns
+  were all correct, and a token sent straight to the API was readable in
+  PostgreSQL within the same command. The bug was not storage — it was **PROOF**.
+  That is how one bad paste into the wrong input became three rounds of re-typing
+  a token, each round ending in "I confirmed it works".
+  - **Assert on a SECOND read, never on what the ORM handed back.** Prisma returns
+    the object you asked it to write, so checking that object can only confirm
+    your own intent. Re-read the row by id and decrypt it — `verifyStoredSecret()`
+    in `lib/hosting/credentials.ts` does this for all four token write paths
+    (platform create/update, user create/update). A mismatch returns
+    `500 token_not_persisted` in plain language.
+  - **Compare the DECRYPTED value, not the 4-char hint.** Two different tokens can
+    share a last-4; a hint-only check would wave a wrong credential through and
+    leave it sitting there looking healthy.
+  - **An absent stored copy is a FAILURE, never a silent pass.** The owner's rows
+    were found exactly in that state (`zoneTokenHint` empty on all three), and a
+    check that treats "nothing there" as "nothing to check" passes on precisely
+    the broken case.
+  - **Never put the token in the error message.** Only the field name and last 4.
+  - **Pin it with a test that breaks the store underneath the write.** Simulate the
+    drop (the fake's `update` nulls the ciphertext on the way to the DB) and assert
+    the call REFUSES. Without that the guarantee can be deleted silently and every
+    test still passes — a guarantee nothing checks is a comment.
+  - **Proving it live does not need the panel.** Mint an admin session with `jose`
+    (`SignJWT`, HS256, `SESSION_SECRET`, issuer/audience `spaceworker-admin`, `sub`
+    `admin` — see `lib/admin-auth.ts`), `curl` the PATCH to `localhost:3500`, then
+    read the result out of PostgreSQL. That bypasses every layer of UI guesswork and
+    takes seconds:
+    ```bash
+    U=$(grep -m1 -E '^DATABASE_URL=' /opt/spaceworker/.env | cut -d= -f2- \
+      | sed -e "s/^[\"']//" -e "s/[\"']$//" | tr -d '[:space:]')
+    psql "$U" -qAtc 'select label, "zoneTokenHint" from "HostingPlatformAccount"'
+    ```
+    `zoneTokenHint` is `NOT NULL DEFAULT ''` — clearing it needs `"zoneTokenHint"=''`,
+    not `NULL`, or the update fails the constraint.
+  - **Run the mint script from `/opt/spaceworker`.** `jose` resolves from that
+    directory's `node_modules`; from `/tmp` Node cannot find it and dies with
+    `ERR_MODULE_NOT_FOUND` (and a bare `npx` there tries to *install* `jose`).
+  - **Adding a read path breaks every fake Prisma.** Six tests in
+    `tests/hosting-links-credentials.test.ts` failed with
+    `hostingCredential.findUnique is not a function` the moment the read-back
+    landed. A new query is a real change to each stub that owns one.
+  - **A test that passes because it 404s is not testing the write.** The user-path
+    stub's `findFirst` returned `null`, so `updateHostingCredential` bailed with
+    `not_found` *before* writing — green for entirely the wrong reason. Make the
+    stub actually find the row.
+  - **A require-hook must be installed BEFORE the `require`, and the module must be
+    evicted from `require.cache` first.** `platform-accounts` had already required
+    `credentials.ts` at the top of the suite, so a patched loader installed later
+    was never consulted and the test read a module bound to a different fake. Same
+    family as reading the build's `.map` instead of `/opt/<app>/lib`: confirm you
+    are inspecting the artifact you think you are.
 
 
 

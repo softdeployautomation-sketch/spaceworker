@@ -455,6 +455,17 @@ likely to be deleted **last**, which is exactly the delete that triggers teardow
 teardown keyed on a per-row column is wrong when that column is nullable and the resource is
 shared — derive shared-resource identity from its real inputs.**
 
+**28. "I checked and it saved" is not evidence the owner can see — read the row back.** *(Recorded 2026-10-04 on Task 158 W2.)* The owner reported **three times** that a Cloudflare token they pasted had not stuck, each time being told "it's fine, I confirmed". It was fine: a token PATCHed straight to the live API was readable in PostgreSQL seconds later. **The bug was never storage — it was proof.** A write whose only evidence is the response body is indistinguishable from one that silently dropped the value, so each session re-derived the same conclusion from a different artifact and the owner's next paste failed identically.
+
+- **Prisma returns what you ASKED it to write.** Asserting on its return object can only ever confirm your own intent. Re-read the row by id and decrypt it — `verifyStoredSecret()` (`lib/hosting/credentials.ts`) now does this on all four token write paths: platform create/update (Pages, Workers, Zones) and user create/update (Pages, Workers). A mismatch is `500 token_not_persisted` in plain language, so the panel says "this did not save" instead of rendering a green row that fails at 3am.
+- **Compare the DECRYPTED value, not the 4-char hint.** Two different tokens can share a last-4; a hint-only check waves a wrong credential through and leaves it looking healthy.
+- **An absent stored copy is a FAILURE.** The owner's three rows were found exactly in that state (`zoneTokenHint` empty), and a check that treats "nothing there" as "nothing to check" passes on precisely the broken case.
+- **No message ever contains the token** — field name and last 4 only.
+- **Pin it by breaking the store underneath the write.** The tests make the fake null the ciphertext on the way to the DB and assert the call REFUSES, on create and update, on both paths. Without that the guarantee can be deleted and every test still passes.
+- **The user path had the identical unverified write** — the owner's prediction that users would hit it too was correct, and it is now covered.
+- **To prove a write live, do not go through the panel.** Mint an admin session with `jose` (`SignJWT`, HS256, `SESSION_SECRET`, issuer/audience `spaceworker-admin`, `sub` `admin`), `curl` the PATCH, read the row with `psql`. Script must run from `/opt/spaceworker` or `jose` will not resolve.
+- **A new read path breaks every fake Prisma** — six tests failed with `findUnique is not a function` on landing. **And a test that passes because it 404s is not testing the write**: a stub returning `null` from `findFirst` made the update bail before writing, green for the wrong reason.
+
 **27. A migration can be proven on an EMPTY database and still be wrong — clone production.**
 *(Recorded 2026-10-04 on Task 159.)* Trap 23 says history cannot replay onto an empty DB,
 and the tempting workaround is to "just test the SQL somewhere". An empty database
