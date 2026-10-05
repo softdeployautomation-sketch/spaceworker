@@ -13,8 +13,9 @@ import { cn } from "@/lib/cn";
 // READ-ONLY BY CONSTRUCTION, same rule as components/wallet-balance.tsx: this
 // file fetches, formats and links. There is no amount input, no POST and no
 // handler that can move money, so it cannot become a top-up flow by accident.
-// The one route allowed to credit a wallet is a server-side admin grant
-// (PLAN_TASK_158 W3), which does not exist yet.
+// Money enters a wallet through exactly two server-side paths: the admin grant
+// (PLAN_TASK_158 W3, shipped in 076800d) and the top-up flow this chip links to
+// (PLAN_TASK_167 W4) — both decide server-side, never from this component.
 //
 // WHY formatCents IS NOT IMPORTED HERE. `formatCents` lives in lib/wallet.ts,
 // and that module starts with `import "server-only"` — importing it from a
@@ -25,13 +26,11 @@ import { cn } from "@/lib/cn";
 // is deliberately byte-for-byte the same shape as formatCents so the two cannot
 // drift into disagreeing about what a balance looks like.
 //
-// ⚠ THIS CHIP WILL READ $0.00 FOR EVERY REAL USER, AND THAT IS HONEST.
-// PLAN_TASK_165 §3 proves no production route calls creditTopup /
-// creditApprovedPayment / adminAdjustBalance, so the wallet cannot be funded
-// until W3 ships. Rather than fake a balance or build a top-up form to paper
-// over it, an empty wallet renders an explicit "No funds yet" label: a chip that
-// says $0.00 with no explanation reads as a bug, and one that shows a made-up
-// figure would be worse.
+// AN EMPTY WALLET STILL RENDERS AN EXPLICIT LABEL, but as of PLAN_TASK_167 W4
+// it is an invitation rather than an explanation: the chip links to
+// /dashboard/billing, where the top-up form now lives, so "no funds yet" is the
+// first step of a working flow instead of a dead end. A bare $0.00 would still
+// read as a bug; this reads as "start here".
 
 interface WalletView {
   balanceCents: number;
@@ -99,7 +98,7 @@ export function WalletChip() {
         state === "loading"
           ? "Loading your balance"
           : empty
-            ? "No funds yet — nothing has been added to this wallet"
+            ? "No funds yet — top up your wallet on the Billing page"
             : `Wallet balance ${centsToDisplay(wallet?.balanceCents ?? 0)}`
       }
       className={cn(
@@ -111,8 +110,9 @@ export function WalletChip() {
       {state === "loading" ? (
         <span className="tabular-nums">…</span>
       ) : empty ? (
-        // Deliberately not "$0.00" with no explanation — see the header note.
-        <span>Wallet · no funds yet</span>
+        // Deliberately not a bare "$0.00" — an empty wallet is an invitation to
+        // the top-up form on /dashboard/billing now that W4 has shipped.
+        <span>Wallet · add funds</span>
       ) : (
         <span className="font-semibold tabular-nums text-fg">
           {centsToDisplay(wallet?.balanceCents ?? 0)}

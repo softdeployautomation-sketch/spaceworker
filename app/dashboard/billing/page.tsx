@@ -82,31 +82,122 @@ export default function BillingPage() {
   // branch: putting it in the branches would unmount and remount it as the payment
   // state resolves, which throws away the balance it already fetched and issues a
   // second GET on every page view.
-  if (payment === undefined) {
-    return (
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
-        <WalletBalance />
-        <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
-      </div>
+  // PLAN_TASK_167 W4 — the top-up surface renders on EVERY branch of the
+  // subscription state below: whether the customer has no payment, a pending one
+  // or an approved one has no bearing on their ability to add funds to their own
+  // wallet. Rendering it once here (rather than inside each branch) also keeps it
+  // mounted while `payment` resolves, so an amount someone is already typing
+  // isn't thrown away by the state transition.
+  const subscription =
+    payment === undefined ? (
+      <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
+    ) : !payment ? (
+      <UpgradeFlow onResult={handleResult} />
+    ) : (
+      <StatusCardView payment={payment} note={note} onResult={handleResult} />
     );
-  }
-
-  if (!payment) {
-    return (
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
-        <WalletBalance />
-        <UpgradeFlow onResult={handleResult} />
-      </div>
-    );
-  }
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
       <WalletBalance />
-      <StatusCardView payment={payment} note={note} onResult={handleResult} />
+      <TopUpFlow />
+      {subscription}
+    </div>
+  );
+}
+
+// PLAN_TASK_167 W4 §4a — the ONE copy-address / submit-hash block, shared by the
+// subscription checkout and the wallet top-up. The plan forbids a second copy of
+// this component, and the reason is concrete: two copies means the hash rules
+// (trimmed, non-empty, submitted with the order it belongs to) drift apart, and
+// whichever copy falls behind stops checking. Everything chain-specific arrives
+// as props; nothing here knows what a payment is FOR — the parent decides that
+// in its `onSubmitHash`.
+//
+// It owns only the hash input and its own submit lifecycle. The returned string
+// from `onSubmitHash` is an ERROR message to display (null means success and the
+// parent has already reacted — e.g. redirected to the status card, or marked the
+// top-up as submitted).
+function PaymentInstructions({
+  kind,
+  toAddress,
+  amountUsd,
+  note,
+  submitLabel,
+  onSubmitHash,
+}: {
+  kind: Kind;
+  toAddress: string;
+  amountUsd: number;
+  note?: string;
+  submitLabel: string;
+  onSubmitHash: (txHash: string) => Promise<string | null>;
+}) {
+  const [txHash, setTxHash] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit() {
+    const hash = txHash.trim();
+    if (!hash) {
+      setError("Enter your transaction hash");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      const failure = await onSubmitHash(hash);
+      if (failure) setError(failure);
+    } catch {
+      setError("Network error");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="mt-5 space-y-4">
+      <div>
+        <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          Send {kindLabel(kind)} to this address
+        </p>
+        <div className="mt-2 flex items-center gap-2">
+          <code className="flex-1 break-all rounded-lg bg-zinc-100 px-3 py-2 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+            {toAddress}
+          </code>
+          <CopyButton value={toAddress} />
+        </div>
+        <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+          Send exactly ${amountUsd.toFixed(2)} worth of{" "}
+          {kind === "btc" ? "BTC" : "USDT"} — within ±5% is accepted.
+        </p>
+        {note && (
+          <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">{note}</p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
+          Transaction hash
+        </label>
+        <input
+          type="text"
+          value={txHash}
+          onChange={(e) => setTxHash(e.target.value)}
+          placeholder="Enter the transaction hash after sending"
+          className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+        />
+        <button
+          onClick={submit}
+          disabled={submitting}
+          className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+        >
+          {submitting ? "Submitting…" : submitLabel}
+        </button>
+      </div>
+
+      {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
     </div>
   );
 }
@@ -119,8 +210,6 @@ function UpgradeFlow({
   const [kind, setKind] = useState<Kind>("btc");
   const [checkout, setCheckout] = useState<CheckoutInfo | null>(null);
   const [loadingInfo, setLoadingInfo] = useState(false);
-  const [txHash, setTxHash] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -142,34 +231,25 @@ function UpgradeFlow({
     };
   }, [kind]);
 
-  async function submit() {
-    const hash = txHash.trim();
-    if (!hash) {
-      setError("Enter your transaction hash");
-      return;
+  // Delegated to PaymentInstructions as its `onSubmitHash`: the shared block owns
+  // the input and the submitting state; this owns what the hash MEANS for a
+  // subscription — POST it to /api/billing/submit, then re-read the status and
+  // hand the page the row it should render. Returned string = error to show.
+  async function submitHash(hash: string): Promise<string | null> {
+    const res = await fetch("/api/billing/submit", {
+      method: "POST",
+      body: JSON.stringify({ kind, txHash: hash }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return typeof data.error === "string" ? data.error : "Submission failed";
     }
-    setSubmitting(true);
-    setError("");
-    try {
-      const res = await fetch("/api/billing/submit", {
-        method: "POST",
-        body: JSON.stringify({ kind, txHash: hash }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "Submission failed");
-        return;
-      }
-      const statusRes = await fetch("/api/billing/status");
-      const statusData = await statusRes.json().catch(() => ({}));
-      if (statusRes.ok) {
-        onResult(statusData.status === null ? null : statusData, data.note);
-      }
-    } catch {
-      setError("Network error");
-    } finally {
-      setSubmitting(false);
+    const statusRes = await fetch("/api/billing/status");
+    const statusData = await statusRes.json().catch(() => ({}));
+    if (statusRes.ok) {
+      onResult(statusData.status === null ? null : statusData, data.note);
     }
+    return null;
   }
 
   return (
@@ -202,48 +282,192 @@ function UpgradeFlow({
         )}
 
         {checkout && (
-          <div className="mt-5 space-y-4">
-            <div>
-              <p className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Send {kindLabel(kind)} to this address
-              </p>
-              <div className="mt-2 flex items-center gap-2">
-                <code className="flex-1 break-all rounded-lg bg-zinc-100 px-3 py-2 font-mono text-xs text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-                  {checkout.toAddress}
-                </code>
-                <CopyButton value={checkout.toAddress} />
-              </div>
-              <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                Send exactly ${checkout.amountUsd.toFixed(2)} worth of{" "}
-                {kind === "btc" ? "BTC" : "USDT"} — within ±5% is accepted.
-              </p>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
-                Transaction hash
-              </label>
-              <input
-                type="text"
-                value={txHash}
-                onChange={(e) => setTxHash(e.target.value)}
-                placeholder="Enter the transaction hash after sending"
-                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
-              />
-              <button
-                onClick={submit}
-                disabled={submitting}
-                className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
-              >
-                {submitting ? "Submitting…" : "Submit Payment"}
-              </button>
-            </div>
-          </div>
+          <PaymentInstructions
+            kind={kind}
+            toAddress={checkout.toAddress}
+            amountUsd={checkout.amountUsd}
+            submitLabel="Submit Payment"
+            onSubmitHash={submitHash}
+          />
         )}
 
         {error && <p className="mt-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
       </div>
     </div>
+  );
+}
+
+// PLAN_TASK_167 W4 §4a — the top-up surface. ONE route (`/api/billing/topup`) in
+// both directions: step 1 opens the order, step 2 attaches the hash — and the
+// component NEVER claims success beyond what the server said. The final state it
+// renders is "submitted, awaiting review", because a top-up is never auto-approved
+// (§8.6) and `/api/billing/status` deliberately excludes top-up rows (so there is
+// no status to poll — the admin queue is the state machine).
+//
+// The minimum comes from GET /api/billing/topup (an AdminSetting), shown before
+// the customer types so the floor is a stated rule rather than a surprise 400.
+function TopUpFlow() {
+  const [limits, setLimits] = useState<{ minimumUsd: number; maximumUsd: number } | null>(null);
+  const [amount, setAmount] = useState("");
+  const [kind, setKind] = useState<Kind>("usdt_trc20");
+  const [order, setOrder] = useState<{ paymentId: string; kind: Kind; toAddress: string; amountUsd: number; note: string } | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [submitted, setSubmitted] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await fetch("/api/billing/topup");
+      const data = await res.json().catch(() => ({}));
+      if (!cancelled && res.ok && typeof data.minimumUsd === "number") {
+        setLimits({ minimumUsd: data.minimumUsd, maximumUsd: data.maximumUsd });
+      }
+      // Fail-soft: if the limits can't be read the form still works — the POST
+      // re-validates the floor server-side and its error names the minimum. The
+      // hint is a convenience, never the enforcement.
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function openOrder() {
+    const amountUsd = Number(amount);
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
+      setError("Enter an amount to add");
+      return;
+    }
+    if (limits && amountUsd < limits.minimumUsd) {
+      setError(`The minimum top-up is $${limits.minimumUsd.toFixed(2)}.`);
+      return;
+    }
+    setOpening(true);
+    setError("");
+    try {
+      const res = await fetch("/api/billing/topup", {
+        method: "POST",
+        body: JSON.stringify({ amountUsd, kind }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Could not start the top-up");
+        return;
+      }
+      setOrder({
+        paymentId: data.paymentId,
+        kind: data.kind,
+        toAddress: data.toAddress,
+        amountUsd: data.amountUsd,
+        note: data.note,
+      });
+    } catch {
+      setError("Network error");
+    } finally {
+      setOpening(false);
+    }
+  }
+
+  // Step 2 — attach the hash to OUR order. On success we render the awaiting-
+  // review state and stop: there is deliberately no polling here, because the
+  // server will never flip this row without an admin (§8.6).
+  async function submitHash(txHash: string): Promise<string | null> {
+    if (!order) return "Open a top-up order first";
+    const res = await fetch("/api/billing/topup", {
+      method: "POST",
+      body: JSON.stringify({ paymentId: order.paymentId, txHash }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return typeof data.error === "string" ? data.error : "Submission failed";
+    }
+    setSubmitted(typeof data.note === "string" ? data.note : "Received. We'll confirm the payment and add the funds to your wallet.");
+    return null;
+  }
+
+  if (submitted) {
+    return (
+      <section className="mb-6 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Top-up submitted</h2>
+        <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{submitted}</p>
+        <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+          This top-up is awaiting review — funds land in your wallet after a human confirms the payment.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section
+      aria-label="Top up wallet"
+      className="mb-6 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Top up wallet</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Add funds to your balance with crypto. Minimum ${limits ? limits.minimumUsd.toFixed(2) : "…"}
+        {limits ? `, up to $${limits.maximumUsd.toLocaleString()} per order.` : "."}
+      </p>
+
+      {order ? (
+        <PaymentInstructions
+          kind={order.kind}
+          toAddress={order.toAddress}
+          amountUsd={order.amountUsd}
+          note={order.note}
+          submitLabel="Submit Transaction Hash"
+          onSubmitHash={submitHash}
+        />
+      ) : (
+        <>
+          <div className="mt-4 flex gap-2">
+            {KIND_OPTIONS.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setKind(opt.id)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                  kind === opt.id
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="mt-4 flex items-end gap-3">
+            <div className="w-40">
+              <label
+                htmlFor="topup-amount"
+                className="block text-sm font-medium text-zinc-700 dark:text-zinc-300"
+              >
+                Amount (USD)
+              </label>
+              <input
+                id="topup-amount"
+                type="number"
+                inputMode="decimal"
+                min={limits?.minimumUsd}
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder={limits ? limits.minimumUsd.toFixed(2) : "25.00"}
+                className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
+              />
+            </div>
+            <button
+              onClick={openOrder}
+              disabled={opening}
+              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {opening ? "Creating…" : "Continue"}
+            </button>
+          </div>
+        </>
+      )}
+
+      {error && <p className="mt-3 text-sm text-red-600 dark:text-red-400">{error}</p>}
+    </section>
   );
 }
 

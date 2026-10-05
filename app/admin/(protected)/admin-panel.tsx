@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
-import { ALL_PRODUCTS, EXE_PRODUCTS } from "@/lib/products";
+import { ALL_PRODUCTS, EXE_PRODUCTS, WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
@@ -106,6 +106,13 @@ const TABS: Array<{ id: Tab; label: string }> = [
 const PRODUCT_LABELS: Record<string, string> = Object.fromEntries(
   ALL_PRODUCTS.map((p) => [p.id, p.name]),
 );
+// PLAN_TASK_167 W4 — `wallet_topup` is deliberately NOT in ALL_PRODUCTS (it is
+// not sellable and grants no entitlement), but it IS a Payment.product this
+// review table has to name for the admin about to approve it. Adding it here —
+// rather than letting the fallback print `wallet_topup` — means the row says
+// "Wallet top-up" next to the amount, which is exactly the context an approver
+// needs before clicking the button that credits a balance.
+PRODUCT_LABELS[WALLET_TOPUP_PRODUCT_ID] = "Wallet top-up";
 
 // Every product sold on the store, in admin "Wallets & Prices" tab edit order.
 const WALLET_PRICE_ROWS: Array<{ id: string; field: string; label: string; hint: string }> =
