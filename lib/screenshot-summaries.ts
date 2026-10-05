@@ -147,6 +147,14 @@ export function summariseCostReport(): string {
 export const RETRYABLE_SUMMARY_ERRORS = new Set([
   "cap_exhausted", // transient: the cap resets at UTC midnight
   "daily_call_budget", // transient: the device's budget resets at UTC midnight
+  // 2026-10-04 — the relay's OWN spend cap. "over_cap" was NOT in this set, so
+  // a frame that hit a real cap was TERMINAL: every later sweep skipped it, so
+  // it could never be summarised even though the cap resets at Channelry's day
+  // boundary. Same class of stranding bug as the "bad_request" one below.
+  "over_cap",
+  // Same day — a bare 429 (no usage body) is Cloudflare back-pressure, NOT
+  // money. Transient, so it must retry rather than strand the frame.
+  "rate_limited",
   "ai_unavailable", // transient: the relay was briefly down (502/network)
   "temporarily_unavailable",
   // TASK_157 — the two that used to strand frames forever, and must not any more.

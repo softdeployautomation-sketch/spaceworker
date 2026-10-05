@@ -543,6 +543,59 @@ test("the per-device daily budget caps a device at 24 frames/day and MARKS the r
   assert.ok(RETRYABLE_SUMMARY_ERRORS.has("daily_call_budget"));
 });
 
+test("2026-10-04: the frames left over by the local cap are picked up again after the UTC-day reset", async () => {
+  // The live incident in miniature: 30 frames arrive, the local 24/day cap marks
+  // 6 as `daily_call_budget`, and the next day's pass must actually SUMMARISE
+  // those 6 rather than skip them forever. This is the behaviour that proved
+  // the whole thing was a transient local limit and not a Channelry budget.
+  // Yesterday: 30 frames arrive, the local 24/day cap summarises 24 and marks 6.
+  clock = new Date(new Date(TODAY_NOON_UTC).getTime() - 24 * 60 * 60 * 1000);
+  addUser();
+  addDevice("d1");
+  for (let i = 0; i < 30; i++) await makeFrame("d1");
+
+  const day1 = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+  assert.equal(day1.summarised, 24);
+  assert.equal(frames.filter((f) => f.summaryError === "daily_call_budget").length, 6);
+
+  // Simulate the day rolling over. NOTE: writeSummaries stamps `summarisedAt` with
+  // the REAL wall clock (`new Date()`), never the injected `now` — correct in
+  // production, and it means a test cannot roll the day just by moving `clock`.
+  // Ageing day 1's stamps by 24h is what a real rollover produces: those frames
+  // are now summarised *yesterday*, so today's count starts at 0 again.
+  const oneDayEarlier = new Date(new Date(TODAY_NOON_UTC).getTime() - 24 * 60 * 60 * 1000);
+  for (const f of frames) {
+    if (f.summarisedAt !== null) f.summarisedAt = oneDayEarlier;
+  }
+
+  // A pass the next UTC day, with nothing else changed: the budget has reset, so
+  // the 6 deferred frames must be picked up and actually summarised.
+  clock = new Date(TODAY_NOON_UTC);
+  const day2 = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+
+  assert.equal(day2.summarised, 6, "the 6 deferred frames are summarised the next day");
+  assert.equal(frames.filter((f) => f.summary === null).length, 0, "nothing is left unsummarised");
+  assert.equal(
+    frames.filter((f) => f.summaryError !== null).length,
+    0,
+    "a successful retry CLEARS the stale daily_call_budget error",
+  );
+  // Same 30 frames throughout — nothing was deleted or duplicated to get here.
+  assert.equal(frames.length, 30);
+});
+
+test("2026-10-04: over_cap and rate_limited are RETRYABLE, so neither strands a frame forever", async () => {
+  // "over_cap" was absent from the retryable set, so a frame that hit a REAL
+  // Channelry cap was treated as terminal and skipped by every later sweep —
+  // even though the cap resets at the relay's day boundary. "rate_limited" is
+  // new and is Cloudflare back-pressure, transient by definition. Neither may
+  // strand a perfectly good frame.
+  assert.ok(RETRYABLE_SUMMARY_ERRORS.has("over_cap"), "a real cap resets daily, so retry");
+  assert.ok(RETRYABLE_SUMMARY_ERRORS.has("rate_limited"), "back-pressure clears itself");
+  // Still terminal: a file that is gone from disk will never yield text.
+  assert.equal(RETRYABLE_SUMMARY_ERRORS.has("image_missing"), false);
+});
+
 // ---------------------------------------------------------------------------
 // The cap-exhaustion path and failure independence
 // ---------------------------------------------------------------------------

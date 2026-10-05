@@ -159,10 +159,35 @@ test("every known capture-failure code maps to plain, actionable copy", () => {
 
 test("every summaryError code maps to calm, specific copy", () => {
   assert.equal(summaryPendingCopy(null), "Not summarised yet.");
-  assert.match(summaryPendingCopy("daily_call_budget"), /summary budget for this machine is used up/);
   assert.match(summaryPendingCopy("temporarily_unavailable"), /retried/);
   assert.match(summaryPendingCopy("image_missing"), /could not be read/);
   assert.match(summaryPendingCopy("something_new"), /something_new/);
+});
+
+test("2026-10-04: the local daily cap, a real Channelry spend cap, and a bare 429 are three DISTINCT things on screen", () => {
+  // This distinction is the whole fix. The local cap once read as "budget used
+  // up", which sent the operator chasing a spend cap that was 99.98% unused.
+  const local = summaryPendingCopy("daily_call_budget");
+  const money = summaryPendingCopy("over_cap");
+  const limited = summaryPendingCopy("rate_limited");
+
+  // The LOCAL cap names the local limit and the reset time — never "budget".
+  assert.match(local, /daily summary limit/i);
+  assert.match(local, /24 frames/);
+  assert.match(local, /00:00 UTC/);
+  assert.doesNotMatch(local, /budget/i);
+
+  // ONLY the real relay spend cap is allowed to say "budget", because only it
+  // comes from the relay's explicit usage-bearing 429.
+  assert.match(money, /Channelry AI budget/i);
+
+  // A bare 429 is back-pressure: it must not read as money at all.
+  assert.match(limited, /rate limiting/i);
+  assert.match(limited, /not a budget problem/i);
+  assert.match(limited, /retried/);
+
+  // All three are visibly different strings — no two states collapse into one.
+  assert.equal(new Set([local, money, limited]).size, 3);
 });
 
 // ---------------------------------------------------------------------------

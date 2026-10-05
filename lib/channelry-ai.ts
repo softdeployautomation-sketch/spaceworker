@@ -81,6 +81,7 @@ export type ChannelryAiErrorCode =
   | "unauthorized"
   | "inactive"
   | "over_cap"
+  | "rate_limited"
   | "temporarily_unavailable"
   | "bad_request";
 
@@ -127,7 +128,8 @@ function toUsage(raw: unknown): ChannelryAiUsage {
  *
  *   401 → "unauthorized"        (bad/inactive key)
  *   403 → "inactive"            (client deactivated on Channelry's side)
- *   429 → "over_cap"            (SpaceWorker's own daily pool exhausted)
+ *   429 WITH both usage fields → "over_cap"  (the relay's OWN spend cap)
+ *   429 WITHOUT them           → "rate_limited" (Cloudflare-level back-pressure)
  *   502 → "temporarily_unavailable" (upstream Groq error — never leak raw msg)
  *   network failure → "temporarily_unavailable"
  *   key unset → "unconfigured"  (fail closed, never a fake/empty key)
@@ -189,20 +191,50 @@ if (res.status === 401) {
     );
   }
   if (res.status === 429) {
+    // Pinned from the RELAY'S OWN SOURCE, not guessed (worker-full.ts, the
+    // /external/ai-chat handler): the relay emits 429 for exactly ONE reason —
+    // its own spend cap — and always alongside both usage fields:
+    //
+    //   return json({ detail: 'daily AI cost cap reached for this client',
+    //     used_hundredths_cent: capCheck.used, cap_hundredths_cent: capCheck.cap,
+    //     active: capCheck.active }, capCheck.active ? 429 : 403);
+    //
+    // It deliberately collapses EVERY upstream Groq failure into a 502
+    // (`error(e?.message || 'script service error', 502)`), so a bare 429 with
+    // no usage body can only be Cloudflare-level back-pressure in front of the
+    // Worker — NOT money.
+    //
+    // The two must never be conflated. Before this, ANY 429 was reported as
+    // "budget exceeded", so a transient edge rate limit read as a dead budget
+    // (live 2026-10-04: the relay answered a live admin test with 120/500000
+    // hundredths of a cent used — 0.02% of the pool — and the UI still claimed
+    // the cap was exhausted). "over_cap" is the ONLY code that means money, and
+    // it is now gated on the usage body actually being present.
     let detail = "";
+    let overCap = false;
     try {
       const b = (await res.json()) as Record<string, unknown>;
       const used = typeof b.used_hundredths_cent === "number" ? b.used_hundredths_cent : undefined;
       const cap = typeof b.cap_hundredths_cent === "number" ? b.cap_hundredths_cent : undefined;
       if (used !== undefined && cap !== undefined) {
+        overCap = true;
         detail = ` (${used}/${cap} hundredths of a cent used today)`;
       }
     } catch {
-      // body unreadable — keep the plain message
+      // body unreadable — treat as NOT a cap response
     }
+    if (overCap) {
+      throw new ChannelryAiError(
+        "over_cap",
+        `The SpaceWorker AI daily cap is exhausted (429).${detail} It resets at Channelry's day boundary.`,
+        429
+      );
+    }
+    // Retryable and explicitly NOT money: say so plainly rather than inventing a
+    // budget story the operator will chase.
     throw new ChannelryAiError(
-      "over_cap",
-      `The SpaceWorker AI daily cap is exhausted (429).${detail} It resets at Channelry's day boundary.`,
+      "rate_limited",
+      "The AI service is rate limiting requests right now (429). This is temporary back-pressure, not an exhausted budget — try again shortly.",
       429
     );
   }

@@ -47,8 +47,20 @@ export function summaryPendingCopy(summaryError: string | null): string {
       return "Not summarised yet.";
     case "cap_exhausted":
       return "No summary — today's AI limit for this account is used up.";
+    // 2026-10-04 — this is a LOCAL per-device processing limit (24 frames/day,
+    // enforced by lib/screenshot-summaries.ts), NOT anything to do with the
+    // Channelry AI budget. It used to read as a money problem, which sent the
+    // operator chasing a spend cap that was 99.98% unused. Name the limit and
+    // say when it clears.
     case "daily_call_budget":
-      return "No summary — today's summary budget for this machine is used up.";
+      return "No summary — this machine's daily summary limit (24 frames) is reached. It resets at 00:00 UTC and they will be retried.";
+    // The ONLY copy in this function that is allowed to say "budget": it is set
+    // solely from the relay's explicit spend-cap response body.
+    case "over_cap":
+      return "No summary — the Channelry AI budget is exhausted. It resets at the relay's day boundary.";
+    // A bare 429 is back-pressure, NOT money. Never let it read as a budget.
+    case "rate_limited":
+      return "No summary — the AI service is rate limiting requests right now. Not a budget problem; it will be retried.";
     case "ai_unavailable":
     case "temporarily_unavailable":
       return "No summary — the AI service was unavailable. It will be retried.";
