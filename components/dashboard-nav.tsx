@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 
 import {
   Cloud,
-  CreditCard,
   FlaskConical,
   Globe,
   LayoutDashboard,
@@ -54,17 +53,23 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   // "not available yet" placeholder until AdminSetting.cyberlabEnabled is on and
   // the lab ships, exactly like Hosting was before P1 was switched on.
   { href: "/dashboard/cyberlab", label: "Cyber Lab", icon: FlaskConical },
-  // TASK_161 D3 / Task 158 W2 — Billing was LIVE but UNREACHABLE: /dashboard/billing
-  // existed and rendered the wallet balance card, yet no NAV_ITEMS entry pointed at
-  // it, so there was no way to click to it from the dock or the mobile nav row. The
-  // owner reported "I see no billing page or tab right now", and that was correct.
-  // Web-only, so it is auto-excluded from the extractor build below.
+  // PLAN_TASK_165 P1 (owner, 2026-10-05) — Billing left the nav entirely. It is
+  // now a "Wallet" chip in the top bar, beside the date (components/wallet-chip.tsx,
+  // rendered from components/shell.tsx). /dashboard/billing stays reachable by URL
+  // and by that chip; nothing else points at it any more, and the chip is NOT in
+  // NAV_ITEMS, so it cannot come back as a second dock/mobile entry.
   //
-  // KNOWN SEPARATE DEFECT, deliberately NOT fixed here (it is its own change and
-  // would not belong in a Billing-visibility commit): `Mailboxes` has a DESCRIPTIONS
-  // entry but STILL has no NAV_ITEMS entry, so /dashboard/mailboxes is unreachable
-  // from the OS chrome for the same reason. See SENIOR_HANDOFF §7.2.
-  { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
+  // The entry is DELETED, not hidden. NAV_ITEMS is the single source of truth for
+  // the dock, the mobile row, the Window menu and (since P2) the overview sidebar,
+  // so a hidden-but-present entry would still render in all of them.
+  //
+  // Mailboxes is deliberately NOT an entry here, and that is correct rather than a
+  // bug: app/dashboard/mailboxes/page.tsx is a redirect to
+  // /dashboard/campaigns?tab=mailboxes — mailboxes are a TAB inside Campaigns.
+  // Same for /dashboard/browser-profiles -> /dashboard/browser?tab=profiles and
+  // /dashboard/licenses -> /dashboard/settings#licenses. An earlier handoff
+  // (TASK_161_DASHBOARD_OS.md §2 D1) called that an orphaned page and asked for a
+  // nav entry; the owner corrected it and that sentence has been fixed in the doc.
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

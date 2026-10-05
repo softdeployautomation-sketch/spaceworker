@@ -10,6 +10,7 @@ import { LogoutButton } from "@/components/logout-button";
 import { MenuBar } from "@/components/menu-bar";
 import { SupportWidget } from "@/components/support-widget";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { WalletChip } from "@/components/wallet-chip";
 
 interface ShellProps {
   children: React.ReactNode;
@@ -43,6 +44,12 @@ export function Shell({ children, buildTarget }: ShellProps) {
           <MenuBar buildTarget={buildTarget} />
         </div>
         <div className="flex items-center gap-3 md:gap-4">
+          {/* PLAN_TASK_165 P1 — the Wallet chip, beside the date. Web-hosted only,
+              for the same reason as the widgets below: GET /api/wallet is a real
+              Prisma-backed route and the EXE ships with no DATABASE_URL. The chip
+              also hides itself for a 403, which is what a `license_only` session
+              gets from proxy.ts. */}
+          {!buildTarget && <WalletChip />}
           <DesktopClock />
           <div className="flex items-center gap-1">
             <ThemeToggle />

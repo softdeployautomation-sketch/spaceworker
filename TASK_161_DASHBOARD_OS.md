@@ -72,13 +72,20 @@ Automate). Hosting and Cyber Lab are **absent**, though both are shipped, nav-li
 everything else — ship it first.
 
 ### D1 — Overview cards → tiny nav-shaped tiles
-Replace the card grid in `app/dashboard/page.tsx` with a compact tile grid: icon + short
-label, sized like the dock icons. **Drive it from `useNavItems()` with the hardcoded `href`
-filter deleted** so a new app appears automatically — that filter is exactly how Mailboxes
-went missing from the overview while it exists in `app/dashboard/mailboxes` and in the
-description map (`app/dashboard/page.tsx:15`). Also add `Mailboxes` to `NAV_ITEMS`
-(`components/dashboard-nav.tsx:37-59`): it is described in `DESCRIPTIONS` but has **no nav
-entry**, so it is currently unreachable from the OS chrome.
+**⚠ CORRECTED 2026-10-05 (owner) — the `Mailboxes` half of this item was WRONG.**
+Do **NOT** add `Mailboxes` to `NAV_ITEMS`. `app/dashboard/mailboxes/page.tsx:11` is
+`redirect("/dashboard/campaigns?tab=mailboxes")` — Mailboxes is a **tab inside Campaigns**,
+which is where the owner wants it. Same for `/dashboard/browser-profiles` →
+`/dashboard/browser?tab=profiles` and `/dashboard/licenses` → `/dashboard/settings#licenses`.
+**There is no orphaned-page defect**; an earlier handoff claimed there was and was corrected.
+Adding a nav entry would have created a *second* entry for a tab that already exists.
+See `PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md` §0 C1.
+
+The rest of the item stands: replace the card grid in `app/dashboard/page.tsx` with a compact
+tile grid, icon + short label, **driven from `useNavItems()` with the hardcoded `href`
+filter deleted**. That filter (the allow-list including `i.href === "/dashboard/mailboxes"`,
+a condition that can never be true) is what silently dropped every newly added app — which is
+why Billing existed but appeared nowhere. **Delete it; do not patch it.**
 
 ### D2 — Top status bar — **UNBLOCKED 2026-10-05**
 One row above the content, four cells: **Wallet** (`getWallet().balanceCents` +
@@ -238,7 +245,7 @@ prefer a **dedicated/free-to-use 3D or motion-graphics source** over generic sto
 | Phase | What | Blocked on |
 |---|---|---|
 | **D7** | Marketing pillars + Hero + `SpaceScene` on the marketing page | Nothing — **start here** |
-| **D1** | Tiny nav-shaped tiles + add `Mailboxes` to `NAV_ITEMS` | Nothing |
+| **D1** | Tiny nav-shaped tiles. **Do NOT add `Mailboxes` to `NAV_ITEMS`** (corrected 2026-10-05 — it is a tab inside Campaigns) | Nothing |
 | **D2** | Top status bar (4 cells) | W2 — **now shipped**, so unblocked |
 | **D3** | Support button (left) + user composer + admin queue | Backend exists; UI only |
 | **D4** | Admin-composed ticket ("message any user") | Decision made — **no migration needed** |
@@ -252,7 +259,8 @@ dependency on any of the above, and is the item most likely to be noticed by a p
 ## 4. Hard rules for whoever builds this
 
 1. **Nav data stays the single source of truth.** Never hardcode an app list in the overview;
-   that is the defect that hid Mailboxes.
+   the dead `href` allow-list that did exactly that is now deleted. (It never actually hid
+   Mailboxes — see the D1 correction above.)
 2. **`getWallet()`/`listLedger()` are server-only.** No wallet arithmetic in a client
    component. Integer cents end to end; `formatCents` for display. The **client** must go through
    `GET /api/wallet` (shipped, `231ae31`), never import the service.
