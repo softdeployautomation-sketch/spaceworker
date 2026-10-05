@@ -1,15 +1,30 @@
-# PROMPT — NEXT VERIFICATION AGENT (starts from commit `5d3b893b`, deployed & live)
+# PROMPT — NEXT VERIFICATION AGENT (starts from commit `892e209`)
 
 > ## ★ WHAT CHANGED SINCE THE LAST HANDOFF — read this first
 >
-> The **support batch is now SHIPPED, COMMITTED, PUSHED and LIVE-VERIFIED.** Commit
-> **`5d3b893b`** on `main`, deployed in run **`37305909697`**. Do not re-verify it as
-> uncommitted work and do not re-commit it. Your job starts at **wallet W3**.
+> **P1 + P2 are SHIPPED, COMMITTED, PUSHED and DEPLOYED.** Do not re-verify them as
+> uncommitted work and do not re-commit them. Commits `c3a9d00` (P1 Wallet chip) and
+> `29bfbbc` (P2 overview-only side nav) are live.
 >
-> The previous verifier did the verification work that agent asked for, and the
-> agent's own claims were checked line by line rather than trusted. Three of its
-> claims needed correcting — they are listed in §2 as **CORRECTED**, so you do not
-> repeat them.
+> **`892e209` adds three things, and it is the commit you must verify:**
+> 1. **TASK_166 — unread notification on the support button** (the owner's bug report:
+>    *"the message delivered into the user, but it didn't show like a notification on
+>    the support button"*).
+> 2. **P3 — the dashboard status row** (`GET /api/overview-stats`).
+> 3. **Marketing: 5 pillars, Hosting + Cyber Lab presented as available.**
+>
+> **Your primary work item is `PLAN_TASK_167_WALLET_TOPUP.md` — wallet W3 + W4.** The
+> owner asked mid-session whether Add-funds leads to a payment path. The verified answer
+> is **NO** — see §3, and do not let the previous agent's optimism stand uncorrected.
+>
+> ### ⚠ The Cyber Lab switch — check this first, it is an owner action
+> The marketing copy in `892e209` now presents **Cyber Lab as a live product** with no
+> "coming soon" and no beta label, per the owner's explicit instruction. But
+> `PLAN_TASK_164` §3 records `cyberlabEnabled = false` in production, and the lab panel
+> still renders *"Not available yet"*. **The owner said he will flip the switch the same
+> night.** Verify the actual production value of `cyberlabEnabled` and report it. If it is
+> still `false`, the live site is making a claim its own product page contradicts — that
+> is a finding for your report, not something to fix yourself.
 
 ---
 
@@ -17,6 +32,8 @@
   /Users/mikeolab/spaceworker/HOW_WE_MOVE_FAST.md
   /Users/mikeolab/vantra/TASK_MANAGEMENT_PLAYBOOK.md
   /Users/mikeolab/spaceworker/SENIOR_HANDOFF.md
+  /Users/mikeolab/spaceworker/PLAN_TASK_167_WALLET_TOPUP.md   <- YOUR WORK ITEM
+  /Users/mikeolab/spaceworker/PLAN_TASK_158_WALLET_BALANCE.md <- §4 schema, §8 invariants, §9 tests
 Then read the task doc named in the work item. Rules you must not break:
 
 1. Never `git commit -m "..."` with multi-line text. Write the message to a file, use
@@ -30,44 +47,160 @@ Then read the task doc named in the work item. Rules you must not break:
    a marker string (playbook §6).
 5. "Done" ≠ committed ≠ pushed ≠ deployed ≠ proven live. Prove each separately.
 6. Never claim a check passed that you did not see pass. A command you aborted, timed out, or
-## 2. Verified state as of handoff (2026-10-05)
+## 2. Verified state as of handoff (2026-10-05, after `892e209`)
 
-Branch `main`, HEAD **`5d3b893b`**, **0 ahead / 0 behind** origin/main.
+Branch `main`, HEAD **`892e209`**, pushed and deployed (run `37328850999`).
 
 Recent history (newest first):
-  5d3b893 feat(support): customer widget, admin queue, admin-composed tickets, Billing nav
-  8c8b4b6 docs: scope the OS dashboard (3D video + support schema), marketing copy, store cart, self-host
-  231ae31 feat(wallet): W2 step 1 — authenticated GET /api/wallet and a read-only balance card
-  5a5c07e test(wallet): dry-run the wallet migration against a clone of PRODUCTION
-  4a7e06c docs: scope the OS dashboard, store multi-select, and devices-first self-host
-  5462981 feat(wallet,hosting): wallet ledger with guarded CAS and a real Zones capability probe
+```
+892e209 TASK_166 + P3: unread notification on the support button, and status row
+29bfbbc feat(dashboard): overview-only side nav, overview cards removed (P2)
+c3a9d00 feat(dashboard): Wallet chip in the top bar, Billing out of the dock (P1)
+5d3b893 feat(support): customer widget, admin queue, admin-composed tickets, Billing nav
+231ae31 feat(wallet): W2 — authenticated GET /api/wallet and a read-only balance card
+```
 
-**The support batch — every gate below was run by the verifier, not self-reported:**
+**Gates for `892e209` — run by the implementing agent, NOT yet independently verified:**
+
+| Gate | Result |
+|---|---|
+| `npx tsc --noEmit` | clean, 0 errors |
+| `npx eslint` on all 8 touched files | clean, 0 |
+| `tests/support-tickets.test.ts` | **50/50** (was 40; +10 unread tests) |
+| `tests/wallet.test.ts` | 29/29 — **79 combined, 0 fail** |
+| `npx prisma validate` | valid |
+| `CI=true npx next build` | exit 0 |
+| CI "Build & typecheck" on `892e209` | **success** (14:54:31Z → 14:55:59Z) |
+| Deploy `37328850999` (workflow_dispatch) | build success; deploy job — **see §2.1** |
+
+### 2.1 ⚠ NOT YET PROVEN LIVE — your first job
+
+The deploy run `37328850999` was still executing its "Deploy to production" job when this
+handoff was written. **Check it yourself and report per job, not per run.** If it failed,
+the marketing copy and the Cyber Lab claim are NOT live and §5 changes accordingly.
+
+Cheapest live-prove for the new routes — **401, not 405 / not 404**, is the proof they are
+deployed (a 405 means the handler is absent):
+```
+POST /api/support/tickets/<some-id>/read   -> 401 unauthenticated, NOT 405
+GET  /api/overview-stats                   -> 401 unauthenticated, NOT 404
+```
+
+### 2.2 What `892e209` contains, for verification
+
+**Unread (TASK_166)**
+- `SupportTicket.lastReadAt` — nullable, **no backfill, no default** (`NULL` = never read,
+  deliberately, so a reply already waiting is surfaced). Migration
+  `prisma/migrations/20261111000000_task166_support_unread/`.
+- `markTicketRead()` in `lib/support/tickets.ts` — moves the cursor **forward only**, for
+  the caller's **own** ticket; another user's id **404s, not 403s** (not an existence
+  oracle).
+- `POST /api/support/tickets/[id]/read` — own route dir because a Next.js route module
+  exports one handler per method and `[id]/messages` already owns POST for that id.
+- Per-ticket `unread` **boolean** derived from one row (newest message + `lastReadAt`) —
+  **not** a per-ticket COUNT query. Verify the reasoning holds: a wrong badge number is
+  worse than a coarser true one.
+- Badge count, dot on the collapsed button, WebAudio chime, 45s poll.
+
+**Status row (P3)**
+- `GET /api/overview-stats` — one session-scoped read for the whole row.
+- **No `userId` parameter anywhere.** The id must come from the cookie only. Verify by
+  grep, not by reading the happy path.
+- **Integer units:** wallet in CENTS, AI in HUNDREDTHS OF A CENT. Neither divided on the
+  server.
+- AI usage summed via `lib/ai-metering`, so it is by construction the same number the
+  agent's cap check enforces.
+- Rate-limited with a **new** limiter kind `"overview-stats"`.
+
+**Marketing**
+- Five pillars; grid changed to `md:grid-cols-2 lg:grid-cols-3` (five tiles in a 3-wide
+  grid leave a ragged 3+2 row).
+- Hosting as available — verify every claim maps to a real shipped surface in
+  `components/hosting-panel.tsx`.
+- Cyber Lab as available, **bounded** to "authorised" / "your own systems" / "consent
+  recorded per run", mirroring `lib/lab/gate.ts`. The previous agent deliberately did NOT
+  write "test any target" — check that bound is intact.
+
+### 2.3 A mistake the previous agent made — do not repeat it
+
+It first wrote the `lastReadAt` migration into
+`prisma/migrations/20261110000000_task159_support_tickets/`, whose timestamp collides with
+the **wallet** migration (`20261110000000_task158_wallet`). It was moved to
+`20261111000000_task166_support_unread` before commit. **Verify the canonical task159
+migration (`20261107000000`) and the task158 wallet migration are untouched**, and that
+the five directories are strictly increasing and non-colliding:
+```
+20261105000000_task157_user_domains
+20261106000000_task158_zone_token
+20261107000000_task159_support_tickets
+20261110000000_task158_wallet
+20261111000000_task166_support_unread
+```
+A duplicate migration timestamp on a production box is a failed deploy, not a warning.
+
+---
+
+## 2.4 ⚠ WORK ITEM A — the wallet has NO funding path. This is your main job.
+
+**Work from `PLAN_TASK_167_WALLET_TOPUP.md`.** Read it first; it is short and cites
+`PLAN_TASK_158` §4–§9.
+
+The owner asked mid-session: *"hope we have the add funds in wallet that leads to the
+payment path, and not only for subscription… which is the wallet plan."*
+
+**Verified answer: NO, and this is not a UI gap — the functions have no caller at all.**
+
+| Function | Location | Production callers |
+|---|---|---|
+| `creditTopup()` | `lib/wallet.ts:431` | **ZERO** — only `tests/wallet.test.ts` |
+| `adminAdjustBalance()` | `lib/wallet.ts:567` | **ZERO** — and there is **no `app/api/admin/wallet` directory** |
+| `creditApprovedPayment()` | `lib/wallet.ts:487` | **ZERO** |
+
+Re-run that grep yourself. The owner's instinct is correct, and the consequence is that a
+**user's balance is `$0.00` in production today and always will be** until W3 + W4 exist.
+
+Two things the next agent must NOT get wrong:
+
+1. **`components/wallet-chip.tsx:28-33` documents this on purpose** — the chip renders an
+   explicit "no funds yet" state instead of a bare `$0.00`, and the comment says the chip
+   *will* read `$0.00` for every real user. **That comment is TRUE.** Update it in the same
+   commit the top-up ships; do not delete it earlier to "clean up".
+2. **⚠ TWO UNRELATED THINGS BOTH USE THE WORD "WALLET".** The error the owner hit locally,
+   `"Wallet not configured"`, is `app/api/billing/checkout/route.ts:69` and
+   `app/api/billing/submit/route.ts:116` — it means `AdminSetting.btcWallet` / `usdtWallet`
+   / `usdtErc20Wallet` (the **crypto payout address**) is blank locally. It is **not** the
+   SpaceWorker wallet, and it is configured in production. Do not chase the wrong one.
+
+**Scope: W3 and W4 only.** W5 (`/api/wallet/spend`) and W6 (EXE-from-wallet) are OUT.
+The highest-risk line in the whole plan is the 4b branch on the admin approve route: a
+`wallet_topup` must credit the wallet, and **every other product must behave exactly as it
+does today**. The owner sells subscriptions and EXE licences through that route; a
+regression there hands a paying customer a wallet balance instead of a licence.
+
+---
+
+## 2.5 The previous handoff's gates (for continuity)
+
+Those were run by the **verifier**, not self-reported, and remain the baseline:
 
 | Gate | Result |
 |---|---|
 | `npx tsc --noEmit` | clean, 0 errors |
 | `npx eslint` on all 6 touched files | clean, 0 |
 | `npx eslint 'app/admin/(protected)/admin-panel.tsx'` | **44 errors — PRE-EXISTING**, see CORRECTED 2 |
-| `npm run test:support` | **40/40** (was 30; +10 D4 tests) |
+| `npm run test:support` | 40/40 (at that commit) |
 | `npm run test:wallet` | 29/29 |
 | `npm run test:lab` | 10/10 |
 | `npm run test:hosting` | 334/334 |
 | `CI=true npm run build` | exit 0 |
 
-**Deploy run `37305909697` (`workflow_dispatch`) — deploy job PRESENT, not skipped:**
-  - "Build & typecheck" → **success** (11:54:08Z → 11:55:17Z)
-  - "Deploy to production (manual only)" → **success** (11:55:20Z → 11:59:22Z)
-  - Deploy log shows `rm -rf /opt/spaceworker/.next` **before** `tar xzf` — fresh build, not stale
-  - systemd unit assertions passed (the job would have failed otherwise)
+Deploy `37305909697` — "Build & typecheck" success, "Deploy to production" **success**,
+log shows `rm -rf /opt/spaceworker/.next` **before** `tar xzf` (fresh build, not stale),
+systemd unit assertions passed.
 
-**Live checks over real HTTP (unauthenticated):**
-  - `GET /dashboard/billing` → **200**
-  - `POST /api/admin/support/tickets` → **401**, and specifically **NOT 405** — the old code had
-    no POST handler at all, so a 405 would have meant the new endpoint was absent. **401 is the
-    proof the new route is live.** This is the cheapest live-proves-new-code trick available.
-  - `GET /api/admin/support/tickets` → 401 · `GET /api/support/tickets` → 401
-  - `POST /api/support/tickets` with a forged `userId` in the body, unauthenticated → 401
+Live checks (unauthenticated): `GET /dashboard/billing` → 200;
+`POST /api/admin/support/tickets` → **401 and specifically NOT 405** (the 401-not-405 trick
+is what proved the new endpoint was live; reuse it above).
 
    never ran is OUTSTANDING, not green.
 7. Scratch databases only. Never run a destructive migration against anything that is not a
@@ -212,76 +345,85 @@ a new surface.
   `/dashboard/browser-profiles` → `/dashboard/browser?tab=profiles` and `/dashboard/licenses` →
   `/dashboard/settings#licenses`. **There is no orphaned-page defect, and no one should "fix" it by
   adding a `NAV_ITEMS` entry** — that would duplicate a tab that already exists.
-  **The real defect this masked is in `app/dashboard/page.tsx:26-37`:** a hardcoded allow-list filter
-  whose `i.href === "/dashboard/mailboxes"` condition can never match, so it silently drops every
-  newly added app. That is what hid Billing, and it is fixed by the current work item below.
+  **The real defect this masked was in `app/dashboard/page.tsx:26-37`:** a hardcoded allow-list
+  filter whose `i.href === "/dashboard/mailboxes"` condition can never match, so it silently drops
+  every newly added app. That is what hid Billing. **It is fixed in `29bfbbc` (P2) — confirm it
+  is gone rather than assuming.**
 - Stock-video licences for D2 remain **unverified** (Pexels/Pixabay return 403 to automated
   fetches; Mixkit's terms load from JS).
 - `AdminSetting.cyberlabEnabled = false` in production (Cyber Lab is dark) while the owner has
-  decided to advertise it. Marketing copy must land with the switch flip.
+  decided to advertise it. **The marketing copy HAS NOW LANDED in `892e209` and the owner said he
+  would flip the switch the same night. Verify the live value and report it — see the header
+  and §5 item 4.** This is the one open inconsistency between the marketing page and the product.
 - `app/dashboard/billing/page.tsx` has **2 pre-existing** ESLint errors
   (`react-hooks/set-state-in-effect`).
 
-## 3. WORK ITEM A — OS dashboard redesign: Wallet chip + overview-only side nav
+## 3. WORK ITEM A — verify `892e209`, then build the wallet top-up
 
-Scope: `PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md` **P1 and P2**. The feature agent works from
-`PROMPT_NEXT_FEATURE_AGENT.md`. **Two separate commits are expected** — verify they are separate and
-that each is independently deployable.
+### 3A. Verify the shipped commit FIRST, before writing any new code
 
-⚠ **The old Work Item A in this file said "verify wallet W3". That is superseded.** W3 is deferred:
-it is money-adjacent and must not ride along inside a UI commit. It remains the next *money* task
-after this one.
+Step 0 — git state, do not guess it:
+```
+git fetch origin && git status --short && git log --oneline -5
+```
+Confirm `TASK_133_RMM_ENGINE_BRINGUP.md` is still untracked and **untouched** (TRAP 1),
+and nothing else unexpected is in the tree.
 
-Step 0 — before touching code:
-  a. `git fetch origin && git status --short && git log --oneline -5` — confirm sync and what is in
-     flight. **Do not guess the git state.**
-  b. Read the diff of every changed path. **Do not rubber-stamp it.**
-  c. Confirm no unrelated changes are swept in, and that `TASK_133_RMM_ENGINE_BRINGUP.md` is still
-     untracked and **untouched** (TRAP 1).
+Step 1 — the deploy (§2.1). **If run `37328850999`'s deploy job did not succeed, stop and
+report that first** — everything below assumes the marketing copy is live.
 
-Step 1 — the gate, before each commit:
-    npx tsc --noEmit · npx eslint (touched files only)
-    npm run test:wallet (29) · test:support (40) · test:hosting (334)
-    CI=true npm run build
+Step 2 — the gates (these are the previous agent's self-report; make them your own):
+```
+npx tsc --noEmit
+npx eslint <the 8 touched files>
+npx tsx --test tests/support-tickets.test.ts tests/wallet.test.ts   # expect 79 pass
+npx prisma validate
+CI=true npm run build
+```
 
-Step 2 — verify the claims, do not assume them:
-  * **Billing left the dock.** `NAV_ITEMS` in `components/dashboard-nav.tsx` must have **no**
-    `/dashboard/billing` entry, and a **Wallet chip must exist in `components/menu-bar.tsx`** linking
-    to `/dashboard/billing`. **If the entry is merely hidden rather than deleted, that is a failure** —
-    `NAV_ITEMS` is the single source of truth and a hidden entry reappears in the dock.
-  * **The chip reads the balance over HTTP, not by importing the service.** `getWallet()` is
-    **server-only**. Grep the chip for any client-side `import ... from "@/lib/wallet"` — if present,
-    it is a **blocker**, not a style note.
-  * **No fabricated balance.** The wallet cannot be funded yet — see §3 of the plan. The chip will
-    read `$0.00` for every real user. **A hardcoded or optimistic balance is a release blocker.**
-    Confirm no top-up/"Add funds" flow was invented to paper over it.
-  * **Build-target narrowing did not regress.** `BUILD_ALLOWED_HREFS.extractor` must still yield only
-    Overview/Extract/Settings. Removing a Billing entry cannot affect the EXE (Billing was never in
-    that set) — **verify, don't assume.**
-  * **The sidebar renders on the OVERVIEW ONLY.** If it is added to `components/shell.tsx`, it shows
-    on every page and contradicts the request. Confirm it is `hidden md:flex` and does not overlap
-    the bottom dock (`components/dock.tsx:19`).
-  * **The dead filter is gone.** `app/dashboard/page.tsx` must no longer contain the hardcoded
-    allow-list with the never-matching `i.href === "/dashboard/mailboxes"` condition. **If that
-    filter survives, the fix was cosmetic** — the class of bug (new apps silently hidden) is intact.
-  * **No dead data left behind.** Removing the cards removes the only reader of `DESCRIPTIONS`
-    (`app/dashboard/page.tsx:12-22`). Either delete it or confirm something still reads it.
-  * **`Mailboxes` was NOT added to `NAV_ITEMS`.** If the agent "fixed" the non-issue, reject the
-    change — it duplicates a tab that already exists inside Campaigns (§2).
-  * **Support widget has not moved.** It is bottom-left because `AgentWidget` owns bottom-right.
-  * **No wallet/admin-grant route was added** in a UI commit (TRAP: money inside a UI change).
+Step 3 — the claims, each with `file:line`:
+  * **`cyberlabEnabled` in production.** The owner said he is flipping it. **Check the real
+    value and report it.** Still `false` ⇒ the live site advertises a product whose own
+    panel says "Not available yet" — a real finding, not a nit.
+  * **Migration order is strictly increasing and non-colliding** (§2.3), and the task159
+    and task158-wallet migrations are byte-identical to `origin/main`.
+  * **`markTicketRead` is forward-only and owner-scoped**, and 404s (not 403s) another
+    user's ticket.
+  * **`GET /api/overview-stats` has no `userId` parameter** — grep, don't read the happy
+    path. Confirm money stays integer (CENTS / HUNDREDTHS OF A CENT), nothing divided
+    server-side.
+  * **Live:** `POST /api/support/tickets/<id>/read` unauth → **401, not 405**;
+    `GET /api/overview-stats` unauth → **401, not 404**.
+  * **You cannot see a rendered badge without a real session.** Say so plainly rather than
+    claiming the notification "works".
 
-Step 3 — deploy and prove live:
-  * `git push origin main`; `gh workflow run deploy.yml --ref main`.
-  * Confirm the **DEPLOY JOB** ran (not skipped) — check the **job list**, not the run conclusion.
-  * Confirm `.next` was removed before extraction and the BUILD_ID mtime is inside the job window.
-  * Live over `curl` (SSH prompts for a password — TRAP 9): `GET /dashboard/billing` → expect a real
-    200/307, and `GET /api/wallet` unauthenticated → **401, not 404** (mounted) and **not 200**.
-  * **You cannot see a rendered chip without a real session** — say so plainly rather than claiming
-    the Wallet chip "works". Anonymous HTML proves the page serves, not that the chip renders.
+### 3B. Then build it — `PLAN_TASK_167_WALLET_TOPUP.md`, W3 then W4
 
-Step 4 — commit and deploy if the agent left work uncommitted. `git add` specific paths only;
-commit with `-F<file>`; confirm with `git log -1` (TRAP 7).
+Read `PLAN_TASK_167_WALLET_TOPUP.md` and `PLAN_TASK_158` §4–§9 first. The short version:
+
+  * **W3** `POST /api/admin/wallet/grant` + admin panel section. Admin check BEFORE
+    `request.json()`; every credit carries `adminId`; a replayed `idempotencyKey` 409s;
+    negative amounts land as `admin_adjust`, not `admin_grant`.
+  * **W4a** `POST /api/billing/topup` — opens a `wallet_topup` payment and **credits
+    nothing**. Amount validated against an admin-configured minimum.
+  * **W4b** Branch the admin approve route on `product`. `wallet_topup` → guarded credit
+    into the wallet, writing `topup` + `creditedCents` + `adminNote`, granting **no**
+    entitlement. **Every other product behaves exactly as today.**
+  * **A top-up never auto-credits.** On-chain confirmation is not payment.
+  * **Credit + payment status in one transaction.**
+
+**The line most likely to cause real damage is W4b's non-topup branch.** A paying customer
+buying a subscription or an EXE licence must not receive a wallet balance instead. That
+regression is invisible in casual testing and expensive in production.
+
+**Commit discipline (money is not UI):** W3, then W4 routes, then W4 UI — separate commits,
+each pushed and deployed on its own (`PLAN_TASK_165` §5 rule 1, `PLAN_TASK_167` §5).
+
+Step 4 — deploy each commit: `git push origin main`, then
+`gh workflow run deploy.yml --ref main`. **Confirm the DEPLOY JOB ran (not skipped) — check
+the job list, never the run conclusion.** Confirm `.next` was removed before extraction and
+the BUILD_ID mtime is inside the job window. If anything is left uncommitted, `git add`
+specific paths only, commit with `-F<file>`, and confirm with `git log -1` (TRAP 7).
 
 ## 4. WORK ITEM B — the owner's locked decisions. Do NOT relitigate these.
   **D1 WALLETPAPER: PAUSED.** No per-user wallpaper isolation, so custom wallpaper uploads are
@@ -292,13 +434,21 @@ commit with `-F<file>`; confirm with `git log -1` (TRAP 7).
      "must report" note below.
   **D3 MARKETING COPY:** Hosting AND Cyber Lab are both advertised NOW (the owner is finishing
      Cyber Lab this week); domains are "coming soon". Scoped in `PLAN_TASK_164_MARKETING_COPY.md`.
-     ⚠ **The Hero already matches the proposed copy word for word — do NOT rewrite it.** The
-     actual gap is the pillars.
+     **D3 IS NOW PARTIALLY SHIPPED in `892e209`** — Hosting and Cyber Lab are on the landing
+     page as live capabilities, the pillars went 3 → 5, and the grid became
+     `md:grid-cols-2 lg:grid-cols-3`. Two things to check: **domains were deliberately NOT
+     added as a pillar** (confirm that is still intended), and the Cyber Lab copy stayed
+     bounded to "authorised" / "your own systems" / "consent recorded per run" rather than
+     drifting into "test any target". The `<h1>` and metadata were aligned to the real page.
   **D4 STORE:** dropdown multi-select, total computed SERVER-SIDE, purchase linked to the user's
      EMAIL. `PLAN_TASK_162` §6–8. Start with S0 (verify whether email linkage already works).
   **D5 SELF-HOST, devices-first:** V1 = sell `devices` standalone (`DEVICES_MODULE`) — cheap,
      unblocked, and the owner's stated priority. V3 = fix the live bug where mailer/combined/
      automation EXEs leak the full web nav. `PLAN_TASK_163` §5A–5B.
+  **D6 WALLET:** W3 + W4 only — `PLAN_TASK_167_WALLET_TOPUP.md`. **W5
+     (`POST /api/wallet/spend`) and W6 (EXE-from-wallet) remain unbuilt and are explicitly
+     OUT of scope.** A wallet with no way to spend it is a smaller problem than one where a
+     debit path ships without a credit path to feed it.
 
 **If D2 reaches the licence question, report it as a BLOCKER, do not assume.** Pexels and Pixabay
 return HTTP 403 to automated fetches and Mixkit's terms load from JS modals. Confirming a licence
@@ -316,11 +466,16 @@ outstanding, and any new trap you hit. Use the editor tool for long content, the
 2. Deploy evidence: run id, job names + conclusions (deploy job present or skipped), BUILD_ID
    mtime vs run start, live curl results.
 3. Claim-by-claim verdict on the work item: confirmed or refuted, with `file:line`.
-4. Any blocker, with the exact reason. If you cannot verify something, **say so plainly** rather
+4. **The `cyberlabEnabled` production value, stated plainly.** If it is still `false`, say so
+   directly and name the consequence: the marketing page claims a product the lab panel
+   denies. Do not soften it, and do not fix it yourself.
+5. **The wallet's zero-caller result, re-verified by you** — not taken from §2.4 on trust.
+   Give the grep you ran and its output.
+6. Any blocker, with the exact reason. If you cannot verify something, **say so plainly** rather
    than assuming.
-5. For D2/D3/D4/D5: what you scoped, and the open questions you deliberately did not guess.
-6. Cleanup confirmation: scratch DBs dropped, temp scripts deleted from BOTH machines,
+7. For D2/D3/D4/D5/D6: what you scoped, and the open questions you deliberately did not guess.
+8. Cleanup confirmation: scratch DBs dropped, temp scripts deleted from BOTH machines,
    `git worktree list` showing **only** your intended worktrees, `git status --short` state
    (it should still show `?? TASK_133_RMM_ENGINE_BRINGUP.md` and nothing else unexpected),
    and whether production was modified.
-7. The next agent's prompt, ready to paste.
+9. The next agent's prompt, ready to paste.
