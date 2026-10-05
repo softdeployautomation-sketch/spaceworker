@@ -20,7 +20,8 @@ export type RateLimitKind =
   | "mailbox-test"
   | "billing-submit"
   | "trial-ping"
-  | "wallet-read";
+  | "wallet-read"
+  | "overview-stats";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -69,6 +70,12 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // behind one NAT share an IP. It exists to stop an unbounded read of the
   // balance, not to police a user clicking refresh.
   "wallet-read": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
+  // PLAN_TASK_165 P3 — GET /api/overview-stats, the status row under the welcome
+  // panel. Same shape of traffic as wallet-read (it backs a dashboard that loads
+  // once per visit, plus a manual Refresh button) and for the same reason: the
+  // cap exists to stop an unbounded scrape of a user's own numbers, not to police
+  // someone opening their own dashboard.
+  "overview-stats": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {

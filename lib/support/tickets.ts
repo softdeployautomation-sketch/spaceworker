@@ -78,6 +78,15 @@ export interface SupportTicketView {
   resolvedAt: string | null;
   messageCount: number;
   lastMessageAt: string | null;
+  /**
+   * TASK_166 — an admin has replied and the owner has not opened the ticket since.
+   *
+   * A per-ticket BOOLEAN, not a count of unread messages, because the button shows a
+   * count of unread THREADS ("3 new") and because the newest-message derivation cannot
+   * honestly produce a per-message number (see `isUnread`). A wrong number on a badge is
+   * worse than a coarser true one.
+   */
+  unread: boolean;
 }
 
 export interface SupportTicketDetailView extends SupportTicketView {
@@ -200,8 +209,15 @@ const TICKET_LIST_SELECT = {
   updatedAt: true,
   resolvedAt: true,
   domainRefId: true,
+  lastReadAt: true,
   _count: { select: { messages: true } },
-  messages: { take: 1, orderBy: { createdAt: "desc" as const }, select: { createdAt: true } },
+  // TASK_166 — `authorRole` was added to this projection so the unread flag can be
+  // derived from ONE row instead of a second query per ticket. See `toTicketView`.
+  messages: {
+    take: 1,
+    orderBy: { createdAt: "desc" as const },
+    select: { createdAt: true, authorRole: true },
+  },
 } satisfies Prisma.SupportTicketSelect;
 
 /** Structural type for a row shaped by `TICKET_LIST_SELECT`. */
@@ -215,8 +231,39 @@ interface TicketListRow {
   updatedAt: Date;
   resolvedAt: Date | null;
   domainRefId: string | null;
+  lastReadAt: Date | null;
   _count: { messages: number };
-  messages: Array<{ createdAt: Date }>;
+  messages: Array<{ createdAt: Date; authorRole?: string }>;
+}
+
+/**
+ * TASK_166 — "has an admin said something the customer has not looked at?"
+ *
+ * Derived from the newest message in the projection plus `lastReadAt`. Two deliberate
+ * choices, both about being honest about what a single-row projection can see:
+ *
+ *   * It is the NEWEST message that decides, not "any unread admin message anywhere".
+ *     A filtered COUNT per ticket would mean a second query per ticket purely for a
+ *     badge, and the list already loads one message per ticket — so this reads that
+ *     row. The state it cannot see (an older unread admin reply that the customer has
+ *     since replied to) is not one worth preserving: the customer demonstrably read
+ *     the thread, because they typed in it.
+ *
+ *   * `lastReadAt === null` means UNREAD, never "read" (see the migration). Every
+ *     ticket that predates the column has null there, and the recoverable direction is
+ *     to badge a reply that really is sitting there.
+ *
+ * A ticket with NO messages cannot be unread, and a ticket whose newest message is the
+ * customer's own is not unread either — replying is itself reading.
+ */
+function isUnread(
+  messages: Array<{ createdAt: Date; authorRole?: string }>,
+  lastReadAt: Date | null
+): boolean {
+  if (messages.length === 0) return false;
+  const newest = messages.reduce((a, b) => (b.createdAt > a.createdAt ? b : a));
+  if (newest.authorRole !== AUTHOR_ADMIN) return false;
+  return lastReadAt === null || newest.createdAt > lastReadAt;
 }
 
 function toTicketView(row: TicketListRow): SupportTicketView {
@@ -231,6 +278,10 @@ function toTicketView(row: TicketListRow): SupportTicketView {
     resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : null,
     messageCount: row._count.messages,
     lastMessageAt: lastMessageAtOf(row.messages),
+    // The DETAIL projection passes the whole thread ascending, so this is the max
+    // across all of them rather than just `[0]` — the same order-independence
+    // `lastMessageAtOf` exists for, and the reason it is a shared helper.
+    unread: isUnread(row.messages, row.lastReadAt),
   };
 }
 
@@ -438,6 +489,56 @@ export async function addUserMessage(
   ]);
 
   return { ok: true, value: toMessageView(message) };
+}
+
+/**
+ * TASK_166 — mark a ticket read for ITS OWNER, clearing the unread badge.
+ *
+ * Called when the customer opens a thread. Ownership is in the QUERY, not a post-fetch
+ * comparison, and the miss is a 404 for exactly the reason §4 requires: a 403 would
+ * confirm the id exists and belongs to somebody else.
+ *
+ * NOT called by the admin side. If reading a ticket in the admin queue cleared the
+ * customer's badge, an admin working the queue would silence the customer's alert for
+ * them, and the reply would sit unread forever — the bug this feature exists to fix.
+ * The admin routes have no access to this function.
+ *
+ * Idempotent and monotonic: it never moves the cursor BACKWARDS. An out-of-order second
+ * call (a slow request landing after a newer one) would otherwise un-read a ticket the
+ * customer is currently looking at, and the badge would reappear on its own.
+ */
+export async function markTicketRead(
+  userId: string,
+  ticketId: string
+): Promise<SupportResult<{ id: string; lastReadAt: string }>> {
+  const owned = await prisma.supportTicket.findFirst({
+    where: { id: ticketId, userId },
+    select: { id: true, lastReadAt: true },
+  });
+  if (!owned) return ticketNotFound();
+
+  const now = new Date();
+  // The cursor never moves BACKWARDS. Compared in JS rather than pushed into the WHERE
+  // clause, so the value returned is the cursor that was actually stored and not merely
+  // the one we hoped for.
+  const next =
+    owned.lastReadAt !== null && owned.lastReadAt.getTime() > now.getTime()
+      ? owned.lastReadAt
+      : now;
+
+  const updated = await prisma.supportTicket.update({
+    where: { id: ticketId },
+    data: { lastReadAt: next },
+    select: { id: true, lastReadAt: true },
+  });
+
+  return {
+    ok: true,
+    value: {
+      id: updated.id,
+      lastReadAt: (updated.lastReadAt ?? next).toISOString(),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------

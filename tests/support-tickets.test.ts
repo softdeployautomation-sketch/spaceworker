@@ -34,6 +34,8 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://test:test@1
 const USER_LIST_ROUTE = "/app/api/support/tickets/route.ts";
 const USER_ID_ROUTE = "/app/api/support/tickets/[id]/route.ts";
 const USER_MSG_ROUTE = "/app/api/support/tickets/[id]/messages/route.ts";
+/** TASK_166 — the read-cursor route, which lives in its own `/read` directory. */
+const USER_READ_ROUTE = "/app/api/support/tickets/[id]/read/route.ts";
 const ADMIN_LIST_ROUTE = "/app/api/admin/support/tickets/route.ts";
 const ADMIN_ID_ROUTE = "/app/api/admin/support/tickets/[id]/route.ts";
 const ADMIN_MSG_ROUTE = "/app/api/admin/support/tickets/[id]/messages/route.ts";
@@ -54,6 +56,8 @@ interface FakeTicket {
   createdAt: Date;
   updatedAt: Date;
   resolvedAt: Date | null;
+  /** TASK_166 — the owner's read cursor. null means NEVER READ (see the migration). */
+  lastReadAt: Date | null;
 }
 
 interface FakeMessage {
@@ -115,6 +119,9 @@ function ticket(over: Partial<FakeTicket> & { id: string; userId: string }): Fak
     createdAt: clock,
     updatedAt: clock,
     resolvedAt: null,
+    // TASK_166 — null, i.e. "never read". This is the state every ticket is in on the day
+    // the column is added, and it is why the service must treat null as UNREAD.
+    lastReadAt: null,
     ...over,
   };
 }
@@ -296,6 +303,7 @@ loader._load = function patched(request, parent, isMain) {
     from.endsWith(USER_LIST_ROUTE) ||
     from.endsWith(USER_ID_ROUTE) ||
     from.endsWith(USER_MSG_ROUTE) ||
+    from.endsWith(USER_READ_ROUTE) ||
     from.endsWith(ADMIN_LIST_ROUTE) ||
     from.endsWith(ADMIN_ID_ROUTE) ||
     from.endsWith(ADMIN_MSG_ROUTE);
@@ -343,6 +351,9 @@ const userIdRoute = require("../app/api/support/tickets/[id]/route") as {
   GET: (req: Request, c: { params: Promise<{ id: string }> }) => Promise<Res>;
 };
 const userMsgRoute = require("../app/api/support/tickets/[id]/messages/route") as {
+  POST: (req: Request, c: { params: Promise<{ id: string }> }) => Promise<Res>;
+};
+const userReadRoute = require("../app/api/support/tickets/[id]/read/route") as {
   POST: (req: Request, c: { params: Promise<{ id: string }> }) => Promise<Res>;
 };
 const adminListRoute = require("../app/api/admin/support/tickets/route") as {
@@ -1049,5 +1060,169 @@ test("D4 §2.1 the credential scan applies to an ADMIN-composed ticket too", asy
   const body = await readBody(res);
   assert.match(body.error ?? "", /Cloudflare/, "the refusal names the shape, not the secret");
   assert.ok(!(body.error ?? "").includes("OOujdCztZDuH8yr"), "and never echoes the value");
+});
+
+// ===========================================================================
+// TASK_166 — THE UNREAD BADGE (owner, 2026-10-05: an admin reply "delivered into the
+// user, but it didn't show like a notification on the support button").
+//
+// The bug was never a missing message — the reply was always in the list. It was that
+// nothing told the CUSTOMER, on any surface, until they happened to open the panel.
+// These cover the three ways that can silently fail: the flag itself, the read cursor
+// (owner's only, forwards only), and the admin side (must NOT clear the customer's badge).
+// ===========================================================================
+
+/** Files a ticket for the session user with one message, then advances the clock. */
+async function seedTicketWithMessage(
+  role: "admin" | "user",
+  id = "t_1",
+  body = "hello"
+): Promise<void> {
+  store.tickets.push(ticket({ id, userId: "user_a", createdAt: clock }));
+  store.messages.push({
+    id: nextId("m"),
+    ticketId: id,
+    authorRole: role,
+    authorId: role === "admin" ? "admin" : "user_a",
+    body,
+    createdAt: clock,
+  });
+  clock = new Date(clock.getTime() + 60_000);
+}
+
+/** The `unread` flag the customer's own list route reports, keyed by ticket id. */
+async function unreadFlagsFor(sessionId: string): Promise<Record<string, boolean>> {
+  sessionUser = { id: sessionId };
+  const body = (await (await userListRoute.GET()).json()) as {
+    tickets?: Array<{ id: string; unread?: boolean }>;
+  };
+  return Object.fromEntries((body.tickets ?? []).map((t) => [t.id, Boolean(t.unread)]));
+}
+
+test("TASK_166 an admin reply on a never-read ticket is unread", async () => {
+  await seedTicketWithMessage("admin");
+  assert.deepEqual(await unreadFlagsFor("user_a"), { t_1: true });
+});
+
+test("TASK_166 lastReadAt null means UNREAD, not read — the pre-migration direction", async () => {
+  // Every ticket that existed before this column was added has NULL there. Reading NULL as
+  // "read" would permanently hide an answer that really is sitting in the queue, which is
+  // the one failure mode this whole feature exists to prevent.
+  await seedTicketWithMessage("admin");
+  assert.equal(store.tickets[0].lastReadAt, null);
+  assert.equal((await unreadFlagsFor("user_a")).t_1, true);
+});
+
+test("TASK_166 a ticket whose newest message is the customer's own is not unread", async () => {
+  // Replying is itself reading — the customer demonstrably saw the thread.
+  await seedTicketWithMessage("admin");
+  clock = new Date(clock.getTime() + 60_000);
+  store.messages.push({
+    id: nextId("m"),
+    ticketId: "t_1",
+    authorRole: "user",
+    authorId: "user_a",
+    body: "thanks",
+    createdAt: clock,
+  });
+  assert.equal((await unreadFlagsFor("user_a")).t_1, false);
+});
+
+test("TASK_166 opening the thread clears the badge, and it stays cleared", async () => {
+  await seedTicketWithMessage("admin");
+  assert.equal((await unreadFlagsFor("user_a")).t_1, true);
+
+  const res = await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
+  assert.equal(res.status, 200);
+  assert.equal((await unreadFlagsFor("user_a")).t_1, false, "the badge must clear");
+
+  // Idempotent: a client retry must not throw or resurrect the badge.
+  assert.equal((await userReadRoute.POST(jsonReq("POST"), ctx("t_1"))).status, 200);
+  assert.equal((await unreadFlagsFor("user_a")).t_1, false);
+});
+
+test("TASK_166 the read cursor only ever moves FORWARDS", async () => {
+  await seedTicketWithMessage("admin");
+  await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
+  const first = store.tickets[0].lastReadAt;
+  assert.ok(first, "the cursor must have been written");
+
+  // Simulate an out-of-order second call from a slower request that started earlier: the
+  // cursor is rewound in the store, then the route runs again. The rewind must be corrected
+  // rather than adopted, or the badge reappears under a customer reading the thread.
+  store.tickets[0].lastReadAt = new Date(first.getTime() - 60_000);
+  await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
+  assert.equal(
+    store.tickets[0].lastReadAt?.getTime(),
+    first.getTime(),
+    "a rewind must be corrected, not adopted",
+  );
+});
+
+test("TASK_166 a non-owner gets 404, not 403, and the cursor is never touched", async () => {
+  await seedTicketWithMessage("admin");
+  sessionUser = { id: "user_a" };
+  assert.equal((await userReadRoute.POST(jsonReq("POST"), ctx("t_1"))).status, 200);
+
+  // user_b is not the owner. 404, because 403 would confirm the ticket exists (§4).
+  sessionUser = { id: "user_b" };
+  const before = store.tickets[0].lastReadAt;
+  const res = await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
+  assert.equal(res.status, 404, "must not confirm that another customer's ticket exists");
+  assert.equal(store.tickets[0].lastReadAt?.getTime(), before?.getTime());
+});
+
+test("TASK_166 an unread ticket is listed for its owner alone", async () => {
+  await seedTicketWithMessage("admin", "t_1");
+  store.tickets.push(ticket({ id: "t_2", userId: "user_b", createdAt: clock }));
+  store.messages.push({
+    id: nextId("m"),
+    ticketId: "t_2",
+    authorRole: "admin",
+    authorId: "admin",
+    body: "not yours",
+    createdAt: clock,
+  });
+
+  assert.deepEqual(await unreadFlagsFor("user_a"), { t_1: true }, "user_b's ticket is not listed");
+  assert.deepEqual(await unreadFlagsFor("user_b"), { t_2: true });
+});
+
+test("TASK_166 the ADMIN queue must not clear the customer's badge", async () => {
+  // The badge exists to tell the CUSTOMER an answer arrived. If reading the ticket in the
+  // admin queue moved the customer's cursor, an admin working the queue would silence the
+  // customer's alert for them and the reply would sit unread forever.
+  adminSession = { sub: "admin" };
+  await seedTicketWithMessage("user", "t_1");
+  clock = new Date(clock.getTime() + 60_000);
+
+  const res = await adminMsgRoute.POST(jsonReq("POST", { body: "fixed it" }), ctx("t_1"));
+  assert.equal(res.status, 201);
+  assert.equal(
+    store.tickets[0].lastReadAt,
+    null,
+    "an admin reply must leave the read cursor alone so the customer is notified",
+  );
+  assert.equal((await unreadFlagsFor("user_a")).t_1, true);
+});
+
+test("TASK_166 the read route rejects an anonymous caller before touching the store", async () => {
+  await seedTicketWithMessage("admin");
+  sessionUser = null;
+  const res = await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
+  assert.equal(res.status, 401);
+  assert.equal(store.tickets[0].lastReadAt, null, "no write for an anonymous caller");
+});
+
+test("TASK_166 the list projection drives the badge, so it must carry `unread`", async () => {
+  // Guards the WIRE contract, not the service: the button reads `unread` off the LIST
+  // response, so if this field is dropped from the view the badge silently reads 0 and the
+  // original bug returns with every service-level test above still green.
+  await seedTicketWithMessage("admin");
+  sessionUser = { id: "user_a" };
+  const body = (await (await userListRoute.GET()).json()) as {
+    tickets?: Array<Record<string, unknown>>;
+  };
+  assert.equal(body.tickets?.[0]?.unread, true);
 });
 

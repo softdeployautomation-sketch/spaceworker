@@ -38,6 +38,8 @@ interface TicketRow {
   messageCount: number;
   lastMessageAt: string | null;
   createdAt: string;
+  /** TASK_166 — an admin replied since the owner last opened this ticket. */
+  unread?: boolean;
 }
 
 interface Message {
@@ -97,6 +99,67 @@ async function readError(res: Response, fallback: string): Promise<string> {
  * to the box that contains the offending text is what makes that instruction readable
  * before the user hits send again.
  */
+/**
+ * TASK_166 — a short two-note chime for a new support reply, synthesised with the Web
+ * Audio API rather than shipped as an audio file.
+ *
+ * WHY SYNTHESISED AND NOT AN MP3. A sound file would be a new binary asset with its own
+ * licensing question and its own download, for something that is two oscillators and an
+ * envelope. Generating it means no asset, no licence, and no bundle growth. It also means
+ * the chime can never 404, which for a "did we tell the customer" feature would be a
+ * silent failure of the exact kind that is hardest to notice.
+ *
+ * WHY IT IS LAZY AND GUARDED. Browsers refuse to start an AudioContext without a prior
+ * user gesture, and they REFUSE to create one at all if `state === "suspended"`. So the
+ * context is created on the first click on the support button — a real gesture — and
+ * every later chime reuses it. A notification that throws on load would take the widget
+ * down with it, so every failure here is swallowed and the badge still shows.
+ */
+let audioContext: AudioContext | null = null;
+
+/** Called from a click handler so the context starts unlocked. Safe to call repeatedly. */
+function primeSupportAudio(): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (!audioContext) {
+      const Ctor =
+        window.AudioContext ??
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctor) return;
+      audioContext = new Ctor();
+    }
+    if (audioContext.state === "suspended") void audioContext.resume();
+  } catch {
+    audioContext = null;
+  }
+}
+
+/** Two soft notes (A5 → E6). Resolves silently if the browser refuses to make sound. */
+function playSupportChime(): void {
+  if (!audioContext || audioContext.state !== "running") return;
+  try {
+    const now = audioContext.currentTime;
+    for (const [index, freq] of [880, 1318.5].entries()) {
+      const osc = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      const startsAt = now + index * 0.12;
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      // A short attack and an exponential tail. Gain must never reach exactly 0, or the
+      // exponential ramp throws — hence 0.0001 rather than 0.
+      gain.gain.setValueAtTime(0.0001, startsAt);
+      gain.gain.exponentialRampToValueAtTime(0.09, startsAt + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startsAt + 0.28);
+      osc.connect(gain).connect(audioContext.destination);
+      osc.start(startsAt);
+      osc.stop(startsAt + 0.3);
+    }
+  } catch {
+    // A blocked or unavailable audio device must not break the badge.
+  }
+}
+
 function ErrorNote({ children }: { children: string }) {
   return (
     <p className="rounded-lg border border-red-300 bg-red-50 p-2 text-xs text-red-700 dark:border-red-800 dark:bg-red-950/30 dark:text-red-300">
@@ -126,6 +189,67 @@ export function SupportWidget() {
    * erodes trust in a help desk. A ref updates synchronously.
    */
   const busyRef = useRef(false);
+
+  /**
+   * TASK_166 — the unread count on the button, polled in the BACKGROUND.
+   *
+   * This is the fix for "the message delivered into the user, but it didn't show like a
+   * notification on the support button". The reply was always delivered and always in the
+   * list — the list was simply only fetched when the panel was OPEN, so a customer who
+   * never opened it had no way to know an answer was waiting.
+   *
+   * WHY THE POLL IS SEPARATE FROM `loadList`. `loadList` sets `tickets`, which is the
+   * panel's own state; polling it while the panel is open would fight the user's
+   * scrolling and, worse, would clear `loadError` underneath them. This refetches the
+   * same endpoint purely to read `unread`, and only writes the COUNT.
+   *
+   * WHY THE CHIME FIRES ONLY ON A RISING COUNT. `firstPollRef` swallows the very first
+   * poll so that opening the app does not chime about a reply the customer may well have
+   * read yesterday. After that, a count that went UP means something genuinely arrived
+   * while they were here. A count that went DOWN (they opened it on another tab) stays
+   * silent — falling is not news.
+   */
+  const [unreadCount, setUnreadCount] = useState(0);
+  const firstPollRef = useRef(true);
+  /**
+   * Mirrors `unreadCount` in a ref. The poll callback compares against this instead of the
+   * state value: comparing against state would need the count in the callback's
+   * dependency list, which would rebuild the 45s timer on every single poll.
+   */
+  const unreadCountRef = useRef(0);
+
+  const pollUnread = useCallback(async () => {
+    try {
+      const res = await fetch("/api/support/tickets", { cache: "no-store" });
+      if (!res.ok) return; // A failed poll is silent: no badge change, no error state.
+      const data = (await res.json()) as { tickets?: TicketRow[] };
+      const next = (data.tickets ?? []).filter((t) => t.unread).length;
+
+      if (firstPollRef.current) {
+        // Baseline only. The badge still SHOWS a pre-existing unread count — that is the
+        // bug being fixed — but arriving here is not itself a new event.
+        firstPollRef.current = false;
+      } else if (next > unreadCountRef.current) {
+        playSupportChime();
+      }
+      unreadCountRef.current = next;
+      setUnreadCount(next);
+    } catch {
+      // Offline, or the tab was backgrounded mid-request. Nothing to report.
+    }
+  }, []);
+
+  useEffect(() => {
+    // Same suppression, and for the same reason, as the `loadList` effect below:
+    // `pollUnread` awaits `fetch` before every setState, so there is no synchronous
+    // setState in this effect body — no cascading render to avoid.
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- pollUnread() awaits fetch before every setState
+    void pollUnread();
+    // 45s. Long enough to be invisible in the network tab, short enough that an answer
+    // arriving during a work session shows up while they are still in the app.
+    const timer = setInterval(() => void pollUnread(), 45_000);
+    return () => clearInterval(timer);
+  }, [pollUnread]);
 
   const loadList = useCallback(async () => {
     setLoadError(null);
@@ -160,6 +284,25 @@ export function SupportWidget() {
       if (!res.ok) throw new Error(await readError(res, "Could not open that ticket."));
       const data = (await res.json()) as { ticket: TicketDetail };
       setDetail(data.ticket);
+
+      // TASK_166 — clear the badge for THIS ticket. Fired only AFTER the thread actually
+      // loaded, so a failed open does not mark unread mail as read. Deliberately not
+      // awaited and not allowed to throw: the ticket is on screen either way, and a
+      // cosmetic badge must never be able to block reading the reply.
+      void fetch(`/api/support/tickets/${encodeURIComponent(id)}/read`, { method: "POST" })
+        .then((r) => {
+          if (!r.ok) return;
+          // Reflect the cleared state immediately instead of waiting up to 45s for the
+          // next poll to notice what the server already knows.
+          setUnreadCount((n) => Math.max(0, n - 1));
+          unreadCountRef.current = Math.max(0, unreadCountRef.current - 1);
+          setTickets((prev) =>
+            prev ? prev.map((t) => (t.id === id ? { ...t, unread: false } : t)) : prev,
+          );
+        })
+        .catch(() => {
+          // The next poll re-derives the true count, so a dropped call self-heals.
+        });
     } catch (e) {
       setFormError(e instanceof Error ? e.message : "Could not open that ticket.");
       setView("list");
@@ -302,7 +445,26 @@ export function SupportWidget() {
                         className="w-full rounded-lg px-2 py-2 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/5"
                       >
                         <span className="flex items-start justify-between gap-2">
-                          <span className="min-w-0 flex-1 truncate text-sm text-fg">{t.subject}</span>
+                          <span className="flex min-w-0 flex-1 items-center gap-2">
+                            {/* TASK_166 — an unread reply is also marked IN the list, not
+                                only on the floating button: the badge says "go look", this
+                                dot says which thread. Bold subject text alongside it, so
+                                the signal does not depend on seeing colour. */}
+                            {t.unread && (
+                              <>
+                                <span
+                                  aria-hidden
+                                  className="h-2 w-2 shrink-0 rounded-full bg-brand-500"
+                                />
+                                <span className="sr-only">Unread reply: </span>
+                              </>
+                            )}
+                            <span
+                              className={`min-w-0 truncate text-sm ${t.unread ? "font-semibold text-fg" : "font-normal text-fg"}`}
+                            >
+                              {t.subject}
+                            </span>
+                          </span>
                           <span
                             className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                               isResolved(t.status)
@@ -426,10 +588,42 @@ export function SupportWidget() {
 
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
-        className="flex h-14 w-14 items-center justify-center rounded-full bg-brand-600 text-white shadow-xl transition-transform hover:scale-105 hover:bg-brand-700"
-        aria-label={open ? "Close support" : "Open support"}
+        onClick={() => {
+          // A click is the user gesture that unlocks audio, so the context is primed HERE
+          // rather than at mount — a context created on load would be born suspended and
+          // the first real reply would be silent.
+          primeSupportAudio();
+          setOpen((v) => !v);
+        }}
+        className="relative flex h-14 w-14 items-center justify-center rounded-full bg-brand-600 text-white shadow-xl transition-transform hover:scale-105 hover:bg-brand-700"
+        // The count is in the label, not only the visual badge: the badge is a coloured
+        // circle, which is invisible to a screen reader and ambiguous to everyone else.
+        aria-label={
+          unreadCount > 0
+            ? `Open support, ${unreadCount} unread ticket${unreadCount === 1 ? "" : "s"}`
+            : open
+              ? "Close support"
+              : "Open support"
+        }
       >
+        {/* TASK_166 — unread count. `99+` rather than an unbounded number: a support inbox
+            can never legitimately have hundreds of unread threads, and a badge wide enough
+            to hold "247" would cover the icon it is attached to. */}
+        {unreadCount > 0 && (
+          <span
+            aria-hidden
+            className="absolute -right-1 -top-1 flex h-6 min-w-[1.5rem] items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-bold text-white ring-2 ring-[#17130f]"
+          >
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        )}
+        {/* A soft pulse so an unread reply is noticeable even in peripheral vision. */}
+        {unreadCount > 0 && (
+          <span
+            aria-hidden
+            className="absolute inset-0 -z-10 animate-ping rounded-full bg-brand-500/40"
+          />
+        )}
         {open ? (
           <span className="text-xl">✕</span>
         ) : (

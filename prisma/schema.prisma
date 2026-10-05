@@ -3526,6 +3526,28 @@ model SupportTicket {
 
   messages SupportMessage[]
 
+  // TASK_166 — "when did THIS USER last open this ticket", i.e. the read cursor for
+  // the unread badge on the support button (owner, 2026-10-05).
+  //
+  // WHY THIS LIVES ON THE TICKET AND NOT ON SupportMessage. Per-message `readAt` would
+  // be the richer model, but it is wrong for the question being asked. Nobody asks
+  // "which individual rows are unread"; the badge answers "is there anything new since
+  // I looked", and that is exactly a high-water mark against time. A cursor is also one
+  // column instead of one row per message, and it cannot go stale in the way a copied
+  // boolean can.
+  //
+  // NULLABLE, AND NULL MEANS "NEVER READ" — deliberately, not as an oversight. On the
+  // day this column is added, every ticket that already exists has a NULL here, so
+  // treating NULL as "unread" lights the badge for a customer who has genuinely seen
+  // those replies, and treating it as "read" silently hides a real reply forever. The
+  // badge firing once for pre-existing tickets is the recoverable direction; a hidden
+  // support reply is the one that costs trust.
+  //
+  // Only the OWNER's own view is tracked. The admin queue deliberately does not write
+  // it: an admin working a queue would clear the customer's badge for them, so the
+  // customer would never be told an answer arrived. That is the whole point of it.
+  lastReadAt DateTime?
+
   // The per-user listing ("my tickets, newest first") and the admin queue
   // ("open first, newest first") — the only two reads that exist in Phase 1.
   @@index([userId, createdAt])
