@@ -96,6 +96,65 @@ it directly serves the stated priority. **Start here.**
 - **No CLI that prints a secret.** Follow `scripts/set-platform-token.ts`: stdin only, never argv,
   never a log line.
 
+## 5A. Re-verified 2026-10-05 + owner ruling (this is the priority)
+**Owner ruling, locked:** *"the first priority for the self host is the devices part… we should be
+able to create each tool like that. If its not in the plan, lets add it so when we resume that, we
+will tackle that first."*
+
+I re-checked all three blockers against the source rather than trusting the prose above. **All
+three still hold:**
+
+| Claim | Re-verified at |
+|---|---|
+| `ExeBuildTarget = "extractor" \| "mailer" \| "combined" \| "automation"` — no `devices` | `lib/exe-build-target.ts:9-11` |
+| `BUILD_ALLOWED_HREFS` has **exactly one** entry (`extractor`), so the other three ship the full nav | `components/dashboard-nav.tsx:64-66` |
+| `devices` is already its own entitlement key | `lib/entitlements.ts:12` |
+| …but it is welded to `assistant` — no standalone product exists | `lib/products.ts:106-112` |
+
+**So the priority the owner named is exactly V1, and V1 is genuinely cheap.** The expensive work
+(V4's local device data plane) is *not* on the critical path for "sell devices on its own".
+
+### Build order — V1 first, and it is small
+- **V1 — `DEVICES_MODULE`.** One `StoreProduct` with `id: "devices_module"`, `name: "Device
+  Manager"`, `priceField: "devicesModulePriceUsd"`, `kind: "module"`, **`entitlementKeys:
+  ["devices"]` only**. Needs: the product entry, the new `AdminSetting` price column (additive,
+  nullable or defaulted — never NOT NULL without a default on a live table), a `/pricing` entry
+  if prices are listed there, the store test, and the entitlement-gate test proving a holder of
+  `["devices"]` alone passes `hasEntitlement(userId, "devices")`.
+  **Deliverable the owner actually asked for:** a user can buy device management *without* the
+  mailer or the extractor.
+- **V2 — entitlement-aware nav.** `DashboardNav`/dock/overview filter by
+  `listEffectiveEntitlements(userId)`. This is the real "turn the others off" UX and works under
+  both A and B.
+- **V3 — generalise `BUILD_ALLOWED_HREFS`.** `Record<ExeBuildTarget, Set<string>>` covering **all
+  four** targets. **Fixes a live bug regardless of the self-host decision** — `mailer`, `combined`
+  and `automation` currently leak the entire web nav into their EXEs. Cheapest real win in this
+  whole plan and it needs no product input; consider shipping it before V1.
+- **V4 — the hard one.** Add `"devices"` to `ExeBuildTarget` **and** make the Devices page +
+  device runtime work with **no `DATABASE_URL`**. Needs either a bundled embedded store for
+  device records or a mandatory link to the hosted API. Scope properly before promising it.
+- **V5** — only if the owner picks option (B): the local-first device plane + sync model.
+
+### ⚠ Sequencing warning
+V4 is where the real cost is, and V4 is **only reachable after V1 ships devices standalone**. Do
+**not** let V4's difficulty push V1 backwards: V1 is independently valuable and independently
+deployable, and it is the literal thing the owner asked for.
+
+## 5B. Open questions I deliberately did NOT guess
+1. **A or B** (§2) — still the owner's structural call. V1/V2/V3 are valid under **both**, which is
+   exactly why they are sequenced first.
+2. **Should V1 deprecate the `assistant_devices_module` bundle?** The owner should decide: keep
+   selling the bundle as "Assistant & Devices" (assistant + devices together), or split it so
+   `assistant` becomes its own product. **Splitting changes what existing customers bought**, so
+   that is a commercial decision, not a refactor.
+3. **Default price for a standalone Devices module** — needs a real number from the owner; I did
+   not invent one.
+4. **Does a devices-only buyer need the Vantra link?** Device online/idle telemetry is a
+   pass-through to the separate Vantra service (`SENIOR_HANDOFF.md` §1). A devices-only customer
+   arguably needs that integration configured on day one, and nobody has confirmed what happens
+   today if `VANTRA_INTERNAL_TOKEN` is absent.
+5. **Is the hosted-device limit per-user or per-plan** for a devices-only customer?
+
 generalised. (`undefined` = allow everything — `:70-74`.)
 
 ### Blocker 3 — Devices is deliberately **web-only**, because it needs infrastructure the EXE lacks

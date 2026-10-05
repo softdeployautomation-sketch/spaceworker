@@ -1775,3 +1775,124 @@ of this work). HEAD `71ca4d7`, tree clean. Read-only investigation except one tu
 - **Next:** (1) tell the owner to re-upload the zip; (2) narrow the CF token's zones;
   (3) implement the reserved-host denylist + tests; (4) verify zone-create permission;
   (5) then the domain wizard; (6) then per-capability health; (7) then tickets.
+
+---
+
+### 2026-10-05 — Wallet W2 Step 1 verified, deployed + live-verified; D2–D5 scoped (no code for them)
+
+- **Did:** Verified another agent's uncommitted W2 work claim-by-claim rather than rubber-stamping
+  it, then shipped it as commit **`231ae31`** (`app/api/wallet/route.ts`,
+  `components/wallet-balance.tsx`, `lib/rate-limit.ts`, `app/dashboard/billing/page.tsx`,
+  `tests/wallet-route.test.ts`). **I changed exactly one thing: I added a 9th test** (trap 1
+  below). Separately, **scoped only — no implementation** — for D2 (3D video centrepiece,
+  `TASK_161` §2 D6), D3 marketing copy (new `PLAN_TASK_164_MARKETING_COPY.md`), D4 store cart
+  (`PLAN_TASK_162` §6–8), D5 self-host devices-first (`PLAN_TASK_163` §5A–5B).
+
+- **Verified (every command re-run by me this session):**
+  - `npx tsc --noEmit` → **0**; `npx eslint` on the 4 owned files → **0**
+  - `npm run test:wallet` **29/29**; `npm run test:support` **30/30**; `npm run test:hosting`
+    **334/334**; `npx tsx --test tests/wallet-route.test.ts` **9/9**
+  - `CI=true npm run build` → **exit 0**, `/api/wallet` in the route table
+  - Deploy run **`37292940559`** (`workflow_dispatch`): **"Build & typecheck" success**, **"Deploy
+    to production (manual only)" success** — job present, NOT skipped. Job window
+    `09:54:31Z…09:58:26Z`; `/opt/spaceworker/.next/BUILD_ID` mtime **09:55:27Z**, i.e. *inside* the
+    window (fresh build, not stale).
+  - Live `BUILD_ID` = **`WvCKpRBOukDSlI74eeF7T`**; `systemctl is-active spaceworker` → **active**;
+    `GET /` → 200.
+  - Live `GET /api/wallet` → **401** `{"error":"Unauthorized"}` (**not** 404 → route is mounted).
+    `GET /api/wallet?userId=someone-else` → 401 (query ignored). `POST /api/wallet` → **405**
+    (no money-moving verb). `/api/admin/wallets` → 403.
+  - Deployed-build proof of the ordering (playbook §6 — read `.next/server`, never the stale
+    `lib/`): the compiled handler is literally `getClientIp()` → `allowAndRecord(e,"wallet-read")`
+    → `getCurrentUser()` → `getWallet(t.id)`.
+  - Migration `20261110000000_task158_wallet` **is applied in production** (`finished_at` non-null,
+    `rolled_back_at` null) — W2 is a read over a live table, not a pending one.
+  - The 5 "uncommitted docs" flagged as unknown last session are in fact **TRACKED and CLEAN**
+    (`git ls-files --error-unmatch` on all five) — they shipped in `4a7e06c`.
+
+- **NOT verified / could not verify:**
+  - **Any authenticated render.** No test-account session, so I never saw the card render with a
+    real balance. Its presence in the deployed build is proven; its *appearance* is not.
+  - **Stock-video licences for D2.** `pexels.com`, `help.pexels.com` and `pixabay.com` all
+    returned **HTTP 403** to automated fetches; Mixkit's terms load from JS modals; the one Pixabay
+    PDF I reached came back as raw uncompressed binary. **I did not assert that any licence permits
+    commercial use.** Needs a human in a browser. Genuine blocker for putting a real clip in.
+  - Whether `cyberlabEnabled` gets flipped before the new marketing copy goes live.
+
+- **State left behind:** `main` @ `231ae31`, **0 ahead / 0 behind** origin/main, tree clean apart
+  from the doc edits listed below. **No production writes** — read-only `SELECT`s against
+  `AdminSetting` and `_prisma_migrations` only. **No scratch databases created.** Temp files
+  removed (`/tmp/threecost`, `/tmp/route.ts.bak`, `/tmp/sw_w2_commit.txt`, `/tmp/*.out`).
+  `scripts/stub-server-only.cjs` **not** touched.
+
+- **New traps found this session (read before repeating my work):**
+
+  1. **A green suite can be blind to an ordering contract — mutation-test before you trust
+     "coverage".** The 8 original wallet-route tests stayed **9/9 green** after I moved the rate
+     limit to run *after* the session check. Nothing failed: no test asserted the *ordering*, only
+     outcomes, which are identical for a signed-in caller. I added a 9th test — no session AND
+     limit-refusing → assert **429, not 401** — which is what makes the flip visible. Rule: for any
+     security-relevant **ordering** (rate limit before auth, tenant guard before existence check),
+     write the test where the branches would return **different status codes**, then actually
+     mutate to prove the test fails.
+
+  2. **`npx tsc --noEmit` fails on a stale `.next/types/validator.ts`, and the fix is NOT a code
+     change.** A brand-new, unbuilt route made tsc exit **2**:
+     `.next/types/validator.ts(2204,39): error TS2307: Cannot find module '../../app/api/wallet/route.js'`.
+     This looks like a broken import and is not — the validator is generated by `next build`. Run
+     `CI=true npm run build` **first**, then tsc → 0. **Do not "fix" the route file over this.**
+
+  3. **`app/dashboard/billing/page.tsx` has 2 PRE-EXISTING ESLint errors**
+     (`react-hooks/set-state-in-effect`). Confirmed present at HEAD via `git stash -u` + lint + pop.
+     **Not** from W2. `CI=true npm run build` still exits 0. Anyone touching this file will see
+     them and may wrongly assume they caused them — don't, and don't fix them as a drive-by.
+
+  4. **`/dashboard/billing` is NOT in `NAV_ITEMS` — there is no Billing tab.** Verified:
+     `components/dashboard-nav.tsx` has 9 hrefs and `/dashboard/billing` is not among them; the
+     page is reachable only by deep link or the "Upgrade" links in `mailboxes-panel.tsx:1233`,
+     `send-region-settings.tsx:130`, `agent-widget.tsx:57`. **This is why the owner could not see
+     the new wallet card.** The card ships and is live; there is simply no nav affordance.
+
+  5. **"Deployed" ≠ "there is a UI for it".** The card was proven deployed four ways: BUILD_ID
+     inside the run window; `/api/wallet` → 401 not 404; the card chunk
+     `/_next/static/chunks/2h80gs2rfjdgm.js` served **200** and containing `Wallet balance`,
+     `/api/wallet`, `Could not load your balance`; and that chunk listed in
+     `app/dashboard/billing/page_client-reference-manifest.js` — the check that actually rules out
+     the orphan-chunk trap in `HOW_WE_MOVE_FAST.md` §6. It still had **zero visible entry point**.
+     Always ask "how does a user *reach* this?" before reporting a UI as shipped.
+
+  6. **Anonymous `curl` of a dashboard page is a 307 to `/login`, so it can neither confirm nor
+     refute a dashboard UI.** `GET /dashboard/billing` → `307 → /login`. That proves nothing
+     either way. Verify via build artifacts (this trap) or with a real session.
+
+  7. **Measured, not estimated: `three` + `@react-three/fiber` is ~130–200KB gzipped, not
+     ~700KB.** Installed in a scratch dir to check: `three@0.186.1`'s `three.module.js` gzips to
+     **~128KB**; `@react-three/fiber@9.8.1` adds ~3KB core + a ~75KB shared `events` chunk; both
+     MIT. The "~700KB" figure in the brief was an over-estimate. It does **not** change the
+     decision (the owner chose a free 3D **video asset**, needing **zero** dependencies), but
+     anyone re-arguing "the 3D stack is too heavy" should argue from a measurement.
+
+  8. **`AdminSetting` columns are real columns, not key/value.** Query as
+     `select "cyberlabEnabled","hostingEnabled" from "AdminSetting" limit 1;` — there is no
+     `key`/`value` pair, and `select key,value …` errors with *column "key" does not exist*. Live
+     values 2026-10-05: **`cyberlabEnabled = false`, `hostingEnabled = true`,
+     `hostingPlatformCfEnabled = true`.** ⚠️ **Cyber Lab is dark in production right now** — so
+     marketing it (the owner has decided to) must land the same week as flipping that switch, or
+     paying customers see "not switched on yet".
+
+  9. **The marketing Hero already matches the owner's proposed copy, word for word**
+     (`app/page.tsx:74-77`), and the eyebrow already reads "AI Assistant · Device Control ·
+     Cybersecurity" (`:68-70`). **Do not rewrite it.** The actual gap is that Hosting and Cyber
+     Lab are missing from the pillars (`:99-113`). Re-verify before "fixing" hero copy that is fine.
+
+  10. **⚠ Heredocs through the terminal wrapper CORRUPT large files.** A ~8.8KB
+      `cat >> file <<'EOF'` appended garbled text and left `SENIOR_HANDOFF.md` at 1954 lines of
+      mixed-up fragments. Recovered with `git checkout -- SENIOR_HANDOFF.md` (it is tracked).
+      **Write multi-KB content with the editor tool, then append the small file**
+      (`cat smallfile >> target`). Never a heredoc for anything long. Likewise verify `git log -1`
+      after committing: a mangled command can leave the commit *not* made while appearing to run.
+
+- **Next:** (1) **add a Billing entry to `NAV_ITEMS`** so the owner can actually see the wallet
+  card, and confirm it renders with a real session; (2) finish the support UI + the
+  admin-composed-ticket route (`TASK_161` D3/D4); (3) `PLAN_TASK_164` marketing copy;
+  (4) `PLAN_TASK_163` V1 `DEVICES_MODULE` + V3 nav-narrowing bug; (5) `PLAN_TASK_162` S0/S1.

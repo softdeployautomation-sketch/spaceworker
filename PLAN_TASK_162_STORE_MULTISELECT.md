@@ -76,3 +76,46 @@ single BTC/USDT transfer cannot be split into N verified on-chain payments.
   `grantEntitlement` already extends terms correctly — `lib/entitlements.ts` Task 99 note.)
 - Should selecting a module that the user **already holds** be blocked, or allowed as a
   term-extension purchase? Current behaviour: it grants, and stacks time.
+
+---
+
+## 6. Re-verified 2026-10-05 (verification pass, no new findings)
+I re-read the purchase path rather than trusting the section above. **Every claim still holds:**
+`product` is still a single string, `checkout` still returns one `amountUsd`, modules still carry
+`entitlementKeys`, and `MODULE_PRODUCTS` is still the 4 modules + web bundle + 4 EXEs. Nothing in
+this plan is stale.
+
+**One addition the owner made while this was being scoped (2026-10-05):** a purchase must be
+**linked to the user's EMAIL**, "so that when an EXE is bought, generating a license and binding
+it is straightforward."
+
+**Check before building — this may already be satisfied, in which case do not build it twice.**
+The `User` model carries an email and the existing EXE auto-bind flow already binds a license to a
+machine (Task 159/`app/api/exe-license/auto-bind`). The open question is whether the *purchase*
+row itself records the email **at purchase time** (an immutable snapshot), which matters if a
+user later changes their address. If the grant already resolves `user → email` at bind time, a
+snapshot column is likely unnecessary. **Verify this first; it may cost one column or zero.**
+
+## 7. Build order (each phase independently deployable)
+1. **S0** *(new, cheap)* — verify whether the email-linkage requirement is already met. Decide
+   snapshot-vs-resolve. Do this **before** S1 so the cart row is designed once, correctly.
+2. **S1** server cart (`POST /api/billing/cart`) — no schema if a signed token is used.
+3. **S2** dropdown multi-select UI (accessibility-complete).
+4. **S3** cart-aware checkout with an itemised breakdown.
+5. **S4** fulfillment granting the union of `entitlementKeys`, once, in the existing transaction.
+6. **S5** tests + wallet (W5) interlock.
+
+S1 alone is worth shipping: it is the server-side pricing guarantee, and it is testable before any
+UI exists.
+
+## 8. Open questions I deliberately did NOT guess
+1. **Cart storage**: signed expiring token (no schema, stateless, harder to introspect) vs. a cart
+   row (inspectable, needs a migration + expiry sweeper). Both are in §2; I did not pick.
+2. **Discount policy** for N modules — still the owner's call (§5).
+3. **Can EXE and modules share a cart?** §4 currently says **no** (EXE pricing is duration-based
+   and issues a license with its own term logic). That is a conservative default I inherited, not
+   a verified product constraint — worth confirming, because it is the most likely thing a user
+   will try.
+4. **Partial refunds / downgrades** when a cart contains a module the user already holds.
+5. **Currency/price rounding**: are all module prices whole dollars? The cart total's rounding
+   rule was never specified and integer-cents discipline (§4) demands it be.
