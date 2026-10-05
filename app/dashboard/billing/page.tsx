@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { copyToClipboard } from "@/lib/clipboard";
+import { WalletBalance } from "@/components/wallet-balance";
 
 type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
 
@@ -75,10 +76,17 @@ export default function BillingPage() {
     setNote(resultNote ?? null);
   }
 
+  // TASK_158 W2 — the balance card sits above every branch below, including the
+  // loading one, so the page never renders a billing form without telling the user
+  // what they already have. It is rendered ONCE here rather than inside each
+  // branch: putting it in the branches would unmount and remount it as the payment
+  // state resolves, which throws away the balance it already fetched and issues a
+  // second GET on every page view.
   if (payment === undefined) {
     return (
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
+        <WalletBalance />
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
       </div>
     );
@@ -88,12 +96,19 @@ export default function BillingPage() {
     return (
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
+        <WalletBalance />
         <UpgradeFlow onResult={handleResult} />
       </div>
     );
   }
 
-  return <StatusCardView payment={payment} note={note} onResult={handleResult} />;
+  return (
+    <div>
+      <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
+      <WalletBalance />
+      <StatusCardView payment={payment} note={note} onResult={handleResult} />
+    </div>
+  );
 }
 
 function UpgradeFlow({

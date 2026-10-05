@@ -19,7 +19,8 @@ export type RateLimitKind =
   | "exe-license-eligibility"
   | "mailbox-test"
   | "billing-submit"
-  | "trial-ping";
+  | "trial-ping"
+  | "wallet-read";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -62,6 +63,12 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // session) and feeds the admin's active-trial-devices view; a modest per-IP cap
   // covers the one-ping-per-device-per-session real pattern while blocking spam.
   "trial-ping": [{ limit: 20, windowMs: 60 * 60 * 1000 }],
+  // Task 158 W2 — GET /api/wallet. The dashboard balance card polls this, so the
+  // cap has to clear a real client refreshing on a timer. Generous for that
+  // reason, and the same reasoning as exe-license-eligibility: several devices
+  // behind one NAT share an IP. It exists to stop an unbounded read of the
+  // balance, not to police a user clicking refresh.
+  "wallet-read": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {
