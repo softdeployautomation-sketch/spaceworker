@@ -31,6 +31,11 @@ export async function GET() {
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
     usdtErc20Wallet: settings.usdtErc20Wallet,
+    // PLAN_TASK_167 W4 — the minimum top-up, so the floor can be changed without a
+    // deploy. Read AND written here rather than in a route of its own because it
+    // lives in the same singleton as the payout addresses and the prices, and this
+    // is already the tab that edits that row.
+    walletTopupMinUsd: settings.walletTopupMinUsd,
     ...priceFieldsOf(settings),
   });
 }
@@ -75,6 +80,21 @@ export async function PUT(req: Request) {
     data.usdtErc20Wallet = body.usdtErc20Wallet.trim() || null;
   }
 
+  // PLAN_TASK_167 W4 — the minimum top-up. Validated here with the same "> 0"
+  // rule as the prices, which is also what the migration's CHECK constraint
+  // enforces, so a bad value is refused here with a clear message rather than
+  // thrown by the database as an opaque 500.
+  if (body.walletTopupMinUsd !== undefined) {
+    const min = Number(body.walletTopupMinUsd);
+    if (!Number.isFinite(min) || min <= 0) {
+      return NextResponse.json(
+        { error: "walletTopupMinUsd must be greater than 0" },
+        { status: 400 },
+      );
+    }
+    data.walletTopupMinUsd = min;
+  }
+
   for (const field of PRICE_FIELDS) {
     const raw = body[field];
     if (raw === undefined) continue;
@@ -98,6 +118,7 @@ export async function PUT(req: Request) {
     btcWallet: settings.btcWallet,
     usdtWallet: settings.usdtWallet,
     usdtErc20Wallet: settings.usdtErc20Wallet,
+    walletTopupMinUsd: settings.walletTopupMinUsd,
     ...priceFieldsOf(settings),
   });
 }

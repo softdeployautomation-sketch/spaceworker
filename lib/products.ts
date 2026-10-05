@@ -200,6 +200,32 @@ export const EXE_PRODUCTS: StoreProduct[] = [
 
 export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
 
+/**
+ * PLAN_TASK_167 W4 — the wallet top-up.
+ *
+ * NOT IN `ALL_PRODUCTS`, and that is deliberate on both counts:
+ *
+ *   * it is not a STORE product. It grants no entitlement, bumps no tier and issues
+ *     no licence, so it must never render a card on /store or be buyable through
+ *     the normal checkout — `ALL_PRODUCTS` is exactly the list those pages iterate,
+ *     and every member of it is something whose approval has a product-shaped
+ *     consequence. Adding this one to the list would put a "buy" button on a
+ *     product that buys nothing;
+ *   * it is not priced by an `AdminSetting` price field either. The customer
+ *     chooses the amount (bounded below by `walletTopupMinUsd`), so there is no
+ *     single price to put in the prices table.
+ *
+ * It is still a `Payment.product` value, because that column is the only place the
+ * approve route can branch on "what does approving this MEAN" — see
+ * app/api/admin/payments/[id]/approve/route.ts.
+ */
+export const WALLET_TOPUP_PRODUCT_ID = "wallet_topup";
+
+/** True when this `Payment.product` credits a wallet rather than granting a product. */
+export function isWalletTopup(productId: string | null | undefined): boolean {
+  return productId === WALLET_TOPUP_PRODUCT_ID;
+}
+
 const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
 
 export function getProduct(id: string): StoreProduct | null {

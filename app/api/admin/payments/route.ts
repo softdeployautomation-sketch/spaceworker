@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
+import { WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 
 // GET /api/admin/payments — flagged + pending payments with user email and last
 // check, PLUS (2026-09-19) any "approved" EXE-product payment with no matching
@@ -27,7 +28,12 @@ export async function GET() {
     prisma.payment.findMany({
       where: {
         status: "approved",
-        product: { not: "web_subscription" },
+        // PLAN_TASK_167 W4 — a wallet top-up is an approved product-shaped payment
+        // that will NEVER have an ExeLicense, because approving it credits a wallet
+        // and grants nothing. Without this exclusion every top-up ever approved
+        // would appear here forever as "approved_no_license", burying the genuine
+        // reconciliation safety net this query exists to be.
+        product: { notIn: ["web_subscription", WALLET_TOPUP_PRODUCT_ID] },
         exeLicense: null,
       },
       include: {

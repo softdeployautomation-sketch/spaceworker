@@ -3,6 +3,7 @@ import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
 import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto-verify";
 import { handleApprovedPayment } from "@/lib/license-service";
+import { WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 
@@ -25,8 +26,29 @@ export async function POST(req: Request) {
   // always read as "not found," and silently auto-reject after 24h before an
   // admin ever saw it — the exact bug the null-txHash exclusion above already
   // exists to prevent, just for a different reason.
+  // PLAN_TASK_167 W4 — a `wallet_topup` is EXCLUDED from automatic approval, and
+  // this is the single most important line in the file for that feature.
+  //
+  // Every other row below is auto-approved the moment it verifies on-chain. For a
+  // top-up that would be catastrophic in two separate ways: `handleApprovedPayment`
+  // would be called for a product that grants nothing, which for an unknown
+  // `product` string means it falls through to the EXE branch and THROWS
+  // ("Unknown EXE product"), and even if that were fixed, a top-up must never
+  // auto-credit (plan §8.6). On-chain confirmation is not payment — an admin
+  // decides. So a top-up waits in the admin queue like any other manual review,
+  // which is exactly where §4b's approve branch will find it.
+  //
+  // (`handleApprovedPayment` throwing here would at least have been loud, not
+  // silent. It is excluded rather than defended-in-depth because the two rules —
+  // "never auto-approve a top-up" and "branch on product in exactly one place" —
+  // are better served by the top-up never reaching this function at all.)
   const pending = await prisma.payment.findMany({
-    where: { status: "pending", txHash: { not: null }, kind: { not: "usdt_erc20" } },
+    where: {
+      status: "pending",
+      txHash: { not: null },
+      kind: { not: "usdt_erc20" },
+      product: { not: WALLET_TOPUP_PRODUCT_ID },
+    },
     orderBy: { createdAt: "asc" },
   });
 
