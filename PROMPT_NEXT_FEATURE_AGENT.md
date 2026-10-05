@@ -1,112 +1,104 @@
-# PROMPT A — Feature agent: Billing tab, wallet in the UI, finish Support
+# PROMPT — NEXT FEATURE AGENT (OS dashboard: Wallet chip + overview-only side nav)
 
-Copy everything below the line into the next feature-agent session.
+## 0. Your task in one line
+Ship **P1 and P2** of `PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md`: move Billing out of the dock into a
+**Wallet chip in the top bar beside the date**, and add a **small side nav to the overview only**,
+**removing the overview cards**. Two separate commits.
 
----
+## 1. MANDATORY reading, before any command
+  /Users/mikeolab/spaceworker/HOW_WE_MOVE_FAST.md
+  /Users/mikeolab/spaceworker/PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md   ← your scope, read §0 first
+  /Users/mikeolab/spaceworker/SENIOR_HANDOFF.md
+  /Users/mikeolab/spaceworker/PROMPT_NEXT_VERIFICATION_AGENT.md  §1 — the rules are BINDING
+Full rule list: no multi-line `git commit -m` (use `-F<file>`); never print a secret; never edit
+`.env`; never `npm run build` on the VPS; **never `git stash`**; never claim a check you did not see
+pass. **Use `CI=true npm run build`** — `lib/env.ts` throws only when `NODE_ENV=production` AND
+`CI` is unset, and the local `.env` holds a `local_dev_…` placeholder.
 
-You are the FEATURE agent for SpaceWorker. You own the code. Another senior agent already
-verified and deployed the wallet W2 work you are continuing from — you do not need to re-verify it.
+**State:** `main`, HEAD `cb780cd`, 0 ahead / 0 behind. `git status --short` shows exactly one
+untracked file, `TASK_133_RMM_ENGINE_BRINGUP.md` — that is the owner's pre-existing stash work.
+**Never `git add -A`, never stash, never delete it.** `git add` only the paths you touch.
 
-REPO: `/Users/mikeolab/spaceworker` (branch `main`)
+## 2. ⚠ The owner's correction — read before you touch the nav
 
-## 0. READ FIRST (binding)
-  cat SENIOR_HANDOFF.md          # §0 and §10 are binding on you
-  cat HOW_WE_MOVE_FAST.md       # deploy + verification playbook
-  cat TASK_161_DASHBOARD_OS.md   # your scope for tasks 2 and 3
-Then run `git status` and `git log --oneline -3` before touching anything. If there are unrelated
-uncommitted changes, do not touch or discard them — another agent likely has work in flight.
+**Do NOT add `Mailboxes` to `NAV_ITEMS`.** An earlier handoff claimed it was unreachable; that was
+wrong and the owner corrected it. `app/dashboard/mailboxes/page.tsx:11` is
+`redirect("/dashboard/campaigns?tab=mailboxes")` — mailboxes are a **tab inside Campaigns**, which is
+where the owner wants them. Same for `/dashboard/browser-profiles` → `/dashboard/browser?tab=profiles`
+and `/dashboard/licenses` → `/dashboard/settings#licenses`. **There is no orphaned-page defect.**
 
-**Current verified state:** `main` @ `231ae31`, 0 ahead / 0 behind origin. Deployed run
-`37292940559`, live `BUILD_ID WvCKpRBOukDSlI74eeF7T`. Migration
-`20261110000000_task158_wallet` IS applied in production. `GET /api/wallet` IS live and returns
-401 unauthenticated. **Step 1 below is about making it VISIBLE, not about building it again.**
+`TASK_161_DASHBOARD_OS.md` §2 D1 contains that wrong instruction. **Correct the doc when you edit
+that area — fix the doc, not the nav.**
 
-## TASK 1 — Add a Billing entry to the nav so the owner can see the wallet card
+**The real defect is one line above it.** `app/dashboard/page.tsx:26-37` filters `useNavItems()`
+through a hardcoded allow-list containing `i.href === "/dashboard/mailboxes"` — a condition that can
+**never be true**. The filter looks maintained while silently dropping every new app, which is why
+Billing existed but appeared nowhere. **Delete the filter; do not patch it.**
 
-**This is first because the owner already reported "I see no billing page or tab right now", and
-that report is CORRECT.** The wallet card is live at `/dashboard/billing` but that route is not in
-`NAV_ITEMS` (`components/dashboard-nav.tsx:37-59`), so there is no way to click to it.
+## 3. P1 — Wallet chip in the top bar (commit 1)
 
-- Add `{ href: "/dashboard/billing", label: "Billing", icon: <CreditCard|Receipt> }` to
-  `NAV_ITEMS`, in the same style as the existing entries, with a short comment saying why.
-- **Read `NAV_ITEMS` first.** Note that `Mailboxes` is described in `DESCRIPTIONS` but has NO nav
-  entry either — a known separate defect. Do **not** fix it in this commit; note it.
-- **Do not regress build-target narrowing.** `BUILD_ALLOWED_HREFS` (`:64-66`) has only an
-  `extractor` entry today, so a new nav item WILL leak into the mailer/combined/automation EXEs
-  along with everything else. That is pre-existing (see `PLAN_TASK_163` §5A V3) — do not fix it
-  here, but say so in your commit message.
-- Verify the wallet card actually renders for a signed-in user. **You cannot do this with `curl`:
-  anonymous `GET /dashboard/billing` is a 307 to `/login` and proves nothing.** Either sign in for
-  real, or state plainly in your report that the visual render is unverified. Do not claim you
-  saw it if you did not.
+Remove `{ href: "/dashboard/billing", label: "Billing", icon: CreditCard }` from `NAV_ITEMS`
+(`components/dashboard-nav.tsx:67`) and add a **Wallet chip to `components/menu-bar.tsx`**, beside the
+date, linking to `/dashboard/billing`.
 
-## TASK 2 — Wallet: close out the remaining W2 surface
-W2 step 1 (read route + read-only card) is **shipped and live**. Per
-`PLAN_TASK_158_WALLET_BALANCE.md` §W2, the remaining work is W3 (admin grant) and W5 (spend) —
-**they are separate tasks and must stay separate.** For this session:
-- Read `PLAN_TASK_158_WALLET_BALANCE.md` and report which W-step is next.
-- If the next step is **W3 (admin grant)**, scope it and confirm the plan before writing code.
-- **Hard rules:** `lib/wallet.ts` stays price-agnostic and is the ONLY writer of
-  `User.balanceCents`; the ledger is append-only (no update/delete on `WalletLedgerEntry`, ever);
-  every mutation is a guarded conditional `updateMany` whose `count === 0` is the failure signal;
-  debit+entitlement and credit+payment-status each commit in ONE transaction or not at all; no
-  float money, integer cents end to end.
-- **Never add a way for a client to POST an amount to the wallet.** Credits only ever come from a
-  server-proven payment. The existing route has no POST (it 405s) and must stay that way.
+* **Delete the entry — do not hide it.** `NAV_ITEMS` is the single source of truth for the dock, the
+  mobile row and (after P2) the sidebar. A hidden-but-present entry reappears in the dock.
+* **Read the balance over `GET /api/wallet`**, reusing the pattern already in
+  `components/wallet-balance.tsx`. **`getWallet()` is server-only — never import it client-side.**
+  Integer cents end to end; format with `formatCents`.
+* `BUILD_ALLOWED_HREFS` (`dashboard-nav.tsx:75`) needs **no** change — `/dashboard/billing` was never
+  in the extractor set. **Verify that, don't assume it.**
+* ⚠ **Check `proxy.ts` first.** A `license_only` session is restricted to `/dashboard/licenses`, so a
+  chip pointing at `/dashboard/billing` may 403 for those users. Decide deliberately and test it.
+* ⚠ **The chip will read `$0.00` for every real user.** `PLAN_TASK_165` §3 proves no production route
+  calls `creditTopup`/`creditApprovedPayment`/`adminAdjustBalance` — the wallet cannot be funded
+  until `PLAN_TASK_158` W3 ships. **Render that honestly** (a clear empty/low-balance state), and
+  **say so in your report.** Do not fake a balance and do not build a top-up flow to paper over it.
 
-## TASK 3 — Support: finish the UI, then the admin-composed ticket
-Backend is **done** (6 authenticated routes, `lib/support/tickets.ts`). There is **no UI at all**,
-so today a customer cannot open a ticket. Scope is `TASK_161` §2 D3 and D4 — read them, detailed.
+## 4. P2 — Side nav on the overview only (commit 2)
 
+Render `DashboardNav variant="sidebar"` **on the overview only** — in the overview's own layout, NOT
+in `components/shell.tsx`, or it shows on every page and contradicts the request.
 
-## NON-NEGOTIABLES (this repo)
-- **Never `git commit -m "..."` with multi-line text.** Write the message to a file, use
-  `git commit -F<file>`.
-- **Never modify `.env` or any env var to make something work.** This caused two production
-  outages (2026-09-27).
-- **Never run `npm run build` on the VPS.** No `lib/` source tree there; grep `.next/server` for a
-  marker string instead (`HOW_WE_MOVE_FAST.md` §6).
-- **Never print or paste a real secret.** Cloudflare tokens are AES-256-GCM encrypted; only the
-  last-4 hint is ever exposed.
-- **"Done" ≠ committed ≠ pushed ≠ deployed ≠ proven live.** Prove each separately.
-- **Only `gh workflow run deploy.yml --ref main` deploys**, and the deploy job is manual-only —
-  a green run can have SKIPPED it. Always check the **job list**, not the run conclusion.
-- **Scratch databases only.** Never run a destructive migration against anything you did not
-  create this session.
-- **Never use a shell heredoc for multi-KB file content** — it corrupts the file through the
-  terminal wrapper (this actually happened on 2026-10-05 and needed a `git checkout --` to undo).
-  Write content with your editor tool, then `cat smallfile >> target`.
+* **Good news:** the sidebar variant already exists and is styled
+  (`components/dashboard-nav.tsx:98-116`, a `flex-col` list). This is a **wiring job**, not a
+  from-scratch build. Nothing renders it today; the only call site is `shell.tsx:59` with
+  `variant="mobile"`.
+* **Remove the overview cards** — the owner wants them gone because every app is already reachable
+  from the dock below.
+* **Delete the dead filter** at `app/dashboard/page.tsx:26-37` (§2 above).
+* `hidden md:flex` so it does not fight the dock on small screens.
+* Removing the cards removes the overview's only use of `DESCRIPTIONS` (`app/dashboard/page.tsx:12-22`).
+  Either delete it or keep it only if something still reads it — **do not leave dead data behind.**
+* Desktop nav is a **bottom dock** (`components/dock.tsx:19`, `fixed bottom-4 left-1/2`, `md:flex`,
+  icon-only tiles). The sidebar must not overlap it.
 
-## GATE — all must pass before you commit
-```
-npx tsc --noEmit              # NOTE: run AFTER a build if you added routes — see trap 2
-npx eslint <each file you touched>
-npm run test:wallet           # 29
-npm run test:support          # 30
-npm run test:hosting          # 334
-CI=true npm run build
-```
-**No CI runs these** — your run is the only one. Known pre-existing issues you did NOT cause:
-2 ESLint errors in `app/dashboard/billing/page.tsx` (`react-hooks/set-state-in-effect`). Do not fix
-them as a drive-by in an unrelated commit.
+## 5. Gate before EACH commit (separately, not once at the end)
+    npx tsc --noEmit
+    npx eslint on the touched files only
+    npm run test:wallet  (29) · npm run test:support (40) · npm run test:hosting (334)
+    CI=true npm run build
+**No CI runs these.** Re-run after commit 1 and again after commit 2.
 
-## THEN
-Commit (`-F<file>`) → push → `gh workflow run deploy.yml --ref main` → confirm the **deploy job**
-ran and succeeded → check `BUILD_ID` mtime is NEWER than the run start → live-verify with real
-curl output → update `SENIOR_HANDOFF.md` §6/§7/§12 per §10 and the relevant task docs.
-Code-complete + doc-stale == a broken handoff.
+Then, separately: `git add <specific paths>` → `git commit -F<file>` → `git log -1` to **confirm the
+commit happened** → `git push origin main`. **Pushing does not deploy.** Leave deploying to the
+verifier, or run `gh workflow run deploy.yml --ref main` and check the **job list** — a green run can
+have SKIPPED the deploy job.
 
-## REPORT BACK
-Commit SHAs, deploy run id, live BUILD_ID, the gate output, the live curl results, and — plainly —
-anything you could NOT verify. If you did not see a check pass, say it is outstanding.
+## 6. Out of scope — do NOT build these
+* **P3 (modal + wallpaper)** is a separate task. **D5 wallpaper is PAUSED by the owner** — if you ever
+  build it, it is a **static bundled asset**, never a per-user upload/preference/migration.
+  **D6 3D is BLOCKED on licence verification** — a `<SpaceScene />` shell with no asset is fine,
+  but **never ship a licence-unverified clip** (Pexels/Pixabay 403 automated fetches; Mixkit's terms
+  are behind JS modals). Report it as a BLOCKER.
+* **P4 / wallet W3 (admin grant)** — money-adjacent, and **must not be bundled into a UI commit.**
+* **Support (D3/D4) is already shipped and live** (`5d3b893b`, run `37305909697`). Do not rebuild it,
+  and do not move the support widget: it is **bottom-left** because `AgentWidget` owns bottom-right,
+  and two widgets in one corner make the lower one unclickable.
 
-- **D3 (UI only):** `components/support-widget.tsx`, mounted in `components/shell.tsx` **left of**
-  the agent widget, mirroring its footprint/z-index/EXE-suppression. Then the user composer (list
-  own tickets → open thread → reply) and the admin queue (list all → thread → reply →
-  `open → resolved`). **No new API needed** — it all backs onto existing routes.
-- **D4 (needs care):** "send any user a message" **cannot** be built as a new messaging system.
-  `SupportMessage` requires a `ticketId` (FK, `onDelete: Cascade`) and `SupportTicket.userId` is
-  immutable. The decided route is an **admin-composed ticket**: `createSupportTicket` gains an
-  admin `actorId` so an admin opens a ticket on behalf of a chosen user. **The target user id MUST
-  come from the admin session, NEVER from the request body** — that is the exact bug the schema
-  warns about at `prisma/schema.prisma:3492-3494`. No migration is needed for this route.
+## 7. Report back
+1. Gate results table — every command, real output, pass/fail/**outstanding**.
+2. **Whether the Wallet chip renders for a `license_only` session**, and what you decided.
+3. Proof Billing left the dock and the EXE nav still shows only Overview/Extract/Settings.
+4. What you did about `DESCRIPTIONS` and the dead filter.
+5. Anything you could not verify, plainly. Do not assume.

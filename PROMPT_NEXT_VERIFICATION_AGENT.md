@@ -183,15 +183,38 @@ a GitHub secret, not on your machine. **Verify live over `curl` against
 **TRAP 10 — `test:support` counts will move.** 40/40 is the baseline *including* the 10 new D4
 tests. If a count drops, the suite is being edited, not the code being fixed — read the diff.
 
+**TRAP 11 — THE WALLET CANNOT BE FUNDED YET. Every real user sees `$0.00`.**
+This is the most misreadable thing in the current build. `lib/wallet.ts` **has** `creditTopup`
+(`:431`), `creditApprovedPayment` (`:487`) and `adminAdjustBalance` (`:567`) — but `grep -rn` proves
+**no production route calls any of them**; the only hits are `lib/wallet.ts` itself and
+`tests/wallet.test.ts`. They are unit-tested and unwired. `POST /api/wallet` is **405** (GET only),
+and there is no `/api/wallet/grant`, `/api/billing/topup` or `/api/wallet/spend`.
+**What does exist is a TIER purchase flow** — `POST /api/billing/submit` creates a `Payment` with
+`status: "pending"` (`app/api/billing/submit/route.ts:133-142`) for manual admin review, and
+approving it does **not** credit a balance. **The owner's instruction to have no "Add funds" flow is
+therefore easy to satisfy: it was never built.** Only `PLAN_TASK_158` W3 (admin grant) can make a
+balance non-zero, and it is deliberately deferred. **So a Wallet chip reading `$0.00` is correct
+behaviour, not a bug — do not "fix" it, and treat any fabricated balance as a blocker.**
+
+**TRAP 12 — `getWallet()` is SERVER-ONLY.** The client must fetch `GET /api/wallet`, exactly as
+`components/wallet-balance.tsx` already does. A client component importing `@/lib/wallet` is a
+blocker. This is `PLAN_TASK_158` §4 rule 2 and it is easy to violate when a balance first appears in
+a new surface.
+
 **KNOWN OUTSTANDING (do not treat as done):**
 - The wallet card's **visual render with a real session has still never been observed.**
   Anonymous `GET /dashboard/billing` used to be a 307 to `/login`; it is now **200** (the page
   builds and serves) but that still says nothing about what a logged-in user sees.
-- **`Mailboxes` has a `DESCRIPTIONS` entry but NO `NAV_ITEMS` entry**, so `/dashboard/mailboxes`
-  is unreachable from the OS chrome for exactly the same reason Billing was. Confirmed still
-  present at `5d3b893b` (live: `GET /dashboard/mailboxes` → 200, i.e. the page serves but nothing
-  links to it). **One-line fix, deliberately left out of the Billing commit — it belongs in its
-  own commit.** Consider picking this up first; it is trivial and the owner is still affected.
+- ~~**`Mailboxes` has a `DESCRIPTIONS` entry but NO `NAV_ITEMS` entry**~~ — **RESOLVED AS A NON-ISSUE
+  (owner, 2026-10-05).** The previous handoff called this an unreachable-page defect. **It was
+  wrong.** `app/dashboard/mailboxes/page.tsx:11` is `redirect("/dashboard/campaigns?tab=mailboxes")` —
+  mailboxes are a tab inside Campaigns, which is where the owner wants them. Same for
+  `/dashboard/browser-profiles` → `/dashboard/browser?tab=profiles` and `/dashboard/licenses` →
+  `/dashboard/settings#licenses`. **There is no orphaned-page defect, and no one should "fix" it by
+  adding a `NAV_ITEMS` entry** — that would duplicate a tab that already exists.
+  **The real defect this masked is in `app/dashboard/page.tsx:26-37`:** a hardcoded allow-list filter
+  whose `i.href === "/dashboard/mailboxes"` condition can never match, so it silently drops every
+  newly added app. That is what hid Billing, and it is fixed by the current work item below.
 - Stock-video licences for D2 remain **unverified** (Pexels/Pixabay return 403 to automated
   fetches; Mixkit's terms load from JS).
 - `AdminSetting.cyberlabEnabled = false` in production (Cyber Lab is dark) while the owner has
@@ -199,52 +222,66 @@ tests. If a count drops, the suite is being edited, not the code being fixed —
 - `app/dashboard/billing/page.tsx` has **2 pre-existing** ESLint errors
   (`react-hooks/set-state-in-effect`).
 
-## 3. WORK ITEM A — wallet W3 (your main task)
+## 3. WORK ITEM A — OS dashboard redesign: Wallet chip + overview-only side nav
 
-Scope: `PLAN_TASK_158_WALLET_BALANCE.md` §7 row **W3** —
-`POST /api/admin/wallet/grant` + the admin panel section. Gate: **grant is audited and
-idempotent.**
+Scope: `PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md` **P1 and P2**. The feature agent works from
+`PROMPT_NEXT_FEATURE_AGENT.md`. **Two separate commits are expected** — verify they are separate and
+that each is independently deployable.
 
-**`PLAN_TASK_158` §8 is BINDING — this is money-adjacent.** "It typechecks" is not an acceptable
-report. Specifically, for W3:
-  - **No float money.** Integer cents end to end (§8.1 / D3).
-  - **The ledger is append-only.** No `update`/`delete` on `WalletLedgerEntry`, ever (§8.2).
-  - **`User.balanceCents` has exactly one writer — `lib/wallet.ts`** (§8.3). If your route writes
-    the balance column directly, that is a blocker, not a style note.
-  - **Guard, don't check-then-act.** Every mutation is a conditional `updateMany` whose
-    `count === 0` is the failure signal (D5, §8.4). A `findUnique`-then-`update` is a
-    lost-update bug under concurrency.
-  - **Credit + audit entry commit in ONE transaction**, or not at all (§8.5).
-  - **Every admin credit carries `adminId`** (§8.7). An unattributed balance change is a support
-    incident.
-  - **Admin routes check the admin session FIRST, before parsing the body** (§8.8) — follow the
-    pattern in `app/api/admin/support/tickets/route.ts`, which the verifier confirmed does this.
-  - **Idempotency is the W3 gate.** Two concurrent grants with the same `idempotencyKey` must
-    produce **one** ledger entry and **one** balance increase. This is acceptance test 1 in
-    `PLAN_TASK_158` §9.
+⚠ **The old Work Item A in this file said "verify wallet W3". That is superseded.** W3 is deferred:
+it is money-adjacent and must not ride along inside a UI commit. It remains the next *money* task
+after this one.
 
-**Verification you must perform, not assume:**
-  * **Mutation-test the auth guard**: remove the session check, confirm a test fails. A green test
-    that cannot fail is decoration.
-  * **Prove the double-credit is impossible** under real concurrency, not just sequentially.
-    The existing suite was blind to rate-limit **ordering** before (handoff trap 1) — the same
-    class of blind spot. Test the ORDER of operations, not just the outcome.
-  * Confirm `adminId` is captured on every grant path, including the failure path.
-  * Confirm the append-only invariant with a grep that no `walletLedgerEntry.update` /
-    `.delete` exists anywhere.
-  * **Live test on the VPS over real HTTP, including a concurrency test and a double-mint test**
-    (this is gate B of the money-adjacent protocol and is not optional).
+Step 0 — before touching code:
+  a. `git fetch origin && git status --short && git log --oneline -5` — confirm sync and what is in
+     flight. **Do not guess the git state.**
+  b. Read the diff of every changed path. **Do not rubber-stamp it.**
+  c. Confirm no unrelated changes are swept in, and that `TASK_133_RMM_ENGINE_BRINGUP.md` is still
+     untracked and **untouched** (TRAP 1).
 
-Also: `ExeLicense.paymentId` is `@unique` and **required**, so EXE-from-wallet needs a migration
-(`paymentId` nullable + `walletEntryId` + a CHECK); and `issueExeLicense()`
-(`lib/license-service.ts:130`) hardcodes `paymentId` — its `findUnique` is the **double-mint
-guard**, which the wallet path must not bypass. That is W6, but **do not regress it now.**
-Vantra already implements balance-first in production — copy its shape
-(`vantra/app/api/admin/payments/[paymentId]/confirm/route.ts:70-86` credit, `:116-123` debit);
-we improve on it with an append-only ledger. SpaceWorker already has the BTC/USDT/USDT-ERC20
-addresses on `AdminSetting`, so **no new payment infrastructure is needed.**
+Step 1 — the gate, before each commit:
+    npx tsc --noEmit · npx eslint (touched files only)
+    npm run test:wallet (29) · test:support (40) · test:hosting (334)
+    CI=true npm run build
 
-W5 without W4 is pointless, and W4 without W1 is impossible. **W3 is the next shippable phase.**
+Step 2 — verify the claims, do not assume them:
+  * **Billing left the dock.** `NAV_ITEMS` in `components/dashboard-nav.tsx` must have **no**
+    `/dashboard/billing` entry, and a **Wallet chip must exist in `components/menu-bar.tsx`** linking
+    to `/dashboard/billing`. **If the entry is merely hidden rather than deleted, that is a failure** —
+    `NAV_ITEMS` is the single source of truth and a hidden entry reappears in the dock.
+  * **The chip reads the balance over HTTP, not by importing the service.** `getWallet()` is
+    **server-only**. Grep the chip for any client-side `import ... from "@/lib/wallet"` — if present,
+    it is a **blocker**, not a style note.
+  * **No fabricated balance.** The wallet cannot be funded yet — see §3 of the plan. The chip will
+    read `$0.00` for every real user. **A hardcoded or optimistic balance is a release blocker.**
+    Confirm no top-up/"Add funds" flow was invented to paper over it.
+  * **Build-target narrowing did not regress.** `BUILD_ALLOWED_HREFS.extractor` must still yield only
+    Overview/Extract/Settings. Removing a Billing entry cannot affect the EXE (Billing was never in
+    that set) — **verify, don't assume.**
+  * **The sidebar renders on the OVERVIEW ONLY.** If it is added to `components/shell.tsx`, it shows
+    on every page and contradicts the request. Confirm it is `hidden md:flex` and does not overlap
+    the bottom dock (`components/dock.tsx:19`).
+  * **The dead filter is gone.** `app/dashboard/page.tsx` must no longer contain the hardcoded
+    allow-list with the never-matching `i.href === "/dashboard/mailboxes"` condition. **If that
+    filter survives, the fix was cosmetic** — the class of bug (new apps silently hidden) is intact.
+  * **No dead data left behind.** Removing the cards removes the only reader of `DESCRIPTIONS`
+    (`app/dashboard/page.tsx:12-22`). Either delete it or confirm something still reads it.
+  * **`Mailboxes` was NOT added to `NAV_ITEMS`.** If the agent "fixed" the non-issue, reject the
+    change — it duplicates a tab that already exists inside Campaigns (§2).
+  * **Support widget has not moved.** It is bottom-left because `AgentWidget` owns bottom-right.
+  * **No wallet/admin-grant route was added** in a UI commit (TRAP: money inside a UI change).
+
+Step 3 — deploy and prove live:
+  * `git push origin main`; `gh workflow run deploy.yml --ref main`.
+  * Confirm the **DEPLOY JOB** ran (not skipped) — check the **job list**, not the run conclusion.
+  * Confirm `.next` was removed before extraction and the BUILD_ID mtime is inside the job window.
+  * Live over `curl` (SSH prompts for a password — TRAP 9): `GET /dashboard/billing` → expect a real
+    200/307, and `GET /api/wallet` unauthenticated → **401, not 404** (mounted) and **not 200**.
+  * **You cannot see a rendered chip without a real session** — say so plainly rather than claiming
+    the Wallet chip "works". Anonymous HTML proves the page serves, not that the chip renders.
+
+Step 4 — commit and deploy if the agent left work uncommitted. `git add` specific paths only;
+commit with `-F<file>`; confirm with `git log -1` (TRAP 7).
 
 ## 4. WORK ITEM B — the owner's locked decisions. Do NOT relitigate these.
   **D1 WALLETPAPER: PAUSED.** No per-user wallpaper isolation, so custom wallpaper uploads are
