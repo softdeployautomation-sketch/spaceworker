@@ -89,11 +89,20 @@ let clock = new Date("2026-10-04T10:00:00.000Z");
 let seq = 0;
 const nextId = (prefix: string) => `${prefix}_${++seq}`;
 
-/** Emails the admin detail view joins for. */
+/** Emails the admin detail view joins for, and the emails `user.findUnique` resolves. */
 const userEmails: Record<string, string> = {
   user_a: "ada@sw.dev",
   user_b: "bob@sw.dev",
 };
+
+/**
+ * The reverse index `createAdminComposedTicket` looks the target up through.
+ *
+ * TASK_161 D4 resolves the ticket's owner from an EMAIL, so this is the lookup the
+ * whole admin-composed path hinges on. Seeded from `userEmails` by default so an
+ * existing test that files as "user_a" resolves too.
+ */
+let usersByEmail: Record<string, string> = { "ada@sw.dev": "user_a", "bob@sw.dev": "user_b" };
 
 function ticket(over: Partial<FakeTicket> & { id: string; userId: string }): FakeTicket {
   return {
@@ -152,6 +161,13 @@ function isDate(value: unknown): boolean {
 }
 
 const fakePrisma = {
+  user: {
+    findUnique: async ({ where }: { where: { email: string } }) => {
+      queries.push({ op: "user.findUnique", where });
+      const id = usersByEmail[where.email];
+      return id ? { id } : null;
+    },
+  },
   userDomain: {
     findUnique: async ({ where }: { where: { id: string } }) => {
       queries.push({ op: "userDomain.findUnique", where });
@@ -331,6 +347,8 @@ const userMsgRoute = require("../app/api/support/tickets/[id]/messages/route") a
 };
 const adminListRoute = require("../app/api/admin/support/tickets/route") as {
   GET: (req: Request) => Promise<Res>;
+  /** TASK_161 D4 — the admin-composed ticket, added to this route's contract. */
+  POST: (req: Request) => Promise<Res>;
 };
 const adminIdRoute = require("../app/api/admin/support/tickets/[id]/route") as {
   GET: (req: Request, c: { params: Promise<{ id: string }> }) => Promise<Res>;
@@ -366,6 +384,10 @@ beforeEach(() => {
   clock = new Date("2026-10-04T10:00:00.000Z");
   sessionUser = { id: "user_a" };
   adminSession = null;
+  // Reset the lookup index, not just the store: a test that adds an email must not
+  // leak that account into the next test, or "an unknown email is refused" would
+  // silently stop being true depending on test order.
+  usersByEmail = { "ada@sw.dev": "user_a", "bob@sw.dev": "user_b" };
 });
 
 // ===========================================================================
@@ -873,3 +895,159 @@ test("§4 the queue's preview is the LAST message, and it is not the whole threa
   // row. `take: 1` bounds the QUERY; this bounds the VIEW.
   assert.equal(row.messages, undefined, "a list must not carry message bodies");
 });
+
+// ===========================================================================
+// TASK_161 D4 — THE ADMIN-COMPOSED TICKET.
+//
+// The security question this file has to answer is NOT "can an admin file a ticket?"
+// — of course they can. It is "can anybody ELSE file a ticket against a customer, or
+// read a thread that is not theirs?" Every test below is about that.
+// ===========================================================================
+
+/** A valid admin-composed body, overridden per test. */
+const compose = (over: Record<string, unknown> = {}) =>
+  jsonReq("POST", {
+    userEmail: "bob@sw.dev",
+    subject: "Called about mine.com",
+    body: "Bob phoned; his nameservers are set but the page is not served.",
+    ...over,
+  });
+
+test("D4 an unauthenticated POST is refused 401 and the body is NEVER read", async () => {
+  adminSession = null;
+  const res = await adminListRoute.POST(compose());
+  assert.equal(res.status, 401);
+  // The gate runs before `request.json()`. Asserted rather than assumed, because the
+  // alternative — parse, then check — is what turns this endpoint into an
+  // account-existence oracle reachable without credentials.
+  assert.equal(queries.some((q) => q.op === "user.findUnique"), false, "no lookup may run");
+  assert.equal(store.tickets.length, 0, "and nothing may be written");
+});
+
+test("D4 the target is resolved from the EMAIL server-side, and the ticket is the customer's", async () => {
+  adminSession = { sub: "admin" };
+  const res = await adminListRoute.POST(compose());
+  assert.equal(res.status, 201);
+
+  // The lookup is by email, against User.email. There is no id parameter at all, so
+  // there is nothing to forge into somebody else's row.
+  const lookup = queries.find((q) => q.op === "user.findUnique");
+  assert.equal(lookup?.where.email, "bob@sw.dev");
+
+  // The stored owner is the RESOLVED id for that email — not "user_a" (the session
+  // user) and not whatever the caller sent.
+  const stored = store.tickets[0];
+  assert.equal(stored.userId, "user_b");
+  assert.notEqual(stored.userId, "user_a", "the admin session user is not the owner");
+});
+
+test("D4 the admin's session subject is recorded as the author, not a user id", async () => {
+  adminSession = { sub: "admin" };
+  await adminListRoute.POST(compose());
+  const msg = store.messages[0];
+  assert.equal(msg.authorRole, "admin");
+  assert.equal(msg.authorId, "admin");
+  // The literal string "admin" is the shared-passcode subject (lib/admin-auth.ts). It
+  // is NOT a User row and must never be mistaken for one.
+  assert.equal(usersByEmail["admin"], undefined, "'admin' is not a user id");
+});
+
+test("D4 the email match is case- and whitespace-insensitive", async () => {
+  adminSession = { sub: "admin" };
+  const res = await adminListRoute.POST(compose({ userEmail: "  BOB@Sw.Dev  " }));
+  assert.equal(res.status, 201, "a different spelling of one address must still resolve");
+  assert.equal(store.tickets[0].userId, "user_b");
+});
+
+test("D4 an unknown email is a 404 and writes nothing", async () => {
+  adminSession = { sub: "admin" };
+  const res = await adminListRoute.POST(compose({ userEmail: "nobody@sw.dev" }));
+  assert.equal(res.status, 404);
+  assert.equal(store.tickets.length, 0, "a ticket must not be filed against nobody");
+  assert.equal(store.messages.length, 0);
+});
+
+test("D4 a missing email is refused before any lookup", async () => {
+  adminSession = { sub: "admin" };
+  // zod's `min(1)` accepts three spaces, so this is NOT caught as a 400 — it reaches
+  // the service, which trims and returns 422 `missing_email`. The 404 branch and the
+  // lookup are the things worth proving here, so the assertion is on the lookup.
+  const res = await adminListRoute.POST(compose({ userEmail: "   " }));
+  assert.equal(res.status, 422);
+  assert.equal(queries.some((q) => q.op === "user.findUnique"), false, "no lookup for a blank");
+  assert.equal(store.tickets.length, 0);
+});
+
+test("D4 the composed ticket is visible to the CUSTOMER it was filed for", async () => {
+  adminSession = { sub: "admin" };
+  await adminListRoute.POST(compose());
+
+  // The whole reason this feature exists: a thread that starts in a channel nobody is
+  // watching is a thread that gets answered twice, or not at all. It must land in the
+  // customer's own list, which is only true because the owner was resolved to them.
+  sessionUser = { id: "user_b" };
+  const rows = (await readBody(await userListRoute.GET())).tickets ?? [];
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].subject, "Called about mine.com");
+
+  // And the OTHER customer must not see it. This is the assertion that would fail if
+  // the owner were ever taken from a request field instead of the email lookup.
+  sessionUser = { id: "user_a" };
+  const other = (await readBody(await userListRoute.GET())).tickets ?? [];
+  assert.equal(other.length, 0, "user_a must not see a ticket filed for user_b");
+});
+
+test("D4 the customer can reply to an admin-composed ticket, and the admin sees it", async () => {
+  adminSession = { sub: "admin" };
+  const created = (await readBody(await adminListRoute.POST(compose()))).ticket as {
+    id: string;
+  };
+
+  sessionUser = { id: "user_b" };
+  const reply = await userMsgRoute.POST(
+    jsonReq("POST", { body: "Yes, that is the right domain." }),
+    ctx(created.id)
+  );
+  assert.equal(reply.status, 201);
+
+  adminSession = { sub: "admin" };
+  const thread = (await readBody(await adminIdRoute.GET(jsonReq("GET"), ctx(created.id)))).ticket as {
+    messages: Array<Record<string, unknown>>;
+    userEmail: string;
+  };
+  assert.equal(thread.userEmail, "bob@sw.dev", "the queue names whose ticket this is");
+  assert.equal(thread.messages.length, 2);
+  assert.equal(thread.messages[1].authorRole, "user");
+});
+
+test("D4 no customer route can name a target user — the D4 hole is not copied into §2.2", async () => {
+  sessionUser = { id: "user_a" };
+  // The customer POST is asked to file against user_b. The schema does not declare the
+  // field, so it is dropped and the ticket is filed for the session user, which is the
+  // ONLY correct outcome. If someone ever adds `userId` to that schema, this test is
+  // what notices — it is the regression guard for the whole D4 design.
+  const res = await userListRoute.POST(
+    jsonReq("POST", {
+      userEmail: "bob@sw.dev",
+      userId: "user_b",
+      subject: "Trying to file against someone else",
+      body: "This must land on my own account.",
+    })
+  );
+  assert.equal(res.status, 201);
+  assert.equal(store.tickets[0].userId, "user_a");
+  assert.equal(store.tickets.length, 1, "no second ticket may appear");
+});
+
+test("D4 §2.1 the credential scan applies to an ADMIN-composed ticket too", async () => {
+  adminSession = { sub: "admin" };
+  const res = await adminListRoute.POST(
+    compose({ body: "his token is cfut__OOujdCztZDuH8yrK3mNqPLrXe" })
+  );
+  assert.equal(res.status, 422);
+  assert.equal(store.tickets.length, 0, "staff must not be the one who gets a token in");
+  const body = await readBody(res);
+  assert.match(body.error ?? "", /Cloudflare/, "the refusal names the shape, not the secret");
+  assert.ok(!(body.error ?? "").includes("OOujdCztZDuH8yr"), "and never echoes the value");
+});
+

@@ -8,6 +8,7 @@ import { DesktopBackground } from "@/components/desktop-background";
 import { Dock } from "@/components/dock";
 import { LogoutButton } from "@/components/logout-button";
 import { MenuBar } from "@/components/menu-bar";
+import { SupportWidget } from "@/components/support-widget";
 import { ThemeToggle } from "@/components/theme-toggle";
 
 interface ShellProps {
@@ -69,6 +70,18 @@ export function Shell({ children, buildTarget }: ShellProps) {
           runtime (buildTarget set) has no DATABASE_URL, and /api/agent is a
           real Prisma-backed route — it would just fail there. */}
       {!buildTarget && <AgentWidget />}
+
+      {/* TASK_161 D3 — the support widget, for the same reason and with the same
+          gate: /api/support/** is a real Prisma-backed route and the EXE ships
+          with no DATABASE_URL.
+
+          Placed BOTTOM-LEFT, not bottom-right, because AgentWidget already owns
+          bottom-right (components/agent-widget.tsx). Two widgets on the same
+          corner overlap each other, and the one underneath becomes unclickable —
+          which would make support unreachable in exactly the width range where
+          the panel is open. Opposite corners is the fix, and it is a positional
+          decision rather than an arbitrary one. */}
+      {!buildTarget && <SupportWidget />}
       </div>
     </AgentPageContextProvider>
   );

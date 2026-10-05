@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 
 import {
   Cloud,
+  CreditCard,
   FlaskConical,
   Globe,
   LayoutDashboard,
@@ -53,6 +54,17 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
   // "not available yet" placeholder until AdminSetting.cyberlabEnabled is on and
   // the lab ships, exactly like Hosting was before P1 was switched on.
   { href: "/dashboard/cyberlab", label: "Cyber Lab", icon: FlaskConical },
+  // TASK_161 D3 / Task 158 W2 — Billing was LIVE but UNREACHABLE: /dashboard/billing
+  // existed and rendered the wallet balance card, yet no NAV_ITEMS entry pointed at
+  // it, so there was no way to click to it from the dock or the mobile nav row. The
+  // owner reported "I see no billing page or tab right now", and that was correct.
+  // Web-only, so it is auto-excluded from the extractor build below.
+  //
+  // KNOWN SEPARATE DEFECT, deliberately NOT fixed here (it is its own change and
+  // would not belong in a Billing-visibility commit): `Mailboxes` has a DESCRIPTIONS
+  // entry but STILL has no NAV_ITEMS entry, so /dashboard/mailboxes is unreachable
+  // from the OS chrome for the same reason. See SENIOR_HANDOFF §7.2.
+  { href: "/dashboard/billing", label: "Billing", icon: CreditCard },
   { href: "/dashboard/settings", label: "Settings", icon: Settings },
 ];
 

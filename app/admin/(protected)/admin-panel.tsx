@@ -8,6 +8,7 @@ import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 import DomainsPanel from "@/components/admin/domains-panel";
+import SupportQueuePanel from "@/components/admin/support-queue-panel";
 
 type AdminUser = {
   id: string;
@@ -54,7 +55,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "devices" | "payments" | "wallets" | "notifications" | "sessions" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
+type Tab = "overview" | "users" | "devices" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -66,6 +67,15 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
   { id: "sessions", label: "Browser Sessions" },
+  // TASK_161 D3 — the support queue, placed directly after Browser Sessions and
+  // BEFORE "Search Queue". Two reasons, and the naming one matters:
+  //   * "Support" and "Search Queue" both begin with S and an admin reaching for
+  //     support should not have to read past a tab whose name starts the same way.
+  //   * The existing "Search Queue" label is about the async SEARCH JOB pipeline
+  //     (screenshots/OCR leads). Renaming it to "Job Queue" would be clearer still,
+  //     but that is a separate cosmetic change and not mine to make inside a commit
+  //     that adds a feature — it would touch every doc and screenshot naming it.
+  { id: "support", label: "Support" },
   { id: "queue", label: "Search Queue" },
   // TASK_126 — split out of "Search Queue", which used to hold five unrelated
   // system panels (Admission control, Worker control, Governor, Clone limits,
@@ -209,6 +219,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "wallets" && <WalletsTab />}
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
+        {tab === "support" && <SupportQueuePanel />}
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
         {tab === "research" && <ResearchTab />}

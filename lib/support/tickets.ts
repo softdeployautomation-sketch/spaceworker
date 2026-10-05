@@ -609,3 +609,119 @@ export async function updateAdminTicket(
   });
   return { ok: true, value: toTicketView(row) };
 }
+
+// ---------------------------------------------------------------------------
+// ADMIN-COMPOSED TICKETS (TASK_161 D4)
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a ticket ON BEHALF OF a user, from the admin panel.
+ *
+ * The need is real: support routinely has to answer "my domain isn't showing up" from
+ * a phone call or a Discord message, and forcing the customer to log in and file it
+ * themselves means the thread starts in a channel nobody is watching.
+ *
+ * ── WHY THERE IS NO "target user id" PARAMETER ────────────────────────────────────
+ *
+ * PLAN_TASK_159 §2.2 requires the ticket's owner to come from the session and NEVER
+ * from a request body, because a body-supplied id lets a crafted POST file a ticket
+ * against somebody else's account. That rule is stated for the CUSTOMER routes, where
+ * the session identifies exactly one person and that person may only ever act on
+ * themselves.
+ *
+ * It does not transfer to the admin side, and pretending it does would be worse than
+ * ignoring it. `lib/admin-auth.ts` shows why: the admin panel is a SINGLE SHARED
+ * PASSCODE session whose subject is literally the string `"admin"`. It carries no user
+ * identity at all — there is no admin whose id could be the owner, and asking for one
+ * would be asking for a value that does not exist.
+ *
+ * So the security intent is preserved by moving the decision to the only place that can
+ * actually make it, the SERVER:
+ *
+ *   1. `requireAdminSession()` runs BEFORE the body is parsed (see the route), so an
+ *      unauthenticated caller never reaches this function and never learns whether a
+ *      given email has an account.
+ *   2. The target is an EMAIL, resolved here against `User.email` — a lookup the
+ *      attacker cannot forge into an arbitrary row the way they can forge an id.
+ *   3. The customer's own route gains NO new parameter: `POST /api/support/tickets`
+ *      still has no way to name a target, so §2.2 is untouched on the side where a
+ *      real customer is the caller.
+ *   4. The email is normalised to lowercase, because `User.email` is `@unique` and two
+ *      spellings of one address that both "resolve" differently would file the ticket
+ *      against nobody.
+ *
+ * An unknown email is a 404 with a generic message. Not to hide accounts from staff —
+ * the staff already have the Users tab — but because "we could not find that user" is
+ * the actionable half of the failure, and the other half ("that email exists but is
+ * not verified") is a detail that belongs in the ticket, not the error.
+ *
+ * The credential scan applies here exactly as it does on the customer route
+ * (`validateSubject` / `validateBody` are the SAME functions), so an admin cannot be
+ * the person who finally gets a token into the table by typing it into the wrong box.
+ */
+export async function createAdminComposedTicket(input: {
+  userEmail: string;
+  subject: string;
+  body: string;
+  category?: string | null;
+  priority?: string | null;
+  authorId?: string | null;
+}): Promise<SupportResult<SupportTicketDetailView>> {
+  const subject = validateSubject(input.subject);
+  if (!subject.ok) return subject;
+  const body = validateBody(input.body);
+  if (!body.ok) return body;
+
+  const email = (input.userEmail ?? "").trim().toLowerCase();
+  if (email === "") {
+    return {
+      ok: false,
+      status: 422,
+      code: "missing_email",
+      message: "Enter the customer's email address.",
+    };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true },
+  });
+  if (!user) {
+    return {
+      ok: false,
+      status: 404,
+      code: "user_not_found",
+      message: "No account with that email address.",
+    };
+  }
+
+  // No `domainRefId` parameter, deliberately: an admin-attached domain would bypass
+  // `resolveOwnedDomain`'s ownership check, which is the only thing keeping a ticket's
+  // domain reference on the customer's own account (§3.3). If this feature ever needs
+  // it, the domain must be resolved WITH `ownerUserId = user.id`, not trusted from the
+  // form.
+
+  const created = await prisma.supportTicket.create({
+    data: {
+      // The RESOLVED owner, from the lookup above — never from the form.
+      userId: user.id,
+      subject: subject.value,
+      category: cleanOptional(input.category),
+      priority: cleanOptional(input.priority),
+      messages: {
+        create: {
+          authorRole: AUTHOR_ADMIN,
+          // The admin session subject ("admin"). Nullable with no FK, so removing an
+          // admin's account later can never block or orphan this row (§3.2).
+          authorId: cleanOptional(input.authorId),
+          body: body.value,
+        },
+      },
+    },
+    select: { id: true },
+  });
+
+  // Re-read through the admin detail path, so this response carries the same shape the
+  // admin queue will produce on its next read and the two can never disagree.
+  return getAdminTicket(created.id);
+}
