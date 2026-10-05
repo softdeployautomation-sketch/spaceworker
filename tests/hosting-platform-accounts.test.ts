@@ -179,6 +179,7 @@ const {
   healthyPlatformAccountCount,
   isPlatformEngineEnabled,
   listPlatformAccounts,
+  verifyPlatformAccount,
 } = mod;
 
 beforeEach(() => {
@@ -1376,4 +1377,203 @@ test("TASK_158 W2: the USER credential path proves its writes too", async () => 
     loader._load = original;
     delete require.cache[credsPath];
   }
+});
+
+// ---------------------------------------------------------------------------
+// TASK_160 — a bad capability token must be able to go RED.
+//
+// Before this change `zoneTokenError` had exactly one writer in the whole
+// codebase and it wrote `null`, so a Zones token that was readable in the
+// database but refused by Cloudflare rendered green forever and only failed
+// later, at provision time, on an end user's domain-add request. Each test below
+// names the exact rule it pins, and the first two are the pair from
+// TASK_160_CAPABILITY_TOKEN_ERROR_COLUMNS.md §5.
+// ---------------------------------------------------------------------------
+
+const CAP_ZONE_TOKEN = "cf-zone-token-ZZZZ9999";
+const PAGES_OK = async () => ({ ok: true, status: 200, value: { accountId: "acct_x" } });
+
+/** A row whose Pages token is fine and whose Zones token is `zoneToken`. */
+function seedWithZoneToken(zoneToken: string | null): Row {
+  const zone = zoneToken ? crypto.encryptSecret(zoneToken) : null;
+  return seed({
+    accountId: "acct_zone",
+    zoneTokenCiphertext: zone?.ciphertext ?? null,
+    zoneTokenIv: zone?.iv ?? null,
+    zoneTokenTag: zone?.tag ?? null,
+    zoneTokenHint: zoneToken ? zoneToken.slice(-4) : "",
+    zoneTokenError: null,
+  });
+}
+
+test("TASK_160: a REFUSED Zones token stamps zoneTokenError (fails before: it was null)", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => ({ ok: false, status: 403, error: "Invalid API Token" }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.ok(res.ok && typeof res.value.zoneTokenError === "string" && res.value.zoneTokenError.length > 0,
+    "a refused Zones token must leave a reason an admin can read");
+});
+
+test("TASK_160: a row with NO Zones token is never marked broken, and is never probed", async () => {
+  const row = seedWithZoneToken(null);
+  let probeCalls = 0;
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => {
+      probeCalls++;
+      return { ok: false, status: 403, error: "Invalid API Token" };
+    },
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  // NULL is the normal state of the fleet; a row that was never configured must
+  // not be able to render red, which is the guard against "fixing" this by
+  // treating absent as broken.
+  assert.equal(res.ok && res.value.zoneTokenError, null);
+  assert.equal(probeCalls, 0, "no token to probe must mean no probe call at all");
+});
+
+test("TASK_160: a Zones token that cannot be DECRYPTED goes red, not green", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+  // Break the tag. `readZoneToken` swallows this and answers null, which is
+  // indistinguishable from "never set" — so the decision to probe has to be made
+  // from the ciphertext columns, not from that return value.
+  row.zoneTokenTag = "not-a-real-tag";
+  let probeCalls = 0;
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => {
+      probeCalls++;
+      return { ok: true, status: 200, value: null };
+    },
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.match(res.ok ? (res.value.zoneTokenError ?? "") : "", /could not be read/);
+  assert.equal(probeCalls, 0, "an unreadable token is reported, not silently treated as absent");
+});
+
+test("TASK_160: a Zones token that verifies CLEARS a previous error", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+  row.zoneTokenError = "Invalid API Token"; // the stale verdict from an earlier run
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => ({ ok: true, status: 200, value: null }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.ok && res.value.zoneTokenError, null);
+});
+
+test("TASK_160: an unreadable PAGES token does not hide an unreadable ZONES token", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+  row.tokenTag = "not-a-real-tag"; // the Pages path returns early on this
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => ({ ok: false, status: 403, error: "Invalid API Token" }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  // The two tokens are independent credentials; failing to read one must not
+  // leave the other's column dark, which is how this column stayed dead.
+  //
+  // Asserted as NON-EMPTY rather than by matching the text: a 403's wording is
+  // deliberately ours and not Cloudflare's (see the 403 branch in
+  // probeAndStampZoneToken), so pinning the provider's string here would break
+  // every time that message is improved. The property under test is that the
+  // column is stamped at all.
+  assert.ok((res.ok ? res.value.zoneTokenError ?? "" : "").length > 0,
+    "an unreadable Pages token must not leave the Zones column dark");
+});
+
+test("TASK_160: workerTokenError stays NULL, on purpose, and is documented as such", async () => {
+  const worker = crypto.encryptSecret("cf-worker-token-WWWW1111");
+  const row = seed({
+    accountId: "acct_worker",
+    workerTokenCiphertext: worker.ciphertext,
+    workerTokenIv: worker.iv,
+    workerTokenTag: worker.tag,
+    workerTokenHint: "1111",
+  });
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    // A probe that fails everything, so if the Workers token were ever verified
+    // through this path it would go red here.
+    probeZoneToken: async () => ({ ok: false, status: 403, error: "Invalid API Token" }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(res.ok && res.value.workerTokenError, null,
+    "no side-effect-free call proves a Workers token can upload a script AND edit DNS");
+});
+
+test("TASK_160: the stamped reason never carries the token or its ciphertext", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+  const ciphertext = row.zoneTokenCiphertext as string;
+
+  // A hostile probe: a provider that quotes the credential back in its error
+  // body. This value is persisted, mailed and rendered, so the guard has to hold
+  // for a bad provider message, not only for a well behaved one.
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async (cred) => ({
+      ok: false,
+      status: 403,
+      error: `Authentication failed for token ${cred.token}`,
+    }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  const stamped = res.ok ? (res.value.zoneTokenError ?? "") : "";
+  assert.ok(stamped.length > 0, "the row still goes red");
+  assert.ok(!stamped.includes(CAP_ZONE_TOKEN), "the token must not be persisted or displayed");
+  assert.ok(!stamped.includes(ciphertext), "nor any part of the stored ciphertext");
+});
+
+test("TASK_160: a 403 does NOT claim the token is invalid, because Zone Read is a different grant", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+
+  // Cloudflare's own wording for a 403 on /zones is "Authentication error", which
+  // points the operator at the wrong thing entirely.
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => ({ ok: false, status: 403, error: "Authentication error" }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  const stamped = (res.ok ? res.value.zoneTokenError : "") ?? "";
+
+  // `GET /zones` needs Zone READ; custom domains need Zone CREATE. A token with
+  // only Zone Create 403s this probe and is still perfectly able to add domains.
+  // Telling the owner their token is broken would send them to delete a working
+  // token and replace it with one that 403s identically — a loop with no exit.
+  assert.ok(stamped.length > 0, "the row still goes red — it is genuinely unproven");
+  assert.doesNotMatch(stamped, /invalid/i,
+    "never assert the token is invalid: a Zone-Create-only token 403s here and works");
+  assert.match(stamped, /Zone Read|revoked/i,
+    "name the two real causes instead of guessing between them");
+});
+
+test("TASK_160: a 5xx is reported as ITSELF, not as a verdict on the token", async () => {
+  const row = seedWithZoneToken(CAP_ZONE_TOKEN);
+
+  const res = await verifyPlatformAccount(row.id, {
+    verify: PAGES_OK,
+    probeZoneToken: async () => ({ ok: false, status: 503, error: "Service temporarily unavailable" }),
+  });
+
+  assert.ok(res.ok, JSON.stringify(res));
+  const stamped = (res.ok ? res.value.zoneTokenError : "") ?? "";
+  assert.match(stamped, /temporarily unavailable/i, "Cloudflare's own words survive");
+  assert.doesNotMatch(stamped, /revoked|invalid/i, "an outage says nothing about the token");
 });

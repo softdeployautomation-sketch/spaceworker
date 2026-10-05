@@ -152,7 +152,14 @@ keeps its meaning and no backfill is required.
 ```prisma
 model User {
   // ...existing fields untouched...
-  balanceCents  Int  @default(0)   // TASK_158 D2. Money IN, cached total.
+  balanceCents  Int  @default(0)   // TASK_158 D2. Money IN, cached total. SIGNED.
+  // TASK_158 D10 (owner, 2026-10-05) — the postpaid CEILING, in cents. 0 =
+  // postpaid off, which is every existing and every new user. This is NOT a
+  // second balance: it authorises how far BELOW zero balanceCents may go, and
+  // nothing else. Owed = max(0, -balanceCents); headroom = balanceCents +
+  // postpaidLimitCents. Never negative itself (a negative limit would be an
+  // inverted rule, so the migration CHECKs it >= 0).
+  postpaidLimitCents Int @default(0)
   walletEntries WalletLedgerEntry[]
   walletGrants  WalletLedgerEntry[] @relation("WalletAdminActor")
 }
@@ -171,9 +178,12 @@ model WalletLedgerEntry {
   balanceAfterCents Int
   // "topup"        — admin credited an approved crypto payment
   // "purchase"     — user spent balance on a product/entitlement
-  // "refund"       — a purchase was reversed
+  // "refund"       — a purchase was reversed (O2: always a CREDIT, never a debit)
   // "admin_grant"  — manual credit, no payment involved
   // "admin_adjust" — manual correction (can be negative)
+  // "postpaid_grant" / "postpaid_revoke" — D10. These change WHAT IS ALLOWED, not
+  //   the money: amountCents is 0 and balanceAfterCents is unchanged, so the
+  //   running-sum invariant in acceptance test 4 still holds for every row.
   kind      String
   // Free-text label for the UI, e.g. "Premium — 30 days" or "Hosting link pack".
   note      String?
@@ -395,19 +405,94 @@ W1 first, always. W5 without W4 is pointless, and W4 without W1 is impossible.
   wallet** — see D7/D9 and phase W6. The wallet is also the place a customer
   comes to *fix and replace* a license. Remaining sub-question, now O5 below:
   what a re-issue costs.
-- **O2** — Refund policy: when an admin rejects a previously credited top-up,
-  should the balance go negative (allowed, recoverable) or should the admin
-  issue an explicit `admin_adjust`? Plan currently allows negative.
-- **O3** — Minimum top-up amount and whether there is a maximum per order.
-- **O4** — Should a user be able to spend balance on hosting link packs /
-  storage overages (the `hostingPremiumMaxLinks` family in `AdminSetting`), or
-  is balance-for-premium-only for now? The `lib/entitlements.ts` +
-  `lib/hosting/rules.ts` cap machinery already makes this a clean extension.
-- **O5** — What does a **re-issued / replacement EXE license** cost? Full price
-  again, or free when the original was already paid for (defect replacement)? This
-  is a policy choice, and it decides whether W6's "fix and replace" flow needs a
-  refund/debit path at all. **Ask before building W6's replace flow.**
-- **O6** — When a wallet-bought EXE license is replaced, does the OLD license
-  row get superseded (revoked / `boundMachineId` cleared) or do both stay valid?
-  `ExeLicenseTransfer` + `lib/exe-license-bind.ts:60` already reason about
-  machine binding, so this is a real decision, not a detail.
+- **O2 — RESOLVED (owner, 2026-10-05): refunds are real, but a balance may only go
+  negative when an admin has explicitly granted postpaid.** Two separate rules, and
+  conflating them is how a customer ends up with a surprise debt:
+  - **Refund** (bad item) credits money back — positive, unconditional. It can
+    never itself push a balance below zero; if the refunded purchase itself was
+    bought on postpaid, the refund settles the debt before it becomes a balance.
+  - **Negative balance is forbidden by default.** A user with $0 cannot buy.
+  - **An admin may grant a user a postpaid line of any amount.** That line is the
+    *only* thing that authorizes a negative balance, and it is a **ceiling, not a
+    balance**: the user may keep spending until they reach it, then must top up.
+    They may add funds at any time to cover it and keep buying. See D10.
+- **O3 — RESOLVED (owner, 2026-10-05): minimum top-up $10, maximum $10,000.**
+  Enforced in the top-up route, not only in the UI. The maximum is per order, not
+  per lifetime — a user may top up repeatedly.
+- **O4 — RESOLVED (owner, 2026-10-05): "balances can buy anything in spaceworker."**
+  Balance is **currency, not a feature-scoped credit.** Any product, add-on, plan
+  tier, or capacity pack the admin panel can sell can be bought with balance, and
+  nothing may hardcode a narrower allow-list of eligible products.
+
+  Two consequences the builder must respect, both mechanical:
+  - **The price is a per-SKU stored value, not a constant in the purchase code.**
+    If a product's price lives in a `switch`/`if` next to the checkout call, this
+    decision is violated the moment a second SKU is added. W1 only needs the ledger
+    and `debitWallet` to be price-agnostic — **take the amount as a parameter and
+    never import a price table into `lib/wallet.ts`.** Pricing lives with the SKU.
+  - **This does NOT make metered/overage spend in scope.** "Anything you can buy"
+    means purchasable goods and tiers. It is not authorisation to charge balance per
+    page-view, per GB, or per link — that is billing-by-usage, needs its own
+    metering and its own owner decision. Capacity packs stay a *product you buy*
+    (a tier that raises `hostingPremiumMaxLinks`), not a live meter.
+
+  The premium cap machinery (`lib/entitlements.ts` + `lib/hosting/rules.ts`) is
+  therefore the mechanism for "buy more capacity": buying a higher tier still writes
+  an `AdminSetting`/entitlement cap, and the wallet only has to move the money. Do
+  not fork the cap logic into the wallet.
+- **O5 — RESOLVED (owner, 2026-10-05): a replacement EXE license costs full price
+  again, and self-service is limited to moving a license to another device.** The
+  license is locked to the buyer's email *and* device, so "self-service replacement"
+  can only ever mean a device move. A genuinely defective item is handled as a
+  **support report**, and the admin decides whether that specific case is free.
+  So the wallet's EXE path has two distinct actions and they must not be conflated:
+  **buy** (debits the full price) and **move to another device** (never debits,
+  uses the existing `transferExeLicenseToMachine`). Defect refunds are an admin
+  decision recorded on the ticket, not a self-service button.
+- **O6 — RESOLVED (owner, 2026-10-05): the former license IS already invalidated,
+  and it is invalidated by overwrite rather than by a flag.** Confirmed in the code
+  on 2026-10-05: `transferExeLicenseToMachine()` (`lib/exe-license-bind.ts:376`)
+  overwrites `boundMachineId`/`boundLicenseKey` in place, and the validator checks
+  `machine_id` against the live device (`lib/exe-license-validator.ts:102`), so the
+  old key stops validating the moment it moves. There is no `revokedAt` column and
+  none is needed: a re-sign replaces the only copy that was device-specific, and
+  every move is recorded in the append-only `ExeLicenseTransfer` log.
+
+  **⚠️ One thing that is NOT implemented, and W6 must not assume it is:** the
+  transfer path is *already* correct for a device move, but nothing today links a
+  replacement to the *purchase* — there is no `supersededBy`/`replacesId` on
+  `ExeLicense`, so "which license replaced which" is only reconstructable from the
+  audit log. W6 may leave it that way (the transfer log is sufficient) but must not
+  claim a supersede relationship that does not exist.
+
+## 10.1 D10 — postpaid is a CEILING on the debt, not a balance
+
+The owner (2026-10-05): *"i can assign a user a post of any amount so that user can
+keep getting stuff and getting negative balance, and can pay up later and then add
+more funds."*
+
+Modelled as one signed integer plus one non-negative limit, never as a separate
+balance type:
+
+- `User.balanceCents` — signed. May go negative **only** while a postpaid line
+  exists, and never below `-(postpaidLimitCents)`.
+- `User.postpaidLimitCents Int @default(0)` — the ceiling. `0` = postpaid off, which
+  is the default for every existing and new user.
+
+This is deliberately **not** a second balance. Two balances would let the question
+"what does this user owe?" have two answers. One signed number plus a ceiling
+answers it arithmetically: **owed = max(0, -balanceCents)**, and the headroom is
+`balanceCents + postpaidLimitCents`. That headroom is the single number every
+spend path checks, and it is the single number the admin UI shows.
+
+The guard in `debitWallet` becomes `balanceCents - amountCents >= -postpaidLimitCents`
+instead of `balanceCents - amountCents >= 0`. That one line is the whole feature;
+everything else is the admin surface to set the limit and the copy that explains it.
+
+**Granting and revoking a postpaid line is an audited ledger event, not a silent
+column write.** A limit that appears or disappears with no record is indistinguishable
+from a bug months later, and this is the one number that lets a customer's balance
+go below zero — so both write a `postpaid_grant` / `postpaid_revoke` ledger row with
+the `adminId`, and a revoke never changes the balance itself, only what is allowed
+going forward. A user already below zero when the line is revoked keeps the debt;
+their next purchase simply fails until they top up.

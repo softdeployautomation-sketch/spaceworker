@@ -544,18 +544,29 @@ export default function PlatformAccountsPanel() {
                     {a.workerTokenError && (
                       <p className="mt-1 text-xs text-red-600 dark:text-red-400">{a.workerTokenError}</p>
                     )}
-                    {/* TASK_158 W0 — the Zones token's status line. A row WITHOUT one
-                        is the normal state today (every Cloudflare token we hold is
-                        refused zone creation), so it reads as neutral rather than as
-                        an error: custom domains simply stay on the manual path. */}
+                    {/* TASK_158 W0 / TASK_160 — the Zones token's status line. A row
+                        WITHOUT one is the normal state today (every Cloudflare token we
+                        hold is refused zone creation), so it reads as neutral rather
+                        than as an error: custom domains simply stay on the manual path.
+
+                        TASK_160 changed the GREEN wording, and the reason matters: a
+                        green line now means something was actually proven — the token
+                        reads this account's zones — instead of meaning only "a value
+                        exists in a column". It deliberately does NOT say "can create
+                        zones": Cloudflare grants no read endpoint behind `zone.create`,
+                        so claiming it would be a green light for a check that never
+                        ran. */}
                     <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                      Custom domains (zone create):{" "}
+                      Custom domains:{" "}
                       {a.hasZoneToken ? (
                         <span className="text-emerald-600 dark:text-emerald-400">
                           token …{a.zoneTokenHint} set
+                          {a.lastVerifiedAt
+                            ? " · reads zones on this account"
+                            : " · not verified yet"}
                         </span>
                       ) : (
-                        <span>not set — domains are added in the Cloudflare dashboard</span>
+                        <span>no Zones token — domains are added in the Cloudflare dashboard</span>
                       )}
                     </p>
                     {a.zoneTokenError && (

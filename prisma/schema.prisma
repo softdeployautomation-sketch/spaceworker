@@ -120,6 +120,22 @@ model User {
   screenDigestEnabled               Boolean @default(false)
   screenDigestIntervalMinutes       Int     @default(120)
   createdAt                DateTime               @default(now())
+  // TASK_158 W1 — the wallet. `balanceCents` is a CACHED TOTAL, never the record of
+  // truth: the truth is the sum of `WalletLedgerEntry.amountCents`, and the whole
+  // point of the ledger is that a mistake in this column is a bug to fix rather than
+  // an amount nobody can explain. Every movement of money in lib/wallet.ts writes
+  // the ledger row and this column inside ONE transaction, so the two can never
+  // disagree. It is Int (not BigInt) deliberately: 21_474_836 dollars in cents,
+  // which no customer will reach, and Prisma Int maps to a JS number, so BigInt
+  // would leak `bigint` arithmetic into every caller for no benefit.
+  balanceCents             Int                    @default(0)
+  // How far below zero this user may go, in cents. 0 = prepaid only (the current
+  // behaviour: a user with no balance cannot buy anything). A positive value is the
+  // owner's postpaid line. It can NEVER be negative — a negative limit would mean
+  // "you must stay in credit", which is not a postpaid limit, and it is refused both
+  // here and by a CHECK constraint in the migration, because a soft check that can
+  // be written around is worse than a hard error.
+  postpaidLimitCents       Int                    @default(0)
   verifications            VerificationCode[]
   rateLimits               RateLimitEvent[]
   mailboxes                Mailbox[]
@@ -171,6 +187,13 @@ model User {
   // TASK_159 — support tickets this user opened. The userId ALWAYS comes from the
   // session, never from a request body (PLAN_TASK_159_SUPPORT_TICKETS.md §2.2).
   supportTickets           SupportTicket[]
+  // TASK_158 W1 — the wallet ledger. TWO relations to the same model, not one: a
+  // ledger row always belongs to the user it concerns, and an admin CREDIT
+  // additionally carries the admin who granted it, so "who gave this user money"
+  // survives in the table itself rather than only in an application log that
+  // nobody will still be able to read when the question is asked.
+  walletEntries            WalletLedgerEntry[]     @relation("WalletOwner")
+  walletGrants             WalletLedgerEntry[]     @relation("WalletAdmin")
 }
 
 model VerificationCode {
@@ -894,6 +917,80 @@ model DeliverabilityCheck {
   @@index([campaignId, createdAt])
 }
 
+// TASK_158 W1 — THE WALLET LEDGER: the single, append-only record of every cent
+// that has ever entered or left a user's balance. Written only by lib/wallet.ts.
+//
+// WHY A LEDGER AND NOT JUST A COLUMN. A balance is a number, and a number cannot
+// answer "why is it 400 instead of 500". That question is asked after every refund
+// dispute, every chargeback and every angry email, so the only design that
+// survives the first one is a design where the answer was already written down.
+//
+// RULES THAT ARE ENFORCED IN THE DATABASE, NOT IN THE SERVICE:
+//   * APPEND-ONLY by convention — there is no update path in lib/wallet.ts, and a
+//     correction is expressed as a new opposing row rather than by rewriting
+//     history. A balance you can edit is a balance nobody can defend.
+//   * `idempotencyKey` is @unique and nullable. Non-null means "this exact
+//     movement must never happen twice", which is what a replayed payment webhook
+//     or a retried request actually needs. The unique index is the guard: a
+//     read-then-write check is a race, not a check.
+//   * `paymentId` on a credit is exactly one payment (UNIQUE), because one
+//     customer's money becoming another's balance is not a bug to be detected
+//     later, it is the failure this whole feature has to be immune to.
+//
+// `balanceAfterCents` is a SNAPSHOT, recorded so a statement can be printed
+// without replaying the history — it is the value that was written to
+// `User.balanceCents` by the same statement, never computed afterwards by a
+// separate read (which would race the next movement).
+model WalletLedgerEntry {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation("WalletOwner", fields: [userId], references: [id])
+  // "topup" | "purchase_credit" | "admin_adjust" | "admin_grant" |
+  // "debit_purchase" | "refund" | "postpaid_grant" | "postpaid_revoke"
+  //
+  // A string and not a Postgres enum on purpose: adding an enum value needs a
+  // migration and, on older Postgres, a lock on a table that grows forever. The
+  // set of reasons the wallet can have is still small and is validated in
+  // lib/wallet.ts, which is where a typo is caught — at the call site, in review.
+  kind   String
+  // Signed, in cents. `postpaid_grant` / `postpaid_revoke` are deliberately
+  // amountCents 0 and carry their meaning in `postpaidLimitAfterCents` instead,
+  // because they move a CEILING, not money — a zero money row keeps "the sum of
+  // this ledger" equal to the balance at all times.
+  amountCents       Int
+  balanceAfterCents Int
+  // Why this user was given money by hand, or NULL. Nullable because a topup has
+  // nothing to explain and a forced value would just be "n/a" written a thousand
+  // times. REQUIRED (at the service layer) for admin_grant and admin_adjust.
+  note String?
+  // NULL unless this entry WAS a movement of money. UNIQUE, so one payment can
+  // never credit two wallets — which is the invariant the whole feature rests on.
+  //
+  // onDelete Restrict is stated EXPLICITLY on all three foreign keys because
+  // Prisma's default for an optional relation is SetNull, and every one of these
+  // defaults would quietly destroy the record this table exists to keep: deleting
+  // the Payment would erase which payment funded the credit, deleting the admin
+  // would erase who granted it. Prisma's own default is stated in the schema so
+  // `migrate diff` agrees with the migration instead of trying to "fix" it back.
+  paymentId String?                      @unique
+  payment   Payment?                     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  // Who granted it, when kind is admin_grant / admin_adjust.
+  adminId String?
+  admin   User?   @relation("WalletAdmin", fields: [adminId], references: [id], onDelete: Restrict)
+  // The non-null repeat guard described above.
+  idempotencyKey String? @unique
+  // TASK_158 W1 — the license this entry paid for, when the money came from the
+  // wallet. UNIQUE and 1-1, matching `ExeLicense.walletEntryId`.
+  exeLicense ExeLicense?
+  // The postpaid CEILING in force after this entry, so a historical statement can
+  // say how much the user was allowed to owe at the time.
+  postpaidLimitAfterCents Int?
+  createdAt                DateTime  @default(now())
+
+  // The index a statement is actually read by: newest first, for one user.
+  @@index([userId, createdAt])
+}
+
 model Payment {
   id           String                       @id @default(cuid())
   userId       String
@@ -924,10 +1021,27 @@ model Payment {
   durationDays Int?
   status       String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
   autoApproved Boolean                      @default(false)
+  // TASK_158 W1 — how much of this payment was moved into the wallet as CREDIT,
+  // not as a product. A $10 purchase can be $6 of wallet credit plus $4 of
+  // something else, so this is nullable and never assumed to equal amountUsd: the
+  // payment is the invoice, this column is what the wallet was told, and only one
+  // of those two is in the wallet's favour. NULL for every pre-existing row and
+  // for every payment that credited nothing, which is the majority.
+  creditedCents Int?
+  // TASK_158 W1 — why an admin moved this payment's money by hand, or NULL. Free
+  // text because the interesting answers ("customer paid twice", "refund for the
+  // outage on the 3rd") are not enumerable, and an enumerated reason list would
+  // just be a comment field with extra steps.
+  adminNote   String?
   createdAt    DateTime                     @default(now())
   updatedAt    DateTime                     @updatedAt
   attempts     PaymentVerificationAttempt[]
   exeLicense   ExeLicense?
+  // TASK_158 W1 — the ledger rows that credited this payment into a wallet. One
+  // payment can credit at most once, and that is enforced by the UNIQUE index on
+  // `WalletLedgerEntry.paymentId` rather than by trusting the caller to remember:
+  // a replayed payment webhook is the normal way this would be done twice.
+  walletEntries WalletLedgerEntry[]
 
   @@index([userId])
   @@index([status])
@@ -943,8 +1057,28 @@ model ExeLicense {
   id                          String    @id @default(cuid())
   userId                      String
   user                        User      @relation(fields: [userId], references: [id])
-  paymentId                   String    @unique
-  payment                     Payment   @relation(fields: [paymentId], references: [id])
+  paymentId                   String?   @unique
+  // onDelete Restrict, explicitly. Prisma would default this optional relation to
+  // SetNull, which on delete would try to null out paymentId and immediately
+  // violate the "exactly one provenance" CHECK below — turning a clean delete
+  // refusal into a confusing constraint error, and leaving the admin free to drop
+  // the evidence for what a customer paid for.
+  payment                     Payment?  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  // TASK_158 W1 — the other half of PROVENANCE. A license is always bought for
+  // money, but that money can now arrive from the wallet rather than from a
+  // Payment, so `paymentId` became NULLABLE and a `walletEntryId` was added
+  // beside it. The pairing is not left to convention: the migration carries a
+  // CHECK that exactly one of the two is set, because a row with both would be a
+  // double-counted purchase and a row with neither would be a license nobody paid
+  // for.
+  //
+  // The @unique on paymentId STAYS, and that is the whole reason this works: in
+  // Postgres (and per the SQL standard) NULLs are DISTINCT under a unique index, so
+  // any number of wallet-funded licenses can carry a NULL paymentId while two
+  // licenses still can never claim the same payment. Dropping it would have
+  // silently turned a one-to-one into a one-to-many and broken `Payment.exeLicense`.
+  walletEntryId               String?   @unique
+  walletEntry                 WalletLedgerEntry? @relation(fields: [walletEntryId], references: [id], onDelete: Restrict)
   product                     String // matches Payment.product
   licenseKey                  String    @unique
   issuedAt                    DateTime  @default(now())

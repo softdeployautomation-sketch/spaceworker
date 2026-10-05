@@ -6,6 +6,10 @@ import { encryptSecret, decryptSecretOrThrow } from "../mailbox-crypto";
 // never drift apart on how a second token is stored.
 import { buildWorkerTokenFields, readWorkerToken, buildZoneTokenFields, readZoneToken, verifyStoredSecret } from "./credentials";
 import type { HostingResult } from "./files";
+// Type-only, so it is erased at compile time and this module stays free of any
+// runtime import of ./cloudflare — the property the lazy `await import` below
+// exists to preserve (the unit tests load it with no socket available).
+import type { CfCredential, CfResult } from "./cloudflare";
 
 // TASK_155 P6a (PLAN §19) — OUR Cloudflare accounts: the premium engine's
 // zero-setup path.
@@ -50,7 +54,13 @@ export interface HostingPlatformAccountView {
   workerTokenHint: string;
   /** True when a Workers/DNS token is stored on this row. */
   hasWorkerToken: boolean;
-  /** Plain-language reason the Workers token failed, or NULL when healthy/unset. */
+  /**
+   * TASK_160 — still ALWAYS null, and that is deliberate rather than forgotten:
+   * no side-effect-free Cloudflare call proves a Workers token can both upload a
+   * script and edit DNS, so there is no honest verdict to write. A column that
+   * could only ever be right by accident is worse than a dead one. See the
+   * capability-probe comment in lib/hosting/platform-accounts.ts.
+   */
   workerTokenError: string | null;
   // --- TASK_158 W0 — the optional Zones token, NEVER the token itself.
   /** Non-secret hint: the last 4 chars of the Zones token, or "" when unset. */
@@ -61,7 +71,17 @@ export interface HostingPlatformAccountView {
    * on the manual two-step path. It is never treated as a failure.
    */
   hasZoneToken: boolean;
-  /** Plain-language reason the Zones token failed, or NULL when healthy/unset. */
+  /**
+   * TASK_160 — the Zones token's own verdict, stamped by `verifyPlatformAccount`
+   * from a read of THIS account's zones. NULL when there is no Zones token (the
+   * normal state), and NULL when a stored token last verified. Non-null means the
+   * token is unreadable or refused, and the admin can act on it now rather than
+   * discovering it on a customer's domain-add request.
+   *
+   * Read the wording of the panel copy with this in mind: a green line means the
+   * token READS this account's zones. It does not claim `zone.create`, because no
+   * cheap call can prove that.
+   */
   zoneTokenError: string | null;
   // --- TASK_157 Phase 1 — the workers.dev hostname for the FREE tier.
   /**
@@ -387,6 +407,172 @@ export async function markPlatformAccountVerified(id: string, error: string | nu
     })
     .catch(() => {});
 }
+
+/**
+ * TASK_160 — the per-CAPABILITY counterpart of `markPlatformAccountVerified`.
+ *
+ * `verifyError` has had a writer since Task 155; `workerTokenError` and
+ * `zoneTokenError` had exactly one writer each, and both wrote `null`. So a
+ * token that was readable in the database but useless in practice rendered green
+ * forever, and only failed later at provision time on an end user's request.
+ *
+ * The rule this function exists to keep is narrow and asymmetric on purpose:
+ * stamp the verdict when there IS a token, and do nothing at all when there is
+ * NOT. A row with no Zones token is the normal state of the fleet, and turning
+ * every unconfigured row red would be a lie in the opposite direction.
+ *
+ * `error` NULL clears the column (a token that just verified); a non-null string
+ * makes the panel's red line real.
+ */
+export async function markPlatformCapabilityToken(
+  id: string,
+  capability: "zoneToken" | "workerToken",
+  error: string | null
+): Promise<void> {
+  const data =
+    capability === "zoneToken" ? { zoneTokenError: error } : { workerTokenError: error };
+  await prisma.hostingPlatformAccount.update({ where: { id }, data }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// TASK_160 — the Zones capability probe.
+//
+// WHAT THIS PROVES, PRECISELY (read this before believing a green line):
+// the stored token is live AND can READ the zones of the account named on this
+// row. That is a real check — it catches a revoked, expired, mistyped or
+// wrong-account token, which is the overwhelmingly common failure — and it is
+// the strongest statement any cheap probe can make.
+//
+// WHAT IT DOES NOT PROVE: `com.cloudflare.api.account.zone.create`. Cloudflare
+// grants no read endpoint behind that permission, so proving it would mean
+// actually attempting a zone creation — a side effect we refuse to have in a
+// verification button. This is why the panel copy says "reads zones on this
+// account" and not "can create zones". A token that reads but cannot create will
+// still pass here and still 403 in zone-provision.ts; that gap is real, and it
+// is closed by the honest wording rather than by a check that lies.
+//
+// The Workers/DNS token is deliberately left UNPROBED here, and `workerTokenError`
+// stays unwritten. There is no side-effect-free call that proves a Workers token
+// can both upload a script and edit DNS; stamping it with a readability-only
+// verdict would make a green line out of a check that proves much less than the
+// label claims. Same reasoning as the Zones probe, which is why it is called out.
+// ---------------------------------------------------------------------------
+
+/**
+ * The name we ask Cloudflare about. `.invalid` is reserved by RFC 2606 and can
+ * never be delegated or registered, so this zone can never exist — the call is
+ * a pure read whose answer is "no such zone", which is success for our purposes.
+ */
+const ZONE_PROBE_APEX = "spaceworker-zone-probe.invalid";
+
+/**
+ * The default probe. Lazy-imported so this module stays network-free at load
+ * time, exactly like `verifyCredential` above.
+ */
+async function defaultProbeZoneToken(cred: CfCredential): Promise<CfResult<unknown>> {
+  const { getZoneByName } = await import("./workers");
+  return getZoneByName(cred, ZONE_PROBE_APEX);
+}
+
+/**
+ * Never persist a string that CONTAINS the token.
+ *
+ * The probe's own error message comes from Cloudflare and should never quote a
+ * credential, but "should never" is not "cannot": a provider that echoes an auth
+ * header back in an error body is an ordinary accident, and this value is written
+ * to the database, mailed to the admin and rendered in a panel. The redaction here
+ * costs one `includes` and removes the possibility entirely, rather than relying
+ * on every current and future provider error being well behaved.
+ */
+function redactToken(text: string | undefined, token: string, fallback: string): string {
+  if (!text) return fallback;
+  return text.includes(token) ? fallback : text;
+}
+
+/**
+ * Probe one row's Zones token and stamp `zoneTokenError` with the verdict.
+ * Returns the string that was stamped, or null when there was nothing to say
+ * (no token stored, or the token verified).
+ */
+async function probeAndStampZoneToken(
+  row: {
+    id: string;
+    accountId: string;
+    zoneTokenCiphertext: string | null;
+    zoneTokenIv: string | null;
+    zoneTokenTag: string | null;
+  },
+  probe: (cred: CfCredential) => Promise<CfResult<unknown>>
+): Promise<string | null> {
+  const zoneToken = readZoneToken(row);
+  // Absent is the NORMAL state and is never a failure. Deciding that from the
+  // CIPHERTEXT columns rather than from `readZoneToken`'s return value is load
+  // bearing: `readZoneToken` swallows a decrypt failure and answers null, which is
+  // indistinguishable from "never set". Asking it first would therefore let an
+  // UNREADABLE zone token skip the probe and render green — the exact bug this
+  // function exists to fix, reintroduced one level down.
+  const stored = !!(row.zoneTokenCiphertext && row.zoneTokenIv && row.zoneTokenTag);
+  if (!stored) return null;
+  if (!zoneToken) {
+    // Same plain language the Pages path uses for the same failure.
+    const error = "The stored Zones token could not be read. Re-enter it.";
+    await markPlatformCapabilityToken(row.id, "zoneToken", error);
+    return error;
+  }
+
+  const res = await probe({ accountId: row.accountId, token: zoneToken });
+
+  // A 401 is unambiguous: Cloudflare rejected the credential itself.
+  if (res.ok) {
+    await markPlatformCapabilityToken(row.id, "zoneToken", null);
+    return null;
+  }
+
+  const error = redactToken(res.error, zoneToken, "");
+
+  // Two different treatments, because the two statuses mean different things.
+  if (res.status === 403 || res.status === 401) {
+    // TASK_160 — a refusal here is AMBIGUOUS, and Cloudflare's own wording for it
+    // is "Authentication error", which points the operator at the wrong thing.
+    //
+    // `GET /zones` needs the Zone READ permission, a DIFFERENT grant from Zone
+    // CREATE — the permission custom domains actually need. A token scoped to
+    // Zone Create alone therefore 403s this probe while being perfectly capable of
+    // creating the zone. So this is explicitly NOT "your token is invalid": saying
+    // that would send the owner to delete a working token and replace it with one
+    // that 403s identically, a fix loop with no exit.
+    //
+    // The provider's text is DROPPED rather than appended — it is the one message
+    // in this whole path that is actively misleading, and burying the real
+    // explanation under it reproduces the original bug at a smaller size.
+    await markPlatformCapabilityToken(
+      row.id,
+      "zoneToken",
+      "Cloudflare refused this Zones token. It is either revoked, or it lacks the Zone Read permission this check uses. Zone Create alone is enough to add domains, so this may still work — ask Cloudflare which."
+    );
+    return "Cloudflare refused this Zones token.";
+  }
+
+  // Anything else (rate limit, network, 5xx) is Cloudflare's own words, redacted:
+  // it is not a verdict about the token, and paraphrasing it would lose the one
+  // detail that makes it actionable.
+  await markPlatformCapabilityToken(
+    row.id,
+    "zoneToken",
+    error || "Could not reach Cloudflare to check the Zones token. Try again shortly."
+  );
+  return error || "Could not reach Cloudflare to check the Zones token.";
+}
+
+/**
+ * The injectable half of `verifyPlatformAccount`, so its two network calls can
+ * be driven with no Cloudflare account and no socket — the same reason
+ * `resolvePlatformCredential` takes `verify` as a parameter.
+ */
+export interface PlatformVerifyDeps {
+  verify?: (cred: CfCredential) => Promise<CfResult<{ accountId: string }>>;
+  probeZoneToken?: (cred: CfCredential) => Promise<CfResult<unknown>>;
+}
 // ---------------------------------------------------------------------------
 // The §19.2 resolution rule — the whole feature in one function.
 // ---------------------------------------------------------------------------
@@ -595,25 +781,37 @@ export async function resolvePlatformCredential(
  * already saved, the admin just needs to SEE why.
  */
 export async function verifyPlatformAccount(
-  id: string
+  id: string,
+  deps: PlatformVerifyDeps = {}
 ): Promise<HostingResult<HostingPlatformAccountView>> {
   const row = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
   if (!row) return { ok: false, status: 404, code: "not_found", message: "Account not found." };
+
+  // TASK_160 — the Zones probe runs on BOTH exit paths below, and that placement
+  // is deliberate. An unreadable PAGES token must not be allowed to hide an
+  // unreadable ZONES token: they are independent credentials, and returning early
+  // on the first one is how the second column stayed dead in the first place.
+  const probeZone = deps.probeZoneToken ?? defaultProbeZoneToken;
+  const stampZone = () => probeAndStampZoneToken(row, probeZone);
 
   let token: string;
   try {
     token = decryptSecretOrThrow(row.tokenCiphertext, row.tokenIv, row.tokenTag, "hosting platform account");
   } catch {
     await markPlatformAccountVerified(id, "The stored token could not be read. Re-enter it.");
+    await stampZone();
     const refreshed = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
     return { ok: true, value: toPlatformAccountView(refreshed ?? row) };
   }
 
   // Lazy import so this module stays network-free at load time (the unit tests
   // drive rotation with an injected verifier and never touch Cloudflare).
-  const { verifyCredential } = await import("./cloudflare");
-  const verdict = await verifyCredential({ accountId: row.accountId, token });
+  const verify = deps.verify ?? (await import("./cloudflare")).verifyCredential;
+  const verdict = await verify({ accountId: row.accountId, token });
   await markPlatformAccountVerified(id, verdict.ok ? null : verdict.error ?? "That API token could not be verified.");
+  // TASK_160 — `verifyError` says nothing about the other two tokens, so each
+  // capability is stamped with its own verdict from its own credential.
+  await stampZone();
 
   const refreshed = await prisma.hostingPlatformAccount.findUnique({ where: { id } });
   return { ok: true, value: toPlatformAccountView(refreshed ?? row) };

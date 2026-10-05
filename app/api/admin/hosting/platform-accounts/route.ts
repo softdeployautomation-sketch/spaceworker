@@ -201,10 +201,17 @@ export async function PATCH(request: Request) {
     if (!verified.ok) {
       return NextResponse.json({ error: verified.message, code: verified.code }, { status: verified.status });
     }
-  } else if (fields.status === "active") {
+  } else if (fields.status === "active" || fields.zoneToken !== undefined) {
     // Re-enabling a row the admin previously disabled (or that went red) must not
     // hand rotation an unconfirmed token: verify immediately so the row either
     // turns green or goes straight back to red with a reason the admin can read.
+    //
+    // TASK_160 — the same reasoning for a freshly pasted ZONES token. Without this,
+    // saving one clears `zoneTokenError` (the write resets it, correctly) and then
+    // leaves it empty until somebody remembers to press "Verify now" — which
+    // reproduces, through the save path, the very bug Task 160 closes: a row that
+    // looks healthy and has never been looked at. Saving a credential is exactly
+    // when the operator is watching the screen.
     await verifyPlatformAccount(id);
   } else if (Object.keys(fields).length === 0) {
     return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
