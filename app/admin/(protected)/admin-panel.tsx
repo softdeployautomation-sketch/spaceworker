@@ -9,6 +9,7 @@ import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 import DomainsPanel from "@/components/admin/domains-panel";
 import SupportQueuePanel from "@/components/admin/support-queue-panel";
+import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 
 type AdminUser = {
   id: string;
@@ -216,7 +217,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         )}
         {tab === "devices" && <DevicesTab owner={deviceOwner} onOwnerChange={setDeviceOwner} />}
         {tab === "payments" && <PaymentsTab />}
-        {tab === "wallets" && <WalletsTab />}
+        {tab === "wallets" && <WalletsTab users={initialUsers} />}
         {tab === "notifications" && <NotificationsTab />}
         {tab === "sessions" && <SessionsTab />}
         {tab === "support" && <SupportQueuePanel />}
@@ -710,7 +711,10 @@ function PaymentsTab() {
   );
 }
 
-function WalletsTab() {
+// The user list is threaded in from AdminPanel's `initialUsers` purely so the
+// grant form below has a name to put next to an id — this tab has always been
+// about configuration, not people, and it did not need a user list until W3.
+function WalletsTab({ users }: { users: Array<{ id: string; email: string }> }) {
   const [loaded, setLoaded] = useState(false);
   const [btc, setBtc] = useState("");
   const [usdt, setUsdt] = useState("");
@@ -860,6 +864,11 @@ function WalletsTab() {
           </button>
         </div>
       )}
+
+      {/* PLAN_TASK_167 W3 — outside the `loaded` branch on purpose: the grant form
+          does not depend on the wallet settings having loaded, and gating a money
+          control behind an unrelated fetch is how it ends up mysteriously disabled. */}
+      <WalletGrantPanel users={users} />
     </div>
   );
 }

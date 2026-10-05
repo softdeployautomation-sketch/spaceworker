@@ -46,6 +46,7 @@ export type WalletEntryKind =
   | "topup"
   | "purchase_credit"
   | "admin_adjust"
+  | "admin_grant"
   | "debit_purchase"
   | "refund"
   | "postpaid_grant"
@@ -55,6 +56,7 @@ const KINDS: readonly WalletEntryKind[] = [
   "topup",
   "purchase_credit",
   "admin_adjust",
+  "admin_grant",
   "debit_purchase",
   "refund",
   "postpaid_grant",
@@ -148,7 +150,27 @@ type EntryRow = {
 };
 
 /** A completed movement: the ledger entry, plus the balance it produced. */
-export type WalletMovement = WalletEntryView & { balanceCents: number };
+export type WalletMovement = WalletEntryView & { balanceCents: number } & {
+  /**
+   * True when this result came from an idempotency key that had ALREADY produced
+   * a movement, rather than from a fresh one.
+   *
+   * WHY THIS IS NOT GUESSABLE BY THE CALLER. The DB's UNIQUE index is the real
+   * guard, and it fires as a throw that `move()` catches and converts into "here
+   * is the original entry, you already did this" — which is the correct answer for
+   * a webhook that may legitimately be retried. But an admin form is not a
+   * webhook: the admin's intent is "apply this grant once", and a second
+   * identical success is indistinguishable, from the outside, from two real grants
+   * having landed. That is precisely the ambiguity a money endpoint must not hand
+   * back to its caller, so it is surfaced here as data instead. A route can then
+   * answer 409 while the guard itself stays the index — rather than the route
+   * resorting to a check-then-act read, which is the race this whole file exists
+   * to avoid.
+   *
+   * Absent (false) on every genuinely fresh movement.
+   */
+  replayed?: boolean;
+};
 
 function notFound(): WalletResult<never> {
   return { ok: false, status: 404, code: "user_not_found", message: "Account not found." };
@@ -314,7 +336,9 @@ export async function move(userId: string, m: Movement): Promise<WalletResult<Wa
       // occur while a matching key existed would be reported as a paid invoice.
       if (isUniqueViolation(e) && m.idempotencyKey) {
         const prior = await findPrior(m.idempotencyKey, userId);
-        if (prior) return { ok: true, value: prior };
+        // `replayed: true` is load-bearing for callers that must distinguish "this
+        // just happened" from "this already happened" — see `WalletMovement`.
+        if (prior) return { ok: true, value: { ...prior, replayed: true } };
         // The key exists but belongs to SOMEONE ELSE. This is the cross-account
         // collision `findPrior` refuses to paper over, and it is a caller bug — so
         // it becomes a NAMED refusal instead of an exception escaping a module
@@ -585,6 +609,53 @@ export async function adminAdjustBalance(input: {
     amountCents: input.amountCents,
     adminId: input.adminId,
     note: note.value,
+  });
+}
+
+/**
+ * Give a user money by hand, as an admin (PLAN_TASK_167 W3).
+ *
+ * WHY THIS IS NOT JUST `adminAdjustBalance` UNDER A NEW NAME. The two ledger kinds
+ * mean different things to whoever reads the statement later: `admin_grant` is
+ * "we decided to give you this", `admin_adjust` is "we corrected something". A
+ * single sign-based branch is what makes the distinction true forever, and it lives
+ * HERE rather than in the route because §3.4 of the plan is a rule about the ledger's
+ * meaning, not about an HTTP handler — a second caller that picked its own `kind`
+ * from the sign would quietly break the promise the kind makes.
+ *
+ * The note and the adminId are both mandatory, for the reason given on
+ * `adminAdjustBalance`: an unattributed balance change is a support incident.
+ */
+export async function grantBalance(input: {
+  userId: string;
+  amountCents: number;
+  adminId: string;
+  note: string;
+  /** Replay guard, UNIQUE when present. See `move()`. */
+  idempotencyKey?: string;
+}): Promise<WalletResult<WalletMovement>> {
+  const note = checkNote(input.note);
+  if (!note.ok) return note;
+  if (!note.value) {
+    return {
+      ok: false,
+      status: 422,
+      code: "note_required",
+      message: "Say why you are giving this user money — the note is what makes it auditable later.",
+    };
+  }
+  if (!Number.isInteger(input.amountCents)) return badAmount("Amounts are in whole cents.");
+  // A zero "grant" is a note wearing a money row's clothes; `move()` would refuse
+  // it too, but saying so here names the real problem, which is a missing amount.
+  if (input.amountCents === 0) {
+    return badAmount("Enter an amount — a grant of zero changes nothing.");
+  }
+  return move(input.userId, {
+    kind: input.amountCents > 0 ? "admin_grant" : "admin_adjust",
+    amountCents: input.amountCents,
+    adminId: input.adminId,
+    note: note.value,
+    idempotencyKey: input.idempotencyKey,
   });
 }
 /**

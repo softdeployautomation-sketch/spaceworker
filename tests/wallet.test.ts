@@ -676,6 +676,175 @@ test("an unknown account is a 404, not a silent zero balance", async () => {
   assert.equal(res.status, 404);
 });
 
+/* ========================================================================== */
+/* PLAN_TASK_167 W3 — the admin grant (grantBalance).                          */
+/* ========================================================================== */
+
+test("a grant credits the balance and names the admin who gave it", async () => {
+  seedUser("u1", 100);
+  const res = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 2500,
+    adminId: "admin1",
+    note: "paid for the Pro upgrade by bank transfer",
+  });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.kind, "admin_grant", "a positive grant is a grant, not an adjustment");
+  assert.equal(res.value.amountCents, 2500);
+  assert.equal(balanceOf("u1"), 2600);
+  assert.equal(store.entries[0].adminId, "admin1", "an unattributed balance change is a support incident");
+  assert.equal(store.entries[0].note, "paid for the Pro upgrade by bank transfer");
+  assert.equal(res.value.replayed, undefined, "a first grant is not a replay");
+  assertLedgerSumsToBalance("u1", 100);
+});
+
+test("a NEGATIVE grant is filed as admin_adjust, never as admin_grant", async () => {
+  seedUser("u1", 1000);
+  const res = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: -300,
+    adminId: "admin1",
+    note: "clawed back a duplicated grant",
+  });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  // §3.4: two ledger kinds, two different meanings in the UI. A negative grant
+  // dressed as admin_grant would make "we gave you money" and "we took money back"
+  // indistinguishable on the statement.
+  assert.equal(res.value.kind, "admin_adjust");
+  assert.equal(res.value.amountCents, -300);
+  assert.equal(balanceOf("u1"), 700);
+  assertLedgerSumsToBalance("u1", 1000);
+});
+
+test("a grant without a note is refused and writes nothing", async () => {
+  seedUser("u1", 100);
+  const res = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 500,
+    adminId: "admin1",
+    note: "   ",
+  });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.code, "note_required");
+  assert.equal(writes.length, 0, "an unlabelled grant must never reach the ledger");
+  assert.equal(balanceOf("u1"), 100);
+});
+
+test("a zero grant is refused", async () => {
+  seedUser("u1", 100);
+  const res = await wallet.grantBalance({ userId: "u1", amountCents: 0, adminId: "a1", note: "nothing" });
+
+  assert.equal(res.ok, false);
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 100);
+});
+
+test("a fractional amount never reaches the ledger — no float touches money", async () => {
+  seedUser("u1");
+  const res = await wallet.grantBalance({ userId: "u1", amountCents: 1050.5, adminId: "a1", note: "typo" });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.code, "invalid_amount");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 0);
+});
+
+test("a replayed grant key credits ONCE and is reported as a replay", async () => {
+  seedUser("u1");
+  const first = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 1000,
+    adminId: "admin1",
+    note: "goodwill",
+    idempotencyKey: "grant-1",
+  });
+  const second = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 1000,
+    adminId: "admin1",
+    note: "goodwill",
+    idempotencyKey: "grant-1",
+  });
+
+  assert.equal(first.ok && first.value.replayed, undefined);
+  assert.equal(second.ok, true, "the index refuses the duplicate without erroring");
+  if (!second.ok) return;
+  // The flag is what lets the route answer 409 for a double-clicked Save while the
+  // UNIQUE index remains the actual guard — no check-then-act anywhere.
+  assert.equal(second.value.replayed, true);
+  assert.equal(second.value.id, first.ok ? first.value.id : "", "the replay names the original entry");
+  assert.equal(balanceOf("u1"), 1000, "credited exactly once");
+  assert.equal(store.entries.length, 1);
+  assertLedgerSumsToBalance("u1");
+});
+
+test("two grants fired at the same moment still credit once", async () => {
+  seedUser("u1");
+  await Promise.all([
+    wallet.grantBalance({ userId: "u1", amountCents: 700, adminId: "a1", note: "x", idempotencyKey: "k" }),
+    wallet.grantBalance({ userId: "u1", amountCents: 700, adminId: "a1", note: "x", idempotencyKey: "k" }),
+  ]);
+
+  assert.equal(balanceOf("u1"), 700);
+  assert.equal(store.entries.length, 1);
+  assertLedgerSumsToBalance("u1");
+});
+
+test("a grant key already used for ANOTHER user is a named refusal", async () => {
+  seedUser("u1");
+  seedUser("u2");
+  await wallet.grantBalance({ userId: "u2", amountCents: 100, adminId: "a1", note: "n", idempotencyKey: "shared" });
+
+  const res = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 100,
+    adminId: "a1",
+    note: "n",
+    idempotencyKey: "shared",
+  });
+
+  assert.equal(res.ok, false, "never a silent cross-account success");
+  if (res.ok) return;
+  assert.equal(res.code, "idempotency_key_conflict");
+  assert.equal(res.status, 409);
+  assert.equal(balanceOf("u1"), 0);
+  assert.equal(balanceOf("u2"), 100);
+});
+
+test("admin_grant is a real ledger kind, not a value move() would reject", async () => {
+  seedUser("u1");
+  const res = await wallet.grantBalance({ userId: "u1", amountCents: 1, adminId: "a1", note: "n" });
+
+  // Guards the regression this kind actually had: `admin_grant` was documented in
+  // the schema and in the comment above creditTopup, but absent from KINDS — so
+  // move() answered 500 unknown_wallet_kind and no grant could ever be filed.
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.kind, "admin_grant");
+});
+
+test("a grant for an unknown account is a 404 and writes nothing", async () => {
+  const res = await wallet.grantBalance({
+    userId: "nobody",
+    amountCents: 500,
+    adminId: "admin1",
+    note: "typo in the id",
+  });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 404);
+  assert.equal(writes.length, 0);
+});
+
+
 test("a movement for an unknown account writes nothing", async () => {
   const res = await wallet.creditTopup({ userId: "nobody", amountCents: 100 });
   assert.equal(res.ok, false);
