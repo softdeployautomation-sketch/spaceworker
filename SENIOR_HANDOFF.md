@@ -663,6 +663,34 @@ immediately, so the transient did not recur.)
   path simply did not occur. That branch is proven by the N2 session's stubbed-body browser
   render harness (**SIMULATION**, labelled in §12) and by `tests/device-idle-chip.test.ts`
   (10/10) and the live bundle grep — **not** by a live screenshot. Do not over-claim it.
+
+- **TASK_167 wallet top-up W3 + W4 — SHIPPED + DEPLOYED + VERIFIED LIVE (2026-10-05,
+  this session).** `main` @ `08cd67c`, pushed, deployed (run `37357696848`, build +
+  deploy jobs both success), migration applied, live-verified. Four commits ahead of
+  `3f5b2ad` (docs-only, was `origin/main`): `b13c29a` migration
+  `20261112000000_task167_wallet_topup_min` (`AdminSetting.walletTopupMinUsd`, DOUBLE
+  NOT NULL DEFAULT 5, CHECK > 0); `076800d` W3 `POST /api/admin/wallet/grant` (admin
+  session BEFORE body parse, `adminId` from session, replay → 409) + `WalletGrantPanel`
+  + `grantBalance` sign-routing (`admin_grant`/`admin_adjust`) + `admin_grant` kind fix;
+  `767c039` W4 backend `POST/GET /api/billing/topup` (opens order / attaches hash,
+  floor + $10k cap, round-UP, credits NOTHING) + approve-route `wallet_topup` branch via
+  `creditApprovedPayment` (no `handleApprovedPayment`, no entitlement) + payment-verify
+  exclusion + `billing/status` and `admin/payments` exclusions + `WALLET_TOPUP_PRODUCT_ID`
+  (NOT in `ALL_PRODUCTS`) + 22 tests; `08cd67c` W4 UI (`TopUpFlow` + shared
+  `PaymentInstructions` on `/dashboard/billing`, admin "Wallet top-up" label, chip "add
+  funds" copy). Gates independently re-run, all green: `tsc` 0 · wallet 39/39 · topup
+  22/22 · support 50/50 · hosting 334/334 · ESLint 1 flag proven pre-existing on the
+  `892e209` baseline via throwaway worktree (never `git stash`) · `CI=true build` exit 0.
+  Live proof: `_prisma_migrations` holds the task167 migration; `walletTopupMinUsd`
+  column present; `.next/BUILD_ID` mtime 2026-10-05 20:43 CEST (after deploy 20:40);
+  `spaceworker.service` restarted 20:47; unauthenticated live probes
+  `GET /api/billing/topup` → 401, `POST /api/admin/wallet/grant` → 403,
+  `POST /api/admin/payments/x/approve` → 403; route files present in deployed build.
+  Plan §7 acceptance confirmed claim-by-claim in source. `TASK_133_RMM_ENGINE_BRINGUP.md`
+  untouched. Wallet state: any user can now FUND their wallet (top-up → admin approval →
+  credit, or direct admin grant). **Still no spend path** — W5 (`POST /api/wallet/spend`)
+  and W6 (EXE-from-wallet) remain unbuilt and out of scope; see §7.
+
 - **M3 summarisation has never been exercised against a live frame.** The summariser is
   proven present in the compiled bundle and the timeline UI renders, but the device's
   `screenshotMonitoringEnabled` is `false` (**re-verified this session: all 8 rows of
@@ -714,6 +742,13 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 |---|---|---|---|
 | **1** | **Domains** — hosting Domains section (BYO + platform), zone-create probe, pending-zone → nameservers → poll `active`, fallback to a prefilled ticket | `PLAN_TASK_157_PLATFORM_DOMAINS.md` §4 Phases 4–5 + `PLAN_TASK_155…` §18 | **Phase 4a SHIPPED + LIVE 2026-10-04** (`2805bb2`, migration `20261105000000_task157_user_domains` applied, deploy run `37192624610`). User self-service domains (list/add/delete/verify-one), admin list/add-on-behalf/delete, server-side ownership gating on link create/update, hosting Domains UI, DB CHECK constraints. Live-verified 28/28 route assertions + zero migration drift. ⚠️ **The `Zone:Edit` probe came back NEGATIVE (2026-10-03) — see §7.3**; automatic zone creation is still **not available**, so onboarding works for zones already in the account. Remaining: 4b ticket fallback, 4c, Phase 5 restructure, admin Domains UI, `credentialId` enforcement, site-publication wiring. |
 | **2** | **Wallet / balance-first billing** — top up, spend on premium **and on EXE licenses**, admin grant, immutable ledger | **`PLAN_TASK_158_WALLET_BALANCE.md`** (new this session) | **W1 SHIPPED LOCALLY as `5462981` — NOT PUSHED, NOT DEPLOYED, migration `20261110000000_task158_wallet` NOT applied in production.** Local gate green (334/30/29, tsc, ESLint, prod build, migration replay). **NEXT ACTION = the dispatch prompt in `DISPATCH_WALLET_W2.md`** (deploy `5462981`, then W2 `GET /api/wallet`). W3–W6 remain. |
+> **2026-10-05 update:** row 2 above is STALE — W1/W2/W3/W4 are all shipped, pushed,
+> deployed and live-verified (W1 `5462981` + W2 `231ae31` + W3/W4 §6.9). Ignore the "NOT
+> PUSHED" note and the `DISPATCH_WALLET_W2.md` pointer; the next wallet work is row **2b**
+> (W5 spend path), not a re-dispatch of W2.
+
+| **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **NOT STARTED — NEXT WALLET TASK after the P0 queue/summary fixes.** W3 (admin grant) + W4 (top-up → admin credit) are LIVE (§6.9); the wallet can be filled but not spent. W6 (EXE-from-wallet, dual-provenance `issueExeLicense()` refactor) stays after W5. |
+| **0** | **P0 OWNER BUGS — extraction queue serves 1 of 3 + hardcoded 24-frame summary cap** — worker lane `Semaphore(1)` vs admin dial; Phase A fairness; hardcoded `SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY` | **`PROMPT_NEXT_FEATURE_AGENT.md` (TASK_168)** | **QUEUED FIRST — jumps the wallet order.** Owner-reported 2026-10-06: (A) queue set to 3 users, only 1 gets results; (B) screen timeline "daily summary limit (24 frames)" must be an admin dial. Diagnosed, not fixed: `worker/api.py:163-164`, `dispatch/route.ts:158-180/226-252/280-317`, `screenshot-summaries.ts:75-102/464-480`, `screen-timeline.tsx:55-56`. |
 | **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | **`PLAN_TASK_159_SUPPORT_TICKETS.md`** (own doc, this session) | **Phase 1 (backend) SHIPPED + LIVE 2026-10-04** (`8326220`, migration `20261107000000_task159_support_tickets` applied, deploy run `37231502875`). `SupportTicket`/`SupportMessage`, a credential-rejecting write path, and six authenticated routes. Live-verified end to end with a disposable user. **No UI, no email** — next is the user composer + thread, then the admin queue. |
 | **4** | **Marketing** for the new tools (hosting domains, wallet, tickets) | **now partially covered by `TASK_161_DASHBOARD_OS.md` §D7** | **SCOPED 2026-10-05, not started.** The Cyber Lab + Hosting pillars are a small, independent edit to `app/page.tsx` (only 3 `Pillar`s exist today, neither new tool is among them) — **recommended as the cheapest first win.** Full marketing doc still owed. |
 | **5** | **Cyber Lab C2+ completion** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | Deferred by the owner until #4 lands |
@@ -1896,3 +1931,34 @@ of this work). HEAD `71ca4d7`, tree clean. Read-only investigation except one tu
   card, and confirm it renders with a real session; (2) finish the support UI + the
   admin-composed-ticket route (`TASK_161` D3/D4); (3) `PLAN_TASK_164` marketing copy;
   (4) `PLAN_TASK_163` V1 `DEVICES_MODULE` + V3 nav-narrowing bug; (5) `PLAN_TASK_162` S0/S1.
+
+### 2026-10-05 (evening) — TASK_167 wallet top-up W3 + W4 SHIPPED + DEPLOYED + VERIFIED LIVE
+
+Four commits (`b13c29a` migration → `076800d` W3 grant → `767c039` W4 backend →
+`08cd67c` W4 UI), pushed `3f5b2ad..08cd67c`, deployed run `37357696848` (build +
+deploy both success), migration `20261112000000_task167_wallet_topup_min` applied on
+production. Gates independently re-run: tsc 0 · wallet 39/39 · topup 22/22 · support
+50/50 · hosting 334/334 · ESLint 1 flag proven pre-existing on `892e209` baseline via
+`/tmp/sw_eslint_base` throwaway worktree (removed afterwards; never `git stash`) ·
+`CI=true build` exit 0. Live: BUILD_ID mtime 20:43 CEST, service restarted 20:47,
+unauthenticated probes 401/403/403, route files in deployed build, plan §7 acceptance
+confirmed claim-by-claim. `TASK_133_RMM_ENGINE_BRINGUP.md` untouched throughout.
+§6.9 added, §7 row 2 marked STALE + row 2b (W5 spend path) queued as next wallet task.
+Next verification prompt rewritten for the W5 agent (starts from `08cd67c`).
+
+### 2026-10-06 — TASK_167 re-verified; TASK_168 (P0 queue + summary dial) queued
+
+TASK_167 (`08cd67c`, deploy run `37357696848`) re-verified this session:
+tsc 0 · wallet 39/39 · topup 22/22 · support 50/50 · hosting 334/334 ·
+`CI=true build` exit 0. Owner reported two P0 bugs instead of W5: (A)
+extraction queue set to 3 serves only 1 — diagnosed to worker
+`Semaphore(1)` (`worker/api.py:163-164`) vs the admin dial + Phase A
+push-back shape (`dispatch/route.ts:158-180/226-252/280-317`); (B) screen
+timeline "daily summary limit (24 frames)" hardcoded
+(`screenshot-summaries.ts:75-102/464-480`, copy at
+`screen-timeline.tsx:55-56`) — must become admin dials (defaults 24/8).
+Both scoped in `PROMPT_NEXT_FEATURE_AGENT.md` (TASK_168), verification
+prompt rewritten for it, §7 row 0 queued ahead of W5. Nothing committed
+for the fixes — prompts + handoff only. `TASK_133_RMM_ENGINE_BRINGUP.md`
+untouched.
+

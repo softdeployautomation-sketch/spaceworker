@@ -1,104 +1,91 @@
-# PROMPT — NEXT FEATURE AGENT (OS dashboard: Wallet chip + overview-only side nav)
+# TASK_168 — EXTRACTION QUEUE P0 + SUMMARY LIMIT DIAL (owner bugs)
 
-## 0. Your task in one line
-Ship **P1 and P2** of `PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md`: move Billing out of the dock into a
-**Wallet chip in the top bar beside the date**, and add a **small side nav to the overview only**,
-**removing the overview cards**. Two separate commits.
+## 0. Read first (binding)
 
-## 1. MANDATORY reading, before any command
-  /Users/mikeolab/spaceworker/HOW_WE_MOVE_FAST.md
-  /Users/mikeolab/spaceworker/PLAN_TASK_165_OS_DASHBOARD_REDESIGN.md   ← your scope, read §0 first
-  /Users/mikeolab/spaceworker/SENIOR_HANDOFF.md
-  /Users/mikeolab/spaceworker/PROMPT_NEXT_VERIFICATION_AGENT.md  §1 — the rules are BINDING
-Full rule list: no multi-line `git commit -m` (use `-F<file>`); never print a secret; never edit
-`.env`; never `npm run build` on the VPS; **never `git stash`**; never claim a check you did not see
-pass. **Use `CI=true npm run build`** — `lib/env.ts` throws only when `NODE_ENV=production` AND
-`CI` is unset, and the local `.env` holds a `local_dev_…` placeholder.
+- HOW_WE_MOVE_FAST.md + SENIOR_HANDOFF.md §4 + §5 traps.
+- PROMPT_NEXT_VERIFICATION_AGENT.md §1 — binding.
+- Rules: `git add` explicit paths only (TASK_133 file is the owner's,
+  never touch it); commit with `-F<file>`; never print secrets; never edit
+  `.env`; never build on the VPS; never `git stash`; use `CI=true npm run build`.
+- State: `main` @ `08cd67c`, pushed + deployed. TASK_167 live — don't touch it.
 
-**State:** `main`, HEAD `cb780cd`, 0 ahead / 0 behind. `git status --short` shows exactly one
-untracked file, `TASK_133_RMM_ENGINE_BRINGUP.md` — that is the owner's pre-existing stash work.
-**Never `git add -A`, never stash, never delete it.** `git add` only the paths you touch.
+## 1. BUG A (P0) — queue set to 3, only 1 user gets results
 
-## 2. ⚠ The owner's correction — read before you touch the nav
+Owner: "we already have a queue system and i set it to allow 3 users at a
+go, but when 3 users are running, only one is getting results."
 
-**Do NOT add `Mailboxes` to `NAV_ITEMS`.** An earlier handoff claimed it was unreachable; that was
-wrong and the owner corrected it. `app/dashboard/mailboxes/page.tsx:11` is
-`redirect("/dashboard/campaigns?tab=mailboxes")` — mailboxes are a **tab inside Campaigns**, which is
-where the owner wants them. Same for `/dashboard/browser-profiles` → `/dashboard/browser?tab=profiles`
-and `/dashboard/licenses` → `/dashboard/settings#licenses`. **There is no orphaned-page defect.**
+Verified facts (reproduce, don't assume):
 
-`TASK_161_DASHBOARD_OS.md` §2 D1 contains that wrong instruction. **Correct the doc when you edit
-that area — fix the doc, not the nav.**
+- Dials: `dispatchLightMaxConcurrent` / `dispatchHeavyMaxConcurrent`
+  (`prisma/schema.prisma:279-281`), both `@default(1)`. Confirm the LIVE row
+  actually holds 3 before assuming code is at fault.
+- Phase A admits per lane, `running >= maxConcurrent` pushes back
+  (`app/api/internal/dispatch/route.ts:158-180`). Push-back is by fixed
+  index (`candidates.slice(0, ...)`), so check head-of-line blocking.
+- HARD MISMATCH: worker holds ONE slot per lane, hardcoded
+  (`worker/api.py:163-164`, `asyncio.Semaphore(1)`). Phase A can admit 3
+  while the worker serialises to 1.
+- Worker reject path (POST non-OK) requeues with resume data KEPT
+  (`route.ts:226-252`) — confirm the requeued row is clean.
+- Phase B polls only `running` (`route.ts:280`); slot frees in
+  `finalizeJobAndMeter` (`route.ts:292-309`). A serialised job holds its
+  lane slot until the 12h TTL (`route.ts:128-148).
+- Stall signal exists, nothing consumes it: `currentStepAt` advances only
+  on real step change (`route.ts:401-411`).
 
-**The real defect is one line above it.** `app/dashboard/page.tsx:26-37` filters `useNavItems()`
-through a hardcoded allow-list containing `i.href === "/dashboard/mailboxes"` — a condition that can
-**never be true**. The filter looks maintained while silently dropping every new app, which is why
-Billing existed but appeared nowhere. **Delete the filter; do not patch it.**
+## 2. BUG A fix contract
 
-## 3. P1 — Wallet chip in the top bar (commit 1)
+1. Worker concurrency follows the admin dial — no hardcoded 1. Size the
+   lane semaphores from the cap (env or admin API, never a second
+   hardcoded constant). Default stays 1 until the dial says otherwise.
+2. Phase A fairness: a full lane must not starve other lanes' candidates
+   in the same tick. Test: lane X full + lane Y healthy → Y dispatches.
+3. Worker-rejected jobs requeue as CLEAN `queued` rows (no stale resume
+   data). Test the requeue shape.
+4. An admitted-but-never-started job must not hold its slot indefinitely
+   — bound it; prove a stuck-`running` job releases its lane.
+5. Keep: worker 404 → `finalizeJobAndMeter(failed)` (`route.ts:311-317`).
 
-Remove `{ href: "/dashboard/billing", label: "Billing", icon: CreditCard }` from `NAV_ITEMS`
-(`components/dashboard-nav.tsx:67`) and add a **Wallet chip to `components/menu-bar.tsx`**, beside the
-date, linking to `/dashboard/billing`.
+Tests: lane-fairness, reject-requeue shape, slot-release, 404-finalise.
+Gates: tsc + wallet 39 + topup 22 + support 50 + hosting 334 + ESLint
+touched-only (worktree baseline) + `CI=true` build, before EACH commit.
+Two commits (A then B), explicit `git add`, `-F` commit, push (push ≠ deploy,
+leave deploy to the verifier).
 
-* **Delete the entry — do not hide it.** `NAV_ITEMS` is the single source of truth for the dock, the
-  mobile row and (after P2) the sidebar. A hidden-but-present entry reappears in the dock.
-* **Read the balance over `GET /api/wallet`**, reusing the pattern already in
-  `components/wallet-balance.tsx`. **`getWallet()` is server-only — never import it client-side.**
-  Integer cents end to end; format with `formatCents`.
-* `BUILD_ALLOWED_HREFS` (`dashboard-nav.tsx:75`) needs **no** change — `/dashboard/billing` was never
-  in the extractor set. **Verify that, don't assume it.**
-* ⚠ **Check `proxy.ts` first.** A `license_only` session is restricted to `/dashboard/licenses`, so a
-  chip pointing at `/dashboard/billing` may 403 for those users. Decide deliberately and test it.
-* ⚠ **The chip will read `$0.00` for every real user.** `PLAN_TASK_165` §3 proves no production route
-  calls `creditTopup`/`creditApprovedPayment`/`adminAdjustBalance` — the wallet cannot be funded
-  until `PLAN_TASK_158` W3 ships. **Render that honestly** (a clear empty/low-balance state), and
-  **say so in your report.** Do not fake a balance and do not build a top-up flow to paper over it.
+## 3. BUG B — "daily summary limit (24 frames)" is hardcoded
 
-## 4. P2 — Side nav on the overview only (commit 2)
+Owner: "i need the daily limit not hardcoded. and nothing like 24 frames
+should be the daily limit." Screen timeline shows
+"No summary — this machine's daily summary limit (24 frames) is reached."
 
-Render `DashboardNav variant="sidebar"` **on the overview only** — in the overview's own layout, NOT
-in `components/shell.tsx`, or it shows on every page and contradicts the request.
+Verified facts:
 
-* **Good news:** the sidebar variant already exists and is styled
-  (`components/dashboard-nav.tsx:98-116`, a `flex-col` list). This is a **wiring job**, not a
-  from-scratch build. Nothing renders it today; the only call site is `shell.tsx:59` with
-  `variant="mobile"`.
-* **Remove the overview cards** — the owner wants them gone because every app is already reachable
-  from the dock below.
-* **Delete the dead filter** at `app/dashboard/page.tsx:26-37` (§2 above).
-* `hidden md:flex` so it does not fight the dock on small screens.
-* Removing the cards removes the overview's only use of `DESCRIPTIONS` (`app/dashboard/page.tsx:12-22`).
-  Either delete it or keep it only if something still reads it — **do not leave dead data behind.**
-* Desktop nav is a **bottom dock** (`components/dock.tsx:19`, `fixed bottom-4 left-1/2`, `md:flex`,
-  icon-only tiles). The sidebar must not overlap it.
+- Cap `SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY = 24`
+  (`lib/screenshot-summaries.ts:75-87`); calls cap
+  `SCREENSHOT_SUMMARY_MAX_CALLS_PER_DEVICE_PER_DAY = 8` (`:89-102`).
+  Breach marks `summaryError = "daily_call_budget"` (`:464-480`).
+  UI hardcodes "(24 frames)" (`components/screen-timeline.tsx:55-56`).
+- Summary pass reads raw AdminSetting (`:200-221`); AI/day-boundary dials
+  NOT admin-editable (`:104-128`). Capture dials resolve separately
+  (`lib/device-screenshots.ts`).
 
-## 5. Gate before EACH commit (separately, not once at the end)
-    npx tsc --noEmit
-    npx eslint on the touched files only
-    npm run test:wallet  (29) · npm run test:support (40) · npm run test:hosting (334)
-    CI=true npm run build
-**No CI runs these.** Re-run after commit 1 and again after commit 2.
+Fix contract:
 
-Then, separately: `git add <specific paths>` → `git commit -F<file>` → `git log -1` to **confirm the
-commit happened** → `git push origin main`. **Pushing does not deploy.** Leave deploying to the
-verifier, or run `gh workflow run deploy.yml --ref main` and check the **job list** — a green run can
-have SKIPPED the deploy job.
+1. Migration (additive, nullable-safe):
+   `screenshotSummaryMaxFramesPerDevicePerDay` (default 24 — byte-identical
+   until touched) + `screenshotSummaryMaxCallsPerDevicePerDay` (default 8).
+   Clamp frames 1..1000, calls 1..100, calls ≤ frames; NULL/invalid → 24/8.
+2. `resolveSummarySettings` reads them; budget in `summarisePendingFrames`
+   uses resolved values. UI copy interpolates the dial — never "24" when
+   the dial says otherwise.
+3. Surface both dials in admin UI beside the existing screenshot dials.
+4. Tests: default 24/8 · raised binds less · lowered binds more ·
+   NULL/invalid fallback · UI copy matches dial. Scratch-DB replay only.
 
-## 6. Out of scope — do NOT build these
-* **P3 (modal + wallpaper)** is a separate task. **D5 wallpaper is PAUSED by the owner** — if you ever
-  build it, it is a **static bundled asset**, never a per-user upload/preference/migration.
-  **D6 3D is BLOCKED on licence verification** — a `<SpaceScene />` shell with no asset is fine,
-  but **never ship a licence-unverified clip** (Pexels/Pixabay 403 automated fetches; Mixkit's terms
-  are behind JS modals). Report it as a BLOCKER.
-* **P4 / wallet W3 (admin grant)** — money-adjacent, and **must not be bundled into a UI commit.**
-* **Support (D3/D4) is already shipped and live** (`5d3b893b`, run `37305909697`). Do not rebuild it,
-  and do not move the support widget: it is **bottom-left** because `AgentWidget` owns bottom-right,
-  and two widgets in one corner make the lower one unclickable.
+## 4. Report back
 
-## 7. Report back
-1. Gate results table — every command, real output, pass/fail/**outstanding**.
-2. **Whether the Wallet chip renders for a `license_only` session**, and what you decided.
-3. Proof Billing left the dock and the EXE nav still shows only Overview/Extract/Settings.
-4. What you did about `DESCRIPTIONS` and the dead filter.
-5. Anything you could not verify, plainly. Do not assume.
+1. Bug A: live dial values; root cause (`file:line`); where worker
+   concurrency comes from now; fairness proof.
+2. Bug B: migration name; values tested; copy before/after.
+3. Gate table, real output. Honest unverified list.
+
