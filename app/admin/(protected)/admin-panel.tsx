@@ -1322,6 +1322,8 @@ type ScreenshotSettingsState = {
   maxConcurrent: number;
   intervalMinutes: number;
   retentionDays: number;
+  // TASK_168 Bug B — the summary budget dial (calls/device/day; ×3 = frames).
+  summaryMaxCalls: number;
 };
 
 type ScreenshotViewState = {
@@ -1363,6 +1365,13 @@ const SCREENSHOT_NUMBER_ROWS: Array<{
     hint: "Older frames are deleted from disk and their rows removed by the sweep. This is a real deletion, not a hide.",
     min: 1,
     max: 365,
+  },
+  {
+    field: "summaryMaxCalls",
+    label: "Summaries per device per day (calls)",
+    hint: "Metered AI calls per device per UTC day; each call summarises up to 3 frames, so 8 calls = 24 frames. Frames past the limit are marked and retried after 00:00 UTC, never silently dropped. Lower this to cut AI spend, raise it to summarise dense capture schedules.",
+    min: 1,
+    max: 48,
   },
 ];
 

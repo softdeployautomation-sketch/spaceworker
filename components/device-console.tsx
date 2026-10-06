@@ -117,6 +117,10 @@ type ScreenMonitorView = {
     intervalMinutes: number;
     retentionDays: number;
     effectiveIntervalMinutes: number;
+    // TASK_168 Bug B — the resolved daily FRAMES budget (dial × 3), served by
+    // GET so the deferred copy names the limit that actually binds. Optional:
+    // older responses (and tests) predate it and fall back to 24.
+    summaryFramesPerDay?: number;
   };
   frames: Array<{
     id: string;
@@ -2272,6 +2276,7 @@ function ScreenMonitoringCard({
                 openFrameId={openFrame}
                 onToggleFrame={(id) => setOpenFrame(openFrame === id ? null : id)}
                 onDeleteFrame={(id) => void deleteFrame(id)}
+                framesPerDay={view.policy.summaryFramesPerDay ?? 24}
               />
             </>
           )}

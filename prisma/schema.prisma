@@ -397,6 +397,13 @@ model AdminSetting {
   //                              is a dial, never a code change.
   screenshotHeadroomRamPct         Int     @default(0)
   screenshotRotationSliceMinutes   Int     @default(25)
+  // TASK_168 Bug B — the SUMMARY budget dial. The per-device daily relay-call
+  // budget (frames/day = calls x 3 images/call) was a hardcoded 8 (= 24
+  // frames/day) in lib/screenshot-summaries.ts AND in the timeline copy
+  // ("daily summary limit (24 frames)"), so the owner could not tune AI spend
+  // without a code change. Additive with the old default: 8 reproduces the
+  // old behaviour exactly (8 x 3 = 24).
+  screenshotSummaryMaxCallsPerDevicePerDay Int @default(8)
 
   // TASK_155 P1 — Task 155 "Workers & Pages" hosting, FILES engine. Every cap is
   // an AdminSetting (CROSS-TRACK RULE 7 — nothing hardwired; owner 2026-10-01:

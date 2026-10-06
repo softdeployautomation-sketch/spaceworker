@@ -391,6 +391,9 @@ beforeEach(() => {
     screenshotCapturesMaxConcurrent: 2,
     screenshotCaptureIntervalMinutes: 60,
     screenshotRetentionDays: 14,
+    // TASK_168 Bug B — the dial's default reproduces the old hardcode. The
+    // hook returns a copy of this row, so a test sets the DIAL here.
+    screenshotSummaryMaxCallsPerDevicePerDay: 8,
   };
   users.push({ id: "user_1", aiDailyCapHundredthsCent: 20000 });
 });
@@ -594,6 +597,42 @@ test("2026-10-04: over_cap and rate_limited are RETRYABLE, so neither strands a 
   assert.ok(RETRYABLE_SUMMARY_ERRORS.has("rate_limited"), "back-pressure clears itself");
   // Still terminal: a file that is gone from disk will never yield text.
   assert.equal(RETRYABLE_SUMMARY_ERRORS.has("image_missing"), false);
+});
+
+test("TASK_168 Bug B: the daily budget BINDS at the admin dial, not the old hardcoded 24", async () => {
+  // The dial is 2 calls/day = 6 frames/day. 9 frames arrive: 6 summarised in
+  // 2 calls, 3 marked daily_call_budget. Under the old hardcode all 9 would
+  // have been summarised (9 <= 24) — so this proves the DIAL binds.
+  adminRow.screenshotSummaryMaxCallsPerDevicePerDay = 2;
+  addUser();
+  addDevice("d1");
+  for (let i = 0; i < 9; i++) await makeFrame("d1");
+
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+
+  assert.equal(calls.length, 2, "6 frames at 3/call = 2 calls, the dial's allowance");
+  assert.equal(result.summarised, 6);
+  assert.equal(result.deferred, 3);
+  assert.equal(frames.filter((f) => f.summary !== null).length, 6);
+  assert.equal(frames.filter((f) => f.summaryError === "daily_call_budget").length, 3);
+  assert.equal(frames.length, 9, "nothing deleted to make the count look right");
+});
+
+test("TASK_168 Bug B: raising the dial above the old 24 actually summarises more", async () => {
+  // The dial is 16 calls/day = 48 frames/day. 30 frames arrive: under the old
+  // hardcode 6 would have been deferred (30 > 24) — here all 30 summarise in
+  // 10 calls. The dial is a ceiling that moves BOTH ways.
+  adminRow.screenshotSummaryMaxCallsPerDevicePerDay = 16;
+  addUser();
+  addDevice("d1");
+  for (let i = 0; i < 30; i++) await makeFrame("d1");
+
+  const result = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+
+  assert.equal(calls.length, 10, "30 frames at 3/call = 10 calls, within the 16-call dial");
+  assert.equal(result.summarised, 30);
+  assert.equal(result.deferred, 0);
+  assert.equal(frames.filter((f) => f.summaryError !== null).length, 0);
 });
 
 // ---------------------------------------------------------------------------

@@ -190,6 +190,17 @@ test("2026-10-04: the local daily cap, a real Channelry spend cap, and a bare 42
   assert.equal(new Set([local, money, limited]).size, 3);
 });
 
+test("TASK_168 Bug B: the deferred copy names the DIAL's limit, defaulting to the old 24", () => {
+  // Default: identical to the old hardcoded sentence — existing UI/tests read on.
+  assert.match(summaryPendingCopy("daily_call_budget"), /\(24 frames\)/);
+  // With the dial at 2 calls/day (= 6 frames), the copy names 6, not 24.
+  const dialled = summaryPendingCopy("daily_call_budget", 6);
+  assert.match(dialled, /\(6 frames\)/);
+  assert.doesNotMatch(dialled, /\(24 frames\)/);
+  assert.match(dialled, /00:00 UTC/);
+  assert.doesNotMatch(dialled, /budget/i);
+});
+
 // ---------------------------------------------------------------------------
 // TASK_157 — the extraction toggle, and the delete affordance.
 //

@@ -23,6 +23,11 @@ const WRITABLE = {
   maxConcurrent: { column: "screenshotCapturesMaxConcurrent", kind: "int", min: 1, max: 10 },
   intervalMinutes: { column: "screenshotCaptureIntervalMinutes", kind: "int", min: 1, max: 1440 },
   retentionDays: { column: "screenshotRetentionDays", kind: "int", min: 1, max: 365 },
+  // TASK_168 Bug B — the SUMMARY budget dial: metered relay calls per device
+  // per UTC day (× 3 images/call = frames/day). Floor of 1: 0 would mean
+  // "summarise nothing, ever", which is the OFF switch's job. Cap of 48
+  // (= 144 frames/day): beyond that the dial stops being a cost ceiling.
+  summaryMaxCalls: { column: "screenshotSummaryMaxCallsPerDevicePerDay", kind: "int", min: 1, max: 48 },
 } as const;
 
 type WritableKey = keyof typeof WRITABLE;

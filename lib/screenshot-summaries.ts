@@ -447,6 +447,13 @@ export async function runSummaryPass(
     return result;
   }
 
+  // TASK_168 Bug B — the per-device daily FRAMES budget is DERIVED from the
+  // admin dial (calls/day × 3 images/call), never a second hardcoded number.
+  // The exported constant below is the DEFAULT (8 → 24) the dial falls back
+  // to; what binds here is the resolved dial.
+  const maxFramesPerDevicePerDay =
+    settings.summaryMaxCalls * SCREENSHOT_SUMMARY_IMAGES_PER_CALL;
+
   // Group by device, preserving oldest-first order within each device.
   const byDevice = new Map<string, PendingSummaryFrame[]>();
   for (const frame of pending) {
@@ -461,8 +468,10 @@ export async function runSummaryPass(
     const userId = frames[0].userId;
 
     // (3) per-device daily budget — checked BEFORE any cap read or call.
+    // TASK_168 Bug B — the limit is the ADMIN DIAL resolved above, not the
+    // hardcoded constant: the constant is the dial's default, not the rule.
     const alreadyToday = await countSummarisedToday(deviceId);
-    const remaining = Math.max(0, SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY - alreadyToday);
+    const remaining = Math.max(0, maxFramesPerDevicePerDay - alreadyToday);
     const eligible = frames.slice(0, remaining);
     const overBudget = frames.slice(remaining);
     if (overBudget.length > 0) {

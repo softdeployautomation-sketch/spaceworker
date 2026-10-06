@@ -61,6 +61,12 @@ export interface ScreenshotSettings {
   headroomRamPct: number;
   /** How long one rotation slice holds before the per-user cursor advances. */
   rotationSliceMinutes: number;
+  // TASK_168 Bug B — the SUMMARY budget dial: metered relay calls allowed per
+  // device per UTC day. Default 8 (= 24 frames/day at 3/call) reproduces the
+  // old hardcoded behaviour. The frames/day figure is DERIVED (× 3), never a
+  // second dial, so the two can never drift apart. Short name matches the
+  // admin API/UI key (same 1:1:1 discipline as maxConcurrent etc.).
+  summaryMaxCalls: number;
 }
 
 /** Structural subset of AdminSetting this module reads. */
@@ -73,6 +79,9 @@ export interface ScreenshotSettingsRow {
   // RECONCILES against. Same AdminSetting row, so no second settings read.
   screenshotHeadroomRamPct?: number | null;
   screenshotRotationSliceMinutes?: number | null;
+  // TASK_168 Bug B — the summary budget dial lives on the same AdminSetting
+  // row, so no second settings read.
+  screenshotSummaryMaxCallsPerDevicePerDay?: number | null;
   governorRamWarnPct?: number | null;
   governorRamHardPct?: number | null;
 }
@@ -134,6 +143,13 @@ export function resolveScreenshotSettings(
       row?.screenshotRotationSliceMinutes,
       25,
       SCREENSHOT_ROTATION_SLICE_MIN_MINUTES,
+    ),
+    // TASK_168 Bug B — floor of 1 call: 0 would mean "summarise nothing, ever",
+    // which is the OFF switch's job, not the budget dial's.
+    summaryMaxCalls: rowInt(
+      row?.screenshotSummaryMaxCallsPerDevicePerDay,
+      8,
+      1,
     ),
   };
 }

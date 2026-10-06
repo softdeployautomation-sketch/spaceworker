@@ -590,6 +590,8 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
   // line" (75) and the owner's 25-minute rotation slice.
   assert.equal(defaults.headroomRamPct, 75, "0 = inherit governorRamWarnPct (75)");
   assert.equal(defaults.rotationSliceMinutes, 25, "owner figure: every 20-30 min");
+  // TASK_168 Bug B — the summary budget dial at the old hardcoded default.
+  assert.equal(defaults.summaryMaxCalls, 8, "8 calls = 24 frames/day, the old hardcode");
 
   // A missing row must be as safe as an empty one.
   assert.deepEqual(resolveScreenshotSettings(null), defaults);
@@ -601,11 +603,13 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
     screenshotCapturesMaxConcurrent: 0,
     screenshotCaptureIntervalMinutes: 0,
     screenshotRetentionDays: 0,
+    screenshotSummaryMaxCallsPerDevicePerDay: 0,
   });
   assert.equal(silly.enabled, true);
   assert.equal(silly.maxConcurrent, 2);
   assert.equal(silly.intervalMinutes, 60);
   assert.equal(silly.retentionDays, 14);
+  assert.equal(silly.summaryMaxCalls, 8, "a 0 budget falls back, never means summarise-nothing");
 
   // A real value is honoured — including 1 (the RAM-measuring setting).
   const one = resolveScreenshotSettings({
@@ -613,6 +617,7 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
     screenshotCapturesMaxConcurrent: 1,
     screenshotCaptureIntervalMinutes: 1,
     screenshotRetentionDays: 1,
+    screenshotSummaryMaxCallsPerDevicePerDay: 2,
   });
   assert.deepEqual(one, {
     enabled: true,
@@ -622,6 +627,8 @@ test("settings fall back to the schema defaults and clamp nonsense to sane floor
     // M6 fields, at their resolved defaults (no governor row => warn 75).
     headroomRamPct: 75,
     rotationSliceMinutes: 25,
+    // TASK_168 Bug B — the dial is honoured, not clamped to the old hardcode.
+    summaryMaxCalls: 2,
   });
 });
 

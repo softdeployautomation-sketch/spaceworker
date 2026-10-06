@@ -10,6 +10,7 @@ import {
   resolveScreenshotSettings,
   SCREENSHOT_INTERVAL_MAX_MINUTES,
 } from "@/lib/device-screenshots";
+import { SCREENSHOT_SUMMARY_IMAGES_PER_CALL } from "@/lib/screenshot-summaries";
 
 export const dynamic = "force-dynamic";
 
@@ -87,6 +88,9 @@ export async function GET(
     // override) — the exact same shared resolver listDueDevices uses.
     policy: {
       enabled: policy.enabled,
+      // TASK_168 Bug B — the resolved daily FRAMES budget (dial × 3), so the
+      // timeline's deferred copy names the limit that actually binds.
+      summaryFramesPerDay: policy.summaryMaxCalls * SCREENSHOT_SUMMARY_IMAGES_PER_CALL,
       intervalMinutes: policy.intervalMinutes,
       retentionDays: policy.retentionDays,
       effectiveIntervalMinutes: resolveEffectiveIntervalMinutes(

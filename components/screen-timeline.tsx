@@ -39,21 +39,28 @@ export interface ScreenTimelineFrame {
   ocrConfidence: number | null;
 }
 
-/** Why a CAPTURED frame has no summary, in human words (neutral, never red). */
-export function summaryPendingCopy(summaryError: string | null): string {
+/**
+ * Why a CAPTURED frame has no summary, in human words (neutral, never red).
+ *
+ * TASK_168 Bug B — `framesPerDay` is the ADMIN DIAL's resolved value
+ * (summaryMaxCalls × 3 images/call), passed in by the caller. It defaults to
+ * 24 (the old hardcoded 8 × 3) so existing callers keep reading identically.
+ */
+export function summaryPendingCopy(summaryError: string | null, framesPerDay = 24): string {
   switch (summaryError) {
     case null:
     case "":
       return "Not summarised yet.";
     case "cap_exhausted":
       return "No summary — today's AI limit for this account is used up.";
-    // 2026-10-04 — this is a LOCAL per-device processing limit (24 frames/day,
-    // enforced by lib/screenshot-summaries.ts), NOT anything to do with the
+    // 2026-10-04 — this is a LOCAL per-device processing limit (TASK_168: the
+    // admin "Summaries per device per day" dial, default 24 frames/day),
+    // enforced by lib/screenshot-summaries.ts — NOT anything to do with the
     // Channelry AI budget. It used to read as a money problem, which sent the
     // operator chasing a spend cap that was 99.98% unused. Name the limit and
     // say when it clears.
     case "daily_call_budget":
-      return "No summary — this machine's daily summary limit (24 frames) is reached. It resets at 00:00 UTC and they will be retried.";
+      return `No summary — this machine's daily summary limit (${framesPerDay} frames) is reached. It resets at 00:00 UTC and they will be retried.`;
     // The ONLY copy in this function that is allowed to say "budget": it is set
     // solely from the relay's explicit spend-cap response body.
     case "over_cap":
@@ -152,7 +159,7 @@ function failureCode(reason: string): string {
  * The toggle only appears when there is actually text to show. We do not offer a
  * view that is empty.
  */
-export function FrameReadout({ frame }: { frame: ScreenTimelineFrame }) {
+export function FrameReadout({ frame, framesPerDay = 24 }: { frame: ScreenTimelineFrame; framesPerDay?: number }) {
   const hasText = frame.ocrText !== null && frame.ocrText !== undefined && frame.ocrText !== "";
   const [showText, setShowText] = useState(false);
   const lowConfidence = frame.ocrConfidence !== null && frame.ocrConfidence < 45;
@@ -192,7 +199,7 @@ export function FrameReadout({ frame }: { frame: ScreenTimelineFrame }) {
             <p className="mt-0.5 text-sm text-fg">{frame.summary}</p>
           ) : (
             <p className="mt-0.5 text-sm text-fg-muted">
-              {summaryPendingCopy(frame.summaryError)}
+              {summaryPendingCopy(frame.summaryError, framesPerDay)}
             </p>
           )}
           {hasText && (
@@ -217,12 +224,16 @@ export function ScreenTimeline({
   openFrameId,
   onToggleFrame,
   onDeleteFrame,
+  // TASK_168 Bug B — the resolved daily FRAMES budget (dial × 3), so the
+  // deferred copy names the limit that actually binds, not a hardcoded 24.
+  framesPerDay = 24,
 }: {
   deviceId: string;
   frames: ScreenTimelineFrame[];
   openFrameId: string | null;
   onToggleFrame: (frameId: string) => void;
   onDeleteFrame?: (frameId: string) => void;
+  framesPerDay?: number;
 }) {
   return (
     <div
@@ -281,7 +292,7 @@ export function ScreenTimeline({
                 )}
               </div>
               {frame.status === "captured" && (
-                <FrameReadout frame={frame} />
+                <FrameReadout frame={frame} framesPerDay={framesPerDay} />
               )}
               {frame.status !== "captured" && (
                 <p className="mt-0.5 text-sm text-red-500">
