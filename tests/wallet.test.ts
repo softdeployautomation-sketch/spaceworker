@@ -33,6 +33,10 @@ interface FakeUser {
   id: string;
   balanceCents: number;
   postpaidLimitCents: number;
+  // W5 — spendSubscription reads tier + premiumExpiresAt and writes them on
+  // success. Default tier 1 / NULL expiry = plain free account.
+  tier: number;
+  premiumExpiresAt: Date | null;
 }
 
 interface FakeEntry {
@@ -235,8 +239,8 @@ loader._load = function patched(request, parent, isMain) {
 const wallet = require("../lib/wallet") as typeof import("../lib/wallet");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
-function seedUser(id: string, balanceCents = 0, postpaidLimitCents = 0): FakeUser {
-  const u: FakeUser = { id, balanceCents, postpaidLimitCents };
+function seedUser(id: string, balanceCents = 0, postpaidLimitCents = 0, extra: Partial<FakeUser> = {}): FakeUser {
+  const u: FakeUser = { id, balanceCents, postpaidLimitCents, tier: 1, premiumExpiresAt: null, ...extra };
   store.users.push(u);
   return u;
 }
@@ -849,4 +853,121 @@ test("a movement for an unknown account writes nothing", async () => {
   const res = await wallet.creditTopup({ userId: "nobody", amountCents: 100 });
   assert.equal(res.ok, false);
   assert.equal(writes.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// PLAN_TASK_158 W5 — spendSubscription: funded balance becomes a 30-day
+// tier-5 term. THE INVARIANT: the debit + the tier/expiry grant + the ledger
+// row commit together, or nothing moves at all.
+// ---------------------------------------------------------------------------
+
+test("W5 success debits once + grants tier 5 with a ~30-day term + ledger row", async () => {
+  seedUser("u1", 5000);
+  const before = Date.now();
+  const res = await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.balanceCents, 2500);
+  assert.equal(res.value.chargedCents, 2500);
+  const u = store.users.find((x) => x.id === "u1")!;
+  assert.equal(u.tier, 5);
+  assert.ok(u.premiumExpiresAt instanceof Date);
+  const days = (u.premiumExpiresAt.getTime() - before) / (24 * 60 * 60 * 1000);
+  assert.ok(days > 29 && days < 31, `term must be ~30 days, got ${days}`);
+  assert.equal(store.entries.length, 1);
+  assert.equal(store.entries[0].kind, "debit_purchase");
+  assert.equal(store.entries[0].amountCents, -2500);
+  assert.equal(store.entries[0].balanceAfterCents, 2500);
+  assert.match(store.entries[0].note ?? "", /web_subscription/);
+  assertLedgerSumsToBalance("u1", 5000);
+});
+
+test("W5 debit carries the CAS guard the double-spend proof depends on", async () => {
+  seedUser("u1", 5000);
+  await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+  assert.deepEqual(casGuards[0].where, { id: "u1", balanceCents: 5000 });
+});
+
+test("W5 double-spend: two simultaneous full-balance spends = exactly one success", async () => {
+  // $25 balance, two $25 spends fired at once — the double-click. The loser
+  // finds premium live (the winner granted it) and is refused already_active;
+  // either way it must NOT be a second charge.
+  seedUser("u1", 2500);
+  const [a, b] = await Promise.all([
+    wallet.spendSubscription({ userId: "u1", priceCents: 2500 }),
+    wallet.spendSubscription({ userId: "u1", priceCents: 2500 }),
+  ]);
+  const winners = [a, b].filter((r) => r.ok).length;
+  assert.equal(winners, 1, "exactly one spend may succeed");
+  assert.equal(balanceOf("u1"), 0);
+  assert.equal(store.entries.length, 1, "the loser must not leave a ledger row");
+  assertLedgerSumsToBalance("u1", 2500);
+});
+
+test("W5 insufficient balance = 402 insufficient_funds and nothing moves", async () => {
+  seedUser("u1", 2499);
+  const res = await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 402);
+  assert.equal(res.code, "insufficient_funds");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 2499);
+  assert.equal(store.entries.length, 0);
+  assert.equal(store.users.find((x) => x.id === "u1")!.tier, 1);
+});
+
+test("W5 live term = 409 already_active and nothing moves (refuse, never extend)", async () => {
+  seedUser("u1", 5000, 0, { tier: 5, premiumExpiresAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000) });
+  const res = await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 409);
+  assert.equal(res.code, "already_active");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 5000);
+  assert.equal(store.entries.length, 0);
+});
+
+test("W5 grandfathered tier-5 (NULL expiry) = 409 already_active, nothing moves", async () => {
+  // Pre-Task-55 premium never expires; spending balance on top of it would be
+  // charging for something the account already holds.
+  seedUser("u1", 5000, 0, { tier: 5, premiumExpiresAt: null });
+  const res = await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 409);
+  assert.equal(res.code, "already_active");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 5000);
+});
+
+test("W5 expired term may buy again — a new term starts from now", async () => {
+  seedUser("u1", 5000, 0, { tier: 5, premiumExpiresAt: new Date(Date.now() - 1000) });
+  const before = Date.now();
+  const res = await wallet.spendSubscription({ userId: "u1", priceCents: 2500 });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  const u = store.users.find((x) => x.id === "u1")!;
+  assert.equal(u.tier, 5);
+  assert.ok(u.premiumExpiresAt!.getTime() >= before, "new term starts from now, not stacked onto the past");
+  assert.equal(balanceOf("u1"), 2500);
+});
+
+test("W5 keyed retry after success answers chargedCents 0 and moves nothing", async () => {
+  seedUser("u1", 5000);
+  const first = await wallet.spendSubscription({ userId: "u1", priceCents: 2500, idempotencyKey: "spend_1" });
+  assert.equal(first.ok, true);
+  const second = await wallet.spendSubscription({ userId: "u1", priceCents: 2500, idempotencyKey: "spend_1" });
+
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.equal(second.value.chargedCents, 0);
+  assert.equal(balanceOf("u1"), 2500);
+  assert.equal(store.entries.length, 1);
 });

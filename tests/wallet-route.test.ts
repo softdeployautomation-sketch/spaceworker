@@ -237,4 +237,148 @@ test("the route never moves money", async () => {
 
   assert.equal(getWalletCalls.length, 1);
 });
+// ---------------------------------------------------------------------------
+// PLAN_TASK_158 W5 — POST /api/wallet/spend route contracts. The SERVICE's
+// atomicity is proven in tests/wallet.test.ts; what is under test here lives
+// in the route itself: session user only, server-side price from the SAME
+// AdminSetting field as checkout, EXE refused (W6 not started), and the
+// 402/409 shapes pass through with their codes.
+// ---------------------------------------------------------------------------
+
+const SPEND_ROUTE = "/app/api/wallet/spend/route.ts";
+
+/** null = signed out. Otherwise the id the session resolves to. */
+let spendSessionUserId: string | null = "u_alice";
+/** The AdminSetting price the fake settings return (dollars, like the column). */
+let spendPriceUsd = 25;
+/** What the fake spendSubscription should answer. */
+let spendResult: unknown = null;
+let spendCalls: Array<{ userId: string; priceCents: number }> = [];
+let spendRateLimitAllowed = true;
+let spendRateLimitKinds: string[] = [];
+
+const fakeSpendWallet = {
+  spendSubscription: async (input: { userId: string; priceCents: number }) => {
+    spendCalls.push({ userId: input.userId, priceCents: input.priceCents });
+    return spendResult;
+  },
+};
+
+const fakeSpendRateLimit = {
+  getClientIp: async () => "203.0.113.9",
+  allowAndRecord: async (_ip: string, kind: string) => {
+    spendRateLimitKinds.push(kind);
+    return spendRateLimitAllowed;
+  },
+};
+
+const fakeSpendSettings = {
+  getAdminSettings: async () => ({ webSubscriptionPriceUsd: spendPriceUsd }),
+};
+
+const spendLoader = Module as unknown as { _load: (r: string, p: NodeModule | undefined, m: boolean) => unknown };
+const spendOriginalLoad = spendLoader._load;
+// Stacked on the GET suite's loader above; dispatch is by route file, and
+// SPEND_ROUTE never ends with the GET ROUTE string, so the two never collide.
+spendLoader._load = function patchedSpend(request: string, parent: NodeModule | undefined, isMain: boolean) {
+  const from = parent?.filename ?? "";
+  if (from.endsWith(SPEND_ROUTE)) {
+    if (request === "next/server") return { NextResponse: fakeNextResponse };
+    if (request === "@/lib/session-user")
+      return { getCurrentUser: async () => (spendSessionUserId ? { id: spendSessionUserId } : null) };
+    if (request === "@/lib/rate-limit") return fakeSpendRateLimit;
+    if (request === "@/lib/admin-settings") return fakeSpendSettings;
+    if (request === "@/lib/wallet") return fakeSpendWallet;
+  }
+  return spendOriginalLoad.call(this, request, parent, isMain);
+};
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+const spendRoute = require("../app/api/wallet/spend/route") as {
+  POST: (req: never) => Promise<{ status: number; json: () => Promise<unknown> }>;
+};
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+const spendReq = (body: unknown) => ({ json: async () => body }) as never;
+
+function resetSpendFakes() {
+  spendSessionUserId = "u_alice";
+  spendPriceUsd = 25;
+  spendResult = {
+    ok: true,
+    value: { balanceCents: 2500, premiumExpiresAt: new Date("2026-11-05T12:00:00.000Z"), chargedCents: 2500 },
+  };
+  spendCalls = [];
+  spendRateLimitAllowed = true;
+  spendRateLimitKinds = [];
+}
+
+test("W5 route charges the session user at the server price ($25 -> 2500c)", async () => {
+  resetSpendFakes();
+  const res = await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  const body = (await res.json()) as { ok: boolean; product: string; balanceCents: number; chargedCents: number };
+
+  assert.equal(res.status, 200);
+  assert.deepEqual(spendCalls, [{ userId: "u_alice", priceCents: 2500 }]);
+  assert.equal(body.ok, true);
+  assert.equal(body.product, "web_subscription");
+  assert.equal(typeof body.balanceCents, "number");
+  assert.equal(Number.isInteger(body.balanceCents), true);
+});
+
+test("W5 route rounds the price UP like the credit path ($10.001 -> 1001c)", async () => {
+  resetSpendFakes();
+  spendPriceUsd = 10.001;
+  await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.deepEqual(spendCalls, [{ userId: "u_alice", priceCents: 1001 }]);
+});
+
+test("W5 route refuses EXE products — W6 not started — without touching the wallet", async () => {
+  resetSpendFakes();
+  for (const product of ["extractor_exe", "combined_exe", "mailer_module", "wallet_topup", undefined, 123]) {
+    spendCalls = [];
+    const res = await spendRoute.POST(spendReq({ product }));
+    const body = (await res.json()) as { error: string; code: string };
+    assert.equal(res.status, 400, `product ${JSON.stringify(product)} must be refused`);
+    assert.equal(body.code, "unsupported_product");
+    assert.deepEqual(spendCalls, [], "a refused product must never reach the wallet");
+  }
+});
+
+test("W5 route 401s with no session and never touches the wallet", async () => {
+  resetSpendFakes();
+  spendSessionUserId = null;
+  const res = await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.equal(res.status, 401);
+  assert.deepEqual(spendCalls, []);
+});
+
+test("W5 route passes 402/409 shapes through with their codes", async () => {
+  resetSpendFakes();
+  spendResult = { ok: false, status: 402, code: "insufficient_funds", message: "Insufficient balance." };
+  const r402 = await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.equal(r402.status, 402);
+  assert.equal(((await r402.json()) as { code: string }).code, "insufficient_funds");
+
+  spendResult = { ok: false, status: 409, code: "already_active", message: "Already premium." };
+  const r409 = await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.equal(r409.status, 409);
+  assert.equal(((await r409.json()) as { code: string }).code, "already_active");
+});
+
+test("W5 route 429s when the rate limit refuses, without touching the wallet", async () => {
+  resetSpendFakes();
+  spendRateLimitAllowed = false;
+  const res = await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.equal(res.status, 429);
+  assert.deepEqual(spendCalls, []);
+});
+
+test("W5 route limits under wallet-spend, not the wallet-read polling budget", async () => {
+  // A money move under a 120/hr read budget is a hammerable endpoint. This
+  // asserts the strict kind (10/hr billing-submit posture) directly.
+  resetSpendFakes();
+  await spendRoute.POST(spendReq({ product: "web_subscription" }));
+  assert.deepEqual(spendRateLimitKinds, ["wallet-spend"]);
+});
 // __APPEND_TESTS__

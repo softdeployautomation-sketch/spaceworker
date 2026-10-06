@@ -77,6 +77,28 @@ const MAX_NOTE_LEN = 500;
 /** Prisma's unique-violation code, matched as a string to keep this file import-free. */
 const UNIQUE_VIOLATION = "P2002";
 
+/**
+ * PLAN_TASK_158 W5 — one web-subscription term bought from wallet balance.
+ * 30 days (== PREMIUM_DAYS_PER_CHARGE), priced server-side in whole cents.
+ * The tier written here is 5 by definition (see the spendSubscription comment
+ * for why the number is not imported from lib/premium.ts).
+ */
+const SPEND_TERM_DAYS = 30;
+const PREMIUM_TIER_FOR_SPEND = 5;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * True while the account holds usable premium: tier 5 with a live term, OR
+ * grandfathered tier 5 (NULL expiry, pre-Task-55 — never expires by design).
+ * A tier-5 row whose term has PASSED is not live: the lazy reversion will flip
+ * it to tier 1 on next read, and spending must be allowed to start a new term.
+ */
+function isLivePremium(tier: number, premiumExpiresAt: Date | null): boolean {
+  if (tier < PREMIUM_TIER_FOR_SPEND) return false;
+  if (premiumExpiresAt === null) return true; // grandfathered — already premium
+  return premiumExpiresAt.getTime() > Date.now();
+}
+
 export interface WalletView {
   /** Cached total, in cents. The authoritative sum is the ledger's. */
   balanceCents: number;
@@ -658,6 +680,105 @@ export async function grantBalance(input: {
     idempotencyKey: input.idempotencyKey,
   });
 }
+/**
+ * PLAN_TASK_158 W5 — spend funded balance on the web subscription.
+ *
+ * Closes the top-up loop for web only: one atomic step debits the balance AND
+ * grants a 30-day tier-5 term. EXE products are W6 and never reach here.
+ *
+ * ATOMICITY: debit CAS + tier/expiry write + ledger row commit in ONE
+ * $transaction — a crash can never take money without granting premium, or
+ * grant it for free. Pre-flight checks are repeated inside the retry loop
+ * because two tabs can stale them; the in-loop re-check is the real guard.
+ *
+ * ALREADY-ACTIVE: REFUSE (409 already_active), never extend. A second tap
+ * while a term is live must not eat another month of balance; one debit per
+ * term keeps "why was I charged twice" answerable. Grandfathered tier-5
+ * (NULL expiry) counts as active — they already hold premium.
+ */
+export async function spendSubscription(input: {
+  userId: string;
+  /** Integer cents, computed SERVER-side from the checkout price source. */
+  priceCents: number;
+  idempotencyKey?: string;
+}): Promise<
+  WalletResult<{ balanceCents: number; premiumExpiresAt: Date; chargedCents: number }>
+> {
+  if (!Number.isInteger(input.priceCents)) return badAmount("Amounts are in whole cents.");
+  if (input.priceCents <= 0) return badAmount("Enter an amount — a spend of zero changes nothing.");
+  const note = checkNote("Premium — 30 days (web_subscription)");
+  if (!note.ok) return note;
+
+  const idemKey =
+    typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+      ? input.idempotencyKey
+      : undefined;
+
+  // A retry of the SAME keyed spend answers from committed truth, never charges twice.
+  if (idemKey) {
+    const prior = await prisma.walletLedgerEntry.findUnique({ where: { idempotencyKey: idemKey } });
+    if (prior) {
+      if (prior.userId !== input.userId) {
+        return { ok: false, status: 409, code: "idempotency_key_conflict", message: "That reference was already used for a different account." };
+      }
+      const u = await prisma.user.findUnique({ where: { id: input.userId }, select: { balanceCents: true, premiumExpiresAt: true } });
+      if (!u) return notFound();
+      return { ok: true, value: { balanceCents: u.balanceCents, premiumExpiresAt: u.premiumExpiresAt ?? new Date(), chargedCents: 0 } };
+    }
+  }
+
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+    const snap = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { balanceCents: true, tier: true, premiumExpiresAt: true, postpaidLimitCents: true },
+    });
+    if (!snap) return notFound();
+    if (isLivePremium(snap.tier, snap.premiumExpiresAt)) {
+      return { ok: false, status: 409, code: "already_active", message: "Premium is already active on this account — no charge was made." };
+    }
+    if (snap.balanceCents - input.priceCents < -snap.postpaidLimitCents) {
+      return { ok: false, status: 402, code: "insufficient_funds", message: "Insufficient balance. Top up your wallet first — nothing was charged." };
+    }
+
+    const newBalance = snap.balanceCents - input.priceCents;
+    const nowMs = Date.now();
+    // Base is now unless a FUTURE expiry somehow exists without live premium
+    // (defensive: expired terms restart from now, never stack onto the past).
+    const baseMs = snap.premiumExpiresAt && snap.premiumExpiresAt.getTime() > nowMs ? snap.premiumExpiresAt.getTime() : nowMs;
+    const expiry = new Date(baseMs + SPEND_TERM_DAYS * DAY_MS);
+
+    try {
+      const done = await prisma.$transaction(async (tx) => {
+        // Same CAS idiom as move(): the loser's count is 0 and it retries.
+        const { count } = await tx.user.updateMany({
+          where: { id: input.userId, balanceCents: snap.balanceCents },
+          data: { balanceCents: newBalance, tier: PREMIUM_TIER_FOR_SPEND, premiumExpiresAt: expiry },
+        });
+        if (count === 0) return false;
+        await tx.walletLedgerEntry.create({
+          data: { userId: input.userId, kind: "debit_purchase", amountCents: -input.priceCents, balanceAfterCents: newBalance, note: note.value, idempotencyKey: idemKey },
+        });
+        return true;
+      });
+      if (!done) continue;
+      return { ok: true, value: { balanceCents: newBalance, premiumExpiresAt: expiry, chargedCents: input.priceCents } };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // A concurrent retry of the same keyed spend won first: answer committed truth.
+      if (!idemKey) continue;
+      const existing = await prisma.walletLedgerEntry.findUnique({ where: { idempotencyKey: idemKey } });
+      if (existing && existing.userId === input.userId) {
+        const fresh = await prisma.user.findUnique({ where: { id: input.userId }, select: { balanceCents: true, premiumExpiresAt: true } });
+        if (!fresh) return notFound();
+        return { ok: true, value: { balanceCents: fresh.balanceCents, premiumExpiresAt: fresh.premiumExpiresAt ?? expiry, chargedCents: 0 } };
+      }
+      return { ok: false, status: 409, code: "idempotency_key_conflict", message: "That reference was already used for a different account." };
+    }
+  }
+
+  return { ok: false, status: 409, code: "wallet_contended", message: "That account was being changed at the same time. Please try again." };
+}
+
 /**
  * Set (or change, or revoke) a user's postpaid credit line.
  *

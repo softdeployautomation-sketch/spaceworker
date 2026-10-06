@@ -21,6 +21,7 @@ export type RateLimitKind =
   | "billing-submit"
   | "trial-ping"
   | "wallet-read"
+  | "wallet-spend"
   | "overview-stats";
 
 interface Rule {
@@ -70,6 +71,11 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // behind one NAT share an IP. It exists to stop an unbounded read of the
   // balance, not to police a user clicking refresh.
   "wallet-read": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
+  // PLAN_TASK_158 W5 — POST /api/wallet/spend moves money, so it gets the
+  // billing-submit posture (10/hr), NOT the wallet-read polling budget. The
+  // UI fires one POST per button click; 10/hr covers double-clicks + keyed
+  // retries while stopping a script from hammering a spend.
+  "wallet-spend": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
   // PLAN_TASK_165 P3 — GET /api/overview-stats, the status row under the welcome
   // panel. Same shape of traffic as wallet-read (it backs a dashboard that loads
   // once per visit, plus a manual Refresh button) and for the same reason: the

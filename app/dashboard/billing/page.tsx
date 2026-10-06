@@ -61,6 +61,10 @@ function CopyButton({ value }: { value: string }) {
 export default function BillingPage() {
   const [payment, setPayment] = useState<PaymentInfo | null | undefined>(undefined);
   const [note, setNote] = useState<string | null>(null);
+  // PLAN_TASK_158 W5 — bumped after every spend so SpendFlow re-reads price +
+  // premium state and WalletBalance re-fetches. A key-change remount, not a
+  // prop thread: the spend result must never linger as a stale "active" line.
+  const [spendEpoch, setSpendEpoch] = useState(0);
 
   useEffect(() => {
     (async () => {
@@ -100,7 +104,8 @@ export default function BillingPage() {
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
-      <WalletBalance />
+      <WalletBalance key={spendEpoch} />
+      {payment !== undefined && <SpendFlow key={spendEpoch} onSpent={() => setSpendEpoch((n) => n + 1)} />}
       <TopUpFlow />
       {subscription}
     </div>
@@ -549,5 +554,117 @@ function StatusCardView({
         </div>
       )}
     </div>
+  );
+}
+
+// PLAN_TASK_158 W5 — "Activate with balance". Reads the spend price + premium
+// state, then POSTs { product: "web_subscription" } — the ONLY body the route
+// accepts. No amount, no userId: the price is server-computed from the same
+// AdminSetting field as checkout, and the user comes from the session. After
+// a success the parent remounts (balance refresh) via onSpent.
+function SpendFlow({ onSpent }: { onSpent: () => void }) {
+  const [state, setState] = useState<
+    | { kind: "loading" }
+    | { kind: "ready"; priceUsd: number; balanceCents: number; premiumActive: boolean }
+    | { kind: "error"; message: string }
+  >({ kind: "loading" });
+  const [spending, setSpending] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        // Price from the SAME source the spend route charges: the checkout
+        // quote for web_subscription (AdminSetting.webSubscriptionPriceUsd).
+        // No second constant anywhere — display and charge read one field.
+        const [walletRes, quoteRes] = await Promise.all([
+          fetch("/api/wallet", { cache: "no-store" }),
+          fetch("/api/billing/checkout?kind=usdt_trc20&product=web_subscription", { cache: "no-store" }),
+        ]);
+        if (!quoteRes.ok) throw new Error(`price lookup failed (${quoteRes.status})`);
+        const qd = (await quoteRes.json()) as { amountUsd?: unknown };
+        if (typeof qd.amountUsd !== "number" || !Number.isFinite(qd.amountUsd)) throw new Error("price lookup failed");
+        let balanceCents = 0;
+        if (walletRes.ok) {
+          const wd = (await walletRes.json()) as { wallet?: { balanceCents?: unknown } };
+          if (typeof wd.wallet?.balanceCents === "number") balanceCents = wd.wallet.balanceCents;
+        }
+        const st = await fetch("/api/billing/status", { cache: "no-store" });
+        let premiumActive = false;
+        if (st.ok) {
+          const sd = (await st.json()) as { status?: { status?: unknown } | null };
+          premiumActive = !!sd.status && (sd.status as { status?: unknown }).status === "approved";
+        }
+        setState({ kind: "ready", priceUsd: qd.amountUsd, balanceCents, premiumActive });
+      } catch {
+        setState({ kind: "error", message: "Could not load the subscription price. Try again shortly." });
+      }
+    })();
+  }, []);
+
+  async function spend() {
+    setSpending(true);
+    setResult(null);
+    try {
+      const res = await fetch("/api/wallet/spend", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ product: "web_subscription" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: unknown; code?: unknown; premiumExpiresAt?: unknown };
+      if (!res.ok) {
+        const message = typeof data.error === "string" ? data.error : `Spend failed (${res.status})`;
+        setResult({ ok: false, message });
+        return;
+      }
+      const expiry = typeof data.premiumExpiresAt === "string" ? data.premiumExpiresAt : null;
+      setResult({
+        ok: true,
+        message: expiry ? `Premium active until ${new Date(expiry).toLocaleDateString()}.` : "Premium activated for 30 days.",
+      });
+      onSpent();
+    } catch {
+      setResult({ ok: false, message: "Spend failed. Try again shortly." });
+    } finally {
+      setSpending(false);
+    }
+  }
+
+  if (state.kind === "loading") return null;
+  if (state.kind === "error") {
+    return (
+      <section aria-label="Activate with balance" className="mb-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <p className="text-sm text-zinc-500 dark:text-zinc-400">{state.message}</p>
+      </section>
+    );
+  }
+
+  const priceCents = Math.ceil(state.priceUsd * 100);
+  const affordable = state.balanceCents >= priceCents;
+  const money = `$${(priceCents / 100).toFixed(2)}`;
+
+  return (
+    <section aria-label="Activate with balance" className="mb-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Activate with balance</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        {state.premiumActive
+          ? "Premium is already active on this account — no charge was made."
+          : `One month of Pro for ${money} from your wallet balance.`}
+      </p>
+      {!state.premiumActive && (
+        <button
+          onClick={() => void spend()}
+          disabled={spending || !affordable}
+          className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+        >
+          {spending ? "Activating…" : affordable ? `Activate Pro — ${money}` : `Insufficient balance (need ${money})`}
+        </button>
+      )}
+      {result && (
+        <p className={`mt-3 text-sm ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+          {result.message}
+        </p>
+      )}
+    </section>
   );
 }
