@@ -505,7 +505,33 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-04 (Task 159 Phase 1 — support-ticket BACKEND — SHIPPED, MIGRATED, LIVE-VERIFIED).**
+**Last verified: 2026-10-06 (TASK_171 zip-link history — VERIFIED + DEPLOYED + LIVE).**
+`main` @ `307d152`, deploy run **37451784379** (`workflow_dispatch`,
+build + deploy both **success**). Migration
+**`20261114000000_task171_install_link_history`** applied live (present in
+`_prisma_migrations` as the newest applied migration); `VantraInstallLink`
+table live, count **0** (no mints since deploy — expected). Deployed
+BUILD_ID **`DMk4FrXxoHs2RFPK6HqN_`** (mtime `2026-10-06 12:47:03 +0200`,
+inside the deploy window); all three services active, zero failed units.
+Live: `https://spaceworker.top/` **200**, `GET /api/wallet` **401**,
+`GET /api/assistant/vantra` **401**, `/link/vantra/<bad>` **410**
+(unknown-token path, no 500). Code: every public mint ALSO writes its own
+`VantraInstallLink` history row (best-effort, never fails a landed mint);
+`resolveInstallToken` looks up the mint row first (unknown/expired/revoked
+=> null, counts nothing), increments `downloadCount` best-effort (one open
+= one download) and 302s to THAT token's artifact; panel shows "All links
+(N)" with URL + copy, live countdown, download count; old rows read-only.
+
+**Honest gap:** no live end-to-end (no real ZIP link minted on prod, no
+panel screenshot, no count increment observed live, no expired row seen
+live) — countdown/count rendering proven by the 10 new unit tests, not by
+a browser.
+
+**Queue next:** Wallet W5 spend path (premium-only, owner-scoped
+2026-10-06): `POST /api/wallet/spend` for `web_subscription` +
+Activate-with-balance UI. W6 (EXE-from-wallet) is a separate later task.
+
+**Previous state (2026-10-04, Task 159 Phase 1 — support-ticket BACKEND — SHIPPED, MIGRATED, LIVE-VERIFIED).**
 `main` @ `8326220`, deployed build **`u6J4f3cE3JRIn6kSBYA8f`** (`/opt/spaceworker/.next/BUILD_ID`,
 mtime `2026-10-04 22:19:43 +0200`), deploy run **37231502875** (`workflow_dispatch`,
 **success**, 4m59s). Migration **`20261107000000_task159_support_tickets`** applied
@@ -747,7 +773,7 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 > PUSHED" note and the `DISPATCH_WALLET_W2.md` pointer; the next wallet work is row **2b**
 > (W5 spend path), not a re-dispatch of W2.
 
-| **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **NOT STARTED — NEXT WALLET TASK after the P0 queue/summary fixes.** W3 (admin grant) + W4 (top-up → admin credit) are LIVE (§6.9); the wallet can be filled but not spent. W6 (EXE-from-wallet, dual-provenance `issueExeLicense()` refactor) stays after W5. |
+| **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **NEXT WALLET TASK — owner-scoped 2026-10-06 as PREMIUM-ONLY.** W3 (admin grant) + W4 (top-up → admin credit) are LIVE (§6.9); the wallet can be filled but not spent. W6 (EXE-from-wallet, dual-provenance `issueExeLicense()` refactor) stays after W5 — do not widen W5 to EXE products. TASK_171 zip-link history shipped 2026-10-06 (`307d152`, deployed run `37451784379`) and no longer blocks the queue. |
 | **0** | **P0 OWNER BUGS — extraction queue serves 1 of 3 + hardcoded 24-frame summary cap** — worker lane `Semaphore(1)` vs admin dial; Phase A fairness; hardcoded `SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY` | **`PROMPT_NEXT_FEATURE_AGENT.md` (TASK_168)** | **QUEUED FIRST — jumps the wallet order.** Owner-reported 2026-10-06: (A) queue set to 3 users, only 1 gets results; (B) screen timeline "daily summary limit (24 frames)" must be an admin dial. Diagnosed, not fixed: `worker/api.py:163-164`, `dispatch/route.ts:158-180/226-252/280-317`, `screenshot-summaries.ts:75-102/464-480`, `screen-timeline.tsx:55-56`. |
 | **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | **`PLAN_TASK_159_SUPPORT_TICKETS.md`** (own doc, this session) | **Phase 1 (backend) SHIPPED + LIVE 2026-10-04** (`8326220`, migration `20261107000000_task159_support_tickets` applied, deploy run `37231502875`). `SupportTicket`/`SupportMessage`, a credential-rejecting write path, and six authenticated routes. Live-verified end to end with a disposable user. **No UI, no email** — next is the user composer + thread, then the admin queue. |
 | **4** | **Marketing** for the new tools (hosting domains, wallet, tickets) | **now partially covered by `TASK_161_DASHBOARD_OS.md` §D7** | **SCOPED 2026-10-05, not started.** The Cyber Lab + Hosting pillars are a small, independent edit to `app/page.tsx` (only 3 `Pillar`s exist today, neither new tool is among them) — **recommended as the cheapest first win.** Full marketing doc still owed. |
@@ -1933,7 +1959,6 @@ of this work). HEAD `71ca4d7`, tree clean. Read-only investigation except one tu
   (4) `PLAN_TASK_163` V1 `DEVICES_MODULE` + V3 nav-narrowing bug; (5) `PLAN_TASK_162` S0/S1.
 
 ### 2026-10-05 (evening) — TASK_167 wallet top-up W3 + W4 SHIPPED + DEPLOYED + VERIFIED LIVE
-
 Four commits (`b13c29a` migration → `076800d` W3 grant → `767c039` W4 backend →
 `08cd67c` W4 UI), pushed `3f5b2ad..08cd67c`, deployed run `37357696848` (build +
 deploy both success), migration `20261112000000_task167_wallet_topup_min` applied on
@@ -1962,3 +1987,76 @@ prompt rewritten for it, §7 row 0 queued ahead of W5. Nothing committed
 for the fixes — prompts + handoff only. `TASK_133_RMM_ENGINE_BRINGUP.md`
 untouched.
 
+### 2026-10-06 — TASK_171 zip-link history VERIFIED + DEPLOYED + LIVE; Wallet W5 (premium-only) queued
+
+- **Did:** verified feature-agent's TASK_171 (`307d152`, already on
+  `origin/main` — no separate push needed): re-ran every gate independently
+  (tsc 0; vantra 68/68; wallet 39/39; support 50/50; hosting 338/338;
+  idlechip 15/15; ESLint touched-only 0; `CI=true npm run build` exit 0;
+  `prisma validate` OK). Dispatched `deploy.yml` (run `37451784379`,
+  `workflow_dispatch`, build + deploy both **success**, HEAD
+  `307d15203c6297cd25c509207c80f39fb58473a0`). Migration
+  `20261114000000_task171_install_link_history` applied live (present in
+  `_prisma_migrations`, newest applied row); `VantraInstallLink` table live,
+  count 0 (no mints since deploy — expected). Live: `https://spaceworker.top/`
+  200, `GET /api/wallet` 401, `GET /api/assistant/vantra` 401,
+  `/link/vantra/<bad>` 410 (unknown-token path, no 500); all three services
+  active, zero failed units; deployed BUILD_ID `DMk4FrXxoHs2RFPK6HqN_`
+  (mtime 2026-10-06 12:47 CEST, inside the deploy window).
+- **Honest gap:** no live end-to-end (no real ZIP link minted on prod, no
+  panel screenshot, no count increment observed live, no expired row seen
+  live) — countdown/count rendering proven by the 10 new unit tests, not by
+  a browser. The feature-agent's report claimed the same; confirmed here.
+- **Queue:** owner scoped the wallet finale 2026-10-06 — **W5 premium-only**
+  (`POST /api/wallet/spend` for `web_subscription` + Activate-with-balance
+  UI). W6 (EXE-from-wallet) is a separate later task, not widened into W5.
+  `PROMPT_NEXT_FEATURE_AGENT.md` rewritten for W5; the verification prompt
+  rewritten for the W5 verifier (W6 queued after). `§6` state + `§7` row 2b
+  updated; this log entry + `§12` evidence appended.
+- **Next:** W5 feature agent builds the spend path from `307d152`.
+
+### 2026-10-06 — TASK_171 raw evidence (gates, deploy, VPS)
+
+Gates (all re-run this session on `307d152`, real output):
+- `npx tsc --noEmit` → exit 0, no output.
+- `npm run test:vantra` → 68/68 pass (58 existing + 10 new TASK_171).
+- `npm run test:wallet` → 39/39 pass.
+- `npm run test:support` → 50/50 pass.
+- `npm run test:hosting` → 338/338 pass.
+- `npm run test:idlechip` → 15/15 pass.
+- `npx eslint lib/vantra-link.ts lib/install-link-countdown.ts
+  components/device-list.tsx tests/vantra-link-installer.test.ts` → clean.
+- `CI=true npm run build` → exit 0 (routes listed, middleware proxy OK).
+- `npx prisma validate` → "The schema at prisma/schema.prisma is valid".
+
+Deploy:
+- `gh workflow run deploy.yml --ref main` → run `37451784379`.
+- `gh run view 37451784379 --json status,conclusion,headSha` →
+  `{"conclusion":"success","status":"completed",
+  "headSha":"307d15203c6297cd25c509207c80f39fb58473a0"}`.
+- Jobs: `Build & typecheck` success; `Deploy to production (manual only)`
+  success (a SKIPPED deploy would NOT count — this one ran).
+
+VPS (ssh -i ~/.ssh/tacticalrmm_vps root@164.68.105.96):
+- `/opt/spaceworker/.next/BUILD_ID` = `DMk4FrXxoHs2RFPK6HqN_`,
+  mtime `2026-10-06 12:47:03 +0200` (inside the 10:44–12:47 UTC run window).
+- `systemctl is-active spaceworker spaceworker-browser extraction-worker`
+  → active/active/active; `systemctl --failed` → 0 loaded units listed.
+- `_prisma_migrations` newest applied rows (desc):
+  `20260922000000_assistant_foundation` (note: finished_at ordering quirk —
+  the row below is the real newest migration by name),
+  `20261114000000_task171_install_link_history`,
+  `20261113000000_task168_summary_budget_dial`,
+  `20261112000000_task167_wallet_topup_min`.
+- `select count(*) from "VantraInstallLink"` → `0` (table live, no mints
+  since deploy — expected).
+
+Public probes (no session):
+- `GET https://spaceworker.top/` → 200.
+- `GET https://spaceworker.top/api/wallet` → 401.
+- `GET https://spaceworker.top/api/assistant/vantra` → 401.
+- `GET https://spaceworker.top/link/vantra/does-not-exist-...` → 410.
+
+NOT done live: no real ZIP link minted on prod; no panel screenshot; no
+count increment observed; no expired row observed. Unit tests cover all
+four; do not claim live rendering.
