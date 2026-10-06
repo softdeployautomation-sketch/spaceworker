@@ -1,5 +1,5 @@
 import { prisma } from "../prisma";
-import { isValidLinkTarget, isValidSlug, newHostingToken } from "./rules";
+import { isTokenSlugSafe, isValidLinkTarget, isValidSlug, newShortLinkToken } from "./rules";
 import { resolveCapsForUser, type HostingResult } from "./files";
 import { mapIdentityFor, publishUserMap, teardownUserMap } from "./links-engine";
 import { healthyPlatformAccountCount } from "./platform-accounts";
@@ -210,8 +210,24 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
 
   const label = input.label?.trim() ? input.label.trim() : null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const token = newHostingToken();
+  // TASK_169 — auto tokens are SHORT (7 base64url chars, ≈42 bits: 64^7 ≈ 4.4e12
+  // keys, so 100k links collide with p ≈ 1e-3). Two guards keep the namespaces
+  // disjoint: rejection-sampling on isTokenSlugSafe (a raw draw is slug-shaped
+  // with p ≈ 0.24, so redraw — cheap), and the retry loop below retries TOKEN
+  // collisions silently while a SLUG collision 409s for the user to fix.
+  // Existing 24-char tokens keep resolving forever (resolveLink is unchanged).
+  const mintToken = (): string => {
+    for (let i = 0; i < 8; i++) {
+      const token = newShortLinkToken();
+      if (isTokenSlugSafe(token)) return token;
+    }
+    // Fallback, not a collision: an all-lowercase draw 8 times running
+    // (p ≈ 1e-5). Force disjointness rather than looping forever.
+    return `${newShortLinkToken().slice(0, 6)}A`;
+  };
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const token = mintToken();
     let row: LinkRedirectRow;
     try {
       const created = await prisma.linkRedirect.create({
@@ -231,7 +247,7 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       // A slug collision is the user's to fix; a token collision is ours to
-      // retry (improbable — 18 random bytes).
+      // retry (shorter space than the old 24-char tokens, hence 8 attempts).
       if (slug) {
         return { ok: false, status: 409, code: "slug_taken", message: "That link name is already taken. Pick another." };
       }

@@ -1414,9 +1414,14 @@ export function HostingPanel() {
           const fallbackUrl = `${status.linksBase}/r/${link.slug ?? link.token}`;
           const onEdge = link.engine === "cloudflare";
           const liveUrl = onEdge && link.deployStatus === "live" ? link.publicUrl : null;
-          // Share the Worker address once it is live; otherwise the /r/ address,
-          // which §19.12.2 guarantees always resolves.
-          const shareUrl = liveUrl ?? fallbackUrl;
+          // TASK_169 — share the SHORTEST live address. The edge host is usually
+          // the long workers.dev name, so the /r/ fallback (user slug, else the
+          // 7-char token) wins whenever the edge URL is longer. Never show a dead
+          // address: the edge URL is a candidate only when it is live; the /r/
+          // fallback (§19.12.2) always resolves so it is always a candidate.
+          const candidates = [fallbackUrl, ...(liveUrl ? [liveUrl] : [])];
+          const shareUrl = candidates.sort((a, b) => a.length - b.length)[0];
+          const heroIsFallback = shareUrl === fallbackUrl;
           return (
             <div key={link.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1469,7 +1474,7 @@ export function HostingPanel() {
                   </button>
                 </div>
               </div>
-              {onEdge && (
+              {onEdge && !heroIsFallback && (
                 <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-100 pt-2 text-xs text-zinc-500 dark:border-zinc-800">
                   <span className="shrink-0">Always works:</span>
                   <a href={fallbackUrl} target="_blank" rel="noreferrer" className="truncate font-mono text-emerald-600 hover:underline">

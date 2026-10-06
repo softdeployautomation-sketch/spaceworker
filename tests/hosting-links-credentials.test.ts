@@ -232,6 +232,7 @@ installRequireHook();
 const linksMod = require("../lib/hosting/links") as typeof import("../lib/hosting/links");
 const credsMod = require("../lib/hosting/credentials") as typeof import("../lib/hosting/credentials");
 const crypto = require("../lib/mailbox-crypto") as typeof import("../lib/mailbox-crypto");
+const rulesMod = require("../lib/hosting/rules") as typeof import("../lib/hosting/rules");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 beforeEach(() => {
@@ -461,6 +462,62 @@ test("credentials are per-user: one user can never see, edit or switch another's
   const del = await credsMod.deleteHostingCredential(OTHER, mine.value.id);
   assert.ok(!del.ok && del.status === 404);
   assert.equal(await credsMod.getDefaultHostingCredential(OTHER), null);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_169 — short auto tokens (7 base64url chars, never slug-shaped).
+// ---------------------------------------------------------------------------
+
+test("TASK_169: auto tokens are SHORT (7 chars, base64url) and slug-safe", async () => {
+  const res = await linksMod.createHostedLink({ userId: USER, target: "https://example.com/short" });
+  assert.ok(res.ok, JSON.stringify(res));
+  if (!res.ok) return;
+  assert.match(res.value.token, /^[A-Za-z0-9_-]{7}$/);
+  assert.equal(res.value.shortPath, `/r/${res.value.token}`);
+  // Slug-shaped would collide with the slug namespace — must never happen.
+  assert.ok(rulesMod.isTokenSlugSafe(res.value.token), "auto token must never match the slug shape");
+});
+
+test("TASK_169: a token collision retries silently (never 409s); only user slugs 409", async () => {
+  // Drive the REAL mint path by stubbing crypto with a SEQUENCED fill: first
+  // every draw is 0xFF (base64 → "_______", slug-safe via `_`), then 0x00
+  // (base64 → "AAAAAAA", slug-safe via uppercase). Attempt 1 collides with the
+  // taken row and retries; attempt 2 lands free and succeeds — never a 409.
+  const cryptoObj = globalThis.crypto as unknown as { getRandomValues: (b: Uint8Array) => Uint8Array };
+  const origGet = cryptoObj.getRandomValues;
+  let draws = 0;
+  cryptoObj.getRandomValues = (b: Uint8Array) => {
+    draws += 1;
+    // newShortLinkToken = 1 draw per mint (18 bytes → slice 7). The sampler
+    // accepts both fills first try, so draws map 1:1 to create attempts.
+    return b.fill(draws <= 1 ? 0xff : 0x00);
+  };
+  try {
+    links.push({
+      id: "link-taken", token: "_______", userId: OTHER, slug: null, campaignId: null,
+      target: "https://taken.test", label: null, clickCount: 0, createdAt: new Date(),
+    });
+    const res = await linksMod.createHostedLink({ userId: USER, target: "https://example.com/retry" });
+    assert.ok(res.ok, JSON.stringify(res));
+    if (!res.ok) return;
+    assert.equal(res.value.token, "AAAAAAA");
+    assert.equal(draws, 2, "one collision + one success");
+  } finally {
+    cryptoObj.getRandomValues = origGet;
+  }
+});
+
+test("TASK_169: slug-first resolve still holds, and old 24-char tokens still resolve", async () => {
+  links.push({
+    id: "link-old", token: "ciLSBh6Wgwb_g7562FolUwT-", userId: USER, slug: null, campaignId: null,
+    target: "https://old-token.test", label: null, clickCount: 0, createdAt: new Date(),
+  });
+  const old = await linksMod.resolveLink("ciLSBh6Wgwb_g7562FolUwT-");
+  assert.deepEqual(old, { id: "link-old", target: "https://old-token.test" });
+  const created = await linksMod.createHostedLink({ userId: OTHER, target: "https://slugged.test", slug: "my-offer" });
+  assert.ok(created.ok);
+  const bySlug = await linksMod.resolveLink("my-offer");
+  assert.ok(bySlug && bySlug.target === "https://slugged.test");
 });
 
 

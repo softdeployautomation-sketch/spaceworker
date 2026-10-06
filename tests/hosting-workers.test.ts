@@ -1351,3 +1351,27 @@ test("publishUserMap skips a reserved zone when DEFAULTING, and picks a usable o
     "broks.beauty's zone id is never used for a write"
   );
 });
+
+// ---------------------------------------------------------------------------
+// TASK_169 — short auto tokens ride the Worker map like any other key.
+// ---------------------------------------------------------------------------
+
+test("TASK_169: a short auto token is created at 7 chars and published into the Worker map", async () => {
+  calls = [];
+  bodies = [];
+  defaultRoutes();
+  addCred();
+  const created = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://short.example/",
+    engine: "cloudflare",
+    customHost: OWN_HOST,
+    credentialId: "hc_1",
+  });
+  assert.ok(created.ok, JSON.stringify(created));
+  if (!created.ok) return;
+  assert.match(created.value.token, /^[A-Za-z0-9_-]{7}$/);
+  const src = lastUploadedSource();
+  assert.ok(src.includes(created.value.token), "the short token must be a key in the uploaded map");
+  assert.ok(src.includes("https://short.example/"));
+});

@@ -326,12 +326,37 @@ export function sanitizeDispositionFilename(input: string): string {
 // Tokens & slugs.
 // ---------------------------------------------------------------------------
 
-/** Opaque, url-safe public lookup key (base64url of 18 random bytes = 24 chars).
- *  NOT a secret (mirrors LinkRedirect.token) — an unknown token 404s cleanly. */
+/** Opaque, url-safe public lookup key (base64url alphabet: A–Z a–z 0–9 - _).
+ *
+ *  TASK_169 — auto tokens are SHORT (7 chars ≈ 42 bits). The alphabet is kept on
+ *  purpose: tokens carry uppercase and/or `-`/`_` (or fail the slug shape) so a
+ *  token can never equal a slug (SLUG_RE = lowercase + digits + dashes only),
+ *  and `resolveLink` keeps serving slug-first. NOT a secret (mirrors
+ *  LinkRedirect.token) — an unknown token 404s cleanly.
+ *
+ *  Collision math: 64^7 ≈ 4.4e12 keys, so 100k links collide with p ≈ 1e-3
+ *  (birthday bound n²/2N). The create retry loop is bounded to match.
+ *
+ *  `newHostingToken` (24 chars) stays for files/sites/previews — only USER
+ *  LINKS go short. Old 24-char link tokens keep resolving forever. */
 export function newHostingToken(): string {
   const bytes = new Uint8Array(18);
   globalThis.crypto.getRandomValues(bytes);
   return base64url(bytes);
+}
+
+/** TASK_169 — the auto key for a user-created short link: 7 base64url chars. */
+export function newShortLinkToken(): string {
+  return newHostingToken().slice(0, 7);
+}
+
+/** TASK_169 — true when a key can never collide with a slug (uppercase, `_`,
+ *  or a shape SLUG_RE rejects: leading/trailing dash, length > 63). Tokens are
+ *  minted by rejection-sampling on this: a 7-char token is slug-shaped with
+ *  p ≈ 0.24, so ~1 in 4 raw draws is discarded and redrawn — cheap, and it
+ *  keeps the slug/token namespaces disjoint by construction. */
+export function isTokenSlugSafe(token: string): boolean {
+  return !isValidSlug(token);
 }
 
 function base64url(bytes: Uint8Array): string {
