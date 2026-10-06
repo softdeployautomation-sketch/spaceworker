@@ -51,6 +51,62 @@ LANES = ("light", "heavy")
 _SAFE_JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
 _JOB_TTL_SECONDS = 3600  # prune done/failed jobs after 1 hour
 _JOB_CLEANUP_INTERVAL_SECONDS = 300  # background prune cadence, independent of request traffic
+# TASK_168 Bug A — startup lane caps. The LIVE cap comes from the dispatcher's
+# per-POST laneMaxConcurrent hint (the admin dial, carried on every create);
+# these env vars only set what the worker assumes before the first hint lands.
+# Default stays 1 until the dial says otherwise — same as the old hardcoded 1.
+_WORKER_LANE_ENV = {"light": "WORKER_LIGHT_MAX_CONCURRENT", "heavy": "WORKER_HEAVY_MAX_CONCURRENT"}
+_LANE_CAP_MIN = 1
+_LANE_CAP_MAX = 16  # sanity ceiling: each active job is a real Playwright+Chromium process
+
+
+def _lane_default_cap(lane: str) -> int:
+    try:
+        raw = int(os.getenv(_WORKER_LANE_ENV[lane], "1"))
+    except ValueError:
+        return 1
+    return max(_LANE_CAP_MIN, min(_LANE_CAP_MAX, raw))
+
+
+def _clamp_lane_hint(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return max(_LANE_CAP_MIN, min(_LANE_CAP_MAX, int(value)))
+    return None
+
+
+def _lane_gate_adopt(lane: str, cap: int) -> None:
+    """Adopt a new live cap for a lane (grow AND shrink, no restart).
+
+    The gate is a used-counter + condition, not a Semaphore, precisely because
+    asyncio.Semaphore has no resize: a counter cap change is just an int store
+    plus a notify_all, so waiters re-check against the NEW cap immediately. A
+    grow wakes queued jobs at once; a shrink below the currently-held count
+    drains gracefully — in-flight jobs finish (their release notifies), while
+    new starts queue until used < cap again. Never wedges.
+    """
+    caps = getattr(app.state, "lane_caps", None)
+    cond = getattr(app.state, "lane_cond", None)
+    if caps is None or cond is None:
+        return
+    caps[lane] = cap
+
+
+async def _lane_gate_acquire(lane: str) -> None:
+    """Wait until lane usage is below the live cap, then hold one slot."""
+    cond: asyncio.Condition = app.state.lane_cond
+    async with cond:
+        await cond.wait_for(lambda: app.state.lane_used.get(lane, 0) < app.state.lane_caps.get(lane, 1))
+        app.state.lane_used[lane] = app.state.lane_used.get(lane, 0) + 1
+
+
+async def _lane_gate_release(lane: str) -> None:
+    """Free one held slot and wake waiters to re-check the live cap."""
+    cond: asyncio.Condition = app.state.lane_cond
+    async with cond:
+        app.state.lane_used[lane] = max(0, app.state.lane_used.get(lane, 1) - 1)
+        cond.notify_all()
 
 
 @dataclass
@@ -122,6 +178,11 @@ class JobRequest(BaseModel):
     # is top-level in the real request, not nested under params.
     jobId: Optional[str] = Field(default=None, max_length=200)
     lane: Optional[str] = None
+    # TASK_168 Bug A — the dispatcher's live per-lane cap (the admin dial) rides
+    # on every create. Valid hint => adopted as the live cap (grow AND shrink);
+    # absent/invalid => the worker keeps its env/startup value. Never trusted
+    # blindly: clamped to [_LANE_CAP_MIN, _LANE_CAP_MAX] in _clamp_lane_hint.
+    laneMaxConcurrent: Optional[float] = Field(default=None)
 
 
 def require_token(authorization: Optional[str] = Header(None)) -> None:
@@ -159,10 +220,12 @@ async def lifespan(app: FastAPI):
 
     os.makedirs(os.getenv("WORKER_JOB_DIR", JOB_DIR_DEFAULT), exist_ok=True)
 
-    app.state.lanes = {
-        "light": asyncio.Semaphore(1),
-        "heavy": asyncio.Semaphore(1),
-    }
+    # TASK_168 Bug A — startup caps from env, NOT hardcoded 1. Each lane starts
+    # at its env default and every POST /jobs then carries the dispatcher's live
+    # hint (the admin dial), which _lane_gate_adopt() applies on each create.
+    app.state.lane_caps = {lane: _lane_default_cap(lane) for lane in LANES}
+    app.state.lane_used = {lane: 0 for lane in LANES}
+    app.state.lane_cond = asyncio.Condition()
     cleanup_task = asyncio.create_task(_periodic_cleanup())
     try:
         yield
@@ -180,6 +243,19 @@ app = FastAPI(dependencies=[Depends(require_token)], lifespan=lifespan)
 @app.post("/jobs", status_code=200)
 async def create_job(req: JobRequest, request: Request) -> dict:
     lane = get_lane(req)
+
+    # TASK_168 Bug A — adopt the dispatcher's live cap hint on EVERY create, so
+    # the admin dial flows dispatcher -> worker with no second config and no
+    # restart. A valid hint wins (grow AND shrink); absent/invalid keeps the
+    # env/startup value. Notification wakes newly-fittable waiters at once.
+    hint = _clamp_lane_hint(req.laneMaxConcurrent)
+    if hint is not None:
+        caps = getattr(app.state, "lane_caps", None)
+        cond = getattr(app.state, "lane_cond", None)
+        if caps is not None and cond is not None and caps.get(lane) != hint:
+            async with cond:
+                caps[lane] = hint
+                cond.notify_all()
 
     if req.jobId:
         if not _SAFE_JOB_ID_RE.match(req.jobId):
@@ -208,10 +284,12 @@ async def create_job(req: JobRequest, request: Request) -> dict:
         state.current_step = text
 
     async def run_job() -> None:
-        sem = app.state.lanes[lane]
+        # TASK_168 Bug A — the per-lane gate: wait on the live cap (a counter +
+        # condition), NOT a fixed Semaphore(1). `_lane_gate_adopt` above may have
+        # just changed the cap this very create; the acquire below reads it fresh.
         acquired = False
         try:
-            await sem.acquire()
+            await _lane_gate_acquire(lane)
             acquired = True
             try:
                 # Owner-requested 2026-09-20: Advanced Search's domain
@@ -263,7 +341,7 @@ async def create_job(req: JobRequest, request: Request) -> dict:
             # a paused job's leads are safe here and are never lost to cleanup.
             shutil.rmtree(job_dir, ignore_errors=True)
             if acquired:
-                sem.release()
+                await _lane_gate_release(lane)
 
     state.task = asyncio.create_task(run_job())
     return {"jobId": job_id}

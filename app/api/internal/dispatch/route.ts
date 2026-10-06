@@ -6,6 +6,14 @@ import { resumeJob } from "@/lib/job-resume";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { markDuplicateLeads } from "@/lib/lead-duplicates";
 import {
+  buildRejectRequeueData,
+  buildWorkerCreateBody,
+  classifyStuckJob,
+  isWorkerMissing,
+  planLaneDispatch,
+  resolveLaneCaps,
+} from "@/lib/dispatch-policy";
+import {
   isPremiumTier,
   mayDispatchToolToday,
   recordTrialRun,
@@ -106,147 +114,264 @@ export async function POST(req: Request) {
   const results: Record<string, unknown> = {};
   const adminSettings = await getAdminSettings();
 
-  // Phase A: dispatch one queued job per idle lane
-  for (const lane of LANES) {
-    // Guard worker config before touching the DB — avoids jobs stuck "running"
-    // with no workerJobId when the env vars are missing.
-    if (!workerBase || !workerToken) {
-      results[`${lane}_dispatch`] = "no_worker_config";
-      continue;
-    }
+  // TASK_168 Bug A — the stuck-`running` reaper runs FIRST, so a freed slot
+  // is usable in this same tick. Two shapes, both pure-classified by
+  // lib/dispatch-policy.ts `classifyStuckJob`:
+  //   * `running` + no workerJobId + admitted >5min ago — dispatch claimed
+  //     it but the worker POST never landed (worker down between the two
+  //     writes, non-OK POST whose requeue write crashed). It never started,
+  //     so it goes back to CLEAN `queued` (no resumeState — that column is
+  //     only ever non-null while `paused`) and is retried, not billed.
+  //   * `running` + workerJobId + no real step progress for 12h
+  //     (currentStepAt only moves on a REAL step change, so a serialised
+  //     job's stale step cannot look fresh) — the serialise-forever case
+  //     from Bug A. Finished as failed via finalizeJobAndMeter so metering
+  //     records what actually ran and the lane slot is freed.
+  // (Hoisted metering finalizer — see the definition before the reaper.)
 
-    // Task 46 — admin pause: existing running jobs keep running to completion,
-    // only NEW claims stop. Checked before the transaction/advisory lock below —
-    // a paused lane shouldn't even take the lock.
+  const stuckReaped = { requeued: 0, failed: 0 };
+  const stuckRunning = await prisma.searchJob.findMany({
+    where: { status: "running" },
+    select: {
+      id: true, lane: true, workerJobId: true, trialStartedAt: true,
+      createdAt: true, currentStep: true, currentStepAt: true, userId: true,
+    },
+  });
+  const nowMs = Date.now();
+  for (const stuck of stuckRunning) {
+    const action = classifyStuckJob(stuck, nowMs);
+    if (!action) continue;
+    try {
+      if (action === "requeue") {
+        const clean = buildRejectRequeueData();
+        await prisma.searchJob.update({
+          where: { id: stuck.id },
+          data: {
+            status: clean.searchJob.status,
+            workerJobId: clean.searchJob.workerJobId,
+            error: clean.searchJob.error,
+            trialStartedAt: clean.searchJob.trialStartedAt,
+            resumeState: Prisma.DbNull,
+          },
+        });
+        await prisma.jobQueueEntry.update({
+          where: { searchJobId: stuck.id },
+          data: { status: clean.queueEntry.status },
+        });
+        stuckReaped.requeued++;
+      } else {
+        await finalizeJobAndMeter(
+          stuck as { id: string; userId: string; lane: string; trialStartedAt: Date | null },
+          {
+            status: "failed",
+            error: "The job made no progress for 12 hours, so it was stopped to free its queue slot.",
+          },
+        );
+        stuckReaped.failed++;
+      }
+    } catch {
+      // Skip — will retry on the next tick rather than aborting admission.
+    }
+  }
+
+  // TASK_168 Bug A — Phase A admits per lane WITHOUT cross-lane blocking.
+  // Each lane's running count is weighed against its own cap, in a fixed
+  // lane order, and a full (or off) lane X only pushes back X's own
+  // candidates — head-of-line for X can never starve lane Y. Admission
+  // order within a lane is queue order (priority desc, created asc); the
+  // per-lane slice counts come from the shared pure helper
+  // (lib/dispatch-policy.ts `planLaneDispatch`) so the route and its tests
+  // read the same rule, and each lane still claims inside its own
+  // advisory-locked transaction below.
+  //
+  // Contract item 2 (fairness): lane X full/busy/off NEVER skips lane Y's
+  // candidates. Each lane gets its own plan slice from ONE shared fetch,
+  // and the loop dispatches lane by lane — a failure claiming/posting for
+  // X only records X's result key and moves on to Y.
+  const caps = resolveLaneCaps(adminSettings as unknown as Record<string, unknown>);
+  const queuedAll = await prisma.jobQueueEntry.findMany({
+    where: { status: "queued", lane: { in: [...LANES] } },
+    orderBy: [{ priorityTier: "desc" }, { createdAt: "asc" }],
+    include: {
+      searchJob: {
+        select: { id: true, status: true, userId: true, query: true, params: true },
+      },
+    },
+  });
+  const runningByLane: Record<string, number> = {};
+  for (const lane of LANES) {
+    runningByLane[lane] = await prisma.searchJob.count({
+      where: { lane, status: "running" },
+    });
+  }
+  const plan = planLaneDispatch({ candidates: queuedAll, runningByLane, caps });
+  results.phase_a_plan = {
+    toDispatch: Object.fromEntries(
+      LANES.map((lane) => [lane, plan.toDispatchByLane[lane].map((c) => c.searchJobId)]),
+    ),
+    pushBackCount: plan.pushBackCount,
+    runningByLane,
+    caps,
+  };
+
+  for (const lane of LANES) {
     const laneKeys = LANE_SETTINGS_KEYS[lane];
+    // Task 46 — admin pause: existing running jobs keep running to
+    // completion, only NEW claims stop. Checked before any transaction or
+    // lock — a paused lane shouldn't even take the lock.
     if (!adminSettings[laneKeys.enabled]) {
       results[`${lane}_dispatch`] = "queue_paused";
       continue;
     }
-    const maxConcurrent = Math.max(1, adminSettings[laneKeys.max]);
-
-    // The lane-busy count and the row claim are inside one transaction guarded
-    // by a PostgreSQL advisory lock. This prevents two concurrent dispatch
-    // calls from each seeing the same running count independently and then each
-    // claiming a different queued entry — which would violate the lane's
-    // concurrency invariant (now admin-configured, was always exactly 1).
-    const claimed = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LANE_LOCK_ID[lane]})`;
-
-      const running = await tx.searchJob.count({ where: { lane, status: "running" } });
-      if (running >= maxConcurrent) return "lane_busy" as const;
-
-      const entry = await tx.jobQueueEntry.findFirst({
-        where: { lane, status: "queued" },
-        orderBy: [{ priorityTier: "desc" }, { createdAt: "asc" }],
-        include: { searchJob: true },
-      });
-      if (!entry) return null;
-
-      // Tier 1 trial — per-tool daily cap, enforced HERE at admission (Phase A),
-      // inside the same transaction + advisory lock as the claim, so two
-      // dispatch ticks can't both OK a trial user's over-cap run. Premium
-      // (tier >= 5) is always exempt. An over-cap trial job is left QUEUED
-      // (status untouched) so it's the first pick again after UTC midnight when
-      // the allowance resets — never silently dispatched past the cap.
-      const owner = await tx.user.findUnique({
-        where: { id: entry.searchJob.userId },
-        select: { tier: true },
-      });
-      const tool = toolForLane(lane);
-      const allow = await mayDispatchToolToday(tx, {
-        userId: entry.searchJob.userId,
-        tier: owner?.tier ?? 0,
-        tool,
-        usedOn: trialDayKey(new Date()),
-      });
-      if (!allow) return "trial_cap" as const;
-
-      const { count } = await tx.jobQueueEntry.updateMany({
-        where: { id: entry.id, status: "queued" },
-        data: { status: "dispatched" },
-      });
-      if (count === 0) return null;
-
-      await tx.searchJob.update({
-        where: { id: entry.searchJobId },
-        data: { status: "running", trialStartedAt: new Date() },
-      });
-      return entry;
-    });
-
-    if (claimed === "lane_busy") {
-      results[`${lane}_dispatch`] = "lane_busy";
+    const toDispatch = plan.toDispatchByLane[lane];
+    if (toDispatch.length === 0) {
+      // Distinguish "nothing waiting" from "lane full": the pending count
+      // here INCLUDES this lane's pushed-back rows, so "stuck at queued
+      // with nothing actually processing" stays diagnosable.
+      const pendingThisLane = queuedAll.filter((c) => c.lane === lane).length;
+      results[`${lane}_dispatch`] = pendingThisLane > 0 ? "lane_busy" : "queue_empty";
       continue;
     }
-
-    if (claimed === "trial_cap") {
-      // Trial user is at/over their 900s/tool/day allowance for this lane's
-      // tool. The entry stays queued for tomorrow. This is a real, expected
-      // non-dispatch, not an error.
-      results[`${lane}_dispatch`] = "trial_cap";
+    // Guard worker config ONCE per lane before touching the DB — avoids jobs
+    // stuck "running" with no workerJobId when the env vars are missing.
+    if (!workerBase || !workerToken) {
+      results[`${lane}_dispatch`] = "no_worker_config";
       continue;
     }
-
-    if (!claimed) {
-      results[`${lane}_dispatch`] = "queue_empty";
-      continue;
-    }
-
-    try {
-      const res = await fetch(`${workerBase}/jobs`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${workerToken}`,
-        },
-        body: JSON.stringify({
-          jobId: claimed.searchJob.id,
-          query: claimed.searchJob.query,
-          params: claimed.searchJob.params,
-          lane,
-        }),
+    let laneOutcome: string = "queue_empty";
+    let dispatchedCount = 0;
+    for (const candidate of toDispatch) {
+      // Id-keyed claim under the lane lock; re-checks running < cap inside.
+      const claimed = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${LANE_LOCK_ID[lane]})`;
+        const running = await tx.searchJob.count({ where: { lane, status: "running" } });
+        if (running >= caps[lane].maxConcurrent) return "lane_busy" as const;
+        const entry = await tx.jobQueueEntry.findUnique({
+          where: { id: candidate.id },
+          include: {
+            searchJob: {
+              select: { id: true, status: true, userId: true, query: true, params: true },
+            },
+          },
+        });
+        if (!entry || entry.status !== "queued" || !entry.searchJob || entry.searchJob.status !== "queued") return null;
+        const owner = await tx.user.findUnique({
+          where: { id: entry.searchJob.userId },
+          select: { tier: true },
+        });
+        const allow = await mayDispatchToolToday(tx, {
+          userId: entry.searchJob.userId,
+          tier: owner?.tier ?? 0,
+          tool: toolForLane(lane),
+          usedOn: trialDayKey(new Date()),
+        });
+        if (!allow) return "trial_cap" as const;
+        const { count } = await tx.jobQueueEntry.updateMany({
+          where: { id: entry.id, status: "queued" },
+          data: { status: "dispatched" },
+        });
+        if (count === 0) return null;
+        await tx.searchJob.update({
+          where: { id: entry.searchJobId },
+          data: { status: "running", trialStartedAt: new Date() },
+        });
+        return entry;
       });
-
-      if (res.ok) {
-        const data = (await res.json()) as { jobId?: string };
-        if (!data.jobId) {
-          // Worker returned 200 but no jobId — treat as failure so the job
-          // doesn't get stuck "running" forever with nothing to poll.
-          await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: "Worker returned no jobId" });
-          results[`${lane}_dispatch`] = "worker_missing_jobid";
-        } else {
-          // The worker call above is a real network round trip — a concurrent
-          // stop request could have cancelled this SearchJob (status ->
-          // "stopped") in that exact window, before workerJobId is ever
-          // recorded. If that happened, the stop route's own DELETE call
-          // already ran and found no workerJobId to cancel against, so the
-          // worker is now running a job nobody can reach — re-check status
-          // here, right before recording workerJobId, and immediately cancel
-          // the just-started worker job instead of recording it as live.
-          const current = await prisma.searchJob.findUnique({
-            where: { id: claimed.searchJobId },
-            select: { status: true },
-          });
-          if (current?.status !== "running") {
-            results[`${lane}_dispatch`] = "cancelled_before_assign";
-            void fetch(`${workerBase}/jobs/${data.jobId}`, {
-              method: "DELETE",
-              headers: { Authorization: `Bearer ${workerToken}` },
-            }).catch(() => {});
-          } else {
-            await safeUpdateSearchJob(claimed.searchJobId, { workerJobId: data.jobId });
-            results[`${lane}_dispatch`] = "dispatched";
-          }
-        }
-      } else {
-        await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: `Worker rejected: ${res.status}` });
-        results[`${lane}_dispatch`] = `worker_error_${res.status}`;
+      if (claimed === "lane_busy") {
+        laneOutcome = dispatchedCount > 0 ? "dispatched_partial_lane_busy" : "lane_busy";
+        break;
       }
-    } catch (err) {
-      await safeUpdateSearchJob(claimed.searchJobId, { status: "failed", error: String(err) });
-      results[`${lane}_dispatch`] = "worker_unreachable";
+      if (claimed === "trial_cap") {
+        laneOutcome = dispatchedCount > 0 ? "dispatched_partial_trial_cap" : "trial_cap";
+        break;
+      }
+      if (!claimed) continue;
+      // Clean-requeue writer: the job never started, so back to CLEAN queued.
+      const requeueClean = async () => {
+        const clean = buildRejectRequeueData();
+        await prisma.searchJob.update({
+          where: { id: claimed.searchJobId },
+          data: {
+            status: clean.searchJob.status,
+            workerJobId: clean.searchJob.workerJobId,
+            error: clean.searchJob.error,
+            trialStartedAt: clean.searchJob.trialStartedAt,
+            resumeState: Prisma.DbNull,
+          },
+        }).catch(() => {});
+        await prisma.jobQueueEntry.update({
+          where: { searchJobId: claimed.searchJobId },
+          data: { status: clean.queueEntry.status },
+        }).catch(() => {});
+      };
+      const body = buildWorkerCreateBody({
+        jobId: claimed.searchJob.id,
+        lane,
+        params: (claimed.searchJob.params ?? {}) as Record<string, unknown>,
+        laneMaxConcurrent: caps[lane].maxConcurrent,
+      });
+      try {
+        const res = await fetch(`${workerBase}/jobs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${workerToken}`,
+          },
+          body: JSON.stringify({ ...body, query: claimed.searchJob.query }),
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as { jobId?: string };
+          if (!data.jobId) {
+            // Worker returned 200 but no jobId — nothing to poll, so clean
+            // requeue (NOT failed): the job never started.
+            await requeueClean();
+            laneOutcome = "worker_missing_jobid_requeued";
+          } else {
+            // The worker call above is a real network round trip — a
+            // concurrent stop request could have cancelled this SearchJob
+            // (status -> "stopped") in that exact window, before workerJobId
+            // is ever recorded. Re-check status here and cancel the
+            // just-started worker job instead of recording it as live.
+            const current = await prisma.searchJob.findUnique({
+              where: { id: claimed.searchJobId },
+              select: { status: true },
+            });
+            if (current?.status !== "running") {
+              laneOutcome = "cancelled_before_assign";
+              void fetch(`${workerBase}/jobs/${data.jobId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${workerToken}` },
+              }).catch(() => {});
+            } else {
+              await safeUpdateSearchJob(claimed.searchJobId, { workerJobId: data.jobId });
+              dispatchedCount++;
+              laneOutcome = "dispatched";
+            }
+          }
+        } else if (isWorkerMissing(res.status)) {
+          // 404 on POST: the worker never saw the job — fail it via the
+          // metered finalizer, same as Phase B's 404 path (contract item 5).
+          await finalizeJobAndMeter(
+            { id: claimed.searchJobId, userId: claimed.searchJob.userId, lane, trialStartedAt: new Date() },
+            { status: "failed", error: "Worker has no record of this job (404)" },
+          );
+          laneOutcome = "worker_error_404";
+        } else {
+          // 409 lane-busy / 5xx: the worker refused — clean requeue so the
+          // job retries on a later tick with no stale resume data.
+          await requeueClean();
+          laneOutcome = `worker_error_${res.status}_requeued`;
+        }
+      } catch {
+        // POST threw (worker unreachable mid-claim) — clean requeue: the
+        // job never started and must not hold its lane slot as `running`.
+        await requeueClean();
+        laneOutcome = "worker_unreachable_requeued";
+      }
     }
+    results[`${lane}_dispatch`] = laneOutcome;
+    if (dispatchedCount > 0) results[`${lane}_dispatched_count`] = dispatchedCount;
   }
 
   // Tier 1 trial — finally-ize a run that reached a terminal state ("done",
