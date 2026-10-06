@@ -43,6 +43,20 @@ line, so every zip it mints enrolls WITH GUI dialogs.
   service active (2026-10-06 16:31:17 CEST); live functional proof:
   `buildEnrollmentCommand({...})` ends in `--silent` (run on the box via
   `node --import tsx`).
+- **Independent verifier re-run 2026-10-06:** md5 `00ef606a22342c9fba6405d8471d603c`
+  still matches both ends; `vantra-msi-generator` active, same PID 115516 /
+  same timestamp (no restart needed); journalctl `-p err` empty; probe:
+  `"... --agent-type server --auth TOKEN --rdp --ping --power --silent"` +
+  `ENDS_SILENT:true`; `routes.ts:668` builds that same `enrollmentCommand`,
+  embedded at `:775` (`enroll:`) and `:812` (`installCommand:`).
+- Spaceworker gates (same session): tsc clean; wallet 47/47;
+  wallet-topup + wallet-route 38/38; vantra-link-installer 68/68;
+  hosting 338/338; idle 23/23; support 49/50 — the single fail is
+  TASK_166 "read cursor only ever moves FORWARDS" (`:1144`, 1ms
+  wall-clock vs fake-clock race: expected `...047`, got `...048`),
+  untouched by this fix (commit `ccd8293` is docs-only; `git diff
+  2a6ed68..HEAD` on support files is empty; last support commit
+  `892e209`). CI build exit 0; prisma valid, no migration.
 - Verifier to mint a test zip via the Spaceworker public flow; embedded
   enrollment command must end in `--silent`. GUI-silence needs a Windows
   VM — SIMULATION unless owner confirms on hardware.

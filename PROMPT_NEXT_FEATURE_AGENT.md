@@ -8,9 +8,10 @@
   touch it); commit with -F file; never print secrets; never edit .env;
   never BUILD on the VPS (generator runs via tsx — edit TS over ssh +
   service restart only); never git stash.
-- State: spaceworker main at 7a576e4 (queue-scoping commit: P0 silent fix
-  still live-unfixed unless the verifier says otherwise; W5 spend pushed,
-  deploy run 37470986552 success; §7 rows 0b/0c scoped this session).
+- State: spaceworker main at ccd8293 (P0 docs commit: fix landed live +
+  verified this session — see verification prompt §1; deploy run
+  37480260244 build-only success, deploy skipped by design). W5 spend
+  pushed, live (run 37470986552); §7 rows 0b/0c scoped this session.
   The nested-folder work is NOT in spaceworker first: it is the generator
   service at /opt/vantra-installer on the VPS (164.68.105.96, key
   ~/.ssh/tacticalrmm_vps) + local parity repos (~/vantra-installer,

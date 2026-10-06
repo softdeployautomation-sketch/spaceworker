@@ -1,17 +1,28 @@
-# PROMPT — NEXT VERIFICATION AGENT (TASK_173 nested folder + grant fix queued)
+# PROMPT — NEXT VERIFICATION AGENT (TASK_173 nested folder; P0 VERIFIED LIVE 2026-10-06)
 
-You verify the P0 silent-install fix AND the TASK_173 nested-folder build,
-then queue the grant fix.
+P0 silent-install fix is VERIFIED LIVE (see §1). You verify the TASK_173
+nested-folder build, then queue the grant fix.
 
-Start: spaceworker main at b3e2540 (W5 spend path, pushed; deploy run
-37470986552 success — confirm live as part of this run). The feature agent's
-fix is NOT a spaceworker commit: it is a one-line edit on the VPS generator
-(/opt/vantra-installer/generator/src/install-command.ts + service restart).
-Your spaceworker-side job is gates + live proof + doc queue. TASK_133 file is
+Start: spaceworker main at ccd8293 (P0 docs commit, pushed; build-only
+run 37480260244 success, deploy skipped by design — no Spaceworker code
+changed). The P0 fix is NOT a spaceworker commit: it is live on the VPS
+generator and ALREADY VERIFIED this session (md5 match, service active,
+ENDS_SILENT:true probe, routes.ts:668/775/812 embedding — see §7 row 0 +
+§12 log 2026-10-06 VERIFIED). Do NOT re-verify P0 beyond a quick md5 +
+is-active sanity check. Your spaceworker-side job is gates + the TASK_173
+proof + doc queue. TASK_133 file is
 the owner's — never touch it. Never git stash; baselines via throwaway
 worktree. Never edit .env; never build on the VPS.
 
-## 1. VERIFY (expect: live generator carries --silent AND the nested layout; spaceworker forwarding commit)
+## 1. ALREADY VERIFIED — P0 silent fix (do not redo; sanity-check only)
+
+md5 `00ef606a22342c9fba6405d8471d603c` live; service active; probe
+`ENDS_SILENT:true`; `routes.ts:668/775/812` embedding; gates recorded in
+§7 row 0 + §12 log (support 49/50 pre-existing flake documented there).
+Sanity check = `md5sum` + `systemctl is-active` only. GUI-silence stays
+SIMULATION until the owner confirms on hardware.
+
+## 2. VERIFY (expect: live generator carries the nested layout; spaceworker forwarding commit)
 
 Re-run every gate yourself: npx tsc --noEmit, hosting, wallet, top-up,
 vantra-link-installer, support, idlechip suites, ESLint on touched files
@@ -28,7 +39,9 @@ Confirm TASK_173 nested folder: mint a test zip through the Spaceworker
 public flow and show the entry list =
 `Update.lnk` at root + `<inner>/<nested>/Launcher.exe` +
 `<inner>/<nested>/agent.bin` (+ PDF beside the exe when attached); show the
-bridge Update.lnk args contain `.\<inner>\<nested>\Launcher.exe`. VM
+bridge Update.lnk args contain `.\<inner>\<nested>\Launcher.exe`; confirm
+the embedded enroll command STILL ends in `--silent` (nested change must
+not regress P0). VM
 install is the only end-to-end proof — accept the agent's SIMULATION label
 unless the owner confirms on hardware; never claim live install success
 without it.
