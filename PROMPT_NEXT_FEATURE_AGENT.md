@@ -1,4 +1,4 @@
-# TASK_168 — EXTRACTION QUEUE P0 + SUMMARY LIMIT DIAL (owner bugs)
+# PROMPT — NEXT FEATURE AGENT (queue: short links, then mobile remote-control)
 
 ## 0. Read first (binding)
 
@@ -7,85 +7,111 @@
 - Rules: `git add` explicit paths only (TASK_133 file is the owner's,
   never touch it); commit with `-F<file>`; never print secrets; never edit
   `.env`; never build on the VPS; never `git stash`; use `CI=true npm run build`.
-- State: `main` @ `08cd67c`, pushed + deployed. TASK_167 live — don't touch it.
+- State: `main` @ `90e4d30` (TASK_168 Bug A `3330dad` + Bug B `90e4d30`),
+  pushed + deployed (run 37427332704 green on that SHA; site 200 on /login,
+  unauth probes 401/403-shaped). TASK_167 live — don't touch it.
 
-## 1. BUG A (P0) — queue set to 3, only 1 user gets results
+## 1. TASK_169 (FIRST) — short links are too long
 
-Owner: "we already have a queue system and i set it to allow 3 users at a
-go, but when 3 users are running, only one is getting results."
+Owner: "the redirect link we have gives too long link, it should actually
+give a very short link, lets make it generate shorter links and dynamic as
+usual." Screenshot proof: edge URL
+`https://sw-0279…5.swdocs.workers.dev/k34iuXi76JoPT_2cAvFJY4Bp` (35-char
+host + 24-char token) and fallback
+`https://spaceworker.instaweb.top/r/ciLSBh6Wgwb_g7562FolUwT-` (24-char token).
 
 Verified facts (reproduce, don't assume):
 
-- Dials: `dispatchLightMaxConcurrent` / `dispatchHeavyMaxConcurrent`
-  (`prisma/schema.prisma:279-281`), both `@default(1)`. Confirm the LIVE row
-  actually holds 3 before assuming code is at fault.
-- Phase A admits per lane, `running >= maxConcurrent` pushes back
-  (`app/api/internal/dispatch/route.ts:158-180`). Push-back is by fixed
-  index (`candidates.slice(0, ...)`), so check head-of-line blocking.
-- HARD MISMATCH: worker holds ONE slot per lane, hardcoded
-  (`worker/api.py:163-164`, `asyncio.Semaphore(1)`). Phase A can admit 3
-  while the worker serialises to 1.
-- Worker reject path (POST non-OK) requeues with resume data KEPT
-  (`route.ts:226-252`) — confirm the requeued row is clean.
-- Phase B polls only `running` (`route.ts:280`); slot frees in
-  `finalizeJobAndMeter` (`route.ts:292-309`). A serialised job holds its
-  lane slot until the 12h TTL (`route.ts:128-148).
-- Stall signal exists, nothing consumes it: `currentStepAt` advances only
-  on real step change (`route.ts:401-411`).
+- Token: `newHostingToken()` (`lib/hosting/rules.ts:331-335`) = base64url
+  of 18 random bytes = 24 chars. Created in `createHostedLink`
+  (`lib/hosting/links.ts:213-239`); token collision retries once, slug
+  collision 409s for the user to fix.
+- Serve: `resolveLink` (`lib/hosting/links.ts:495-501`) checks slug first,
+  then token. Comment at `:489-490`: tokens contain `-`/`_`+uppercase so a
+  slug can never equal a token — keep that invariant whatever you change.
+- Display: `components/hosting-panel.tsx:1416-1479` — edge `publicUrl`
+  (`https://<customHost>/<key>`) is the hero; `/r/<key>` fallback under
+  "Always works". Default edge host today is the workers.dev name
+  (`workerNameForUser`, `lib/hosting/workers.ts:234-236` → `sw-`+32 hex).
+- Worker map keys = same token/slug (`buildWorkerMapSource`,
+  `lib/hosting/workers.ts:766-785`); both resolve, `/r` is the fallback
+  (§19.12.2, `lib/hosting/links-engine.ts:40-42`).
 
-## 2. BUG A fix contract
+## 2. TASK_169 fix contract
 
-1. Worker concurrency follows the admin dial — no hardcoded 1. Size the
-   lane semaphores from the cap (env or admin API, never a second
-   hardcoded constant). Default stays 1 until the dial says otherwise.
-2. Phase A fairness: a full lane must not starve other lanes' candidates
-   in the same tick. Test: lane X full + lane Y healthy → Y dispatches.
-3. Worker-rejected jobs requeue as CLEAN `queued` rows (no stale resume
-   data). Test the requeue shape.
-4. An admitted-but-never-started job must not hold its slot indefinitely
-   — bound it; prove a stuck-`running` job releases its lane.
-5. Keep: worker 404 → `finalizeJobAndMeter(failed)` (`route.ts:311-317`).
+1. Auto tokens get SHORT (6–8 chars, base64url alphabet kept so the
+   slug/token namespaces stay disjoint). Grow the create retry loop to match
+   the shorter space (bounded attempts, still 409-free for tokens — only
+   user slugs 409). Existing 24-char tokens keep resolving forever.
+2. Default public URL gets short too: prefer the SHORTEST live address
+   (user slug if set, else short token on the shortest available host —
+   `go.<zone>` / app `/r/` before `<worker>.workers.dev`). Never show a
+   dead address: hero URL only when `deployStatus === "live"`.
+3. Dynamic as usual, unchanged: optional custom slug, re-target/re-slug via
+   PATCH (`app/api/hosting/links/[id]/route.ts`), click counts, per-user cap,
+   engine picker, `/r/<key>` fallback always valid.
+4. Tests: short-token length + charset; collision retry; slug-first resolve
+   still holds; old 24-char tokens still resolve; worker map carries short
+   keys. Hosting suite (334) stays green.
+5. Gates before commit: tsc + wallet/top-up/support/hosting suites + ESLint
+   touched-only (worktree baseline, 0 new) + `CI=true` build. One commit,
+   explicit `git add`, `-F` file, push (push ≠ deploy, leave deploy to
+   the verifier).
 
-Tests: lane-fairness, reject-requeue shape, slot-release, 404-finalise.
-Gates: tsc + wallet 39 + topup 22 + support 50 + hosting 334 + ESLint
-touched-only (worktree baseline) + `CI=true` build, before EACH commit.
-Two commits (A then B), explicit `git add`, `-F` commit, push (push ≠ deploy,
-leave deploy to the verifier).
+## 3. TASK_170 (SECOND) — mobile responsiveness, esp. device remote control
 
-## 3. BUG B — "daily summary limit (24 frames)" is hardcoded
+Owner: "mobile responsiveness of the whole spaceworker is very bad …
+especially the device remote control, it doesnt show the mesh console at
+all, it just shows a blue modal covering the screen, lets make the view the
+same with the desktop and adjust to just mobile responsiveness not blocking
+mobile remote view."
 
-Owner: "i need the daily limit not hardcoded. and nothing like 24 frames
-should be the daily limit." Screen timeline shows
-"No summary — this machine's daily summary limit (24 frames) is reached."
+Verified facts (reproduce at 390px width, don't assume):
 
-Verified facts:
-
-- Cap `SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY = 24`
-  (`lib/screenshot-summaries.ts:75-87`); calls cap
-  `SCREENSHOT_SUMMARY_MAX_CALLS_PER_DEVICE_PER_DAY = 8` (`:89-102`).
-  Breach marks `summaryError = "daily_call_budget"` (`:464-480`).
-  UI hardcodes "(24 frames)" (`components/screen-timeline.tsx:55-56`).
-- Summary pass reads raw AdminSetting (`:200-221`); AI/day-boundary dials
-  NOT admin-editable (`:104-128`). Capture dials resolve separately
-  (`lib/device-screenshots.ts`).
+- Console: `components/device-console.tsx` — session window `:1380-1520`
+  (tab strip already `overflow-x-auto`, `:1442`); remote pane
+  `RemoteControl` `:2839+`, iframe at `:3494` (`h-[420px]`, fullscreen
+  `h-[calc(100vh-3rem)]` at `:3190`); CONNECT-first gate `:3102-3124`
+  (no auto-session — keep it: sessions cost a one-shot login token,
+  `:495-508`).
+- Suspects for the "blue modal": launcher palette overlay
+  `fixed inset-0 z-50` (`:3523`); toolbox backdrop `fixed inset-0 z-10`
+  (`:2803`); confirm dialog `max-w-lg` (`:3530`); viewport already
+  `device-width + viewportFit: cover` (`app/layout.tsx:30-34`).
+- Summary cards already stack via `sm:` grids (`:1693`, `:2575`) — audit
+  what does NOT (fixed widths like `w-72`/`w-40` in hosting-panel
+  `:1295,1303` are the same class of bug; fix the pattern wherever the
+  audit finds it).
 
 Fix contract:
 
-1. Migration (additive, nullable-safe):
-   `screenshotSummaryMaxFramesPerDevicePerDay` (default 24 — byte-identical
-   until touched) + `screenshotSummaryMaxCallsPerDevicePerDay` (default 8).
-   Clamp frames 1..1000, calls 1..100, calls ≤ frames; NULL/invalid → 24/8.
-2. `resolveSummarySettings` reads them; budget in `summarisePendingFrames`
-   uses resolved values. UI copy interpolates the dial — never "24" when
-   the dial says otherwise.
-3. Surface both dials in admin UI beside the existing screenshot dials.
-4. Tests: default 24/8 · raised binds less · lowered binds more ·
-   NULL/invalid fallback · UI copy matches dial. Scratch-DB replay only.
+1. Remote tab on mobile = same flow as desktop: Connect → MeshCentral
+   iframe visible and usable. No overlay may cover the iframe on load or on
+   tab switch; the iframe sizes to the mobile viewport (`dvh`, no sideways
+   overflow) and remote input still reaches it (touch-action correct).
+2. Responsive, not a second UI: same tabs, same tools, stacked/scrolling —
+   never a blocked or forked mobile view. Desktop layout pixel-unchanged.
+3. Whole-app pass on the audit hits (tables, forms, fixed-width inputs);
+   keep it to layout/CSS + minimal structural change, no behaviour change.
+4. Tests: whatever the fix touches gets a regression test (e.g. overlay
+   never renders over an active session; iframe container classes admit
+   small viewports). Existing suites green.
+5. Same gates as TASK_169. Separate commit after TASK_169, explicit
+   `git add`, `-F`, push. Leave deploy to the verifier.
 
-## 4. Report back
+## 4. Wallet spend path (W5) waits
 
-1. Bug A: live dial values; root cause (`file:line`); where worker
-   concurrency comes from now; fairness proof.
-2. Bug B: migration name; values tested; copy before/after.
-3. Gate table, real output. Honest unverified list.
+Wallet W5 sits in handoff §7 row 2b — it is next AFTER these two, not now.
+Do not start it.
+
+## 5. Report back
+
+1. TASK_169: token length chosen + collision math; default-host rule;
+   before/after URL examples; migration or no-migration (prefer none —
+   additive-only if a column is truly needed); gate table, real output.
+2. TASK_170: root cause of the covering modal (`file:line` + trigger);
+   viewport/iframe CSS before/after; audit list + what changed; desktop
+   unchanged proof; gate table.
+3. Honest unverified list (anything not run on device-width or live).
+
 
