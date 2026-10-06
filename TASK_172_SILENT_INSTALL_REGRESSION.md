@@ -25,22 +25,27 @@ line, so every zip it mints enrolls WITH GUI dialogs.
 - Vantra web side (`lib/zip-generator.ts`, `lib/sw-installer-names.ts`) at
   parity via TASK_121 + TASK_125. No web change needed.
 
-## 3. Fix (ssh, not a repo commit)
+## 3. Fix (ssh, not a repo commit) — DONE 2026-10-06
 
-1. Back up + edit ONE live file:
-   `/opt/vantra-installer/generator/src/install-command.ts` — append
-   `` `--silent`, `` after the features-map line (byte-identical to local
-   lines 51-60). Keep the FIX 4 comment block.
-2. `systemctl restart vantra-msi-generator` (runs `tsx src/server.ts`,
-   no build step). Assert active + clean journal.
-3. Rollback: restore backup + restart.
+1. Backed up + overwrote ONE live file:
+   `/opt/vantra-installer/generator/src/install-command.ts` — ported local
+   installer-dev file (FIX 4 `e148ff5`) byte-identical (md5
+   `00ef606a22342c9fba6405d8471d603c` both ends). Backup:
+   `install-command.ts.bak.TASK172_20261006_163032`. Rollback: restore
+   backup + restart.
+2. `systemctl restart vantra-msi-generator` → active (PID 115516, since
+   2026-10-06 16:31:17 CEST, clean journal; runs `tsx src/server.ts`,
+   no build step).
 
 ## 4. Verify
 
-- Live grep shows the `--silent` argv line; service active.
-- Mint a test zip via the Spaceworker public flow; embedded enrollment
-  command ends in `--silent`. GUI-silence needs a Windows VM — SIMULATION
-  unless owner confirms on hardware.
+- Live grep shows the `--silent` argv line (lines 33/35/42/59/64);
+  service active (2026-10-06 16:31:17 CEST); live functional proof:
+  `buildEnrollmentCommand({...})` ends in `--silent` (run on the box via
+  `node --import tsx`).
+- Verifier to mint a test zip via the Spaceworker public flow; embedded
+  enrollment command must end in `--silent`. GUI-silence needs a Windows
+  VM — SIMULATION unless owner confirms on hardware.
 
 ## 5. Parked follow-up (TASK_173 candidate)
 
