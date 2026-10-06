@@ -15,6 +15,7 @@ import {
   ensureProxiedRecord,
   ensureZoneActive,
   hostFromRoutePattern,
+  legacyWorkerNameForUser,
   listActiveZones,
   listWorkerRoutes,
   putWorkerRoute,
@@ -198,7 +199,7 @@ export async function publishUserMap(
     if (premium) {
       // A workers.dev "domain" is a SUFFIX, not a host: Cloudflare answers
       // `<script>.workers.dev`, so the admin's `swdocs.workers.dev` becomes
-      // `sw-<userhash>.swdocs.workers.dev`. Without this prefix every user in the
+      // `lnk-<shorthash>.swdocs.workers.dev`. Without this prefix every user in the
       // account would claim the SAME host and the last publish would overwrite
       // everyone else's links. A zoned host like `go.instaweb.top` needs no
       // prefix — that name is genuinely shared, and is the point of a zone.
@@ -263,6 +264,12 @@ export async function publishUserMap(
         code: "cf_error",
         message: exposed.error ?? "Could not switch on the link's workers.dev address.",
       };
+    }
+    // Post-rename cleanup: the old `sw-<32hex>` script (if any) is orphaned now
+    // that the short `lnk-<8hex>` name serves the map. Best-effort — a failure
+    // here must not fail the publish that just succeeded.
+    if (legacyWorkerNameForUser(userId) !== workerName) {
+      await deleteWorkerScript(cf, legacyWorkerNameForUser(userId));
     }
     // routePattern is null BY DESIGN, not "unknown": teardown reads it to decide
     // whether a route needs deleting, and there is no route. Reporting a pattern
@@ -440,6 +447,11 @@ export async function teardownUserMap(
 
   const delScript = await deleteWorkerScript(cf, workerName);
   const scriptDeleted = delScript.ok || delScript.status === 404;
+
+  // Post-rename cleanup: also remove the orphaned pre-rename script, if any.
+  if (legacyWorkerNameForUser(userId) !== workerName) {
+    await deleteWorkerScript(cf, legacyWorkerNameForUser(userId));
+  }
 
   return { routeDeleted, scriptDeleted };
 }

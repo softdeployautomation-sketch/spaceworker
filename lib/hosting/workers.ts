@@ -225,13 +225,26 @@ export function hostFromRoutePattern(pattern: string): string {
 }
 
 /**
- * A stable, DNS-label-safe Worker name for one user: `sw-` + 32 hex chars.
+ * A stable, DNS-label-safe Worker name for one user: `lnk-` + 8 hex chars.
+ *
+ * Short by design: this name becomes the left label of the premium
+ * `<worker>.swdocs.workers.dev` host, so every extra char is paid on every
+ * shared link. 16^8 (4.3B) names is ample for a per-user script.
  *
  * 32 hex chars of the userId is enough that two users never collide, and keeping
  * it short keeps the name readable in the Cloudflare dashboard. Hashing also means
  * a userId — which we never send to Cloudflare — does not appear in the account.
  */
 export function workerNameForUser(userId: string): string {
+  return `lnk-${createHash("sha256").update(userId).digest("hex").slice(0, 8)}`;
+}
+
+/**
+ * The pre-rename worker name (`sw-` + 32 hex). Kept so publish/teardown can
+ * delete the orphaned long-named script after the cutover — old test links
+ * were abandoned, so no migration of their URLs is attempted.
+ */
+export function legacyWorkerNameForUser(userId: string): string {
   return `sw-${createHash("sha256").update(userId).digest("hex").slice(0, 32)}`;
 }
 

@@ -386,7 +386,7 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
       // TASK_155 P6c — leaving the host or the account re-publishes on the new one,
       // but the OLD route keeps serving the old target until it is removed. Because
       // there is ONE script per user, that cleanup has to happen BEFORE the new
-      // publish: the old teardown deletes sw-<hash>, and doing it second would
+      // publish: the old teardown deletes the previous script, and doing it second would
       // delete the script we had just written.
       const nextHost = (input.customHost ?? row.customHost ?? null) as string | null;
       const nextCred = (input.credentialId ?? row.credentialId ?? null) as string | null;

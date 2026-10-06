@@ -1414,13 +1414,12 @@ export function HostingPanel() {
           const fallbackUrl = `${status.linksBase}/r/${link.slug ?? link.token}`;
           const onEdge = link.engine === "cloudflare";
           const liveUrl = onEdge && link.deployStatus === "live" ? link.publicUrl : null;
-          // TASK_169 — share the SHORTEST live address. The edge host is usually
-          // the long workers.dev name, so the /r/ fallback (user slug, else the
-          // 7-char token) wins whenever the edge URL is longer. Never show a dead
-          // address: the edge URL is a candidate only when it is live; the /r/
-          // fallback (§19.12.2) always resolves so it is always a candidate.
-          const candidates = [fallbackUrl, ...(liveUrl ? [liveUrl] : [])];
-          const shareUrl = candidates.sort((a, b) => a.length - b.length)[0];
+          // Premium links serve from the edge host the admin set
+          // (swdocs.workers.dev / a zoned host): the hero is the live edge URL,
+          // never the free /r/ fallback. The fallback stays under
+          // "Always works". Non-live edge links show the fallback so we never
+          // share a dead address; local links always show the fallback.
+          const shareUrl = liveUrl ?? fallbackUrl;
           const heroIsFallback = shareUrl === fallbackUrl;
           return (
             <div key={link.id} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">

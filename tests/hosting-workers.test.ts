@@ -438,6 +438,12 @@ test("P6c: worker names are stable, per-user, and never contain a userId", () =>
   assert.notEqual(a, workers.workerNameForUser("user_2"));
   assert.ok(!a.includes("user"), "the userId must not appear in the account");
   assert.ok(/^[a-z0-9-]{1,63}$/.test(a), "must be a valid DNS label");
+  // Short by design: the name is the left label of the premium workers.dev
+  // host, so every char is paid on every shared link.
+  assert.ok(/^lnk-[0-9a-f]{8}$/.test(a), `short lnk-<8hex> shape, got ${a}`);
+  // The pre-rename long name is kept only for orphan cleanup.
+  assert.ok(/^sw-[0-9a-f]{32}$/.test(workers.legacyWorkerNameForUser("user_1")));
+  assert.notEqual(a, workers.legacyWorkerNameForUser("user_1"));
 });
 
 test("P6c: the route pattern is the exact host, never a wildcard subdomain", () => {

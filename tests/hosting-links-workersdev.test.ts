@@ -18,7 +18,7 @@ let lastResolveOpts: { requireWorkerToken?: boolean; pinAccountId?: string | nul
 // workers.dev route on refuses, instead of reporting an unreachable link live.
 let enableFails = false;
 
-const USER_WORKER = `sw-${createHash("sha256").update(USER).digest("hex").slice(0, 32)}`;
+const USER_WORKER = `lnk-${createHash("sha256").update(USER).digest("hex").slice(0, 8)}`;
 
 function fakeWorkers() {
   return {
@@ -29,7 +29,10 @@ function fakeWorkers() {
     assertZoneWritable: () => ({ ok: true }),
     defaultLinkHost: (z: string) => `go.${z}`,
     deleteWorkerRoute: async () => ({ ok: true, status: 200 }),
-    deleteWorkerScript: async () => ({ ok: true, status: 200 }),
+    deleteWorkerScript: async (_c: unknown, name: string) => {
+      callLog.push(`deleteScript:${name}`);
+      return { ok: true, status: 200 };
+    },
     enableWorkerOnWorkersDev: async (_c: unknown, name: string) => {
       callLog.push(`enable:${name}`);
       return enableFails
@@ -66,7 +69,8 @@ function fakeWorkers() {
       callLog.push(`upload:${name}`);
       return { ok: true, status: 200 };
     },
-    workerNameForUser: (id: string) => `sw-${createHash("sha256").update(id).digest("hex").slice(0, 32)}`,
+    workerNameForUser: (id: string) => `lnk-${createHash("sha256").update(id).digest("hex").slice(0, 8)}`,
+    legacyWorkerNameForUser: (id: string) => `sw-${createHash("sha256").update(id).digest("hex").slice(0, 32)}`,
   };
 }
 
@@ -143,10 +147,11 @@ test("a workers.dev premium domain publishes by uploading the script ALONE", asy
   const res = await engine.publishUserMap(USER, { credentialId: null });
 
   assert.equal(res.ok, true, `publish failed: ${JSON.stringify(res)}`);
+  const LEGACY_WORKER = `sw-${createHash("sha256").update(USER).digest("hex").slice(0, 32)}`;
   assert.deepEqual(
     callLog,
-    ["buildSource:0", "upload:" + USER_WORKER, "enable:" + USER_WORKER],
-    "no zone lookup, no DNS record, no route — but the workers.dev route IS switched on"
+    ["buildSource:0", "upload:" + USER_WORKER, "enable:" + USER_WORKER, "deleteScript:" + LEGACY_WORKER],
+    "no zone lookup, no DNS record, no route — but the workers.dev route IS switched on, and the orphaned long-named script is cleaned up"
   );
   assert.equal(res.ok && res.value.customHost, `${USER_WORKER}.swdocs.workers.dev`);
 });
