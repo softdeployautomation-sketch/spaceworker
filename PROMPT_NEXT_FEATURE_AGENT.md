@@ -1,4 +1,4 @@
-# PROMPT — NEXT FEATURE AGENT (TASK_173: nested launcher folder)
+# PROMPT — NEXT FEATURE AGENT (TASK_175: desktop-only install-link gate — OWNER PRIORITY, BUILD FIRST)
 
 ## 0. Read first (binding)
 
@@ -6,84 +6,67 @@
 - PROMPT_NEXT_VERIFICATION_AGENT.md section 1 — binding.
 - Rules: explicit git add of paths only (TASK_133 is the owner's, never
   touch it); commit with -F file; never print secrets; never edit .env;
-  never BUILD on the VPS (generator runs via tsx — edit TS over ssh +
-  service restart only); never git stash.
-- State: spaceworker main at ccd8293 (P0 docs commit: fix landed live +
-  verified this session — see verification prompt §1; deploy run
-  37480260244 build-only success, deploy skipped by design). W5 spend
-  pushed, live (run 37470986552); §7 rows 0b/0c scoped this session.
-  The nested-folder work is NOT in spaceworker first: it is the generator
-  service at /opt/vantra-installer on the VPS (164.68.105.96, key
-  ~/.ssh/tacticalrmm_vps) + local parity repos (~/vantra-installer,
-  ~/vantra) + thin forwarding in spaceworker.
+  never git stash.
+- State: spaceworker main at 498d2e7 (TASK_172 verify docs commit).
+  Scope doc: TASK_175_DESKTOP_ONLY_LINK_GATE.md (read it fully — it
+  holds the verified WHY + SHAPE).
 
-## 1. THE TASK (owner-directed 2026-10-06, scoped — now BUILD it)
+## 1. THE TASK (owner-directed 2026-10-06, BUILD FIRST — before grant fix)
 
-Owner wants the launcher in a SECOND folder nested inside the first.
-Target zip layout:
+Agent-install links get opened on phones/tablets where the Windows
+installer can't run. Build an OPTIONAL per-link "Desktop only" toggle:
+when ON, a mobile/tablet opener sees a small white modal ("open this
+on your PC") instead of the file; desktop openers pass straight
+through. For the self-host agent-install flow. Scoped SMALL.
 
-  Update.lnk                        (zip root, unchanged)
-  <inner>/<nested>/Launcher.exe
-  <inner>/<nested>/agent.bin
-  <inner>/<nested>/<guide>.pdf      (PDF follows the exe — sibling invariant kept)
-
-and the PS-bridge Update.lnk runs
-`Start-Process .\<inner>\<nested>\Launcher.exe -Verb RunAs`.
-
-Why this shape is safe (verified this session, NOT inferred):
-- The bridge already does `.\$LauncherSubFolder\$LauncherTarget`
-  (New-AgentShortcut.ps1:5986) — passing the JOINED `inner\nested` relative
-  path as `-LauncherSubFolder` needs NO .ps1 logic change.
-- `launcher.c` reads agent.bin as a SIBLING of the exe
-  (`read_external_payload`, dir-of-self) — exe + bin move together, so NO
-  launcher.c change. `open_pdf` resolves from GetModuleFileName with a
-  parent-folder fallback — PDF follows the exe, invariant holds.
+Verdict (verified this session, NOT inferred): THE LINK, not the site.
+GET /link/vantra/<token> (app/link/vantra/[token]/route.ts) is the
+single choke point every opener passes through (resolveInstallToken →
+302, else 410/502). The site/panel can't do it — the minter and the
+opener are usually different people on different machines, so mint-time
+UA tells nothing. Server UA sniffing alone is NOT enough (in-app
+browsers lie, tablets spoof desktop) → server pre-check + client
+confirm.
 
 ## 2. THE BUILD
 
-Generator (local ~/vantra-installer FIRST, then port live over ssh):
-1. `generator/src/launcher-build.ts`: new optional `nestedFolder` via the
-   same bare-name `clean()` as innerFolder (default e.g. `bin`); zip
-   entries become `${inner}/${nested}/${launcherName|payloadName|pdfName}`;
-   pass through to `validateLauncherBuild` names.
-2. `generator/src/routes.ts` `names:` block: accept + trim `nestedFolder`
-   (same shape as innerFolder).
-3. `generator/src/launcher-validate.ts`: expect the nested entries.
-4. `New-AgentShortcut.ps1`: NO logic change — call site passes the joined
-   `inner\nested` value as `-LauncherSubFolder`.
-5. Vantra parity: `lib/zip-generator.ts` + `lib/sw-installer-names.ts`
-   accept/forward `nestedFolder` the same way.
-6. Port to live /opt/vantra-installer over ssh (backup first, NOT a git
-   repo) + `systemctl restart vantra-msi-generator`, assert active.
+1. `lib/vantra-link.ts`: `InstallerNames.desktopOnly?: boolean` +
+   sanitize (keep ONLY when true; absent = today's behavior) — same
+   pattern TASK_121 used for the three names, no schema change.
+2. `app/api/assistant/vantra/install-link/route.ts` parseNames: accept
+   + forward `desktopOnly`; `mintInstallLink` persists it in
+   installerNamesJson on BOTH the VantraLink row + the history row.
+   Private PS path untouched (no link involved).
+3. `app/link/vantra/[token]/route.ts`: after resolve, when the row's
+   flag is on AND the request UA looks mobile/tablet → serve the
+   interstitial HTML (white modal: installer runs on PC only +
+   Continue-anyway `?desktop=1` that 302s). Desktop UA or flag off →
+   today's 302 byte-identical. Expired/revoked still 410 — gate never
+   masks those. Download counting unchanged.
+4. Mint UI: one "Desktop only" checkbox on the public-link mint
+   (components/device-list.tsx + components/vantra-connect.tsx).
+5. Tests: flag persists at mint; resolver HTML on mobile UA, 302 on
+   desktop UA, 302 with ?desktop=1; flag-off links 302 for both UAs.
 
-Spaceworker (thin forwarding, same session):
-7. `lib/vantra-link.ts`: `InstallerNames.nestedFolder?` +
-   `sanitizeInstallerNames` (same `safeInstallerName` drop rule) +
-   `app/api/assistant/vantra/install-link/route.ts` `parseNames`.
-8. Tests: zip entry list with/without nestedFolder; invalid nestedFolder
-   dropped to default; bridge args carry the nested path.
-
-Do NOT touch: install-command.ts --silent line, FIX 5 PDF behaviour, wallet
-code, TASK_133.
+Do NOT touch: --silent line, PDF behaviour, wallet/grants, TASK_133.
 
 ## 3. VERIFY (before docs)
 
-- Mint a REAL test zip through the Spaceworker public flow; assert entry
-  list = nested layout; assert bridge args contain `.\<inner>\<nested>\`.
-- VM install proves end-to-end — label SIMULATION unless owner confirms on
-  hardware.
-- Spaceworker gates: npx tsc --noEmit clean; vantra-link-installer tests;
-  wallet/topup/support/hosting suites; CI=true build exit 0. No migration
-  (no schema touched — flag any migration as unexpected).
+- npx tsc --noEmit clean; vantra-link-installer suite; wallet/topup
+  suites (resolver touched — prove no regression); CI=true build.
+  No migration (flag any as unexpected).
+- Live proof with curl: mint a desktopOnly link, fetch with mobile UA
+  (expect HTML modal, no redirect) + desktop UA (expect 302).
 
 ## 4. DOCS + HANDOFF (spaceworker repo, one commit)
 
-- SENIOR_HANDOFF.md: section 6 state, section 7 queue (strike 0b, promote
-  grant fix + W6), section 12 log entry.
-- New TASK_173_NESTED_LAUNCHER_FOLDER.md (layout, files, verification).
+- SENIOR_HANDOFF.md: section 6 state, section 7 queue (strike 0e,
+  promote grant fix 0c), section 12 log entry.
+- New TASK_175_DESKTOP_ONLY_GATE_BUILD.md (flag, files, UA logic,
+  verification). The scope doc stays as-is.
 - PROMPT_NEXT_VERIFICATION_AGENT.md belongs to the verifier — leave it.
-- Commit docs explicitly (git add paths, -F file), push to main. Deploy
-  only if spaceworker code changed (it does — forwarding + tests).
+- Commit docs + code explicitly (git add paths, -F file), push main.
+  Deploy only if spaceworker code changed (it does — route + UI).
 
 ## 5. PARKED (do NOT build — queue only)
 
@@ -91,12 +74,11 @@ code, TASK_133.
    `adminId: null` for the shared-passcode admin in
    `app/api/admin/wallet/grant/route.ts` + try/catch → JSON 500 +
    "grant with null adminId succeeds" test. No migration.
-2. Wallet W6 EXE-from-wallet (after the above): dual-provenance
-   issueExeLicense refactor. Big task — do not start.
+2. Nested folder TASK_173 (row 0b, MEDIUM) — after grant fix.
+3. Wallet W6 EXE-from-wallet (after the above). Big — do not start.
 
 ## 6. Report back
 
-1. File diffs (local + live), restart proof, minted-zip entry list.
-2. Gate table (tsc, suites, build, generator active).
-3. Docs commit SHA + push proof; parked items queued with numbers.
-4. Honest unverified list (esp. VM install if no hardware run).
+1. File diffs, gate table, live curl proof (mobile HTML vs desktop 302).
+2. Docs commit SHA + push proof; parked items queued with numbers.
+3. Honest unverified list.

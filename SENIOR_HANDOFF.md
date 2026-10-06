@@ -777,6 +777,8 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 > PUSHED" note and the `DISPATCH_WALLET_W2.md` pointer; the next wallet work is row **2b**
 > (W5 spend path), not a re-dispatch of W2.
 
+| **0e** | **Desktop-only install-link gate (TASK_175 — SCOPED 2026-10-06, OWNER PRIORITY: BUILD FIRST)** — optional per-link toggle: mobile/tablet openers see a white "open on your PC" modal instead of the file; desktop passes straight through. Verdict: THE LINK, not the site (`/link/vantra/[token]` resolver is the single choke point every opener passes; mint-time UA tells nothing). Flag `desktopOnly` in installerNamesJson (no migration); server UA pre-check + client touch-check confirm; `?desktop=1` continue-anyway. Doc: `TASK_175_DESKTOP_ONLY_LINK_GATE.md`. Sized SMALL. **Build before grant fix per owner 2026-10-06.** |
+| **0d** | **Premium / Premium Plus tier split (TASK_174 — SCOPED 2026-10-06, NOT STARTED)** — owner: today's Premium BECOMES Plus for all current users; trimmed Premium is the only advertised tier; Plus never advertised (owner-awarded via support-ticket request + manual invoice through existing payment rails). Tier 10 = Plus, 5 = Premium, 1 = trial (10 keeps all `>= 5` gates true; dispatch 10>5>1 free). Premium keeps mesh viewer + all non-device premium; Plus-only = screen monitoring, PIN, hide/reveal, maintenance, run-command, queues, power, clones. Per-user full Restrict button (new accountRestricted bool, one migration). Backfill tier-5→10. Doc: `TASK_174_PREMIUM_PLUS_TIERS.md`. Sized LARGE (5 sub-builds a–e). **AFTER grant fix + W6 per owner order.** |
 | **0b** | **Nested launcher folder (TASK_173 — SCOPED 2026-10-06, ready to build)** — owner wants the launcher in a SECOND folder nested inside the first: zip becomes `{ Update.lnk @ root, <inner>/<nested>/Launcher.exe, <inner>/<nested>/agent.bin, PDF follows exe }`, and the PS-bridge `.lnk` targets `.\<inner>\<nested>\Launcher.exe`. Shape: new optional `nestedFolder` (bare-name `clean()`, default e.g. `bin`) in `launcher-build.ts` + routes `names:` passthrough; zip entries + `validateLauncherBuild` names + `New-AgentShortcut.ps1 -LauncherSubFolder` (now takes the JOINED `inner\nested` relative path — no .ps1 logic change, just a longer value); `launcher.c` payload needs NO change (sibling of exe, invariant kept) and `open_pdf` parent-fallback already covers drift — PDF follows the exe so the sibling invariant holds. Spaceworker forwards it (`lib/vantra-link.ts` `InstallerNames` + `sanitizeInstallerNames` + `install-link/route.ts` `parseNames`, same bare-name drop rule) + Vantra parity (`zip-generator.ts`, `sw-installer-names.ts`). No DB migration. Verify: mint zip, assert entry list, assert bridge args contain the nested path, VM install. Sized MEDIUM. |
 | **0c** | **Admin grant bug (ROOT-CAUSED 2026-10-06, ready to fix — SMALL)** — Give-a-customer-funds ($50, skiddy4real@gmail.com, "founders funding") → "Grant failed". Cause: the grant route passes `adminId: session.sub` = the literal string `"admin"` (shared-passcode session, `lib/admin-auth.ts` — no per-admin accounts), but `WalletLedgerEntry.adminId` is FK `User? @relation("WalletAdmin")` (schema:1002-1003) and no `User` row with `id='admin'` exists → **P2003 FK violation inside `move()`'s `$transaction`** → throw escapes the `catch` (only `isUniqueViolation` is handled) → Next.js 500 HTML → panel's `res.json().catch(() => ({}))` yields no `error` string → generic "Grant failed". Your repro ($50 on the customer's real User row) can NEVER succeed until this is fixed. Only caller: `app/api/admin/wallet/grant/route.ts` (no other route calls `grantBalance`/`adminAdjustBalance`/`setPostpaidLimit` — all three share the broken shape). Fix (pick one): **(A) nullable-admin (recommended)** — `adminId: session.sub === "admin" ? null : session.sub` in route (or write `null` directly), keep note, add try/catch → JSON 500 instead of HTML, add test "grant with null adminId succeeds", panel keeps note + `error ?? Grant failed`; audit stays via note, no migration (column already nullable). **(B) sentinel admin User row** — migration seeds `User id='admin'` (hack, FK now hard-required, every grant depends on a magic row). Verify: grant $X on prod → balance +X, ledger `admin_grant` with note, success toast; note/amount rejections unchanged; unit test for null-adminId. Sized SMALL. |
 | **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **BUILT as `b3e2540`, pushed, deploy run `37470986552` success — awaits verifier live-confirm.** W6 (EXE-from-wallet) stays after the silent fix + grant bug per owner order 2026-10-06 — do not widen W5 to EXE products. |
@@ -2204,6 +2206,31 @@ four; do not claim live rendering.
 - **Owner can test NOW:** mint a fresh zip → install on Windows → expect
   no TacticalRMM GUI dialog (functional proof is server-side;
   GUI-silence = SIMULATION until hardware confirm).
-- **Next:** feature agent builds TASK_173 nested folder (row 0b);
-  verification prompt rewritten to confirm it, then queue the grant fix
-  (row 0c). W6 last.
+- **Next:** feature agent builds TASK_175 desktop-only gate (row 0e,
+  OWNER PRIORITY — before grant fix); verifier confirms via mobile-UA
+  HTML vs desktop-UA 302 curl proof, then queues the grant fix (row
+  0c). Nested folder 0b + W6 after. TASK_174 tier split scoped
+  (row 0d, LARGE) — parked until W6 lands.
+
+### 2026-10-06 — TASK_175 desktop-only gate SCOPED + QUEUED FIRST (owner priority)
+
+- **Ask:** agent-install links get opened on phones/tablets; want an
+  OPTIONAL per-link toggle showing a white "open on your PC" modal to
+  mobile openers, desktop passes through. For self-host installs.
+- **Verdict (verified, NOT inferred): THE LINK, not the site.**
+  `GET /link/vantra/<token>` is the single choke point every opener
+  passes (resolveInstallToken → 302, else 410/502); panel mints but a
+  different person usually opens, so mint-time UA is useless. Server
+  UA pre-check + client touch-check confirm (in-app browsers lie).
+- **Shape (SMALL, no migration):** `desktopOnly` flag in
+  installerNamesJson (TASK_121 pattern); checkbox on public-link mint;
+  resolver serves interstitial HTML on mobile UA, 302 otherwise;
+  `?desktop=1` continue-anyway; expired/revoked still 410.
+  Doc: `TASK_175_DESKTOP_ONLY_LINK_GATE.md`.
+- **Queue:** 0e FIRST (before 0c grant fix) per owner 2026-10-06; then
+  0c → 0b → W6 → 0d (tier split). Both prompts rewritten for TASK_175.
+- **Also scoped this session:** TASK_174 Premium/Plus split (tier 10 =
+  Plus w/ all device tools, tier 5 = Premium w/ mesh only, Plus never
+  advertised, per-user Restrict, backfill 5→10; doc
+  `TASK_174_PREMIUM_PLUS_TIERS.md`, row 0d) + repaired a mangled 0b
+  row from an earlier edit (text restored byte-identical).
