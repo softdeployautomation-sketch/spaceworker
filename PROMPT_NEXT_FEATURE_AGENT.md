@@ -1,93 +1,93 @@
-# PROMPT — NEXT FEATURE AGENT (queue: WALLET W5 — spend on premium, premium-only)
+# PROMPT — NEXT FEATURE AGENT (P0: silent-install regression)
 
 ## 0. Read first (binding)
 
 - HOW_WE_MOVE_FAST.md + SENIOR_HANDOFF.md sections 4 + 5 traps.
 - PROMPT_NEXT_VERIFICATION_AGENT.md section 1 — binding.
-- Rules: git add explicit paths only (TASK_133 file is the owner's, never
+- Rules: explicit git add of paths only (TASK_133 is the owner's, never
   touch it); commit with -F file; never print secrets; never edit .env;
-  never build on the VPS; never git stash; use CI=true npm run build.
-- State: main at 307d152 (TASK_171 zip-link history: VantraInstallLink
-  per-mint history + download counts + live countdowns in the Add-a-device
-  panel), pushed AND deployed (run 37451784379, build+deploy success,
-  migration 20261114000000_task171_install_link_history applied live,
-  VantraInstallLink count 0 = no mints since deploy). TASK_169/170 live —
-  do not touch them.
-- Short links are SETTLED (premium serves only from the short swdocs host).
-  Zip-link history is SETTLED (TASK_171). Do not re-litigate either.
+  never BUILD on the VPS (edit ONE live TS file over ssh + service restart
+  only — generator runs via tsx, no build step); never git stash.
+- State: spaceworker main at b3e2540 (W5 spend, pushed; deploy run
+  37470986552 success). The work is NOT in spaceworker: it is the generator
+  service at /opt/vantra-installer on the VPS (164.68.105.96, key
+  ~/.ssh/tacticalrmm_vps), plus doc updates in spaceworker.
 
-## 1. WALLET W5 — POST /api/wallet/spend for web_subscription (premium-only)
+## 1. THE BUG (owner-confirmed 2026-10-06)
 
-Owner scope decision (2026-10-06): W5 premium-only. W6 (EXE-from-wallet,
-dual-provenance issueExeLicense refactor) is a separate later task — do not
-start it, do not widen this task to EXE products.
+Owner tested the Spaceworker zip: the TacticalRMM GUI dialog pops up during
+install/enroll — a regression of Vantra FIX 4 (commit e148ff5), fixed in the
+vantra-installer repo but never ported to the live generator.
 
-Owner ask (PLAN_TASK_158_WALLET_BALANCE.md 7.1): users fund the wallet first
-(W3 grant + W4 top-up to admin credit — both LIVE), then spend that balance
-on subscription. The wallet today can be FILLED but not SPENT. This task
-closes that loop for the web subscription only.
+Root cause (verified over ssh this session, NOT inferred):
 
-### Verified facts (reproduce, do not assume)
+- Reference fix appends `--silent` as the LAST argv in
+  buildEnrollmentCommand() (generator/src/install-command.ts:59). It kills
+  all agent-install GUI: confirmations, error popups, broker notification.
+  Requires admin — holds via launcher UAC elevation / PS-bridge RunAs.
+- Live file /opt/vantra-installer/generator/src/install-command.ts (VPS, NOT
+  a git repo — deployed by copy) ends its argv at the features map with NO
+  --silent line. grep silent hits comments only.
+- Local installer-dev HAS the fix; origin/main now carries all three fix
+  commits (e148ff5, ccb129a, 8fb69d8) since the repo went public. The live
+  box was copied from an older tree and never re-synced.
 
-- lib/wallet.ts is the ONLY money writer: creditWallet, debitWallet (kind
-  debit_purchase, allowNegative postpaid headroom), grantBalance
-  (admin_grant / admin_adjust sign-routing), setPostpaidLimit.
-  Compare-and-swap on the balance value itself, up to 5 retries, then 409
-  wallet_contended. Idempotency via idempotencyKey unique. Ledger
-  WalletLedgerEntry is append-only. Tests: tests/wallet.test.ts 39/39.
-- GET /api/wallet reads the caller's own wallet from the session — no
-  userId param, no body, integer cents end to end.
-- No spend route exists: no app/api/wallet/spend directory, no spend string
-  in app/lib/components/tests for the wallet path.
-- Premium model (lib/premium.ts): PREMIUM_TIER = 5,
-  PREMIUM_DAYS_PER_CHARGE = 30; grandfathered tier-5 NULL-expiry never
-  expires; lazy applyPremiumReversion downgrades expired terms to tier 1.
-- Premium price today lives in the crypto checkout path
-  (app/api/billing/checkout, lib/products.ts); the spend route must price
-  from the SAME source, never a second constant.
+NOT broken, do not touch: FIX 5 guide-PDF auto-open IS live (routes.ts has
+the full pdf path, ~36 pdf hits). Vantra web side (zip-generator.ts,
+sw-installer-names.ts) is at parity. toPowerShellInstallCommand() inherits
+the fix automatically (calls buildEnrollmentCommand internally).
 
-### W5 fix contract
+## 2. THE FIX (one line + restart — ssh, not a repo commit)
 
-1. New authenticated route POST /api/wallet/spend, body
-   product web_subscription (reject anything else — EXE is W6). Session user
-   id ONLY (same rule as GET /api/wallet). Integer cents end to end.
-2. Atomic in ONE transaction: debitWallet (CAS + idempotency) + premium term
-   grant (extend premiumExpiresAt by 30 days, or start a new term from now;
-   tier to 5). A crash can never take money without granting premium, or
-   grant it for free. Ledger row kind debit_purchase with a note naming the
-   product + term.
-3. Failure shapes: insufficient balance = 402 insufficient_funds;
-   already-premium-with-live-term = 409 already_active (document extend vs
-   refuse; default refuse); concurrent spend = 409 wallet_contended via CAS;
-   unknown product = 400/422.
-4. Invariants kept: lib/wallet.ts stays the only balance writer; ledger
-   stays append-only; admin session checks unchanged; rate-limit the route
-   like the other wallet/billing routes.
-5. UI: Activate with balance on /dashboard/billing (plan section 7 W5 gate)
-   + balance refresh after spend. Reuse components/wallet-balance.tsx
-   formatting (cents to display in the browser only).
-6. Tests: spend debits once + grants term atomically; double-spend of the
-   full balance = exactly one success; insufficient = 402 and nothing moves;
-   already-active = 409 and nothing moves; concurrent spends = one wins via
-   CAS; EXE product = rejected (W6 not started). Existing suites green.
-7. Gates before commit: tsc + wallet + topup + support + hosting + idlechip
-   suites + ESLint touched-only (worktree baseline, 0 new) + CI=true build
-   + prisma validate (expect NO migration — W1 already shipped the ledger;
-   if one is truly needed, timestamp strictly greater than
-   20261114000000_task171_install_link_history). One commit, explicit
-   git add, -F file, push (push is not deploy, leave deploy to verifier).
+1. Over ssh (key ~/.ssh/tacticalrmm_vps, root@164.68.105.96): back up, then
+   edit exactly ONE file:
+   /opt/vantra-installer/generator/src/install-command.ts,
+   buildEnrollmentCommand() return array — append `--silent`, AFTER the
+   features-map line (byte-identical to local
+   ~/vantra-installer/generator/src/install-command.ts:51-60).
+2. Keep/update the FIX 4 comment block so the live file matches local.
+3. Restart ONLY the generator: systemctl restart vantra-msi-generator
+   (runs tsx src/server.ts — no build step). Assert is-active = active.
+4. DO NOT touch /opt/spaceworker, /opt/vantra, any other generator file,
+   or any other unit. DO NOT git on the VPS (not a repo).
+5. Rollback: restore the backup + restart.
 
-## 2. What is NOT this task
+## 3. VERIFY (before touching spaceworker docs)
 
-- W6 (EXE-from-wallet, ExeLicense.paymentId nullable + walletEntryId +
-  CHECK constraint, issueExeLicense dual provenance, replace/re-issue
-  surface in /dashboard/licenses). Queued after W5, not now.
-- Postpaid changes (D10 postpaidLimitCents ceiling already exists — spend
-  via allowNegative headroom only, no new limit surface).
-- New top-up methods, new currencies, refunds UI, store multiselect.
+- grep -n silent on the live file shows the --silent argv line.
+- systemctl is-active = active; journalctl clean start, no crash loop.
+- Mint a REAL test zip through the Spaceworker public flow; confirm the
+  embedded enrollment command ends in --silent. GUI-silence is provable
+  only on a Windows VM — label SIMULATION unless owner confirms on hardware.
+- Spaceworker gates (doc-only diff): npx tsc --noEmit clean; CI=true build
+  exit 0. No migration (no schema touched).
 
-## 3. Report back
+## 4. DOCS + HANDOFF (spaceworker repo, one commit)
 
-1. W5: route + UI paths (file:line); atomic debit+grant shape; price source;
-   already-active decision; gate table, real output.
-2. Honest unverified list (anything not run live).
+- SENIOR_HANDOFF.md: section 6 state, section 7 queue (strike this, promote
+  nested-folder + grant-bug + W6), section 12 log entry.
+- New TASK_172_SILENT_INSTALL_REGRESSION.md (root cause, fix, verification,
+  nested-folder parked as follow-up).
+- PROMPT_NEXT_VERIFICATION_AGENT.md belongs to the verifier — leave it.
+- Commit docs explicitly (git add paths, -F file), push to main. No deploy
+  needed (no spaceworker code changed).
+
+## 5. PARKED (do NOT build — queue only)
+
+1. Nested launcher folder (owner 2026-10-06): launcher ships flat
+   (Update.lnk + Launcher.exe + payload + PDF in one innerFolder). Owner
+   wants the launcher in a SECOND folder nested inside the first, .lnk
+   targeting the right path. Needs scoping (launcher.c, lnk target,
+   generator contract, Vantra parity). Park as TASK_173 candidate.
+2. Grant bug (owner 2026-10-06): admin Give-a-customer-funds (50 USD,
+   skiddy4real@gmail.com, founders funding) returns Grant failed. Route +
+   service exist; root cause NOT isolated. Queue for triage.
+3. Wallet W6 EXE-from-wallet (after the above): dual-provenance
+   issueExeLicense refactor. Big task — do not start.
+
+## 6. Report back
+
+1. Live file diff (before/after), restart proof, --silent presence, zip mint.
+2. Gate table (tsc, build, generator active, journal clean).
+3. Docs commit SHA + push proof; parked items queued with numbers.
+4. Honest unverified list (esp. Windows-GUI silence if no VM run).

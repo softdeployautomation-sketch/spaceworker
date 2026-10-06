@@ -527,9 +527,12 @@ panel screenshot, no count increment observed live, no expired row seen
 live) — countdown/count rendering proven by the 10 new unit tests, not by
 a browser.
 
-**Queue next:** Wallet W5 spend path (premium-only, owner-scoped
-2026-10-06): `POST /api/wallet/spend` for `web_subscription` +
-Activate-with-balance UI. W6 (EXE-from-wallet) is a separate later task.
+**Queue next (owner order 2026-10-06 — wallet paused):** P0 silent-install
+regression (one-line `--silent` port to the LIVE generator, ssh + restart —
+see §7 row 0). Then nested launcher folder (TASK_173 candidate), then the
+admin grant-bug triage ($50 founders-funding "Grant failed"), then Wallet
+W6 EXE-from-wallet. W5 spend path (`b3e2540`, deploy run `37470986552`
+success) awaits verifier live-confirm.
 
 **Previous state (2026-10-04, Task 159 Phase 1 — support-ticket BACKEND — SHIPPED, MIGRATED, LIVE-VERIFIED).**
 `main` @ `8326220`, deployed build **`u6J4f3cE3JRIn6kSBYA8f`** (`/opt/spaceworker/.next/BUILD_ID`,
@@ -773,8 +776,10 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 > PUSHED" note and the `DISPATCH_WALLET_W2.md` pointer; the next wallet work is row **2b**
 > (W5 spend path), not a re-dispatch of W2.
 
-| **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **NEXT WALLET TASK — owner-scoped 2026-10-06 as PREMIUM-ONLY.** W3 (admin grant) + W4 (top-up → admin credit) are LIVE (§6.9); the wallet can be filled but not spent. W6 (EXE-from-wallet, dual-provenance `issueExeLicense()` refactor) stays after W5 — do not widen W5 to EXE products. TASK_171 zip-link history shipped 2026-10-06 (`307d152`, deployed run `37451784379`) and no longer blocks the queue. |
-| **0** | **P0 OWNER BUGS — extraction queue serves 1 of 3 + hardcoded 24-frame summary cap** — worker lane `Semaphore(1)` vs admin dial; Phase A fairness; hardcoded `SCREENSHOT_SUMMARY_MAX_FRAMES_PER_DEVICE_PER_DAY` | **`PROMPT_NEXT_FEATURE_AGENT.md` (TASK_168)** | **QUEUED FIRST — jumps the wallet order.** Owner-reported 2026-10-06: (A) queue set to 3 users, only 1 gets results; (B) screen timeline "daily summary limit (24 frames)" must be an admin dial. Diagnosed, not fixed: `worker/api.py:163-164`, `dispatch/route.ts:158-180/226-252/280-317`, `screenshot-summaries.ts:75-102/464-480`, `screen-timeline.tsx:55-56`. |
+| **0b** | **Nested launcher folder (TASK_173 candidate)** — owner 2026-10-06: launcher ships flat (Update.lnk + Launcher.exe + payload + PDF in one innerFolder); owner wants the launcher in a SECOND folder nested inside the first, .lnk targeting the right path. Needs scoping (launcher.c, lnk target, generator contract, Vantra parity). Parked behind the silent fix. |
+| **0c** | **Admin grant bug (triage)** — owner 2026-10-06: Give-a-customer-funds ($50, skiddy4real@gmail.com, "founders funding") returns Grant failed. Route `POST /api/admin/wallet/grant` + `grantBalance` exist; root cause NOT isolated. Small-to-medium suspected. Queued behind silent fix + nested-folder scoping. |
+| **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **BUILT as `b3e2540`, pushed, deploy run `37470986552` success — awaits verifier live-confirm.** W6 (EXE-from-wallet) stays after the silent fix + grant bug per owner order 2026-10-06 — do not widen W5 to EXE products. |
+| **0** | **P0 SILENT-INSTALL REGRESSION — live generator missing FIX 4 `--silent`** — owner-tested zip shows the TacticalRMM GUI dialog (regression of vantra-installer `e148ff5`). Live `/opt/vantra-installer/generator/src/install-command.ts` ends argv at the features map (grep silent = comments only); local installer-dev HAS it; origin/main now carries all three fix commits. FIX 5 PDF IS live — do not touch it. Fix = ONE line over ssh + `systemctl restart vantra-msi-generator` (tsx, no build). Mint test zip, prove embedded enroll ends in `--silent`. | **`PROMPT_NEXT_FEATURE_AGENT.md` (P0 silent fix)** | **QUEUED FIRST — jumps the wallet order per owner 2026-10-06.** Scoped, not fixed: live-vs-local diff proven over ssh this session. GUI-silence needs a Windows VM (SIMULATION unless owner confirms). |
 | **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | **`PLAN_TASK_159_SUPPORT_TICKETS.md`** (own doc, this session) | **Phase 1 (backend) SHIPPED + LIVE 2026-10-04** (`8326220`, migration `20261107000000_task159_support_tickets` applied, deploy run `37231502875`). `SupportTicket`/`SupportMessage`, a credential-rejecting write path, and six authenticated routes. Live-verified end to end with a disposable user. **No UI, no email** — next is the user composer + thread, then the admin queue. |
 | **4** | **Marketing** for the new tools (hosting domains, wallet, tickets) | **now partially covered by `TASK_161_DASHBOARD_OS.md` §D7** | **SCOPED 2026-10-05, not started.** The Cyber Lab + Hosting pillars are a small, independent edit to `app/page.tsx` (only 3 `Pillar`s exist today, neither new tool is among them) — **recommended as the cheapest first win.** Full marketing doc still owed. |
 | **5** | **Cyber Lab C2+ completion** | `PLAN_TASK_156_CYBERLAB_REAL_WORLD_TOOLS.md` | Deferred by the owner until #4 lands |
@@ -2060,3 +2065,41 @@ Public probes (no session):
 NOT done live: no real ZIP link minted on prod; no panel screenshot; no
 count increment observed; no expired row observed. Unit tests cover all
 four; do not claim live rendering.
+
+### 2026-10-06 — W5 VERIFIED + DEPLOYED; P0 silent-install regression SCOPED + QUEUED FIRST
+
+- **Did:** verified feature-agent's W5 (`b3e2540`, 6 files +607):
+  re-ran gates independently (tsc 0; wallet 47/47; route 16/16; topup 22/22;
+  support 50/50; hosting 338/338; idlechip 15/15; ESLint touched-only 0 new
+  — billing-page flag proven pre-existing on `08cd67c`; `CI=true build`
+  exit 0; `prisma validate` OK, no migration). Dispatched `deploy.yml`
+  (run `37470986552`, `workflow_dispatch`, build + deploy both **success**,
+  HEAD `b3e2540`). Live: BUILD_ID `tKUHX-rxk834sMF6S21Pb` (mtime
+  2026-10-06 15:30 CEST, inside window); all three services active, zero
+  failed; no pending migrations (W5 needs none); `GET /api/wallet` 401,
+  `POST /api/wallet/spend` 401; spend route present in deployed build.
+- **Scoped (owner order 2026-10-06 — wallet paused):** P0 silent-install
+  regression. Owner-tested zip shows the TacticalRMM GUI dialog — Vantra
+  FIX 4 (`e148ff5`, `--silent` last argv in `buildEnrollmentCommand()`)
+  never reached the live generator. Proven over ssh: live
+  `/opt/vantra-installer/generator/src/install-command.ts` ends argv at
+  the features map (grep silent = comments only); local installer-dev HAS
+  it; origin/main now carries all three fix commits (repo went public).
+  FIX 5 PDF IS live (~36 pdf hits in live routes.ts) — do not touch.
+  Fix = ONE line over ssh + `systemctl restart vantra-msi-generator`
+  (tsx, no build). `PROMPT_NEXT_FEATURE_AGENT.md` rewritten for it;
+  verification prompt rewritten to match.
+- **Queued:** §7 row 0 (P0 silent fix, jumps wallet order) → row 0b
+  (nested launcher folder, TASK_173 candidate — launcher in a second folder
+  nested inside the first, .lnk targeting right path) → row 0c (admin
+  grant-bug triage: $50 founders-funding "Grant failed", root cause open)
+  → W6 EXE-from-wallet last. §6 queue pointer updated; §7 row 2b marked
+  BUILT-awaits-verifier.
+- **Verified:** gate table + deploy + VPS proofs above (raw output in
+  session). W5 live-confirm left to the verifier.
+- **NOT verified:** Windows-GUI silence (needs VM — agent must label
+  SIMULATION); grant-bug root cause; nested-folder scope.
+- **State left behind:** main at `b3e2540`, tree has prompt + handoff edits
+  (this commit) + untracked `TASK_133_RMM_ENGINE_BRINGUP.md` (owner's,
+  untouched).
+- **Next:** P0 feature agent applies the one-line `--silent` port live.

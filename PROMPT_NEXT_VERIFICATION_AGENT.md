@@ -1,36 +1,35 @@
-# PROMPT — NEXT VERIFICATION AGENT (WALLET W5 spend on premium)
+# PROMPT — NEXT VERIFICATION AGENT (P0 silent-install fix)
 
-You verify Wallet W5 (spend funded balance on premium terms), then queue W6.
-Start: main at feature-agent's W5 commit (POST /api/wallet/spend +
-Activate-with-balance UI), pushed by them. TASK_171 zip-link history
-(307d152) is live. TASK_133 file is the owner's — never touch it. Never
-git stash; baselines via throwaway worktree. Never edit .env; never build
-on the VPS. Pushing is not deploying. W6 (EXE-from-wallet) is next — queue
-it, do not build it.
+You verify the P0 silent-install fix, then queue the nested-folder task.
 
-## 1. VERIFY (expect one commit: Wallet W5 spend path)
+Start: spaceworker main at b3e2540 (W5 spend path, pushed; deploy run
+37470986552 success — confirm live as part of this run). The feature agent's
+fix is NOT a spaceworker commit: it is a one-line edit on the VPS generator
+(/opt/vantra-installer/generator/src/install-command.ts + service restart).
+Your spaceworker-side job is gates + live proof + doc queue. TASK_133 file is
+the owner's — never touch it. Never git stash; baselines via throwaway
+worktree. Never edit .env; never build on the VPS.
+
+## 1. VERIFY (expect: live generator carries --silent; spaceworker docs commit)
 
 Re-run every gate yourself: npx tsc --noEmit, hosting, wallet, top-up,
-support, idlechip, NEW tests named in the report, ESLint on touched files
-with worktree baseline (prove 0 new), CI=true npm run build,
-prisma validate (expect NO new migration — W1 already shipped the ledger;
-if one exists, timestamp must be strictly greater than
-20261114000000_task171_install_link_history and additive-only).
+support, idlechip suites, ESLint on touched files with worktree baseline
+(prove 0 new), CI=true npm run build, prisma validate (expect NO new
+migration — this fix touches no schema; flag any migration as unexpected).
 
-Confirm W5 on /dashboard/billing + POST /api/wallet/spend: body product
-web_subscription ONLY (EXE products rejected — W6 not started); session
-user id only (no userId param, no body id); price from the SAME source as
-the crypto checkout (no second constant); ONE transaction for debit +
-premium term grant (30 days via PREMIUM_DAYS_PER_CHARGE, tier to 5);
-insufficient = 402 insufficient_funds with nothing moved; already-active =
-409 already_active with nothing moved (extend-vs-refuse documented);
-concurrent full-balance double-spend = exactly one success via CAS
-(wallet_contended 409 for the loser); ledger row kind debit_purchase,
-append-only (no update/delete on WalletLedgerEntry); lib/wallet.ts still
-the ONLY balance writer (no prisma.user.update of balanceCents elsewhere);
-integer cents end to end; Activate-with-balance UI refreshes the balance.
-git log origin/main..main --stat lists ONLY the W5 commit; git status
-shows no strays.
+Confirm the fix on the VPS (ssh key ~/.ssh/tacticalrmm_vps):
+grep -n silent /opt/vantra-installer/generator/src/install-command.ts shows
+the `--silent` argv line inside buildEnrollmentCommand (not comments only);
+systemctl is-active vantra-msi-generator = active; journalctl clean start.
+Mint a test zip through the Spaceworker public flow and show the embedded
+enrollment command ends in --silent. GUI-silence needs a Windows VM — accept
+the agent's SIMULATION label unless the owner confirms on hardware; never
+claim live GUI-silence without it.
+
+Confirm W5 still live on /dashboard/billing + POST /api/wallet/spend (body
+product web_subscription ONLY; session user id only; price from the checkout
+source; 402/409 shapes). git log origin/main..main lists ONLY the docs
+commit; git status shows no strays.
 
 ## 2. DEPLOY (push only if green; deploy = gh workflow + VPS proof)
 
@@ -55,10 +54,15 @@ SIMULATION, never verified live.
 
 ## 4. WRITE THE NEXT PROMPTS + HANDOFF, commit, report
 
-Rewrite PROMPT_NEXT_FEATURE_AGENT.md for Wallet W6 EXE-from-wallet
-(handoff section 7 row W6 — confirm scope with the owner's order before
-assigning). Rewrite THIS file for that task (fresh section 1 gates for its
-scope). Update SENIOR_HANDOFF.md: section 6 state, section 7 queue,
-section 9 log entry, section 12 evidence. Commit the three docs explicitly
+Rewrite PROMPT_NEXT_FEATURE_AGENT.md for the nested launcher folder
+(TASK_173 candidate — owner wants launcher in a second folder nested inside
+the first, .lnk targeting the right path; scope launcher.c, lnk target,
+generator innerFolder contract, Vantra parity — do NOT build it here).
+Rewrite THIS file for that task (fresh section 1 gates for its scope).
+Update SENIOR_HANDOFF.md: section 6 state, section 7 queue, section 9 log
+entry, section 12 evidence. NOTE the grant bug as queued triage (admin
+Give-a-customer-funds 50 USD founders-funding returned Grant failed; route
++ service exist, root cause open) and W6 EXE-from-wallet AFTER the
+nested-folder + grant bug per owner order. Commit the three docs explicitly
 (git add paths, -F file, git log -1 to confirm), push. Report: gate table,
-deploy run id + SHA, VPS evidence, next task queued, unverified list.
+generator live evidence, next task queued, unverified list.
