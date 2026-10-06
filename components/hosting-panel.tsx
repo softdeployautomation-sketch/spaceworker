@@ -1166,7 +1166,7 @@ export function HostingPanel() {
               spellCheck={false}
               autoComplete="off"
               autoCapitalize="none"
-              className="w-64 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 sm:w-64"
             />
           </label>
           <button
@@ -1286,22 +1286,22 @@ export function HostingPanel() {
           onSubmit={onAddLink}
           className="flex flex-wrap items-end gap-3 rounded-lg border border-zinc-200 p-4 dark:border-zinc-800"
         >
-          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+          <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-zinc-500 sm:flex-none">
             Target URL
             <input
               value={linkForm.target}
               onChange={(e) => setLinkForm((s) => ({ ...s, target: e.target.value }))}
               placeholder="https://…"
-              className="w-72 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 sm:w-72"
             />
           </label>
-          <label className="flex flex-col gap-1 text-xs text-zinc-500">
+          <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs text-zinc-500 sm:flex-none">
             Name (optional)
             <input
               value={linkForm.slug}
               onChange={(e) => setLinkForm((s) => ({ ...s, slug: e.target.value }))}
               placeholder="my-link"
-              className="w-40 rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
+              className="w-full rounded border border-zinc-300 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900 sm:w-40"
             />
           </label>
           <label className="flex flex-col gap-1 text-xs text-zinc-500">
@@ -1552,7 +1552,7 @@ export function HostingPanel() {
                   value={slugs[file.id] ?? file.slug ?? ""}
                   onChange={(e) => setSlugs((s) => ({ ...s, [file.id]: e.target.value }))}
                   placeholder="short link name (optional, e.g. my-app)"
-                  className="w-64 rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                  className="w-full rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900 sm:w-64"
                 />
                 <button onClick={() => void onSaveSlug(file)} className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700">
                   Save link name

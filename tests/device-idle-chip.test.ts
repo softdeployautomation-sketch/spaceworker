@@ -1,7 +1,85 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { idleChipLabel, idleReadProvenanceFrom, type IdleChipDevice } from "../lib/device-idle";
+
+// TASK_170 — mobile responsiveness of the device remote control + link inputs.
+//
+// WHY THIS FILE EXISTS: the owner's report was "the device remote control
+// doesn't show the mesh console at all, it just shows a blue modal covering
+// the screen" on mobile. The fix is layout/CSS only (same tabs, same tools,
+// stacked/scrolling — never a forked mobile view, desktop pixel-unchanged),
+// so the regression test asserts on the REAL component source: the class
+// strings that admit small viewports must be present, and the fixed-pixel
+// classes that forced sideways overflow must be gone (or demoted to sm: and
+// up). A screenshot at 390px is the live proof; this pins the classes so a
+// later edit can't silently reintroduce the overflow.
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CONSOLE_SRC = readFileSync(join(HERE, "..", "components", "device-console.tsx"), "utf8");
+const PANEL_SRC = readFileSync(join(HERE, "..", "components", "hosting-panel.tsx"), "utf8");
+
+test("TASK_170: the remote iframe admits small viewports (dvh base, 480px only on sm+)", () => {
+  assert.ok(
+    CONSOLE_SRC.includes('"h-[70dvh] sm:h-[480px]"'),
+    "embedded iframe must be viewport-relative below sm, 480px only on sm and up",
+  );
+  assert.ok(
+    !CONSOLE_SRC.includes(': "h-[480px]"'),
+    "the bare fixed-pixel iframe height must be gone",
+  );
+});
+
+test("TASK_170: the toolbox dropdown cannot clip off the right edge on mobile", () => {
+  assert.ok(
+    CONSOLE_SRC.includes("max-sm:left-auto max-sm:right-0"),
+    "toolbox panel must open right-aligned below sm",
+  );
+  assert.ok(
+    CONSOLE_SRC.includes("max-w-[calc(100vw-2rem)]"),
+    "toolbox panel must admit the viewport width",
+  );
+});
+
+test("TASK_170: the launcher palette respects safe areas and scrolls on short screens", () => {
+  assert.ok(
+    CONSOLE_SRC.includes("overflow-y-auto bg-black/50"),
+    "launcher backdrop must scroll instead of clipping on short viewports",
+  );
+  assert.ok(
+    CONSOLE_SRC.includes("env(safe-area-inset-top)"),
+    "launcher must clear the notch/status-bar area",
+  );
+});
+
+test("TASK_170: no overlay renders over an active session on load or tab switch", () => {
+  // Both overlays are state-gated: the launcher palette only on an explicit
+  // user action, the toolbox backdrop only while its menu is open. Neither
+  // may be tied to `mesh` (session exists) or to `tab` (tab selected).
+  const launcherGate = CONSOLE_SRC.match(/\{launcherOpen && \([\s\S]{0,400}?fixed inset-0/);
+  assert.ok(launcherGate, "launcher overlay must be gated on launcherOpen only");
+  assert.ok(
+    !CONSOLE_SRC.includes("mesh && launcherOpen") && !CONSOLE_SRC.includes("tab === \"control\" && launcherOpen"),
+    "launcher must never auto-open from session/tab state",
+  );
+  const toolboxGate = CONSOLE_SRC.match(/\{open && \(\s*<>\s*<div className="fixed inset-0 z-10"/);
+  assert.ok(toolboxGate, "toolbox backdrop must be gated on its own open state");
+});
+
+test("TASK_170: hosting link/domain inputs are fluid below sm (no fixed w-*)", () => {
+  for (const fixed of ["w-72 rounded", "w-40 rounded", '"w-64 rounded']) {
+    assert.ok(
+      !PANEL_SRC.includes(`className="${fixed}`),
+      `fixed-width input must be gone: ${fixed}`,
+    );
+  }
+  assert.ok(PANEL_SRC.includes("sm:w-72"), "desktop widths return on sm and up");
+  assert.ok(PANEL_SRC.includes("sm:w-40"), "desktop widths return on sm and up");
+});
+
 
 // TASK_154 N2 — the client chip must never render a CONNECTED device as a bare
 // status word.

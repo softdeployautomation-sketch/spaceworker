@@ -2801,7 +2801,13 @@ function ToolboxMenu({
       {open && (
         <>
           <div className="fixed inset-0 z-10" onClick={onClose} />
-          <div className="absolute left-0 top-full z-20 mt-1 w-56 rounded-lg border border-border bg-bg-elevated/70 p-1.5 shadow-xl backdrop-blur-md">
+          {/* TASK_170 — on device-width screens the 14rem panel used to clip off
+              the right edge (the toolbox line sits inside an `overflow-hidden`
+              session window, and the last menus have no room to their right).
+              Same panel, same tools — it just opens right-aligned and admits
+              the viewport width instead of overflowing it. Desktop unchanged:
+              below sm the alignment classes are no-ops at desktop widths. */}
+          <div className="absolute left-0 top-full z-20 mt-1 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-border bg-bg-elevated/70 p-1.5 shadow-xl backdrop-blur-md max-sm:left-auto max-sm:right-0">
             {children}
           </div>
         </>
@@ -3494,11 +3500,21 @@ function ControlTab({
           <iframe
             src={mesh.control}
             title="Remote desktop"
-            // Embedded stays a fixed 480px panel (unchanged); full-screen fills
-            // what is left below the toolbox line. `min-h-0` is required for a
-            // flex child to be allowed to shrink below its content height —
-            // without it the iframe wins the layout and overflows the frame.
-            className={cn("w-full bg-black", fullScreen ? "min-h-0 flex-1" : "h-[480px]")}
+            // Embedded stays a fixed 480px panel on desktop (unchanged);
+            // full-screen fills what is left below the toolbox line. `min-h-0`
+            // is required for a flex child to be allowed to shrink below its
+            // content height — without it the iframe wins the layout and
+            // overflows the frame.
+            // TASK_170 — on device-width screens the 480px panel forced sideways
+            // scrolling and the remote input missed the shrunken viewport. The
+            // iframe keeps its desktop size above sm; below it the height falls
+            // to a viewport-relative 70dvh (address-bar safe, no fixed-pixel
+            // overflow) with touch-action intact for remote input. The
+            // height cascade is sm: > base, so desktop pixels don't move.
+            className={cn(
+              "w-full bg-black [touch-action:auto]",
+              fullScreen ? "min-h-0 flex-1" : "h-[70dvh] sm:h-[480px]",
+            )}
             sandbox="allow-scripts allow-same-origin allow-forms"
           />
         </div>
@@ -3520,7 +3536,7 @@ function ControlTab({
           every target shape before a command is ever built. */}
       {launcherOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-24"
+          className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1.5rem,env(safe-area-inset-top))] sm:pt-24"
           onClick={() => setLauncherOpen(false)}
         >
           <div
