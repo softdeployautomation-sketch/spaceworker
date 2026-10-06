@@ -1548,6 +1548,12 @@ model LinkRedirect {
   deployStatus String @default("pending")
   // Plain-language reason from Cloudflare, safe to show the user. No tokens.
   deployError String?
+  // TASK_175 — Desktop-only gate (premium-only): when true, a mobile/tablet
+  // opener of /r/<key> sees an "open this on your PC" interstitial instead of
+  // the redirect; desktop openers pass straight through. NULL = gate off
+  // (today's behavior). Set only for premium minters (lib/hosting/links.ts
+  // drops it for anyone else); the resolver treats presence as authority.
+  desktopOnly Boolean?
 
   @@index([campaignId])
   @@index([userId])

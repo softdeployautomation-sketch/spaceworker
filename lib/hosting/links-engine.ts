@@ -132,10 +132,10 @@ async function mapEntriesFor(
    *  the zone. Without this the first link a user ever creates is written to a
    *  script that does not contain it, and the live host 404s. */
   extraIds: string[] = []
-): Promise<{ key: string; target: string }[]> {
+): Promise<{ key: string; target: string; desktopOnly: boolean }[]> {
   const rows = await prisma.linkRedirect.findMany({
     where: { userId, engine: "cloudflare", ...(host ? { customHost: host } : {}) },
-    select: { id: true, token: true, slug: true, target: true, customHost: true },
+    select: { id: true, token: true, slug: true, target: true, customHost: true, desktopOnly: true },
   });
 
   // The in-flight row, if the host filter excluded it. Fetched by id and scoped to
@@ -145,15 +145,18 @@ async function mapEntriesFor(
   if (missing.length > 0) {
     const extra = await prisma.linkRedirect.findMany({
       where: { id: { in: missing }, userId, engine: "cloudflare" },
-      select: { id: true, token: true, slug: true, target: true, customHost: true },
+      select: { id: true, token: true, slug: true, target: true, customHost: true, desktopOnly: true },
     });
     rows.push(...extra);
   }
 
-  const entries: { key: string; target: string }[] = [];
+  const entries: { key: string; target: string; desktopOnly: boolean }[] = [];
   for (const row of rows) {
-    entries.push({ key: row.token, target: row.target });
-    if (row.slug) entries.push({ key: row.slug, target: row.target });
+    // TASK_175 — the gate flag rides the map per key (token AND slug each get
+    // it), so the edge gates a friendly slug exactly like its token.
+    const gated = (row as { desktopOnly?: boolean | null }).desktopOnly === true;
+    entries.push({ key: row.token, target: row.target, desktopOnly: gated });
+    if (row.slug) entries.push({ key: row.slug, target: row.target, desktopOnly: gated });
   }
   return entries;
 }

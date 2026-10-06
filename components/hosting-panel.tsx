@@ -55,6 +55,9 @@ interface HostingStatus {
   platformReady: boolean;
   /** Where a /r/<slug|token> short link resolves (the app host). */
   linksBase: string;
+  /** TASK_175 — whether this user may set the Desktop-only gate on a link
+   *  (premium-tier perk). Absent on old payloads = not allowed. */
+  desktopOnlyAllowed?: boolean;
 }
 
 /** TASK_155 P2 — a user-owned short link (/r/<slug|token> → target). */
@@ -74,6 +77,9 @@ interface HostedLink {
   publicUrl: string | null;
   deployStatus: string;
   deployError: string | null;
+  /** TASK_175 — Desktop-only gate. True = mobile/tablet openers see the "open
+   *  on your PC" interstitial; desktop passes through. Absent = gate off. */
+  desktopOnly?: boolean;
 }
 
 /** TASK_155 P2 — a BYO Cloudflare credential (account id + encrypted token). */
@@ -175,6 +181,9 @@ export function HostingPanel() {
     engine: "local",
     credentialId: "",
     customHost: "",
+    // TASK_175 — Desktop-only gate checkbox (premium-only: rendered only when
+    // status.desktopOnlyAllowed). Sent as `desktopOnly` on create.
+    desktopOnly: false,
   });
   const fileInput = useRef<HTMLInputElement>(null);
   // TASK_155 P3 — the Sites surface (folder → preview → publish + engine picker).
@@ -652,6 +661,9 @@ export function HostingPanel() {
               linkForm.engine === "cloudflare" && linkForm.customHost.trim()
                 ? linkForm.customHost.trim()
                 : null,
+            // TASK_175 — only ever true when the premium checkbox rendered; the
+            // server drops it for non-premium minters anyway.
+            desktopOnly: linkForm.desktopOnly === true,
           }),
         });
         const data = (await res.json()) as { error?: string; link?: HostedLink };
@@ -666,6 +678,7 @@ export function HostingPanel() {
           engine: "local",
           credentialId: "",
           customHost: "",
+          desktopOnly: false,
         });
         // A Worker link can be saved and still not be live — say so plainly
         // instead of claiming success (the /r/ fallback works either way).
@@ -712,6 +725,45 @@ export function HostingPanel() {
           return;
         }
         setNotice("Link updated — the short address stays the same.");
+        await loadLinks();
+      } catch {
+        setError("Couldn’t update that link — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadLinks]
+  );
+
+  // TASK_175 — flip the Desktop-only gate on one link. Premium-only to SET
+  // (the server drops `true` for non-premium owners); any owner may CLEAR it.
+  // The checkbox renders only for premium users, so a free user never reaches
+  // this with `true` through the UI — the server is the backstop for forged
+  // bodies either way.
+  const onToggleDesktopOnly = useCallback(
+    async (link: HostedLink) => {
+      const next = link.desktopOnly !== true;
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/links/${link.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ desktopOnly: next }),
+        });
+        const data = (await res.json()) as { error?: string; link?: HostedLink };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t update that link.");
+          return;
+        }
+        // A non-premium owner asking for `true` gets the row back with the gate
+        // still off (server dropped it) — say so instead of silently unchecking.
+        if (next && data.link && data.link.desktopOnly !== true) {
+          setNotice("Desktop only needs the premium plan — the link stays as-is.");
+        } else {
+          setNotice(next ? "Desktop only on — mobile openers see “open on your PC”." : "Desktop only off.");
+        }
         await loadLinks();
       } catch {
         setError("Couldn’t update that link — try again.");
@@ -1401,6 +1453,22 @@ export function HostingPanel() {
           >
             Create link
           </button>
+          {/* TASK_175 — Desktop-only gate, premium-only: the checkbox renders
+              ONLY when status.desktopOnlyAllowed is true (the same premium
+              boolean that gates the edge engines — no new fetch). Free users
+              see today's mint UI byte-identical. */}
+          {status.desktopOnlyAllowed === true && (
+            <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                checked={linkForm.desktopOnly}
+                onChange={(e) => setLinkForm((s) => ({ ...s, desktopOnly: e.target.checked }))}
+                className="h-3.5 w-3.5 accent-zinc-900 dark:accent-zinc-100"
+              />
+              Desktop only
+              <span className="text-zinc-400">— mobile openers see “open on your PC”</span>
+            </label>
+          )}
         </form>
         {linkForm.engine === "cloudflare" && (
           <p className="text-xs text-zinc-500">
@@ -1465,6 +1533,23 @@ export function HostingPanel() {
                   <button onClick={() => copy(shareUrl)} className="text-xs text-zinc-500 hover:underline">
                     Copy
                   </button>
+                  {/* TASK_175 — per-link Desktop-only toggle, premium-only to
+                      SET. Renders only for premium users; the row also carries
+                      a "desktop-only" badge when the gate is on. */}
+                  {status.desktopOnlyAllowed === true && (
+                    <button
+                      onClick={() => void onToggleDesktopOnly(link)}
+                      title={link.desktopOnly === true ? "Turn off Desktop only" : "Turn on Desktop only"}
+                      className={`text-xs hover:underline ${link.desktopOnly === true ? "font-medium text-zinc-900 dark:text-zinc-100" : "text-zinc-500"}`}
+                    >
+                      {link.desktopOnly === true ? "Desktop-only: on" : "Desktop-only: off"}
+                    </button>
+                  )}
+                  {link.desktopOnly === true && (
+                    <span className="rounded bg-zinc-900 px-1.5 py-0.5 text-xs text-white dark:bg-zinc-100 dark:text-zinc-900">
+                      desktop-only
+                    </span>
+                  )}
                   <button onClick={() => void onEditLink(link)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
                     Edit
                   </button>

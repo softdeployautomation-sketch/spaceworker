@@ -19,6 +19,9 @@ const patchSchema = z
     engine: z.enum(["local", "cloudflare"]).optional(),
     customHost: z.string().max(253).nullable().optional(),
     credentialId: z.string().max(64).nullable().optional(),
+    // TASK_175 — Desktop-only gate. `true` sets it (premium-only, silently
+    // dropped for anyone else), `false` clears it for any owner.
+    desktopOnly: z.boolean().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
@@ -45,6 +48,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     engine: parsed.engine,
     customHost: parsed.customHost,
     credentialId: parsed.credentialId,
+    desktopOnly: parsed.desktopOnly,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

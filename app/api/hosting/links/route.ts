@@ -27,6 +27,10 @@ const postSchema = z.object({
   engine: z.enum(["local", "cloudflare"]).optional(),
   customHost: z.string().max(253).nullable().optional(),
   credentialId: z.string().max(64).nullable().optional(),
+  // TASK_175 — Desktop-only gate (premium-only). Accepted from anyone, but
+  // lib/hosting/links.ts silently drops `true` for non-premium minters, so a
+  // forged body from a free account mints a normal link.
+  desktopOnly: z.boolean().optional(),
 });
 
 export async function POST(request: Request) {
@@ -57,6 +61,7 @@ export async function POST(request: Request) {
     engine: parsed.engine,
     customHost: parsed.customHost,
     credentialId: parsed.credentialId,
+    desktopOnly: parsed.desktopOnly,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

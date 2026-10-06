@@ -86,5 +86,11 @@ export async function GET() {
     // prompt, never a Premium row that fails at deploy time.
     premium,
     platformReady: platformHealthy > 0,
+    // TASK_175 — the Desktop-only link gate is a premium-tier perk: the tab
+    // renders the checkbox only when this is true (same boolean that decides
+    // the premium engine options — no new fetch). Free users see today's mint
+    // UI byte-identical, and the server drops a forged `desktopOnly: true`
+    // for non-premium minters anyway.
+    desktopOnlyAllowed: premium,
   });
 }

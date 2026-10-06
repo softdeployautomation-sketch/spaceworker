@@ -1,4 +1,5 @@
 import { prisma } from "../prisma";
+import { isPremiumWithReversion } from "../premium";
 import { isTokenSlugSafe, isValidLinkTarget, isValidSlug, newShortLinkToken } from "./rules";
 import { resolveCapsForUser, type HostingResult } from "./files";
 import { mapIdentityFor, publishUserMap, teardownUserMap } from "./links-engine";
@@ -40,6 +41,10 @@ export interface HostedLinkView {
   publicUrl: string | null;
   deployStatus: string;
   deployError: string | null;
+  /** TASK_175 — Desktop-only gate (premium-only). True = mobile/tablet openers
+   *  of /r/<key> see the "open on your PC" interstitial; desktop passes
+   *  through. False/absent = today's redirect. */
+  desktopOnly: boolean;
 }
 
 type LinkRedirectRow = {
@@ -54,6 +59,7 @@ type LinkRedirectRow = {
   customHost: string | null;
   deployStatus: string;
   deployError: string | null;
+  desktopOnly?: boolean | null;
 };
 
 export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
@@ -76,6 +82,8 @@ export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
     // Cloudflare's message is already plain language and contains no secrets, but
     // it is only shown when something actually went wrong.
     deployError: row.deployError ?? null,
+    // TASK_175 — NULL reads back as off, so every pre-flag row behaves as today.
+    desktopOnly: row.desktopOnly === true,
   };
 }
 
@@ -103,6 +111,10 @@ export interface CreateHostedLinkInput {
   customHost?: string | null;
   /** A BYO HostingCredential id, or null to use the platform roster. */
   credentialId?: string | null;
+  /** TASK_175 — Desktop-only gate, premium-only. True requests the gate; it is
+   *  persisted ONLY when the minter is premium — anyone else's `true` is
+   *  silently dropped (same posture as an invalid slug: dropped, never a 400). */
+  desktopOnly?: boolean;
 }
 
 /**
@@ -126,6 +138,23 @@ function premiumGate(): HostingResult<never> {
 /** A hostname is a plain DNS label set — nothing that could smuggle a path or a scheme. */
 function isValidLinkHost(host: string): boolean {
   return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(host);
+}
+
+/**
+ * TASK_175 — the premium-only rule for the Desktop-only gate. True when the
+ * minter may SET the gate: an active premium tier. Uses the same
+ * isPremiumWithReversion semantics the files engine uses (grandfathered tier-5
+ * counts; an expired term does not). A "hosting" grant is NOT enough — the gate
+ * is a premium-tier perk, and the resolver needs no lookup because the flag's
+ * presence on the row IS the authority at open time.
+ */
+export async function canUseDesktopOnlyGate(userId: string): Promise<boolean> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { tier: true, premiumExpiresAt: true },
+  });
+  if (!user) return false;
+  return isPremiumWithReversion(user);
 }
 
 export async function createHostedLink(input: CreateHostedLinkInput): Promise<HostingResult<HostedLinkView>> {
@@ -210,6 +239,15 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
 
   const label = input.label?.trim() ? input.label.trim() : null;
 
+  // TASK_175 — premium-only at mint: a non-premium minter's `desktopOnly: true`
+  // is silently DROPPED (never a 400), so a forged body mints a normal link.
+  // Read AFTER the entitlement-heavy path above so the common mint pays one
+  // extra user lookup only when the flag is actually requested.
+  let desktopOnly: boolean | undefined;
+  if (input.desktopOnly === true) {
+    desktopOnly = (await canUseDesktopOnlyGate(input.userId)) ? true : undefined;
+  }
+
   // TASK_169 — auto tokens are SHORT (7 base64url chars, ≈42 bits: 64^7 ≈ 4.4e12
   // keys, so 100k links collide with p ≈ 1e-3). Two guards keep the namespaces
   // disjoint: rejection-sampling on isTokenSlugSafe (a raw draw is slug-shaped
@@ -241,6 +279,9 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
           credentialId: engine === "cloudflare" ? credentialId : null,
           customHost: engine === "cloudflare" ? customHost : null,
           deployStatus: engine === "cloudflare" ? "pending" : "live",
+          // TASK_175 — spread only when a premium minter asked: undefined leaves
+          // the column NULL (gate off) and keeps old Prisma clients working.
+          ...(desktopOnly === true ? { desktopOnly: true } : {}),
         },
       });
       row = created as LinkRedirectRow;
@@ -295,6 +336,9 @@ export interface UpdateHostedLinkInput {
   engine?: string;
   customHost?: string | null;
   credentialId?: string | null;
+  /** TASK_175 — same premium-only rule as create. `true` sets the gate (premium
+   *  only), `false` clears it (any owner), `undefined` leaves it untouched. */
+  desktopOnly?: boolean;
 }
 
 /** Re-label / re-target / re-slug a link. Never touches token or clickCount. */
@@ -372,6 +416,17 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
   }
   if (input.credentialId !== undefined) data.credentialId = input.credentialId ?? null;
 
+  // TASK_175 — same premium-only rule as create: `true` sets the gate only for a
+  // premium minter (silently dropped for anyone else), `false` clears it for any
+  // owner, `undefined` leaves it untouched.
+  if (input.desktopOnly !== undefined) {
+    if (input.desktopOnly === true) {
+      if (await canUseDesktopOnlyGate(input.userId)) data.desktopOnly = true;
+    } else {
+      data.desktopOnly = null;
+    }
+  }
+
   if (Object.keys(data).length === 0) return { ok: true, value: toHostedLinkView(row) };
 
   try {
@@ -381,7 +436,13 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
     // re-label must not cost a Cloudflare round trip, and a switch AWAY from
     // cloudflare must not leave this link in the script.
     const mapChanged =
-      data.target !== undefined || data.slug !== undefined || data.engine !== undefined || data.customHost !== undefined;
+      data.target !== undefined ||
+      data.slug !== undefined ||
+      data.engine !== undefined ||
+      data.customHost !== undefined ||
+      // TASK_175 — the gate flag lives in the Worker's DESKTOP set, so flipping
+      // it re-uploads the map exactly like a re-target.
+      data.desktopOnly !== undefined;
     if (mapChanged && nowCloudflare) {
       // TASK_155 P6c — leaving the host or the account re-publishes on the new one,
       // but the OLD route keeps serving the old target until it is removed. Because
@@ -497,6 +558,9 @@ export async function deleteHostedLink(userId: string, id: string): Promise<Host
 export interface ResolvedLink {
   id: string;
   target: string;
+  /** TASK_175 — Desktop-only gate. True = a mobile/tablet opener sees the
+   *  interstitial instead of the redirect. Absent/false = today's 302. */
+  desktopOnly: boolean;
 }
 
 /**
@@ -507,13 +571,88 @@ export interface ResolvedLink {
  * first is the intent-revealing choice). Nothing here is gated behind the master
  * switch: Task 30 campaign links must keep resolving even while Hosting is dark,
  * which is exactly why this differs from resolveServe (files).
+ *
+ * TASK_175 — the row's `desktopOnly` flag rides along (NULL = false), and the
+ * ROUTE decides HTML vs 302 after resolving. No tier check at open time: the
+ * flag's presence IS the authority (a premium-minter's link keeps gating even
+ * if their term later lapses), which also keeps the anonymous open path free
+ * of a user lookup.
  */
 export async function resolveLink(key: string): Promise<ResolvedLink | null> {
   const link =
     (await prisma.linkRedirect.findFirst({ where: { slug: key } })) ??
     (await prisma.linkRedirect.findUnique({ where: { token: key } }));
   if (!link) return null;
-  return { id: link.id, target: link.target };
+  return {
+    id: link.id,
+    target: link.target,
+    desktopOnly: (link as { desktopOnly?: boolean | null }).desktopOnly === true,
+  };
+}
+
+/**
+ * TASK_175 — server UA pre-check for the Desktop-only gate. True when the
+ * opener looks like a phone or tablet (mobile UA token, Android, iOS device,
+ * or iPadOS-13+ desktop-mode Safari which reports Macintosh + touch). This is
+ * the FIRST half of "server pre-check + client confirm": in-app browsers lie
+ * and tablets spoof desktop, so the interstitial page re-confirms with
+ * touch/maxTouchPoints/userAgentData.mobile and offers "Continue anyway".
+ */
+export function isMobileUserAgent(ua: string | null | undefined): boolean {
+  if (!ua) return false;
+  const s = ua.toLowerCase();
+  if (/mobi|mobile|android|iphone|ipod|phone|blackberry|bb10|mini|windows phone|iemobile|opera mobi|opera mini|fennec/.test(s)) {
+    return true;
+  }
+  // iPadOS 13+ reports "Macintosh" with "Mobile" in the UA when requesting the
+  // desktop site — still a touch tablet for gate purposes.
+  if (/ipad|tablet/.test(s)) return true;
+  if (s.includes("macintosh") && s.includes("mobile")) return true;
+  return false;
+}
+
+/**
+ * TASK_175 — the interstitial served to a mobile/tablet opener of a gated
+ * link: a small white modal ("open this on your PC") instead of the file, with
+ * a "Continue anyway" escape (?desktop=1) for a desktop opener the server
+ * misread. The page re-confirms on the CLIENT (touch points, UA-data mobile
+ * flag): a desktop browser that lands here with JS on auto-continues, and the
+ * no-JS fallback keeps the modal + the manual Continue link.
+ *
+ * `continueUrl` must be the same /r/<key> URL with `?desktop=1` — never the
+ * target itself, so the bypass still flows through the choke point (and the
+ * click still counts).
+ */
+export function desktopOnlyInterstitialHtml(continueUrl: string): string {
+  const esc = continueUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
+  // The same URL is embedded a second time inside the inline <script> (the
+  // client-confirm auto-continue). JSON.stringify alone is NOT enough there: a
+  // `</script>` sequence in the URL would close our script block. Escape `<`
+  // (and the HTML-significant chars for symmetry) so the page is inert.
+  const js = JSON.stringify(continueUrl).replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+  return (
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<meta name="robots" content="noindex">` +
+    `<title>Open this on your PC</title>` +
+    `<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f4f5;font-family:system-ui,-apple-system,sans-serif}` +
+    `.card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:28px 26px;max-width:380px;margin:16px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)}` +
+    `h1{font-size:18px;margin:0 0 8px;color:#18181b}p{font-size:14px;color:#52525b;line-height:1.5;margin:0 0 18px}` +
+    `a.btn{display:inline-block;background:#18181b;color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;text-decoration:none}` +
+    `.note{margin-top:12px;font-size:12px;color:#a1a1aa}</style></head><body>` +
+    `<div class="card" role="dialog" aria-modal="true" aria-labelledby="t175-title">` +
+    `<h1 id="t175-title">Open this on your PC</h1>` +
+    `<p>This link opens best on a desktop computer. Please open it on your PC to continue.</p>` +
+    `<a class="btn" id="t175-continue" href="${esc}">Continue anyway</a>` +
+    `<div class="note">On a desktop? Tap Continue anyway.</div>` +
+    `</div><script>(function(){try{` +
+    `var touch=(navigator.maxTouchPoints||0)>0||\"ontouchstart\" in window;` +
+    `var uaDataMobile=!!(navigator.userAgentData&&navigator.userAgentData.mobile);` +
+    `var ua=navigator.userAgent||\"\";` +
+    `var mobile=/mobi|mobile|android|iphone|ipod|phone/i.test(ua)&&!/macintosh/i.test(ua);` +
+    `if(!touch&&!uaDataMobile&&!mobile){window.location.replace(${js});}` +
+    `}catch(e){}})();</script></body></html>`
+  );
 }
 
 /** Best-effort click count. A failure must never break the redirect. */
