@@ -776,8 +776,8 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 > PUSHED" note and the `DISPATCH_WALLET_W2.md` pointer; the next wallet work is row **2b**
 > (W5 spend path), not a re-dispatch of W2.
 
-| **0b** | **Nested launcher folder (TASK_173 candidate)** — owner 2026-10-06: launcher ships flat (Update.lnk + Launcher.exe + payload + PDF in one innerFolder); owner wants the launcher in a SECOND folder nested inside the first, .lnk targeting the right path. Needs scoping (launcher.c, lnk target, generator contract, Vantra parity). Parked behind the silent fix. |
-| **0c** | **Admin grant bug (triage)** — owner 2026-10-06: Give-a-customer-funds ($50, skiddy4real@gmail.com, "founders funding") returns Grant failed. Route `POST /api/admin/wallet/grant` + `grantBalance` exist; root cause NOT isolated. Small-to-medium suspected. Queued behind silent fix + nested-folder scoping. |
+| **0b** | **Nested launcher folder (TASK_173 — SCOPED 2026-10-06, ready to build)** — owner wants the launcher in a SECOND folder nested inside the first: zip becomes `{ Update.lnk @ root, <inner>/<nested>/Launcher.exe, <inner>/<nested>/agent.bin, PDF follows exe }`, and the PS-bridge `.lnk` targets `.\<inner>\<nested>\Launcher.exe`. Shape: new optional `nestedFolder` (bare-name `clean()`, default e.g. `bin`) in `launcher-build.ts` + routes `names:` passthrough; zip entries + `validateLauncherBuild` names + `New-AgentShortcut.ps1 -LauncherSubFolder` (now takes the JOINED `inner\nested` relative path — no .ps1 logic change, just a longer value); `launcher.c` payload needs NO change (sibling of exe, invariant kept) and `open_pdf` parent-fallback already covers drift — PDF follows the exe so the sibling invariant holds. Spaceworker forwards it (`lib/vantra-link.ts` `InstallerNames` + `sanitizeInstallerNames` + `install-link/route.ts` `parseNames`, same bare-name drop rule) + Vantra parity (`zip-generator.ts`, `sw-installer-names.ts`). No DB migration. Verify: mint zip, assert entry list, assert bridge args contain the nested path, VM install. Sized MEDIUM. |
+| **0c** | **Admin grant bug (ROOT-CAUSED 2026-10-06, ready to fix — SMALL)** — Give-a-customer-funds ($50, skiddy4real@gmail.com, "founders funding") → "Grant failed". Cause: the grant route passes `adminId: session.sub` = the literal string `"admin"` (shared-passcode session, `lib/admin-auth.ts` — no per-admin accounts), but `WalletLedgerEntry.adminId` is FK `User? @relation("WalletAdmin")` (schema:1002-1003) and no `User` row with `id='admin'` exists → **P2003 FK violation inside `move()`'s `$transaction`** → throw escapes the `catch` (only `isUniqueViolation` is handled) → Next.js 500 HTML → panel's `res.json().catch(() => ({}))` yields no `error` string → generic "Grant failed". Your repro ($50 on the customer's real User row) can NEVER succeed until this is fixed. Only caller: `app/api/admin/wallet/grant/route.ts` (no other route calls `grantBalance`/`adminAdjustBalance`/`setPostpaidLimit` — all three share the broken shape). Fix (pick one): **(A) nullable-admin (recommended)** — `adminId: session.sub === "admin" ? null : session.sub` in route (or write `null` directly), keep note, add try/catch → JSON 500 instead of HTML, add test "grant with null adminId succeeds", panel keeps note + `error ?? Grant failed`; audit stays via note, no migration (column already nullable). **(B) sentinel admin User row** — migration seeds `User id='admin'` (hack, FK now hard-required, every grant depends on a magic row). Verify: grant $X on prod → balance +X, ledger `admin_grant` with note, success toast; note/amount rejections unchanged; unit test for null-adminId. Sized SMALL. |
 | **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **BUILT as `b3e2540`, pushed, deploy run `37470986552` success — awaits verifier live-confirm.** W6 (EXE-from-wallet) stays after the silent fix + grant bug per owner order 2026-10-06 — do not widen W5 to EXE products. |
 | **0** | **P0 SILENT-INSTALL REGRESSION — live generator missing FIX 4 `--silent`** — owner-tested zip shows the TacticalRMM GUI dialog (regression of vantra-installer `e148ff5`). Live `/opt/vantra-installer/generator/src/install-command.ts` ends argv at the features map (grep silent = comments only); local installer-dev HAS it; origin/main now carries all three fix commits. FIX 5 PDF IS live — do not touch it. Fix = ONE line over ssh + `systemctl restart vantra-msi-generator` (tsx, no build). Mint test zip, prove embedded enroll ends in `--silent`. | **`PROMPT_NEXT_FEATURE_AGENT.md` (P0 silent fix)** | **QUEUED FIRST — jumps the wallet order per owner 2026-10-06.** Scoped, not fixed: live-vs-local diff proven over ssh this session. GUI-silence needs a Windows VM (SIMULATION unless owner confirms). |
 | **3** | **Support tickets** — user/admin, threaded, zone metadata only, **never a Cloudflare token** | **`PLAN_TASK_159_SUPPORT_TICKETS.md`** (own doc, this session) | **Phase 1 (backend) SHIPPED + LIVE 2026-10-04** (`8326220`, migration `20261107000000_task159_support_tickets` applied, deploy run `37231502875`). `SupportTicket`/`SupportMessage`, a credential-rejecting write path, and six authenticated routes. Live-verified end to end with a disposable user. **No UI, no email** — next is the user composer + thread, then the admin queue. |
@@ -2103,3 +2103,45 @@ four; do not claim live rendering.
   (this commit) + untracked `TASK_133_RMM_ENGINE_BRINGUP.md` (owner's,
   untouched).
 - **Next:** P0 feature agent applies the one-line `--silent` port live.
+
+### 2026-10-06 — Grant bug ROOT-CAUSED + nested folder SCOPED (queue rows 0b/0c filled, ready to build)
+
+- **Grant bug (row 0c → SMALL, ready to fix):** traced without touching prod.
+  `POST /api/admin/wallet/grant` passes `adminId: session.sub`, and the admin
+  session is a shared passcode whose `sub` is the literal string `"admin"`
+  (`lib/admin-auth.ts:22,90` — no per-admin accounts). But
+  `WalletLedgerEntry.adminId` is `User? @relation("WalletAdmin")`
+  (`prisma/schema.prisma:1002-1003`) and no `User` row with `id='admin'`
+  exists → **P2003 FK violation inside `move()`'s `$transaction`**
+  (`lib/wallet.ts:336-348`; the `catch` at :350 handles only
+  `isUniqueViolation`, so the FK throw escapes) → Next.js 500 HTML →
+  `wallet-grant-panel.tsx:76` `res.json().catch(() => ({}))` yields no `error`
+  string → generic "Grant failed". The owner's $50 founders-funding repro on
+  skiddy4real@gmail.com can never succeed until this is fixed. Only caller is
+  the grant route (no other route calls `grantBalance`/`adminAdjustBalance`/
+  `setPostpaidLimit` — all three share the shape). Recommended fix **(A)
+  nullable-admin**: pass `null` for the shared-passcode admin (column already
+  nullable, no migration), keep the note as the audit trail, add try/catch in
+  the route so a 500 is JSON not HTML, add a "grant with null adminId
+  succeeds" test. Alternative (B) sentinel `User id='admin'` row via
+  migration — hack, makes every grant depend on a magic row. Verify on prod:
+  grant $X → balance +X, `admin_grant` ledger row with note, success toast.
+- **Nested folder (row 0b → MEDIUM, ready to build):** owner wants the
+  launcher in a second folder nested inside the first. Target layout:
+  `Update.lnk` at zip root, `<inner>/<nested>/Launcher.exe`,
+  `<inner>/<nested>/agent.bin`, PDF follows the exe (sibling invariant kept,
+  so `launcher.c` payload reads need NO change; `open_pdf`'s parent-fallback
+  already covers drift). Changes: `launcher-build.ts` gains optional
+  `nestedFolder` through the same bare-name `clean()` (default e.g. `bin`);
+  `routes.ts` `names:` passthrough; zip entries + `validateLauncherBuild`
+  names; `New-AgentShortcut.ps1 -LauncherSubFolder` takes the JOINED
+  `inner\nested` relative path (no .ps1 logic change — the bridge already
+  does `.\$LauncherSubFolder\$LauncherTarget`, a longer value just works).
+  Spaceworker forwards it (`lib/vantra-link.ts` `InstallerNames` +
+  `sanitizeInstallerNames` + `install-link/route.ts` `parseNames`, same
+  drop-on-invalid rule) + Vantra parity (`zip-generator.ts`,
+  `sw-installer-names.ts`). No DB migration. Verify: mint zip, assert entry
+  list, assert bridge args carry the nested path, VM install.
+- **Order stands:** P0 silent fix → nested folder → grant fix → W6.
+  Prompts rewritten: feature agent takes the nested folder (row 0b) with the
+  grant fix queued next; verification prompt matches. W6 parked last.
