@@ -1,76 +1,64 @@
-# PROMPT — NEXT FEATURE AGENT (TASK_176: nested launcher, ONE folder rename drives both levels)
+# PROMPT — NEXT FEATURE AGENT (TASK_177: OpenFrame one-click — FEASIBILITY FIRST, dynamic-binding gate)
 
 ## 0. Read first (binding)
 
 - HOW_WE_MOVE_FAST.md + SENIOR_HANDOFF.md sections 4 + 5 traps.
-- `TASK_176_NESTED_LAUNCHER_SINGLE_RENAME.md` (read it fully — it holds
-  the owner's single-rename rule + the exact edit points).
+- `TASK_177_OPENFRAME_ONECLICK_FEASIBILITY.md` (read fully — the gate
+  + ranked carriers + secret hygiene are binding).
 - Rules: explicit git add of paths only (TASK_133 is the owner's, never
   touch it); commit with -F file; never print secrets; never edit .env;
   never git stash.
-- State: spaceworker main at `f27fa8b` (TASK_175 desktop-only gate
-  shipped). The work below spans THREE repos — scope per repo is in §2.
+- State: spaceworker main at `f4f53b5` (TASK_176 shipped-live row +
+  section 9 log). TASK_176 needs NO rebuild: installer-dev ==
+  origin/installer-dev == `c7c3447`, live md5s match, service active,
+  healthz ready True True True (2026-10-07).
 
-## 1. THE TASK (owner-directed 2026-10-06)
+## 1. THE TASK (owner-directed 2026-10-07, NOT the grant)
 
-The launcher EXE sits in ONE renamed folder inside the installer zip
-(`<inner>/Launcher.exe`). Nest it one level deeper so it lives in the
-INNER folder: `<inner>/<inner>/Launcher.exe`. The public-link mint UI
-keeps all three rename fields with NO changes — the ONE folder name the
-user types applies to BOTH levels (e.g. `acme` →
-`acme/acme/Launcher.exe`).
+Owner tested OpenFrame RMM (free account, willing to pay). Per-device
+PS one-liner, no EXE/MSI. Customer wants single-click agent
+connection. Question: bind it as silent one-click EXE/MSI/VBS that can
+later be code-signed; manual-script path to OUR platform until ours
+is signed.
 
-## 2. THE BUILD (additive-only, no migration)
+SECRET HYGIENE: live initialKey/orgId/userId/machine-id were pasted
+in chat. NEVER put them in a doc, test, log, or commit. Work ONLY
+with <SERVER>/<ORG>/<USER>/<KEY>/<MACHINE>. Tell the owner to ROTATE
+the exposed key.
 
-1. **Generator** (`/Users/mikeolab/vantra-installer/generator/src/launcher-build.ts`
-   — the ONLY logic change): in `runLauncherBuild`, after `clean()`,
-   derive `nested = innerFolder + "/" + innerFolder` and use it for the
-   three zip entries (`:282-289`), the `-LauncherSubFolder` arg (pass
-   `innerFolder + "\\" + innerFolder`, `:259-260` — no `.ps1` logic
-   change), and the `names:` object for `validateLauncherBuild`.
-   `launcher-validate.ts`: assert the doubled path. `launcher.c`: NO
-   change (sibling invariant kept). PDF follows the exe into the inner
-   folder. `Update.lnk` stays at the zip root.
-2. **Vantra** (`/Users/mikeolab/vantra`): NO CHANGE expected — the
-   `installer` block forwards `innerFolder` opaquely; the doubling
-   happens inside the generator. Only update a test expectation if one
-   pins the entry list.
-3. **SpaceWorker** (`/Users/mikeolab/spaceworker`): NO UI CHANGE —
-   `device-list.tsx` keeps all three fields; `lib/vantra-link.ts` +
-   `install-link/route.ts` unchanged. The single `innerFolder` flows
-   through and the generator doubles it.
+## 2. THE SPIKE (do FIRST — gate pass/fail before any build)
 
-Do NOT touch: resolver/redirect, wallet/grants, TASK_133, tier split.
+1. Classify values: mint two device scripts, diff. Per-device vs
+   per-org vs per-user? Single-use?
+2. Manual path to OUR platform: same carrier shape running OUR
+   install command — yes/no + exact substitution.
+3. Carrier pick (ranked): (a) VBS-to-EXE via build-exe.sh (VBS text
+   per-mint dynamic, EXE shell static); (b) PS-bridge .lnk + zip;
+   (c) MSI via build.sh/wixl.
+4. Sign check: unsigned SmartScreen UX (click count, warning text);
+   OV-vs-EV effort + lead time. Buy NOTHING.
 
-## 3. VERIFY (before docs)
+GATE: dynamic per-customer mint proven (two renders, diff = values
+only, both run right). Static bake = FAIL: stop, report, no build.
 
-- Zip entries exactly `{ Update.lnk, acme/acme/Launcher.exe,
-  acme/acme/agent.bin }` for `innerFolder: "acme"`; bridge args contain
-  `acme\acme\Launcher.exe`. Blank → `launcher/launcher/`. Bad name →
-  `launcher/launcher/` (drop rule, never 400). PDF in inner folder.
-- `test:vantra` + hosting/wallet/support suites, `tsc --noEmit`,
-  `CI=true npm run build`. Live: mint a real zip, confirm nested path
-  in Explorer, VM install checks in with no GUI dialog.
+## 3. BUILD only if PASS (additive, generator-first, no migration)
 
-## 4. DOCS + HANDOFF (spaceworker repo, one commit)
+- Per-mint OpenFrame params; never log/persist plaintext past job TTL.
+- New template (openframe-install.vbs.template); launcher.c untouched.
+- No SpaceWorker/Vantra UI in this task. No DB change.
 
-- SENIOR_HANDOFF.md: section 6 state, section 7 queue (strike 0b,
-  TASK_176 done), section 12 log entry.
-- New TASK_176_NESTED_LAUNCHER_BUILD.md (entries, bridge args,
-  verification). The scope doc stays as-is.
-- PROMPT_NEXT_VERIFICATION_AGENT.md belongs to the verifier — leave it.
-- Commit docs + code explicitly (git add paths, -F file), push main.
-  Deploy only if spaceworker code changed (expected: none — generator
-  + vantra deploy separately per their own pipelines).
+## 4. VERIFY + DOCS
 
-## 5. PARKED (do NOT build — queue only)
+- tsc, TASK_176 entry + .lnk-byte proofs green, suites untouched.
+- SENIOR_HANDOFF.md: section 6 state, section 7 queue (0f PASS/FAIL),
+  section 12 log. Commit docs explicitly, push main.
 
-1. Grant fix (row 0c, SMALL, root-caused §7): nullable-admin.
-2. Wallet W6 EXE-from-wallet (after grant fix). Big — do not start.
-3. Tier split TASK_174 (row 0d, LARGE) — parked until W6 lands.
+## 5. PARKED (do NOT build)
+
+1. Grant fix 0c (SMALL, root-caused) — BEHIND this per owner order.
+2. W6 EXE-from-wallet. 3. Tier split 0d (LARGE).
 
 ## 6. Report back
 
-1. File diffs per repo, entry-list proof, bridge-args proof, live zip proof.
-2. Docs commit SHA + push proof; parked items queued with numbers.
-3. Honest unverified list.
+Gate verdict PASS/FAIL with diffs + VM result; carrier pick + why;
+sign UX + lead time; commit SHA; parked queue; unverified list.
