@@ -84,6 +84,22 @@ export interface VantraLinkView {
   // row (TASK_121 §6 item 4, unchanged by this task).
   installerKind: "zip" | "exe" | null;
   installerNames: InstallerNames | null;
+  // TASK_171 — every public mint this user ever made, newest first. Each entry
+  // carries the wrapper URL, its expiry (the panel's live countdown reads it),
+  // its download count, and the artifact kind — but NEVER the server-only
+  // installerUrl or the token hash (same rule as the view's other fields).
+  installLinks: InstallLinkHistoryItem[];
+}
+
+/** One row of TASK_171 public-link history, as the panel renders it. */
+export interface InstallLinkHistoryItem {
+  id: string;
+  installUrl: string;
+  installTokenExpiresAt: Date;
+  downloadCount: number;
+  installerKind: "zip" | "exe" | null;
+  installerNames: InstallerNames | null;
+  createdAt: Date;
 }
 
 function toView(
@@ -96,6 +112,7 @@ function toView(
     installerKind?: string | null; installerNamesJson?: string | null;
   },
   privateAllowed = false,
+  installLinks: InstallLinkHistoryItem[] = [],
 ): VantraLinkView {
   return {
     id: link.id,
@@ -113,7 +130,50 @@ function toView(
     privatePsExpiresAt: link.privatePsExpiresAt,
     installerKind: link.installerKind === "zip" || link.installerKind === "exe" ? link.installerKind : null,
     installerNames: parseStoredInstallerNames(link.installerNamesJson ?? null) ?? null,
+    installLinks,
   };
+}
+
+/**
+ * TASK_171 — the public mint history for a user, newest first, as the panel
+ * renders it. Server-only `installerUrl` and the token hash are selected OUT
+ * (same rule as `toView`): the rows carry what the panel needs — URL, expiry,
+ * count, kind — and nothing that could mint a download.
+ *
+ * Revoked users (and unknown users) get `[]`: revoke deletes nothing, but the
+ * rows are inert history, not live surface. A missing `vantraInstallLink`
+ * delegate (client generated before this migration) reads as empty history,
+ * never a throw — the current link keeps working.
+ */
+export async function listInstallLinks(userId: string): Promise<InstallLinkHistoryItem[]> {
+  const link = await db.vantraLink.findUnique({ where: { userId }, select: { status: true } });
+  if (!link || link.status === "revoked") return [];
+  const rows = await db.vantraInstallLink.findMany({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true, publicUrl: true, expiresAt: true, downloadCount: true,
+      installerKind: true, installerNamesJson: true, createdAt: true,
+    },
+  });
+  return rows.map((row) => ({
+    id: row.id,
+    installUrl: row.publicUrl,
+    installTokenExpiresAt: row.expiresAt,
+    downloadCount: typeof row.downloadCount === "number" ? row.downloadCount : 0,
+    installerKind: row.installerKind === "zip" || row.installerKind === "exe" ? row.installerKind : null,
+    installerNames: parseStoredInstallerNames(row.installerNamesJson) ?? null,
+    createdAt: row.createdAt,
+  }));
+}
+
+/** `toView` plus the user's mint history — the shape both GET surfaces return. */
+async function toViewWithHistory(
+  link: Parameters<typeof toView>[0],
+  privateAllowed: boolean,
+  userId: string,
+): Promise<VantraLinkView> {
+  return toView(link, privateAllowed, await listInstallLinks(userId));
 }
 
 async function isPrivateAllowed(userId: string): Promise<boolean> {
@@ -128,7 +188,7 @@ async function isPrivateAllowed(userId: string): Promise<boolean> {
 export async function getVantraLinkView(userId: string): Promise<VantraLinkView | null> {
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") return null;
-  return toView(link, await isPrivateAllowed(userId));
+  return toViewWithHistory(link, await isPrivateAllowed(userId), userId);
 }
 
 /**
@@ -140,7 +200,7 @@ export async function getVantraLinkView(userId: string): Promise<VantraLinkView 
 export async function ensureVantraLink(userId: string): Promise<VantraLinkView> {
   const existing = await db.vantraLink.findUnique({ where: { userId } });
   if (existing && existing.status !== "error") {
-    return toView(existing, await isPrivateAllowed(userId));
+    return toViewWithHistory(existing, await isPrivateAllowed(userId), userId);
   }
 
   const decision = await hasEntitlement(userId, "assistant");
@@ -179,7 +239,7 @@ export async function ensureVantraLink(userId: string): Promise<VantraLinkView> 
     initiatingChannel: "system",
     detail: { orgId: link.orgId, orgName: link.orgName },
   });
-  return toView(link, await isPrivateAllowed(userId));
+  return toViewWithHistory(link, await isPrivateAllowed(userId), userId);
 }
 
 /**
@@ -210,7 +270,7 @@ export async function ensurePrivateOrg(userId: string): Promise<VantraLinkView> 
     status: "executed",
     detail: { orgId: provisioned.org.id },
   });
-  return toView(updated, true);
+  return toViewWithHistory(updated, true, userId);
 }
 
 function sha256(value: string): string {
@@ -516,7 +576,7 @@ export async function mintInstallLink(
       status: "executed",
       detail: { orgId: privOrgId },
     });
-    return toView(updated, true);
+    return toViewWithHistory(updated, true, userId);
   }
 
   // Task 121 — the public artifact. `installer.body` is `{}` when the caller
@@ -538,12 +598,15 @@ export async function mintInstallLink(
   // (PIN callback, campaign links, licence links, the setup-bundle base,
   // ...) are untouched and stay on appBaseUrl.
   const publicUrl = env.publicLinkBaseUrl;
+  const tokenHash = sha256(token);
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  const installUrl = `${publicUrl}/link/vantra/${token}`;
   const updated = await db.vantraLink.update({
     where: { id: link.id },
     data: {
-      installTokenHash: sha256(token),
-      installTokenExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
-      installUrl: `${publicUrl}/link/vantra/${token}`,
+      installTokenHash: tokenHash,
+      installTokenExpiresAt: expiresAt,
+      installUrl,
       // Task 121 (§4a) — remember what was minted so `resolveInstallToken`
       // can redirect instead of calling Vantra again. `installerUrl` is the raw
       // generator/agent URL: SERVER-ONLY — it is never put in a view model, an
@@ -555,13 +618,32 @@ export async function mintInstallLink(
       lastError: null,
     },
   });
+  // TASK_171 — the same mint, as its own history row. The VantraLink update
+  // above stays the CURRENT-link pointer (unchanged shape); this row is what
+  // survives the NEXT mint. Same token hash / URL / expiry values, the same
+  // server-only installerUrl, count starting at 0. Best-effort: a history
+  // write must never fail a mint that already succeeded (the pointer update
+  // above is the source of truth the panel already reads).
+  await db.vantraInstallLink.create({
+    data: {
+      userId,
+      tokenHash,
+      publicUrl: installUrl,
+      expiresAt,
+      installerUrl: minted.downloadUrl,
+      installerKind: installer.names ? "zip" : "exe",
+      installerNamesJson: installer.names ? JSON.stringify(installer.names) : null,
+    },
+  }).catch(() => {
+    // history bookkeeping only — the mint itself already landed above
+  });
   await recordAgentActionAudit({
     userId,
     action: "vantra_install_link_minted",
     status: "executed",
     detail: { orgId: link.orgId },
   });
-  return toView(updated, await isPrivateAllowed(userId));
+  return toViewWithHistory(updated, await isPrivateAllowed(userId), userId);
 }
 
 /**
@@ -625,6 +707,34 @@ export async function mintPublicPsCommand(
  * expiry check below are deliberately unchanged.
  */
 export async function resolveInstallToken(token: string): Promise<string | null> {
+  // TASK_171 — the per-mint row is the primary lookup: it carries the expiry,
+  // the server-only artifact URL for THAT token, and the download counter.
+  // Unknown hash ⇒ null (counts nothing — there is no row to count on).
+  // Expired ⇒ null (counts nothing). Revoked ⇒ null (the VantraLink status
+  // check below): revoke deletes no history rows, so they must not resolve.
+  const hash = sha256(token);
+  const mint = await db.vantraInstallLink.findUnique({ where: { tokenHash: hash } }).catch(() => null);
+  if (mint) {
+    if (mint.expiresAt.getTime() < Date.now()) return null;
+    const owner = await db.vantraLink.findUnique({ where: { userId: mint.userId }, select: { status: true } });
+    if (!owner || owner.status === "revoked") return null;
+    if (mint.installerUrl) {
+      // One open = one download, best-effort: a count write must never cost
+      // the caller the artifact (same posture as the legacy branch below).
+      await db.vantraInstallLink.update({
+        where: { id: mint.id },
+        data: { downloadCount: { increment: 1 } },
+      }).catch(() => {
+        // best-effort bookkeeping — a failed write must never cost the caller
+        // the artifact that was already minted for them
+      });
+      return mint.installerUrl;
+    }
+    // History row without a stored URL (should not happen — every TASK_171
+    // mint writes one — but a NULL is possible if the column was cleared):
+    // fall through to the legacy per-user path, which re-mints with the
+    // remembered names exactly once.
+  }
   const link = await db.vantraLink.findFirst({
     where: { installTokenHash: sha256(token), status: { not: "revoked" } },
     select: {

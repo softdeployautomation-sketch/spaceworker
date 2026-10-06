@@ -164,6 +164,10 @@ model User {
   userEntitlements         UserEntitlement[]
   agentActionAudits        AgentActionAudit[]
   vantraLink               VantraLink?
+  // TASK_171 — every public install-link mint gets its own row (the VantraLink
+  // row keeps pointing at the CURRENT link only), so re-minting never destroys
+  // history. Read via listInstallLinks (revoked users get nothing).
+  vantraInstallLinks       VantraInstallLink[]
   // Task 95 — Devices v2 tool parity.
   deviceQueuedCommands     DeviceQueuedCommand[]
   devicePinRequests        DevicePinRequest[]
@@ -2213,6 +2217,46 @@ model VantraLink {
   @@index([orgId])
   @@index([status])
 }
+// ============================================================================
+// TASK_171 — public install-link history (one row per mint).
+// ----------------------------------------------------------------------------
+// Minting a new public link used to OVERWRITE VantraLink.installTokenHash /
+// installTokenExpiresAt / installUrl / installerUrl, so every "New link"
+// destroyed the previous one. Now each mint ALSO writes one row here and the
+// VantraLink row stays what it always was: the pointer at the CURRENT link.
+//   tokenHash         sha256(token) — UNIQUE. Raw tokens only ever exist in
+//                     the browser at click time; the hash-only rule is unchanged.
+//   publicUrl         the /link/vantra/<token> wrapper URL shown in the panel.
+//   expiresAt         +72h at mint; the panel's live countdown reads this.
+//   installerUrl      the raw generator/agent download URL. SERVER-ONLY, like
+//                     VantraLink.installerUrl: read only by resolveInstallToken,
+//                     never in a view/response/log/audit. Per-mint (not just on
+//                     the current row) so opening an OLD link redirects to the
+//                     artifact minted for THAT token instead of re-minting.
+//   downloadCount     incremented once per successful open (best-effort — a
+//                     count write never breaks the 302). Expired/unknown opens
+//                     count nothing (there is no row to count on).
+// Revoke deletes nothing: a revoked user resolves nothing (resolve checks the
+// VantraLink status) and lists nothing (listInstallLinks returns []), so the
+// rows are inert history, not live surface.
+// ============================================================================
+model VantraInstallLink {
+  id                 String   @id @default(cuid())
+  userId             String
+  user               User     @relation(fields: [userId], references: [id])
+  tokenHash          String   @unique
+  publicUrl          String
+  expiresAt          DateTime
+  installerUrl       String?
+  installerKind      String?
+  installerNamesJson String?
+  downloadCount      Int      @default(0)
+  createdAt          DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// ============================================================================
 
 // ============================================================================
 // Task 95 — Devices v2 tool parity (remote control / maintenance / PIN /

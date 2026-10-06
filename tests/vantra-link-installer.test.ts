@@ -103,6 +103,25 @@ interface RouteMintCall {
 let routeMintCalls: RouteMintCall[];
 let mintError: string | null;
 
+// TASK_171 — one per-mint history row, as the fake delegate holds it.
+interface MintRow {
+  id: string;
+  userId: string;
+  tokenHash: string;
+  publicUrl: string;
+  expiresAt: Date;
+  installerUrl: string | null;
+  installerKind: string | null;
+  installerNamesJson: string | null;
+  downloadCount: number;
+  createdAt: Date;
+}
+
+let mintRows: MintRow[];
+let mintCreates: Array<Record<string, unknown>>;
+let mintUpdates: Array<Record<string, unknown>>;
+let mintCreateError: unknown = null;
+
 beforeEach(() => {
   row = {
     id: "link-t121",
@@ -136,6 +155,10 @@ beforeEach(() => {
   onboardingUpdates = [];
   onboardingCreateError = null;
   devicesResponse = { ok: true, orgTier: "public", devices: [] };
+  mintRows = [];
+  mintCreates = [];
+  mintUpdates = [];
+  mintCreateError = null;
 });
 
 /** Honours Prisma's `select` so a forgotten column cannot hide behind the fake. */
@@ -178,6 +201,47 @@ const fakeDb = {
       dbUpdates.push({ ...patch });
       Object.assign(row, patch);
       return { ...row };
+    },
+  },
+  // TASK_171 — the per-mint history delegate. findMany honours `select`,
+  // newest-first ordering, and the revoked/unknown-user ⇒ [] rule (the module
+  // checks the VantraLink status first, so the fake only stores rows).
+  vantraInstallLink: {
+    findUnique: async ({ where }: DbArgs) => {
+      return mintRows.find((m) => m.tokenHash === (where as Record<string, unknown> | undefined)?.tokenHash) ?? null;
+    },
+    findMany: async ({ select }: DbArgs) => {
+      const ordered = [...mintRows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+      return ordered.map((m) => project(m as unknown as Record<string, unknown>, select));
+    },
+    create: async ({ data }: DbArgs) => {
+      if (mintCreateError) throw mintCreateError;
+      const patch = { ...(data as Record<string, unknown>) };
+      mintCreates.push({ ...patch });
+      const created: MintRow = {
+        id: `mint-${mintRows.length + 1}`,
+        userId: String(patch.userId ?? USER_ID),
+        tokenHash: String(patch.tokenHash ?? ""),
+        publicUrl: String(patch.publicUrl ?? ""),
+        expiresAt: patch.expiresAt as Date,
+        installerUrl: (patch.installerUrl as string | null) ?? null,
+        installerKind: (patch.installerKind as string | null) ?? null,
+        installerNamesJson: (patch.installerNamesJson as string | null) ?? null,
+        downloadCount: 0,
+        createdAt: new Date(Date.now() + mintRows.length),
+      };
+      mintRows.push(created);
+      return { ...created };
+    },
+    update: async ({ where, data }: DbArgs) => {
+      const target = mintRows.find((m) => m.id === (where as Record<string, unknown> | undefined)?.id);
+      if (!target) throw new Error("mint_not_found");
+      const patch = { ...(data as Record<string, unknown>) };
+      mintUpdates.push({ ...patch });
+      const inc = patch.downloadCount as { increment?: number } | undefined;
+      if (inc && typeof inc.increment === "number") target.downloadCount += inc.increment;
+      else Object.assign(target, patch);
+      return { ...target };
     },
   },
   // TASK_128 — enough of the Device + DeviceOnboarding surface for syncDevices'
@@ -1102,6 +1166,150 @@ test("a private-org sighting releases the row instead of leaving it counting", a
 
   const released = onboardingUpdates.at(-1);
   assert.equal(released?.status, "released", "observed private ⇒ the row is released");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_171 — public install-link history: all mints, expiry, downloads.
+// ---------------------------------------------------------------------------
+
+/** The wrapper URL of the most recent mint (what the panel shows as current). */
+function lastMintUrl(): string {
+  assert.ok(mintCreates.length > 0, "expected at least one history write");
+  return String(mintCreates.at(-1)?.publicUrl ?? "");
+}
+
+/** The raw token of the most recent mint, recovered from its wrapper URL. */
+function lastMintToken(): string {
+  const url = lastMintUrl();
+  const token = url.split("/link/vantra/").at(-1) ?? "";
+  assert.match(token, /^[a-f0-9]{48}$/, "the history row must carry the real wrapper URL");
+  return token;
+}
+
+test("TASK_171: a public mint writes its own history row and the view lists it", async () => {
+  const view = await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" });
+  assert.equal(mintCreates.length, 1, "one mint ⇒ one history row");
+  const created = mintCreates[0];
+  assert.equal(created.userId, USER_ID);
+  assert.match(String(created.tokenHash ?? ""), /^[a-f0-9]{64}$/, "hash-only, never the raw token");
+  assert.equal(String(created.publicUrl ?? "").startsWith("https://spaceworker.test/link/vantra/"), true);
+  assert.ok(created.expiresAt instanceof Date, "the countdown reads expiresAt");
+  assert.equal(created.installerUrl, RAW_URL, "the per-mint artifact URL is remembered");
+  assert.equal(created.installerKind, "zip");
+  assert.deepEqual(JSON.parse(String(created.installerNamesJson ?? "null")), { zipName: "TaxReturn.zip" });
+  // The pointer row and the history row agree (same token, same URL, same expiry).
+  assert.equal(created.tokenHash, row.installTokenHash);
+  assert.equal(created.publicUrl, row.installUrl);
+  assert.deepEqual(created.expiresAt, row.installTokenExpiresAt);
+  // ...and the view carries the row the panel renders (newest first).
+  assert.equal(view.installLinks.length, 1);
+  assert.equal(view.installLinks[0].installUrl, row.installUrl);
+  assert.deepEqual(view.installLinks[0].installTokenExpiresAt, row.installTokenExpiresAt);
+  assert.equal(view.installLinks[0].downloadCount, 0);
+  assert.equal(view.installLinks[0].installerKind, "zip");
+});
+
+test("TASK_171: history survives re-mint — 2 mints ⇒ 2 rows, current pointer moves", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const firstUrl = lastMintUrl();
+  await mintInstallLink(USER_ID, "public", {});
+  assert.equal(mintCreates.length, 2, "the second mint must not destroy the first row");
+  assert.equal(mintRows.length, 2);
+  assert.notEqual(mintCreates[0].publicUrl, mintCreates[1].publicUrl, "each mint gets its own token");
+  assert.equal(row.installUrl, mintCreates[1].publicUrl, "the pointer moves to the newest mint");
+  const view = await getVantraLinkView(USER_ID);
+  assert.equal(view?.installLinks.length, 2, "the panel lists ALL of the user's links");
+  assert.equal(view?.installLinks[0].installUrl, mintCreates[1].publicUrl, "newest first");
+  assert.equal(view?.installLinks[1].installUrl, firstUrl);
+});
+
+test("TASK_171: opening a link 302s to its own artifact and counts one download", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  assert.equal(mintRows[0].downloadCount, 0);
+  // No outbound call: the history row already holds the artifact URL.
+  const callsBefore = fetches.length;
+  assert.equal(await resolveInstallToken(token), RAW_URL);
+  assert.equal(mintRows[0].downloadCount, 1, "one open = one download");
+  assert.equal(fetches.length, callsBefore, "a stored URL never re-mints on open");
+  assert.equal(await resolveInstallToken(token), RAW_URL);
+  assert.equal(mintRows[0].downloadCount, 2, "each open counts");
+});
+
+test("TASK_171: an OLD link still opens after a re-mint (history rows stay live)", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const firstToken = lastMintToken();
+  await mintInstallLink(USER_ID, "public", {});
+  assert.equal(await resolveInstallToken(firstToken), RAW_URL, "the old token resolves to its own artifact");
+  assert.equal(mintRows[0].downloadCount, 1);
+  assert.equal(mintRows[1].downloadCount, 0, "the new link counts only its own opens");
+});
+
+test("TASK_171: expired and unknown opens return null and count nothing", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  mintRows[0].expiresAt = new Date(Date.now() - 1000);
+  assert.equal(await resolveInstallToken(token), null);
+  assert.equal(mintRows[0].downloadCount, 0, "an expired open counts nothing");
+  assert.equal(mintUpdates.length, 0);
+  assert.equal(await resolveInstallToken("f".repeat(48)), null, "unknown token ⇒ null");
+  assert.equal(fetches.length, 1, "only the mint called out — no branch re-mints for a dead link");
+});
+
+test("TASK_171: a revoked user resolves nothing and lists nothing (rows are inert)", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  row.status = "revoked";
+  assert.equal(await resolveInstallToken(token), null, "revoke deletes nothing but resolves nothing");
+  assert.equal(mintRows[0].downloadCount, 0);
+  assert.equal(await getVantraLinkView(USER_ID), null);
+});
+
+test("TASK_171: a count write that fails still returns the artifact", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  const original = fakeDb.vantraInstallLink.update;
+  fakeDb.vantraInstallLink.update = async () => {
+    throw new Error("db down");
+  };
+  try {
+    assert.equal(await resolveInstallToken(token), RAW_URL, "bookkeeping must never cost the artifact");
+    assert.equal(mintRows[0].downloadCount, 0, "the failed increment left no count behind");
+  } finally {
+    fakeDb.vantraInstallLink.update = original;
+  }
+});
+
+test("TASK_171: a history write that fails still mints (pointer is the source of truth)", async () => {
+  mintCreateError = new Error("db down");
+  const view = await mintInstallLink(USER_ID, "public");
+  assert.ok(row.installUrl, "the current-link pointer still landed");
+  assert.equal(view.installUrl, row.installUrl);
+  assert.deepEqual(view.installLinks, [], "no history row ⇒ empty list, never a throw");
+});
+
+test("TASK_171: the view never carries installerUrl or a token hash", async () => {
+  const view = await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" });
+  const serialised = JSON.stringify(view);
+  assert.ok(!serialised.includes(RAW_URL), "the raw download URL must not be serialised");
+  assert.ok(!serialised.includes("installerUrl"), "not even the key name");
+  assert.ok(!serialised.includes("tokenHash"), "nor the hash");
+  assert.ok(!("installerUrl" in view.installLinks[0]), "history rows are URL + expiry + count + kind only");
+});
+
+test("TASK_171 countdown: live text counts down, then says expired", async () => {
+  const { formatInstallLinkCountdown, formatDownloadCount } = (await import(
+    "../lib/install-link-countdown"
+  )) as typeof import("../lib/install-link-countdown");
+  const now = Date.now();
+  assert.equal(formatInstallLinkCountdown(now + 30_000, now), "expires in <1m");
+  assert.equal(formatInstallLinkCountdown(now + 90 * 60_000, now), "expires in 1h 30m");
+  assert.equal(formatInstallLinkCountdown(now + 72 * 3_600_000, now), "expires in 72h 00m");
+  assert.equal(formatInstallLinkCountdown(now - 1_000, now), "expired");
+  assert.equal(formatInstallLinkCountdown(now, now), "expired");
+  assert.equal(formatDownloadCount(0), "No downloads yet");
+  assert.equal(formatDownloadCount(1), "1 download");
+  assert.equal(formatDownloadCount(7), "7 downloads");
 });
 
 

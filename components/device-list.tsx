@@ -28,6 +28,10 @@ import {
   onboardingView,
   orderOnboardingQueue,
 } from "@/lib/device-onboarding";
+import {
+  formatDownloadCount,
+  formatInstallLinkCountdown,
+} from "@/lib/install-link-countdown";
 
 // Task 95 — Devices v2 list, ScreenConnect-style session grid. ONE device =
 // ONE row with ONE status (from /api/devices only, derived from OUR heartbeat
@@ -67,6 +71,19 @@ type DeviceRow = {
 // in lib/vantra-link.ts (declared here instead of imported so this client
 // component never pulls in the server-only module).
 type InstallerNames = { zipName?: string; updateLinkName?: string; innerFolder?: string };
+
+// TASK_171 — one row of public-link history, as the view carries it. Mirrors
+// `InstallLinkHistoryItem` in lib/vantra-link.ts (declared here instead of
+// imported so this client component never pulls in the server-only module).
+type InstallLinkHistoryItem = {
+  id: string;
+  installUrl: string;
+  installTokenExpiresAt: string;
+  downloadCount: number;
+  installerKind: "zip" | "exe" | null;
+  installerNames: InstallerNames | null;
+  createdAt: string;
+};
 
 // TASK_154 N2 — `relTime` / `statusWord` / the idle chip moved to the ONE shared,
 // client-safe helper (`lib/device-idle.ts`) so this list and the device console
@@ -137,6 +154,10 @@ export function DeviceList() {
     // drop to the exe branch being indistinguishable from a real ZIP.
     installerKind: "zip" | "exe" | null;
     installerNames: InstallerNames | null;
+    // TASK_171 — every public mint this user ever made, newest first (URL +
+    // expiry + download count per row). Never carries the server-only
+    // installerUrl — that stays in lib/vantra-link.ts.
+    installLinks: InstallLinkHistoryItem[];
   } | null>(null);
   const [psRevealed, setPsRevealed] = useState(false);
   // TASK_128 §15 — the PUBLIC tier's PowerShell command (owner request: the
@@ -185,6 +206,12 @@ export function DeviceList() {
                   ? data.link.installerKind
                   : null,
               installerNames: data.link.installerNames ?? null,
+              installLinks: Array.isArray(data.link.installLinks)
+                ? data.link.installLinks.filter(
+                    (item: unknown): item is InstallLinkHistoryItem =>
+                      !!item && typeof item === "object" && typeof (item as { installUrl?: unknown }).installUrl === "string",
+                  )
+                : [],
             }
           : null,
       );
@@ -347,6 +374,17 @@ export function DeviceList() {
                     ? data.link.installerKind
                     : null,
               installerNames: kind === "private" ? prev.installerNames : (data.link.installerNames ?? null),
+              // TASK_171 — a fresh public mint prepends its own history row, so
+              // the new link appears at the top without waiting for the 20 s
+              // poll. The server is newest-first; trust its order, don't invent
+              // one client-side.
+              installLinks:
+                kind === "private" || !Array.isArray(data.link.installLinks)
+                  ? prev.installLinks
+                  : data.link.installLinks.filter(
+                      (item: unknown): item is InstallLinkHistoryItem =>
+                        !!item && typeof item === "object" && typeof (item as { installUrl?: unknown }).installUrl === "string",
+                    ),
             }
           : prev,
       );
@@ -956,6 +994,50 @@ export function DeviceList() {
                     <p className="text-xs text-fg-muted">
                       One-time link, valid 72 hours — run it on the machine you want linked.
                     </p>
+                    {/* TASK_171 — every public mint this user ever made, newest
+                        first: URL + copy, a live "expires in Xh Ym"/"expired"
+                        countdown (off the existing 1-minute `nowMs` tick — no
+                        new fetch loop), and its download count. Old rows are
+                        read-only (copy only, no re-mint); the current link's
+                        Generate/Regenerate/"New link" actions above are
+                        unchanged. */}
+                    {link.installLinks.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
+                          All links <span className="font-normal normal-case">({link.installLinks.length})</span>
+                        </p>
+                        <ul className="max-h-56 space-y-1.5 overflow-y-auto">
+                          {link.installLinks.map((item, index) => {
+                            const expiresMs = new Date(item.installTokenExpiresAt).getTime();
+                            const expired = !Number.isFinite(expiresMs) || expiresMs <= nowMs;
+                            return (
+                              <li
+                                key={item.id}
+                                className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1.5"
+                              >
+                                <span className="text-xs font-medium text-fg-muted">#{link.installLinks.length - index}</span>
+                                <code className="max-w-full flex-1 truncate text-xs text-fg-muted">{item.installUrl}</code>
+                                <span
+                                  className={expired ? "text-xs text-red-600" : "text-xs text-fg-muted"}
+                                  title={new Date(item.installTokenExpiresAt).toLocaleString()}
+                                >
+                                  {formatInstallLinkCountdown(expiresMs, nowMs)}
+                                </span>
+                                <span className="text-xs text-fg-muted" title="Successful opens of this link">
+                                  · {formatDownloadCount(item.downloadCount)}
+                                </span>
+                                <button
+                                  onClick={() => copyText(`install-link-${item.id}`, item.installUrl)}
+                                  className="rounded-md border border-border px-2 py-1 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                                >
+                                  {copied === `install-link-${item.id}` ? "Copied ✓" : "Copy"}
+                                </button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      </div>
+                    )}
 
                     {/* TASK_128 §15 — the PUBLIC tier's PowerShell option (owner
                         request: "just the way we have for private"). Same
