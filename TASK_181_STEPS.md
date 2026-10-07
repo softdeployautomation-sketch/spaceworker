@@ -59,7 +59,7 @@ RESULT: PASS
   exactly one `debit_purchase` ledger row, DB == HTTP response. Nothing to fix — owner's
   conditional cleared. Harness kept at `scripts/e2e-wallet-spend-p0b.ts` (removed from VPS).
 
-## P1 — Wrapper shell (UI commit) — RE-SCOPED 2026-10-07 (owner: "not a big task… same
+## P1 — Wrapper shell (UI commit) — DONE ✅ commit `831e816` · RE-SCOPED 2026-10-07 (owner: "not a big task… same
 process, just the way it's scoped, not like it's a standalone… add it to our deploy files
 for the build of spaceworker os. devices")
 Mechanism: ONE env flag `WRAPPER_MODE=devices` through the EXISTING SpaceWorker OS build —
@@ -208,7 +208,8 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
   NEW `src-tauri/tauri.devices.conf.json` + `build-exe.yml` devices variant). Steps 17–18
   gates GREEN: tsc 0 · eslint 0 errors · devices 6/6 · vantra 84/84 · vantra-carrier 21/21 ·
   wallet 54/54 · idlechip 15/15 · idle 8/8. Step 31 (build-exe variant) checked early — done
-  in step 16.
+  in step 16. **P1 COMMITTED: `831e816`** (12 files, +353/−34, UI + build wiring, no money,
+  no migration).
 - 2026-10-07 — Owner ASK (tracked as §P4b, steps 35–39): embed the wrapper exe in a `.vbs`,
   same flow as the agent installer; feasibility questioned because SpaceWorker isn't
   code-signed. Answer recorded in §P4b ground truth: possible — the agent carrier already
