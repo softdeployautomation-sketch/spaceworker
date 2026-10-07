@@ -31,12 +31,21 @@
 
 function Get-CloneBrowserExe {
     <# Resolve the browser executable for a CDP-capable browser. #>
-    param([Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge')][string]$Browser)
+    param([Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge', 'brave')][string]$Browser)
     $candidates = if ($Browser -eq 'chrome') {
         @(
             (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe'),
             (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe'),
             (Join-Path $env:LOCALAPPDATA 'Google\Chrome\Application\chrome.exe')
+        )
+    } elseif ($Browser -eq 'brave') {
+        # Brave is Chromium, so its cookie store is the same format and the same
+        # App-Bound-Encryption story: the CDP route is the only way its cookies can
+        # leave the machine, exactly as for Chrome and Edge.
+        @(
+            (Join-Path $env:ProgramFiles 'BraveSoftware\Brave-Browser\Application\brave.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'BraveSoftware\Brave-Browser\Application\brave.exe'),
+            (Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\Application\brave.exe')
         )
     } else {
         @(
@@ -61,7 +70,7 @@ function Get-FreeTcpPort {
 
 function Test-CookieTransferSupport {
     <# Reports whether Chrome-native cookie transfer is possible on this host. #>
-    param([ValidateSet('chrome', 'edge')][string]$Browser = 'chrome')
+    param([ValidateSet('chrome', 'edge', 'brave')][string]$Browser = 'chrome')
     $exe = Get-CloneBrowserExe -Browser $Browser
     return [pscustomobject]@{
         supported = [bool]$exe
@@ -236,7 +245,7 @@ function Export-CdpCookies {
       Writes $OutFile as JSON. Returns a summary (counts only).
     #>
     param(
-        [Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge')][string]$Browser,
+        [Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge', 'brave')][string]$Browser,
         [Parameter(Mandatory = $true)][string]$ProfileDir,
         [Parameter(Mandatory = $true)][string]$OutFile
     )
@@ -307,7 +316,7 @@ function Import-CdpCookies {
       encrypted with the DESTINATION's own key. Returns counts only.
     #>
     param(
-        [Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge')][string]$Browser,
+        [Parameter(Mandatory = $true)][ValidateSet('chrome', 'edge', 'brave')][string]$Browser,
         [Parameter(Mandatory = $true)][string]$ProfileDir,
         [Parameter(Mandatory = $true)][string]$InFile
     )

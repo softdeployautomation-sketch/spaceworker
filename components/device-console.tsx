@@ -28,6 +28,13 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import {
+  CLONE_BROWSERS,
+  cloneBrowserCarryRefusal,
+  cloneBrowserLabel,
+  isCarriableBrowser,
+  type CloneBrowser,
+} from "@/lib/clone-browsers";
 import { useConfirm } from "@/components/confirm-provider";
 import { ScreenTimeline, captureFailureCopy } from "@/components/screen-timeline";
 import { ScreenAlertsCard } from "@/components/screen-alerts-card";
@@ -222,7 +229,40 @@ type CloneRow = {
   queuePosition?: number;
   /** TASK_105 — coarse wait estimate in seconds, paired with queuePosition. */
   queueEtaSeconds?: number;
+  /**
+   * TASK_135 §6.3 — the profile state carry, as the clone record has it.
+   * `stateSyncPending` above 0 means files are still to come; the console says so
+   * rather than letting a half-arrived replica look finished.
+   */
+  stateSyncMode: string | null;
+  stateSyncReason: string | null;
+  stateSyncPending: number | null;
+  stateManifestAt: string | null;
+  browserPinError: string | null;
+  stateRestoreNote: string | null;
 };
+
+/**
+ * TASK_135 §6.3 — ONE human line for the state carry, or "" when there is nothing
+ * worth saying.
+ *
+ * The rule: never claim more than the fields support. A pending count is stated in
+ * files (the user's mental model is "my history came over", not "delta mode"), a
+ * named failure is stated as a failure, and a completed transfer is stated plainly
+ * — because "did my tabs come over?" is the only question this line exists to
+ * answer, and an optimistic line here is worse than none.
+ */
+function cloneStateLine(row: Pick<CloneRow, "stateSyncMode" | "stateSyncReason" | "stateSyncPending">): string {
+  const pending = row.stateSyncPending ?? 0;
+  const failed = row.stateSyncReason && row.stateSyncReason !== "first_clone" && row.stateSyncReason !== "sync_on_reconnect" && row.stateSyncReason !== "cache_baseline";
+  if (row.stateSyncMode === null && !failed) return "";
+  if (pending > 0) return `Your browser data: ${pending} file${pending === 1 ? "" : "s"} still coming`;
+  if (failed) return `Your browser data: not copied (${row.stateSyncReason})`;
+  if (row.stateSyncReason === "first_clone") return "Your browser data: copied";
+  if (row.stateSyncReason === "sync_on_reconnect") return "Your browser data: up to date";
+  if (row.stateSyncReason === "cache_baseline") return "Your browser data: brought up to date";
+  return "Your browser data: copied";
+}
 
 /**
  * TASK_105 — the honest queue line for a clone that is waiting for a slot.
@@ -255,19 +295,12 @@ const CLONE_STEP_LABELS: Record<string, string> = {
   deleted: "Deleted",
 };
 
-const CLONE_BROWSER_LABELS: Record<string, string> = {
-  chrome: "Chrome",
-  edge: "Edge",
-  firefox: "Firefox",
-};
-
 function cloneStepLabel(status: string): string {
   return CLONE_STEP_LABELS[status] ?? "Working on it";
 }
 
-function cloneBrowserLabel(browser: string): string {
-  return CLONE_BROWSER_LABELS[browser] ?? "Browser";
-}
+// `cloneBrowserLabel` deliberately comes from `@/lib/clone-browsers` — the console's
+// own copy is what let Brave be pickable-looking in one place and refused in another.
 
 function cloneEgressLabel(egressMode: string): string {
   return egressMode === "direct"
@@ -531,7 +564,11 @@ export function DeviceConsole({
   const [cloneError, setCloneError] = useState("");
   const [cloneBusy, setCloneBusy] = useState("");
   const [cloneNotice, setCloneNotice] = useState("");
-  const [cloneBrowser, setCloneBrowser] = useState<"chrome" | "edge" | "firefox">("chrome");
+  // TASK_135 §6.3 — the last "Sync profile state" outcome (manual half). Held here
+  // rather than in CloneTab so a tab switch does not erase what the device just
+  // said, which is the one moment the operator is reading it.
+  const [stateSyncResult, setStateSyncResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [cloneBrowser, setCloneBrowser] = useState<CloneBrowser>("chrome");
   const [cloneProfile, setCloneProfile] = useState("");
   const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
   // TASK_119A (owner 2026-09-25): the clone flow the owner asked for — one
@@ -1237,6 +1274,51 @@ export function DeviceConsole({
     }
   }
 
+  // TASK_135 §6.3 — the MANUAL half of the state pipe: ask this PC to carry its
+  // browser profile's state again, without starting a whole clone. The useful
+  // case is the one the automatic sync cannot cover: the replica is stale (new
+  // bookmarks, a fresh tab session) and nothing else needs doing, OR a transfer
+  // stopped part-way and needs finishing.
+  //
+  // It is a device action, not a job action, because the cache it fills is keyed
+  // by device + browser + profile and survives every clone. The route picks the
+  // browser and profile from this device's most recent clone, so the operator
+  // does not restate them — and a device with no clone history is told so.
+  async function syncProfileState() {
+    setCloneBusy("state-sync");
+    setCloneError("");
+    setCloneNotice("");
+    setStateSyncResult(null);
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/clone-state-sync`, { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: unknown;
+        summary?: unknown;
+        reason?: unknown;
+        error?: unknown;
+      };
+      // The route's own summary line is the truth about what moved: it is built
+      // from the device's counts, and it says how many files are still to come
+      // when a transfer had to stop. Never replaced with an optimistic string.
+      const summary =
+        typeof data.summary === "string" && data.summary
+          ? data.summary
+          : typeof data.reason === "string" && data.reason
+            ? data.reason
+            : res.ok
+              ? "Profile state checked."
+              : cleanErr(data.error, "Could not sync profile state");
+      setStateSyncResult({ ok: res.ok && data.ok === true, text: summary });
+      // A partial transfer is NOT an error, but it is not finished either — the
+      // notice tells the operator to run it again, which is the whole remedy.
+      await loadToolData();
+    } catch (e) {
+      setStateSyncResult({ ok: false, text: e instanceof Error ? e.message : "Could not sync profile state" });
+    } finally {
+      setCloneBusy("");
+    }
+  }
+
   async function startClone() {
     setCloneBusy("start");
     setCloneError("");
@@ -1556,6 +1638,8 @@ export function DeviceConsole({
               setupSteps={setupSteps}
               onSetup={runCloneSetup}
               onStart={startClone}
+              onStateSync={syncProfileState}
+              stateSync={stateSyncResult}
               onRevoke={revokeClone}
               onDelete={deleteClone}
               onOpen={openCloneSession}
@@ -2286,7 +2370,7 @@ function ScreenMonitoringCard({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   return (
     <div className="space-y-4">
@@ -2300,6 +2384,14 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
         onSetup={props.onSetup}
       />
       <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} sessionMode={props.sessionMode} setSessionMode={props.setSessionMode} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
+      <ProfileStateCard
+        busy={props.busy}
+        result={props.stateSync}
+        onSync={props.onStateSync}
+        browser={props.browser}
+        profile={props.profile}
+        latest={props.clones[0] ?? null}
+      />
       {live ? (
         <CloneLiveCard row={live} busy={props.busy} premium={props.premium} onOpen={props.onOpen} onRevoke={props.onRevoke} />
       ) : (
@@ -2328,6 +2420,93 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
   );
 }
 
+/**
+ * TASK_135 §6.3 — "Sync profile state": carry this PC's browser data again.
+ *
+ * WHY THIS IS ITS OWN CARD. Everything else on this tab is about STARTING a
+ * clone. This is about the data a clone will show: history, bookmarks, open tabs,
+ * extensions, settings. The automatic sync runs when a clone starts, and this is
+ * the other door — for a replica that has gone stale since (new bookmarks, a fresh
+ * tab session) and for finishing a transfer that had to stop part-way.
+ *
+ * WHAT IT TELLS THE OPERATOR, and why each line is here:
+ *   - it is SILENT on the PC: no windows, no prompts, nothing to click there,
+ *     which is the hard rule this feature is built to;
+ *   - nothing can be lost by running it: what the replica already holds is the
+ *     comparison, so a second run sends only what is missing;
+ *   - which browser and profile it will carry, since the route takes them from
+ *     this device's most recent clone and guessing is how the wrong profile ends
+ *     up in the replica.
+ */
+function ProfileStateCard(props: {
+  busy: string;
+  result: { ok: boolean; text: string } | null;
+  onSync: () => Promise<void>;
+  browser: CloneBrowser;
+  profile: string;
+  latest: CloneRow | null;
+}) {
+  const lastLine = props.latest ? cloneStateLine(props.latest) : "";
+  const pending = props.latest?.stateSyncPending ?? 0;
+  // Same rule as the server's run-command path, read from the ONE list rather than
+  // by name: a browser nothing can be carried from gets the device's own reason in
+  // the card, BEFORE the click. The button is disabled, not hidden, so the reason
+  // stays visible.
+  const carryRefusal = cloneBrowserCarryRefusal(props.browser);
+  const unsupported = carryRefusal !== null;
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">Browser data</p>
+      <p className="mt-1 text-sm text-fg">
+        History, bookmarks, open tabs, extensions and settings — copied from this PC so your clone opens
+        exactly where you left off.
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">
+        Runs silently on this PC: no windows and nothing to click there. Your sign-ins come over separately,
+        so a clone still works if this cannot run.
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">
+        Nothing is ever removed by running it again — what your clone already has is what the next copy
+        compares against, so a second run only sends what is missing.
+      </p>
+      {lastLine && <p className="mt-2 text-xs text-fg">{lastLine}</p>}
+      {pending > 0 && (
+        <p className="mt-1 text-xs text-amber-500">
+          {pending} file{pending === 1 ? "" : "s"} still to copy — run this again to finish.
+        </p>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <button
+          onClick={props.onSync}
+          disabled={props.busy === "state-sync" || unsupported}
+          title={
+            unsupported
+              ? carryRefusal ?? undefined
+              : `Copy ${cloneBrowserLabel(props.browser)}${props.profile ? ` · ${props.profile}` : ""} from this PC`
+          }
+          className="rounded border border-border px-2.5 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:pointer-events-none disabled:opacity-50"
+        >
+          {props.busy === "state-sync"
+            ? "Copying…"
+            : props.latest === null
+              ? "Copy browser data"
+              : "Copy browser data again"}
+        </button>
+        <span className="text-xs text-fg-muted">
+          {cloneBrowserLabel(props.browser)}
+          {props.latest?.profileName ? ` · ${props.latest.profileName}` : ""}
+          {unsupported ? " · not supported" : ""}
+        </span>
+      </div>
+      {props.result && (
+        <p className={cn("mt-2 text-xs", props.result.ok ? "text-emerald-500" : "text-red-500")}>
+          {props.result.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: string) => Promise<void>; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void> }) {
   const { row, busy, onOpen, onRevoke, onDelete } = props;
   const live = isCloneLiveStatus(row.status);
@@ -2350,6 +2529,9 @@ function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: stri
           {queueLine ? `${queueLine} · ` : ""}
           {cloneEgressShort(row.egressMode)} · TTL {formatCountdown(row.ttlRemainingMs)}{errText}
         </span>
+        {cloneStateLine(row) && (
+          <span className="mt-0.5 block text-xs text-fg-muted">{cloneStateLine(row)}</span>
+        )}
       </span>
       <span className="flex shrink-0 gap-2">
         {live && (
@@ -2551,8 +2733,7 @@ function CloneSetupCard(props: {
   );
 }
 
-
-function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrowser: (b: "chrome" | "edge" | "firefox") => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
   const { browser, setBrowser, profile, setProfile, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
@@ -2566,7 +2747,15 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
   // seen the extension + native host on this PC (`liveCaptureReady` is a
   // presence check, not a guess). Otherwise it is disabled with the reason —
   // never a button that fails after Start.
-  const liveSelectable = setup?.liveCaptureReady === true;
+  //
+  // AND only for a browser whose session can be carried. Carrying means running the
+  // work PC's own browser under CDP to lift its cookies, so a browser with no
+  // implementation (Firefox) gets a second, different reason — stated before the
+  // click rather than as a refusal after it.
+  const carryRefusal = cloneBrowserCarryRefusal(browser);
+  const carryable = isCarriableBrowser(browser);
+  const extensionReady = setup?.liveCaptureReady === true;
+  const liveSelectable = extensionReady && carryable;
   return (
     <div className="rounded-lg border border-border bg-bg p-3">
       <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
@@ -2576,10 +2765,17 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
         <span className="block text-xs text-fg-muted">
           Browser
           <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
-            {(["chrome", "edge", "firefox"] as const).map((b) => (
+            {CLONE_BROWSERS.map((b) => (
               <button
                 key={b}
-                onClick={() => setBrowser(b)}
+                onClick={() => {
+                  setBrowser(b);
+                  // A browser that carries nothing cannot be paired with "Carry my
+                  // session", so picking one moves the pair back to `fresh` instead of
+                  // leaving the form in a combination the server would refuse. The
+                  // server still refuses it (lib/clone.ts) — this is courtesy, not the gate.
+                  if (!isCarriableBrowser(b) && sessionMode === "live") setSessionMode("fresh");
+                }}
                 className={cn(
                   "flex-1 px-2 py-1.5 text-xs transition-colors",
                   browser === b ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
@@ -2654,22 +2850,34 @@ function CloneStartCard(props: { browser: "chrome" | "edge" | "firefox"; setBrow
             <button
               onClick={() => liveSelectable && setSessionMode("live")}
               disabled={!liveSelectable}
-              title={liveSelectable ? "Hands this PC's signed-in session to the clone" : "Needs the browser extension on this PC — use “Set up this PC” in Device setup above"}
+              title={
+                !carryable
+                  ? carryRefusal ?? undefined
+                  : extensionReady
+                    ? "Hands this PC's signed-in session to the clone"
+                    : "Needs the browser extension on this PC — use “Set up this PC” in Device setup above"
+              }
               className={cn(
                 "flex-1 px-2 py-1.5 text-xs transition-colors",
                 sessionMode === "live" && liveSelectable ? "bg-black/10 font-medium text-fg dark:bg-white/10" : "text-fg-muted hover:text-fg",
                 !liveSelectable && "cursor-not-allowed opacity-60",
               )}
             >
-              Carry my session{!liveSelectable ? " · setup needed" : ""}
+              Carry my session{!carryable ? " · not available" : !extensionReady ? " · setup needed" : ""}
             </button>
           </span>
         </span>
         {!liveSelectable ? (
           <p className="mt-1.5 text-xs text-fg-muted">
-            &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
-            this PC&rdquo; in Device setup above — it installs silently, and this option appears once
-            it is detected.
+            {!carryable ? (
+              carryRefusal
+            ) : (
+              <>
+                &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
+                this PC&rdquo; in Device setup above — it installs silently, and this option appears once
+                it is detected.
+              </>
+            )}
           </p>
         ) : sessionMode === "live" ? (
           <p className="mt-1.5 text-xs text-fg-muted">

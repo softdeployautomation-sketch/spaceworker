@@ -13,8 +13,15 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'lib/GcmCrypto.ps1')
 . (Join-Path $root 'lib/ProfilePaths.ps1')
 
-$failures = @()
-function Check { param($Name, $Cond) if ($Cond) { Write-Output "PASS $Name" } else { $failures += $Name; Write-Output "FAIL $Name" } }
+$script:failures = @()
+# `$script:` on BOTH sides is load-bearing. A bare `$failures += $Name` inside a
+# function assigns a NEW local variable, so the script-level array stayed empty no
+# matter what failed — the suite printed FAIL lines and then "ALL PASSED" and exit 0.
+# It ran that way long enough for the README to record a pass count from it. A test
+# harness that cannot fail is worse than no harness: it reports green for a real bug,
+# and that is exactly what happened (the Extensions pattern below was broken and this
+# check could not say so).
+function Check { param($Name, $Cond) if ($Cond) { Write-Output "PASS $Name" } else { $script:failures += $Name; Write-Output "FAIL $Name" } }
 
 # ── 1. GCM roundtrip ────────────────────────────────────────────────────────
 $key = New-Object byte[] 32
@@ -46,12 +53,31 @@ $fp = Join-Path $work 'fakeprofile'
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 [System.IO.File]::WriteAllText((Join-Path $fp 'Preferences'), '{"test":"mt1"}', $utf8NoBom)
 [System.IO.File]::WriteAllText((Join-Path $fp 'Bookmarks'), '{"roots":{}}', $utf8NoBom)
-New-Item -ItemType Directory -Path (Join-Path $fp 'Extensions\abc') -Force | Out-Null
-[System.IO.File]::WriteAllText((Join-Path $fp 'Extensions\abc\manifest.json'), '{"name":"t"}', $utf8NoBom)
+New-Item -ItemType Directory -Path (Join-Path $fp 'Extensions') -Force | Out-Null
+$extDir = Join-Path (Join-Path $fp 'Extensions') 'abc'
+New-Item -ItemType Directory -Path $extDir -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $extDir 'manifest.json'), '{"name":"t"}', $utf8NoBom)
+# Tabs/window state (the "…down to tabs" file set), and a separate root that
+# carries a `Last Version` marker so the version-match input is exercised on a
+# profile of its own (the happy-path profile above must stay version-free: a
+# marker there would correctly trigger the 127+ refusal asserted in step 4d).
+New-Item -ItemType Directory -Path (Join-Path $fp 'Sessions') -Force | Out-Null
+$sessDir = Join-Path $fp 'Sessions'
+[System.IO.File]::WriteAllText((Join-Path $sessDir 'Session_13370000000000000'), 'tabs', $utf8NoBom)
+[System.IO.File]::WriteAllText((Join-Path $sessDir 'Tabs_13370000000000000'), 'tabs', $utf8NoBom)
+$vroot = Join-Path $work 'vroot'
+New-Item -ItemType Directory -Path $vroot -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $vroot 'Last Version'), '141.0.7390.55', $utf8NoBom)
+$vprofile = Join-Path $vroot 'Default'
+New-Item -ItemType Directory -Path $vprofile -Force | Out-Null
 
 # capture via the library functions directly against the synthetic dir
 $rel = Get-ProfileFileList -ProfileDir $fp
 Check 'capture.file-list-finds-synthetics' (($rel -contains 'Preferences') -and ($rel -contains 'Bookmarks') -and ($rel -join ' ') -match 'manifest.json')
+# Tabs/window state: the entry must be enumerated, or a restored clone can never
+# bring back the windows it was cloned from. Separator-agnostic so the same check
+# holds on Windows and on pwsh/Linux (`Sessions\Session_…` vs `Sessions/Session_…`).
+Check 'capture.file-list-finds-sessions' (($rel -join '|') -match 'Sessions[\\/](Session|Tabs)_')
 
 $capKey = if ($WithKey -and $env:SPACEWORKER_CLONE_KEY) { [Convert]::FromBase64String($env:SPACEWORKER_CLONE_KEY) } else { $null }
 $archive = Join-Path $work 'test.psa'
@@ -66,7 +92,7 @@ Check 'restore.restored-count' ($res.files_restored -ge 3)
 $expectedBytes = [System.Text.Encoding]::UTF8.GetBytes('{"test":"mt1"}')
 $actualBytes = [System.IO.File]::ReadAllBytes((Join-Path $dest 'Preferences'))
 Check 'restore.prefs-byte-identical' ([Convert]::ToBase64String($actualBytes) -eq [Convert]::ToBase64String($expectedBytes))
-Check 'restore.manifest-present' (Test-Path (Join-Path $dest 'Extensions\abc\manifest.json'))
+Check 'restore.manifest-present' (Test-Path (Join-Path (Join-Path (Join-Path $dest 'Extensions') 'abc') 'manifest.json'))
 
 # ── 4c. tampered archive fails closed (exit 2 path) ─────────────────────────
 if ($capKey) {
@@ -81,7 +107,149 @@ if ($capKey) {
     Write-Output 'SKIP restore.tampered-rejected (no SPACEWORKER_CLONE_KEY; DPAPI path is Windows-only)'
 }
 
-# ── 5. exit-code contract constants ─────────────────────────────────────────
+# ── 4d. source browser version + the app-bound refusal (Chrome/Edge 127+) ───
+# The version is the input to "deliver a matching browser"; the refusal is the
+# honest answer for a version whose cookies no out-of-process reader can decrypt.
+Check 'version.major-detected' ((Get-BrowserMajorVersion -Browser 'chrome' -ProfileDir $vprofile) -eq '141')
+Check 'version.unknown-is-null' ($null -eq (Get-BrowserMajorVersion -Browser 'firefox' -ProfileDir $vprofile))
+$vcap = Invoke-CaptureFromDir -ProfileDir $vprofile -Out (Join-Path $work 'v.psa') -Browser 'chrome' -Key $capKey
+Check 'capture.reports-browser-version' ($vcap.browser_major_version -eq '141')
+Check 'capture.app-bound-refused-by-name' ($vcap.cookie_transfer -eq 'unsupported:app-bound-encryption')
+Check 'capture.app-bound-is-partial' ($vcap.exit_code -eq 1)
+
+# ── 4e. browser roots: Chrome / Edge / Brave must each read their OWN tree ───
+# This is the test for the two-browser assumption that used to live in this file:
+# version detection had `if ($Browser -eq 'chrome') {…} else {…Edge…}`, so a third
+# Chromium browser (Brave) would have read its version out of EDGE's directory and
+# silently changed which hosted build a clone is pinned to. Each browser below has a
+# DIFFERENT "Last Version", so reading the wrong one cannot pass by accident. The
+# profile directory is deliberately somewhere unrelated: that is the case where the
+# configured root is the only thing that can answer.
+$savedLocal = $env:LOCALAPPDATA
+$savedRoaming = $env:APPDATA
+try {
+    $lad = Join-Path $work 'lad'
+    $roots = @{
+        chrome = Join-Path $lad 'Google\Chrome\User Data'
+        edge   = Join-Path $lad 'Microsoft\Edge\User Data'
+        brave  = Join-Path $lad 'BraveSoftware\Brave-Browser\User Data'
+    }
+    $versions = @{ chrome = '150.0.1.2'; edge = '151.0.2.3'; brave = '152.0.3.4' }
+    foreach ($b in $roots.Keys) {
+        New-Item -ItemType Directory -Path (Join-Path $roots[$b] 'Default') -Force | Out-Null
+        [System.IO.File]::WriteAllText((Join-Path $roots[$b] 'Last Version'), $versions[$b], $utf8NoBom)
+        [System.IO.File]::WriteAllText((Join-Path $roots[$b] 'Default\Preferences'), '{}', $utf8NoBom)
+    }
+    $env:LOCALAPPDATA = $lad
+
+    $elsewhere = Join-Path $work 'elsewhere\Default'
+    New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+
+    Check 'roots.brave-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'brave') -eq $roots['brave'])
+    Check 'roots.chrome-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'chrome') -eq $roots['chrome'])
+    Check 'roots.edge-is-its-own-root' ((Get-ChromiumUserDataRoot -Browser 'edge') -eq $roots['edge'])
+
+    Check 'version.brave-reads-brave' ((Get-BrowserMajorVersion -Browser 'brave' -ProfileDir $elsewhere) -eq '152')
+    Check 'version.chrome-reads-chrome' ((Get-BrowserMajorVersion -Browser 'chrome' -ProfileDir $elsewhere) -eq '150')
+    Check 'version.edge-reads-edge' ((Get-BrowserMajorVersion -Browser 'edge' -ProfileDir $elsewhere) -eq '151')
+
+    Check 'profile-dir.brave-resolves-default' ((Get-BrowserProfileDir -Browser 'brave' -ProfileName 'Default') -eq (Join-Path $roots['brave'] 'Default'))
+    Check 'profile-dir.edge-resolves-default' ((Get-BrowserProfileDir -Browser 'edge' -ProfileName 'Default') -eq (Join-Path $roots['edge'] 'Default'))
+
+    # Firefox is not Chromium and must not be folded into that map: its base comes
+    # from Roaming and it is a list of profiles, not a "User Data" root.
+    $ffRoot = Join-Path $work 'roaming\Mozilla\Firefox\Profiles'
+    $ffProfile = Join-Path $ffRoot 'abc123.default-release'
+    New-Item -ItemType Directory -Path $ffProfile -Force | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $ffProfile 'prefs.js'), '// x', $utf8NoBom)
+    $env:APPDATA = Join-Path $work 'roaming'
+    Check 'profile-dir.firefox-uses-roaming' ((Get-BrowserProfileDir -Browser 'firefox') -eq $ffProfile)
+} finally {
+    $env:LOCALAPPDATA = $savedLocal
+    $env:APPDATA = $savedRoaming
+}
+
+# ── 4f. Brave is accepted by the CDP cookie module ──────────────────────────
+# The ValidateSet is the contract between the orchestrator's browser list and the
+# module that must run the browser to move cookies. Before Brave was added, a Brave
+# clone failed with a PowerShell parameter-binding error — a message about a script,
+# not about the browser.
+#
+# Each browser gets a PLANTED executable in a synthetic ProgramFiles, because the
+# candidate lists are what actually decide which binary runs: a copy-paste error
+# (Brave's candidates pointing at msedge.exe) would move the wrong browser's cookies
+# and still exit 0. Planting distinct files makes that failure impossible to miss.
+$savedPf = $env:ProgramFiles
+$savedPf86 = ${env:ProgramFiles(x86)}
+$savedLocalApp = $env:LOCALAPPDATA
+$cdpThrew = $false
+$cdpErr = ''
+$cdpFound = @{}
+try {
+    . (Join-Path $root 'lib/CdpCookies.ps1')
+    $pf = Join-Path $work 'pf'
+    $pf86 = Join-Path $work 'pf86'   # non-empty: Join-Path throws on an empty base
+    New-Item -ItemType Directory -Path $pf86 -Force | Out-Null
+    $exes = @{
+        chrome = 'Google\Chrome\Application\chrome.exe'
+        edge   = 'Microsoft\Edge\Application\msedge.exe'
+        brave  = 'BraveSoftware\Brave-Browser\Application\brave.exe'
+    }
+    foreach ($b in $exes.Keys) {
+        $p = Join-Path $pf $exes[$b]
+        New-Item -ItemType Directory -Path (Split-Path $p -Parent) -Force | Out-Null
+        [System.IO.File]::WriteAllText($p, 'stub', $utf8NoBom)
+    }
+    $env:ProgramFiles = $pf
+    ${env:ProgramFiles(x86)} = $pf86
+    $env:LOCALAPPDATA = $pf86
+    foreach ($b in @('chrome', 'edge', 'brave')) {
+        $cdpFound[$b] = Get-CloneBrowserExe -Browser $b
+    }
+} catch { $cdpThrew = $true; $cdpErr = $_.Exception.Message } finally {
+    $env:ProgramFiles = $savedPf
+    ${env:ProgramFiles(x86)} = $savedPf86
+    $env:LOCALAPPDATA = $savedLocalApp
+}
+Check 'cdp.brave-accepted-by-validate-set' (-not $cdpThrew)
+if ($cdpThrew) { Write-Output "       (CDP module error: $cdpErr)" }
+Check 'cdp.chrome-exe-resolves' ($cdpFound['chrome'] -eq (Join-Path $work 'pf\Google\Chrome\Application\chrome.exe'))
+Check 'cdp.edge-exe-resolves' ($cdpFound['edge'] -eq (Join-Path $work 'pf\Microsoft\Edge\Application\msedge.exe'))
+Check 'cdp.brave-exe-resolves' ($cdpFound['brave'] -eq (Join-Path $work 'pf\BraveSoftware\Brave-Browser\Application\brave.exe'))
+Check 'cdp.brave-does-not-run-a-chromium-exe' ($cdpFound['brave'] -notmatch 'chrome\.exe|msedge\.exe')
+
+
+# ── 4g. the capture's cookie gate covers the whole Chromium family ──────────
+# The bug this pins, found 2026-09-30: the capture branch tested `@('chrome','edge')`
+# while the RESTORE branch tested `@('chrome','edge','brave')`. A Brave clone
+# therefore carried its files and silently skipped its session — `cookie_transfer`
+# stayed 'none' and the exit code stayed 0, a clean-looking clone with no logins.
+# Both branches now read ONE shared `$script:CarriableBrowsers` (a list cannot
+# disagree with itself), and this asserts the observable consequence: a Brave capture
+# REACHES the cookie branch instead of falling straight past it.
+#
+# 'skipped:no-local-state' is the correct verdict here and is also the proof: the
+# synthetic profile has no `Local State` at its User Data root, so arriving at that
+# answer means the gate let Brave in. The old gate produced 'none' — the same value
+# it produces for a browser that carries no cookies by design, which is precisely why
+# nothing reported the bug.
+#
+# LOCALAPPDATA is pointed at an empty sandbox for the duration: on a Windows machine
+# with Brave installed the CONFIGURED root would otherwise supply a real version and
+# change the verdict, and a check whose result depends on the machine is not a check.
+$savedLocalForCookies = $env:LOCALAPPDATA
+try {
+    $env:LOCALAPPDATA = Join-Path $work 'lad-empty'
+    New-Item -ItemType Directory -Path (Join-Path $work 'lad-empty') -Force | Out-Null
+    $braveArchive = Join-Path $work 'brave.psa'
+    $bcap = Invoke-CaptureFromDir -ProfileDir $fp -Out $braveArchive -Browser 'brave' -Key $capKey
+} finally {
+    $env:LOCALAPPDATA = $savedLocalForCookies
+}
+Check 'capture.brave-reaches-cookie-branch' ($bcap.cookie_transfer -eq 'skipped:no-local-state')
+Check 'capture.brave-not-no-cookies-by-design' ($bcap.cookie_transfer -ne 'none')
+Check 'capture.browsers-are-one-list' (($script:CarriableBrowsers -join ',') -eq 'chrome,edge,brave')
+
 Check 'contract.exit-codes' ($script:Magic.Length -eq 7)
 
 Write-Output ''
