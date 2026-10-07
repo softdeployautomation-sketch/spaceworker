@@ -15,6 +15,7 @@ on:
         type: choice
         options:
           - extractor
+          - devices
       tag_name:
         description: Release tag (e.g. v1.4.0) — leave blank to skip a GitHub Release
         required: false
@@ -49,7 +50,27 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate
 
-      # tauri-action invokes `tauri build --config src-tauri/tauri.extractor.conf.json`,
+      # TASK_181 — variant → build env. The `devices` wrapper variant narrows via
+      # WRAPPER_MODE (ONE flag through the SAME core build — D2: not a buildTarget).
+      # exeBuildTarget() has no "devices" value, so feeding the variant straight
+      # into BUILD_TARGET would silently fall back to "extractor" — the exact
+      # hazard the comment on the env below documents. The core target therefore
+      # stays "extractor" for both variants today; WRAPPER_MODE is "devices" only
+      # on the devices variant (empty elsewhere ⇒ runtime-assemble omits the line
+      # ⇒ that variant's .env.local is byte-identical to a build cut today).
+      - name: Resolve variant env (BUILD_TARGET / WRAPPER_MODE)
+        id: variant
+        shell: bash
+        run: |
+          if [ "${{ github.event.inputs.variant }}" = "devices" ]; then
+            echo "build_target=extractor" >> "$GITHUB_OUTPUT"
+            echo "wrapper_mode=devices" >> "$GITHUB_OUTPUT"
+          else
+            echo "build_target=${{ github.event.inputs.variant }}" >> "$GITHUB_OUTPUT"
+            echo "wrapper_mode=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # tauri-action invokes `tauri build --config src-tauri/tauri.<variant>.conf.json`,
       # which runs the bundle's beforeBuildCommand (`npm run exe:build:web` →
       # `next build` + scripts/runtime-assemble.mjs to bundle the standalone
       # runtime + Node binary as the EXE's sidecar) with the env below — so the
@@ -65,8 +86,13 @@ jobs:
           # yet, but a real bug waiting to bite silently (exeBuildTarget()
           # defaults to "extractor" rather than failing closed) the moment
           # another variant's option/tauri-config is added. Fixed to track
-          # the actual input now, before that happens.
-          BUILD_TARGET: ${{ github.event.inputs.variant }}
+          # the actual input now, before that happens. TASK_181 — the input is
+          # no longer fed raw: the resolve step above maps variant=devices to the
+          # core "extractor" target (wrapper scoping rides WRAPPER_MODE instead).
+          BUILD_TARGET: ${{ steps.variant.outputs.build_target }}
+          # TASK_181 — devices-wrapper scoping flag; empty for every other
+          # variant (runtime-assemble then omits it from .env.local entirely).
+          WRAPPER_MODE: ${{ steps.variant.outputs.wrapper_mode }}
           SPACEWORKER_LOCAL_EXE: "true"
           EXE_LICENSE_SECRET: ${{ secrets.EXE_LICENSE_SECRET }}
           # For a release build the whole app (incl. admin/api) compiles, and its
@@ -86,7 +112,10 @@ jobs:
           BROWSER_PROFILE_BASE_DIR: ${{ secrets.BROWSER_PROFILE_BASE_DIR }}
         with:
           projectPath: .
-          args: --config src-tauri/tauri.extractor.conf.json
+          # One tauri conf per variant: extractor → tauri.extractor.conf.json,
+          # devices → tauri.devices.conf.json (TASK_181; both merge over the
+          # base tauri.conf.json, window title "SpaceWorker OS" inherited).
+          args: --config src-tauri/tauri.${{ github.event.inputs.variant }}.conf.json
           tagName: ${{ github.event.inputs.tag_name }}
           releaseName: "SpaceWorker OS — ${{ github.event.inputs.variant }}"
           releaseBody: "Manual-cut desktop release from the current commit."
@@ -97,7 +126,7 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: spaceworker-extractor-windows
+          name: spaceworker-${{ github.event.inputs.variant }}-windows
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.sig

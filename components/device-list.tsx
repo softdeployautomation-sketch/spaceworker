@@ -17,6 +17,7 @@ import {
 
 import { useConfirm } from "@/components/confirm-provider";
 import { PanicButton } from "@/components/panic-button";
+import { useWrapperMode } from "@/components/wrapper-mode-context";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { idleChipLabel, idleReadProvenanceFrom, type IdleReadProvenance } from "@/lib/device-idle";
@@ -115,6 +116,10 @@ const NAME_INPUT_CLASS =
   "mt-1 w-full rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30";
 
 export function DeviceList() {
+  // TASK_181 — the devices-only wrapper build (WRAPPER_MODE=devices): same
+  // component, scoped down — no public/private vocabulary, no private path,
+  // no Panic button; zip + PowerShell install paths stay web-only.
+  const wrapper = useWrapperMode() !== null;
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [filter, setFilter] = useState<Filter>("all");
@@ -144,8 +149,11 @@ export function DeviceList() {
   // TASK_178 stage 1 — which public flow the panel is showing (owner's
   // dropdown: ZIP / PowerShell / VBS / EXE — one method at a time so the
   // screen never shows every option at once). The private tier never uses
-  // it: private stays PowerShell-only.
-  const [method, setMethod] = useState<"zip" | "powershell" | "vbs" | "exe">("zip");
+  // it: private stays PowerShell-only. TASK_181 — the wrapper build ships the
+  // .vbs/EXE options only, so it starts on .vbs (zip/PowerShell are web-only).
+  const [method, setMethod] = useState<"zip" | "powershell" | "vbs" | "exe">(
+    wrapper ? "vbs" : "zip",
+  );
   // The stage-1 file-rename field for the .vbs mint + its success chip.
   const [vbsName, setVbsName] = useState("");
   const [vbsSaved, setVbsSaved] = useState("");
@@ -612,7 +620,9 @@ export function DeviceList() {
   // that is surfaced with the documented local-only escape hatch — which is
   // NEVER the default, and says in plain words that the agent stays installed.
   async function removeDeviceRow(d: DeviceRow) {
-    const isPrivate = d.tier === "private";
+    // TASK_181 — the wrapper build has no private-agent vocabulary: its remove
+    // dialog always uses the neutral copy, whatever org the row is in.
+    const isPrivate = !wrapper && d.tier === "private";
     if (
       !(await confirm({
         title: `Remove ${d.name}?`,
@@ -898,7 +908,10 @@ export function DeviceList() {
               </div>
             ) : (
               <div className="space-y-3">
-                {/* Public / Private toggle — disabled with a single tier */}
+                {/* Public / Private toggle — disabled with a single tier.
+                    TASK_181 — the wrapper build never renders it: that build has
+                    no public/private vocabulary and no private install path. */}
+                {!wrapper && (
                 <div className="flex flex-wrap items-center gap-2">
                   <div className="flex overflow-hidden rounded-lg border border-border">
                     <button
@@ -944,6 +957,7 @@ export function DeviceList() {
                       : "Public link only — the private agent unlocks with premium."}
                   </span>
                 </div>
+                )}
 
                 {installKind === "public" ? (
                   <div className="space-y-3">
@@ -963,8 +977,9 @@ export function DeviceList() {
                         }
                         className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-fg focus:border-brand-500 focus:outline-none"
                       >
-                        <option value="zip">ZIP link</option>
-                        <option value="powershell">PowerShell command</option>
+                        {/* TASK_181 — zip + PowerShell install paths stay web-only. */}
+                        {!wrapper && <option value="zip">ZIP link</option>}
+                        {!wrapper && <option value="powershell">PowerShell command</option>}
                         <option value="vbs">One-click .vbs file</option>
                         <option value="exe">EXE link</option>
                         <option value="mac" disabled>
@@ -975,7 +990,8 @@ export function DeviceList() {
                     {(method === "zip" || method === "exe") && (
                       <p className="text-sm text-fg-muted">
                         1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
-                        &nbsp;·&nbsp; 3 · It appears here, then silently moves to your private agent.
+                        &nbsp;·&nbsp; 3 · It appears here
+                        {wrapper ? "" : ", then silently moves to your private agent"}.
                       </p>
                     )}
                     {/* TASK_121 (OOB-13) — name the artifact the way Vantra's own
@@ -1503,7 +1519,8 @@ export function DeviceList() {
             Your machines and their live status. Remote tools live in each machine&apos;s console.
           </p>
         </div>
-        <PanicButton />
+        {/* TASK_181 — no Panic button in the wrapper build (web-only surface). */}
+        {!wrapper && <PanicButton />}
       </div>
 
       {error && <p className="text-sm text-red-500">{error}</p>}
@@ -1744,7 +1761,9 @@ export function DeviceList() {
                         already says private, so the green chip was pure noise
                         repeated on every settled row. Public is the state worth
                         calling out, because it is the temporary one. */}
-                    {d.tier !== "private" && (
+                    {/* TASK_181 — the wrapper build shows no tier pill (no
+                        public/private vocabulary in that surface). */}
+                    {!wrapper && d.tier !== "private" && (
                       <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-medium text-fg-muted">
                         Public
                       </span>

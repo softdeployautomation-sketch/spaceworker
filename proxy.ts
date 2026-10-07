@@ -61,6 +61,29 @@ const secret = () => encoder.encode(process.env.SESSION_SECRET ?? "");
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
 
+  // TASK_181 D2 — wrapper-mode route guard, FIRST thing in the middleware and
+  // deliberately BEFORE the local-EXE short-circuit below (a wrapper build IS a
+  // local runtime — if this ran after that bypass, /dashboard/extract would
+  // never be intercepted in the very build it exists for).
+  //
+  // WRAPPER_MODE is only ever set by the wrapper build's own runtime
+  // (scripts/runtime-assemble.mjs embeds it in the EXE's .env.local); the hosted
+  // web deploy never sets it, so this is a single env read that no-ops there —
+  // flag-off behaviour is byte-identical to today. A hidden nav entry is not a
+  // guard (§3.1): this is what actually makes /dashboard/extract and friends
+  // unreachable in the wrapper, same fail-closed posture as the license_only
+  // allowlist below.
+  if (process.env.WRAPPER_MODE === "devices" && pathname.startsWith("/dashboard")) {
+    const allowed =
+      pathname === "/dashboard/devices" ||
+      pathname.startsWith("/dashboard/devices/") ||
+      pathname === "/dashboard/settings" ||
+      pathname.startsWith("/dashboard/settings/");
+    if (!allowed) {
+      return redirectTo(request, "/dashboard/devices");
+    }
+  }
+
   // Task 27 Part A — local EXE runtime: the desktop EXE has NO web login by
   // design. Access control is handled entirely by the local <LicenseGate> in the
   // React tree (which is compiled into the EXE and runs offline), and the EXE's

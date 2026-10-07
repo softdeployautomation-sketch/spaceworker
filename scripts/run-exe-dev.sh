@@ -10,6 +10,9 @@ cd "$(dirname "$0")/.."
 
 export SPACEWORKER_LOCAL_EXE=true
 export BUILD_TARGET="${BUILD_TARGET:-extractor}"
+# TASK_181 — devices-wrapper dev pass-through: `WRAPPER_MODE=devices` from the
+# caller flows into the dev server (unset/empty ⇒ no wrapper, exactly today).
+export WRAPPER_MODE="${WRAPPER_MODE:-}"
 
 # Read EXE_LICENSE_SECRET from .env if it isn't already set (dev convenience; the
 # packaged EXE embeds it at build time). Never override an explicitly-set value.

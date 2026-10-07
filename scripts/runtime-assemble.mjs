@@ -122,6 +122,11 @@ const envLines = [
   "SPACEWORKER_LOCAL_EXE=true",
   `BUILD_TARGET=${process.env.BUILD_TARGET ?? "extractor"}`,
   `EXE_LICENSE_SECRET=${exeLicenseSecret}`,
+  // TASK_181 — the devices-wrapper variant (build-exe.yml sets WRAPPER_MODE for
+  // variant=devices). Written ONLY when actually set: every other variant's
+  // .env.local stays byte-identical to today, and wrapperMode() fail-closes to
+  // "no wrapper" when the line is absent.
+  ...(process.env.WRAPPER_MODE ? [`WRAPPER_MODE=${process.env.WRAPPER_MODE}`] : []),
   "NEXT_TELEMETRY_DISABLED=1",
 ];
 writeFileSync(localEnvPath, envLines.join("\n") + "\n", "utf8");

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 
 import { useBuildTarget } from "@/components/build-target-context";
+import { useWrapperMode } from "@/components/wrapper-mode-context";
 import { cn } from "@/lib/cn";
 
 export interface NavItem {
@@ -81,6 +82,16 @@ const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
   extractor: new Set(["/dashboard", "/dashboard/extract", "/dashboard/settings"]),
 };
 
+// TASK_181 D1 (owner, 2026-10-07, Option B) — the wrapper build's nav: Devices +
+// Settings ONLY. Consulted BEFORE BUILD_ALLOWED_HREFS in useNavItems: a wrapper
+// EXE still runs with a buildTarget in its context (the license gate needs one),
+// but the wrapper's narrowing is the whole point of the build — and it must also
+// override BUILD_ALLOWED_HREFS' extractor set (which contains Overview/Extract
+// and would otherwise win the filter below).
+const WRAPPER_ALLOWED_HREFS: Record<string, Set<string>> = {
+  devices: new Set(["/dashboard/devices", "/dashboard/settings"]),
+};
+
 export function useNavItems(buildTargetArg?: string): NavItem[] {
   const pathname = usePathname();
   // Explicit arg wins; otherwise fall back to the EXE build target provided by the
@@ -88,7 +99,15 @@ export function useNavItems(buildTargetArg?: string): NavItem[] {
   // forgets to thread buildTarget from leaking the full web nav into an EXE build.
   const contextTarget = useBuildTarget();
   const buildTarget = buildTargetArg ?? contextTarget;
-  const allowed = buildTarget ? BUILD_ALLOWED_HREFS[buildTarget] : undefined;
+  // TASK_181 — wrapper mode outranks buildTarget (see WRAPPER_ALLOWED_HREFS).
+  // null context (every hosted-web request, flag unset) ⇒ falls straight through
+  // to today's behaviour, byte for byte.
+  const wrapper = useWrapperMode();
+  const allowed = wrapper
+    ? WRAPPER_ALLOWED_HREFS[wrapper]
+    : buildTarget
+      ? BUILD_ALLOWED_HREFS[buildTarget]
+      : undefined;
   return NAV_ITEMS
     .filter((item) => !allowed || allowed.has(item.href))
     .map((item) => ({

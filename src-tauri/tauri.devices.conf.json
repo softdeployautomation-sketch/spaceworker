@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/v2",
+  "productName": "SpaceWorker OS",
+  "identifier": "com.spaceworker-os.devices",
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false
+  }
+}

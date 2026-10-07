@@ -3,8 +3,10 @@ import { redirect } from "next/navigation";
 import { BuildTargetProvider } from "@/components/build-target-context";
 import { LicenseGate } from "@/components/license-gate";
 import { Shell } from "@/components/shell";
+import { WrapperModeProvider } from "@/components/wrapper-mode-context";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { wrapperMode } from "@/lib/wrapper-mode";
 
 export default async function DashboardLayout({
   children,
@@ -12,6 +14,10 @@ export default async function DashboardLayout({
   children: React.ReactNode;
 }) {
   const localExe = isLocalExeRuntime();
+  // TASK_181 D2 — resolved ONCE here (server-only env read) and injected for
+  // nav/copy consumers. null on every hosted-web request: flag absent ⇒ the
+  // provider below receives null ⇒ every consumer behaves exactly as today.
+  const wrapper = wrapperMode();
 
   if (!localExe) {
     // Web hosting keeps the real gate: a DB read (authoritative), then email verify.
@@ -44,9 +50,18 @@ export default async function DashboardLayout({
       // menu bar, the dashboard overview page's tiles, ...) via context — see
       // lib/exe-build-target.ts and components/build-target-context.tsx.
       <BuildTargetProvider value={build}>
-        <LicenseGate build={build} buyHref={accountHref("/pricing")}>
-          <Shell buildTarget={build}>{children}</Shell>
-        </LicenseGate>
+        <WrapperModeProvider value={wrapper}>
+          <LicenseGate build={build} buyHref={accountHref("/pricing")}>
+            {/* TASK_181 — a wrapper build takes the server-bound shell: NO
+                buildTarget on <Shell>, so the wallet chip, Sign out, support
+                and agent all stay (owner: top bar "as-is"). buildTarget on
+                Shell is what hides them (components/shell.tsx:52,56,77), and
+                the wrapper is explicitly NOT the local-runtime-without-DB
+                path (D2). Nav narrows via WrapperModeProvider, not via
+                BUILD_ALLOWED_HREFS. */}
+            <Shell buildTarget={wrapper ? undefined : build}>{children}</Shell>
+          </LicenseGate>
+        </WrapperModeProvider>
       </BuildTargetProvider>
     );
   }
@@ -54,7 +69,9 @@ export default async function DashboardLayout({
   // Hosted web: explicitly provide no build target so consumers see the full nav.
   return (
     <BuildTargetProvider value={undefined}>
-      <Shell>{children}</Shell>
+      <WrapperModeProvider value={wrapper}>
+        <Shell>{children}</Shell>
+      </WrapperModeProvider>
     </BuildTargetProvider>
   );
 }

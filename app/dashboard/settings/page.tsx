@@ -7,6 +7,7 @@ import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { wrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
@@ -38,6 +39,10 @@ export default async function SettingsPage() {
   const user = await getCurrentUser();
   if (!user) return null;
 
+  // TASK_181 — the devices-only wrapper build: user-only settings (account,
+  // licenses, security); the cross-product config cards below are web-only.
+  const wrapper = wrapperMode() !== null;
+
   // Tier 1 trial — "Pro" is tier 5 (Premium) only; tier 1 (trial) shows Free.
   const plan = user.tier >= 5 ? "Pro" : "Free";
 
@@ -50,7 +55,9 @@ export default async function SettingsPage() {
   // through when the user already has a chat with this (shared) bot from
   // another product; the raw token lets them paste it directly instead.
   let linkToken: string | null = null;
-  if (env.telegramBotUsername && !user.telegramChatId) {
+  // TASK_181 — skip the token mint in the wrapper build: the Notifications
+  // card (its only consumer) is web-only there, so the DB write is wasted.
+  if (!wrapper && env.telegramBotUsername && !user.telegramChatId) {
     let token = user.telegramLinkToken;
     if (!token || !parseTelegramLinkToken(token)) {
       token = generateTelegramLinkToken();
@@ -119,7 +126,10 @@ export default async function SettingsPage() {
 
       {/* Owner ask (2026-10-02) — the Cloudflare account token lives in
           Settings; once saved it becomes an option across all hosting (the
-          Hosting page's engine picker reads it via /api/hosting/status). */}
+          Hosting page's engine picker reads it via /api/hosting/status).
+          TASK_181 — from here down these are cross-product config cards:
+          web-only, never rendered in the devices wrapper build. */}
+      {!wrapper && (
       <Card className="max-w-2xl p-6">
         <h2 className="text-lg font-semibold text-fg">Hosting accounts</h2>
         <p className="mt-1 text-sm text-fg-muted">
@@ -130,12 +140,14 @@ export default async function SettingsPage() {
           <HostingCredentialsSettings />
         </div>
       </Card>
+      )}
 
       {/* TASK_134 (premium) — deliberately just the region toggle, not the
           full mailbox management UI (that stays at the Campaigns page's
           "Mailboxes" tab, components/mailboxes-panel.tsx — adding/editing/
           testing mailboxes and the test-mailbox section don't belong on the
           account Settings page). */}
+      {!wrapper && (
       <Card className="max-w-2xl p-6">
         <h2 className="text-lg font-semibold text-fg">Send region</h2>
         <p className="mt-1 text-sm text-fg-muted">
@@ -145,7 +157,9 @@ export default async function SettingsPage() {
           <SendRegionSettings />
         </div>
       </Card>
+      )}
 
+      {!wrapper && (
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -177,7 +191,9 @@ export default async function SettingsPage() {
           />
         </div>
       </Card>
+      )}
 
+      {!wrapper && (
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -189,7 +205,9 @@ export default async function SettingsPage() {
           <Badge tone="neutral">Coming soon</Badge>
         </div>
       </Card>
+      )}
 
+      {!wrapper && (
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -201,6 +219,7 @@ export default async function SettingsPage() {
           <Badge tone="neutral">Coming soon</Badge>
         </div>
       </Card>
+      )}
 
       <p className="text-xs text-fg-muted">
         <Link href="/terms" className="underline hover:text-fg">
