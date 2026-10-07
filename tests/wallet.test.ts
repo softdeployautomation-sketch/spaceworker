@@ -822,6 +822,27 @@ test("a grant key already used for ANOTHER user is a named refusal", async () =>
   assert.equal(balanceOf("u2"), 100);
 });
 
+// TASK_181 P0a — the shared-passcode admin has no User row to FK to. See
+// grantBalance's doc comment: passing the literal "admin" string here used to
+// produce a P2003 inside move()'s transaction (the $50 founders-grant bug).
+test("a grant with a NULL adminId succeeds and writes a null-attributed ledger row", async () => {
+  seedUser("u1", 100);
+  const res = await wallet.grantBalance({
+    userId: "u1",
+    amountCents: 5000,
+    adminId: null,
+    note: "founders funding",
+  });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.kind, "admin_grant");
+  assert.equal(balanceOf("u1"), 5100);
+  assert.equal(store.entries[0].adminId, null, "the shared-passcode admin is NULL, not a forged id");
+  assert.equal(store.entries[0].note, "founders funding", "the note is what keeps this auditable");
+  assertLedgerSumsToBalance("u1", 100);
+});
+
 test("admin_grant is a real ledger kind, not a value move() would reject", async () => {
   seedUser("u1");
   const res = await wallet.grantBalance({ userId: "u1", amountCents: 1, adminId: "a1", note: "n" });

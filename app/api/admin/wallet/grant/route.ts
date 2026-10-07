@@ -63,13 +63,36 @@ export async function POST(req: Request) {
       ? body.idempotencyKey.trim().slice(0, 200)
       : undefined;
 
-  const result = await grantBalance({
-    userId: body.userId.trim(),
-    amountCents,
-    adminId: session.sub,
-    note: body.note,
-    idempotencyKey,
-  });
+  // TASK_181 P0a — THE NULL-ADMIN MAPPING. `session.sub` is the literal string
+  // "admin" (shared passcode, lib/admin-auth.ts — no per-admin accounts, no
+  // `User` row with that id), while `WalletLedgerEntry.adminId` is a real FK to
+  // `User`. Passing "admin" through wrote an unsatisfiable FK → P2003 inside
+  // `move()`'s transaction → an unhandled throw → Next.js HTML 500 → the panel's
+  // `res.json().catch(() => ({}))` found no `error` string and showed the
+  // generic "Grant failed" for a grant that never happened. NULL is the honest
+  // value for the shared-passcode admin (the column is already nullable and the
+  // mandatory note keeps the audit trail); a future per-admin session keeps its
+  // real User id and still FKs.
+  const adminId = session.sub === "admin" ? null : session.sub;
+
+  let result;
+  try {
+    result = await grantBalance({
+      userId: body.userId.trim(),
+      amountCents,
+      adminId,
+      note: body.note,
+      idempotencyKey,
+    });
+  } catch (err) {
+    // JSON, never HTML. A service throw (FK violation, DB down) must reach the
+    // panel as a body it can parse so the operator sees the REAL failure instead
+    // of a generic toast — that unreadable 500 is exactly how the $50 founders
+    // grant died silently. The error text stays generic enough not to leak
+    // schema details to a log scraper, while console.error keeps the detail.
+    console.error("[wallet/grant] grant failed:", err);
+    return NextResponse.json({ error: "Grant failed — nothing was credited." }, { status: 500 });
+  }
 
   if (!result.ok) {
     // Two ways a replay is refused, and they are different faults:

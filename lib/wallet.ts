@@ -135,8 +135,10 @@ interface Movement {
    * replayed webhook is exactly the race a read-then-write would lose.
    */
   paymentId?: string;
-  /** Required for the admin kinds, and meaningless elsewhere. */
-  adminId?: string;
+  /** Required for the admin kinds, and meaningless elsewhere. Null for the
+   *  shared-passcode admin session (sub === "admin"), which has no User row to
+   *  FK to — see grantBalance. */
+  adminId?: string | null;
   /** A caller-supplied repeat guard (e.g. `checkout:<id>`). UNIQUE when present. */
   idempotencyKey?: string;
   /**
@@ -613,7 +615,7 @@ export async function creditApprovedPayment(input: {
 export async function adminAdjustBalance(input: {
   userId: string;
   amountCents: number;
-  adminId: string;
+  adminId: string | null;
   note: string;
 }): Promise<WalletResult<WalletMovement>> {
   const note = checkNote(input.note);
@@ -647,11 +649,21 @@ export async function adminAdjustBalance(input: {
  *
  * The note and the adminId are both mandatory, for the reason given on
  * `adminAdjustBalance`: an unattributed balance change is a support incident.
+ *
+ * TASK_181 P0a (2026-10-07) — `adminId` may be NULL. The admin panel has no
+ * per-admin accounts: its session is a shared passcode whose JWT `sub` is the
+ * literal string `"admin"` (lib/admin-auth.ts), and `WalletLedgerEntry.adminId`
+ * is a real FK to `User`. Passing that string wrote a row no `User` could ever
+ * satisfy → P2003 inside `move()`'s transaction → an HTML 500 the panel could
+ * not read → the generic "Grant failed" the owner hit with real money. The
+ * column is already nullable, so the honest value for "the shared-passcode
+ * admin" is NULL (audit trail lives in the mandatory note) and any other admin
+ * id still FKs normally.
  */
 export async function grantBalance(input: {
   userId: string;
   amountCents: number;
-  adminId: string;
+  adminId: string | null;
   note: string;
   /** Replay guard, UNIQUE when present. See `move()`. */
   idempotencyKey?: string;
@@ -795,7 +807,7 @@ export async function spendSubscription(input: {
 export async function setPostpaidLimit(input: {
   userId: string;
   limitCents: number;
-  adminId: string;
+  adminId: string | null;
   note?: string;
 }): Promise<WalletResult<{ postpaidLimitCents: number }>> {
   if (!Number.isInteger(input.limitCents)) return badAmount("Credit limits are in whole cents.");
