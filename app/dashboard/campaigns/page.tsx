@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
@@ -150,7 +150,15 @@ function extractLinksClient(bodies: string[]): { url: string; likelyImage: boole
   return out;
 }
 
-export default function CampaignsPage() {
+// TASK_183 — renamed from `export default function CampaignsPage()`: the default
+// export below wraps this in <Suspense> so `next build` static prerender can
+// satisfy Next's missing-suspense-with-csr-bailout rule for useSearchParams()
+// (line ~227). The old always-on LicenseGate masked this in EXE builds because
+// it renders a spinner instead of children during prerender — the devices
+// wrapper skips the gate, so the page renders for real and must be correct on
+// its own. Runtime rendering is unchanged (real requests resolve params inside
+// the boundary and render this component directly).
+function CampaignsPageInner() {
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1660,5 +1668,21 @@ export default function CampaignsPage() {
         </>
       )}
     </div>
+  );
+}
+
+// TASK_183 — the Suspense boundary described above: required for static export,
+// invisible at runtime (see CampaignsPageInner comment).
+export default function CampaignsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[40vh] items-center justify-center text-sm text-neutral-500">
+          Loading…
+        </div>
+      }
+    >
+      <CampaignsPageInner />
+    </Suspense>
   );
 }

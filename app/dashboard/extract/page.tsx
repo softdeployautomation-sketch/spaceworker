@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { Suspense, useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Badge, Spinner } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
@@ -2127,7 +2127,13 @@ export function WebExtractPage() {
 // local-engine UI (LocalExtractPage). Which mode we're in is decided by pinging
 // /api/exe/extract — it 200s only inside the local runtime (gated by
 // isLocalExeRuntime), 404s on the hosted web app.
-export default function ExtractPage() {
+// TASK_183 — renamed from `export default function ExtractPage()`: the default
+// export below wraps this in <Suspense> for the same `next build` static-
+// prerender rule as the campaigns page (useSearchParams needs a Suspense
+// boundary once the page really renders during export — the old always-on
+// LicenseGate never rendered children in prerender, masking it). Runtime
+// rendering is unchanged.
+function ExtractPageInner() {
   const [mode, setMode] = useState<"loading" | "web" | "local">("loading");
 
   useEffect(() => {
@@ -2150,5 +2156,21 @@ export default function ExtractPage() {
     <div className="flex min-h-[40vh] items-center justify-center py-16">
       <Spinner className="text-brand-600" />
     </div>
+  );
+}
+
+// TASK_183 — the Suspense boundary described above: required for static export,
+// invisible at runtime (see ExtractPageInner comment).
+export default function ExtractPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[40vh] items-center justify-center">
+          <Spinner className="text-brand-600" />
+        </div>
+      }
+    >
+      <ExtractPageInner />
+    </Suspense>
   );
 }
