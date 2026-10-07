@@ -1,10 +1,11 @@
 # TASK_182 — VBS installer no longer installs (PRIORITY) + parked research
 
-> **PICK UP HERE (2026-10-07 ~22:40):** Root cause = stale agent blocks `-m install`
-> (§S2). Fix `ensureAgentCleanSlate` IMPLEMENTED at all 3 mint points (§S4).
-> **S5 gates green (tsc 0 · vantra 90/90 · xdevice 38/38 · carrier 26/26 · eslint 0).**
-> **S6 done: `~/Desktop/vantra-agent-182-test.vbs` minted + verified (70,763 B).**
-> **NOW: S7 — owner VM confirm on the dirty box → then S8 push + deploy. NO PUSH BEFORE S7.**
+> **CLOSED 2026-10-07:** S1–S8 ALL DONE. Root cause = stale agent blocks `-m install`
+> (§S2); `ensureAgentCleanSlate` fix implemented at all 3 mint points (§S4), gates green
+> (tsc 0 · vantra 90/90 · xdevice 38/38 · carrier 26/26 · eslint 0), owner VM-confirmed
+> (S7), pushed + deployed `0029633` (S8: BUILD_ID `hYINyfUmEUnK9TArnSidZ`, md5 parity,
+> site 200). Parked research §2A/§2B stays here. **Wrapper fix moved to
+> `TASK_183_WRAPPER_HOSTED_WINDOW.md` — pick up THERE.**
 
 **Created 2026-10-07 (pre-compact note).** Owner: "there is a bug in the vbs installer…
 when we fixed the pdf and i confirmed that worked… when i complained about the retry not
@@ -87,10 +88,14 @@ logic must have caused… safest path is going to the pdf fixed that worked."
 - [x] S7. **OWNER VM CONFIRMED ✅ (2026-10-07):** "ran the file first, it ran an
       uninstall of the agent, then when I ran it the second time, it went
       smoothly." Uninstall-first works on the dirty box; second run clean.
-- [ ] S8. After confirm: commit + push (4 files: `lib/vantra-carrier.ts`,
-      `lib/vantra-link.ts`, `scripts/mint-vantra-carrier.ts`,
-      `tests/vantra-carrier.test.ts` + this file), log in TASK_179 + this file;
-      mint-time server code → deploy + `systemctl restart spaceworker`.
+- [x] S8. **DEPLOYED ✅ (2026-10-07):** commit `0029633` pushed (5 files,
+      +301/−7) → `scripts/deploy-vps.sh /tmp/deploy-182.txt` (lib ×2 + CLI,
+      full build + restart). Verified: BUILD_ID `hYINyfUmEUnK9TArnSidZ`,
+      service active, `AGENT_CLEAN_SLATE`×3 + `ensureAgentCleanSlate`×4 on box,
+      md5 parity local↔box (both files), site 200, runtime assertions ok,
+      maintenance OFF. App-generated VBS now carry clean-slate too.
+      **NEXT QUEUED (owner order):** ① spaceworker wrapper issue (§2A:
+      24h-extractor-license conflict) ② activity "unknown" bug (§2B).
 - [ ] S8. After confirm: commit + push, log in TASK_179 + this file; deploy if hosted
       route/UI touched (mint-time server code → deploy + `systemctl restart spaceworker`).
 
@@ -170,4 +175,9 @@ See §5 commands in the Reference block above: uninstall does NOT refresh `_up_`
 kill `spaceworker-exe`/`msedgewebview2`/`node` then `Remove-Item _up_` or the reinstall
 silently serves the old runtime. Also delete `%APPDATA%\SpaceWorkerOS\exe-license-state.json`
 when testing research item A (stale expired trial = the conflict source).
+
+---
+
+**§2A (wrapper 24h license) + §2B (pending bugs) remain here as parked research.**
+**The ACTIVE wrapper fix moved to `TASK_183_WRAPPER_HOSTED_WINDOW.md` (2026-10-07).**
 
