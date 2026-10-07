@@ -19,7 +19,8 @@ export type ProductId =
   | "mailer_exe"
   | "combined_exe"
   | "automation_exe"
-  | "agent_exe";
+  | "agent_exe"
+  | "xdevice";
 
 // TASK_99 / plan §COMMERCIAL C3 — "module" is new: a pick-your-capability web
 // subscription that grants ONE OR MORE entitlements (lib/entitlements.ts)
@@ -27,7 +28,11 @@ export type ProductId =
 // and billed exactly like "web" (flat monthly, no term) — the only
 // difference downstream is what handleApprovedPayment does on success
 // (lib/license-service.ts): grant specific keys instead of bumping tier.
-export type ProductKind = "web" | "module" | "exe";
+// TASK_181 P3 — "xdevice" joins the union as its OWN kind: the public store's
+// web/module/exe sections only render those three kinds (components/store.tsx
+// filters by them), so the wrapper premium never appears as a store card while
+// still being a real, priced, purchasable product everywhere else.
+export type ProductKind = "web" | "module" | "exe" | "xdevice";
 
 export interface StoreProduct {
   id: ProductId;
@@ -65,6 +70,7 @@ export type AdminSettingPriceFields = {
   assistantDevicesModulePriceUsd: number;
   hostingModulePriceUsd: number;
   agentExePriceUsd: number;
+  xdevicePriceUsd: number;
 };
 
 export const WEB_SUBSCRIPTION: StoreProduct = {
@@ -198,7 +204,23 @@ export const EXE_PRODUCTS: StoreProduct[] = [
   AGENT_EXE,
 ];
 
-export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS];
+// TASK_181 P3 (step 26) — the XDevice wrapper premium (owner: "$500 for the
+// wrapper"). Priced from `xdevicePriceUsd` (AdminSetting, default 500,
+// admin-adjustable — no hardcoded 500 anywhere else). Its own kind keeps it
+// OUT of the store's card sections; the upgrade surface is the Settings card
+// and the device-console lock card. The subscription TERM is never shown in
+// the UI (owner: "never show it on ui how long the premium is for") — the
+// server grants a PREMIUM_DAYS_PER_CHARGE term into User.premiumExpiresAt.
+export const XDEVICE: StoreProduct = {
+  id: "xdevice",
+  name: "XDevice Premium",
+  tagline:
+    "Terminal, remote control, browser clones and screen monitoring — unlocked on the devices you own.",
+  priceField: "xdevicePriceUsd",
+  kind: "xdevice",
+};
+
+export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS, XDEVICE];
 
 /**
  * PLAN_TASK_167 W4 — the wallet top-up.

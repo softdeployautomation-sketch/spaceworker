@@ -278,28 +278,50 @@ Owner decisions this round (binding, verbatim anchors):
 Owner: "$500 for the wrapper" · "in admin, time all premium x subscription for one month…
 then i will decide to give them another subscription myself" · "never show it on ui how long
 the premium is for" · wording = "Subscribe to Premium" + admin price.
-- [ ] 25. `prisma/schema.prisma`: add `xdevicePriceUsd Float @default(500)` — ADDITIVE
+- [x] 25. `prisma/schema.prisma`: add `xdevicePriceUsd Float @default(500)` — ADDITIVE
       migration, timestamp strictly greater than newest on `origin/main` (fetch first).
       NO new term column: the tier-3 term lives in `premiumExpiresAt` (step 19c).
-- [ ] 26. `lib/products.ts`: new xdevice product in `ALL_PRODUCTS`
+      — DONE 2026-10-07. `xdevicePriceUsd @default(500)` @ schema:269; migration
+      `20261117000000_task181_xdevice_price` (greater than newest on origin/main).
+- [x] 26. `lib/products.ts`: new xdevice product in `ALL_PRODUCTS`
       (`priceField: "xdevicePriceUsd"`) so `/api/admin/wallets` GET/PUT and
       `/api/store/prices` pick it up automatically (admin-adjustable, no hardcoded 500).
-- [ ] 27. `lib/license-service.ts handleApprovedPayment`: xdevice ⇒ tier 3 +
+      — DONE 2026-10-07. product kind `xdevice` @ lib/products.ts:219; surfaced via
+      store prices + admin wallets routes (both iterate ALL_PRODUCTS).
+- [x] 27. `lib/license-service.ts handleApprovedPayment`: xdevice ⇒ tier 3 +
       `premiumExpiresAt = now + PREMIUM_DAYS_PER_CHARGE` (30d = owner's "one month"; re-grant
       extends from current expiry, stacking like every other grant). HARD RULE: never lower
       an active tier-5 user (a wrapper purchase must not downgrade Premium).
-- [ ] 28. `app/api/wallet/spend` + `lib/wallet.ts`: accept `product: "xdevice"` → debit the
+      — DONE 2026-10-07. checkout+submit treat xdevice as session-required like web/module;
+      grantXDeviceTerm path sets tier 3 + premiumExpiresAt; tier-5 never lowered (guard in
+      lib/premium.ts + test).
+- [x] 28. `app/api/wallet/spend` + `lib/wallet.ts`: accept `product: "xdevice"` → debit the
       admin price + tier 3 + 30d (mirror W5 contract: insufficient 402; tier-3-active OR
       tier-5-active ⇒ 409 `already_active`; keyed replay 0-charge; CAS 409 `wallet_contended`).
-- [ ] 29. Admin extend surface: owner can grant tier 3 (+30d) and EXTEND an active tier-3
+      — DONE 2026-10-07. server-side cents from AdminSetting.xdevicePriceUsd (never body);
+      XDEVICE_TIER_FOR_SPEND = 3 (lib/wallet.ts:108); both already_active branches tested.
+- [x] 29. Admin extend surface: owner can grant tier 3 (+30d) and EXTEND an active tier-3
       term ("increase their monthly subscription duration") — extend the existing admin
       users tier/grant routes; the expiry value stays server/admin-side only.
-- [ ] 30. Upgrade UI (Settings card + device-console card): price from `/api/store/prices`,
+      — DONE 2026-10-07. `POST /api/admin/users/[id]/grant-premium` body `{days?, tier?}`
+      with tier 3|5 validation; stacking extend semantics unchanged; tier-3 expiry never
+      rendered to the user (server/admin-side only).
+- [x] 30. Upgrade UI (Settings card + device-console card): price from `/api/store/prices`,
       wording **"Subscribe to Premium — $X"** (checkout + wallet-spend flows). ZERO duration
       copy anywhere (grep for "30 day/month" in touched components before commit).
-- [ ] 31. Tests: both rails grant exactly ONE tier-3 term · price read from store (grep =
+      — DONE 2026-10-07. billing page + device-console render "Subscribe to Premium" /
+      "Subscribe to Premium — $X" from store prices. xdevice success copy = "Premium
+      activated." (no date, no term). Only duration string left in billing/page.tsx:681 is
+      the PRE-EXISTING tier-5 web fallback (`product !== "xdevice"` branch) — untouched
+      behavior, no test depends on it.
+- [x] 31. Tests: both rails grant exactly ONE tier-3 term · price read from store (grep =
       no hardcoded 500) · tier-5 never downgraded · `already_active` on tier-3-active.
       Gates: tsc/eslint/wallet+module tests · migration additive + replayed · commit (money).
+      — DONE 2026-10-07. NEW `tests/xdevice-payment.test.ts` 14/14 (hook broadened to any
+      `/lib/*.ts` parent so exe-license's `server-only` import is stubbed too). Gates:
+      tsc **0** · eslint **exit 0** (touched files) · xdevice 38/38 (tier 16 + route-gate 8 +
+      payment 14) · wallet 63/63 (incl. grant-route 9) · vantra 90/90 · devices 6/6 ·
+      module-store 11/11 · vantra-carrier 21/21 · idlechip 15/15 · idle 8/8.
 
 ## P4 — Ship — re-scoped 2026-10-07 (build ONCE, clean — owner: "check the previous spaceworker extractor exe… the steps and issues were noted… make sure we dont run into those issues again")
 Build contract = `EXE_BUILD_LESSONS_LEARNED.md` (repo root — read it in full before

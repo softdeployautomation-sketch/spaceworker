@@ -992,3 +992,128 @@ test("W5 keyed retry after success answers chargedCents 0 and moves nothing", as
   assert.equal(balanceOf("u1"), 2500);
   assert.equal(store.entries.length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// TASK_181 P3 (step 31) — spendXDevice: the SAME W5 contract on tier 3.
+// The wrapper premium's spend must be byte-for-byte as safe as the web one:
+// one charge per term, never a downgrade, never a second charge on replay.
+// ---------------------------------------------------------------------------
+
+test("P3 success debits once + grants tier 3 with a ~30-day term + ledger row", async () => {
+  seedUser("u1", 50000);
+  const before = Date.now();
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  assert.equal(res.value.balanceCents, 0);
+  assert.equal(res.value.chargedCents, 50000);
+  const u = store.users.find((x) => x.id === "u1")!;
+  assert.equal(u.tier, 3, "the wrapper premium lands on tier 3, never tier 5");
+  const days = (u.premiumExpiresAt!.getTime() - before) / (24 * 60 * 60 * 1000);
+  assert.ok(days > 29 && days < 31, `term must be ~30 days, got ${days}`);
+  assert.equal(store.entries.length, 1);
+  assert.equal(store.entries[0].kind, "debit_purchase");
+  assert.equal(store.entries[0].amountCents, -50000);
+  assert.match(store.entries[0].note ?? "", /xdevice/);
+  assertLedgerSumsToBalance("u1", 50000);
+});
+
+test("P3 debit carries the CAS guard (balance in the WHERE)", async () => {
+  seedUser("u1", 50000);
+  await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+  assert.deepEqual(casGuards[0].where, { id: "u1", balanceCents: 50000 });
+});
+
+test("P3 double-spend: two simultaneous full-balance spends = exactly one success", async () => {
+  seedUser("u1", 50000);
+  const [a, b] = await Promise.all([
+    wallet.spendXDevice({ userId: "u1", priceCents: 50000 }),
+    wallet.spendXDevice({ userId: "u1", priceCents: 50000 }),
+  ]);
+  const winners = [a, b].filter((r) => r.ok).length;
+  assert.equal(winners, 1, "exactly one spend may succeed");
+  assert.equal(store.entries.length, 1, "the loser must not leave a ledger row");
+  assertLedgerSumsToBalance("u1", 50000);
+});
+
+test("P3 insufficient balance = 402 and nothing moves", async () => {
+  seedUser("u1", 49999);
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 402);
+  assert.equal(res.code, "insufficient_funds");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 49999);
+  assert.equal(store.entries.length, 0);
+  assert.equal(store.users.find((x) => x.id === "u1")!.tier, 1);
+});
+
+test("P3 live tier-3 term = 409 already_active and nothing moves (refuse, never extend)", async () => {
+  seedUser("u1", 50000, 0, { tier: 3, premiumExpiresAt: new Date(Date.now() + 10 * 24 * 60 * 60 * 1000) });
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 409);
+  assert.equal(res.code, "already_active");
+  assert.equal(writes.length, 0);
+  assert.equal(balanceOf("u1"), 50000);
+  assert.equal(store.entries.length, 0);
+});
+
+test("P3 live tier-5 premium = 409 already_active — NEVER charged, NEVER downgraded", async () => {
+  // The HARD RULE end to end: a premium holder tapping Subscribe gets a
+  // refusal with zero writes — tier must still be 5 afterwards.
+  const expiry = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000);
+  seedUser("u1", 50000, 0, { tier: 5, premiumExpiresAt: expiry });
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 409);
+  assert.equal(res.code, "already_active");
+  assert.equal(writes.length, 0, "a refusal must write nothing at all");
+  assert.equal(store.users.find((x) => x.id === "u1")!.tier, 5, "tier 5 must be untouched");
+  assert.equal(balanceOf("u1"), 50000);
+});
+
+test("P3 grandfathered tier-5 (NULL expiry) = 409 already_active, nothing moves", async () => {
+  seedUser("u1", 50000, 0, { tier: 5, premiumExpiresAt: null });
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, false);
+  if (res.ok) return;
+  assert.equal(res.status, 409);
+  assert.equal(res.code, "already_active");
+  assert.equal(writes.length, 0);
+  assert.equal(store.users.find((x) => x.id === "u1")!.tier, 5);
+});
+
+test("P3 expired tier-3 may buy again — a new term starts from now", async () => {
+  seedUser("u1", 50000, 0, { tier: 3, premiumExpiresAt: new Date(Date.now() - 1000) });
+  const before = Date.now();
+  const res = await wallet.spendXDevice({ userId: "u1", priceCents: 50000 });
+
+  assert.equal(res.ok, true);
+  if (!res.ok) return;
+  const u = store.users.find((x) => x.id === "u1")!;
+  assert.equal(u.tier, 3);
+  assert.ok(u.premiumExpiresAt!.getTime() >= before, "new term starts from now, never stacked onto the past");
+  assert.equal(balanceOf("u1"), 0);
+});
+
+test("P3 keyed retry after success answers chargedCents 0 and moves nothing", async () => {
+  seedUser("u1", 50000);
+  const first = await wallet.spendXDevice({ userId: "u1", priceCents: 50000, idempotencyKey: "xspend_1" });
+  assert.equal(first.ok, true);
+  const second = await wallet.spendXDevice({ userId: "u1", priceCents: 50000, idempotencyKey: "xspend_1" });
+
+  assert.equal(second.ok, true);
+  if (!second.ok) return;
+  assert.equal(second.value.chargedCents, 0);
+  assert.equal(balanceOf("u1"), 0);
+  assert.equal(store.entries.length, 1, "one keyed spend = one ledger row, ever");
+});

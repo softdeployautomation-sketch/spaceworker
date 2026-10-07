@@ -7,6 +7,7 @@ import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { getAdminSettings } from "@/lib/admin-settings";
 import { wrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
@@ -43,6 +44,16 @@ export default async function SettingsPage() {
   // licenses, security); the cross-product config cards below are web-only.
   const wrapper = wrapperMode() !== null;
 
+  // TASK_181 P3 (step 30) — the Premium card. Price = the ADMIN-SET
+  // xdevicePriceUsd (read live, never hardcoded anywhere in the UI), wording
+  // per owner: "Subscribe to Premium — $<price>". The TERM/duration is NEVER
+  // rendered (owner: "never show it on ui how long the premium is for").
+  // getCurrentUser already applied lazy reversion, so tier 3 here = a LIVE
+  // XDevice term and tier >= 5 = live/grandfathered Premium.
+  const settings = await getAdminSettings();
+  const xdevicePrice = settings.xdevicePriceUsd;
+  const premiumActive = user.tier >= 5 || user.tier === 3;
+
   // Tier 1 trial — "Pro" is tier 5 (Premium) only; tier 1 (trial) shows Free.
   const plan = user.tier >= 5 ? "Pro" : "Free";
 
@@ -77,6 +88,34 @@ export default async function SettingsPage() {
         <h1 className="text-2xl font-bold text-fg">Settings</h1>
         <p className="mt-1 text-sm text-fg-muted">Your account and preferences.</p>
       </div>
+
+      {/* TASK_181 P3 (step 30) — Subscribe to Premium. Price is the admin-set
+          xdevicePriceUsd (Wallets & Prices); NO term/duration copy anywhere by
+          design — the term lives server-side in premiumExpiresAt. Visible on
+          web AND the wrapper build (it is the wrapper's purchase surface). */}
+      <Card className="max-w-2xl p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-fg">Premium</h2>
+            <p className="mt-1 text-sm text-fg-muted">
+              Remote control, terminal commands, browser clones and screen
+              monitoring — premium tools on devices you own. Your device list, its
+              summary and its activity stay free.
+            </p>
+          </div>
+          {premiumActive && <Badge tone="success">Active</Badge>}
+        </div>
+        {!premiumActive && (
+          <div className="mt-4">
+            <Link
+              href="/dashboard/billing?product=xdevice"
+              className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
+            >
+              Subscribe to Premium — ${xdevicePrice}
+            </Link>
+          </div>
+        )}
+      </Card>
 
       <Card className="max-w-2xl p-6">
         <h2 className="text-lg font-semibold text-fg">Account</h2>

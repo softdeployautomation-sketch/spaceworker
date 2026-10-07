@@ -64,7 +64,9 @@ export async function POST(req: Request) {
   }
 
   let userId: string | null = null;
-  if (product.kind === "web" || product.kind === "module") {
+  // TASK_181 P3: xdevice joins web/module as session-required — its consequence
+  // (tier-3 term) lands on a real account, so it can never be an email-only buy.
+  if (product.kind === "web" || product.kind === "module" || product.kind === "xdevice") {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

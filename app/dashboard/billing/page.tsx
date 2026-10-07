@@ -65,6 +65,16 @@ export default function BillingPage() {
   // premium state and WalletBalance re-fetches. A key-change remount, not a
   // prop thread: the spend result must never linger as a stale "active" line.
   const [spendEpoch, setSpendEpoch] = useState(0);
+  // TASK_181 P3 (step 30) — ?product=xdevice drives both purchase flows below
+  // (crypto checkout quote + wallet-spend body). Read AFTER mount: window does
+  // not exist during SSR, so web renders first and xdevice is adopted on
+  // hydration without a server/client mismatch.
+  const [product, setProduct] = useState<"web_subscription" | "xdevice">("web_subscription");
+  useEffect(() => {
+    const p = new URLSearchParams(window.location.search).get("product");
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- window.location only exists post-mount (SSR has no URL); one-shot adoption of the query param
+    if (p === "xdevice") setProduct("xdevice");
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -96,16 +106,22 @@ export default function BillingPage() {
     payment === undefined ? (
       <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
     ) : !payment ? (
-      <UpgradeFlow onResult={handleResult} />
+      <UpgradeFlow onResult={handleResult} product={product} />
     ) : (
-      <StatusCardView payment={payment} note={note} onResult={handleResult} />
+      <StatusCardView payment={payment} note={note} onResult={handleResult} product={product} />
     );
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
       <WalletBalance key={spendEpoch} />
-      {payment !== undefined && <SpendFlow key={spendEpoch} onSpent={() => setSpendEpoch((n) => n + 1)} />}
+      {payment !== undefined && (
+        <SpendFlow
+          key={`${spendEpoch}-${product}`}
+          onSpent={() => setSpendEpoch((n) => n + 1)}
+          product={product}
+        />
+      )}
       <TopUpFlow />
       {subscription}
     </div>
@@ -209,8 +225,12 @@ function PaymentInstructions({
 
 function UpgradeFlow({
   onResult,
+  product,
 }: {
   onResult: (p: PaymentInfo | null, note?: string) => void;
+  // TASK_181 P3 (step 30) — "xdevice" quotes/charges xdevicePriceUsd and lands
+  // a tier-3 term; "web_subscription" behaves exactly as before.
+  product: "web_subscription" | "xdevice";
 }) {
   const [kind, setKind] = useState<Kind>("btc");
   const [checkout, setCheckout] = useState<CheckoutInfo | null>(null);
@@ -219,11 +239,12 @@ function UpgradeFlow({
 
   useEffect(() => {
     let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the previous quote when kind/product change; the fetch below is async (pre-existing pattern, rule flagged on HEAD too)
     setCheckout(null);
     setError("");
     setLoadingInfo(true);
     (async () => {
-      const res = await fetch(`/api/billing/checkout?kind=${kind}`);
+      const res = await fetch(`/api/billing/checkout?kind=${kind}&product=${product}`);
       const data = await res.json().catch(() => ({}));
       if (!cancelled) {
         setLoadingInfo(false);
@@ -234,7 +255,7 @@ function UpgradeFlow({
     return () => {
       cancelled = true;
     };
-  }, [kind]);
+  }, [kind, product]);
 
   // Delegated to PaymentInstructions as its `onSubmitHash`: the shared block owns
   // the input and the submitting state; this owns what the hash MEANS for a
@@ -243,7 +264,7 @@ function UpgradeFlow({
   async function submitHash(hash: string): Promise<string | null> {
     const res = await fetch("/api/billing/submit", {
       method: "POST",
-      body: JSON.stringify({ kind, txHash: hash }),
+      body: JSON.stringify({ kind, txHash: hash, product }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
@@ -260,10 +281,22 @@ function UpgradeFlow({
   return (
     <div className="mt-6">
       <div className="max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-xl font-semibold tracking-tight">Upgrade to Pro</h2>
+        <h2 className="text-xl font-semibold tracking-tight">
+          {/* TASK_181 P3 (step 30) — owner wording for the wrapper premium:
+              "Subscribe to Premium" + the admin-set price. NO term/duration
+              copy, ever (owner: "never show it on ui how long the premium is
+              for"). */}
+          {product === "xdevice" ? "Subscribe to Premium" : "Upgrade to Pro"}
+        </h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Pro plan gives your jobs higher queue priority.
-          {checkout ? ` $${checkout.amountUsd.toFixed(2)} / month.` : ""}
+          {product === "xdevice"
+            ? "Terminal, remote control, browser clones and screen monitoring — premium tools on devices you own."
+            : "Pro plan gives your jobs higher queue priority."}
+          {checkout
+            ? product === "xdevice"
+              ? ` $${checkout.amountUsd.toFixed(2)}.`
+              : ` $${checkout.amountUsd.toFixed(2)} / month.`
+            : ""}
         </p>
 
         <div className="mt-5 flex gap-2">
@@ -480,10 +513,14 @@ function StatusCardView({
   payment,
   note,
   onResult,
+  product,
 }: {
   payment: PaymentInfo;
   note: string | null;
   onResult: (p: PaymentInfo | null, n?: string) => void;
+  // TASK_181 P3 — the rejected-payment resubmit must re-quote the SAME product
+  // the original payment was for (web vs xdevice), not silently fall back.
+  product: "web_subscription" | "xdevice";
 }) {
   const labels: Record<string, { badge: string; text: string }> = {
     approved: {
@@ -550,7 +587,7 @@ function StatusCardView({
       {payment.status === "rejected" && (
         <div className="mt-8 border-t border-zinc-200 pt-6 dark:border-zinc-800">
           <h3 className="text-lg font-semibold tracking-tight">Submit a new payment hash</h3>
-          <UpgradeFlow onResult={onResult} />
+          <UpgradeFlow onResult={onResult} product={product} />
         </div>
       )}
     </div>
@@ -558,11 +595,11 @@ function StatusCardView({
 }
 
 // PLAN_TASK_158 W5 — "Activate with balance". Reads the spend price + premium
-// state, then POSTs { product: "web_subscription" } — the ONLY body the route
-// accepts. No amount, no userId: the price is server-computed from the same
-// AdminSetting field as checkout, and the user comes from the session. After
-// a success the parent remounts (balance refresh) via onSpent.
-function SpendFlow({ onSpent }: { onSpent: () => void }) {
+// state, then POSTs { product } — web_subscription (W5) or xdevice
+// (TASK_181 P3 step 30). No amount, no userId: the price is server-computed
+// from the same AdminSetting field as checkout, and the user comes from the
+// session. After a success the parent remounts (balance refresh) via onSpent.
+function SpendFlow({ onSpent, product }: { onSpent: () => void; product: "web_subscription" | "xdevice" }) {
   const [state, setState] = useState<
     | { kind: "loading" }
     | { kind: "ready"; priceUsd: number; balanceCents: number; premiumActive: boolean }
@@ -575,11 +612,12 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
     (async () => {
       try {
         // Price from the SAME source the spend route charges: the checkout
-        // quote for web_subscription (AdminSetting.webSubscriptionPriceUsd).
-        // No second constant anywhere — display and charge read one field.
+        // quote for this product (AdminSetting.webSubscriptionPriceUsd /
+        // xdevicePriceUsd). No second constant anywhere — display and charge
+        // read one field.
         const [walletRes, quoteRes] = await Promise.all([
           fetch("/api/wallet", { cache: "no-store" }),
-          fetch("/api/billing/checkout?kind=usdt_trc20&product=web_subscription", { cache: "no-store" }),
+          fetch(`/api/billing/checkout?kind=usdt_trc20&product=${product}`, { cache: "no-store" }),
         ]);
         if (!quoteRes.ok) throw new Error(`price lookup failed (${quoteRes.status})`);
         const qd = (await quoteRes.json()) as { amountUsd?: unknown };
@@ -589,18 +627,31 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
           const wd = (await walletRes.json()) as { wallet?: { balanceCents?: unknown } };
           if (typeof wd.wallet?.balanceCents === "number") balanceCents = wd.wallet.balanceCents;
         }
-        const st = await fetch("/api/billing/status", { cache: "no-store" });
         let premiumActive = false;
-        if (st.ok) {
-          const sd = (await st.json()) as { status?: { status?: unknown } | null };
-          premiumActive = !!sd.status && (sd.status as { status?: unknown }).status === "approved";
+        if (product === "xdevice") {
+          // The XDevice term is an ENTITLEMENT state, not a web-payment row: a
+          // live tier-3 term or a devices grant shows as `devices`, full
+          // Premium as `premium` — either already covers the device tools, so
+          // the spend would be refused server-side with already_active anyway.
+          const ent = await fetch("/api/entitlements", { cache: "no-store" });
+          if (ent.ok) {
+            const ed = (await ent.json()) as { premium?: unknown; keys?: unknown };
+            premiumActive =
+              ed.premium === true || (Array.isArray(ed.keys) && ed.keys.includes("devices"));
+          }
+        } else {
+          const st = await fetch("/api/billing/status", { cache: "no-store" });
+          if (st.ok) {
+            const sd = (await st.json()) as { status?: { status?: unknown } | null };
+            premiumActive = !!sd.status && (sd.status as { status?: unknown }).status === "approved";
+          }
         }
         setState({ kind: "ready", priceUsd: qd.amountUsd, balanceCents, premiumActive });
       } catch {
         setState({ kind: "error", message: "Could not load the subscription price. Try again shortly." });
       }
     })();
-  }, []);
+  }, [product]);
 
   async function spend() {
     setSpending(true);
@@ -609,7 +660,7 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
       const res = await fetch("/api/wallet/spend", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ product: "web_subscription" }),
+        body: JSON.stringify({ product }),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: unknown; code?: unknown; premiumExpiresAt?: unknown };
       if (!res.ok) {
@@ -620,7 +671,14 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
       const expiry = typeof data.premiumExpiresAt === "string" ? data.premiumExpiresAt : null;
       setResult({
         ok: true,
-        message: expiry ? `Premium active until ${new Date(expiry).toLocaleDateString()}.` : "Premium activated for 30 days.",
+        // xdevice: NEVER a date or a term length (owner: "never show it on ui
+        // how long the premium is for"). Web copy unchanged.
+        message:
+          product === "xdevice"
+            ? "Premium activated."
+            : expiry
+              ? `Premium active until ${new Date(expiry).toLocaleDateString()}.`
+              : "Premium activated for 30 days.",
       });
       onSpent();
     } catch {
@@ -649,7 +707,9 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         {state.premiumActive
           ? "Premium is already active on this account — no charge was made."
-          : `One month of Pro for ${money} from your wallet balance.`}
+          : product === "xdevice"
+            ? `Subscribe to Premium for ${money} from your wallet balance.`
+            : `One month of Pro for ${money} from your wallet balance.`}
       </p>
       {!state.premiumActive && (
         <button
@@ -657,7 +717,13 @@ function SpendFlow({ onSpent }: { onSpent: () => void }) {
           disabled={spending || !affordable}
           className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
         >
-          {spending ? "Activating…" : affordable ? `Activate Pro — ${money}` : `Insufficient balance (need ${money})`}
+          {spending
+            ? "Activating…"
+            : affordable
+              ? product === "xdevice"
+                ? `Subscribe — ${money}`
+                : `Activate Pro — ${money}`
+              : `Insufficient balance (need ${money})`}
         </button>
       )}
       {result && (

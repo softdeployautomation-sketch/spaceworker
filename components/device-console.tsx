@@ -391,11 +391,29 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
 // on every action route, so this is the honest UI half of one gate.
 const TOOL_TABS = new Set<Tabs>(["control", "command", "clone", "monitoring"]);
 
-// The upgrade card that replaces a locked tool tab. NO price and NO duration in
-// this copy on purpose: P3 wires the admin-set price into it, and the
-// subscription term is never shown in the UI (owner: "never show it on ui how
-// long the premium is for").
+// The upgrade card that replaces a locked tool tab. P3 (step 30): price comes
+// from the admin-set xdevicePriceUsd via /api/store/prices — shown as owner
+// wording "Subscribe to Premium — $X". The subscription term is NEVER in the
+// copy (owner: "never show it on ui how long the premium is for").
 function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
+  const [priceUsd, setPriceUsd] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/store/prices", { cache: "no-store" });
+        const data = (await res.json()) as { products?: { id?: string; priceUsd?: unknown }[] };
+        const x = data.products?.find((p) => p.id === "xdevice");
+        if (!cancelled && x && typeof x.priceUsd === "number") setPriceUsd(x.priceUsd);
+      } catch {
+        // Fail-soft: render the wording without a price rather than a broken card.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const label = priceUsd !== null ? `Subscribe to Premium — $${priceUsd}` : "Subscribe to Premium";
   return (
     <div
       className={cn(
@@ -404,17 +422,17 @@ function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
       )}
     >
       <Lock className="h-5 w-5 text-fg-muted" aria-hidden />
-      <p className="text-sm font-medium text-fg">Subscribe to Premium</p>
+      <p className="text-sm font-medium text-fg">{label}</p>
       <p className="max-w-md text-sm text-fg-muted">
         Remote control, terminal commands, browser clones and screen monitoring are
         premium tools on devices you own. Your device list, its summary and its
         activity stay free.
       </p>
       <Link
-        href="/dashboard/billing"
+        href="/dashboard/billing?product=xdevice"
         className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
       >
-        Subscribe to Premium
+        {label}
       </Link>
     </div>
   );

@@ -50,6 +50,16 @@ test("the new SpaceWorker Agent EXE and the three modules are really in the cata
   assert.deepEqual(getProduct("assistant_devices_module")?.entitlementKeys, ["assistant", "devices"]);
 });
 
+test("TASK_181 P3: the XDevice wrapper premium is a catalog product priced by xdevicePriceUsd", () => {
+  const x = getProduct("xdevice");
+  assert.ok(x, "xdevice must be in ALL_PRODUCTS so /api/store/prices and Admin > Wallets & Prices pick it up");
+  assert.equal(x!.kind, "xdevice", "its own kind — the store page only renders web/module/exe cards");
+  assert.equal(x!.priceField, "xdevicePriceUsd", "admin-adjustable: never a hardcoded 500 anywhere");
+  assert.ok(ALL_PRODUCTS.includes(x!));
+  assert.ok(!MODULE_PRODUCTS.includes(x!), "not a module card");
+  assert.ok(!EXE_PRODUCTS.includes(x!), "not an EXE card");
+});
+
 // --- lib/entitlements.ts, through the house require-hook stub -------------
 
 interface EntitlementRow {

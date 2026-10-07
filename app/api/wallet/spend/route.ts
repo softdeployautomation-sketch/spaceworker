@@ -3,15 +3,19 @@ import { NextResponse } from "next/server";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { getCurrentUser } from "@/lib/session-user";
 import { getAdminSettings } from "@/lib/admin-settings";
-import { spendSubscription } from "@/lib/wallet";
+import { spendSubscription, spendXDevice } from "@/lib/wallet";
 
 export const dynamic = "force-dynamic";
 
-// PLAN_TASK_158 W5 — POST /api/wallet/spend, body { product: "web_subscription" }.
+// PLAN_TASK_158 W5 — POST /api/wallet/spend, body { product }.
 //
-// The loop-closer: funded balance (W3 grant + W4 top-up) becomes a 30-day
-// tier-5 term. Premium-only by owner scope (2026-10-06) — EXE products are W6
-// and are refused here with 400, not priced, because minting a licence key
+// TASK_181 P3 (step 28): TWO spendable products — "web_subscription"
+// (spendSubscription → 30-day tier-5 term) and "xdevice" (spendXDevice →
+// tier-3 XDevice term, mirroring the full W5 contract: 402 insufficient,
+// 409 already_active, keyed replay 0-charge, CAS 409 wallet_contended).
+// The loop-closer: funded balance (W3 grant + W4 top-up) becomes a term.
+// Everything else — an EXE id, a module id, a missing field, a non-string —
+// is refused here with 400, not priced, because minting a licence key
 // from wallet balance does not exist yet.
 //
 // PRICE SOURCE. The cents charged come from the SAME AdminSetting field the
@@ -50,16 +54,16 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 });
   }
 
-  // Premium-only: the string must match exactly. Anything else — an EXE id, a
-  // module id, a missing field, a non-string — is refused BEFORE any price is
-  // read or money touched. EXE rejection names W6 so the client can explain it.
-  if (body.product !== "web_subscription") {
+  // TASK_181 P3: two spendable products. The string must match exactly —
+  // anything else is refused BEFORE any price is read or money touched.
+  const productId = body.product;
+  if (productId !== "web_subscription" && productId !== "xdevice") {
     return NextResponse.json(
       {
         error:
-          typeof body.product === "string" && body.product.length > 0
-            ? `Wallet spend is not available for "${body.product}" yet — web subscription only.`
-            : "Unknown product. Wallet spend covers the web subscription only.",
+          typeof productId === "string" && productId.length > 0
+            ? `Wallet spend is not available for "${productId}" yet — web subscription and XDevice Premium only.`
+            : "Unknown product. Wallet spend covers the web subscription and XDevice Premium only.",
         code: "unsupported_product",
       },
       { status: 400 },
@@ -67,7 +71,7 @@ export async function POST(req: Request) {
   }
 
   const settings = await getAdminSettings();
-  const priceUsd = settings.webSubscriptionPriceUsd;
+  const priceUsd = productId === "xdevice" ? settings.xdevicePriceUsd : settings.webSubscriptionPriceUsd;
   if (!Number.isFinite(priceUsd) || priceUsd <= 0) {
     return NextResponse.json({ error: "Subscription price is not configured." }, { status: 500 });
   }
@@ -80,14 +84,17 @@ export async function POST(req: Request) {
       ? body.idempotencyKey.trim().slice(0, 200)
       : undefined;
 
-  const result = await spendSubscription({ userId: user.id, priceCents, idempotencyKey });
+  const result =
+    productId === "xdevice"
+      ? await spendXDevice({ userId: user.id, priceCents, idempotencyKey })
+      : await spendSubscription({ userId: user.id, priceCents, idempotencyKey });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
   }
 
   return NextResponse.json({
     ok: true,
-    product: "web_subscription",
+    product: productId,
     balanceCents: result.value.balanceCents,
     premiumExpiresAt: result.value.premiumExpiresAt.toISOString(),
     chargedCents: result.value.chargedCents,

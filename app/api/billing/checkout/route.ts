@@ -43,8 +43,9 @@ export async function GET(req: NextRequest) {
   // The web subscription and modules (TASK_99) both require an existing
   // session — an entitlement/tier is granted to a real account, unlike an
   // EXE license which can be delivered to a bare email. EXE products are the
-  // store's no-login purchase path.
-  if (product.kind === "web" || product.kind === "module") {
+  // store's no-login purchase path. TASK_181 P3: the XDevice wrapper premium
+  // is a tier-3 term on a real account, so it is session-required too.
+  if (product.kind === "web" || product.kind === "module" || product.kind === "xdevice") {
     if (!session) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

@@ -99,6 +99,27 @@ function isLivePremium(tier: number, premiumExpiresAt: Date | null): boolean {
   return premiumExpiresAt.getTime() > Date.now();
 }
 
+/**
+ * TASK_181 P3 (step 28) — the XDevice wrapper premium's tier, kept LOCAL like
+ * PREMIUM_TIER_FOR_SPEND above: this file stays import-free of lib/premium.ts
+ * on purpose (the money module does not take its numbers from elsewhere).
+ * Mirrors XDEVICE_TIER in lib/premium.ts (value 3).
+ */
+const XDEVICE_TIER_FOR_SPEND = 3;
+
+/**
+ * True while the account holds a LIVE XDevice term: tier 3 with a future
+ * expiry, or tier 3 with NULL expiry (counts live — the same grandfather rule
+ * tier 5 has, matching isXdeviceLive in lib/entitlements.ts). An EXPIRED
+ * tier-3 term is not live: reversion flips it to tier 1 on next read, and a
+ * new purchase may start a fresh term from now.
+ */
+function isLiveXDevice(tier: number, premiumExpiresAt: Date | null): boolean {
+  if (tier !== XDEVICE_TIER_FOR_SPEND) return false;
+  if (premiumExpiresAt === null) return true;
+  return premiumExpiresAt.getTime() > Date.now();
+}
+
 export interface WalletView {
   /** Cached total, in cents. The authoritative sum is the ledger's. */
   balanceCents: number;
@@ -765,6 +786,112 @@ export async function spendSubscription(input: {
         const { count } = await tx.user.updateMany({
           where: { id: input.userId, balanceCents: snap.balanceCents },
           data: { balanceCents: newBalance, tier: PREMIUM_TIER_FOR_SPEND, premiumExpiresAt: expiry },
+        });
+        if (count === 0) return false;
+        await tx.walletLedgerEntry.create({
+          data: { userId: input.userId, kind: "debit_purchase", amountCents: -input.priceCents, balanceAfterCents: newBalance, note: note.value, idempotencyKey: idemKey },
+        });
+        return true;
+      });
+      if (!done) continue;
+      return { ok: true, value: { balanceCents: newBalance, premiumExpiresAt: expiry, chargedCents: input.priceCents } };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // A concurrent retry of the same keyed spend won first: answer committed truth.
+      if (!idemKey) continue;
+      const existing = await prisma.walletLedgerEntry.findUnique({ where: { idempotencyKey: idemKey } });
+      if (existing && existing.userId === input.userId) {
+        const fresh = await prisma.user.findUnique({ where: { id: input.userId }, select: { balanceCents: true, premiumExpiresAt: true } });
+        if (!fresh) return notFound();
+        return { ok: true, value: { balanceCents: fresh.balanceCents, premiumExpiresAt: fresh.premiumExpiresAt ?? expiry, chargedCents: 0 } };
+      }
+      return { ok: false, status: 409, code: "idempotency_key_conflict", message: "That reference was already used for a different account." };
+    }
+  }
+
+  return { ok: false, status: 409, code: "wallet_contended", message: "That account was being changed at the same time. Please try again." };
+}
+
+/**
+ * TASK_181 P3 (step 28) — spend funded balance on the XDevice wrapper premium.
+ *
+ * Mirror of spendSubscription's W5 contract, on tier 3 instead of tier 5:
+ *   · insufficient balance → 402 insufficient_funds (nothing moves);
+ *   · LIVE tier-3 term → 409 already_active (refused, never extended — one
+ *     charge per term, same "why was I charged twice" answer as W5);
+ *   · LIVE tier-5 term → 409 too: premium already covers device tools, so
+ *     charging would buy nothing — and this branch writes nothing, keeping the
+ *     HARD RULE that a wrapper purchase never downgrades Premium;
+ *   · keyed retry after success → answers chargedCents 0 from committed truth;
+ *   · CAS loser retries against new truth, then 409 wallet_contended.
+ *
+ * The price (integer cents) is computed by the ROUTE from
+ * AdminSetting.xdevicePriceUsd — never from the request body. The term length
+ * is server-side only: no UI ever renders it (owner: "never show it on ui how
+ * long the premium is for").
+ */
+export async function spendXDevice(input: {
+  userId: string;
+  /** Integer cents, computed SERVER-side from AdminSetting.xdevicePriceUsd. */
+  priceCents: number;
+  idempotencyKey?: string;
+}): Promise<
+  WalletResult<{ balanceCents: number; premiumExpiresAt: Date; chargedCents: number }>
+> {
+  if (!Number.isInteger(input.priceCents)) return badAmount("Amounts are in whole cents.");
+  if (input.priceCents <= 0) return badAmount("Enter an amount — a spend of zero changes nothing.");
+  const note = checkNote("XDevice Premium — 30 days (xdevice)");
+  if (!note.ok) return note;
+
+  const idemKey =
+    typeof input.idempotencyKey === "string" && input.idempotencyKey.length > 0
+      ? input.idempotencyKey
+      : undefined;
+
+  // A retry of the SAME keyed spend answers from committed truth, never charges twice.
+  if (idemKey) {
+    const prior = await prisma.walletLedgerEntry.findUnique({ where: { idempotencyKey: idemKey } });
+    if (prior) {
+      if (prior.userId !== input.userId) {
+        return { ok: false, status: 409, code: "idempotency_key_conflict", message: "That reference was already used for a different account." };
+      }
+      const u = await prisma.user.findUnique({ where: { id: input.userId }, select: { balanceCents: true, premiumExpiresAt: true } });
+      if (!u) return notFound();
+      return { ok: true, value: { balanceCents: u.balanceCents, premiumExpiresAt: u.premiumExpiresAt ?? new Date(), chargedCents: 0 } };
+    }
+  }
+
+  for (let attempt = 0; attempt < MAX_CAS_ATTEMPTS; attempt++) {
+    const snap = await prisma.user.findUnique({
+      where: { id: input.userId },
+      select: { balanceCents: true, tier: true, premiumExpiresAt: true, postpaidLimitCents: true },
+    });
+    if (!snap) return notFound();
+    if (isLiveXDevice(snap.tier, snap.premiumExpiresAt)) {
+      return { ok: false, status: 409, code: "already_active", message: "XDevice Premium is already active on this account — no charge was made." };
+    }
+    if (isLivePremium(snap.tier, snap.premiumExpiresAt)) {
+      // Premium already covers every device tool — refuse rather than charge
+      // for something the account can already do. Writes NOTHING (never a
+      // downgrade path).
+      return { ok: false, status: 409, code: "already_active", message: "Premium is already active on this account — no charge was made." };
+    }
+    if (snap.balanceCents - input.priceCents < -snap.postpaidLimitCents) {
+      return { ok: false, status: 402, code: "insufficient_funds", message: "Insufficient balance. Top up your wallet first — nothing was charged." };
+    }
+
+    const newBalance = snap.balanceCents - input.priceCents;
+    const nowMs = Date.now();
+    // Same defensive base as spendSubscription: restart from now rather than
+    // ever stacking a new term onto a past expiry.
+    const baseMs = snap.premiumExpiresAt && snap.premiumExpiresAt.getTime() > nowMs ? snap.premiumExpiresAt.getTime() : nowMs;
+    const expiry = new Date(baseMs + SPEND_TERM_DAYS * DAY_MS);
+
+    try {
+      const done = await prisma.$transaction(async (tx) => {
+        const { count } = await tx.user.updateMany({
+          where: { id: input.userId, balanceCents: snap.balanceCents },
+          data: { balanceCents: newBalance, tier: XDEVICE_TIER_FOR_SPEND, premiumExpiresAt: expiry },
         });
         if (count === 0) return false;
         await tx.walletLedgerEntry.create({

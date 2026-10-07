@@ -259,6 +259,14 @@ model AdminSetting {
   // mailer/combined/automation EXE already sell in — TASK_27 Part A: "only
   // Extractor is wired into CI today") — sellable now, buildable later.
   agentExePriceUsd               Float    @default(50) // one-time, 6-month term
+  // TASK_181 P3 (step 25) — the XDevice wrapper premium (owner: "$500 for the
+  // wrapper"). One admin-set price, ADDITIVE column. NO duration/term column:
+  // the tier-3 term lives in User.premiumExpiresAt (PREMIUM_DAYS_PER_CHARGE)
+  // and its length is deliberately never rendered in the UI (owner: "never
+  // show it on ui how long the premium is for" — admin decides/extends term
+  // server-side). Default 500 = the owner's stated wrapper price; adjustable
+  // in Admin > Wallets & Prices like every other price here.
+  xdevicePriceUsd                Float    @default(500)
 
   // PLAN_TASK_167 W4 — the smallest wallet top-up a user may open, in whole
   // DOLLARS (every other price on this model is a Float in dollars too, so a

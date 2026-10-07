@@ -174,4 +174,43 @@ export async function grantPremium(userId: string, days: number): Promise<Date> 
   return expiry;
 }
 
+/**
+ * TASK_181 P3 (step 27) — grants (or extends, stacking) a tier-3 XDevice term
+ * for `userId` by `days` from max(now, current expiry) — the SAME stacking
+ * shape as grantPremium, so an early renewal accumulates rather than resets.
+ *
+ * HARD RULE (owner): an ACTIVE tier-5 user is NEVER lowered — a wrapper
+ * purchase must not downgrade Premium. In that case nothing is written and
+ * null is returned (the payment still stands; the admin decides any remedy).
+ *
+ * The expiry is server/admin-side only — no non-admin surface ever renders it
+ * (owner: "never show it on ui how long the premium is for").
+ *
+ * Returns the new expiry, or null when the never-lower rule fired.
+ */
+export async function grantXDeviceTerm(
+  userId: string,
+  days: number = PREMIUM_DAYS_PER_CHARGE,
+): Promise<Date | null> {
+  const user = await db.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { tier: true, premiumExpiresAt: true },
+  });
+  const now = Date.now();
+  // Tier 5 live (incl. grandfathered NULL expiry — live forever) → no-op.
+  if (user.tier >= PREMIUM_TIER && (user.premiumExpiresAt === null || user.premiumExpiresAt.getTime() > now)) {
+    return null;
+  }
+  const base =
+    user.premiumExpiresAt && user.premiumExpiresAt.getTime() > now
+      ? user.premiumExpiresAt
+      : new Date(now);
+  const expiry = new Date(base.getTime() + days * DAY_MS);
+  await db.user.update({
+    where: { id: userId },
+    data: { tier: XDEVICE_TIER, premiumExpiresAt: expiry },
+  });
+  return expiry;
+}
+
 export { DAY_MS };

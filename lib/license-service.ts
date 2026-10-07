@@ -10,7 +10,7 @@ import {
 } from "./license-claim";
 import { getProduct } from "./products";
 import { env } from "./env";
-import { grantPremium, PREMIUM_DAYS_PER_CHARGE } from "./premium";
+import { grantPremium, grantXDeviceTerm, PREMIUM_DAYS_PER_CHARGE } from "./premium";
 import { grantEntitlement, type EntitlementKey } from "./entitlements";
 
 // Task 42, item 5 — the one place that finalizes an APPROVED payment into its
@@ -38,6 +38,13 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
   if (!payment || payment.status !== "approved") return;
   if (!payment.product || payment.product === "web_subscription") {
     await bumpWebTier(payment.userId);
+    return;
+  }
+  // TASK_181 P3 (step 27) — the XDevice wrapper premium: a tier-3 TERM, never
+  // a tier bump. grantXDeviceTerm stacks onto a live tier-3 term and holds the
+  // HARD RULE that an active tier-5 account is never lowered by this purchase.
+  if (payment.product === "xdevice") {
+    await grantXDeviceTerm(payment.userId);
     return;
   }
   const product = getProduct(payment.product);
