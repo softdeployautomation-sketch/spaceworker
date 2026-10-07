@@ -13,6 +13,8 @@
     "test:engine": "tsx --test $(find local-engine/test -name '*.test.ts')",
     "test:browser": "tsx --test browser-server/relay-ingress.test.ts",
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
+    "test:openframe": "tsx --test tests/openframe-carrier.test.ts",
+    "test:vantra-carrier": "tsx --test tests/vantra-carrier.test.ts",
     "test:deliverability": "tsx --test tests/deliverability-probes.test.ts",
     "test:smtp": "tsx --test tests/smtp-envelope-probe.test.ts",
     "test:smtpcap": "tsx --test tests/smtp-capability-probe.test.ts",

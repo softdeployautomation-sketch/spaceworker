@@ -91,7 +91,9 @@ let dbUpdates: Record<string, unknown>[];
 let audits: AuditCall[];
 let fetches: FetchCall[];
 let findFirstWhere: Record<string, unknown>[];
-let mintResponse: { ok: boolean; downloadUrl: string };
+// `command` is set by the TASK_178 public-vbs tests (an older Vantra answers
+// without it — the deploy-order guard).
+let mintResponse: { ok: boolean; downloadUrl: string; command?: string };
 // Route-level (the API boundary): mutable so each test sets its own scenario.
 let sessionValue: { userId: string } | null;
 interface RouteMintCall {
@@ -334,6 +336,11 @@ function installRequireHook(): void {
           // under test (the route's own gate is what these tests exercise);
           // only `mintInstallLink` is a recorder, extended with the pdf arg.
           validateInstallerPdf: realValidateInstallerPdf,
+          // TASK_178 — the public PS/VBS mints run the REAL implementations
+          // end-to-end (fake db + fake fetch answer below); only
+          // mintInstallLink stays a recorder.
+          mintPublicPsCommand: realMintPublicPsCommand,
+          mintPublicVbsFile: realMintPublicVbsFile,
           mintInstallLink: async (
             userId: string,
             kind: string,
@@ -385,6 +392,11 @@ const {
   // TASK_125 — the real PDF validator, handed to the route stub below so the
   // API-boundary tests exercise the module's OWN gate rather than a copy.
   validateInstallerPdf: realValidateInstallerPdf,
+  // TASK_178 — the public PS/VBS branches, same principle: the route stub
+  // hands them over as the REAL implementations (fake db + fake fetch are
+  // already in effect), so these tests add the route boundary itself.
+  mintPublicPsCommand: realMintPublicPsCommand,
+  mintPublicVbsFile: realMintPublicVbsFile,
 } = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -1310,6 +1322,98 @@ test("TASK_171 countdown: live text counts down, then says expired", async () =>
   assert.equal(formatDownloadCount(0), "No downloads yet");
   assert.equal(formatDownloadCount(1), "1 download");
   assert.equal(formatDownloadCount(7), "7 downloads");
+});
+
+
+// ---------------------------------------------------------------------------
+// TASK_178 stage 1 — the PUBLIC one-click `.vbs` branch of the same route.
+//
+// Full stack inside the harness: the route calls the REAL mintPublicVbsFile
+// (fake db + fake fetch answer for Vantra), so these tests pin the API
+// contract: default/renamed file name, the TASK_172 `--silent` landing
+// exactly once inside the carrier, the deploy-order guard, 401, and audit.
+// ---------------------------------------------------------------------------
+
+// The REAL shape Vantra's `{as:"powershell"}` returns (vantra/lib/trmm.ts
+// toPowerShellInstallCommand) — deliberately WITHOUT `--silent`: the gap
+// stage 1 closes at mint time. FAKE auth token only.
+const PS_COMMAND = [
+  "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+  "$exe = Join-Path $env:TEMP 'tacticalagent.exe'",
+  `Invoke-WebRequest -Uri "https://dl.spaceworker.test/tacticalagent.exe" -OutFile $exe -UseBasicParsing`,
+  `Start-Process -FilePath $exe -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-' -Wait`,
+  `$agent = "C:\\Program Files\\TacticalAgent\\tacticalrmm.exe"`,
+  `for ($i = 0; $i -lt 30 -and -not (Test-Path $agent); $i++) { Start-Sleep -Seconds 1 }`,
+  `Start-Process -FilePath $agent -ArgumentList '-m install --api https://rmm.example.test --client-id 42 --site-id 143 --agent-type workstation --auth FAKE_AUTH_TOKEN_0000000000000000000000000000000000000000000000000000 --rdp --ping --power' -WindowStyle Hidden -Wait`,
+  `Remove-Item $exe -Force -ErrorAction SilentlyContinue`,
+  `'Vantra agent installed.'`,
+].join("\n");
+
+test("TASK_178 public-vbs: default file name, elevated hidden carrier, --silent exactly once", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const res = await post({ kind: "public-vbs" });
+  assert.equal(res.status, 200);
+  const body = res.body as { ok: boolean; fileName: string; content: string };
+  assert.equal(body.ok, true);
+  assert.equal(body.fileName, "vantra-agent.vbs");
+  assert.ok(body.content.includes('"runas"'), "UAC elevation");
+  assert.ok(body.content.includes("-ExecutionPolicy Bypass"), "hidden PS shell");
+  assert.ok(body.content.includes("-m install"), "the enroll argv is bound in");
+  assert.equal(
+    (body.content.match(/--silent/g) ?? []).length,
+    1,
+    "the TASK_172 silence, exactly once",
+  );
+  assert.equal(routeMintCalls.length, 0, "the vbs branch never goes through mintInstallLink");
+});
+
+test("TASK_178 public-vbs: the rename field names the file; invalid falls back, never 400s", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const renamed = await post({ kind: "public-vbs", vbsName: "  Client Onboard  " });
+  assert.equal(renamed.status, 200);
+  assert.equal((renamed.body as { fileName: string }).fileName, "Client Onboard.vbs");
+
+  // `:` is the NTFS drive/ADS trap — the route keeps it, the lib drops it.
+  const probe = await post({ kind: "public-vbs", vbsName: "ev:il" });
+  assert.equal(probe.status, 200, "a bad name must never 400 somebody's install");
+  assert.equal((probe.body as { fileName: string }).fileName, "vantra-agent.vbs");
+});
+
+test("TASK_178 public-vbs: an already-silent command is never double-appended", async () => {
+  mintResponse = {
+    ok: true,
+    downloadUrl: RAW_URL,
+    command: PS_COMMAND.replace("--rdp --ping --power'", "--rdp --ping --power --silent'"),
+  };
+  const res = await post({ kind: "public-vbs" });
+  assert.equal(res.status, 200);
+  const content = (res.body as { content: string }).content;
+  assert.equal((content.match(/--silent/g) ?? []).length, 1);
+});
+
+test("TASK_178 public-vbs: no session ⇒ 401 and nothing minted", async () => {
+  sessionValue = null;
+  const res = await post({ kind: "public-vbs" });
+  assert.equal(res.status, 401);
+  assert.equal(routeMintCalls.length, 0);
+});
+
+test("TASK_178 public-vbs: vantra_deploy_outdated ⇒ 503 (an older Vantra answers downloadUrl only)", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL };
+  const res = await post({ kind: "public-vbs" });
+  assert.equal(res.status, 503);
+  assert.deepEqual(res.body, { error: "vantra_deploy_outdated" });
+});
+
+test("TASK_178 public-vbs: audited as vantra_public_vbs_minted with org + file name", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await post({ kind: "public-vbs", vbsName: "Rack01" });
+  const audit = audits.find((a) => a.action === "vantra_public_vbs_minted");
+  assert.ok(audit, "the vbs mint is audited");
+  assert.equal(audit.status, "executed");
+  assert.deepEqual(audit.detail, { orgId: ORG_ID, fileName: "Rack01.vbs" });
 });
 
 

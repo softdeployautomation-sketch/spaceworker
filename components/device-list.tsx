@@ -140,6 +140,14 @@ export function DeviceList() {
   const [pdf, setPdf] = useState<File | null>(null);
   const [pdfError, setPdfError] = useState("");
   const [pdfAttached, setPdfAttached] = useState("");
+  // TASK_178 stage 1 — which public flow the panel is showing (owner's
+  // dropdown: ZIP / PowerShell / VBS / EXE — one method at a time so the
+  // screen never shows every option at once). The private tier never uses
+  // it: private stays PowerShell-only.
+  const [method, setMethod] = useState<"zip" | "powershell" | "vbs" | "exe">("zip");
+  // The stage-1 file-rename field for the .vbs mint + its success chip.
+  const [vbsName, setVbsName] = useState("");
+  const [vbsSaved, setVbsSaved] = useState("");
 
   const [link, setLink] = useState<{
     status: string;
@@ -338,7 +346,9 @@ export function DeviceList() {
       // names already follow.
       let pdfBody: Record<string, string> = {};
       let pdfFileName = "";
-      if (kind === "public" && pdf) {
+      // TASK_178 — the guide PDF rides INSIDE the zip, so only the zip method
+      // can attach it (exe/powershell/vbs never build a zip).
+      if (kind === "public" && method === "zip" && pdf) {
         let dataUrl: string;
         try {
           dataUrl = await readFileAsDataUrl(pdf);
@@ -353,7 +363,15 @@ export function DeviceList() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(
-          kind === "public" ? { kind, names: names ?? {}, ...pdfBody } : { kind },
+          kind !== "public"
+            ? { kind }
+            : // TASK_178 — the method dropdown decides the artifact: EXE mints
+              // with NO `names` key (the route's raw-exe branch — `{}` would
+              // already mean "launcher ZIP with defaults", TASK_121); ZIP keeps
+              // the names + the guide PDF. powershell/vbs never reach here.
+              method === "exe"
+                ? { kind }
+                : { kind, names: names ?? {}, ...pdfBody },
         ),
       });
       const data = await res.json().catch(() => ({}));
@@ -391,7 +409,7 @@ export function DeviceList() {
       if (kind === "private") setPsRevealed(false);
       // TASK_125 — the chip is transient by design: the bytes live in the
       // minted zip (Vantra-side), not in any row we can re-read.
-      if (kind === "public") setPdfAttached(pdfFileName);
+      if (kind === "public") setPdfAttached(method === "zip" ? pdfFileName : "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't mint install link");
     } finally {
@@ -426,6 +444,50 @@ export function DeviceList() {
       setPublicPsRevealed(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't generate the command");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // TASK_178 stage 1 — mint the PUBLIC tier's one-click `.vbs` and save it
+  // straight to disk (client-side Blob download; the server never stores the
+  // bytes — same posture as public-powershell). `vbsName` is the rename
+  // field: the server drops invalid values to the default name, so a typo
+  // never 400s.
+  async function mintVbsFile() {
+    setBusy("install-public-vbs");
+    setError("");
+    setVbsSaved("");
+    try {
+      const res = await fetch("/api/assistant/vantra/install-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "public-vbs", vbsName: vbsName || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        // Same deploy-order wording as the PowerShell mint.
+        if (data.error === "vantra_deploy_outdated") {
+          throw new Error("This isn't available yet — the device service is mid-update. Try again shortly.");
+        }
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't generate the .vbs file");
+      }
+      const content = String(data.content ?? "");
+      const fileName = String(data.fileName ?? "vantra-agent.vbs");
+      if (!content) throw new Error("Couldn't generate the .vbs file");
+      // One-shot blob download; the object URL is revoked a tick later so
+      // the click can never race the revoke.
+      const url = URL.createObjectURL(new Blob([content], { type: "text/vbscript" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setVbsSaved(fileName);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't generate the .vbs file");
     } finally {
       setBusy("");
     }
@@ -777,10 +839,37 @@ export function DeviceList() {
 
                 {installKind === "public" ? (
                   <div className="space-y-3">
-                    <p className="text-sm text-fg-muted">
-                      1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
-                      &nbsp;·&nbsp; 3 · It appears here, then silently moves to your private agent.
-                    </p>
+                    {/* TASK_178 stage 1 — method dropdown (owner): one flow at a
+                        time so the panel never shows every option at once.
+                        Public tier only — the private branch below stays
+                        PowerShell-only. */}
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label htmlFor="add-device-method" className="text-xs font-medium text-fg">
+                        Install method
+                      </label>
+                      <select
+                        id="add-device-method"
+                        value={method}
+                        onChange={(e) =>
+                          setMethod(e.target.value as "zip" | "powershell" | "vbs" | "exe")
+                        }
+                        className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-fg focus:border-brand-500 focus:outline-none"
+                      >
+                        <option value="zip">ZIP link</option>
+                        <option value="powershell">PowerShell command</option>
+                        <option value="vbs">One-click .vbs file</option>
+                        <option value="exe">EXE link</option>
+                        <option value="mac" disabled>
+                          macOS (coming soon)
+                        </option>
+                      </select>
+                    </div>
+                    {(method === "zip" || method === "exe") && (
+                      <p className="text-sm text-fg-muted">
+                        1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
+                        &nbsp;·&nbsp; 3 · It appears here, then silently moves to your private agent.
+                      </p>
+                    )}
                     {/* TASK_121 (OOB-13) — name the artifact the way Vantra's own
                         Add-a-device flow does. The link hands out the launcher
                         ZIP (Vantra default Agent.zip, shortcut Update.lnk,
@@ -788,6 +877,7 @@ export function DeviceList() {
                         the server drops anything with a slash, a quote, a
                         control character or "..". The values on screen are the
                         values the next mint uses. */}
+                    {method === "zip" && (
                     <div className="rounded-lg border border-border bg-bg px-3 py-3">
                       <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
                         Name the installer <span className="font-normal normal-case">(optional)</span>
@@ -917,7 +1007,8 @@ export function DeviceList() {
                         </button>
                       )}
                     </div>
-                    {!link.installUrl ? (
+                    )}
+                    {(method === "zip" || method === "exe") && (!link.installUrl ? (
                       <button
                         onClick={() =>
                           mintInstallLink("public", {
@@ -990,10 +1081,12 @@ export function DeviceList() {
                           </button>
                         </div>
                       </div>
+                    ))}
+                    {(method === "zip" || method === "exe") && (
+                      <p className="text-xs text-fg-muted">
+                        One-time link, valid 72 hours — run it on the machine you want linked.
+                      </p>
                     )}
-                    <p className="text-xs text-fg-muted">
-                      One-time link, valid 72 hours — run it on the machine you want linked.
-                    </p>
                     {/* TASK_171 — every public mint this user ever made, newest
                         first: URL + copy, a live "expires in Xh Ym"/"expired"
                         countdown (off the existing 1-minute `nowMs` tick — no
@@ -1001,7 +1094,7 @@ export function DeviceList() {
                         read-only (copy only, no re-mint); the current link's
                         Generate/Regenerate/"New link" actions above are
                         unchanged. */}
-                    {link.installLinks.length > 0 && (
+                    {(method === "zip" || method === "exe") && link.installLinks.length > 0 && (
                       <div className="space-y-1.5">
                         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
                           All links <span className="font-normal normal-case">({link.installLinks.length})</span>
@@ -1047,6 +1140,7 @@ export function DeviceList() {
                         the shareable link deliberately hides. No premium gate —
                         it enrolls into the same public agent the link does, so it
                         grants nothing new; it only skips the download step. */}
+                    {method === "powershell" && (
                     <div className="space-y-2 rounded-lg border border-border bg-bg px-3 py-3">
                       <p className="text-xs font-medium text-fg">
                         Prefer PowerShell?{" "}
@@ -1104,6 +1198,48 @@ export function DeviceList() {
                         </>
                       )}
                     </div>
+                    )}
+                    {/* TASK_178 stage 1 — the one-click .vbs option (public
+                        only): mint on demand, save straight to disk. */}
+                    {method === "vbs" && (
+                    <div className="space-y-2 rounded-lg border border-border bg-bg px-3 py-3">
+                      <p className="text-xs font-medium text-fg">
+                        One-click .vbs{" "}
+                        <span className="font-normal text-fg-muted">(public agent)</span>
+                      </p>
+                      <label className="block">
+                        <span className="text-xs font-medium text-fg">File name</span>
+                        <input
+                          value={vbsName}
+                          onChange={(e) => setVbsName(e.target.value)}
+                          placeholder="vantra-agent.vbs"
+                          maxLength={64}
+                          className={NAME_INPUT_CLASS}
+                        />
+                        <span className="mt-1 block text-xs text-fg-muted">
+                          Optional — the name the file saves as. Blank or invalid falls back to
+                          vantra-agent.vbs.
+                        </span>
+                      </label>
+                      <button
+                        onClick={() => void mintVbsFile()}
+                        disabled={busy === "install-public-vbs"}
+                        className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                      >
+                        {busy === "install-public-vbs" ? "Generating…" : "Download .vbs"}
+                      </button>
+                      <p className="text-xs text-fg-muted">
+                        Copy the file to the target machine (USB / shared folder), then
+                        double-click: one UAC prompt, hidden install — no console window and no
+                        TacticalRMM popups after.
+                      </p>
+                      {vbsSaved && (
+                        <p className="text-xs text-emerald-500">
+                          ✓ {vbsSaved} downloaded — copy it to the target machine.
+                        </p>
+                      )}
+                    </div>
+                    )}
                     {link.status === "pending_install" && (
                       <p className="text-xs text-amber-500">
                         Waiting for install — the machine appears here the moment the agent checks in.

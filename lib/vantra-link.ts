@@ -15,6 +15,9 @@ import {
   stopMaintenanceOverlayAction,
   type MeshUrlsView,
 } from "./device-tools";
+// TASK_178 stage 1 — the forked carrier (NEVER the openframe one): single-line
+// normaliser, the TASK_172 `--silent` guarantee, and the `.vbs` renderer.
+import { ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs } from "./vantra-carrier";
 
 // Task 93 — the Vantra plugin provisioning + device-action service.
 //
@@ -695,6 +698,84 @@ export async function mintPublicPsCommand(
     command: minted.command,
     expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
   };
+}
+
+// ============================================================================
+// TASK_178 stage 1 — the PUBLIC tier's one-click `.vbs` carrier.
+//
+// The owner hand-proved this exact flow before it was wired in ("the vbs
+// works perfectly"): the org's PS install command bound into ONE
+// double-clickable `.vbs` — hidden window, a single UAC consent, no console.
+// It is the same Vantra `as:"powershell"` mint as `mintPublicPsCommand` (so
+// it is per-ORG by construction — Vantra fills apiBase/clientId/siteId/auth
+// for that org at mint time) plus three transforms, all fail-closed:
+//
+//   1. normalizePowerShellCommand — the multi-line dashboard script becomes
+//      the single line a VBS string literal can hold;
+//   2. ensureSilentEnroll         — the STAGE-1 owner directive: the
+//      TASK_172 `--silent` fix, because Vantra's psCommand does NOT carry
+//      the generator's fix and the owner's test VBS still showed the
+//      TacticalRMM notification after install;
+//   3. renderCarrierVbs           — hidden + UAC `runas` + 1023-char
+//      chunking (the carrier the owner tested on the VM).
+//
+// DELIBERATELY NOT PERSISTED — same posture as public-powershell: the bytes
+// are returned inline (`{fileName, content, expiresAt}`), never written to
+// disk, never a DB column, never a public URL. The client saves the Blob;
+// a re-mint is one click and re-reads the org's (possibly rotated) command.
+// ============================================================================
+
+/** What the file is called when the caller gives no (usable) name. */
+export const DEFAULT_VBS_FILE_NAME = "vantra-agent.vbs";
+
+/**
+ * The rename rule for the downloaded `.vbs` (the stage-1 UI field — owner:
+ * "make sure the file rename … is on the ui"). Same posture as the other
+ * artifact names: a typo or probe (`../evil`, `ev:il` — the NTFS
+ * alternate-data-stream trap) drops to the DEFAULT, never a 400 — nobody's
+ * install is blocked by a filename. Exactly one `.vbs` suffix in the
+ * caller's own casing is kept (`Agent.VBS` → `Agent.vbs`).
+ */
+export function safeVbsFileName(value: unknown): string {
+  if (typeof value !== "string") return DEFAULT_VBS_FILE_NAME;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > 64) return DEFAULT_VBS_FILE_NAME;
+  // The zip/PDF entry-name rule PLUS `:` — a downloaded FILE name never gets
+  // the leniency a zip-internal name had (drive letter / ADS trap).
+  if (INVALID_PDF_NAME.test(trimmed) || trimmed.includes("..")) return DEFAULT_VBS_FILE_NAME;
+  const base = trimmed.replace(/\.vbs$/i, "").trim();
+  if (base.length === 0) return DEFAULT_VBS_FILE_NAME;
+  const finalName = `${base}.vbs`;
+  // Re-check the composed name: `.` alone would round to `..vbs` otherwise.
+  if (INVALID_PDF_NAME.test(finalName) || finalName.includes("..")) return DEFAULT_VBS_FILE_NAME;
+  return finalName;
+}
+
+/** Mint the public tier's one-click `.vbs` carrier for this user's ORG. */
+export async function mintPublicVbsFile(
+  userId: string,
+  requestedName?: string,
+): Promise<{ fileName: string; content: string; expiresAt: Date }> {
+  // Per-ORG by construction: mintPublicPsCommand resolves the user's
+  // VantraLink row and Vantra builds the enrollment for THAT org.
+  const minted = await mintPublicPsCommand(userId);
+  // Fail closed on an unexpected PS shape (the normaliser's stable codes).
+  const flat = normalizePowerShellCommand(minted.command);
+  // Stage-1 owner directive: no TacticalRMM GUI / success notification.
+  const silent = ensureSilentEnroll(flat);
+  const content = renderCarrierVbs(silent);
+  const fileName = safeVbsFileName(requestedName);
+  const link = await db.vantraLink.findUnique({
+    where: { userId },
+    select: { orgId: true },
+  });
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_public_vbs_minted",
+    status: "executed",
+    detail: { orgId: link?.orgId, fileName },
+  });
+  return { fileName, content, expiresAt: minted.expiresAt };
 }
 
 /**

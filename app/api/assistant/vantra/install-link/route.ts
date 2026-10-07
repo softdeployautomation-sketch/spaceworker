@@ -5,6 +5,7 @@ import { getSession } from "@/lib/session";
 import {
   mintInstallLink,
   mintPublicPsCommand,
+  mintPublicVbsFile,
   validateInstallerPdf,
   type InstallerNames,
   type InstallerPdf,
@@ -18,8 +19,17 @@ export const dynamic = "force-dynamic";
 //   POST {names:{…}, pdf,…}      → …with an install-guide PDF inside the ZIP
 //   POST {kind:"private"}        → private PowerShell install command
 //   POST {kind:"public-powershell"} → PUBLIC PowerShell install command
+//   POST {kind:"public-vbs", vbsName?} → PUBLIC one-click .vbs carrier (inline)
 // Private is entitlement-gated in mintInstallLink ("devices" entitlement —
 // premium tier 5 covers it; free/trial users 403).
+//
+// TASK_178 stage 1 — the public VBS carrier: the SAME org mint as
+// public-powershell, normalised to one line, guaranteed `--silent` (the
+// TASK_172 fix Vantra's psCommand lacks) and bound into one double-clickable
+// `.vbs`. It takes neither the names nor the guide PDF (those describe the
+// launcher ZIP), it is inline-only like public-powershell, and `vbsName` is
+// the stage-1 file-rename field (invalid ⇒ default, never a 400 — the same
+// posture as the zip names).
 //
 // TASK_128 §15 — the PUBLIC PowerShell command (owner request). Public needs NO
 // entitlement gate: the device it enrolls lands in the same public org the
@@ -91,16 +101,20 @@ export async function POST(req: Request) {
     pdf?: unknown;
     pdfName?: unknown;
     pdfDelaySec?: unknown;
+    vbsName?: unknown;
   };
   const kind =
     body.kind === "private"
       ? "private"
       : body.kind === "public-powershell"
         ? "public-powershell"
-        : "public";
+        : body.kind === "public-vbs"
+          ? "public-vbs"
+          : "public";
   // The private tier is out of scope (D1/D2): its PowerShell command never
-  // takes the installer block. Same for the public-PowerShell path — the names
-  // and the guide PDF describe the launcher ZIP, which it does not build.
+  // takes the installer block. Same for the public-PowerShell and public-VBS
+  // paths — the names and the guide PDF describe the launcher ZIP, which they
+  // do not build.
   const names = kind === "public" ? parseNames(body.names) : undefined;
 
   // TASK_125 — the LOUD gate for the optional guide PDF (public only). The
@@ -132,6 +146,19 @@ export async function POST(req: Request) {
       return NextResponse.json({
         ok: true,
         command: minted.command,
+        expiresAt: minted.expiresAt,
+      });
+    }
+    // TASK_178 stage 1 — the one-click `.vbs` carrier, returned inline
+    // (fileName + content): the client saves it as a Blob. `vbsName` is the
+    // rename field; the route's bareName drop plus lib-level re-sanitise
+    // mean a typo falls back to the default name, never a 400.
+    if (kind === "public-vbs") {
+      const minted = await mintPublicVbsFile(session.userId, bareName(body.vbsName));
+      return NextResponse.json({
+        ok: true,
+        fileName: minted.fileName,
+        content: minted.content,
         expiresAt: minted.expiresAt,
       });
     }
