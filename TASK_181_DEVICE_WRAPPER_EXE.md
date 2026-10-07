@@ -196,16 +196,16 @@ copy · macOS build (dropdown stays "coming soon") · any private-tier behavior 
 the web app · OpenFrame (frozen — `TASK_177` report only) · local-runtime EXE targets.
 
 ## 8. Checklist
-- [ ] P0a grant fix deployed (live grant succeeds)
-- [ ] P0b W5 live-confirm recorded
+- [x] P0a grant fix deployed (live grant succeeds) — **LIVE PASS 21/21** (`e2e-xdevice-grant-live-p5.ts`: 200 JSON, `adminId IS NULL`, balance credited)
+- [x] P0b W5 live-confirm recorded — PASS 18/18 (2026-10-07, raw output in `TASK_181_STEPS.md` §P0b)
 - [x] Q1/Q2/Q3 + panic/branding resolved by owner 2026-10-07 — $500 admin-adjustable ·
   menu B · no Panic in wrapper · "SpaceWorker OS" / dock "Devices" (§3.1, §4)
-- [ ] P1 wrapper shell built + full-web regression proven (flag off = unchanged)
-- [ ] P2 server-side 403 + tier 3 + UI lock; tests
-- [ ] P3 payment rails both work (checkout approve + wallet spend → tier 3)
-- [ ] Playbook gates: `tsc` 0 · ESLint 0 · full test suites green · leak scan clean
-- [ ] Deployed with §4/§6 evidence (BUILD_ID, `.map`, chunk text per HOW_WE_MOVE_FAST)
-- [ ] Owner acceptance script (§6) run and passed
-- [ ] `SENIOR_HANDOFF.md` §6/§7 + §9 log updated; this doc checked off
+- [x] P1 wrapper shell built + full-web regression proven (flag off = unchanged) — commit `831e816`
+- [x] P2 server-side 403 + tier 3 + UI lock; tests — `4ee8e24`, `tests/xdevice-tier.test.ts` + `tests/xdevice-route-gate.test.ts`
+- [x] P3 payment rails both work — wallet spend live-confirmed (21/21) + checkout/submit rail covered by `tests/xdevice-payment.test.ts`; price admin-configurable (`xdevicePriceUsd`, migration applied)
+- [x] Playbook gates: `tsc` 0 · ESLint 0 NEW errors (admin-panel 44 = pre-existing, stash A/B identical) · full test suites green (xdevice 38 · vantra 90 · wallet 63 · carriers 21+6 · devices 6) · leak scan clean (harness deleted from VPS)
+- [x] Deployed with §4/§6 evidence (BUILD_ID `qOhtBtkIXCxhsWeEjrz1p200`, mtime 2026-10-07 21:21 +0200; server chunk greps `xdevice_required` + `grantXDevice`; client chunk `3ier_oz-u5gbm.js` greps "30d XDevice"; site 200; live route harness PASS 8/8 + 21/21)
+- [ ] Owner acceptance script (§6) run and passed — **OPEN: step 35, owner's Windows box** (CI artifact exe+vbs downloaded + byte-exact verified locally; no real double-click run yet)
+- [x] `SENIOR_HANDOFF.md` §6/§7 + §9 log updated; this doc checked off — 2026-10-07
 
 

@@ -398,8 +398,13 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
       · devices 6/6 · `check-workflow-syntax.mjs` CHECK=0 · commit (this one) + push.
 
 ## Closeout
-- [ ] 41. Update `SENIOR_HANDOFF.md` §6/§7 + §9; check off `TASK_181_DEVICE_WRAPPER_EXE.md` §8.
-- [ ] 42. Rewrite `PROMPT_NEXT_VERIFICATION_AGENT.md`; final commit + push.
+- [x] 41. Update `SENIOR_HANDOFF.md` §6/§7 + §9; check off `TASK_181_DEVICE_WRAPPER_EXE.md` §8.
+      — DONE 2026-10-07: §6 new "Last verified 2026-10-07 TASK_181" block (BUILD_ID
+      `qOhtBtkIXCxhsWeEjrz1p200`, all six live facts a–f); §7 row 0c → CLOSED with live
+      proof; task doc §8 checked (only owner-acceptance row stays open).
+- [x] 42. Rewrite `PROMPT_NEXT_VERIFICATION_AGENT.md`; final commit + push.
+      — DONE 2026-10-07: prompt rewritten to verify P0a→P5 (three owner asks re-prove
+      list, wrapper §6 acceptance, VBS carrier, regressions/deploy-state, handoff).
 
 ## Log
 - 2026-10-07 — Session start. Read TASK_181 scope, playbook, verification prompt, grant route,
@@ -468,6 +473,15 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
   BUILD_ID `V_KHa_EoMeO3HT4HdCgMT`, CI run `37664255586`. Commits pushed: `31ec7c3`,
   `ab6e621`. Gates: tsc 0 · eslint 0 · xdevice 38 · wallet 63 · vantra 90 · devices 6 ·
   module-store 11 · carrier 21 · wrapper-carrier 6 · idlechip 15 · idle 8.
+- 2026-10-07 — P5 + closeout DONE: live harness `e2e-xdevice-grant-live-p5.ts` → **PASS 21/21**
+  on prod (grant-bug gone, admin tier-3 grant + stack, xdevice spend exact/idempotent);
+  harness deleted from VPS. Admin tier-3 grant button deployed (box build, BUILD_ID
+  `qOhtBtkIXCxhsWeEjrz1p200` 21:21 +0200, client chunk `3ier_oz-u5gbm.js` greps
+  "30d XDevice", site 200, repo↔box md5 parity SAME/4-of-4). Local artifact
+  `/tmp/exe-art-181` re-verified (byte-exact rejoin, SHA embedded, Get-FileHash fail-closed,
+  Quit 1). Steps 36–42 checked; commit `672c0bd` (P5) + closeout commit pushed; handoff §6/§7,
+  task-doc §8, verification prompt all rewritten. ONLY OPEN: step 35 — owner's real-Windows
+  double-click run of the exe+vbs artifact.
 
 ## PRE-COMPACT SNAPSHOT — 2026-10-07 v2 (P4b CI-VERIFIED + ask1 BUILT + harness WRITTEN)
 
