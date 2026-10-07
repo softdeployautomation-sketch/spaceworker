@@ -80,7 +80,8 @@ type InstallLinkHistoryItem = {
   installUrl: string;
   installTokenExpiresAt: string;
   downloadCount: number;
-  installerKind: "zip" | "exe" | null;
+  // TASK_179 D6 — "vbs" joins zip/exe: a share-link mint's row.
+  installerKind: "zip" | "exe" | "vbs" | null;
   installerNames: InstallerNames | null;
   createdAt: string;
 };
@@ -148,6 +149,14 @@ export function DeviceList() {
   // The stage-1 file-rename field for the .vbs mint + its success chip.
   const [vbsName, setVbsName] = useState("");
   const [vbsSaved, setVbsSaved] = useState("");
+  // TASK_179 stage 2 — the VBS card's OWN guide-PDF picker (separate from the
+  // zip flow's `pdf` state so switching methods never carries a file across)
+  // + the last minted share link. The file mint allows the full 20MB; a SHARE
+  // link additionally caps at 2MB server-side (D3 — its bytes sit in the row)
+  // with a plain-English error mapped at mint time.
+  const [vbsPdf, setVbsPdf] = useState<File | null>(null);
+  const [vbsPdfError, setVbsPdfError] = useState("");
+  const [vbsLink, setVbsLink] = useState("");
 
   const [link, setLink] = useState<{
     status: string;
@@ -459,16 +468,39 @@ export function DeviceList() {
     setError("");
     setVbsSaved("");
     try {
+      const pdfBody = vbsPdf
+        ? { pdf: await readFileAsDataUrl(vbsPdf), pdfName: vbsPdf.name }
+        : {};
       const res = await fetch("/api/assistant/vantra/install-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: "public-vbs", vbsName: vbsName || undefined }),
+        body: JSON.stringify({ kind: "public-vbs", vbsName: vbsName || undefined, ...pdfBody }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         // Same deploy-order wording as the PowerShell mint.
         if (data.error === "vantra_deploy_outdated") {
           throw new Error("This isn't available yet — the device service is mid-update. Try again shortly.");
+        }
+        // TASK_179 — a picked PDF that fails validation must say so plainly
+        // (same loud posture as the zip's PDF gate; nothing dropped silently).
+        if (data.error === "pdf_too_large") {
+          throw new Error("The install guide must be under 20MB.");
+        }
+        if (
+          data.error === "invalid_pdf" ||
+          data.error === "invalid_pdf_name" ||
+          data.error === "invalid_pdf_delay" ||
+          data.error === "pdf_name_without_pdf"
+        ) {
+          throw new Error("That install guide didn't pass validation — pick the PDF again.");
+        }
+        // TASK_179 stage 2.1 — the renderer refused because the final command
+        // would blow Windows' 32,767-char line cap (org command too large).
+        if (data.error === "command_too_long") {
+          throw new Error(
+            "This organization's install command is too large to bind into a single .vbs — use PowerShell or the ZIP link instead.",
+          );
         }
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't generate the .vbs file");
       }
@@ -488,6 +520,82 @@ export function DeviceList() {
       setVbsSaved(fileName);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't generate the .vbs file");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  // TASK_179 stage 2 — the VBS card's own PDF gate: same friendly rules as
+  // onPdfChange (must be a PDF, ≤20MB for the file mint). The SHARE link is
+  // stricter server-side (2MB) and that error is mapped at mint time.
+  function onVbsPdfChange(file: File | undefined) {
+    if (!file) {
+      setVbsPdf(null);
+      setVbsPdfError("");
+      return;
+    }
+    const isPdf =
+      file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
+    if (!isPdf) {
+      setVbsPdf(null);
+      setVbsPdfError("The install guide must be a PDF file.");
+      return;
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setVbsPdf(null);
+      setVbsPdfError("The install guide must be under 20MB.");
+      return;
+    }
+    setVbsPdfError("");
+    setVbsPdf(file);
+  }
+
+  // TASK_179 stage 2 — mint the SHAREABLE `.vbs` link: the same wrapper
+  // surface as the zip link (72 h, history row, copyable URL). The carrier
+  // itself is rendered server-side when the link is opened (D5 — fresh org
+  // command), so nothing downloads here — the result is a URL to show/copy.
+  async function mintVbsLink() {
+    setBusy("install-vbs-link");
+    setError("");
+    setVbsLink("");
+    try {
+      const pdfBody = vbsPdf
+        ? { pdf: await readFileAsDataUrl(vbsPdf), pdfName: vbsPdf.name }
+        : {};
+      const res = await fetch("/api/assistant/vantra/install-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "public-vbs-link", vbsName: vbsName || undefined, ...pdfBody }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.error === "vantra_deploy_outdated") {
+          throw new Error("This isn't available yet — the device service is mid-update. Try again shortly.");
+        }
+        // D3's 2MB row cap is the ONE rule stricter than the file mint —
+        // say it in plain words instead of a status code.
+        if (data.error === "pdf_too_large") {
+          throw new Error("A guide PDF on a share link must be under 2MB.");
+        }
+        if (
+          data.error === "invalid_pdf" ||
+          data.error === "invalid_pdf_name" ||
+          data.error === "invalid_pdf_delay" ||
+          data.error === "pdf_name_without_pdf"
+        ) {
+          throw new Error("That install guide didn't pass validation — pick the PDF again.");
+        }
+        // TASK_179 stage 2.1 — same renderer refusal as the file mint.
+        if (data.error === "command_too_long") {
+          throw new Error(
+            "This organization's install command is too large to bind into a single .vbs — use PowerShell or the ZIP link instead.",
+          );
+        }
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't create the share link");
+      }
+      setVbsLink(String(data.link ?? ""));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't create the share link");
     } finally {
       setBusy("");
     }
@@ -1094,7 +1202,7 @@ export function DeviceList() {
                         read-only (copy only, no re-mint); the current link's
                         Generate/Regenerate/"New link" actions above are
                         unchanged. */}
-                    {(method === "zip" || method === "exe") && link.installLinks.length > 0 && (
+                    {(method === "zip" || method === "exe" || method === "vbs") && link.installLinks.length > 0 && (
                       <div className="space-y-1.5">
                         <p className="text-xs font-medium uppercase tracking-wide text-fg-muted">
                           All links <span className="font-normal normal-case">({link.installLinks.length})</span>
@@ -1109,6 +1217,23 @@ export function DeviceList() {
                                 className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-bg px-2 py-1.5"
                               >
                                 <span className="text-xs font-medium text-fg-muted">#{link.installLinks.length - index}</span>
+                                {/* TASK_179 D6 — the artifact-kind chip, so a
+                                    vbs link is distinguishable from zip/exe at
+                                    a glance in the shared history card. */}
+                                {item.installerKind && (
+                                  <span
+                                    className={cn(
+                                      "rounded-full border px-1.5 py-0.5 text-[10px] font-medium uppercase",
+                                      item.installerKind === "vbs"
+                                        ? "border-sky-500/40 text-sky-500"
+                                        : item.installerKind === "zip"
+                                          ? "border-emerald-500/40 text-emerald-500"
+                                          : "border-border text-fg-muted",
+                                    )}
+                                  >
+                                    {item.installerKind}
+                                  </span>
+                                )}
                                 <code className="max-w-full flex-1 truncate text-xs text-fg-muted">{item.installUrl}</code>
                                 <span
                                   className={expired ? "text-xs text-red-600" : "text-xs text-fg-muted"}
@@ -1221,13 +1346,80 @@ export function DeviceList() {
                           vantra-agent.vbs.
                         </span>
                       </label>
-                      <button
-                        onClick={() => void mintVbsFile()}
-                        disabled={busy === "install-public-vbs"}
-                        className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
-                      >
-                        {busy === "install-public-vbs" ? "Generating…" : "Download .vbs"}
-                      </button>
+                      {/* TASK_179 stage 2 — the guide PDF for the carrier: rides
+                          INSIDE the downloaded .vbs (and inside the carrier the
+                          share link serves). Opens the moment UAC is approved,
+                          BEFORE the install runs (zip parity). */}
+                      <label className="block" htmlFor="vbs-guide-pdf">
+                        <span className="text-xs font-medium text-fg">
+                          Install guide{" "}
+                          <span className="font-normal text-fg-muted">(PDF, optional)</span>
+                        </span>
+                        <input
+                          id="vbs-guide-pdf"
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={(e) => onVbsPdfChange(e.target.files?.[0])}
+                          className="mt-1 block w-full text-xs text-fg-muted file:mr-3 file:rounded-md file:border file:border-border file:bg-bg file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-fg hover:file:bg-black/5 dark:hover:file:bg-white/5"
+                        />
+                      </label>
+                      {vbsPdf && !vbsPdfError && (
+                        <p className="text-xs text-fg-muted">
+                          Selected: {vbsPdf.name} ({(vbsPdf.size / 1024).toFixed(0)} KB) — it
+                          opens when the install is approved.{" "}
+                          <button
+                            type="button"
+                            className="underline"
+                            onClick={() => onVbsPdfChange(undefined)}
+                          >
+                            Clear
+                          </button>
+                        </p>
+                      )}
+                      {vbsPdfError && (
+                        <p className="text-xs text-red-600">{vbsPdfError}</p>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => void mintVbsFile()}
+                          disabled={busy === "install-public-vbs"}
+                          className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                        >
+                          {busy === "install-public-vbs" ? "Generating…" : "Download .vbs"}
+                        </button>
+                        {/* TASK_179 stage 2 — the shareable link, same wrapper
+                            surface as the zip link. */}
+                        <button
+                          onClick={() => void mintVbsLink()}
+                          disabled={busy === "install-vbs-link"}
+                          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
+                        >
+                          {busy === "install-vbs-link" ? "Creating…" : "Create share link"}
+                        </button>
+                      </div>
+                      {vbsLink && (
+                        <div className="space-y-1.5 rounded-lg border border-border bg-bg px-2 py-2">
+                          <p className="text-xs font-medium text-fg">
+                            Share link{" "}
+                            <span className="font-normal text-fg-muted">(valid 72 hours)</span>
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <code className="max-w-full flex-1 truncate text-xs text-fg-muted">
+                              {vbsLink}
+                            </code>
+                            <button
+                              onClick={() => copyText("vbs-link", vbsLink)}
+                              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+                            >
+                              {copied === "vbs-link" ? "Copied ✓" : "Copy link"}
+                            </button>
+                          </div>
+                          <p className="text-xs text-fg-muted">
+                            Send it instead of the file — opening it downloads this .vbs on the
+                            target machine.
+                          </p>
+                        </div>
+                      )}
                       <p className="text-xs text-fg-muted">
                         Copy the file to the target machine (USB / shared folder), then
                         double-click: one UAC prompt, hidden install — no console window and no

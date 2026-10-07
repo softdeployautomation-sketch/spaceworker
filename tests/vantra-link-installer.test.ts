@@ -115,6 +115,8 @@ interface MintRow {
   installerUrl: string | null;
   installerKind: string | null;
   installerNamesJson: string | null;
+  // TASK_179 — the vbs link payload (file name + optional guide PDF bytes).
+  installerPayloadJson: string | null;
   downloadCount: number;
   createdAt: Date;
 }
@@ -229,6 +231,7 @@ const fakeDb = {
         installerUrl: (patch.installerUrl as string | null) ?? null,
         installerKind: (patch.installerKind as string | null) ?? null,
         installerNamesJson: (patch.installerNamesJson as string | null) ?? null,
+        installerPayloadJson: (patch.installerPayloadJson as string | null) ?? null,
         downloadCount: 0,
         createdAt: new Date(Date.now() + mintRows.length),
       };
@@ -286,6 +289,27 @@ type Loader = {
 
 const MODULE_UNDER_TEST = "lib/vantra-link.ts";
 
+// TASK_179 — a constructible NextResponse stand-in for BOTH route harnesses:
+// `new NextResponse(bytes, {headers})` serves the vbs attachment (status,
+// headers, body readable), while the static `json`/`redirect` keep every
+// existing assertion's `{status, body, json()}` / `{status, headers}` shape.
+class FakeNextResponse {
+  status: number;
+  body: unknown;
+  headers: Record<string, string>;
+  constructor(body: unknown, init?: { status?: number; headers?: Record<string, string> }) {
+    this.status = init?.status ?? 200;
+    this.headers = init?.headers ?? {};
+    this.body = body;
+  }
+  static json(body: unknown, init?: { status?: number }) {
+    return { status: init?.status ?? 200, body, json: async () => body };
+  }
+  static redirect(url: string, status?: number) {
+    return { status: status ?? 302, body: null, headers: { location: String(url) } };
+  }
+}
+
 function installRequireHook(): void {
   const loader = Module as unknown as Loader;
   const original = loader._load;
@@ -319,15 +343,7 @@ function installRequireHook(): void {
     // The API boundary under test: the route module's own dependencies.
     if (from.endsWith("/app/api/assistant/vantra/install-link/route.ts")) {
       if (request === "next/server") {
-        return {
-          NextResponse: {
-            json: (body: unknown, init?: { status?: number }) => ({
-              status: init?.status ?? 200,
-              body,
-              json: async () => body,
-            }),
-          },
-        };
+        return { NextResponse: FakeNextResponse };
       }
       if (request === "@/lib/session") return { getSession: async () => sessionValue };
       if (request === "@/lib/vantra-link") {
@@ -341,6 +357,8 @@ function installRequireHook(): void {
           // mintInstallLink stays a recorder.
           mintPublicPsCommand: realMintPublicPsCommand,
           mintPublicVbsFile: realMintPublicVbsFile,
+          mintPublicVbsLink: realMintPublicVbsLink,
+          MAX_LINK_PDF_BYTES: realMaxLinkPdfBytes,
           mintInstallLink: async (
             userId: string,
             kind: string,
@@ -352,6 +370,15 @@ function installRequireHook(): void {
             return { id: "link-t121", installUrl: "https://spaceworker.test/link/vantra/x" };
           },
         };
+      }
+    }
+    // TASK_179 — the wrapper resolver (GET) under test with the REAL
+    // resolvers from the module under test: the attachment-bytes contract,
+    // the filename disposition, and zip/exe staying a byte-identical 302.
+    if (from.endsWith("/app/link/vantra/[token]/route.ts")) {
+      if (request === "next/server") return { NextResponse: FakeNextResponse };
+      if (request === "@/lib/vantra-link") {
+        return { resolveInstallToken, resolveVbsInstallToken };
       }
     }
     return original.call(this, request, parent, isMain);
@@ -397,6 +424,11 @@ const {
   // already in effect), so these tests add the route boundary itself.
   mintPublicPsCommand: realMintPublicPsCommand,
   mintPublicVbsFile: realMintPublicVbsFile,
+  // TASK_179 stage 2 — the shareable link mint + its open-time resolver,
+  // handed to the route stubs below as the REAL implementations.
+  mintPublicVbsLink: realMintPublicVbsLink,
+  resolveVbsInstallToken,
+  MAX_LINK_PDF_BYTES: realMaxLinkPdfBytes,
 } = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -1358,7 +1390,7 @@ test("TASK_178 public-vbs: default file name, elevated hidden carrier, --silent 
   const body = res.body as { ok: boolean; fileName: string; content: string };
   assert.equal(body.ok, true);
   assert.equal(body.fileName, "vantra-agent.vbs");
-  assert.ok(body.content.includes('"runas"'), "UAC elevation");
+  assert.ok(body.content.includes("-Verb RunAs -Wait -ErrorAction Stop"), "UAC elevation (staged PS, stage 2.2)");
   assert.ok(body.content.includes("-ExecutionPolicy Bypass"), "hidden PS shell");
   assert.ok(body.content.includes("-m install"), "the enroll argv is bound in");
   assert.equal(
@@ -1414,6 +1446,274 @@ test("TASK_178 public-vbs: audited as vantra_public_vbs_minted with org + file n
   assert.ok(audit, "the vbs mint is audited");
   assert.equal(audit.status, "executed");
   assert.deepEqual(audit.detail, { orgId: ORG_ID, fileName: "Rack01.vbs" });
+});
+
+// ---------------------------------------------------------------------------
+// TASK_179 stage 2 — the shareable .vbs LINK: the mint (route boundary), the
+// open-time resolver (D5: fresh org command, name+PDF stored), and the
+// wrapper GET serving attachment bytes (D6: zip/exe 302 untouched).
+// All values FAKE; the unit under test is the real lib/vantra-link.ts.
+// ---------------------------------------------------------------------------
+
+/** Rejoin the carrier's `ps = ps & "…"` chunks exactly as VBS does. */
+const rejoinVbs = (vbs: string): string =>
+  [...vbs.matchAll(/ps = ps & "((?:[^"]|"")*)"/g)].map((m) => m[1].replace(/""/g, '"')).join("");
+
+/** Rejoin the carrier's `b64File.Write "…"` sidecar chunks exactly as VBS does. */
+const rejoinVbsB64 = (vbs: string): string =>
+  [...vbs.matchAll(/b64File\.Write "((?:[^"]|"")*)"/g)].map((m) => m[1].replace(/""/g, '"')).join("");
+
+/** A route-acceptable PDF data-URL with the given DECODED byte size. */
+const pdfDataUrl = (bytes: number): string =>
+  "data:application/pdf;base64," + Buffer.from("%PDF-1.4\n" + "x".repeat(bytes)).toString("base64");
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+const linkRouteModule = require("../app/link/vantra/[token]/route") as {
+  GET: (
+    _req: Request,
+    ctx: { params: Promise<{ token: string }> },
+  ) => Promise<{ status: number; body?: unknown; headers?: Record<string, string> }>;
+};
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+function getLink(token: string) {
+  return linkRouteModule.GET(new Request("https://spaceworker.test/link"), {
+    params: Promise.resolve({ token }),
+  });
+}
+
+/** The raw 48-hex token behind the most recently minted public link URL. */
+function lastLinkToken(): string {
+  const url = String(mintCreates.at(-1)?.publicUrl ?? "");
+  const token = url.split("/").at(-1) ?? "";
+  assert.match(token, /^[a-f0-9]{48}$/, `bad token in ${url}`);
+  return token;
+}
+
+test("TASK_179 public-vbs-link: 200 → wrapper URL + 72h TTL; payload stores name only; audited", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const res = await post({ kind: "public-vbs-link" });
+  assert.equal(res.status, 200);
+  const body = res.body as { ok: boolean; link: string; fileName: string; expiresAt: string };
+  assert.equal(body.ok, true);
+  assert.match(body.link, /^https:\/\/spaceworker\.test\/link\/vantra\/[a-f0-9]{48}$/);
+  assert.equal(body.fileName, "vantra-agent.vbs");
+  const ttl = new Date(body.expiresAt).getTime() - Date.now();
+  assert.ok(ttl > 71 * 3600_000 && ttl <= 72 * 3600_000 + 5_000, `ttl=${ttl}`);
+  // D5 — the row keeps ONLY what cannot be regenerated.
+  const created = mintCreates.at(-1) as Record<string, unknown>;
+  assert.equal(created.installerKind, "vbs");
+  assert.equal(created.publicUrl, body.link);
+  const payload = JSON.parse(String(created.installerPayloadJson)) as Record<string, unknown>;
+  assert.equal(payload.vbsName, "vantra-agent.vbs");
+  assert.ok(!("pdfBase64" in payload), "no PDF attached ⇒ no payload key");
+  assert.ok(!("installerUrl" in created), "D5: the artifact URL is never stored");
+  assert.ok(!JSON.stringify(created).includes("--api"), "the install command never lands in the row");
+  // D5 pre-verify: exactly ONE fresh org call (the `as:"powershell"` mint).
+  assert.equal(fetches.length, 1, "mint pre-verifies the org command once");
+  assert.deepEqual(JSON.parse(String(fetches[0].body)), { as: "powershell" });
+  // D7 — its own audit action, distinct from the file mint's.
+  const audit = audits.find((a) => a.action === "vantra_public_vbs_link_minted");
+  assert.ok(audit, "link mints are audited");
+  assert.equal(audit.status, "executed");
+  assert.deepEqual(audit.detail, { orgId: ORG_ID, fileName: "vantra-agent.vbs" });
+});
+
+test("TASK_179 public-vbs-link: rename + PDF land in the payload (decoded form, delay kept)", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const res = await post({
+    kind: "public-vbs-link",
+    vbsName: "Rack07",
+    pdf: pdfDataUrl(64 * 1024),
+    pdfName: "Site Guide.pdf",
+    pdfDelaySec: 5,
+  });
+  assert.equal(res.status, 200);
+  const body = res.body as { fileName: string };
+  assert.equal(body.fileName, "Rack07.vbs", "the UI rename applies to the link's file name");
+  const created = mintCreates.at(-1) as Record<string, unknown>;
+  const payload = JSON.parse(String(created.installerPayloadJson)) as Record<string, unknown>;
+  assert.equal(payload.vbsName, "Rack07.vbs");
+  assert.equal(payload.pdfName, "Site Guide.pdf");
+  assert.equal(payload.pdfDelaySec, 5);
+  assert.equal(typeof payload.pdfBase64, "string");
+  assert.ok(String(payload.pdfBase64).startsWith("JVBERi"), "stored base64 is the %PDF-1.4 magic, data-URL stripped");
+  assert.equal(
+    Buffer.byteLength(String(payload.pdfBase64), "base64"),
+    64 * 1024 + "%PDF-1.4\n".length,
+    "decoded size round-trips exactly",
+  );
+});
+
+test("TASK_179 D3: link PDFs cap at 2MB (loud 413) while the FILE mint keeps the full 20MB", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  assert.equal(realMaxLinkPdfBytes, 2 * 1024 * 1024, "the row cap is 2MB decoded");
+  const tooBigForLink = pdfDataUrl(2 * 1024 * 1024 + 4096); // >2MB, way under 20MB
+  const linkRes = await post({ kind: "public-vbs-link", pdf: tooBigForLink });
+  assert.equal(linkRes.status, 413, "the ROUTE cap fires before any mint");
+  assert.deepEqual(linkRes.body, { error: "pdf_too_large" });
+  assert.equal(mintCreates.length, 0, "a refused cap mints nothing");
+  // The same PDF on the FILE mint succeeds — bytes are never stored there.
+  const fileRes = await post({ kind: "public-vbs", pdf: tooBigForLink });
+  assert.equal(fileRes.status, 200, "file mints keep the 20MB validator");
+  const fileBody = fileRes.body as { content: string };
+  assert.ok(fileBody.content.includes("FromBase64String"), "the PDF rides inside the carrier");
+});
+
+test("TASK_179: the route PDF gate now covers the vbs file mint (non-PDF ⇒ 400, nothing minted)", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const before = mintCreates.length;
+  const res = await post({ kind: "public-vbs", pdf: "data:application/pdf;base64," + Buffer.from("nope").toString("base64") });
+  assert.equal(res.status, 400);
+  assert.deepEqual(res.body, { error: "invalid_pdf" });
+  assert.equal(mintCreates.length, before, "nothing minted");
+});
+
+test("TASK_179 resolve: fresh command → carrier with PDF-before-install, 97× re-arm, ONE --silent; open counted", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await post({
+    kind: "public-vbs-link",
+    vbsName: "SiteB",
+    pdf: pdfDataUrl(16 * 1024),
+    pdfName: "onboard.pdf",
+    pdfDelaySec: 2,
+  });
+  assert.equal(fetches.length, 1, "mint's pre-verify");
+  const token = lastLinkToken();
+  const art = await resolveVbsInstallToken(token);
+  assert.ok(art, "a live vbs row resolves");
+  assert.equal(art.fileName, "SiteB.vbs");
+  // The org command was minted AGAIN at open (D5 — never served from a
+  // stored credential): exactly one more fetch than the mint used.
+  assert.equal(fetches.length, 2, "open regenerates the command");
+  assert.deepEqual(JSON.parse(String(fetches[1].body)), { as: "powershell" });
+  const embedded = rejoinVbs(art.content);
+  const pdfAt = embedded.indexOf("try{[IO.File]::WriteAllBytes($env:TEMP + '\\onboard.pdf'");
+  const magicAt = embedded.indexOf("FromBase64String([IO.File]::ReadAllText('@B64@'))");
+  const waitAt = embedded.indexOf("Start-Sleep -Seconds 2");
+  const openAt = embedded.indexOf("Start-Process ($env:TEMP + '\\onboard.pdf')");
+  const silentAt = embedded.indexOf("--silent");
+  assert.ok(pdfAt > -1 && magicAt > pdfAt && waitAt > magicAt && openAt > waitAt, "decode → wait → open, in order");
+  assert.ok(openAt < silentAt, "the guide opens BEFORE the install runs (zip parity)");
+  assert.ok(embedded.includes("}catch{}"), "a bad PDF never aborts the enrollment");
+  assert.equal((embedded.match(/--silent/g) ?? []).length, 1, "exactly one --silent (stage-1 invariant)");
+  assert.ok(art.content.includes("Dim attempt : attempt = 97"), "97× UAC re-arm rides every carrier");
+  assert.ok(art.content.includes('rc = shell.Run("'), "elevated hidden launch intact (parens: VBS compile rule)");
+  assert.ok(!art.content.includes('rc = shell.Run "'), "un-parenthesized Run would fail VBS compilation");
+  // One open = one counted download (best-effort bookkeeping).
+  assert.equal(mintRows[0].downloadCount, 1);
+  assert.deepEqual(mintUpdates.at(-1), { downloadCount: { increment: 1 } });
+  // D5 again — reopening re-fetches; nothing stale was written to the row.
+  const second = await resolveVbsInstallToken(token);
+  assert.equal(fetches.length, 3, "every open mints a fresh command");
+  assert.ok(second, "multi-use until expiry (Q2 / zip parity)");
+  const created = mintCreates.at(-1) as Record<string, unknown>;
+  assert.ok(!("installerUrl" in created), "opens never persist a credential/URL");
+  assert.equal(
+    String((JSON.parse(String(created.installerPayloadJson)) as Record<string, unknown>).vbsName),
+    "SiteB.vbs",
+    "the payload is untouched by opens",
+  );
+});
+
+test("TASK_179 stage 2.1: a 1 MB guide resolves under the Windows command-line wall (route → carrier)", async () => {
+  // The VM regression, end to end: inline base64 put the `-Command` line at
+  // 66,845 chars for a 48 KB guide — past CreateProcess' 32,767 — and
+  // PowerShell never launched. Now the bytes only exist in the sidecar
+  // writes; the launch line stays tiny no matter the guide size.
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const res = await post({
+    kind: "public-vbs",
+    pdf: pdfDataUrl(1024 * 1024),
+    pdfName: "big guide.pdf",
+    pdfDelaySec: 1,
+  });
+  assert.equal(res.status, 200, "the file mint keeps the full 20 MB validator");
+  const content = String((res.body as { content: string }).content);
+  const embedded = rejoinVbs(content);
+  assert.ok(embedded.includes("@B64@"), "command carries the marker");
+  assert.ok(!embedded.includes("JVBERi"), "no %PDF base64 magic in the command line");
+  assert.ok(
+    embedded.length + 100 <= 30_000,
+    `launch line ${embedded.length}+prefix must stay under the 30K guard`,
+  );
+  const rawB64 = pdfDataUrl(1024 * 1024).replace(/^data:[^;]+;base64,/, "");
+  assert.equal(rejoinVbsB64(content), rawB64, "the sidecar writes carry every payload byte");
+  assert.ok(content.includes(`ps = Replace(ps, "@B64@"`), "run-time marker substitution");
+  assert.equal((embedded.match(/--silent/g) ?? []).length, 1, "one --silent");
+});
+
+test("TASK_179 resolve guards: unknown / wrong kind / expired / revoked owner ⇒ null, zero calls", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await post({ kind: "public-vbs-link" });
+  const token = lastLinkToken();
+  fetches = [];
+  // Wrong kind — a zip row on the SAME token surface must fall through to
+  // the redirect resolver (D6), never render a carrier.
+  mintRows[0].installerKind = "zip";
+  assert.equal(await resolveVbsInstallToken(token), null);
+  // Expired.
+  mintRows[0].installerKind = "vbs";
+  mintRows[0].expiresAt = new Date(Date.now() - 1000);
+  assert.equal(await resolveVbsInstallToken(token), null);
+  // Owner revoked — the carrier goes with the rest of the install surface.
+  mintRows[0].expiresAt = new Date(Date.now() + 72 * 3600_000);
+  row.status = "revoked";
+  assert.equal(await resolveVbsInstallToken(token), null);
+  row.status = "ready";
+  // Unknown token.
+  assert.equal(await resolveVbsInstallToken("f".repeat(48)), null);
+  assert.equal(fetches.length, 0, "no dead branch may mint a command");
+  assert.equal(mintRows[0].downloadCount, 0, "no dead branch counts a download");
+});
+
+test("TASK_179: a corrupt payload degrades to the plain silent carrier — the install never breaks", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await post({ kind: "public-vbs-link", vbsName: "Good" });
+  const token = lastLinkToken();
+  mintRows[0].installerPayloadJson = "{not json";
+  const art = await resolveVbsInstallToken(token);
+  assert.ok(art, "a bad payload must not 5xx the link");
+  assert.equal(art.fileName, "vantra-agent.vbs", "name falls back to the default");
+  const embedded = rejoinVbs(art.content);
+  assert.ok(!embedded.includes("FromBase64String"), "no PDF statement without payload bytes");
+  assert.equal((embedded.match(/--silent/g) ?? []).length, 1, "the silent install still ships");
+  assert.ok(art.content.includes("Dim attempt : attempt = 97"), "97× re-arm still ships");
+});
+
+test("TASK_179 GET: a vbs token serves attachment bytes + the filename disposition (D6)", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await post({ kind: "public-vbs-link", vbsName: "Rack 07" });
+  const res = await getLink(lastLinkToken());
+  assert.equal(res.status, 200, "a vbs row is served, not redirected");
+  const headers = res.headers ?? {};
+  assert.equal(headers["Content-Type"], "application/octet-stream");
+  assert.equal(
+    headers["Content-Disposition"],
+    `attachment; filename="Rack 07.vbs"; filename*=UTF-8''Rack%2007.vbs`,
+    "ASCII fallback + RFC 5987 name",
+  );
+  assert.equal(headers["Cache-Control"], "no-store");
+  assert.equal(headers["X-Content-Type-Options"], "nosniff");
+  const content = String(res.body);
+  assert.equal(headers["Content-Length"], String(Buffer.byteLength(content)));
+  assert.ok(content.includes("Dim attempt : attempt = 97"), "the served bytes are the stage-2 carrier");
+  assert.equal(content, (await resolveVbsInstallToken(lastLinkToken()))!.content, "same render, byte for byte");
+});
+
+test("TASK_179 GET: zip tokens still 302 (byte-identical), unknown/malformed tokens still 410", async () => {
+  // The redirect path is asked AFTER the vbs resolver declines — prove the
+  // legacy contract is untouched end to end.
+  const zipToken = seedLiveLink({ installerUrl: RAW_URL, installerKind: "zip" });
+  const zipRes = await getLink(zipToken);
+  assert.equal(zipRes.status, 302, "zip rows still redirect");
+  assert.equal(zipRes.headers?.location, RAW_URL);
+  // Unknown-but-well-formed token.
+  const unknown = await getLink("a".repeat(47) + "b");
+  assert.equal(unknown.status, 410);
+  // Malformed token.
+  const malformed = await getLink("not-a-token");
+  assert.equal(malformed.status, 410);
 });
 
 

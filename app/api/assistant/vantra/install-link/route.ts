@@ -3,9 +3,11 @@ import { z } from "zod";
 
 import { getSession } from "@/lib/session";
 import {
+  MAX_LINK_PDF_BYTES,
   mintInstallLink,
   mintPublicPsCommand,
   mintPublicVbsFile,
+  mintPublicVbsLink,
   validateInstallerPdf,
   type InstallerNames,
   type InstallerPdf,
@@ -19,7 +21,8 @@ export const dynamic = "force-dynamic";
 //   POST {names:{…}, pdf,…}      → …with an install-guide PDF inside the ZIP
 //   POST {kind:"private"}        → private PowerShell install command
 //   POST {kind:"public-powershell"} → PUBLIC PowerShell install command
-//   POST {kind:"public-vbs", vbsName?} → PUBLIC one-click .vbs carrier (inline)
+//   POST {kind:"public-vbs", vbsName?, pdf?, …} → PUBLIC one-click .vbs carrier (inline; optional guide PDF)
+//   POST {kind:"public-vbs-link", vbsName?, pdf?, …} → PUBLIC shareable .vbs link (72 h history row; PDF ≤ 2 MB)
 // Private is entitlement-gated in mintInstallLink ("devices" entitlement —
 // premium tier 5 covers it; free/trial users 403).
 //
@@ -110,19 +113,24 @@ export async function POST(req: Request) {
         ? "public-powershell"
         : body.kind === "public-vbs"
           ? "public-vbs"
-          : "public";
+          : body.kind === "public-vbs-link"
+            ? "public-vbs-link"
+            : "public";
   // The private tier is out of scope (D1/D2): its PowerShell command never
   // takes the installer block. Same for the public-PowerShell and public-VBS
   // paths — the names and the guide PDF describe the launcher ZIP, which they
-  // do not build.
+  // do not build. TASK_179 stage 2: the VBS FILE and VBS LINK kinds DO take
+  // the PDF (it rides INSIDE the carrier); only `public` takes the names.
   const names = kind === "public" ? parseNames(body.names) : undefined;
 
-  // TASK_125 — the LOUD gate for the optional guide PDF (public only). The
-  // validator mirrors Vantra's reference rules exactly, so a request accepted
-  // here is accepted there too; the difference is only that a bad PDF is an
-  // actionable status here instead of a silent drop.
+  // TASK_125 — the LOUD gate for the optional guide PDF. The validator
+  // mirrors Vantra's reference rules exactly, so a request accepted here is
+  // accepted there too; the difference is only that a bad PDF is an
+  // actionable status here instead of a silent drop. TASK_179 stage 2 — the
+  // two VBS kinds share it (their PDF rides inside the carrier); only the
+  // LINK additionally caps at 2 MB (D3: the bytes are stored in its row).
   let pdf: InstallerPdf | null = null;
-  if (kind === "public") {
+  if (kind === "public" || kind === "public-vbs" || kind === "public-vbs-link") {
     const validated = validateInstallerPdf({
       pdf: body.pdf,
       pdfName: body.pdfName,
@@ -135,6 +143,15 @@ export async function POST(req: Request) {
       );
     }
     pdf = validated.pdf;
+    // TASK_179 D3/Q1 — link-attached PDFs cap at 2 MB decoded (row-bloat
+    // bound). Loud 413, same posture as the validator above; the file mint
+    // keeps the full 20 MB validator (bytes never stored there).
+    if (kind === "public-vbs-link" && pdf) {
+      const b64 = pdf.pdf.replace(/^data:[^;]+;base64,/, "").replace(/\s+/g, "");
+      if (Math.ceil((b64.length * 3) / 4) > MAX_LINK_PDF_BYTES) {
+        return NextResponse.json({ error: "pdf_too_large" }, { status: 413 });
+      }
+    }
   }
 
   try {
@@ -154,11 +171,24 @@ export async function POST(req: Request) {
     // rename field; the route's bareName drop plus lib-level re-sanitise
     // mean a typo falls back to the default name, never a 400.
     if (kind === "public-vbs") {
-      const minted = await mintPublicVbsFile(session.userId, bareName(body.vbsName));
+      const minted = await mintPublicVbsFile(session.userId, bareName(body.vbsName), pdf);
       return NextResponse.json({
         ok: true,
         fileName: minted.fileName,
         content: minted.content,
+        expiresAt: minted.expiresAt,
+      });
+    }
+    // TASK_179 stage 2 — the shareable `.vbs` link on the SAME wrapper
+    // surface zip/exe links use. Returns the URL to show/copy (the carrier
+    // bytes are rendered at OPEN time, D5) plus the default file name and
+    // TTL. `pdf` is the route-validated, 2 MB-capped guide PDF.
+    if (kind === "public-vbs-link") {
+      const minted = await mintPublicVbsLink(session.userId, bareName(body.vbsName), pdf);
+      return NextResponse.json({
+        ok: true,
+        link: minted.link,
+        fileName: minted.fileName,
         expiresAt: minted.expiresAt,
       });
     }
@@ -169,6 +199,13 @@ export async function POST(req: Request) {
     const status =
       code === "no_link" ? 404
       : code === "private_not_granted" ? 403
+      // From validateInstallerPdf's siblings (the lib's own 2 MB link cap —
+      // defense in depth): same loud posture as the route-level gate.
+      : code === "pdf_too_large" ? 413
+      // TASK_179 stage 2.1 — the carrier renderer refuses to build a line
+      // Windows would reject (32,767-char CreateProcess wall). Client-visible,
+      // actionable — not a gateway error.
+      : code === "command_too_long" ? 400
       // `vantra_deploy_outdated` is Vantra not knowing the public-PowerShell
       // flag yet — a deploy-order problem, not a client error.
       : code === "vantra_not_configured" || code === "vantra_deploy_outdated" ? 503

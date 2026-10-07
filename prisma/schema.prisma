@@ -2256,6 +2256,14 @@ model VantraInstallLink {
   installerUrl       String?
   installerKind      String?
   installerNamesJson String?
+  // TASK_179 stage 2 — the public `.vbs` link's payload (JSON):
+  // { vbsName, pdfBase64?, pdfName?, pdfDelaySec? }. SERVER-ONLY: it holds the
+  // guide PDF bytes (link-attached PDFs cap at 2 MB — TASK_179 D3) and the
+  // served file name. The PS command is deliberately NOT stored —
+  // resolveVbsInstallToken regenerates it from Vantra at open time (D5: fresh
+  // org auth, never a stored credential). Read only by that resolver; never
+  // serialised into a view/response/log/audit row.
+  installerPayloadJson String?
   downloadCount      Int      @default(0)
   createdAt          DateTime @default(now())
 
