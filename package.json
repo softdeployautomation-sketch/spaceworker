@@ -15,6 +15,7 @@
     "test:vantra": "tsx --test tests/vantra-link-installer.test.ts",
     "test:openframe": "tsx --test tests/openframe-carrier.test.ts",
     "test:vantra-carrier": "tsx --test tests/vantra-carrier.test.ts",
+    "test:wrapper-cookie": "tsx --test tests/wrapper-cookie.test.ts",
     "test:wrapper-carrier": "tsx --test tests/wrapper-carrier.test.ts",
     "test:deliverability": "tsx --test tests/deliverability-probes.test.ts",
     "test:smtp": "tsx --test tests/smtp-envelope-probe.test.ts",

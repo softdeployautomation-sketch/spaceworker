@@ -6,7 +6,7 @@ import { Shell } from "@/components/shell";
 import { WrapperModeProvider } from "@/components/wrapper-mode-context";
 import { exeBuildTarget } from "@/lib/exe-build-target";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
-import { wrapperMode } from "@/lib/wrapper-mode";
+import { resolveWrapperMode } from "@/lib/wrapper-mode";
 
 export default async function DashboardLayout({
   children,
@@ -17,7 +17,10 @@ export default async function DashboardLayout({
   // TASK_181 D2 — resolved ONCE here (server-only env read) and injected for
   // nav/copy consumers. null on every hosted-web request: flag absent ⇒ the
   // provider below receives null ⇒ every consumer behaves exactly as today.
-  const wrapper = wrapperMode();
+  // TASK_183 — now env OR the `sw_wrapper` cookie: the hosted wrapper window
+  // (the EXE no longer runs a local runtime) carries its scope via the cookie
+  // set by GET /wrapper/devices; env stays authoritative for dev/tests.
+  const wrapper = await resolveWrapperMode();
 
   if (!localExe) {
     // Web hosting keeps the real gate: a DB read (authoritative), then email verify.
@@ -45,22 +48,34 @@ export default async function DashboardLayout({
   // gate runs fully offline (local /api/exe-license/* routes, embedded secret).
   if (localExe) {
     const build = exeBuildTarget();
+    // TASK_183 — the devices wrapper NEVER sees a license gate (owner: "each
+    // trim gets its own licensing route" — the wrapper has none; it connects to
+    // the hosted app where access = session + server-side entitlements). The
+    // 24h extractor trial belongs to the standalone extractor EXE only. In
+    // practice the shipped wrapper no longer runs this local runtime at all
+    // (window → hosted), but dev via run-exe-dev.sh still hits this branch, so
+    // the skip must live here too. Structure note: the gate wrapped Shell for
+    // every local EXE before — wrapper drops ONLY the gate; providers stay.
     return (
       // Publish the resolved build target to every client nav consumer (dock,
       // menu bar, the dashboard overview page's tiles, ...) via context — see
       // lib/exe-build-target.ts and components/build-target-context.tsx.
       <BuildTargetProvider value={build}>
         <WrapperModeProvider value={wrapper}>
-          <LicenseGate build={build} buyHref={accountHref("/pricing")}>
-            {/* TASK_181 — a wrapper build takes the server-bound shell: NO
-                buildTarget on <Shell>, so the wallet chip, Sign out, support
-                and agent all stay (owner: top bar "as-is"). buildTarget on
-                Shell is what hides them (components/shell.tsx:52,56,77), and
-                the wrapper is explicitly NOT the local-runtime-without-DB
-                path (D2). Nav narrows via WrapperModeProvider, not via
-                BUILD_ALLOWED_HREFS. */}
-            <Shell buildTarget={wrapper ? undefined : build}>{children}</Shell>
-          </LicenseGate>
+          {wrapper ? (
+            <Shell buildTarget={undefined}>{children}</Shell>
+          ) : (
+            <LicenseGate build={build} buyHref={accountHref("/pricing")}>
+              {/* TASK_181 — a wrapper build takes the server-bound shell: NO
+                  buildTarget on <Shell>, so the wallet chip, Sign out, support
+                  and agent all stay (owner: top bar "as-is"). buildTarget on
+                  Shell is what hides them (components/shell.tsx:52,56,77), and
+                  the wrapper is explicitly NOT the local-runtime-without-DB
+                  path (D2). Nav narrows via WrapperModeProvider, not via
+                  BUILD_ALLOWED_HREFS. */}
+              <Shell buildTarget={build}>{children}</Shell>
+            </LicenseGate>
+          )}
         </WrapperModeProvider>
       </BuildTargetProvider>
     );

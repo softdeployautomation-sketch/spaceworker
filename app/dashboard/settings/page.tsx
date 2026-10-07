@@ -8,7 +8,7 @@ import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
 import { getAdminSettings } from "@/lib/admin-settings";
-import { wrapperMode } from "@/lib/wrapper-mode";
+import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
@@ -19,13 +19,21 @@ import { HostingCredentialsSettings } from "@/components/hosting-credentials-set
 export const metadata: Metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
+  // TASK_183 — resolved FIRST: the local-exe early-return below must not fire
+  // for the devices wrapper. The wrapper has NO local licensing (owner: "each
+  // trim gets its own licensing route" — the wrapper connects to the hosted app
+  // where access = session + server-side entitlements), so it takes the normal
+  // settings body — account, Premium XDevice card (P3), etc. — and never the
+  // 24h extractor trial copy. env first, then the `sw_wrapper` cookie.
+  const wrapper = (await resolveWrapperMode()) !== null;
+
   // Desktop EXE runs fully offline — the web session/Postgres read below has no
   // meaning in the local runtime (same pattern as app/dashboard/layout.tsx, which
   // passes user=null there). The only Settings content the EXE needs is the local
   // License panel, which talks exclusively to /api/exe-license/*; the account/
   // security/etc. cards are web-host-only. Split here so the EXE build never
-  // touches the DB.
-  if (isLocalExeRuntime()) {
+  // touches the DB. (Wrapper excluded above — see TASK_183.)
+  if (isLocalExeRuntime() && !wrapper) {
     return (
       <div className="flex flex-col gap-6">
         <div>
@@ -42,7 +50,7 @@ export default async function SettingsPage() {
 
   // TASK_181 — the devices-only wrapper build: user-only settings (account,
   // licenses, security); the cross-product config cards below are web-only.
-  const wrapper = wrapperMode() !== null;
+  // TASK_183 — `wrapper` resolved at the top of the function (env + cookie).
 
   // TASK_181 P3 (step 30) — the Premium card. Price = the ADMIN-SET
   // xdevicePriceUsd (read live, never hardcoded anywhere in the UI), wording

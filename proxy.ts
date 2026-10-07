@@ -2,6 +2,7 @@ import { jwtVerify, type JWTPayload } from "jose";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { getMaintenanceFlags, MAINTENANCE_PAGE_HTML } from "@/lib/maintenance";
+import { WRAPPER_MODE_COOKIE, wrapperModeFromCookieValue } from "@/lib/wrapper-mode";
 
 // Next.js 16 renamed `middleware` to `proxy` (the `middleware.ts` convention is
 // deprecated). This file provides the same auth-gate behavior from the plan:
@@ -66,14 +67,19 @@ export async function proxy(request: NextRequest) {
   // local runtime — if this ran after that bypass, /dashboard/extract would
   // never be intercepted in the very build it exists for).
   //
-  // WRAPPER_MODE is only ever set by the wrapper build's own runtime
-  // (scripts/runtime-assemble.mjs embeds it in the EXE's .env.local); the hosted
-  // web deploy never sets it, so this is a single env read that no-ops there —
+  // TASK_183 — scope comes from EITHER the build-time env (dev/tests: the
+  // wrapper build's own .env.local, unchanged) OR the `sw_wrapper` cookie set
+  // by GET /wrapper/devices (the hosted window: the wrapper EXE no longer runs
+  // a local runtime — it IS a window onto this hosted app, so the guard has to
+  // fire here now). The hosted web deploy sets neither for regular browsers ⇒
   // flag-off behaviour is byte-identical to today. A hidden nav entry is not a
   // guard (§3.1): this is what actually makes /dashboard/extract and friends
   // unreachable in the wrapper, same fail-closed posture as the license_only
   // allowlist below.
-  if (process.env.WRAPPER_MODE === "devices" && pathname.startsWith("/dashboard")) {
+  const wrapperScoped =
+    process.env.WRAPPER_MODE === "devices" ||
+    wrapperModeFromCookieValue(request.cookies.get(WRAPPER_MODE_COOKIE)?.value) !== null;
+  if (wrapperScoped && pathname.startsWith("/dashboard")) {
     const allowed =
       pathname === "/dashboard/devices" ||
       pathname.startsWith("/dashboard/devices/") ||

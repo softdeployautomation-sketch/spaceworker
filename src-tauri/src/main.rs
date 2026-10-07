@@ -33,6 +33,20 @@ use tauri::{Manager, Url};
 /// Dedicated loopback port the bundled Next.js runtime serves the dashboard on.
 const LOCAL_PORT: u16 = 34413;
 
+/// TASK_183 — devices-wrapper entry: the HOSTED app route that sets the
+/// `sw_wrapper` scoping cookie and 307s to /dashboard/devices. The wrapper is a
+/// window onto the hosted app (owner: "it just connects to our app") — it runs
+/// NO local runtime, so session/wallet/devices/all data ride the hosted backend
+/// and there is no local 24h license to show. The extractor/local-runtime builds
+/// keep their bundled runtime and never see this constant.
+const WRAPPER_ENTRY_URL: &str = "https://spaceworker.top/wrapper/devices";
+
+/// TASK_183 — identifier set ONLY by src-tauri/tauri.devices.conf.json (merged
+/// over tauri.conf.json's `com.spaceworker-os.desktop` via build-exe.yml's
+/// `--config`; the extractor variant has its own `...extractor`). Fail-closed:
+/// anything else keeps the local-runtime behavior below, byte-identical.
+const WRAPPER_IDENTIFIER: &str = "com.spaceworker-os.devices";
+
 /// The spawned local-runtime child process — killed when the window closes.
 struct LocalRuntime(Mutex<Option<Child>>);
 
@@ -112,6 +126,23 @@ fn main() {
         .manage(LocalRuntime(Mutex::new(None)))
         .setup(|app| {
             if !cfg!(debug_assertions) {
+                // TASK_183 — devices wrapper: point the window straight at the
+                // HOSTED app entry route and do NOT spawn the bundled runtime.
+                // The local runtime ships with no DATABASE_URL/SESSION_SECRET
+                // and has no forwarding to hosted, so it could never serve the
+                // device list, wallet or session — the 24h license gate was the
+                // first wall, broken data was every wall after it. Navigation
+                // is immediate (the window shows the splash until first paint);
+                // no wait-for-runtime loop applies here.
+                if app.config().identifier == WRAPPER_IDENTIFIER {
+                    let win = app
+                        .get_webview_window("main")
+                        .expect("main window missing");
+                    if let Ok(url) = Url::parse(WRAPPER_ENTRY_URL) {
+                        let _ = win.navigate(url);
+                    }
+                    return Ok(());
+                }
                 // Production: spawn the bundled runtime, then point the window at
                 // it once it answers. Doing the wait on a background thread keeps
                 // setup snappy — the window shows the splash placeholder meanwhile.
