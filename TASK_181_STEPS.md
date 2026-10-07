@@ -482,6 +482,18 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
   Quit 1). Steps 36–42 checked; commit `672c0bd` (P5) + closeout commit pushed; handoff §6/§7,
   task-doc §8, verification prompt all rewritten. ONLY OPEN: step 35 — owner's real-Windows
   double-click run of the exe+vbs artifact.
+- 2026-10-07 — P6 follow-up (owner: "no option under grant, only shows 30days, should show
+  more options"): admin Grant cell now has a per-row duration dropdown
+  (1/3/7/14/30/60/90/180/365d, default 30) feeding BOTH buttons — `Grant {d}d` /
+  `+{d}d` (Premium, tier 5) and `Grant {d}d XDevice` / `+{d}d XDevice` (tier 3).
+  Route already accepted `days` 1..3650 ⇒ NO server/money change. Also root-caused the
+  owner's "only 30days shows" screenshot: the P5 box build never RESTARTED the service,
+  so the old process served the old panel — P6 deploy = file copy (md5 parity verified)
+  + rebuild + `systemctl restart spaceworker`. BUILD_ID `rrJMSnwoXVAH0EGnup7zIs`
+  (2026-10-07 21:42 +0200), service active, site 200, served chunk
+  `0kg409ki8ykkt.js` greps the select `Grant duration (days)` + both dynamic labels.
+  Commit `a1a8b3c` (UI only). Gates: tsc 0 · eslint 44 = pre-existing baseline, 0 in
+  edited region.
 
 ## PRE-COMPACT SNAPSHOT — 2026-10-07 v2 (P4b CI-VERIFIED + ask1 BUILT + harness WRITTEN)
 
