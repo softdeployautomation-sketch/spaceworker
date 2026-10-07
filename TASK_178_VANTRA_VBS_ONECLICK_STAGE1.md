@@ -93,11 +93,20 @@ fork and is the only carrier code this task touches.
       green, `npx tsc --noEmit`, ESLint on touched files.
       ✅ 74/74 + 13/13 (+ openframe 6/6 regression), `tsc -p .` exit 0,
       ESLint exit 0, live-value leak scan clean.
-- [ ] **2.7 ship** — commit → push → **CI `Build & Deploy`
-      (workflow_dispatch)** → live route
-      smoke (POST without session ⇒ 401 ⇒ deployed) → owner VM test:
-      mint from UI, double-click on VM, expect **no TacticalRMM
-      notification** (the TASK_172 silence), device lands in the right org.
+- [x] **2.7 ship** — ✅ done 2026-10-07, playbook path:
+      gates → two `-F` commits (`714ade4` TASK_177, `cd8bf62` TASK_178) →
+      `git push` → CI Build & typecheck **success** → tar-ship source (§1
+      recipe) + **md5 parity PARITY_OK** all 14 files (§2a) →
+      `workflow_dispatch "Build & Deploy"` run `37576197531` **success** →
+      live verify: service `active`, `BUILD_ID 2026-10-07 07:27:47`,
+      home **200**, `POST {kind:"public-vbs"}` no session **401** (route
+      mounted; unknown route **404** as contrast), server `.map`
+      sourcesContent contains `action: "vantra_public_vbs_minted"` (§6 —
+      the running build IS this code), client chunk `1j5owz-yc4l1d.js`
+      contains "One-click .vbs" (exactly one — the fresh build).
+      [ ] **owner VM test**: mint from the UI dropdown, double-click on the
+      VM, expect **no TacticalRMM notification** (the TASK_172 `--silent`
+      now baked by `ensureSilentEnroll`), device lands in the right org.
       *Mechanism note:* HOW_WE_MOVE_FAST §2 leads with `scripts/deploy-vps.sh`,
       but the newer §3/TASK_157 note (2026-10-04) forbids `next build` on the
       box — its source tree is partial post-CI (`Module not found: './cloudflare'`,
