@@ -11,7 +11,14 @@ import { WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE } from "@/lib/wrapper-mo
 // set for regular browsers (they land on /dashboard/devices directly and get the
 // full app, byte-identical to today).
 export function GET(request: Request): NextResponse {
-  const response = NextResponse.redirect(new URL("/dashboard/devices", request.url), 307);
+  // RELATIVE Location on purpose: the client resolves it against its own origin
+  // (the wrapper webview is on spaceworker.top; dev on localhost:3400). An absolute
+  // URL built from `request.url` picked up the box's internal host instead
+  // (verified live: Location came back as https://localhost:3500/... which would
+  // break the webview), so we never build the target from server-side request info.
+  void request;
+  const response = new NextResponse(null, { status: 307 });
+  response.headers.set("Location", "/dashboard/devices");
   response.cookies.set(WRAPPER_MODE_COOKIE, WRAPPER_MODE_COOKIE_VALUE, {
     httpOnly: true,
     sameSite: "lax",

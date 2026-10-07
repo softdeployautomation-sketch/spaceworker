@@ -21,23 +21,34 @@ import { join } from "node:path";
 
 // server-only must never throw in a plain-Node test run; next/headers is a
 // controllable jar for resolveWrapperMode; next/server is a minimal
-// NextResponse stand-in (the entry route only ever uses redirect + cookies.set).
+// NextResponse stand-in — constructable (entry route uses `new NextResponse(null,
+// {status})` + a RELATIVE Location header) and with cookies.set.
 let jar: Map<string, string> = new Map();
-const fakeNextResponse = {
-  redirect(url: URL, status?: number) {
-    const cookieSets: Array<{ name: string; value: string; opts: unknown }> = [];
-    return {
-      status: status ?? 307,
-      redirectedTo: url.toString(),
-      cookies: {
-        set: (name: string, value: string, opts: unknown) => {
-          cookieSets.push({ name, value, opts });
-        },
-      },
-      cookieSets,
-    };
-  },
-};
+class FakeNextResponse {
+  status: number;
+  private rawHeaders = new Map<string, string>();
+  // real Headers lowercases keys — the shim must too (route sets "Location",
+  // tests read "location").
+  headers = {
+    set: (key: string, value: string): void => {
+      this.rawHeaders.set(key.toLowerCase(), value);
+    },
+    get: (key: string): string | null => this.rawHeaders.get(key.toLowerCase()) ?? null,
+  };
+  cookieSets: Array<{ name: string; value: string; opts: unknown }> = [];
+  cookies = {
+    set: (name: string, value: string, opts: unknown) => {
+      this.cookieSets.push({ name, value, opts });
+    },
+  };
+  constructor(_body: unknown, init?: { status?: number }) {
+    this.status = init?.status ?? 200;
+  }
+  get redirectedTo(): string {
+    return this.headers.get("location") ?? "";
+  }
+}
+const fakeNextResponse = FakeNextResponse;
 
 const loader = Module as unknown as {
   _load: (r: string, p: NodeModule | undefined, m: boolean) => unknown;
@@ -67,7 +78,7 @@ const wrapperMode = require("../lib/wrapper-mode") as {
 const entryRoute = require("../app/wrapper/devices/route.ts") as {
   GET: (req: Request) => {
     status: number;
-    redirectedTo: string;
+    headers: { get: (key: string) => string | null };
     cookieSets: Array<{ name: string; value: string; opts: unknown }>;
   };
 };
@@ -109,7 +120,10 @@ test("resolveWrapperMode: env first (never overridden by cookie), then cookie", 
 test("GET /wrapper/devices: 307 to /dashboard/devices with the scoped cookie", () => {
   const res = entryRoute.GET(new Request("https://spaceworker.top/wrapper/devices"));
   assert.equal(res.status, 307);
-  assert.equal(new URL(res.redirectedTo).pathname, "/dashboard/devices");
+  // RELATIVE Location on purpose (route comment): the client resolves it against
+  // ITS origin (webview = spaceworker.top). An absolute URL built server-side
+  // baked in the box's internal host (https://localhost:3500) — verified live.
+  assert.equal(res.headers.get("location"), "/dashboard/devices");
   assert.equal(res.cookieSets.length, 1);
   const [c] = res.cookieSets;
   assert.equal(c.name, "sw_wrapper");

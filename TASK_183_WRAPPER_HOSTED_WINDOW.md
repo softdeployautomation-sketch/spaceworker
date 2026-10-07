@@ -63,6 +63,12 @@ count) come after this. VBS carrier work is CLOSED — see TASK_182 (S1-S8 all g
       `/dashboard/devices`. Unauth: layout → `/login?next=…` → back; cookie already set
       persists narrowing through login (webview profile persists across launches).
       EVIDENCE: handler test 5/5 asserts Set-Cookie attrs + 307 location.
+      LIVE (2026-10-07): `curl -I https://spaceworker.top/wrapper/devices` →
+      `307` + `location: /dashboard/devices` (RELATIVE — first deploy emitted
+      `https://localhost:3500/...` from the box-internal host; route now sets a
+      relative Location the client resolves against ITS origin, same class as the
+      app's relative `location: /login`) + `set-cookie: sw_wrapper=devices;
+      Path=/; Secure; HttpOnly; SameSite=lax`.
 - [x] W3. `proxy.ts` guard (~line 76): `env === "devices" || cookie === "devices"`.
       EVIDENCE: tsc 0; eslint 0.
 - [x] W4. `app/dashboard/layout.tsx`: `resolveWrapperMode()`; localExe branch — skip
