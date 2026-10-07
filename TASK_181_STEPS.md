@@ -374,21 +374,28 @@ UAC consent re-arm 97×, SHA/PDF sidecars) that are VM-proven 21/21. Code-signin
 feasibility blocker — it only affects SmartScreen reputation warnings, and the agent installer
 ships unsigned today. So this phase = reuse the proven carrier machinery for the wrapper NSIS exe.
 
-- [ ] 36. Measure the `devices` NSIS artifact size in CI. Embed path (owner's literal ask):
-      new `renderEmbeddedExeVbs()` reusing vantra-carrier's chunked `b64File` write + SHA-256
-      pre-run verification + run statement. If size proves impractical (>~25 MB VBS), fall back
-      to the agent-flow download carrier (VBS downloads the exe from the release artifact URL,
-      verifies hash, runs) — decision recorded here with the measured number either way.
-- [ ] 37. Post-build step in `build-exe.yml` (macOS/Linux runner, after tauri build): base64
-      the NSIS exe → render `.vbs` next to it → upload BOTH in the same artifact
-      (`spaceworker-devices-windows` gains `spaceworker-devices.vbs`).
-- [ ] 38. Security posture documented in-file: unsigned exe + VBS = same as today's agent
-      carrier; MOTW/Defender caveats listed openly; hash check inside the VBS mandatory
-      (tamper-evidence since neither half is signed).
-- [ ] 39. Tests mirroring `tests/vantra-carrier.test.ts`: fixture bytes → rendered VBS →
-      chunks rejoin to the original base64; SHA-256 statement present; run/elevate statement
-      correct; no raw `"` escaping leaks.
-- [ ] 40. Gates: tsc/eslint/`test:vantra-carrier` + new suite; workflow syntax check; commit.
+- [x] 36. Measure the `devices` NSIS artifact size in CI. Embed path (owner's literal ask):
+      — DONE 2026-10-07: run `37668649342` measured `exe=40130748 bytes vbs=54639380 bytes`
+      (38.3 MB → 52.1 MB, ×1.36). Over the ~25 MB planning threshold but EMBED SHIPS (owner's
+      literal ask) — decision + reasoning recorded in the snapshot below.
+- [x] 37. Post-build step in `build-exe.yml` (post tauri build): base64 the NSIS exe → render
+      `.vbs` next to it → upload BOTH in the same artifact — DONE 2026-10-07:
+      `if: variant == 'devices'` render step runs `scripts/render-devices-vbs.ts`; CI run
+      `37668649342` artifact `spaceworker-devices-windows` contains `*.exe` + `*.vbs`.
+- [x] 38. Security posture documented in-file — DONE: `lib/wrapper-carrier.ts` header carries
+      the full `SECURITY POSTURE (step 38)` block: unsigned exe + VBS = same posture as the
+      shipping agent carrier; MOTW (Zone.Identifier) absent by design + SmartScreen/Defender
+      caveats stated openly; SHA-256 verify MANDATORY + fail-closed (quit(1) before any run);
+      no obfuscation on purpose.
+- [x] 39. Tests mirroring `tests/vantra-carrier.test.ts` — DONE: `tests/wrapper-carrier.test.ts`
+      6/6 (`npm run test:wrapper-carrier`) — fixture bytes → rendered VBS → chunks rejoin
+      byte-exact, SHA-256 statement present, run/verify statements correct, no raw `"` leaks.
+      PLUS real-artifact proof: CI round-trip `payload rejoins byte-exact` + LOCAL download
+      re-verified (base64 rejoin === exe bytes, uppercase SHA embedded, Get-FileHash fail-closed
+      verify statement at VBS line 59477, `WScript.Quit 1` on error).
+- [x] 40. Gates: tsc 0 · ESLint 0 NEW errors (admin-panel 44 = pre-existing, stash A/B identical)
+      · wrapper-carrier 6/6 · vantra-carrier 21/21 · xdevice 38/38 · vantra 90/90 · wallet 63/63
+      · devices 6/6 · `check-workflow-syntax.mjs` CHECK=0 · commit (this one) + push.
 
 ## Closeout
 - [ ] 41. Update `SENIOR_HANDOFF.md` §6/§7 + §9; check off `TASK_181_DEVICE_WRAPPER_EXE.md` §8.
@@ -462,39 +469,76 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
   `ab6e621`. Gates: tsc 0 · eslint 0 · xdevice 38 · wallet 63 · vantra 90 · devices 6 ·
   module-store 11 · carrier 21 · wrapper-carrier 6 · idlechip 15 · idle 8.
 
-## PRE-COMPACT SNAPSHOT — 2026-10-07 (P4b in flight + 2 owner asks OPEN)
+## PRE-COMPACT SNAPSHOT — 2026-10-07 v2 (P4b CI-VERIFIED + ask1 BUILT + harness WRITTEN)
 
 **COMMITTED/PUSHED:** P0a `99a77e8~1` grant null-admin fix (VERIFIED DEPLOYED: box
 `app/api/admin/wallet/grant/route.ts` greps `TASK_181 P0a` = 1, grant-premium route greps
-`TASK_181 P3` = 1) · P1 `831e816` · P2 `4ee8e24` · P3 `31ec7c3` · P4-probes `ab6e621`.
-Working tree UNCOMMITTED (P4b): `lib/wrapper-carrier.ts` (NEW `renderEmbeddedExeVbs`),
-`lib/vantra-carrier.ts` (exports `vbsString`/`chunkWrite`), `tests/wrapper-carrier.test.ts`
-(6/6), `scripts/render-devices-vbs.ts` (smoke: 2.0 MB exe → 2.7 MB VBS, round-trip OK),
-`package.json` (`test:wrapper-carrier`), `.github/workflows/build-exe.yml` (render step
-`if: variant == 'devices'` + artifact `*.vbs`; check-workflow-syntax 19/19 OK).
+`TASK_181 P3` = 1) · P1 `831e816` · P2 `4ee8e24` · P3 `31ec7c3` · P4-probes `ab6e621` ·
+P4b `599c46c` (renderer `lib/wrapper-carrier.ts` `renderEmbeddedExeVbs` + `lib/vantra-carrier.ts`
+exports `vbsString`/`chunkWrite` + `tests/wrapper-carrier.test.ts` 6/6 + `scripts/render-devices-vbs.ts`
++ `package.json` `test:wrapper-carrier` + `build-exe.yml` render step `if: variant == 'devices'`
++ artifact `*.vbs` + snapshot).
 
-**OPEN — owner's latest 3 asks (in priority order):**
-1. **Admin users-tab tier-3 grant UI (NOT BUILT YET).** `admin-panel.tsx` `grantPremium()`
-   (line ~445) POSTs `{}` → route defaults tier 5; there is NO button/selector for
-   tier 3 (xdevice). Owner: "hope you created a place in the users tab where admin can
-   grant a user the premium x device tier." → add tier-3 ("XDevice") grant control to
-   the Users tab Grant column (route already accepts `{days?, tier:3|5}` — server side
-   done + tested). ALSO: owner says "the grant bug still exist" — P0a code IS deployed
-   (grep above), so REPRO live: POST `/api/admin/wallet/grant` with a real userId →
-   confirm JSON success + ledger `admin_grant` + balance; if still failing, check the
-   deployed `.next` chunk (grep `TASK_181 P0a` in `.next/server`) — box `.next` built
-   at `V_KHa_EoMeO3HT4HdCgMT` AFTER rsync, should contain it. Report evidence.
-2. **Payment→grant live-confirm for xdevice** (owner: "make sure granting works after
-   user pays for the premiumxdevice from wrapper"): unit-tested (spend 14/14) but no
-   LIVE run yet — mirror `scripts/e2e-wallet-spend-p0b.ts` pattern for `product:
-   "xdevice"` (seed funded user → POST spend → tier 3 + premiumExpiresAt set → second
-   tap 409 already_active → cleanup) OR verify via §6 probes; record evidence here.
-3. **VBS generator = FINAL step (P4b)**: renderer+tests+workflow done locally (above);
-   REMAINING: (a) CI run `37666835537` (devices exe) was triggered BEFORE the render
-   step existed → download its artifact, **measure exe size** = step-36 decision input
-   (embed if VBS ≲25 MB = exe ≲18 MB, else record fallback decision — renderer grows
-   ~×1.37); (b) after committing build-exe.yml, ONE more `gh workflow run
-   build-exe.yml -f variant=devices` (tree clean+pushed first, per lessons) to produce
-   the REAL `.vbs` in the artifact → verify round-trip + sizes from the run log;
-   (c) mark steps 37–40, run gates, commit, push. Step 35 (owner acceptance on REAL
-   artifact + openly-unverified list) stays open for the owner. Closeout 41–42 last.
+**P4b CI EVIDENCE — run `37668649342` (devices variant, HEAD `599c46c`) COMPLETED SUCCESS:**
+- render step ran on the Windows runner: `exe: SpaceWorker OS_0.1.0_x64-setup.exe (38.3 MB)
+  sha256=9B44D5346B222B90130AA6FE229EB7AA66570191C2859E95B1585102FF867AE8`;
+- `vbs: SpaceWorker OS_0.1.0_x64-setup.vbs (52.1 MB)` — step-36 sizes printed by the script:
+  `exe=40130748 bytes vbs=54639380 bytes`;
+- **`round-trip: OK (payload rejoins byte-exact)`** — real-artifact round-trip proven in CI;
+- artifact upload includes `*.exe` + `*.vbs` + `*.sig` + `*.nsis.zip` (same artifact name).
+
+**STEP-36 DECISION (recorded with the measured number, per the step's own wording):**
+exe 40.1 MB → VBS 54.6 MB (×1.36) is OVER the ~25 MB VBS planning threshold — but the owner's
+literal ask is embed ("i want the exe in the vbs… the point is to load the exe… to reduce the
+flagging, the vbs is important") and 54.6 MB is a one-time install download the carrier's FSO
+chunk-write handles (smoke: 2.0 MB exe → 2.7 MB VBS round-trip OK locally; CI: 40 MB → 54 MB
+byte-exact). **DECISION: EMBED SHIPS.** The download-carrier fallback (VBS fetches exe from
+release URL + hash-verify) stays the documented contingency only if field reports show the
+54 MB VBS impractical — NOT built now (owner: stop overthinking, ship the embed).
+
+**ASKS 1–3 — ALL RESOLVED 2026-10-07 (this commit):**
+1. **Admin users-tab tier-3 grant UI — BUILT + DEPLOYED.** `admin-panel.tsx`: `grantingXId`
+   state + `grantXDevice()` POSTing `{tier: 3}` to `/api/admin/users/[id]/grant-premium` +
+   second button in the Grant column ("XDevice 30d" / "+30d XDevice" when tier===3).
+   File pushed to box via ssh-stdin (rsync/scp choke on the `(protected)` path parens).
+   Gates: tsc 0 · eslint 0 NEW errors (44 = pre-existing, proven identical at HEAD via stash A/B).
+2. **LIVE-CONFIRM harness — RUN → RESULT: PASS 21/21.** `scripts/e2e-xdevice-grant-live-p5.ts`
+   against the LIVE box build (stub-server-only hook, disposable users, self-cleaned):
+
+```
+xdevice price=50000c opening=50500c
+seeded buyer=cmuyhabet0000kpgmlvah216o grantee=cmuyhabfi0001kpgmg5grn3fa
+ok   - admin wallet grant → 200 (got 200)
+ok   - grant body has no error string
+ok   - grant answer is JSON, never HTML
+ok   - balance credited 1500c (got 1500)
+ok   - ledger row kind=admin_grant exists
+ok   - admin_grant.adminId is NULL (P0a fix; got null)
+ok   - admin grant-premium tier:3 → 200 (got 200)
+ok   - response tier === 3 (got 3)
+ok   - term expiry returned to admin
+ok   - first term ~30 days (got 30.000)
+ok   - second grant STACKS (expiry 1796583965227 > 1793991965227)
+ok   - xdevice spend → 200 (got 200)
+ok   - body ok:true product:xdevice
+ok   - chargedCents === 50000
+ok   - balanceCents === 500
+ok   - payment term ~30 days (got 30.000)
+ok   - Postgres tier === 3 (got 3)
+ok   - Postgres premiumExpiresAt set
+ok   - exactly one debit_purchase row (got 1)
+ok   - keyed retry charges 0 (got 0c)
+ok   - second tap 409 already_active (got 409 already_active)
+ok   - still exactly one debit after retries (got 1)
+cleanup: ledger rows + disposable users deleted
+RESULT: PASS
+```
+
+   So: **grant bug GONE live** (P0a: 200 JSON, adminId NULL) · admin tier-3 grant + STACK ✓ ·
+   wrapper xdevice payment → tier 3 + exact admin price + idempotent + one debit ✓.
+   Harness DELETED from box after run (house pattern; kept in repo).
+3. **VBS generator — CI-VERIFIED + LOCAL-DOWNLOAD-VERIFIED; steps 36–40 checked off above.**
+   Artifact: `/tmp/exe-art-181/spaceworker-devices-windows/` — exe 38 MB + vbs 52 MB,
+   byte-exact rejoin, SHA embedded, Get-FileHash fail-closed verify, hidden PowerShell,
+   `Quit 1` on error. Step 35 (owner acceptance on a real Windows box) stays open for the
+   owner. Closeout 41–42 last.

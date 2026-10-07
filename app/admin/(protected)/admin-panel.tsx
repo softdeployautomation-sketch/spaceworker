@@ -401,6 +401,7 @@ function UsersTab({
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [grantingId, setGrantingId] = useState<string | null>(null);
+  const [grantingXId, setGrantingXId] = useState<string | null>(null);
   const [grantMsg, setGrantMsg] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
 
@@ -463,6 +464,39 @@ function UsersTab({
       setError("Network error");
     } finally {
       setGrantingId(null);
+    }
+  }
+
+  // TASK_181 step 29 (admin UI) — grant/extend the XDevice wrapper term
+  // (tier 3). Same route as grantPremium, `tier: 3` in the body. The expiry
+  // comes back to this admin caller only; end-user UI never renders a term.
+  async function grantXDevice(userId: string) {
+    setError("");
+    setGrantingXId(userId);
+    try {
+      const res = await fetch(`/api/admin/users/${userId}/grant-premium`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier: 3 }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setUsers((prev) =>
+          prev.map((u) => (u.id === data.id ? { ...u, tier: data.tier, premiumExpiresAt: data.premiumExpiresAt } : u)),
+        );
+        setGrantMsg((prev) => ({
+          ...prev,
+          [userId]: data.premiumExpiresAt
+            ? `✓ XDevice until ${new Date(data.premiumExpiresAt).toLocaleDateString()}`
+            : "✓ XDevice — no change (active Premium kept)",
+        }));
+      } else {
+        setError(typeof data.error === "string" ? data.error : "Failed to grant XDevice");
+      }
+    } catch {
+      setError("Network error");
+    } finally {
+      setGrantingXId(null);
     }
   }
 
@@ -531,16 +565,30 @@ function UsersTab({
                   )}
                 </td>
                 <td className="px-4 py-3">
-                  <button
-                    onClick={() => grantPremium(user.id)}
-                    disabled={grantingId === user.id}
-                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    {grantingId === user.id ? "Granting…" : user.tier >= 5 ? "+30 days" : "Grant 30d"}
-                  </button>
-                  {grantMsg[user.id] && (
-                    <span className="ml-2 text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
-                  )}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      onClick={() => grantPremium(user.id)}
+                      disabled={grantingId === user.id}
+                      className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      {grantingId === user.id ? "Granting…" : user.tier >= 5 ? "+30 days" : "Grant 30d"}
+                    </button>
+                    {/* TASK_181 step 29 — XDevice wrapper term (tier 3): the
+                        grant/extend surface for the paid wrapper subscription.
+                        Stacks on an active tier-3 term; no-ops (with a note) on
+                        an active tier-5 account so Premium is never lowered. */}
+                    <button
+                      onClick={() => grantXDevice(user.id)}
+                      disabled={grantingXId === user.id}
+                      title="Grant/extend the XDevice wrapper term (tier 3)"
+                      className="rounded-lg bg-zinc-900 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
+                    >
+                      {grantingXId === user.id ? "Granting…" : user.tier === 3 ? "+30d XDevice" : "XDevice 30d"}
+                    </button>
+                    {grantMsg[user.id] && (
+                      <span className="text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
+                    )}
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   {user.emailVerified ? (
