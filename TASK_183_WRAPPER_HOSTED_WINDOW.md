@@ -96,3 +96,35 @@ count) come after this. VBS carrier work is CLOSED — see TASK_182 (S1-S8 all g
       uninstall old wrapper + kill `_up_` (TASK_182 §C) → owner installs new EXE via its
       VBS → lands on hosted login/devices with NO 24h gate; free-user flow + premium card
       in settings; owner confirms → mark done in TASK_181_STEPS (§P4b + §8) + handoff log.
+      **PROGRESS (2026-10-07):**
+      - [x] push: 0fa5eff → 42e40c2 → ed02d0e (origin/main)
+      - [x] hosted deploy: deploy-vps.sh — `/wrapper/devices` route in build (ƒ), service
+        active, site 200; LIVE `curl`: 307 + relative `location: /dashboard/devices` +
+        `sw_wrapper=devices` cookie (after the relative-Location fix — first deploy had
+        baked the box-internal `https://localhost:3500` host; would have broken the
+        webview. Test shim also now lowercases header keys like real `Headers`.)
+      - [x] CI fix: first devices run 37696534160 FAILED — stale committed Cargo.lock
+        lacked the plugin entries, so CI freshly resolved them and crates.io had shipped
+        `dialog 2.8.1 / fs 2.6.0` today, breaking the npm minor-match gate (npm pinned
+        2.7.3 / 2.5.2). Fixed: Cargo.toml pins `~2.7` / `~2.5`, COMPLETE lock committed
+        (dialog 2.7.3 / fs 2.5.2), `cargo check --locked` = 0 (no CI drift possible).
+      - [x] CI re-run 37698140831 → FAILED #2: prerender `/dashboard/campaigns`
+        (`useSearchParams` needs Suspense). ROOT CAUSE found by local repro
+        (`CI=true WRAPPER_MODE=devices BUILD_TARGET=extractor SPACEWORKER_LOCAL_EXE=true
+        npx next build`) + bisect (old layout → BUILD=0): the always-on LicenseGate
+        renders a spinner instead of children during prerender, so the page component
+        never executed and the rule was masked for every EXE build since Task 27.
+        The wrapper branch renders Shell → pages execute → rule enforced. Two pages
+        use useSearchParams (campaigns, extract) — both now Suspense-wrapped
+        (renamed inner + default wrapper; runtime rendering unchanged — hosted
+        dynamic renders resolve params inside the boundary). Local CI-env build
+        after fix: **BUILD=0, 126/126 static**. Gates: tsc 0 · eslint 5=baseline
+        (0 new) · wrapper-cookie 5/5. Pushed 2c3a922; CI re-run 37701087124.
+      - [x] box parity: both pages deployed (deploy-vps.sh), site rebuilt+200.
+      - [x] CI run 37701087124 (headSha 2c3a922) → **SUCCESS** (both gates fixed)
+      - [x] artifact: `spaceworker-devices-windows` downloaded — exe 38M + vbs 52M,
+        verified byte-exact payload==exe (40,136,171 B), uppercase SHA-256 embedded,
+        Get-FileHash + fail-closed present; copied to **~/Desktop/** (00:28 Oct 8)
+      - [ ] VM (owner): uninstall old wrapper + kill `_up_` (TASK_182 §C) → install
+        new EXE via its VBS → lands on hosted login/devices with NO 24h gate;
+        free-user flow + premium card in settings; owner confirms → close W9
