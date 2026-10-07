@@ -28,9 +28,10 @@ shipped; if a phase is missing, that is the report).
 
 ## 2. THE FEATURE (run TASK_181 §6 acceptance yourself — curl/CLI, not vibes)
 
-1. **Menu (option B):** wrapper shows ONLY Devices + Settings; direct GETs to
+1. **Menu (option B, confirmed):** wrapper shows ONLY Devices + Settings; direct GETs to
    `/dashboard/extract`, `/dashboard/campaigns`, etc. inside wrapper mode are
-   404/redirect — hidden links alone = FAIL.
+   404/redirect — hidden links alone = FAIL. **No Panic button** in wrapper mode;
+   branding = window "SpaceWorker OS", dock label "Devices".
 2. **Wording:** zero public/private vocabulary in the wrapper (grep the SHIPPED chunks for
    `Public device`, `private agent`, `silently move` — any hit = FAIL). Web app keeps its
    wording untouched.
@@ -43,7 +44,9 @@ shipped; if a phase is missing, that is the report).
    catch-all); tools unlock; `canUseDeviceTools`-style gate passes for 3/5/10, fails ≤1.
 6. **Payment rails (both):** checkout → submit → admin approve grants tier 3; wallet
    balance spend on the xdevice product grants tier 3 with correct ledger rows. Double-
-   mint guard: one approval/debit ⇒ exactly one grant.
+   mint guard: one approval/debit ⇒ exactly one grant. **Price shows $500 default and
+   reads from the admin-adjustable store — change it in admin → new number appears
+   without redeploy; grep for a hardcoded 500 (= FAIL).**
 7. **Support + Settings:** ticket open + reply from the wrapper works; Settings shows
    only user-concerning sections; Wallet chip + Sign out present.
 8. **Flag OFF regression:** without wrapper mode, the web app is unchanged — full dock,

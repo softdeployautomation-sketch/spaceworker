@@ -81,6 +81,13 @@ A **server-bound desktop EXE** ("device wrapper") of the SpaceWorker OS shell wh
   (route-level guard, not just hidden links).
 - Settings shows **only user-concerning sections** (profile/security, licenses) — no
   sections that configure other tabs. Audit `app/dashboard/settings/page.tsx` and split.
+- **No Panic button** (owner 2026-10-07: "take away the panic button on devices, they
+  dont need it since the agent wont be with the wrapper") — `PanicButton`
+  (`components/device-list.tsx:19` import, `:1506` render) must not render in wrapper
+  mode. Web app keeps it.
+- **Branding (owner 2026-10-07):** window/app name = **"SpaceWorker OS"**; dock/taskbar
+  label for the tab = **"Devices"** (not "Devices"→ anything else; the wrapper's one
+  destination is labelled "Devices").
 
 ### 3.2 Free vs Premium XDevice
 
@@ -117,9 +124,9 @@ commit(s), tested separately.
 
 ## 4. Decisions (locked unless the owner overrides)
 
-- **D1 — Menu: Option B (recommended, owner leaned this way): dock/menu = Devices +
-  Settings only.** Option A (full menu, other tabs visible but disabled) is the documented
-  fallback if B feels too empty — owner picks at start (Q2).
+- **D1 — Menu: Option B CONFIRMED (owner, 2026-10-07): dock/menu = Devices + Settings
+  only.** (Option A — full menu, tabs visible-but-disabled — is withdrawn unless the owner
+  reverses it.)
 - **D2 — Mechanism: a new wrapper mode, NOT `buildTarget`.** `buildTarget` implies local
   runtime, no `DATABASE_URL`, hidden wallet/logout (`shell.tsx:52,56,77`) — Devices needs
   the hosted backend (`PLAN_TASK_163`: "Devices is web-only because it needs the hosted
@@ -137,10 +144,17 @@ commit(s), tested separately.
 - **D6 — Money commits separate** (§3.3).
 - **D7 — Support widget ships as-is** for every wrapper user (owner: "as it is").
 
-### Open questions (ask the owner before/during build)
-- **Q1** Price + duration of Premium XDevice (owner sets; product row + checkout params).
-- **Q2** Menu option B vs A (default B per owner's lean).
-- **Q3** Wrapper name/branding in the taskbar + EXE filename (keep "SpaceWorker OS"?).
+### Owner answers (2026-10-07 — ALL RESOLVED, no open questions)
+- **Q1 price → $500**, and **admin-adjustable at runtime "just like the rest"**: store the
+  default as `$500` and surface it in the admin price store exactly like the existing
+  per-product prices (schema `prisma/schema.prisma:241-253` "still admin-adjustable at
+  runtime", edited under **Admin > Wallets & Prices**; the `hostingModulePriceUsd` /
+  `cyberlabModulePriceUsd` AdminSetting pattern at `:442/:560` is the alternative — match
+  whichever surface the xdevice product naturally lands in). **Never hardcode 500.**
+- **Q2 menu → Option B confirmed** (D1).
+- **Q3 branding → "SpaceWorker OS"** window name; **"Devices"** is the one dock/taskbar
+  label (§3.1).
+- **Panic button → removed in wrapper** (§3.1); web keeps it.
 
 ## 5. Build plan (phases, each with its own gate)
 
@@ -156,8 +170,9 @@ commit(s), tested separately.
 - **P2 — Gating (code commit):** tier 3 + `hasEntitlement` mapping + `canUseDeviceTools`
   403 on every tool route the wrapper exposes + UI upgrade card ("Premium XDevice").
   No migration.
-- **P3 — Payment (money commit):** xdevice product + checkout/submit approve → tier 3;
-  wallet-spend grant-target for xdevice; success path = tools unlock live.
+- **P3 — Payment (money commit):** xdevice product (**default $500, admin-adjustable**,
+  §4 Q1) + checkout/submit approve → tier 3; wallet-spend grant-target for xdevice;
+  success path = tools unlock live.
 - **P4 — Ship:** desktop build artifact (extend build-exe.yml or its wrapper variant) +
   web deploy per playbook §3 if server code changed; owner acceptance below.
 
@@ -166,10 +181,14 @@ commit(s), tested separately.
 2. Mint VBS file + share link with a renamed file → run on VM → device enrolls.
 3. Terminal/tool button → locked UI + API returns 403 `xdevice_required`.
 4. Top up wallet (or pay via checkout) → activate Premium XDevice → tools unlock without
-   re-login (or after refresh — state which).
+   re-login (or after refresh — state which). Offer shows **$500** default; admin changes
+   the price → checkout/offer shows the new number (no redeploy).
 5. Open a support ticket from the wrapper → reply works.
-6. Settings shows only user sections; Support/Wallet/Sign out all present.
-7. Web app in a browser: full dock, zip/powershell methods, private tier — unchanged.
+6. Settings shows only user sections; Support/Wallet/Sign out all present; **NO Panic
+   button anywhere in the wrapper** (web still has it).
+7. Branding: window "SpaceWorker OS", dock label "Devices".
+8. Web app in a browser: full dock, zip/powershell methods, private tier, Panic button —
+   unchanged.
 
 ## 7. Out of scope
 TASK_174 Plus split · W6 EXE-from-wallet · TASK_175 desktop-only link gate · marketing
@@ -179,7 +198,8 @@ the web app · OpenFrame (frozen — `TASK_177` report only) · local-runtime EX
 ## 8. Checklist
 - [ ] P0a grant fix deployed (live grant succeeds)
 - [ ] P0b W5 live-confirm recorded
-- [ ] Q1 price set · Q2 menu option confirmed by owner
+- [x] Q1/Q2/Q3 + panic/branding resolved by owner 2026-10-07 — $500 admin-adjustable ·
+  menu B · no Panic in wrapper · "SpaceWorker OS" / dock "Devices" (§3.1, §4)
 - [ ] P1 wrapper shell built + full-web regression proven (flag off = unchanged)
 - [ ] P2 server-side 403 + tier 3 + UI lock; tests
 - [ ] P3 payment rails both work (checkout approve + wallet spend → tier 3)
