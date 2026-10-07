@@ -121,6 +121,19 @@ jobs:
           releaseBody: "Manual-cut desktop release from the current commit."
           releaseDraft: true
 
+      # TASK_181 P4b — the devices wrapper ships as EXE-in-VBS: same launch flow
+      # as the agent installer (owner: "instead of exe, it will be vbs, to run
+      # the exe… to reduce the flagging"). Renders `<exe>.vbs` NEXT TO the exe
+      # via the tested lib/wrapper-carrier.ts renderer (SHA-256 baked in, round
+      # -trip verified against the REAL artifact) and prints the step-36 size
+      # decision input. Fail-closed: a render/round-trip error fails the run —
+      # a broken carrier never reaches the artifact. Extractor variant skips it
+      # (no carrier for the classic zip/exe flow).
+      - name: Render devices VBS carrier (TASK_181 P4b)
+        if: github.event.inputs.variant == 'devices'
+        shell: bash
+        run: npx tsx scripts/render-devices-vbs.ts src-tauri/target/release/bundle/nsis
+
       # No tag was given => tauri-action skips Release uploads. Always surface the
       # installer as a downloadable run artifact so we can inspect it immediately.
       - name: Upload installer artifact
@@ -129,6 +142,7 @@ jobs:
           name: spaceworker-${{ github.event.inputs.variant }}-windows
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/*.vbs
             src-tauri/target/release/bundle/nsis/*.sig
             src-tauri/target/release/bundle/nsis/*.nsis.zip
           if-no-files-found: error

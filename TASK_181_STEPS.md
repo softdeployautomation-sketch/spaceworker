@@ -447,3 +447,54 @@ ships unsigned today. So this phase = reuse the proven carrier machinery for the
   vantra 90 incl. 6 new free-org/one-org tests, `test:xdevice` script), gates all green
   (tsc 0 · eslint 0 · wallet 54 · devices 6 · carrier 21 · idlechip 15 · idle 8).
   **NEXT: P3 step 25 (payment: additive `xdevicePriceUsd` + money commit).**
+- 2026-10-07 — **P3 COMPLETE (steps 25–31) + P4 deploy/probe COMPLETE (steps 33–34)**:
+  money commit `31ec7c3` (schema `xdevicePriceUsd` + migration 20261117000000, product
+  kind `xdevice`, checkout/submit session-required, spend rail + grant-premium `tier:3|5`,
+  billing/console "Subscribe to Premium — $X", NEW xdevice-payment suite 14/14 after
+  broadening the test require-hook to any `/lib/*.ts` parent — exe-license pulls
+  `server-only`). Deploy per §2/§3: pg_dump → migrate deploy → §6b drift EMPTY →
+  deploy-vps.sh → §2a **0 missing/0 stale**; fixed 2 pre-existing box issues (stray root
+  `probe.ts`/`dump-pubkey.ts`/`send-deferred.ts` → `/root/stray-ts-task181/`; stale
+  `next.config.ts` missing tesseract externalization → shipped). Live probes PASS 8/8
+  (`scripts/e2e-xdevice-gate-p4.ts`: 401/403 xdevice_required/live-tier3-pass/expired-403);
+  client chunk xdevice copy carries NO term (only hit is pre-existing tier-5 fallback).
+  BUILD_ID `V_KHa_EoMeO3HT4HdCgMT`, CI run `37664255586`. Commits pushed: `31ec7c3`,
+  `ab6e621`. Gates: tsc 0 · eslint 0 · xdevice 38 · wallet 63 · vantra 90 · devices 6 ·
+  module-store 11 · carrier 21 · wrapper-carrier 6 · idlechip 15 · idle 8.
+
+## PRE-COMPACT SNAPSHOT — 2026-10-07 (P4b in flight + 2 owner asks OPEN)
+
+**COMMITTED/PUSHED:** P0a `99a77e8~1` grant null-admin fix (VERIFIED DEPLOYED: box
+`app/api/admin/wallet/grant/route.ts` greps `TASK_181 P0a` = 1, grant-premium route greps
+`TASK_181 P3` = 1) · P1 `831e816` · P2 `4ee8e24` · P3 `31ec7c3` · P4-probes `ab6e621`.
+Working tree UNCOMMITTED (P4b): `lib/wrapper-carrier.ts` (NEW `renderEmbeddedExeVbs`),
+`lib/vantra-carrier.ts` (exports `vbsString`/`chunkWrite`), `tests/wrapper-carrier.test.ts`
+(6/6), `scripts/render-devices-vbs.ts` (smoke: 2.0 MB exe → 2.7 MB VBS, round-trip OK),
+`package.json` (`test:wrapper-carrier`), `.github/workflows/build-exe.yml` (render step
+`if: variant == 'devices'` + artifact `*.vbs`; check-workflow-syntax 19/19 OK).
+
+**OPEN — owner's latest 3 asks (in priority order):**
+1. **Admin users-tab tier-3 grant UI (NOT BUILT YET).** `admin-panel.tsx` `grantPremium()`
+   (line ~445) POSTs `{}` → route defaults tier 5; there is NO button/selector for
+   tier 3 (xdevice). Owner: "hope you created a place in the users tab where admin can
+   grant a user the premium x device tier." → add tier-3 ("XDevice") grant control to
+   the Users tab Grant column (route already accepts `{days?, tier:3|5}` — server side
+   done + tested). ALSO: owner says "the grant bug still exist" — P0a code IS deployed
+   (grep above), so REPRO live: POST `/api/admin/wallet/grant` with a real userId →
+   confirm JSON success + ledger `admin_grant` + balance; if still failing, check the
+   deployed `.next` chunk (grep `TASK_181 P0a` in `.next/server`) — box `.next` built
+   at `V_KHa_EoMeO3HT4HdCgMT` AFTER rsync, should contain it. Report evidence.
+2. **Payment→grant live-confirm for xdevice** (owner: "make sure granting works after
+   user pays for the premiumxdevice from wrapper"): unit-tested (spend 14/14) but no
+   LIVE run yet — mirror `scripts/e2e-wallet-spend-p0b.ts` pattern for `product:
+   "xdevice"` (seed funded user → POST spend → tier 3 + premiumExpiresAt set → second
+   tap 409 already_active → cleanup) OR verify via §6 probes; record evidence here.
+3. **VBS generator = FINAL step (P4b)**: renderer+tests+workflow done locally (above);
+   REMAINING: (a) CI run `37666835537` (devices exe) was triggered BEFORE the render
+   step existed → download its artifact, **measure exe size** = step-36 decision input
+   (embed if VBS ≲25 MB = exe ≲18 MB, else record fallback decision — renderer grows
+   ~×1.37); (b) after committing build-exe.yml, ONE more `gh workflow run
+   build-exe.yml -f variant=devices` (tree clean+pushed first, per lessons) to produce
+   the REAL `.vbs` in the artifact → verify round-trip + sizes from the run log;
+   (c) mark steps 37–40, run gates, commit, push. Step 35 (owner acceptance on REAL
+   artifact + openly-unverified list) stays open for the owner. Closeout 41–42 last.

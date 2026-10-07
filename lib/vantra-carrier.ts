@@ -351,7 +351,9 @@ export const SELF_ELEVATE_HEADER =
 export const SELF_ELEVATE_TRAILER = ";exit 0}catch{exit 2}";
 
 /** VBScript string-literal escaping (double the quotes). */
-function vbsString(value: string): string {
+// TASK_181 P4b — exported for the wrapper EXE carrier (lib/wrapper-carrier.ts)
+// so both carriers share ONE VBS string/chunk implementation (rejoin-tested).
+export function vbsString(value: string): string {
   return '"' + value.replace(/"/g, '""') + '"';
 }
 
@@ -379,8 +381,10 @@ function chunkContinuation(command: string): string {
 
 /** Carve quote-free text (the base64 payload) into `TARGET.Write "…"` lines
  *  under the 1023-char VBS source-line limit. TextStream.Write appends exactly
- *  what it is given, so split points are irrelevant (rejoin-tested). */
-function chunkWrite(target: string, text: string): string {
+ *  what it is given, so split points are irrelevant (rejoin-tested).
+ *  TASK_181 P4b: exported — the wrapper EXE carrier writes its payload the
+ *  same way. */
+export function chunkWrite(target: string, text: string): string {
   const lines: string[] = [];
   const WIDTH = 900;
   for (let at = 0; at < text.length; at += WIDTH) {
