@@ -335,12 +335,32 @@ triggering) + `HOW_WE_MOVE_FAST.md` §5/§6. The non-negotiables from it:
   local `next build` failure ≠ code failure (CI build is authoritative).
 - [x] 32. Extend `build-exe.yml` with a `devices` wrapper variant (WRAPPER_MODE) — DONE in step 16 (dropdown `devices`, Resolve variant env, tauri.devices.conf.json,
       artifact name parameterized). Re-verified at P1 gates (check-workflow-syntax 18/18).
-- [ ] 33. Deploy per playbook §2/§3 if server code changed (tar-over-ssh, `--exclude='.env'`,
+- [x] 33. Deploy per playbook §2/§3 if server code changed (tar-over-ssh, `--exclude='.env'`,
       §2a full-tree parity check, CI workflow builds — never `npm run build` on the VPS);
       capture BUILD_ID + run id.
-- [ ] 34. §6 probes: server `.map` has `xdevice_required`; client chunk has `Subscribe to
+      — DONE 2026-10-07. §2 recipe: trees rsync'd wholesale (app lib components tests prisma,
+      `--exclude='.env'`), root files via `scripts/deploy-vps.sh` (maintenance page + rollback
+      + runtime assertions). §3: pg_dump backup `/tmp/pg_dump_task181_pre.sql` (84.6 MB) →
+      `migrate deploy` applied `20261117000000_task181_xdevice_price` → §6b drift = EMPTY
+      migration (0 xdevice lines). Two pre-existing box issues found & fixed en route:
+      (1) stray root `probe.ts`/`dump-pubkey.ts`/`send-deferred.ts` (untracked server debris)
+      broke `next build` typecheck on run 1 → moved to `/root/stray-ts-task181/` (preserved),
+      rollback had served 200 throughout; (2) §2a caught `next.config.ts` stale — missing
+      tesseract.js externalization from f63a335 → shipped + rebuilt. Final §2a: **0 missing,
+      0 stale**. Push `bad680d..31ec7c3` → CI Build&Deploy run `37664255586` success (box
+      build is authoritative, ran after). BUILD_ID `V_KHa_EoMeO3HT4HdCgMT`, service active,
+      `/ → 200`, maintenance OFF.
+- [x] 34. §6 probes: server `.map` has `xdevice_required`; client chunk has `Subscribe to
       Premium` (no duration string); wrapper strings present; route status codes
       (free 403 xdevice_required / tier-3 pass).
+      — DONE 2026-10-07, all against the LIVE build: server chunks grep `xdevice_required` ✓;
+      client chunks grep `Subscribe to Premium` ✓ and the ONLY `30 days` hit is the
+      pre-existing tier-5 web fallback (`product !== "xdevice"` branch) — xdevice client copy
+      carries no term ✓. Live route codes via §4 harness `scripts/e2e-xdevice-gate-p4.ts`
+      (disposable users, self-cleaning) → **RESULT: PASS 8/8**: no-session 401 · free 403
+      `{error:"xdevice_required"}` · live tier-3 PASSES gate (reaches device layer → 404 on
+      fake id) · expired tier-3 403 xdevice_required. Harness deleted from VPS after run
+      (kept in repo for reproducibility).
 - [ ] 35. Owner acceptance script (§6) + lessons checklist above on the REAL artifact;
       openly-unverified list (e.g. Windows VM run).
 
