@@ -26,6 +26,11 @@ export const PREMIUM_DAYS_PER_CHARGE = 30;
  *     access automatically on the next fresh read — no extra instrumentation.
  */
 export const PREMIUM_TIER = 5;
+// TASK_181 P2 — tier 3 = the XDevice subscription (the wrapper's "Subscribe to
+// Premium", admin-priced): a TIME-LIMITED, devices-only tier. NOT premium —
+// every `>= 5` gate stays correctly closed for it — and it never catch-alls:
+// hasEntitlement lights exactly the "devices" key while its term is live.
+export const XDEVICE_TIER = 3;
 
 /**
  * Given a freshly-loaded User row (with at least { tier, premiumExpiresAt }),
@@ -54,13 +59,16 @@ export function isPremiumWithReversion(user: {
  * safe to call on every read. Returns the id if a reversion actually happened.
  */
 export async function applyPremiumReversion(userId: string, tier: number, premiumExpiresAt: Date | null): Promise<boolean> {
-  if (tier < PREMIUM_TIER) return false;
+  // TASK_181 — tier 3 (XDEVICE_TIER) is time-limited by the SAME
+  // premiumExpiresAt column and reverts by the same check-on-read; tiers
+  // 0/1/4 never carry a term, exactly as before.
+  if (tier < PREMIUM_TIER && tier !== XDEVICE_TIER) return false;
   if (premiumExpiresAt === null) return false; // grandfathered — never downgrade
   if (premiumExpiresAt.getTime() > Date.now()) return false;
   await db.user.updateMany({
     where: {
       id: userId,
-      tier: PREMIUM_TIER,
+      tier: { in: [PREMIUM_TIER, XDEVICE_TIER] },
       premiumExpiresAt: { not: null, lt: new Date() },
     },
     data: { tier: 1 },
@@ -127,13 +135,14 @@ export async function applyPremiumReversionWith(
   tier: number,
   premiumExpiresAt: Date | null,
 ): Promise<boolean> {
-  if (tier < PREMIUM_TIER) return false;
+  // TASK_181 — mirror of applyPremiumReversion: tier 3 shares the term column.
+  if (tier < PREMIUM_TIER && tier !== XDEVICE_TIER) return false;
   if (premiumExpiresAt === null) return false; // grandfathered — never downgrade
   if (premiumExpiresAt.getTime() > Date.now()) return false;
   await client.user.updateMany({
     where: {
       id: userId,
-      tier: PREMIUM_TIER,
+      tier: { in: [PREMIUM_TIER, XDEVICE_TIER] },
       premiumExpiresAt: { not: null, lt: new Date() },
     },
     data: { tier: 1 },

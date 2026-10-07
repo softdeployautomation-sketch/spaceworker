@@ -14,6 +14,7 @@ import {
   Globe,
   KeyRound,
   ListPlus,
+  Lock,
   Maximize2,
   Monitor,
   Power,
@@ -382,6 +383,43 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
   ["monitoring", "Screen monitoring", Eye],
 ];
 
+// TASK_181 22b — the tabs that REACH the device (they mint sessions, run
+// commands, start clones, pull frames). A free user may still watch the device
+// (Summary + Activity stay open — owner: "they can see the device but can't
+// perform any actions on it"); these four render the upgrade card instead.
+// The server enforces the same line: canUseDeviceTools → 403 xdevice_required
+// on every action route, so this is the honest UI half of one gate.
+const TOOL_TABS = new Set<Tabs>(["control", "command", "clone", "monitoring"]);
+
+// The upgrade card that replaces a locked tool tab. NO price and NO duration in
+// this copy on purpose: P3 wires the admin-set price into it, and the
+// subscription term is never shown in the UI (owner: "never show it on ui how
+// long the premium is for").
+function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center gap-3 border border-border bg-bg-elevated px-6 py-12 text-center",
+        fullScreen && "h-full border-0",
+      )}
+    >
+      <Lock className="h-5 w-5 text-fg-muted" aria-hidden />
+      <p className="text-sm font-medium text-fg">Subscribe to Premium</p>
+      <p className="max-w-md text-sm text-fg-muted">
+        Remote control, terminal commands, browser clones and screen monitoring are
+        premium tools on devices you own. Your device list, its summary and its
+        activity stay free.
+      </p>
+      <Link
+        href="/dashboard/billing"
+        className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
+      >
+        Subscribe to Premium
+      </Link>
+    </div>
+  );
+}
+
 // TASK_154 N2 — `relTime`, `statusWord` and the idle chip live in the ONE shared
 // client-safe helper (`lib/device-idle.ts`); this file no longer keeps its own
 // copies, so the console and the Devices list cannot diverge.
@@ -543,6 +581,12 @@ export function DeviceConsole({
   // True once /api/entitlements has answered (ok or not) — the egress picker
   // must not render a "Premium" lock before we know the account state.
   const [premiumLoaded, setPremiumLoaded] = useState(false);
+  // TASK_181 22b — device-tools lock derived from the SAME /api/entitlements
+  // answer (19b makes tier 3 emit `devices` there, so a paying tier-3 user
+  // never sees the upgrade card while the server allows them). Starts true
+  // (unlocked) so no lock flashes before the answer arrives; the server gate
+  // is the authority either way.
+  const [deviceTools, setDeviceTools] = useState(true);
 
   // TASK_114 — one-click clone-device setup (relay + engine on this PC, or the
   // hosted receiver). Status rides the console's existing poll tick.
@@ -566,6 +610,10 @@ export function DeviceConsole({
   const [screenMon, setScreenMon] = useState<ScreenMonitorView | null>(null);
 
   const isOnline = device?.status === "online" || device?.status === "asleep";
+  // TASK_181 22b — inverted once, used everywhere below. Starts false (unlocked
+  // default) and flips only when /api/entitlements answers without `devices`,
+  // so no upgrade card flashes for premium/tier-3 users while loading.
+  const toolsLocked = !deviceTools;
 
   const loadDevice = useCallback(async () => {
     try {
@@ -629,6 +677,12 @@ export function DeviceConsole({
       if (e.ok) {
         const data = await e.json().catch(() => ({}));
         setIsPremium(data.premium === true);
+        // TASK_181 22b — one condition, same as canUseDeviceTools: premium
+        // lights every key, tier 3 and grant rows light `devices`.
+        setDeviceTools(
+          data.premium === true ||
+            (Array.isArray(data.keys) && data.keys.includes("devices")),
+        );
       }
       if (s.ok) {
         const data = await s.json().catch(() => ({}));
@@ -1454,7 +1508,13 @@ export function DeviceConsole({
                   : "text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5",
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
+              {/* TASK_181 22b — locked tool tabs wear the lock so the tab that
+                  leads to the upgrade card never reads as a broken tool. */}
+              {toolsLocked && TOOL_TABS.has(key) ? (
+                <Lock className="h-3.5 w-3.5" aria-hidden />
+              ) : (
+                <Icon className="h-3.5 w-3.5" />
+              )}
               {label}
             </button>
           ))}
@@ -1486,29 +1546,41 @@ export function DeviceConsole({
               and broke the session on a tab round trip.
               Visible on Control in embedded mode; in full-screen it is the only
               view that renders at all (NEW-2), whatever `tab` says. */}
-          <div className={fullScreen || tab === "control" ? undefined : "hidden"}>
-            <ControlTab
-              deviceId={deviceId}
-              fullScreen={fullScreen}
-              isOnline={!!isOnline}
-              mesh={mesh}
-              meshErr={meshErr}
-              busy={busy}
-              connect={connect}
-              disconnect={disconnect}
-              runMaintenance={runMaintenance}
-              requestPin={requestPin}
-              pingAgent={pingAgent}
-              ping={ping}
-              runPower={runPower}
-              powerView={powerView}
-              runKeepAwake={runKeepAwake}
-              goToCommand={() => setTab("command")}
-              goToClone={() => setTab("clone")}
-              lastSeenAt={device?.lastSeenAt ?? null}
-            />
-          </div>
-          {!fullScreen && tab === "command" && (
+          {/* TASK_181 22b — LOCKED: the upgrade card takes control's slot (both
+              tabbed and full-screen, where ControlTab is the only view). The
+              ControlTab itself is not mounted while locked — a free user never
+              minted a mesh session, so there is no token to preserve. */}
+          {toolsLocked &&
+            (fullScreen || tab === "control") &&
+            (fullScreen ? <ToolLockCard fullScreen /> : <ToolLockCard />)}
+          {!toolsLocked && (
+            <div className={fullScreen || tab === "control" ? undefined : "hidden"}>
+              <ControlTab
+                deviceId={deviceId}
+                fullScreen={fullScreen}
+                isOnline={!!isOnline}
+                mesh={mesh}
+                meshErr={meshErr}
+                busy={busy}
+                connect={connect}
+                disconnect={disconnect}
+                runMaintenance={runMaintenance}
+                requestPin={requestPin}
+                pingAgent={pingAgent}
+                ping={ping}
+                runPower={runPower}
+                powerView={powerView}
+                runKeepAwake={runKeepAwake}
+                goToCommand={() => setTab("command")}
+                goToClone={() => setTab("clone")}
+                lastSeenAt={device?.lastSeenAt ?? null}
+              />
+            </div>
+          )}
+          {!fullScreen && tab === "command" &&
+            (toolsLocked ? (
+              <ToolLockCard />
+            ) : (
             <CommandTab
               queue={queue}
               cmd={cmd}
@@ -1532,8 +1604,12 @@ export function DeviceConsole({
               setAgentLabel={setAgentLabelEdit}
               runAgentVisibility={runAgentVisibility}
             />
+            )
           )}
-          {!fullScreen && tab === "clone" && (
+          {!fullScreen && tab === "clone" &&
+            (toolsLocked ? (
+              <ToolLockCard />
+            ) : (
             <CloneTab
               clones={clones}
               loaded={clonesLoaded}
@@ -1560,6 +1636,7 @@ export function DeviceConsole({
               onDelete={deleteClone}
               onOpen={openCloneSession}
             />
+            )
           )}
           {!fullScreen && tab === "activity" && <ActivityTab activity={activity} />}
 
@@ -1575,7 +1652,8 @@ export function DeviceConsole({
               `no-store` — so the risk here is a needless refetch, not a spent
               URL. `onState` publishes the loaded view up for Summary's one-line
               pointer. */}
-          {!fullScreen && (
+          {!fullScreen && toolsLocked && tab === "monitoring" && <ToolLockCard />}
+          {!fullScreen && !toolsLocked && (
             <div className={tab === "monitoring" ? undefined : "hidden"}>
               <ScreenMonitoringCard deviceId={deviceId} onState={setScreenMon} />
               {/* TASK_152 M5 — the alert configuration for this account lives
@@ -1597,7 +1675,7 @@ export function DeviceConsole({
               for "just the one line for our tools … even the PIN request modal
               shouldn't be in the remote, since it's already in the tools" —
               PIN collect lives in the Security toolbox menu there. */}
-          {!fullScreen && tab === "control" && (
+          {!fullScreen && tab === "control" && !toolsLocked && (
           <PinPanel
             pins={pins}
             pinLen={pinLen}

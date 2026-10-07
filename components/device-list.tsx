@@ -981,7 +981,17 @@ export function DeviceList() {
                         {!wrapper && <option value="zip">ZIP link</option>}
                         {!wrapper && <option value="powershell">PowerShell command</option>}
                         <option value="vbs">One-click .vbs file</option>
-                        <option value="exe">EXE link</option>
+                        {/* TASK_181 22c — in the WRAPPER the exe is not shippable
+                            yet (owner: "i dont want the zip, just the vbs, and
+                            exe/mac will be coming soon"). The web app keeps its
+                            EXE link unchanged. */}
+                        {wrapper ? (
+                          <option value="exe" disabled>
+                            EXE (coming soon)
+                          </option>
+                        ) : (
+                          <option value="exe">EXE link</option>
+                        )}
                         <option value="mac" disabled>
                           macOS (coming soon)
                         </option>

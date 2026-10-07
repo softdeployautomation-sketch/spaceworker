@@ -1,7 +1,7 @@
 import "server-only";
 
 import { db } from "./db";
-import { isPremiumWithReversion, applyPremiumReversion } from "./premium";
+import { isPremiumWithReversion, applyPremiumReversion, XDEVICE_TIER } from "./premium";
 
 // Task 92 / plan §COMMERCIAL C1 — THE entitlement gate. Every feature checks
 // capabilities here, never tiers: a tier number is storage, `hasEntitlement`
@@ -20,10 +20,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface EntitlementDecision {
   allowed: boolean;
-  // Why: "premium" (tier 5 covers it), "grant" (a UserEntitlement row), or
+  // Why: "premium" (tier 5 covers it), "grant" (a UserEntitlement row), "xdevice"
+  // (TASK_181: tier 3's live term — devices key ONLY, never a catch-all), or
   // "none". reason "expired" means a grant existed but its term passed (and
   // has now been lazily stamped revoked).
-  reason: "premium" | "grant" | "none" | "expired";
+  reason: "premium" | "grant" | "xdevice" | "none" | "expired";
+}
+
+/** Live XDevice (tier 3) term: NULL expiry = grandfathered, same rule as tier 5. */
+function isXdeviceLive(user: { tier: number; premiumExpiresAt: Date | null }): boolean {
+  if (user.tier !== XDEVICE_TIER) return false;
+  if (user.premiumExpiresAt === null) return true;
+  return user.premiumExpiresAt.getTime() > Date.now();
+}
+
+/**
+ * TASK_181 P2 — THE device-action gate. True iff the caller may reach a device
+ * (terminal, remote control, power, clones, …): tier 5 catch-all, a live tier-3
+ * XDevice term, or a `devices` UserEntitlement row (Assistant & Devices module
+ * buyers). Free/trial tier 1 → false; routes answer 403 `xdevice_required`.
+ */
+export async function canUseDeviceTools(userId: string): Promise<boolean> {
+  return (await hasEntitlement(userId, "devices")).allowed;
 }
 
 /**
@@ -40,8 +58,17 @@ export async function hasEntitlement(userId: string, key: EntitlementKey): Promi
   if (!user) return { allowed: false, reason: "none" };
 
   if (isPremiumWithReversion(user)) return { allowed: true, reason: "premium" };
-  // Persist the Task 55 lazy downgrade if the premium term just passed.
+  // Persist the Task 55 lazy downgrade if the premium term just passed. Tier 3
+  // shares the column, so an expired XDevice term reverts to tier 1 HERE too.
   await applyPremiumReversion(user.id, user.tier, user.premiumExpiresAt);
+
+  // TASK_181 — tier 3 lights exactly ONE key, while its term is live: devices.
+  // Never the tier-5 catch-all (mailer/extractor/hosting/cyberlab stay closed),
+  // and an EXPIRED term falls through to the grant rows below like any free
+  // account (a separately purchased module grant still stands on its own).
+  if (user.tier === XDEVICE_TIER && key === "devices" && isXdeviceLive(user)) {
+    return { allowed: true, reason: "xdevice" };
+  }
 
   const grant = await db.userEntitlement.findUnique({
     where: { userId_key: { userId, key } },
@@ -124,6 +151,11 @@ export async function listEffectiveEntitlements(userId: string): Promise<{
   });
   const premium = !!user && isPremiumWithReversion(user);
   if (user) await applyPremiumReversion(user.id, user.tier, user.premiumExpiresAt);
+  // TASK_181 19b — a live tier-3 XDevice term MUST surface the `devices` key
+  // here: the console derives its lock state from THIS list, and a server gate
+  // that allows while this list shows `[]` would paint the upgrade card over a
+  // paying user. `premium` stays false for tier 3 on purpose (it is not tier 5).
+  const xdevice = !!user && isXdeviceLive(user);
 
   const rows = await db.userEntitlement.findMany({ where: { userId } });
   const now = Date.now();
@@ -138,6 +170,6 @@ export async function listEffectiveEntitlements(userId: string): Promise<{
   );
   const keys = premium
     ? [...ENTITLEMENT_KEYS]
-    : [...new Set(live.map((g) => g.key))];
+    : [...new Set([...(xdevice ? (["devices"] as const) : []), ...live.map((g) => g.key)])];
   return { keys, premium, grants };
 }

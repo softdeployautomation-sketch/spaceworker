@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getSession } from "@/lib/session";
+import { deviceToolsDenied } from "@/lib/device-gate";
 import {
   startMaintenanceOverlayAction,
   stopMaintenanceOverlayAction,
@@ -62,6 +63,8 @@ export async function POST(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await deviceToolsDenied(session.userId);
+  if (denied) return denied;
   const { deviceId } = await params;
 
   let body: {

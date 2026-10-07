@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getSession } from "@/lib/session";
+import { deviceToolsDenied } from "@/lib/device-gate";
 import { fetchMeshUrls } from "@/lib/device-tools";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,8 @@ export async function GET(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await deviceToolsDenied(session.userId);
+  if (denied) return denied;
   const { deviceId } = await params;
   const pendingActionId = new URL(req.url).searchParams.get("pendingActionId") ?? undefined;
 

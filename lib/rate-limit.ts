@@ -22,7 +22,8 @@ export type RateLimitKind =
   | "trial-ping"
   | "wallet-read"
   | "wallet-spend"
-  | "overview-stats";
+  | "overview-stats"
+  | "vantra-link";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -82,6 +83,12 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // cap exists to stop an unbounded scrape of a user's own numbers, not to police
   // someone opening their own dashboard.
   "overview-stats": [{ limit: 120, windowMs: 60 * 60 * 1000 }],
+  // TASK_181 P2 — POST /api/assistant/vantra (org provisioning) is now OPEN to
+  // free users, so it became a new abuse surface: each attempt can mint an
+  // org + Vantra-side rows. One user gets ONE org (idempotent upsert), so the
+  // real pattern is a handful of clicks; 10/hr mirrors wallet-spend's
+  // double-click posture while stopping a script from hammering provisioning.
+  "vantra-link": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {

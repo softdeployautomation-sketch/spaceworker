@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/session";
+import { deviceToolsDenied } from "@/lib/device-gate";
 import { getAdminSettings } from "@/lib/admin-settings";
 import {
   deleteDeviceFrameTree,
@@ -108,6 +109,8 @@ export async function PATCH(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await deviceToolsDenied(session.userId);
+  if (denied) return denied;
   const { deviceId } = await params;
 
   const device = await ownedDevice(deviceId, session.userId);

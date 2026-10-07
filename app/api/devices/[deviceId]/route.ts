@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getSession } from "@/lib/session";
+import { deviceToolsDenied } from "@/lib/device-gate";
 import { removeDevice } from "@/lib/vantra-link";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +30,8 @@ export async function DELETE(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await deviceToolsDenied(session.userId);
+  if (denied) return denied;
   const { deviceId } = await params;
   const localOnly = new URL(req.url).searchParams.get("local") === "1";
 

@@ -179,8 +179,19 @@ async function toViewWithHistory(
   return toView(link, privateAllowed, await listInstallLinks(userId));
 }
 
+/**
+ * The private companion org (`sw-<userId>-p`) — the PREMIUM side of the tier
+ * model. TASK_181 P2 step 22d: an XDevice wrapper subscription (tier 3,
+ * reason "xdevice") unlocks the TOOLS only — terminal, remote control, the
+ * rest — and NEVER a second organization (owner 2026-10-07: "premiumxdevice
+ * also gets one organisation, just that the premium unlocks the terminal and
+ * the other tools"). Tier 5 (reason "premium") and a separately purchased
+ * `devices` grant (reason "grant") keep the private org exactly as before.
+ */
 async function isPrivateAllowed(userId: string): Promise<boolean> {
-  return (await hasEntitlement(userId, "devices")).allowed;
+  const decision = await hasEntitlement(userId, "devices");
+  if (!decision.allowed) return false;
+  return decision.reason !== "xdevice";
 }
 
 /**
@@ -196,18 +207,22 @@ export async function getVantraLinkView(userId: string): Promise<VantraLinkView 
 
 /**
  * Idempotent provisioning (TASK_93 acceptance: exactly one link + org per
- * user). Checks: "assistant" entitlement (C1 — capabilities, never tiers),
- * admin settings (vantraLinksEnabled + vantraLinksMax live count). The
- * Vantra side is itself idempotent by org name `sw-<userId>`.
+ * user). Checks: admin settings (vantraLinksEnabled + vantraLinksMax live
+ * count). The Vantra side is itself idempotent by org name `sw-<userId>`.
+ *
+ * TASK_181 P2 step 21 — the "assistant" entitlement requirement is GONE:
+ * org creation is the free-tier enabler (owner: "free users should be able
+ * to create an organization and then generate the vbs… gated for other
+ * things after for premium"). Private companion orgs stay gated behind
+ * `isPrivateAllowed` (devices entitlement) at their own call sites, and the
+ * POST route now carries a `vantra-link` rate-limit bucket since this is a
+ * newly-opened surface.
  */
 export async function ensureVantraLink(userId: string): Promise<VantraLinkView> {
   const existing = await db.vantraLink.findUnique({ where: { userId } });
   if (existing && existing.status !== "error") {
     return toViewWithHistory(existing, await isPrivateAllowed(userId), userId);
   }
-
-  const decision = await hasEntitlement(userId, "assistant");
-  if (!decision.allowed) throw new Error("entitlement_required");
 
   const settings = await getAdminSettings();
   if (!settings.vantraLinksEnabled) throw new Error("vantra_links_disabled");

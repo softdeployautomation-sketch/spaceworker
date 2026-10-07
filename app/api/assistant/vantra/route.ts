@@ -3,17 +3,24 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { db } from "@/lib/db";
 import { ensureVantraLink, getVantraLinkView, syncDevices } from "@/lib/vantra-link";
+import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 // Task 93 — the user-facing Vantra-plugin surface (org provisioning + health).
-//   POST — enable the Assistant's device link: idempotent provisioning of the
-//          hidden `sw-<userId>` Vantra org (entitlement + admin-limit gated).
+//   POST — enable the device link: idempotent provisioning of the hidden
+//          `sw-<userId>` Vantra org (TASK_181: FREE for any signed-in user —
+//          admin-settings gated + rate-limited, no entitlement requirement).
 //   GET  — link status + a live device sync from Vantra (upserts Device rows).
 
 export async function POST() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // TASK_181 — org creation just opened to free users, so cap it like every
+  // other write surface (10/hr per IP; one org per user idempotently).
+  const allowed = await allowAndRecord(await getClientIp(), "vantra-link");
+  if (!allowed) return NextResponse.json({ error: "rate_limited" }, { status: 429 });
 
   try {
     const view = await ensureVantraLink(session.userId);

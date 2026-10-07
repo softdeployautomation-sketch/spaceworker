@@ -21,8 +21,13 @@ export async function getCurrentUser() {
   const user = await db.user.findUnique({ where: { id: session.sub } });
   if (!user) return null;
 
-  await applyPremiumReversion(user.id, user.tier, user.premiumExpiresAt ?? null);
-  if (user.tier < 5) return user;
+  const reverted = await applyPremiumReversion(user.id, user.tier, user.premiumExpiresAt ?? null);
+  if (user.tier < 5) {
+    // TASK_181 — tier 3 (XDevice) reverts on the same check: an expired term
+    // just flipped tier 3 → 1 in the DB, so re-read instead of returning the
+    // stale in-memory row (the bug the tier-5 path dodges by falling through).
+    return reverted ? db.user.findUnique({ where: { id: user.id } }) : user;
+  }
   if (user.premiumExpiresAt === null) return user;
   if (user.premiumExpiresAt.getTime() > Date.now()) return user;
   // Expired — re-read after the downgrade so the returned user reflects reality.

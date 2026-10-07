@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
+import { deviceToolsDenied } from "@/lib/device-gate";
 import { panicStopAllDevices } from "@/lib/devices";
 
 // Task 92 — THE panic switch endpoint (plan CROSS-TRACK RULE 6: one
@@ -10,6 +11,8 @@ import { panicStopAllDevices } from "@/lib/devices";
 export async function POST() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await deviceToolsDenied(session.userId);
+  if (denied) return denied;
 
   const result = await panicStopAllDevices(session.userId, "user");
   return NextResponse.json({ ok: true, ...result });

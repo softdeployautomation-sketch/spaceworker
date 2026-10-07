@@ -65,6 +65,8 @@ interface DbArgs {
   // TASK_128 — db.device.upsert({ ... create: {...} }) is the only caller that
   // passes this; kept optional so every other fake stays as-is.
   create?: Record<string, unknown>;
+  // TASK_181 step 21 — the vantraLink.upsert's other half (update on hit).
+  update?: Record<string, unknown>;
 }
 
 interface AuditCall {
@@ -104,6 +106,17 @@ interface RouteMintCall {
 }
 let routeMintCalls: RouteMintCall[];
 let mintError: string | null;
+
+// TASK_181 P2 — scenario controls. The defaults preserve every pre-existing
+// test: no entitlement (a free tier-1 account), admin settings unconfigured,
+// and the standard org-provision payload.
+let adminSettings: Record<string, unknown>;
+let entitlementAnswer: { allowed: boolean; reason: string };
+let orgProvisionResponse: Record<string, unknown>;
+// Route wiring for POST /api/assistant/vantra (the free org-create surface).
+let rateLimitAllows: boolean;
+let ensuredFor: string[];
+let ensuredView: Record<string, unknown>;
 
 // TASK_171 — one per-mint history row, as the fake delegate holds it.
 interface MintRow {
@@ -154,6 +167,12 @@ beforeEach(() => {
   sessionValue = { userId: USER_ID };
   routeMintCalls = [];
   mintError = null;
+  adminSettings = {};
+  entitlementAnswer = { allowed: false, reason: "none" };
+  orgProvisionResponse = { ok: true, org: { id: "org-fresh", name: "sw-fresh" } };
+  rateLimitAllows = true;
+  ensuredFor = [];
+  ensuredView = { privateAllowed: false };
   deviceRows.clear();
   onboardingRows.clear();
   onboardingUpdates = [];
@@ -204,6 +223,18 @@ const fakeDb = {
       const patch = data ?? {};
       dbUpdates.push({ ...patch });
       Object.assign(row, patch);
+      return { ...row };
+    },
+    // TASK_181 step 21 — ensureVantraLink's two gates: the non-revoked count
+    // (the harness holds exactly ONE link row) and the idempotent upsert that
+    // lands the freshly provisioned org onto that row.
+    count: async ({ where }: DbArgs) => {
+      const notStatus = (where?.status as { not?: string } | undefined)?.not;
+      return notStatus !== undefined && row.status === notStatus ? 0 : 1;
+    },
+    upsert: async ({ where, update, create }: DbArgs) => {
+      const isSameRow = where?.userId !== undefined && where.userId === row.userId;
+      Object.assign(row, (isSameRow ? update : create) ?? {});
       return { ...row };
     },
   },
@@ -319,9 +350,10 @@ function installRequireHook(): void {
     if (from.endsWith(`/${MODULE_UNDER_TEST}`)) {
       if (request === "./db") return { db: fakeDb };
       if (request === "./entitlements") {
-        // Public minting is not entitlement-gated; the private tier is out of
-        // scope for Task 121 (asserted by omission in the mint tests below).
-        return { hasEntitlement: async () => ({ allowed: false, reason: "none" }) };
+        // Public minting is not entitlement-gated; the private tier answers
+        // from `entitlementAnswer` (default denied = a free tier-1 account —
+        // TASK_181 tests flip it to "xdevice"/"grant" for the one-org rule).
+        return { hasEntitlement: async () => entitlementAnswer };
       }
       if (request === "./devices") {
         return {
@@ -330,7 +362,7 @@ function installRequireHook(): void {
           },
         };
       }
-      if (request === "./admin-settings") return { getAdminSettings: async () => ({}) };
+      if (request === "./admin-settings") return { getAdminSettings: async () => adminSettings };
       if (request === "./device-tools") {
         // Not reached by mint/resolve/revoke; stubbed so its own imports stay out.
         return {
@@ -339,6 +371,28 @@ function installRequireHook(): void {
           stopMaintenanceOverlayAction: async () => ({}),
         };
       }
+    }
+    // TASK_181 step 21 — the free org-create route (POST /api/assistant/vantra):
+    // session + rate-limit + db swapped; `ensureVantraLink` is a recorder so
+    // the test can prove the route hands it the SESSION user.
+    if (from.endsWith("/app/api/assistant/vantra/route.ts")) {
+      if (request === "next/server") return { NextResponse: FakeNextResponse };
+      if (request === "@/lib/session") return { getSession: async () => sessionValue };
+      if (request === "@/lib/rate-limit")
+        return {
+          allowAndRecord: async () => rateLimitAllows,
+          getClientIp: async () => "203.0.113.7",
+        };
+      if (request === "@/lib/db") return { db: {} };
+      if (request === "@/lib/vantra-link")
+        return {
+          ensureVantraLink: async (userId: string) => {
+            ensuredFor.push(userId);
+            return ensuredView;
+          },
+          getVantraLinkView: async () => null,
+          syncDevices: async () => ({}),
+        };
     }
     // The API boundary under test: the route module's own dependencies.
     if (from.endsWith("/app/api/assistant/vantra/install-link/route.ts")) {
@@ -395,9 +449,17 @@ installRequireHook();
     body: typeof init?.body === "string" ? init.body : null,
     authorization: headers.Authorization,
   });
-  // TASK_128 — syncDevices reads the device list; everything else in this file
-  // is the mint surface and keeps answering with `mintResponse`.
-  const payload = String(url).includes("/sw/devices") ? devicesResponse : mintResponse;
+  // TASK_128 — syncDevices reads the device list; the org-create POST (free
+  // provisioning, TASK_181 step 21) answers with `orgProvisionResponse`; the
+  // mint surface keeps answering with `mintResponse`. The install-link URLs
+  // also contain "/api/internal/sw/orgs", so the create branch keys on the
+  // EXACT path suffix (create = .../orgs, mint = .../orgs/<id>/install-link).
+  const urlStr = String(url);
+  const payload = urlStr.includes("/sw/devices")
+    ? devicesResponse
+    : urlStr.endsWith("/api/internal/sw/orgs")
+      ? orgProvisionResponse
+      : mintResponse;
   return {
     ok: true,
     status: 200,
@@ -416,6 +478,11 @@ const {
   // TASK_128 — the sweep calls this itself now, so its own insert path is
   // covered here rather than only through the dashboard.
   syncDevices,
+  // TASK_181 step 21 — the free org-create surface + the private companion
+  // (both needed by the one-org tests below; real implementations, same fake
+  // db + fake fetch already in effect).
+  ensureVantraLink: realEnsureVantraLink,
+  ensurePrivateOrg: realEnsurePrivateOrg,
   // TASK_125 — the real PDF validator, handed to the route stub below so the
   // API-boundary tests exercise the module's OWN gate rather than a copy.
   validateInstallerPdf: realValidateInstallerPdf,
@@ -430,6 +497,14 @@ const {
   resolveVbsInstallToken,
   MAX_LINK_PDF_BYTES: realMaxLinkPdfBytes,
 } = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+// TASK_181 step 21 — the free org-create route, loaded through the hook above
+// (deps read the mutable scenario vars at CALL time, so one require suffices).
+const orgRoute = require("../app/api/assistant/vantra/route") as {
+  POST: () => Promise<{ status: number; body: unknown }>;
+};
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /** The body of the single outbound call, parsed. Fails loudly if there was none. */
@@ -1714,6 +1789,76 @@ test("TASK_179 GET: zip tokens still 302 (byte-identical), unknown/malformed tok
   // Malformed token.
   const malformed = await getLink("not-a-token");
   assert.equal(malformed.status, 410);
+});
+
+// ---------------------------------------------------------------------------
+// TASK_181 P2 — free-tier opening (step 21) + the one-org rule (step 22d).
+//
+// The owner's binding model: EVERY account — free or XDevice premium — has
+// exactly ONE organization (the public `sw-<userId>`). Premium unlocks the
+// TERMINAL AND OTHER TOOLS, never a second org. Only tier 5 / a separately
+// purchased devices grant keep the private companion org, as before.
+// ---------------------------------------------------------------------------
+
+test("step 21: an entitlement-less user provisions exactly ONE public org (free org create)", async () => {
+  adminSettings = { vantraLinksEnabled: true, vantraLinksMax: 10 };
+  const FREE_ID = "user_free_1";
+  const view = await realEnsureVantraLink(FREE_ID);
+  const orgCalls = fetches.filter((f) => f.url.endsWith("/api/internal/sw/orgs"));
+  assert.equal(orgCalls.length, 1, "exactly one org POST");
+  assert.equal(orgCalls[0].method, "POST");
+  assert.match(String(orgCalls[0].body), /"swUserId":"user_free_1"/);
+  assert.equal(view.privateAllowed, false, "free never sees the private tier");
+  // Idempotent: a second call reuses the stored row and dials out ZERO times.
+  fetches = [];
+  await realEnsureVantraLink(FREE_ID);
+  assert.equal(fetches.length, 0, "an existing org is reused, never re-provisioned");
+});
+
+test("step 21: the admin gates still hold — disabled ⇒ vantra_links_disabled, cap ⇒ vantra_links_limit", async () => {
+  adminSettings = { vantraLinksEnabled: false, vantraLinksMax: 10 };
+  await assert.rejects(() => realEnsureVantraLink("user_free_2"), /vantra_links_disabled/);
+  adminSettings = { vantraLinksEnabled: true, vantraLinksMax: 0 };
+  await assert.rejects(() => realEnsureVantraLink("user_free_3"), /vantra_links_limit/);
+  assert.equal(fetches.length, 0, "a refused provisioning never dials Vantra");
+});
+
+test("step 21 route: POST /api/assistant/vantra answers 200 and hands the SESSION user to ensureVantraLink", async () => {
+  const res = await orgRoute.POST();
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { ok: true, link: ensuredView });
+  assert.deepEqual(ensuredFor, [USER_ID], "the session's user, never a body-supplied one");
+});
+
+test("step 21 route: the new vantra-link rate bucket answers 429 rate_limited before provisioning", async () => {
+  rateLimitAllows = false;
+  const res = await orgRoute.POST();
+  assert.equal(res.status, 429);
+  assert.deepEqual(res.body, { error: "rate_limited" });
+  assert.deepEqual(ensuredFor, [], "a rate-limited call never reaches ensureVantraLink");
+});
+
+test("step 22d: XDevice premium (reason 'xdevice') keeps ONE org — the private tier stays closed", async () => {
+  entitlementAnswer = { allowed: true, reason: "xdevice" };
+  await assert.rejects(() => mintInstallLink(USER_ID, "private"), /private_not_granted/);
+  assert.equal(fetches.length, 0, "a refused private mint must not call Vantra");
+  await assert.rejects(() => realEnsurePrivateOrg(USER_ID), /private_not_granted/);
+  assert.equal(fetches.length, 0, "a refused companion provision must not call Vantra");
+});
+
+test("step 22d: a purchased devices grant (reason 'grant') still reaches the private tier", async () => {
+  entitlementAnswer = { allowed: true, reason: "grant" };
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const view = await mintInstallLink(USER_ID, "private");
+  assert.equal(view.privateAllowed, true);
+  const urls = fetches.map((f) => f.url);
+  assert.equal(
+    urls.filter((u) => u.endsWith("/api/internal/sw/orgs")).length,
+    1,
+    "the companion org is provisioned exactly once",
+  );
+  assert.equal(urls.filter((u) => u.includes("/install-link")).length, 1, "minted against it");
+  assert.equal(row.privateOrgId, "org-fresh", "the companion lands on the row");
 });
 
 
