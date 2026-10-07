@@ -403,6 +403,10 @@ function UsersTab({
   const [grantingId, setGrantingId] = useState<string | null>(null);
   const [grantingXId, setGrantingXId] = useState<string | null>(null);
   const [grantMsg, setGrantMsg] = useState<Record<string, string>>({});
+  // TASK_181 follow-up (owner: "only shows 30days, should show more options") —
+  // per-row grant duration. The route already accepts `days` 1..3650, so this
+  // is purely admin-side; no term length ever renders in any end-user UI.
+  const [grantDays, setGrantDays] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
 
   async function saveTier(userId: string) {
@@ -446,7 +450,7 @@ function UsersTab({
       const res = await fetch(`/api/admin/users/${userId}/grant-premium`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ days: grantDays[userId] ?? 30 }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -477,7 +481,7 @@ function UsersTab({
       const res = await fetch(`/api/admin/users/${userId}/grant-premium`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tier: 3 }),
+        body: JSON.stringify({ tier: 3, days: grantDays[userId] ?? 30 }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -566,12 +570,35 @@ function UsersTab({
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap items-center gap-1.5">
+                    {/* TASK_181 follow-up — grant DURATION options (owner:
+                        "only shows 30days, should show more options"). The
+                        route accepts days 1..3650; default stays 30. Admin-only
+                        surface — end-user UI never renders a term length. */}
+                    <select
+                      value={grantDays[user.id] ?? 30}
+                      onChange={(e) =>
+                        setGrantDays((prev) => ({ ...prev, [user.id]: Number(e.target.value) }))
+                      }
+                      aria-label="Grant duration (days)"
+                      className="rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200"
+                    >
+                      {[1, 3, 7, 14, 30, 60, 90, 180, 365].map((d) => (
+                        <option key={d} value={d}>
+                          {d}d
+                        </option>
+                      ))}
+                    </select>
                     <button
                       onClick={() => grantPremium(user.id)}
                       disabled={grantingId === user.id}
+                      title="Grant/extend web Premium (tier 5)"
                       className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-emerald-500 disabled:opacity-50"
                     >
-                      {grantingId === user.id ? "Granting…" : user.tier >= 5 ? "+30 days" : "Grant 30d"}
+                      {grantingId === user.id
+                        ? "Granting…"
+                        : user.tier >= 5
+                          ? `+${grantDays[user.id] ?? 30}d`
+                          : `Grant ${grantDays[user.id] ?? 30}d`}
                     </button>
                     {/* TASK_181 step 29 — XDevice wrapper term (tier 3): the
                         grant/extend surface for the paid wrapper subscription.
@@ -583,7 +610,11 @@ function UsersTab({
                       title="Grant/extend the XDevice wrapper term (tier 3)"
                       className="rounded-lg bg-zinc-900 px-3 py-1 text-xs font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
                     >
-                      {grantingXId === user.id ? "Granting…" : user.tier === 3 ? "+30d XDevice" : "XDevice 30d"}
+                      {grantingXId === user.id
+                        ? "Granting…"
+                        : user.tier === 3
+                          ? `+${grantDays[user.id] ?? 30}d XDevice`
+                          : `Grant ${grantDays[user.id] ?? 30}d XDevice`}
                     </button>
                     {grantMsg[user.id] && (
                       <span className="text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
