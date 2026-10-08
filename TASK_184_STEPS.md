@@ -344,6 +344,61 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
 
 ### B4 EXECUTION PLAN (recorded pre-edit, after context compaction)
 
+### B5 EXECUTION PLAN (recorded pre-edit, after context compaction)
+
+**Scope (checkbox verbatim + ORDER line):** invoice lifecycle unit tests
+(fake-db: create → owner-only visibility → pay → tier 5 granted → settled) ·
+ticket-template test · static lock that no subscription amount renders on web
+outside the wrapper branch · **N4** naming static test · full gate battery ·
+§2 deploy (**manual `prisma migrate deploy` — deploy script doesn't run it**)
++ §6b drift re-check · live e2e with a test account → close **C3/C5**.
+Owner does the final visual tier-3 web-vs-wrapper check.
+
+**Decisions (verified against code before writing):**
+1. **Two new test files, two new package scripts** (existing convention: one
+   script per concern, `tsx --test`):
+   - `tests/premium-invoice.test.ts` → `test:invoice` — B3/B4 lifecycle via the
+     wallet-grant-route fake-db pattern (`Module._load` override, route loaded
+     fresh, `fakeNextResponse`): admin create (tier derived from plan, amount
+     default/validated, snapshot methods, one-open-per-user guard) → **user GET
+     `/api/billing/invoices` 401 + owner-only rows** → submit+invoiceId (own/open
+     400s, product derived, amount := invoice, toAddress := snapshot) →
+     **`settleLinkedInvoice` claim-then-grant**: tier 5 → `grantPremium` exactly
+     once, second settle → false (no double grant), tier 3 → `grantXDeviceTerm`,
+     wrong owner / not-open → false → approve wallet arm: settled ⇒ NO wallet
+     credit → `handleApprovedPayment` skips product branch.
+   - `tests/premium-request-static.test.ts` → `test:premium-static` — pure-data
+     template contract (slugs, tiers, `supportTemplateFromSlug` default) +
+     **static locks** (file-reading asserts, module-route-gate test-13 style):
+     web surfaces never render a subscription amount outside the wrapper branch
+     (billing/settings/module-tool-lock/device-console) · **N4**: no user-facing
+     tier-5 CTA says plain "Upgrade to Premium"/"Pro", no XDevice surface says
+     plain "Premium" (scans `app/`+`components/`, whitelist-comment aware) · C3:
+     web billing renders `PremiumRequestCard`+`SupportTicketButton` (tier-
+     independent — the request card never branches on tier, which IS the C3 claim).
+2. **Static locks read real source files** with anchored regexes on the exact
+   wrapper-guarded lines (`isWrapper ? … : …`) — brittle-by-design: if someone
+   moves the price into an ungated branch the test fails.
+3. **Deploy order:** migration FIRST on the VPS (B3+B4 are additive-only → old
+   code unaffected by a new table/column), then §2 tar-over-ssh + build half of
+   `deploy-vps.sh`, then §6b re-parity (expect the two new migrations + B1–B4
+   files, zero drift beyond), then §4 live e2e.
+4. **Live e2e (disposable script, self-cleaning, A5 pattern):** real HTTP — free
+   account: invoices GET 401-anon/200-own · admin POST invoice (default price,
+   snapshot) → user sees it → submit payment → admin approve → **invoice paid +
+   tier 5 read-back** → second approve no-ops · **tier-3 account: web 403s
+   (locked tools) + billing invoice card reachable; device route 200 (wrapper
+   keeps access)** = C3/C5 live evidence. Everything cleaned; script deleted
+   both ends.
+5. **Commits:** tests+scripts one commit (not money) · deploy/evidence recorded
+   in the steps file commit · steps updated post-compaction with B5/N4/C3/C5 →
+   [x], snapshot, NEXT ACTION, DONE LOG, tally.
+
+**Non-goals:** no prod-data changes · no UI edits expected (tests only; if a
+test exposes a real gap, fix + note it) · B3/B4 code untouched · TASK_133
+untouched/untracked.
+
+
 **Scope:** billing page shows the user's open invoice; pay through the EXISTING
 `/api/billing/submit` (and the API contract also accepts the ref on
 `/api/billing/topup` — spec: "invoice ref optional"); admin approval → invoice
