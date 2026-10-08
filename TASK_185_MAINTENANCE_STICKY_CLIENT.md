@@ -70,18 +70,32 @@ hit this on EVERY deploy, and they won't know to hard-refresh.
       tool-data batch, clone poll, mesh-urls), billing 4 (status ×2, checkout,
       topup limits). wallet-chip already had it; POSTs untouched (not
       cacheable). A poisoned tab recovers on its next tick, no hard refresh.
-- [ ] **S5 tests** — new `tests/maintenance-cache.test.ts` static locks:
-      proxy exeApi branch has no-store; device-list GETs pass no-store; lib
-      maintenance HTML still has its reload-poller. (+ existing suites.)
-- [ ] **S6 gates** — tsc 0 · eslint 0-new · new test + wrapper-cookie 6/6 +
-      devices suite.
-- [ ] **S7 deploy + LIVE EVIDENCE** — deploy-vps.sh (repo files) → then flag
-      ON on box: `curl -sI /api/devices` must show `Cache-Control: no-store`
-      + `X-Maintenance: 1` → flag OFF: JSON 200. Record raw headers.
-- [ ] **S8 commit + steps update + report** — owner does ONE hard-refresh
-      (Cmd+Shift+R) to purge their current poisoned entries; everything else
-      self-heals. Note: entries already poisoned on OTHER pages die naturally
-      within the ~1.4-day heuristic window (JS cannot purge HTTP cache).
+- [x] **S5 tests** — `tests/maintenance-cache.test.ts` **6/6**: proxy exeApi
+      503 has no-store; maintenance HTML branch has no-store; device-list GETs
+      pass no-store; device-console tool batch passes no-store; billing
+      status/topup pass no-store; MAINTENANCE_PAGE_HTML keeps its reload
+      poller. (Two initial lock misses fixed to match real code: inline header
+      object; HTML lives in `lib/maintenance.ts` — `static/` page is box-only,
+      its poller verified by earlier live grep.)
+- [x] **S6 gates** — tsc **0** · eslint **0** (5 touched files + new test) ·
+      maintenance-cache **6/6** · wrapper-cookie **6/6** · devices **6/6**.
+- [x] **S7 deploy + LIVE EVIDENCE** — commit `7871dd2`. **Real deploy window,
+  real headers:** `GET /api/devices` during flag ON →
+  `200 + X-Maintenance: 1 + Cache-Control: no-store, must-revalidate` (the
+  exact poisoning vector, now uncacheable); `GET /` same ✓ (both vhosts).
+  After: `/api/devices` → `{"error":"Unauthorized"}` JSON, `/dashboard/devices`
+  → 307 login, root → 200, no X-Maintenance, service active on new build
+  (`BUILD_ID g5vDn79LNrSs3wTDfytXH`), **6 compiled chunks contain no-store**
+  (new client bundle live). *Ops hiccup:* local `deploy-vps.sh` job got
+  SIGSTOPped mid-build (tool harness) → flag never removed / restart never
+  issued — completed tail by hand (`systemctl restart spaceworker` →
+  `rm -f /var/www/sw-maintenance.on` → verify).
+- [ ] **S8 owner confirm** — owner does ONE hard-refresh (Cmd+Shift+R) on any
+      still-stuck tab to purge its old poisoned document; entries already
+      poisoned on other pages die within the ~1.4-day heuristic window (JS
+      cannot purge HTTP cache). From this deploy on nothing gets cached and
+      wrapper tabs self-heal on their next 20 s poll. Owner confirms wrapper
+      shows devices again → then push (see below).
 
 ## KNOWN LIMITS (accepted, documented)
 - Already-poisoned non-devices-page entries on open tabs can't be purged from
