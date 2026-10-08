@@ -74,6 +74,7 @@ const wrapperMode = require("../lib/wrapper-mode") as {
   wrapperMode: () => string | null;
   wrapperModeFromCookieValue: (v: string | undefined | null) => string | null;
   resolveWrapperMode: () => Promise<string | null>;
+  isWrapperPageAllowed: (pathname: string) => boolean;
 };
 const entryRoute = require("../app/wrapper/devices/route.ts") as {
   GET: (req: Request) => {
@@ -162,5 +163,31 @@ test("consumers use the cookie-aware resolver and skip the license gate", () => 
   assert.ok(
     settingsSrc.includes("isLocalExeRuntime() && !wrapper"),
     "settings must skip the local-exe license panel for the wrapper",
+  );
+});
+
+// TASK_183 follow-up (owner, 2026-10-08): "when i click on button to subscribe
+// to premium on the wrapper, it just keeps taking me back to the device
+// dashboard, it doesnt go to the payment." The wrapper guard bounced
+// /dashboard/billing back to /dashboard/devices. Lock the subscribe flow open
+// and everything else still shut.
+test("subscribe flow: billing reachable in wrapper scope, others still shut", () => {
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/billing"), true);
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/billing/anything"), true);
+  // settings is the page that LINKS to billing (entry point)
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/settings"), true);
+  // never-reachable set must stay shut
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/extract"), false);
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/campaigns"), false);
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard/hosting"), false);
+  assert.equal(wrapperMode.isWrapperPageAllowed("/dashboard"), false);
+
+  // proxy.ts keeps its own inline copy of the list (deliberately
+  // self-contained) — a lib-only fix would leave the live guard bouncing.
+  const proxySrc = readFileSync(join(__dirname, "..", "proxy.ts"), "utf8");
+  assert.ok(
+    proxySrc.includes('pathname === "/dashboard/billing"') &&
+      proxySrc.includes('pathname.startsWith("/dashboard/billing/")'),
+    "proxy.ts inline allowlist must include /dashboard/billing",
   );
 });

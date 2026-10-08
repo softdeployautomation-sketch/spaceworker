@@ -27,8 +27,21 @@ export function wrapperMode(): WrapperMode | null {
 
 /** The dashboard pages a wrapper-mode build may reach. Everything else under
  * /dashboard redirects away (enforced server-side in proxy.ts — a hidden link
- * is not a guard). */
-export const WRAPPER_DEVICES_ALLOWED_PAGES = ["/dashboard/devices", "/dashboard/settings"] as const;
+ * is not a guard).
+ *
+ * /dashboard/billing joined for the Subscribe to Premium flow (owner,
+ * 2026-10-08): the wrapper's settings card links to
+ * /dashboard/billing?product=xdevice and the guard was bouncing it straight
+ * back to /dashboard/devices ("it just keeps taking me back to the device
+ * dashboard"). Payment is a wrapper feature (the $500 tier is what the wrapper
+ * sells), so the billing page and its subpaths must be reachable from the
+ * scoped shell. API routes are untouched by this list — proxy.ts's wrapper
+ * guard only ever intercepts /dashboard paths. */
+export const WRAPPER_DEVICES_ALLOWED_PAGES = [
+  "/dashboard/devices",
+  "/dashboard/settings",
+  "/dashboard/billing",
+] as const;
 
 export function isWrapperPageAllowed(pathname: string): boolean {
   return WRAPPER_DEVICES_ALLOWED_PAGES.some(

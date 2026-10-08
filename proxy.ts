@@ -84,7 +84,15 @@ export async function proxy(request: NextRequest) {
       pathname === "/dashboard/devices" ||
       pathname.startsWith("/dashboard/devices/") ||
       pathname === "/dashboard/settings" ||
-      pathname.startsWith("/dashboard/settings/");
+      pathname.startsWith("/dashboard/settings/") ||
+      // TASK_183 follow-up (owner, 2026-10-08): the settings card's
+      // "Subscribe to Premium" points at /dashboard/billing?product=xdevice —
+      // without this the guard 307'd it back to /dashboard/devices and the
+      // payment page was unreachable from the wrapper. Kept in sync with
+      // WRAPPER_DEVICES_ALLOWED_PAGES (lib/wrapper-mode.ts); inline here for
+      // the same self-containment reason as everything else in this file.
+      pathname === "/dashboard/billing" ||
+      pathname.startsWith("/dashboard/billing/");
     if (!allowed) {
       return redirectTo(request, "/dashboard/devices");
     }
