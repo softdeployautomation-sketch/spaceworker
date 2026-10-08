@@ -82,16 +82,14 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   message 15/15 · testrecipients 13/13 · target 10/10 · support 50/50
   (one observed flake in "read cursor moves FORWARDS" — 3 clean reruns, zero
   support files touched by this task, not ours).
-- **WORKING TREE:** code clean at `775cfa3` (B3 money) + steps commits
-  (`699f119` B1+B2 · `5a60f46` steps); only untracked
-  file is `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule.
-- **NEXT ACTION:** **B4 user pays (SCOPED: both plans)** — billing page shows the
-  open invoice (plan name + amount + snapshotted methods + instructions); user pays
-  externally and submits through the EXISTING `/api/billing/submit` |
-  `/api/billing/topup` (invoice ref optional); on admin approval → invoice `paid` +
-  grant **the invoice's own tier** via existing `grant-premium {tier: 3|5}`
-  (duration never shown to the user — TASK_181 rule). Then **B5** tests + gates +
-  deploy (N4 rides B5) → close **C3 + C5** live.
+- **WORKING TREE:** code clean at `8eedd1c` (B4 UI) + `8efd133` (B4 money) +
+  prior commits; only untracked file is `TASK_133_RMM_ENGINE_BRINGUP.md` —
+  UNTRACKED-but-NEVER-TOUCH, house rule.
+- **NEXT ACTION:** **B5 tests + gates + deploy** — invoice lifecycle unit
+  tests (fake-db) + N4 static naming test + full battery + §7 sweep + §2
+  deploy (remember: `deploy-vps.sh` runs `prisma generate` NOT `migrate
+  deploy` — run `migrate deploy` + §6b drift check myself, playbook §3) →
+  close **C3 + C5** live. B4 payment link: `8efd133` money / `8eedd1c` UI.
 - **B1 ✅ B2 ✅** shipped at `699f119` (8 files, +359/−53; tsc 0 · eslint 0 errors/0
   warnings · 11-suite battery, 585 assertions, 0 fail) — evidence in DONE LOG.
 
@@ -320,19 +318,96 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       fires · `tier_check` fires · `userId_fkey` fires · zero residue afterwards.
       **Gates:** tsc 0 · eslint 0 problems on all 3 new files (admin-panel 46/46 =
       identical to HEAD) · battery 11 suites / 590 tests / **585 pass / 0 fail**.
-- [ ] **B4 user pays (SCOPED: both plans)** — billing page shows the open invoice
-      (plan name "Premium Plus"/"Premium XDevice" + amount + methods + instructions);
-      user pays externally and submits through the EXISTING `/api/billing/submit` |
-      `/api/billing/topup` (invoice ref optional); on admin approval → invoice
-      `paid` + grant **the invoice's own tier** through the existing
-      `grant-premium {tier: 3|5}` path (admin-set term; **duration never shown to
-      the user anywhere** — TASK_181 wording rule). NO new payment rails.
+- [x] **B4 user pays (SCOPED: both plans)** — DONE (money `8efd133` + UI
+      `8eedd1c`). Billing page shows the open invoice (plan name via
+      `planLabelForTier` + amount + snapshotted-chain buttons + shared
+      `PaymentInstructions`, hash optional); user submits through the EXISTING
+      `/api/billing/submit` (and the contract also accepts the ref on
+      `/api/billing/topup` — openOrder validation: own + open, amount :=
+      invoice.amountUsd (overrides floor/cap), snapshot address, named 400 for
+      a missing chain); on admin approval → claim-then-grant settles the
+      invoice and grants **the invoice's own tier** (`grantXDeviceTerm` tier 3
+      | `grantPremium` tier 5, `PREMIUM_DAYS_PER_CHARGE`) via
+      `settleLinkedInvoice` in `handleApprovedPayment` + the approve route's
+      wallet arm (invoice settled ⇒ NO wallet credit). One payment, one
+      consequence (invoice branch returns before the product branch).
+      **Duration never shown to the user anywhere** (TASK_181 rule). NO new
+      payment rails. New `GET /api/billing/invoices` (session-scoped, own rows,
+      latest 10). Admin PaymentsTab shows an amber "invoice" chip on rows
+      carrying `invoiceId`.
 - [ ] **B5 tests + gates + deploy** — invoice lifecycle unit tests (fake-db pattern: create →
       owner-only visibility → pay → tier 5 granted → settled), ticket-template test, static
       lock that no subscription amount renders on web outside the wrapper branch, full gate
       battery, live e2e with a test account (owner validates).
 
 ### B3 EXECUTION PLAN (recorded pre-edit, after context compaction)
+
+### B4 EXECUTION PLAN (recorded pre-edit, after context compaction)
+
+**Scope:** billing page shows the user's open invoice; pay through the EXISTING
+`/api/billing/submit` (and the API contract also accepts the ref on
+`/api/billing/topup` — spec: "invoice ref optional"); admin approval → invoice
+`paid` + grant **the invoice's own tier** via the existing grant-premium path.
+NO new payment rails · no duration/term shown to the user anywhere (TASK_181 rule).
+
+**Design decisions (verified against code before writing):**
+1. **`Payment.invoiceId String?`** — additive migration
+   `20261118000001_task184_payment_invoice_ref` (column + index + FK Restrict to
+   PremiumInvoice; back-relation `PremiumInvoice.payments`). Plain optional
+   column keeps every existing `payment.create` untouched.
+2. **One choke point: `handleApprovedPayment`** (license-service) — it already
+   runs for admin-approve, the auto-verify poller, retry-license AND submit's
+   auto-approve. New exported helper `settleLinkedInvoice(payment)`:
+   **claim-then-grant** — atomic `updateMany where status:"open"` (exactly one
+   approval can settle; count 0 ⇒ already settled ⇒ fall through to the normal
+   product consequence), then `grantXDeviceTerm` (tier 3) or `grantPremium`
+   (tier 5), both `PREMIUM_DAYS_PER_CHARGE` (same term as every product grant;
+   admin-set term = the same grant-premium path, never rendered). Returns true
+   ⇒ `handleApprovedPayment` returns WITHOUT the product branch (one payment =
+   one consequence — no double grant).
+3. **Approve route's `wallet_topup` arm** (deliberately skips
+   handleApprovedPayment): if `payment.invoiceId` → `settleLinkedInvoice`;
+   settled ⇒ flip approved + attempt note, **NO wallet credit** (invoice payment,
+   not a top-up); not settled ⇒ fall through to the existing credit path.
+4. **`/api/billing/submit` + invoiceId:** session required (invoice is
+   account-bound) · invoice must be OWN + `open` (else 400) · **server derives**
+   `product` from `invoice.plan` (premium_plus→web_subscription,
+   premium_xdevice→xdevice; body.product ignored) · **`amountUsd :=
+   invoice.amountUsd`** (the admin-edited amount is the truth; keeps on-chain
+   verify consistent with what the invoice showed) · **`toAddress :=
+   invoice.methods[kind]`** (the SNAPSHOT — the user pays the invoice's
+   addresses, not today's settings) · `invoiceId` stored on the Payment.
+5. **`/api/billing/topup` open-order + invoiceId:** same own+open validation ·
+   amount := invoice.amountUsd (admin-authored row overrides top-up floor/cap —
+   they guard self-typed amounts, not admin-set ones) · kind must be a non-null
+   chain on the snapshot · invoiceId stored. **TopUpFlow UI unchanged** (a
+   top-up button that silently settles an invoice would surprise users).
+6. **`GET /api/billing/invoices`** (NEW, session-scoped): latest 10 for the
+   caller only — owner-only visibility (B3's "visible to that user only").
+7. **Billing page `PremiumInvoiceCard`:** parent fetches the open invoice on
+   mount (rendered right after WalletBalance, both modes — an invoice is
+   admin-sent, it may target any account; wrapper's Subscribe/Spend surfaces
+   untouched). Card = plan label from `lib/plan-name.ts` + amount + chain buttons
+   (from the snapshot's non-null chains) + REUSED `PaymentInstructions`
+   (hashOptional — TASK_185) + POST submit `{kind, txHash, invoiceId}` → on
+   success `setSubmitted(true)` (form collapses to "submitted, awaiting review")
+   + refetch `/api/billing/status` → parent `onResult` (StatusCardView takes over
+   the subscription branch) + `onPlan(invoice.plan→product)` so StatusCardView's
+   labels say the invoice's plan. Snapshot with zero configured chains →
+   "contact support" text, no form.
+8. **Admin PaymentsTab:** show a small invoice indicator on rows carrying
+   `invoiceId` (payments list already returns full rows — grep the render spot;
+   skip if not a one-liner).
+
+**Non-goals:** topup UI changes · settle-without-payment admin action (spec:
+settle happens on payment approval) · invoice lifecycle tests + static locks +
+live e2e = **B5** (battery must stay green now).
+
+**Then:** schema → `prisma validate` → verify SQL via `prisma migrate diff` →
+generate → tsc 0 → eslint 0-new → battery → **money commit** (schema +
+migration + license-service + approve/submit/topup routes + GET invoices) →
+**UI commit** (billing page + admin chip) → steps update → push.
+
 
 **Scope (own MONEY commit): admin SENDS/EDITS the invoice. User-side display + pay +
 paid-transition = B4; tests + live e2e = B5.**
@@ -435,7 +510,7 @@ commit) → steps update + push.
 ---
 
 ## ORDER (binding)
-`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B5 deploy + owner live checks) → B1 ✅ B2 ✅ → B3 ✅ → B4 → B5`.
+`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B5 deploy + owner live checks) → B1 ✅ B2 ✅ → B3 ✅ → B4 ✅ → B5`.
 Owner validates Phase A on web before Phase B ships.
 
 ## OWNER ADDENDUM (2026-10-08, same session)
@@ -583,3 +658,31 @@ Owner validates Phase A on web before Phase B ships.
   **Gates:** tsc 0 · eslint 0 problems on 3 new files / admin-panel 46=46 HEAD ·
   battery 11 suites 590 tests **585 pass 0 fail** (browser 5 skip = baseline).
   NEXT ACTION → **B4** (user pays, both plans).
+- 2026-10-08 **B4 ✅ (MONEY `8efd133` + UI `8eedd1c`, plan recorded pre-edit as
+  "B4 EXECUTION PLAN")** — user pays the invoice end to end:
+  `Payment.invoiceId` additive migration `20261118000001_task184_payment_invoice_ref`
+  (column + index + FK Restrict; SQL byte-verified vs `prisma migrate diff`; both
+  B3+B4 migrations applied in ONE ROLLED-BACK txn against local Postgres → DDL ok,
+  `invoiceId` column + `Payment_invoiceId_idx` present, zero residue; local
+  `migrate status` shows all 103 pending = pre-existing, local DB never
+  migration-managed). **`settleLinkedInvoice`** (license-service): claim-then-grant
+  (`updateMany` open→paid is the atomic claim — exactly one racing approval grants;
+  then `grantXDeviceTerm`/`grantPremium` at `PREMIUM_DAYS_PER_CHARGE`); returns
+  true ⇒ `handleApprovedPayment` skips the product branch (one payment, one
+  consequence; false ⇒ normal branch = retry recovery). Approve route's
+  `wallet_topup` arm: invoice ref ⇒ settle + approved + attempt note, NO wallet
+  credit. `submit` + invoiceId: 401 without session · own+open 400s · product
+  derived from `invoice.plan` (body.product ignored) · amount := invoice.amountUsd
+  · toAddress := snapshot. `topup openOrder` + invoiceId: same validation · amount
+  overrides floor/cap · snapshot-only chain · named 400 · notify product
+  `premium_invoice` (fixed a duplicate-`product` key mid-edit). New
+  `GET /api/billing/invoices` (session-scoped, own rows, latest 10). UI:
+  `PremiumInvoiceCard` on billing page (snapshot-chain buttons, shared
+  `PaymentInstructions` hash-optional, submit ⇒ "submitted, awaiting review" +
+  status refetch + `onPlan`; zero-chain ⇒ contact-support text) + admin
+  PaymentsTab amber "invoice" chip (type field + one-liner; list already returns
+  full rows). One fix during gates: dropped my unused eslint-disable in billing.
+  **Gates:** prisma validate+generate ok · tsc 0 · eslint 0 problems on all 7
+  changed files (admin-panel 44=44 HEAD per-file stdin compare) · battery 11
+  suites **585 pass / 0 fail**. NEXT ACTION → **B5** (tests + §7 sweep +
+  §2 deploy w/ manual `migrate deploy` + §6b drift → close C3/C5).
