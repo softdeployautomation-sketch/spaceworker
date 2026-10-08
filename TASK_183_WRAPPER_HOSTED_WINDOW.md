@@ -128,3 +128,21 @@ count) come after this. VBS carrier work is CLOSED — see TASK_182 (S1-S8 all g
       - [ ] VM (owner): uninstall old wrapper + kill `_up_` (TASK_182 §C) → install
         new EXE via its VBS → lands on hosted login/devices with NO 24h gate;
         free-user flow + premium card in settings; owner confirms → close W9
+        **VM EXECUTION 2026-10-08 ~01:13–01:21 (ssh sc\myrat@192.168.0.102, High IL):**
+        - [x] recon: 3 user-mode NSIS apps found (SpaceWorker OS, SpaceWorker OS -
+          Lead Extractor, Vantra), no stale node runtimes running
+        - [x] uninstalled all three silently (`uninstall.exe /S` ×3) → **all dirs GONE**
+        - [x] VBS copied to VM Desktop (54,646,764 B) + executed via cscript: dropped
+          exe to `Temp\sw-devices-44dcf759\` (dir name = exe SHA prefix `44dcf759`,
+          matches local sha256 ✓) + launched (wizard process seen alive)
+        - [x] install completed silently (`/S`) → `LocalAppData\SpaceWorker OS\`
+          (spaceworker-exe.exe + uninstall.exe + `_up_` runtime bundle) +
+          **UNINSTALL ENTRY "SpaceWorker OS" restored**
+        - [x] **LAUNCHED in console session via interactive scheduled task →
+          SCREENSHOT CAPTURED: window "SpaceWorker OS" shows the HOSTED
+          "Welcome back — Sign in to your dashboard" LOGIN page. NO license gate,
+          NO 24h trial, NO extractor copy.** (the TASK_183 goal, proven visually)
+        - [x] `tasklist`: only `spaceworker-exe.exe` running — **NO node.exe**
+          (new main.rs really skips the local runtime spawn)
+        - [x] cleaned up: test task + all vm_*.ps1 + png removed (VBS kept on VM
+          Desktop for owner)
