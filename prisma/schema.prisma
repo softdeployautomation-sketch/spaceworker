@@ -198,6 +198,10 @@ model User {
   // nobody will still be able to read when the question is asked.
   walletEntries            WalletLedgerEntry[]     @relation("WalletOwner")
   walletGrants             WalletLedgerEntry[]     @relation("WalletAdmin")
+  // TASK_184 B3 — invoices an admin sent this user for a premium plan
+  // (Premium Plus / Premium XDevice). Restrict on delete: an invoice is payment
+  // evidence, it must not vanish with the account row.
+  premiumInvoices          PremiumInvoice[]
 }
 
 model VerificationCode {
@@ -3662,4 +3666,51 @@ model SupportMessage {
 
   // The thread read: one ticket's messages in order.
   @@index([ticketId, createdAt])
+}
+
+// TASK_184 B3 (MONEY) — an admin-issued invoice for a premium plan, the bridge
+// between a premium-request support ticket and an actual payment. Admin creates
+// it on the user detail ("Send invoice"): plan pick + editable amount pre-filled
+// from the AdminSetting default for that plan (webSubscriptionPriceUsd /
+// xdevicePriceUsd), with the payout addresses SNAPSHOT at send time. The user
+// sees THEIR open invoice on the billing page, pays externally, and the existing
+// billing submit path settles it.
+//
+// ADDITIVE-ONLY migration (house rule): a brand-new table, no existing row or
+// column touched.
+//
+// `plan` and `tier` are deliberately REDUNDANT (tier is derivable from plan) and
+// deliberately STRING/Int, not enums (house convention — SupportTicket.status
+// reasoning): the pair is stored so the invoice is self-describing even if plan
+// naming evolves, and tier is what the grant path actually consumes. Writers set
+// both SERVER-side from the plan constant; neither ever comes from a request body.
+model PremiumInvoice {
+  id         String    @id @default(cuid())
+  userId     String
+  // Restrict, not Cascade: an invoice is payment evidence — deleting a user must
+  // REFUSE rather than silently destroy the record of money owed/paid.
+  user       User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  // "premium_plus" (tier 5 — every web module) | "premium_xdevice" (tier 3 —
+  // devices only). Pinned with a CHECK in the migration: an unknown plan would
+  // grant the wrong tier, so unlike SupportTicket.status this one is CLOSED.
+  plan       String
+  tier       Int // 3 | 5 — derived from plan, stored for self-description
+  amountUsd  Float // admin-editable before send AND while open (validated > 0)
+  // "open" (awaiting payment) | "paid" (admin settled it). String, not enum —
+  // same house convention as SupportTicket.status; readers treat ONLY "paid"
+  // as settled, anything else renders as awaiting payment.
+  status     String    @default("open")
+  // SNAPSHOT of the configured payout addresses ({btc, usdt_trc20, usdt_erc20})
+  // taken when the invoice was sent — the user must be able to pay the invoice
+  // they were shown even if the admin later rotates an address. Json because the
+  // set of chains is a product decision, not a schema decision.
+  methods    Json
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  paidAt     DateTime? // set exactly once when status flips to "paid"
+
+  // The billing-page read: this user's invoices, newest first.
+  @@index([userId, createdAt])
+  // The "one open invoice per user" guard + admin queue views.
+  @@index([userId, status])
 }

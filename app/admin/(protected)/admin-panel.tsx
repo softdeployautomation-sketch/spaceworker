@@ -10,6 +10,7 @@ import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 import DomainsPanel from "@/components/admin/domains-panel";
 import SupportQueuePanel from "@/components/admin/support-queue-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
+import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
 
 type AdminUser = {
   id: string;
@@ -521,6 +522,7 @@ function UsersTab({
               <th className="px-4 py-3 font-medium">Tier</th>
               <th className="px-4 py-3 font-medium">Premium / Usage</th>
               <th className="px-4 py-3 font-medium">Grant</th>
+              <th className="px-4 py-3 font-medium">Invoice</th>
               <th className="px-4 py-3 font-medium">Verified</th>
               <th className="px-4 py-3 font-medium">Created</th>
               <th className="px-4 py-3 font-medium">Devices</th>
@@ -620,6 +622,11 @@ function UsersTab({
                       <span className="text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
                     )}
                   </div>
+                </td>
+                {/* TASK_184 B3 — send/edit a premium-plan invoice for this user.
+                    All logic lives in UserInvoiceCell (lazy fetch on expand). */}
+                <td className="px-4 py-3">
+                  <UserInvoiceCell userId={user.id} />
                 </td>
                 <td className="px-4 py-3">
                   {user.emailVerified ? (
