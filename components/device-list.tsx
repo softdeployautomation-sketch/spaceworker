@@ -213,7 +213,10 @@ export function DeviceList() {
 
   const loadLink = useCallback(async () => {
     try {
-      const res = await fetch("/api/assistant/vantra");
+      // TASK_185 — no-store: bypasses any HTTP-cached entry (a maintenance
+      // HTML replayed as JSON sticks for ~1.4 days under heuristic caching)
+      // so a poisoned tab self-heals on the next poll without a hard refresh.
+      const res = await fetch("/api/assistant/vantra", { cache: "no-store" });
       if (!res.ok) return;
       const data = await res.json();
       setLink(
@@ -248,7 +251,7 @@ export function DeviceList() {
   const load = useCallback(async () => {
     setError("");
     try {
-      const res = await fetch("/api/devices");
+      const res = await fetch("/api/devices", { cache: "no-store" });
       if (!res.ok) throw new Error("Failed to load devices");
       const data = await res.json();
       setIdleRead(idleReadProvenanceFrom(data));

@@ -78,7 +78,7 @@ export default function BillingPage() {
 
   useEffect(() => {
     (async () => {
-      const res = await fetch("/api/billing/status");
+      const res = await fetch("/api/billing/status", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (res.ok) setPayment(data.status === null ? null : data);
       else setPayment(null);
@@ -244,7 +244,7 @@ function UpgradeFlow({
     setError("");
     setLoadingInfo(true);
     (async () => {
-      const res = await fetch(`/api/billing/checkout?kind=${kind}&product=${product}`);
+      const res = await fetch(`/api/billing/checkout?kind=${kind}&product=${product}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!cancelled) {
         setLoadingInfo(false);
@@ -270,7 +270,7 @@ function UpgradeFlow({
     if (!res.ok) {
       return typeof data.error === "string" ? data.error : "Submission failed";
     }
-    const statusRes = await fetch("/api/billing/status");
+    const statusRes = await fetch("/api/billing/status", { cache: "no-store" });
     const statusData = await statusRes.json().catch(() => ({}));
     if (statusRes.ok) {
       onResult(statusData.status === null ? null : statusData, data.note);
@@ -356,7 +356,7 @@ function TopUpFlow() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const res = await fetch("/api/billing/topup");
+      const res = await fetch("/api/billing/topup", { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!cancelled && res.ok && typeof data.minimumUsd === "number") {
         setLimits({ minimumUsd: data.minimumUsd, maximumUsd: data.maximumUsd });

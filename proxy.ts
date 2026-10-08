@@ -151,7 +151,17 @@ export async function proxy(request: NextRequest) {
       /* fail open: a failed flag read means no maintenance toggled */
     }
     if (flags.exeApi) {
-      return NextResponse.json({ maintenance: true, error: "Maintenance" }, { status: 503 });
+      // 2026-10-08 (TASK_185): explicit no-store, matching the HTML branch
+      // below — middleware-returned responses are not guaranteed next.config's
+      // headers() treatment, and a cacheable 503 replays forever after the
+      // window closes.
+      return NextResponse.json(
+        { maintenance: true, error: "Maintenance" },
+        {
+          status: 503,
+          headers: { "Cache-Control": "no-store, must-revalidate" },
+        },
+      );
     }
   } else if (!isAdminPath) {
     // Same fail-open as the exeApi branch above: proxy runs on EVERY

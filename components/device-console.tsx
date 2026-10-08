@@ -635,7 +635,7 @@ export function DeviceConsole({
 
   const loadDevice = useCallback(async () => {
     try {
-      const res = await fetch("/api/devices");
+      const res = await fetch("/api/devices", { cache: "no-store" });
       if (!res.ok) throw new Error("Failed to load device");
       const data = await res.json();
       const row = (data.devices ?? []).find((d: { id: string }) => d.id === deviceId);
@@ -665,17 +665,17 @@ export function DeviceConsole({
     if (!deviceId) return;
     try {
       const [q, p, a, c, e, s, pw] = await Promise.all([
-        fetch(`/api/devices/${deviceId}/queued-commands`),
-        fetch(`/api/devices/${deviceId}/pin-requests`),
-        fetch(`/api/devices/${deviceId}/activity`),
+        fetch(`/api/devices/${deviceId}/queued-commands`, { cache: "no-store" }),
+        fetch(`/api/devices/${deviceId}/pin-requests`, { cache: "no-store" }),
+        fetch(`/api/devices/${deviceId}/activity`, { cache: "no-store" }),
         // Task 111 — clone history rides the same tick (role=any so a
         // pooled hosted PC also sees what it hosted; `deleted` filtered).
-        fetch(`/api/devices/${deviceId}/clones?role=any&limit=50`),
-        fetch(`/api/entitlements`),
+        fetch(`/api/devices/${deviceId}/clones?role=any&limit=50`, { cache: "no-store" }),
+        fetch(`/api/entitlements`, { cache: "no-store" }),
         // TASK_114 — clone-device setup state (relay row + capabilities).
-        fetch(`/api/devices/${deviceId}/clone-setup`),
+        fetch(`/api/devices/${deviceId}/clone-setup`, { cache: "no-store" }),
         // TASK_123 (B12) P5 — wake availability + keep-awake policy.
-        fetch(`/api/devices/${deviceId}/power`),
+        fetch(`/api/devices/${deviceId}/power`, { cache: "no-store" }),
       ]);
       if (q.ok) setQueue((await q.json()).commands ?? []);
       if (p.ok) setPins((await p.json()).requests ?? []);
@@ -718,7 +718,7 @@ export function DeviceConsole({
   // lifecycle step appears without a manual refresh.
   const pollClone = useCallback(async (cloneId: string) => {
     try {
-      const res = await fetch(`/api/clones/${cloneId}`);
+      const res = await fetch(`/api/clones/${cloneId}`, { cache: "no-store" });
       if (!res.ok) return null;
       const data = await res.json().catch(() => ({}));
       const row = (data.clone ?? null) as CloneRow | null;
@@ -835,7 +835,7 @@ export function DeviceConsole({
     setError("");
     setMeshErr("");
     try {
-      const res = await fetch(`/api/devices/${deviceId}/mesh-urls`);
+      const res = await fetch(`/api/devices/${deviceId}/mesh-urls`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(
