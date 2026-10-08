@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
 import { Lock } from "lucide-react";
 
+import { SupportTicketButton } from "@/components/support-ticket-cta";
 import { cn } from "@/lib/cn";
 import { UPGRADE_TO_PREMIUM_PLUS } from "@/lib/plan-name";
 
@@ -19,9 +19,9 @@ import { UPGRADE_TO_PREMIUM_PLUS } from "@/lib/plan-name";
 // answers) no lock is painted. The server gate is the authority either way; this
 // card is UX, never protection.
 //
-// CTA note (A3 → B2): until the support-ticket template lands, "Upgrade to
-// Premium Plus" goes to /dashboard/settings?template=premium. B2 flips every CTA to
-// open the support widget preloaded with the premium-request template.
+// CTA (B2, shipped): "Upgrade to Premium Plus" opens the support widget in place,
+// preselected on the "Request for Premium Plus" template — no prices on web (B1),
+// and the admin answers the request with the invoice flow (B3/B4).
 
 export type ModuleLockKey = "extractor" | "cyberlab" | "hosting" | "browser";
 
@@ -117,8 +117,6 @@ const MODULE_LOCK_COPY: Record<ModuleLockKey, LockCopy> = {
   },
 };
 
-export const MODULE_UPGRADE_HREF = "/dashboard/settings?template=premium";
-
 export interface ModuleToolLockCardProps {
   moduleKey: ModuleLockKey;
   /** Server-computed answer skips the client fetch (see app/dashboard/browser/page.tsx). */
@@ -159,12 +157,9 @@ export function ModuleToolLockCard({
           <li key={line}>{line}</li>
         ))}
       </ul>
-      <Link
-        href={MODULE_UPGRADE_HREF}
-        className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
-      >
+      <SupportTicketButton template="premium-plus">
         {UPGRADE_TO_PREMIUM_PLUS}
-      </Link>
+      </SupportTicketButton>
     </div>
   );
 }

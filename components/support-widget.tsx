@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, Input, Textarea } from "@/components/ui";
+import {
+  SUPPORT_OPEN_EVENT,
+  SUPPORT_TEMPLATE_OPTIONS,
+  supportTemplateFromSlug,
+} from "@/lib/support-templates";
 
 // TASK_161 D3 — the customer support entry point.
 //
@@ -177,6 +182,8 @@ export function SupportWidget() {
 
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
+  /** TASK_184 B2 — composer template: "" = plain technical ticket (stored as null). */
+  const [category, setCategory] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
@@ -189,6 +196,38 @@ export function SupportWidget() {
    * erodes trust in a help desk. A ref updates synchronously.
    */
   const busyRef = useRef(false);
+
+  /**
+   * TASK_184 B2 — open the widget straight into compose with a template preselected.
+   * Shared by both entry paths below so the preselect can never drift between them.
+   */
+  const applyTemplate = useCallback((slug: string | null) => {
+    setCategory(supportTemplateFromSlug(slug));
+    setOpen(true);
+    setView("compose");
+    setFormError(null);
+  }, []);
+
+  // Full-load path: ?template= already in the URL when the widget mounts (refresh,
+  // pasted link, a Link navigation that fully loads the layout).
+  useEffect(() => {
+    const slug = new URLSearchParams(window.location.search).get("template");
+    if (slug === null) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot adoption of the query param on mount
+    applyTemplate(slug);
+  }, [applyTemplate]);
+
+  // In-page path: an Upgrade CTA anywhere in the dashboard dispatches this event.
+  // The shell — and so this widget — PERSISTS across client navigations, so this,
+  // not the mount effect, is what makes CTAs on other pages work.
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const detail = (event as CustomEvent<{ template?: string }>).detail;
+      applyTemplate(typeof detail?.template === "string" ? detail.template : null);
+    };
+    window.addEventListener(SUPPORT_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(SUPPORT_OPEN_EVENT, onOpen);
+  }, [applyTemplate]);
 
   /**
    * TASK_166 — the unread count on the button, polled in the BACKGROUND.
@@ -318,7 +357,13 @@ export function SupportWidget() {
       const res = await fetch("/api/support/tickets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject: subject.trim(), body: body.trim() }),
+        body: JSON.stringify({
+          subject: subject.trim(),
+          body: body.trim(),
+          // "" → null: a plain technical ticket carries no category at all, so the
+          // admin's premium filters can never catch a non-request by accident.
+          category: category === "" ? null : category,
+        }),
       });
       if (!res.ok) {
         // Verbatim: a credential refusal is an explanation, not a generic failure.
@@ -337,7 +382,7 @@ export function SupportWidget() {
       busyRef.current = false;
       setSubmitting(false);
     }
-  }, [subject, body, loadList]);
+  }, [subject, body, category, loadList]);
 
 
   const sendReply = useCallback(async () => {
@@ -491,6 +536,21 @@ export function SupportWidget() {
 
           {view === "compose" && (
             <div className="flex flex-col gap-2 overflow-y-auto p-3">
+              {/* TASK_184 B2 — the template select. The two premium values are the
+                  categories the admin queue filters on (and, in B3, what an invoice
+                  is raised from); "" files a plain technical ticket. */}
+              <select
+                value={category}
+                onChange={(e) => setCategory(e.target.value)}
+                aria-label="Ticket type"
+                className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-brand-600"
+              >
+                {SUPPORT_TEMPLATE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
               <Input
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}

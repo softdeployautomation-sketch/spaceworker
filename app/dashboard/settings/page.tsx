@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { SupportTicketButton } from "@/components/support-ticket-cta";
+
 import { Badge, Card } from "@/components/ui";
 import { ChangePasswordForm } from "@/components/change-password-form";
 import { NotificationsSettings } from "@/components/notifications-settings";
@@ -100,10 +102,12 @@ export default async function SettingsPage() {
         <p className="mt-1 text-sm text-fg-muted">Your account and preferences.</p>
       </div>
 
-      {/* TASK_181 P3 (step 30) — Subscribe to Premium. Price is the admin-set
-          xdevicePriceUsd (Wallets & Prices); NO term/duration copy anywhere by
-          design — the term lives server-side in premiumExpiresAt. Visible on
-          web AND the wrapper build (it is the wrapper's purchase surface). */}
+      {/* TASK_181 P3 (step 30) / TASK_184 B1+B2 — Premium XDevice card. WEB shows
+          NO price: the button opens the support widget preselected on the
+          "Request for Premium XDevice" template and the admin answers with an
+          editable invoice (B3/B4). WRAPPER keeps its self-serve purchase link with
+          the admin-set xdevicePriceUsd (Wallets & Prices); NO term/duration copy
+          either way — the term lives server-side in premiumExpiresAt. */}
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -118,12 +122,18 @@ export default async function SettingsPage() {
         </div>
         {!premiumActive && (
           <div className="mt-4">
-            <Link
-              href="/dashboard/billing?product=xdevice"
-              className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
-            >
-              Subscribe to Premium XDevice — ${xdevicePrice}
-            </Link>
+            {wrapper ? (
+              <Link
+                href="/dashboard/billing?product=xdevice"
+                className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
+              >
+                Subscribe to Premium XDevice — ${xdevicePrice}
+              </Link>
+            ) : (
+              <SupportTicketButton template="premium-xdevice" className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700">
+                Request Premium XDevice
+              </SupportTicketButton>
+            )}
           </div>
         )}
       </Card>

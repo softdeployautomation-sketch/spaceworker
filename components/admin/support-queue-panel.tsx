@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Button, Input, Textarea } from "@/components/ui";
+import {
+  PREMIUM_REQUEST_TEMPLATES,
+  isPremiumRequestCategory,
+} from "@/lib/support-templates";
 
 // TASK_161 D3/D4 — the admin support queue.
 //
@@ -102,8 +106,20 @@ const STATUS_FILTERS = [
   { value: "", label: "All" },
 ] as const;
 
+/**
+ * TASK_184 B2 — the plan filter. `""` (Every plan) is sent as an ABSENT parameter,
+ * exactly like STATUS_FILTERS' "All": the two premium values are the categories the
+ * widget's templates file, and they reach listAdminTickets' exact-match as-is.
+ */
+const CATEGORY_FILTERS = [
+  { value: "", label: "Every plan" },
+  { value: "premium_request_plus", label: "Premium Plus" },
+  { value: "premium_request_xdevice", label: "Premium XDevice" },
+] as const;
+
 export default function SupportQueuePanel() {
   const [filter, setFilter] = useState<string>("open");
+  const [category, setCategory] = useState<string>("");
   const [tickets, setTickets] = useState<TicketRow[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -121,14 +137,21 @@ export default function SupportQueuePanel() {
   const [newSubject, setNewSubject] = useState("");
   const [newBody, setNewBody] = useState("");
 
-  const load = useCallback(async (status: string) => {
+  const load = useCallback(async (status: string, planCategory: string) => {
     setListError(null);
     try {
       // An empty filter is sent as an ABSENT parameter, not `status=` — the service
       // ignores an empty filter rather than matching `status = ''`, which would render
-      // as "there are no tickets" instead of "show me everything".
-      const qs = status ? `?status=${encodeURIComponent(status)}` : "";
-      const res = await fetch(`/api/admin/support/tickets${qs}`, { cache: "no-store" });
+      // as "there are no tickets" instead of "show me everything". Same rule for the
+      // TASK_184 B2 plan filter: `?category=` reaches listAdminTickets' exact match
+      // as-is, and an absent category means "every plan".
+      const qs = new URLSearchParams();
+      if (status) qs.set("status", status);
+      if (planCategory) qs.set("category", planCategory);
+      const query = qs.toString();
+      const res = await fetch(`/api/admin/support/tickets${query ? `?${query}` : ""}`, {
+        cache: "no-store",
+      });
       if (!res.ok) throw new Error(await readError(res, "Could not load the queue."));
       const data = (await res.json()) as { tickets: TicketRow[] };
       setTickets(data.tickets);
@@ -143,8 +166,8 @@ export default function SupportQueuePanel() {
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load() awaits fetch before every setState
-    void load(filter);
-  }, [filter, load]);
+    void load(filter, category);
+  }, [filter, category, load]);
 
   const openTicket = useCallback(async (id: string) => {
     setError(null);
@@ -230,14 +253,14 @@ export default function SupportQueuePanel() {
           const data = (await again.json()) as { ticket: TicketDetail };
           setDetail(data.ticket);
         }
-        await load(filter);
+        await load(filter, category);
       } catch {
         setError("Network error — the status was not changed.");
       } finally {
         setBusy(false);
       }
     },
-    [selected, busy, filter, load]
+    [selected, busy, filter, category, load]
   );
 
   const composeTicket = useCallback(async () => {
@@ -269,13 +292,13 @@ export default function SupportQueuePanel() {
       setNotice(`Ticket created for ${data.ticket.userEmail}.`);
       setSelected(data.ticket.id);
       setDetail(data.ticket);
-      await load(filter);
+      await load(filter, category);
     } catch {
       setError("Network error — the ticket was not created.");
     } finally {
       setBusy(false);
     }
-  }, [busy, newEmail, newSubject, newBody, filter, load]);
+  }, [busy, newEmail, newSubject, newBody, filter, category, load]);
 
   return (
     <section>
@@ -290,6 +313,25 @@ export default function SupportQueuePanel() {
                 onClick={() => setFilter(f.value)}
                 className={`px-3 py-1.5 text-xs font-medium transition-colors ${
                   filter === f.value
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          {/* TASK_184 B2 — the plan filter: every plan / Premium Plus (tier 5) /
+              Premium XDevice (tier 3). Backed by ?category= the route already passes
+              through to listAdminTickets' exact match — no backend change. */}
+          <div className="flex overflow-hidden rounded-lg border border-border">
+            {CATEGORY_FILTERS.map((f) => (
+              <button
+                key={f.value || "all-plans"}
+                type="button"
+                onClick={() => setCategory(f.value)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                  category === f.value
                     ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
                     : "text-fg-muted hover:bg-black/5 dark:hover:bg-white/5"
                 }`}
@@ -396,6 +438,13 @@ export default function SupportQueuePanel() {
                       </span>
                     </span>
                     <span className="mt-1 block text-xs text-fg-muted">
+                      {/* TASK_184 B2 — a premium request announces its plan right in
+                          the queue row, before anyone opens the thread. */}
+                      {isPremiumRequestCategory(t.category) && (
+                        <span className="mr-1.5 rounded-full bg-brand-600/10 px-1.5 py-0.5 text-[10px] font-medium text-brand-600 dark:text-brand-400">
+                          {PREMIUM_REQUEST_TEMPLATES[t.category].planName}
+                        </span>
+                      )}
                       {t.messageCount} message{t.messageCount === 1 ? "" : "s"} ·{" "}
                       {when(t.lastMessageAt ?? t.createdAt)}
                       {t.priority && ` · ${t.priority}`}

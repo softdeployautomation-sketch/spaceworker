@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 
+import { useWrapperMode } from "@/components/wrapper-mode-context";
+import { SupportTicketButton } from "@/components/support-ticket-cta";
 import { copyToClipboard } from "@/lib/clipboard";
 import { WalletBalance } from "@/components/wallet-balance";
 
@@ -102,20 +104,39 @@ export default function BillingPage() {
   // wallet. Rendering it once here (rather than inside each branch) also keeps it
   // mounted while `payment` resolves, so an amount someone is already typing
   // isn't thrown away by the state transition.
+  // TASK_184 B1 — WEB shows no subscription quote: without a payment on record the
+  // card becomes the ticket-based request (the admin answers with an invoice at the
+  // plan's default price, editable before it is sent — B3/B4); with a payment on
+  // record the status/history card stays (history ≠ quote). The WRAPPER build is
+  // byte-identical to before — self-serve payment is the wrapper's purchase surface.
+  const wrapperMode = useWrapperMode();
   const subscription =
     payment === undefined ? (
       <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
     ) : !payment ? (
-      <UpgradeFlow onResult={handleResult} product={product} />
+      wrapperMode ? (
+        <UpgradeFlow onResult={handleResult} product={product} />
+      ) : (
+        <PremiumRequestCard product={product} />
+      )
     ) : (
-      <StatusCardView payment={payment} note={note} onResult={handleResult} product={product} />
+      <StatusCardView
+        payment={payment}
+        note={note}
+        onResult={handleResult}
+        product={product}
+        wrapper={wrapperMode !== null}
+      />
     );
 
   return (
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
       <WalletBalance key={spendEpoch} />
-      {payment !== undefined && (
+      {/* TASK_184 B1 — "Activate with balance" is a self-serve purchase with a
+          server-computed price: wrapper build only. On web the subscription surface
+          is the ticket request below. */}
+      {payment !== undefined && wrapperMode !== null && (
         <SpendFlow
           key={`${spendEpoch}-${product}`}
           onSpent={() => setSpendEpoch((n) => n + 1)}
@@ -523,11 +544,37 @@ function TopUpFlow() {
   );
 }
 
+// TASK_184 B1 — the WEB subscription surface without a payment on record: request
+// the plan by ticket. NO price renders here on purpose — the admin answers the
+// request with an invoice at the plan's default price, editable before it is sent
+// (B3/B4), so the number never needs to be quoted to the user up front.
+function PremiumRequestCard({ product }: { product: "web_subscription" | "xdevice" }) {
+  const plus = product === "web_subscription";
+  return (
+    <div className="mt-6 max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+      <h2 className="text-xl font-semibold tracking-tight">
+        {plus ? "Premium Plus" : "Premium XDevice"}
+      </h2>
+      <p className="mt-2 text-sm text-zinc-600 dark:text-zinc-300">
+        {plus
+          ? "All premium tools on the web — extractor, hosting, cyber lab and the private browser. Request it here and we will send you an invoice."
+          : "Premium tools on devices you own — remote control, terminal commands, browser clones and screen monitoring. Request it here and we will send you an invoice."}
+      </p>
+      <div className="mt-4">
+        <SupportTicketButton template={plus ? "premium-plus" : "premium-xdevice"}>
+          {plus ? "Request for Premium Plus" : "Request for Premium XDevice"}
+        </SupportTicketButton>
+      </div>
+    </div>
+  );
+}
+
 function StatusCardView({
   payment,
   note,
   onResult,
   product,
+  wrapper,
 }: {
   payment: PaymentInfo;
   note: string | null;
@@ -535,6 +582,10 @@ function StatusCardView({
   // TASK_181 P3 — the rejected-payment resubmit must re-quote the SAME product
   // the original payment was for (web vs xdevice), not silently fall back.
   product: "web_subscription" | "xdevice";
+  // TASK_184 B1 — `wrapper` decides the resubmit surface below: the wrapper keeps
+  // its self-serve re-quote flow; on web a rejected payment's resubmit becomes the
+  // ticket request (no quote is rendered outside the wrapper).
+  wrapper: boolean;
 }) {
   const labels: Record<string, { badge: string; text: string }> = {
     approved: {
@@ -602,8 +653,14 @@ function StatusCardView({
 
       {payment.status === "rejected" && (
         <div className="mt-8 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-          <h3 className="text-lg font-semibold tracking-tight">Submit a new payment hash</h3>
-          <UpgradeFlow onResult={onResult} product={product} />
+          {wrapper ? (
+            <>
+              <h3 className="text-lg font-semibold tracking-tight">Submit a new payment hash</h3>
+              <UpgradeFlow onResult={onResult} product={product} />
+            </>
+          ) : (
+            <PremiumRequestCard product={product} />
+          )}
         </div>
       )}
     </div>
