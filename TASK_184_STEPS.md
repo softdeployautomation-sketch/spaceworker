@@ -398,6 +398,48 @@ Owner does the final visual tier-3 web-vs-wrapper check.
 test exposes a real gap, fix + note it) · B3/B4 code untouched · TASK_133
 untouched/untracked.
 
+### B5 PROGRESS (recorded post-compaction, before deploy starts)
+
+**DONE so far:**
+- Tests written & green: `tests/premium-invoice.test.ts` (**27**) +
+  `tests/premium-request-static.test.ts` (**15**) → committed **`89b8dab`**
+  (tests + package.json scripts `test:invoice` / `test:premium-static`),
+  together with the B5-plan steps commit **`383ac61`** — both PUSHED,
+  HEAD == origin/main at `89b8dab`.
+- Two fixes while writing tests (recorded, not hidden): test-15 asserted the
+  event *value* on the CTA file — actual wiring is by shared *identifier*
+  `SUPPORT_OPEN_EVENT` on both ends (dispatch AND listen) → assertion rewritten
+  to match the real contract (+ added a no-hardcoded-literal lock, stronger);
+  one `tsc` complaint on the fake-db cast → `as unknown as` (standard pattern).
+- **§7 gates: tsc 0 · eslint 0 on both test files · battery 13 suites,
+  627 pass / 0 fail** (invoice 27, premium-static 15, module-gate 13,
+  xdevice 38, devices 6, browser 8, pages 47, lab 10, support 50, wallet 63,
+  hosting 338, wrapper-cookie 6, wrapper-carrier 6).
+
+**DEPLOY DECISION (playbook §2 vs §3 correction — reconciled, recorded BEFORE deploy):**
+- §3 carries a 2026-10-04 correction: "the VPS does NOT build … real path is
+  `gh workflow run \"Build & Deploy\"`" — its failure mode is a **partial**
+  source tree on the box (TASK_157: `Module not found './cloudflare'`,
+  clobbered CI `.next`).
+- **A5 (this task, most recent empirical evidence) shipped FULL trees via
+  tar-over-ssh, then ran the `deploy-vps.sh` build half on the box: build ✓
+  service active ✓ localhost 200 ✓ live e2e 15/15 ✓ parity 0 drift.**
+  Full-tree ship structurally removes the partial-tree failure mode.
+- **Decision: follow the A5-proven path** (matches this plan, step 3):
+  1. §2a-style full-tree ship first: tar-over-ssh of `app lib components tests
+     prisma` (`--exclude='.env'`) + root files `package.json HOW_WE_MOVE_FAST.md`
+  2. `pg_dump` snapshot (§6b "don't skip the backup", always)
+  3. `sudo -u trmm npx prisma migrate deploy` (B3+B4 migrations — script does
+     NOT run it) → **§6b drift diff must be `-- This is an empty migration.`**
+     (else filter for `premiuminvoice`/`invoiceid`)
+  4. `scripts/deploy-vps.sh /tmp/deploy-root.txt` build half (generate →
+     maintenance ON → build → restart → verify)
+  5. §2a/§6b re-parity: md5 full-tree local vs remote → expect **0/0**
+  6. §4 live e2e (disposable script, self-cleaning) → close C3/C5
+- **Fallback recorded:** if the box build fails with a module-not-found
+  (partial tree), fix forward per §3 correction — `gh workflow run
+  "Build & Deploy"` — never leave a clobbered `.next` behind. Also check
+  `.github/workflows/deploy.yml` exists before needing it.
 
 **Scope:** billing page shows the user's open invoice; pay through the EXISTING
 `/api/billing/submit` (and the API contract also accepts the ref on
