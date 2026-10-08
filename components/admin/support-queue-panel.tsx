@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { Button, Input, Textarea } from "@/components/ui";
+import { SupportInvoiceCard, type ThreadInvoiceCardData } from "@/components/support-invoice-card";
 import {
   PREMIUM_REQUEST_TEMPLATES,
   isPremiumRequestCategory,
@@ -55,12 +56,18 @@ interface Message {
   authorRole: string;
   body: string;
   createdAt: string;
+  /** TASK_187 — the soft ref stored on the row (DETAIL reads always carry it). */
+  invoiceId?: string | null;
+  /** TASK_187 — resolved LIVE at read time; null = dangling/foreign ref → no card. */
+  invoice?: ThreadInvoiceCardData | null;
 }
 
 interface TicketDetail extends TicketRow {
   messages: Message[];
   domain: { id: string; apex: string; status: string } | null;
   userEmail: string;
+  /** TASK_187 B7 — the OWNER's id; the invoice composer POSTs at /api/admin/users/<id>/invoices. */
+  userId?: string;
 }
 
 /** The ONLY value that means closed — mirrors RESOLVED_STATUS in lib/support/tickets.ts. */
@@ -117,6 +124,26 @@ const CATEGORY_FILTERS = [
   { value: "premium_request_xdevice", label: "Premium XDevice" },
 ] as const;
 
+/** TASK_187 C1 — the two plans the invoice composer can send. */
+type PlanName = "premium_plus" | "premium_xdevice";
+
+/** Configured defaults from /api/admin/wallets — prefill only, never hardcoded. */
+interface PriceDefaults {
+  premium_plus: number;
+  premium_xdevice: number;
+}
+
+/** Labels from the one source of plan names (support-templates), not retyped. */
+const PLAN_OPTIONS: { value: PlanName; label: string }[] = [
+  { value: "premium_plus", label: PREMIUM_REQUEST_TEMPLATES.premium_request_plus.planName },
+  { value: "premium_xdevice", label: PREMIUM_REQUEST_TEMPLATES.premium_request_xdevice.planName },
+];
+
+/** The ticket's category picks the starting plan; re-inferred for every ticket. */
+function planFromCategory(category: string | null): PlanName {
+  return category === "premium_request_xdevice" ? "premium_xdevice" : "premium_plus";
+}
+
 export default function SupportQueuePanel() {
   const [filter, setFilter] = useState<string>("open");
   const [category, setCategory] = useState<string>("");
@@ -136,6 +163,23 @@ export default function SupportQueuePanel() {
   const [newEmail, setNewEmail] = useState("");
   const [newSubject, setNewSubject] = useState("");
   const [newBody, setNewBody] = useState("");
+
+  // TASK_187 C1 — the money composer, with its own state for the same reason
+  // `reply` and the new-ticket form have their own: a half-filled invoice must
+  // never clobber a half-written reply (or vice versa). Admin-only surface —
+  // the term override and the payout-address overrides exist exactly here.
+  const [invoiceing, setInvoiceing] = useState(false);
+  const [invPlan, setInvPlan] = useState<PlanName>("premium_plus");
+  const [invAmount, setInvAmount] = useState("");
+  const [invAmountTouched, setInvAmountTouched] = useState(false);
+  const [invDays, setInvDays] = useState(""); // blank = standard term
+  const [invBtc, setInvBtc] = useState("");
+  const [invTrc, setInvTrc] = useState("");
+  const [invErc, setInvErc] = useState("");
+  const [invNote, setInvNote] = useState("");
+  const [invBusy, setInvBusy] = useState(false);
+  const [invError, setInvError] = useState<string | null>(null);
+  const [priceDefaults, setPriceDefaults] = useState<PriceDefaults | null>(null);
 
   const load = useCallback(async (status: string, planCategory: string) => {
     setListError(null);
@@ -168,6 +212,25 @@ export default function SupportQueuePanel() {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- load() awaits fetch before every setState
     void load(filter, category);
   }, [filter, category, load]);
+
+  // TASK_187 C1 — a different ticket means a different invoice: close the
+  // form, clear every field, and RE-INFER the plan from this ticket's category
+  // so an XDevice ticket never starts pre-filled as Premium Plus. Keyed to the
+  // ticket identity, so the re-read after a reply does NOT wipe a half-typed
+  // invoice the admin is still working on (same id → effect does not re-run).
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate reset keyed to the ticket identity (same pattern as load())
+    setInvoiceing(false);
+    setInvError(null);
+    setInvPlan(planFromCategory(detail?.category ?? null));
+    setInvAmount("");
+    setInvAmountTouched(false);
+    setInvDays("");
+    setInvBtc("");
+    setInvTrc("");
+    setInvErc("");
+    setInvNote("");
+  }, [detail?.id, detail?.category]);
 
   const openTicket = useCallback(async (id: string) => {
     setError(null);
@@ -299,6 +362,185 @@ export default function SupportQueuePanel() {
       setBusy(false);
     }
   }, [busy, newEmail, newSubject, newBody, filter, category, load]);
+
+  /**
+   * TASK_187 C1 — open/close the invoice form, lazily loading the configured
+   * price defaults the FIRST time it opens (same /api/admin/wallets read the
+   * Users-tab cell does). Fail-soft: a failed prices fetch just means an empty
+   * amount the admin types — never a blocked composer.
+   */
+  const toggleInvoice = useCallback(async () => {
+    if (invoiceing) {
+      setInvoiceing(false);
+      return;
+    }
+    setInvoiceing(true);
+    setInvError(null);
+    if (priceDefaults) {
+      if (!invAmountTouched) setInvAmount(String(priceDefaults[invPlan]));
+      return;
+    }
+    try {
+      const res = await fetch("/api/admin/wallets", { cache: "no-store" });
+      if (!res.ok) return;
+      const prices = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+      const d: PriceDefaults = {
+        premium_plus: Number(prices.webSubscriptionPriceUsd),
+        premium_xdevice: Number(prices.xdevicePriceUsd),
+      };
+      if (Number.isFinite(d.premium_plus) && Number.isFinite(d.premium_xdevice)) {
+        setPriceDefaults(d);
+        if (!invAmountTouched) setInvAmount(String(d[invPlan]));
+      }
+    } catch {
+      // fail-soft — unprefilled amount, admin types it manually
+    }
+  }, [invoiceing, priceDefaults, invAmountTouched, invPlan]);
+
+  /**
+   * TASK_187 C1 — send the invoice, then attach it to THIS thread.
+   *
+   * THREE STEPS, each with its own failure story:
+   *   1. POST /invoices → 201 {invoice}. A 400 carrying `invoiceId` means the
+   *      ONE-OPEN-INVOICE rule fired — that id is EDITED (PATCH) instead of
+   *      creating a contradiction the customer would see twice.
+   *   2. POST messages {body, invoiceId} — the note (or a default) with the
+   *      invoice attached, which is what renders the card in the thread. If
+   *      this fails the invoice EXISTS: the error says so, the form stays open
+   *      for a retry, and a retry lands on step 1's fallback path — no
+   *      duplicate invoice, nothing lost.
+   *   3. Re-read the detail (only the server knows the result) + notice.
+   *
+   * Money rules mirrored from the routes, client-side ONLY as ergonomics —
+   * every one of them is re-validated server-side: amount > 0, days a whole
+   * number ≥ 1 (blank = standard term, key omitted), and ALL THREE addresses
+   * blank ⇒ `methods` omitted ⇒ the server snapshots the configured addrs;
+   * ANY typed ⇒ the full object is sent with blanks as null (chain not
+   * offered on this invoice).
+   */
+  const sendInvoice = useCallback(async () => {
+    if (!selected || !detail?.userId || invBusy) return;
+    const amt = Number(invAmount);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setInvError("The amount must be a number greater than 0.");
+      return;
+    }
+    const dayStr = invDays.trim();
+    let days: number | undefined;
+    if (dayStr !== "") {
+      const n = Number(dayStr);
+      if (!Number.isInteger(n) || n < 1) {
+        setInvError("Duration must be a whole number of days ≥ 1 — leave it blank for the standard term.");
+        return;
+      }
+      days = n;
+    }
+    const body: Record<string, unknown> = { plan: invPlan, amountUsd: amt };
+    if (days !== undefined) body.days = days;
+    if (invBtc.trim() || invTrc.trim() || invErc.trim()) {
+      body.methods = {
+        btc: invBtc.trim() || null,
+        usdt_trc20: invTrc.trim() || null,
+        usdt_erc20: invErc.trim() || null,
+      };
+    }
+
+    setInvBusy(true);
+    setError(null);
+    setNotice(null);
+    setInvError(null);
+    try {
+      const url = `/api/admin/users/${encodeURIComponent(detail.userId)}/invoices`;
+      let res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      let invoiceId = "";
+      if (res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { invoice?: { id?: string } };
+        invoiceId = data.invoice?.id ?? "";
+      } else {
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          invoiceId?: string;
+        };
+        if (typeof data.invoiceId === "string" && data.invoiceId !== "") {
+          // One open invoice per user — edit that one instead of creating a
+          // second contradictory amount for the same plan.
+          res = await fetch(`${url}/${encodeURIComponent(data.invoiceId)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          if (!res.ok) {
+            const patched = (await res.json().catch(() => ({}))) as { error?: string };
+            setInvError(
+              typeof patched.error === "string" && patched.error !== ""
+                ? patched.error
+                : "The existing open invoice could not be updated.",
+            );
+            return;
+          }
+          invoiceId = data.invoiceId;
+        } else {
+          setInvError(
+            typeof data.error === "string" && data.error !== ""
+              ? data.error
+              : "The invoice could not be sent.",
+          );
+          return;
+        }
+      }
+      if (invoiceId === "") {
+        setInvError("The invoice was saved but its id came back empty — check the Users tab.");
+        return;
+      }
+
+      // The customer-facing note: a default when the admin typed nothing, so
+      // a bare card never arrives with an empty message above it.
+      const note =
+        invNote.trim() ||
+        `Your ${invPlan === "premium_xdevice" ? "Premium XDevice" : "Premium Plus"} invoice is ready — the card below has the amount and payment addresses.`;
+      const mres = await fetch(
+        `/api/admin/support/tickets/${encodeURIComponent(selected)}/messages`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ body: note, invoiceId }),
+        },
+      );
+      if (!mres.ok) {
+        setInvError(
+          `Invoice saved, but attaching it to this thread failed: ${await readError(mres, "the message was not posted")}`,
+        );
+        return;
+      }
+
+      // Success — close + reset; the ticket-keyed effect re-infers the plan next time.
+      setInvoiceing(false);
+      setInvNote("");
+      setInvDays("");
+      setInvBtc("");
+      setInvTrc("");
+      setInvErc("");
+      setInvAmountTouched(false);
+      setInvAmount("");
+      setNotice("Invoice sent and attached to this thread.");
+      const again = await fetch(
+        `/api/admin/support/tickets/${encodeURIComponent(selected)}`,
+        { cache: "no-store" },
+      );
+      if (again.ok) {
+        const data = (await again.json()) as { ticket: TicketDetail };
+        setDetail(data.ticket);
+      }
+    } catch {
+      setInvError("Network error — the invoice was not sent.");
+    } finally {
+      setInvBusy(false);
+    }
+  }, [selected, detail, invBusy, invPlan, invAmount, invDays, invBtc, invTrc, invErc, invNote]);
 
   return (
     <section>
@@ -502,9 +744,122 @@ export default function SupportQueuePanel() {
                         layout sideways. Ticket bodies are untrusted customer text, and
                         the admin view is the one place they are rendered longest. */}
                     <p className="whitespace-pre-wrap break-words text-sm text-fg">{m.body}</p>
+                    {/* TASK_187 C2 — the invoice card, resolved LIVE from the
+                        message's soft ref (the admin side sees every ticket's). */}
+                    {m.invoice && <SupportInvoiceCard invoice={m.invoice} />}
                   </div>
                 ))}
               </div>
+
+              {/* TASK_187 C1 — the money composer, between the thread and the
+                  reply box. Admin-only (userId exists only on admin reads):
+                  the term override and payout-address overrides live exactly
+                  HERE — the customer's side never renders either. */}
+              {detail.userId && (
+                <div className="mt-4 border-t border-border pt-4">
+                  <Button
+                    variant="secondary"
+                    className="px-3 py-1.5 text-xs"
+                    disabled={invBusy}
+                    onClick={() => void toggleInvoice()}
+                  >
+                    {invoiceing ? "Cancel" : "Send invoice"}
+                  </Button>
+                  {invoiceing && (
+                    <div className="mt-3 flex flex-col gap-2 rounded-xl border border-border bg-bg-elevated p-3">
+                      <div className="flex flex-wrap gap-2">
+                        <select
+                          value={invPlan}
+                          onChange={(e) => {
+                            const p = e.target.value as PlanName;
+                            setInvPlan(p);
+                            // Re-prefill the amount with the new plan's default
+                            // unless the admin has already typed their own —
+                            // same rule as the Users-tab cell.
+                            if (!invAmountTouched && priceDefaults) {
+                              setInvAmount(String(priceDefaults[p]));
+                            }
+                          }}
+                          aria-label="Invoice plan"
+                          className="rounded-lg border border-border bg-bg-elevated px-2 py-2 text-sm text-fg focus:border-brand-500 focus:outline-none"
+                        >
+                          {PLAN_OPTIONS.map((p) => (
+                            <option key={p.value} value={p.value}>
+                              {p.label}
+                            </option>
+                          ))}
+                        </select>
+                        <Input
+                          type="number"
+                          min={0.01}
+                          step={0.01}
+                          value={invAmount}
+                          onChange={(e) => {
+                            setInvAmountTouched(true);
+                            setInvAmount(e.target.value);
+                          }}
+                          placeholder="Amount (USD)"
+                          aria-label="Invoice amount (USD)"
+                          className="w-36"
+                        />
+                        <Input
+                          type="number"
+                          min={1}
+                          step={1}
+                          value={invDays}
+                          onChange={(e) => setInvDays(e.target.value)}
+                          placeholder="Duration days (blank = standard)"
+                          aria-label="Invoice duration in days (optional)"
+                          className="w-52"
+                        />
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Input
+                          value={invBtc}
+                          onChange={(e) => setInvBtc(e.target.value)}
+                          placeholder="BTC address (blank = default)"
+                          aria-label="BTC payout address"
+                        />
+                        <Input
+                          value={invTrc}
+                          onChange={(e) => setInvTrc(e.target.value)}
+                          placeholder="USDT TRC-20 (blank = default)"
+                          aria-label="USDT TRC-20 payout address"
+                        />
+                        <Input
+                          value={invErc}
+                          onChange={(e) => setInvErc(e.target.value)}
+                          placeholder="USDT ERC-20 (blank = default)"
+                          aria-label="USDT ERC-20 payout address"
+                        />
+                      </div>
+                      <Textarea
+                        value={invNote}
+                        onChange={(e) => setInvNote(e.target.value)}
+                        placeholder="Note to the customer (optional — a default message is used when blank)"
+                        rows={2}
+                        maxLength={10_000}
+                        aria-label="Invoice note"
+                      />
+                      <p className="text-[11px] text-fg-muted">
+                        Leave every address blank to send with the configured defaults. If any
+                        address is typed, the invoice goes out with exactly what is shown — a
+                        blank line hides that chain.
+                      </p>
+                      {invError && (
+                        <p className="text-xs text-red-600 dark:text-red-400">{invError}</p>
+                      )}
+                      <Button
+                        className="self-start text-xs"
+                        disabled={invBusy || !invAmount.trim()}
+                        onClick={() => void sendInvoice()}
+                      >
+                        {invBusy ? "Sending…" : "Send invoice"}
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="mt-4 flex flex-col gap-2 border-t border-border pt-4">
                 <Textarea

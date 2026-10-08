@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, Input, Textarea } from "@/components/ui";
+import { SupportInvoiceCard, type ThreadInvoiceCardData } from "@/components/support-invoice-card";
 import {
   SUPPORT_OPEN_EVENT,
   SUPPORT_TEMPLATE_OPTIONS,
@@ -52,6 +53,10 @@ interface Message {
   authorRole: string;
   body: string;
   createdAt: string;
+  /** TASK_187 — the soft ref stored on the row (DETAIL reads always carry it). */
+  invoiceId?: string | null;
+  /** TASK_187 — resolved owner-scoped at read time; null = no card renders. */
+  invoice?: ThreadInvoiceCardData | null;
 }
 
 interface TicketDetail extends TicketRow {
@@ -611,6 +616,19 @@ export function SupportWidget() {
                             {m.authorRole === "admin" ? "Support" : "You"} · {when(m.createdAt)}
                           </p>
                           <p className="whitespace-pre-wrap break-words text-fg">{m.body}</p>
+                          {/* TASK_187 C2 — the invoice card. "Pay" routes to billing,
+                              where the actual payment flow lives; only OPEN invoices get
+                              the button (a settled one has nothing left to pay). The
+                              widget never renders the term override — the type has no
+                              such field, so it cannot. */}
+                          {m.invoice && (
+                            <SupportInvoiceCard
+                              invoice={m.invoice}
+                              payHref={
+                                m.invoice.status === "open" ? "/dashboard/billing" : undefined
+                              }
+                            />
+                          )}
                         </div>
                       ))}
                     </div>

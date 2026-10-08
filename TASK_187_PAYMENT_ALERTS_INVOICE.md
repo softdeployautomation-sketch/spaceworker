@@ -51,61 +51,62 @@ commits** (house rule).
 ## SCOPE (owner's order)
 
 ### S1 — payment alert EMAIL (diagnose BEFORE touching code)
-- [ ] Live diagnosis on the VPS (read-only): `NotificationLog` rows for
+- [x] Live diagnosis on the VPS (read-only): `NotificationLog` rows for
       `admin_pending_payment` — did sendEmail attempt? outcome? If rows exist `sent` →
       Resend delivery log for the recipient. Likely cause: `ADMIN_EMAIL` unset ⇒
       fallback recipient is `spaceworker@instaweb.top` (owner never sees it) — confirm
       with `grep ADMIN_EMAIL /opt/spaceworker/.env` (read-only; NEVER print values) +
       what `env.adminEmail` resolves to.
-- [ ] Fix per finding: config → flag the needed `.env` line to the OWNER (they apply
+- [x] Fix per finding: config → flag the needed `.env` line to the OWNER (they apply
       it, then re-verify live); code bug → fix in `lib/payment-notify.ts` / `lib/email.ts`.
       Telegram already works — do not regress it.
 
 ### S2 — support notifications (both directions, both channels)
-- [ ] New ticket opened by a user → owner gets **Telegram + email** (ticket id, user
+- [x] New ticket opened by a user → owner gets **Telegram + email** (ticket id, user
       email, category, subject, admin URL). Reuse the `notifyAdminPendingPayment`
       pattern — shared helper (e.g. `notifyAdminTicketCreated`) in `lib/payment-notify.ts`
       or `lib/support-notify.ts`; fire-and-forget; a notify failure must NEVER fail the
       ticket POST.
-- [ ] Admin reply in a thread → the **user gets an email** (`Re: <ticket subject>`,
+- [x] Admin reply in a thread → the **user gets an email** (`Re: <ticket subject>`,
       link to the ticket/billing page).
-- [ ] Both directions write NotificationLog (sendEmail does) — best-effort only.
+- [x] Both directions write NotificationLog (sendEmail does) — best-effort only.
 
 ### S3 — admin invoice composer IN THE SUPPORT PANEL
-- [ ] `support-queue-panel.tsx`, on a selected ticket: **"Send invoice" composer** =
+- [x] `support-queue-panel.tsx`, on a selected ticket: **"Send invoice" composer** =
       **plan dropdown** (Premium Plus / Premium XDevice — reuse
       `lib/support-templates.ts` labels; default inferred from a premium-request ticket
       category), **amount input** (prefilled from the configured price; owner types any
       number, validated > 0), **optional duration (days)** — *"i can decide to add
       duration or not"*.
-- [ ] Schema — ONE migration: `PremiumInvoice.days Int?` + nullable `invoiceId` on the
+- [x] Schema — ONE migration: `PremiumInvoice.days Int?` + nullable `invoiceId` on the
       support-message model (check actual model name first) so the thread can render
       the invoice card. House migration naming + `.md` lock file.
-- [ ] Send path REUSES `POST /api/admin/users/[id]/invoices` (never a second money
+- [x] Send path REUSES `POST /api/admin/users/[id]/invoices` (never a second money
       path); the composer then posts an admin thread message carrying `invoiceId` so
       **the invoice shows in the ticket thread**.
-- [ ] **Payment details:** invoice keeps the automatic **methods snapshot** (fast
+- [x] **Payment details:** invoice keeps the automatic **methods snapshot** (fast
       default = configured payout addresses, TASK_184 behavior) AND the composer lets
       the admin **hand-type/override payment details** per invoice (methods is Json —
       accept an admin-edited object while composing). Owner picks per invoice.
 
 ### S4 — user pays from the ticket/email
-- [ ] Thread renders the invoice card (plan, amount, status, methods) for the ticket
+- [x] Thread renders the invoice card (plan, amount, status, methods) for the ticket
       owner; the invoice email arrives with a **Pay button → `/dashboard/billing`**
       (card already renders there with methods + submits through the existing flow
       carrying `invoiceId`).
-- [ ] Verify end-to-end on the EXISTING settle path: submit with `invoiceId` → admin
+- [x] Verify end-to-end on the EXISTING settle path: submit with `invoiceId` → admin
       approval → invoice `paid` + tier granted. Duration set → grant uses `days`;
       null → current default. **Never render any duration/term string to the user**
       (TASK_181 wording rule stays).
 
 ### S5 — gates + deploy (playbook §7/§2)
-- [ ] `npx tsc --noEmit` → 0. ESLint touched files → 0 NEW (stash A/B baseline;
-      admin-panel pre-existing errors are not yours).
-- [ ] Tests: `test:invoice` + `test:support` extended (notify on create/reply,
+- [x] `npx tsc --noEmit` → 0. ESLint touched files → 0 NEW (direct per-file runs —
+      no stash, house rule; admin-panel pre-existing errors are not yours).
+- [x] Tests: `test:invoice` + `test:support` extended (notify on create/reply,
       duration applies on settle, methods override, invoice renders in thread);
-      regression battery: `test:xdevice` 38 · `test:wallet` 63 · `test:module-gate` ·
-      `test:wrapper-cookie` 6 · `test:maintenance-cache` 6.
+      regression battery: `test:xdevice` 38 · `test:wallet` 63 · `test:module-gate`
+      13 · `test:wrapper-cookie` 6 (`test:maintenance-cache` does NOT exist —
+      corrected 2026-10-08).
 - [ ] Deploy (`scripts/deploy-vps.sh`): fresh BUILD_ID, service active, site 200,
       repo↔box md5 parity. Live evidence: test ticket + pending payment →
       NotificationLog rows + owner receives BOTH Telegram and email (owner eyeball).
