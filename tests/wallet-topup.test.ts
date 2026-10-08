@@ -386,6 +386,25 @@ test("submitting a hash leaves the top-up PENDING and credits nothing", async ()
   );
 });
 
+test("submitting WITHOUT a hash is accepted and stays PENDING (owner: hash optional)", async () => {
+  // TASK_185 follow-up — "even the hash is not required for topup": the admin
+  // confirms every top-up by hand anyway, so an empty hash must reach the same
+  // pending/manual-review state instead of 400-ing. Credits nothing.
+  const { prisma, rows, calls } = openTopup();
+  const { POST } = loadRoute(TOPUP_ROUTE, topupDeps(prisma, {}));
+
+  const res = await POST(req({ paymentId: "pay_1", txHash: "" }));
+  assert.equal(res.status, 200, "an empty hash must not be refused");
+  assert.equal(rows[0].txHash, null, "no hash means NULL (multiple NULLs never collide)");
+  assert.equal(rows[0].status, "pending");
+  const attempt = calls.find((c) => c.model === "attempt");
+  assert.ok(attempt, "a review note is recorded for the admin queue");
+  assert.match(
+    String((attempt?.args?.data as { note?: string } | undefined)?.note),
+    /No transaction hash provided/,
+  );
+});
+
 test("a customer cannot attach a hash to ANOTHER user's top-up", async () => {
   // The lookup is scoped by `userId` AND `product`. A bare findUnique on the id
   // would let one customer write into somebody else's open order.

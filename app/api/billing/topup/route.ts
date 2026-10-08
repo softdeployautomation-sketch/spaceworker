@@ -96,9 +96,10 @@ export async function POST(req: NextRequest) {
  */
 async function attachHash(paymentId: string, txHashRaw: unknown, userId: string) {
   const txHash = typeof txHashRaw === "string" ? txHashRaw.trim() : "";
-  if (!txHash) {
-    return NextResponse.json({ error: "Enter your transaction hash" }, { status: 400 });
-  }
+  // TASK_185 follow-up (owner: "even the hash is not required for topup") —
+  // an empty hash is a valid "submit for manual review" (same contract as
+  // /api/billing/submit). The 400 that used to live here is gone; everything
+  // below simply runs with txHash = null.
 
   const existing = await prisma.payment.findFirst({
     where: { id: paymentId, userId, product: WALLET_TOPUP_PRODUCT_ID },
@@ -121,15 +122,18 @@ async function attachHash(paymentId: string, txHashRaw: unknown, userId: string)
 
   // Hashes are UNIQUE across the table, so a hash already used by ANY payment —
   // including a subscription — is refused here. Reusing one is never legitimate: it
-  // would mean a single transaction counted as payment twice.
-  const clash = await prisma.payment.findUnique({ where: { txHash } });
-  if (clash) {
-    return NextResponse.json({ error: "Transaction hash already submitted" }, { status: 400 });
+  // would mean a single transaction counted as payment twice. Skipped when no
+  // hash was given (NULL never collides under @unique — multiple NULLs allowed).
+  if (txHash) {
+    const clash = await prisma.payment.findUnique({ where: { txHash } });
+    if (clash) {
+      return NextResponse.json({ error: "Transaction hash already submitted" }, { status: 400 });
+    }
   }
 
   const payment = await prisma.payment.update({
     where: { id: existing.id },
-    data: { txHash },
+    data: { txHash: txHash || null },
   });
   await prisma.paymentVerificationAttempt.create({
     data: {
@@ -140,7 +144,9 @@ async function attachHash(paymentId: string, txHashRaw: unknown, userId: string)
       // see what the customer said, and the admin queue is where it belongs.
       // Nothing here runs a chain lookup, and the internal poller skips
       // `wallet_topup` rows entirely.
-      note: "Hash received — awaiting manual review (top-ups are never auto-approved)",
+      note: txHash
+        ? "Hash received — awaiting manual review (top-ups are never auto-approved)"
+        : "No transaction hash provided — awaiting manual review",
     },
   });
 
@@ -236,7 +242,7 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
     kind,
     toAddress,
     amountUsd: payment.amountUsd,
-    note: "Send the exact amount to this address, then submit your transaction hash. Your wallet is credited once we confirm the payment.",
+    note: "Send the exact amount to this address, then submit your transaction hash (optional — we confirm the payment manually). Your wallet is credited once we confirm it.",
   });
 }
 

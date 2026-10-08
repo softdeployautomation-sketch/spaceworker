@@ -147,6 +147,7 @@ function PaymentInstructions({
   note,
   submitLabel,
   onSubmitHash,
+  hashOptional,
 }: {
   kind: Kind;
   toAddress: string;
@@ -154,6 +155,11 @@ function PaymentInstructions({
   note?: string;
   submitLabel: string;
   onSubmitHash: (txHash: string) => Promise<string | null>;
+  // TASK_185 follow-up (owner: "confirming from admin before they get credited")
+  // — the SUBSCRIPTION form submits without a hash (server stores null →
+  // "pending, awaiting manual review"). The top-up form keeps hash required
+  // (its route 400s without one).
+  hashOptional?: boolean;
 }) {
   const [txHash, setTxHash] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -161,7 +167,7 @@ function PaymentInstructions({
 
   async function submit() {
     const hash = txHash.trim();
-    if (!hash) {
+    if (!hash && !hashOptional) {
       setError("Enter your transaction hash");
       return;
     }
@@ -201,6 +207,12 @@ function PaymentInstructions({
       <div>
         <label className="block text-sm font-medium text-zinc-700 dark:text-zinc-300">
           Transaction hash
+          {hashOptional && (
+            <span className="font-normal text-zinc-500 dark:text-zinc-400">
+              {" "}
+              (optional — admin confirms your payment)
+            </span>
+          )}
         </label>
         <input
           type="text"
@@ -326,6 +338,7 @@ function UpgradeFlow({
             amountUsd={checkout.amountUsd}
             submitLabel="Submit Payment"
             onSubmitHash={submitHash}
+            hashOptional
           />
         )}
 
@@ -452,8 +465,9 @@ function TopUpFlow() {
           toAddress={order.toAddress}
           amountUsd={order.amountUsd}
           note={order.note}
-          submitLabel="Submit Transaction Hash"
+          submitLabel="Submit Payment"
           onSubmitHash={submitHash}
+          hashOptional
         />
       ) : (
         <>

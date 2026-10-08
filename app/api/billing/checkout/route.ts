@@ -83,6 +83,6 @@ export async function GET(req: NextRequest) {
     toAddress,
     amountUsd,
     durationDays: product.kind === "exe" ? durationDays : undefined,
-    note: "Send exact amount ±5% to the address shown. Submit your transaction hash below.",
+    note: "Send exact amount ±5% to the address shown. Your transaction hash is optional — we confirm the payment manually.",
   });
 }
