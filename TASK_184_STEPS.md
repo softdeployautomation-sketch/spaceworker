@@ -84,12 +84,12 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   support files touched by this task, not ours).
 - **WORKING TREE:** clean after commit `fcfde55` (only untracked file is
   `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule).
-- **NEXT ACTION:** **A5 deploy (§2 tar-over-ssh) + live curl 403 free / 200 premium (§4)**
-  → C3/C5 live checks (tier-3 web sees locked tools + ticket CTA; wrapper keeps
-  devices) → then B1–B5 (B1/B2/B4 web ticket flow for BOTH requestable plans —
-  Premium Plus (tier 5) and Premium XDevice (tier 3), invoice pre-filled with the
-  configured default price and admin-editable before sending; B3 = money commit,
-  SEPARATE; N4 naming static test rides B5).
+- **NEXT ACTION:** **B1–B5** ticket-based premium request (B1 strip prices → web ticket
+  CTA for BOTH requestable plans — Premium Plus (tier 5) and Premium XDevice (tier 3),
+  invoice pre-filled at each plan's configured default price and admin-editable before
+  sending; B2 support templates; B3 = money commit SEPARATE; B4 user pays; B5 gates +
+  tests + deploy) → then close C3 + C5 (billing-page ticket CTA visible to tier 3 +
+  owner's live wrapper device-access check) · N4 naming static test rides B5.
 
 **PREVIOUS SNAPSHOT (STEP 0):**
 - **A1 ✅** inventory done (in `TASK_184_*.md` §A1 RESULT): keys `extractor`/`cyberlab`/
@@ -101,7 +101,8 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   based, never tier-number) → 403 `{error:"*_required", code:"module_required"}` wired into
   **19 mutation handlers** (11 extractor + 8 hosting, cyberlab consent normalized). Reads stay
   open by design. `tests/hosting-user-domains.test.ts` stubs the gate OPEN (A4 owns gate tests).
-- **REMAINING:** A3 → A4 → A5, then C1 → C5, then B1 → B5. Owner validates Phase A on web
+- **REMAINING:** ~~A3 → A4 → A5~~ all ✅ → ~~C1 → C5~~ C1/C2/C4 ✅ (C3/C5 partial: API
+  e2e live ✅, UI/owner checks ride B1/B2) → B1 → B5. Owner validates Phase A on web
   before Phase B ships.
 
 **KEY FILES:**
@@ -163,11 +164,31 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       GET counterparts never hit the gate; entitled fake grant passes; **tier-3 session →
       same 403s + devices route allowed (positive control, Phase C)**; static lock that all
       19 A2 route files contain `moduleToolsDenied(`.
-- [ ] **A5 gates** — tsc 0 · eslint 0-new · `test:module-gate` + `test:xdevice` +
+- [x] **A5 gates** — tsc 0 · eslint 0-new · `test:module-gate` + `test:xdevice` +
       `test:devices` green · deploy (§2 tar-over-ssh) · live curl 403 free / 200 premium (§4).
-      **CODE GATES GREEN 2026-10-08** (tsc 0 · eslint 0-new · module-gate 13/13 ·
-      xdevice 38/38 · devices 6/6 · hosting 338/338 · lab/wallet/deliverability/
-      smtp/message/testrecipients/target green) — REMAINING: deploy §2 + live curl §4.
+      **DONE 2026-10-08:** code gates re-swept green (tsc 0 · eslint = exactly the 8
+      proven-pre-existing errors → 0 new · module-gate 13/13 · xdevice 38/38 ·
+      devices 6/6 · hosting 338/338 · lab/wallet/deliverability/smtp/message/
+      testrecipients/target green). **Deploy §2:** full-tree md5 parity scan
+      (637 local vs 631 remote) → 6 local-only (all committed TASK_184 files, e.g.
+      `lib/module-gate.ts`, `lib/plan-name.ts`, `components/module-tool-lock.tsx`) ·
+      0 remote-only · ~40 content drifts (A1/A2 + naming never deployed) →
+      whole-tree tar-over-ssh of `app lib components tests prisma` (§1: rsync 2.6.9
+      untrusted) with `--exclude='.env'` → **re-parity DIFF_LINES=0** (md5 both ends)
+      → `scripts/deploy-vps.sh /tmp/deploy-root.txt` (root files package.json +
+      HOW_WE_MOVE_FAST.md): prisma generate → maintenance ON → build → restart →
+      `active` + localhost:3500 → 200 → runtime survived (.env/.next/node_modules/
+      static/maintenance.html) → maintenance OFF → done.
+      **Live §4:** disposable `scripts/t184-a5-e2e.ts` run ON the VPS (real HTTP +
+      real login cookies, self-cleaning, deleted from both ends afterwards) →
+      **RESULT: PASS — 15/15**: anon → 401 · free tier-1 → 403 `{error:*_required}`
+      on a representative mutation of ALL FOUR modules (extractor · cyberlab ·
+      browser · hosting) + GET stays 200 · **tier-3 → same 403s live** · tier-5 →
+      200 + DB read-back (region cleared) · free denial wrote nothing (DB read-back,
+      region kept) · cleanup deleted all 3 test users. Post-run: service active,
+      localhost + https://spaceworker.top = 200. (Learned live: the API error key is
+      `error`, not `code` — fixed 6 assertions; the gates themselves were correct on
+      the very first run.)
 
 ## Phase C — tier-3 (Premium XDevice) behaves like FREE on the web
 
@@ -202,6 +223,11 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       coverage is representative-per-module + file-presence-for-all-26.
 - [ ] **C5 gates + live check** — battery + e2e: tier-3 account on web sees locked tools +
       ticket CTA; same account in wrapper keeps device access.
+      **PARTIAL 2026-10-08:** API-level e2e DONE — live A5 §4 run proved tier-3 →
+      same 403s (extractor/browser) on the deployed server; A4 tests cover
+      hosting/cyberlab + device 200 positive control + expired flip. REMAINING:
+      UI visibility of the lock card + ticket CTA (needs B1/B2) and the owner's
+      visual tier-3 web-vs-wrapper check.
 
 ## Phase B — ticket-based premium request (no prices on web)
 
@@ -255,7 +281,7 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
 ---
 
 ## ORDER (binding)
-`STEP 0 ✅ → A3 → A4 → A5 → C1–C5 (C2/C4 ride on A4, C5 = one live check) → B1 → B5`.
+`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B1/B2 + owner live checks) → B1 → B5`.
 Owner validates Phase A on web before Phase B ships.
 
 ## OWNER ADDENDUM (2026-10-08, same session)
@@ -365,3 +391,17 @@ Owner validates Phase A on web before Phase B ships.
   representative mutation + device 200 positive control + expired flip) with
   static file-presence locks for all 26 routes. C3/C5 live parts ride A5's
   deploy (§2) + owner validation (§4).
+- 2026-10-08 A5 ✅ DONE — **code gates re-swept green** (tsc 0 · eslint 0-new = the
+  same 8 proven-pre-existing errors · module-gate 13/13 · xdevice 38/38 · devices
+  6/6 · full battery green). **Deploy §2:** full-tree md5 parity scan → 6
+  local-only (all committed ours) · 0 remote-only · ~40 drifted (A1/A2 + naming
+  never went out) → whole-tree tar-over-ssh `app lib components tests prisma`
+  `--exclude='.env'` → **re-parity DIFF=0** → `deploy-vps.sh` build half (prisma
+  generate → maintenance ON → build → restart → active/200 → runtime survived →
+  maintenance OFF). **§4 live e2e ON the VPS: RESULT: PASS 15/15** — anon 401 ·
+  free → 403 `{error:*_required}` for ALL FOUR modules + GET open · **tier-3 →
+  same 403s on the deployed server** · tier-5 → 200 + DB read-back · denial wrote
+  nothing (DB read-back) · 3 test users cleaned · localhost + https://spaceworker.top
+  = 200 after. Disposable script deleted from both ends (pre-existing stub kept).
+  Note: live API error key is `error` (not `code`) — fixed 6 assertions, gates were
+  right on run 1.
