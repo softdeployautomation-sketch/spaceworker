@@ -12,6 +12,7 @@ function isTemplate(value: unknown): value is Template {
   return typeof value === "string" && (TEMPLATES as readonly string[]).includes(value);
 }
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -61,6 +62,8 @@ export async function GET() {
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   let body: {
     query?: unknown; queries?: unknown; template?: unknown; params?: unknown; lane?: unknown;

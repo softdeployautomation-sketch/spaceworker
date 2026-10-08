@@ -376,6 +376,9 @@ loader._load = function patched(request, parent, isMain) {
     if (request === "@/lib/session-user") return { getCurrentUser: async () => sessionUser };
     if (request === "@/lib/admin-auth") return { requireAdminSession: async () => isAdmin };
     if (request === "@/lib/prisma") return { prisma: fakePrisma };
+    // TASK_184 A2 — this suite is about DOMAIN OWNERSHIP, not entitlements:
+    // the module gate is stubbed open (A4 adds dedicated entitled/denied tests).
+    if (request === "@/lib/module-gate") return { moduleToolsDenied: async () => null };
     if (request === "@/lib/hosting/domain-registry") return fakeRegistry;
     if (request === "@/lib/hosting/credentials") return fakeCredentials;
     if (request === "@/lib/hosting/workers") return fakeWorkers;

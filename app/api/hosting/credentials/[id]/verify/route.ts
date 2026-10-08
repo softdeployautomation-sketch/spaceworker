@@ -8,9 +8,12 @@ import { verifyHostingCredential } from "@/lib/hosting/credentials";
 // The §16.4 re-verify: confirm a stored token still works and re-stamp the row.
 // Always 200 for an owned credential (a dead token is a RED row, not an error), so
 // the chooser can refresh its "verified …" stamp in place.
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params; // MUST await — async in Next.js 16
   const result = await verifyHostingCredential(user.id, id);

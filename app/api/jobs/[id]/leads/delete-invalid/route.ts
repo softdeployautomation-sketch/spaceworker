@@ -8,12 +8,15 @@ import { getSession } from "@/lib/session";
 // ones and the still-unchecked / no-email ones are left completely untouched (a
 // job that was validated, then a few new unchecked leads appeared, keeps those).
 // Returns how many rows were removed so the UI can react.
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   const { id } = await params;
 

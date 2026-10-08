@@ -17,9 +17,12 @@ import { parseLeadFile } from "@/lib/lead-file-parser";
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024; // 20MB
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   let form: FormData;
   try {

@@ -12,9 +12,12 @@ import { getZoneByName } from "@/lib/hosting/workers";
 // non-owner gets 404 — NOT 403 — so the status code cannot be used to discover that
 // somebody else's domain exists.
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params; // MUST await — async in Next.js 16
   const result = await removeUserDomain(user.id, id);
@@ -39,6 +42,8 @@ export async function DELETE(_request: Request, { params }: { params: Promise<{ 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params;
 

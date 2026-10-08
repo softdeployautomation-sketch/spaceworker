@@ -5,6 +5,7 @@ import { canUseExitNodes } from "@/lib/premium";
 import { getExitNode } from "@/lib/exit-nodes";
 
 // GET /api/settings/extract-region — the current saved value.
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function GET() {
   const session = await getSession();
   if (!session) {
@@ -29,6 +30,9 @@ export async function PATCH(req: Request) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   let body: { region?: string | null };
   try {

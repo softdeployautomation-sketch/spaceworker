@@ -27,9 +27,12 @@ const patchSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params; // MUST await — async in Next.js 16
 
@@ -62,6 +65,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params;
   const result = await deleteHostingCredential(user.id, id);

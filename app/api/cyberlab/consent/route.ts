@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAdminSettings } from "@/lib/admin-settings";
-import { hasEntitlement } from "@/lib/entitlements";
+import { moduleToolsDenied } from "@/lib/module-gate";
 import { clientIp, recordConsent } from "@/lib/lab/consent";
 import { getCurrentUser } from "@/lib/session-user";
 
@@ -26,13 +26,8 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const decision = await hasEntitlement(user.id, "cyberlab");
-  if (!decision.allowed) {
-    return NextResponse.json(
-      { error: "Cyber Lab access is not included on your account." },
-      { status: 403 },
-    );
-  }
+  const denied = await moduleToolsDenied(user.id, "cyberlab");
+  if (denied) return denied;
 
   const settings = await getAdminSettings();
   const { row, created } = await recordConsent({

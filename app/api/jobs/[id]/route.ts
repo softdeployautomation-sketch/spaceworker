@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { resumeJob } from "@/lib/job-resume";
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function GET(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -42,6 +43,8 @@ export async function PATCH(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   const { id } = await params;
 
@@ -118,6 +121,8 @@ export async function DELETE(
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   const { id } = await params;
 

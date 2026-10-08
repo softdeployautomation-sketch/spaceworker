@@ -3,12 +3,15 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { stopSearchJob } from "@/lib/job-stop";
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function POST(
   _req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   const { id } = await params;
 

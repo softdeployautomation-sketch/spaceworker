@@ -9,6 +9,7 @@ import { deleteSite, getSite, listRevisions } from "@/lib/hosting/sites";
 // The GET is the per-site read the Hosting tab polls after an upload or a publish
 // so it can render the §16.1 state machine (extracted → previewed → published)
 // without a second round trip.
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -24,6 +25,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
 export async function DELETE(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   const { id } = await params;
   const result = await deleteSite(user.id, id);

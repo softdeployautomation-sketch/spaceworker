@@ -19,9 +19,12 @@ function nullOrString(v: unknown): string | null {
   return null;
 }
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(session.userId, "extractor");
+  if (denied) return denied;
 
   let body: { leadIds?: unknown; merged?: unknown };
   try {

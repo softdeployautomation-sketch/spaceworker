@@ -26,6 +26,7 @@ import { getZoneByName } from "@/lib/hosting/workers";
 // The user's id always comes from the SESSION, never from the body — otherwise a
 // crafted request could add a domain to somebody else's account.
 
+import { moduleToolsDenied } from "@/lib/module-gate";
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -53,6 +54,8 @@ const postSchema = z.object({
 export async function POST(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  const denied = await moduleToolsDenied(user.id, "hosting");
+  if (denied) return denied;
 
   let parsed;
   try {
