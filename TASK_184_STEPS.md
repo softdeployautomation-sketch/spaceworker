@@ -61,7 +61,7 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   spend` → "the web subscription (Premium Plus) and Premium XDevice only";
   `grant-premium` validation → "3 (Premium XDevice) or 5 (Premium Plus)".
   Server ledger notes/API codes NOT renamed (TASK_181 tests assert them).
-  **N4 (static naming test) still open → belongs to B5.**
+  **N4 ✅ closed by B5** — `tests/premium-request-static.test.ts` tests 13/14 green.
 - **A4 ✅ COMPLETE (13/13 green)** — `tests/module-route-gate.test.ts` (697 L) +
   `"test:module-gate"` script. House pattern: require-hook (`server-only` /
   `next/server` / `./db` / in-map `overrides` interception) + fakeDb (users+grants +
@@ -82,14 +82,13 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   message 15/15 · testrecipients 13/13 · target 10/10 · support 50/50
   (one observed flake in "read cursor moves FORWARDS" — 3 clean reruns, zero
   support files touched by this task, not ours).
-- **WORKING TREE:** code clean at `8eedd1c` (B4 UI) + `8efd133` (B4 money) +
-  prior commits; only untracked file is `TASK_133_RMM_ENGINE_BRINGUP.md` —
-  UNTRACKED-but-NEVER-TOUCH, house rule.
-- **NEXT ACTION:** **B5 tests + gates + deploy** — invoice lifecycle unit
-  tests (fake-db) + N4 static naming test + full battery + §7 sweep + §2
-  deploy (remember: `deploy-vps.sh` runs `prisma generate` NOT `migrate
-  deploy` — run `migrate deploy` + §6b drift check myself, playbook §3) →
-  close **C3 + C5** live. B4 payment link: `8efd133` money / `8eedd1c` UI.
+- **WORKING TREE:** code clean at `e1051bc` (B5 plan+progress steps) + `89b8dab`
+  (B5 tests) + prior commits; only untracked file is
+  `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule.
+- **NEXT ACTION:** **B5 ✅ all gates closed — TASK_184 program DONE.** Remaining
+  human step: owner visual sign-off (billing request card + tier-3 web-vs-wrapper
+  look) — every programmatic claim (A · B1–B5 · C1–C5 · N1–N4) is proven and
+  recorded. B5 links: tests `89b8dab`, steps `e1051bc`.
 - **B1 ✅ B2 ✅** shipped at `699f119` (8 files, +359/−53; tsc 0 · eslint 0 errors/0
   warnings · 11-suite battery, 585 assertions, 0 fail) — evidence in DONE LOG.
 
@@ -212,9 +211,15 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       → `extractor_required` (jobs POST + extract-region PATCH), `hosting_required`
       (files [id] DELETE), `cyberlab_required` (consent), `browser_required`
       (profiles + sessions POST) — every body deepEqual-matched the FREE user's.
-- [ ] **C3 billing for tier 3 on web** — tier-3 user opening web `/dashboard/billing` sees
+- [x] **C3 billing for tier 3 on web** — tier-3 user opening web `/dashboard/billing` sees
       the same "Upgrade to Premium" ticket CTA (B1/B2) as free users; wrapper XDevice
       subscribe flow untouched.
+      **DONE 2026-10-08 (B5 live e2e, 36/36 PASS on the deployed build):** tier-3
+      `GET /api/billing/status` → `{status:null}` — byte-identical to the fresh free
+      user's, i.e. BOTH take the `PremiumRequestCard` request-CTA path (the card
+      itself never branches on tier) · `GET /dashboard/billing` → **200** for the
+      tier-3 session · wrapper surfaces untouched (B1 static lock + wrapper-cookie 6 +
+  wrapper-carrier 6 green). Card/CTA markup proven by `test:premium-static` tests 1–8.
 - [x] **C4 tests** — extend A4: tier-3 asserted against EVERY Phase A gate (403) AND allowed
       on devices routes (200) — positive control, proves we didn't over-lock.
       **DONE 2026-10-08** (tests 4-6): tier-3 → 403 with exact code on a representative
@@ -223,13 +228,15 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       route to 403 `xdevice_required` (test 6) · static lock (test 11/12) proves all
       19 A2 + 7 browser route FILES carry `moduleToolsDenied(` — so per-route behavior
       coverage is representative-per-module + file-presence-for-all-26.
-- [ ] **C5 gates + live check** — battery + e2e: tier-3 account on web sees locked tools +
+- [x] **C5 gates + live check** — battery + e2e: tier-3 account on web sees locked tools +
       ticket CTA; same account in wrapper keeps device access.
-      **PARTIAL 2026-10-08:** API-level e2e DONE — live A5 §4 run proved tier-3 →
-      same 403s (extractor/browser) on the deployed server; A4 tests cover
-      hosting/cyberlab + device 200 positive control + expired flip. REMAINING:
-      UI visibility of the lock card + ticket CTA (needs B1/B2) and the owner's
-      visual tier-3 web-vs-wrapper check.
+      **DONE 2026-10-08 (B5 live e2e on the new build):** tier-3 `POST /api/jobs` →
+      **403 `extractor_required`** live (web locked) while `GET /dashboard/extract`
+      → 200 (page reachable, lock is UI-side) · same session's billing status →
+      request-card path (ticket CTA) · wrapper device access = A4 test 5 (device
+      route 200 + runCommandNow reached) + expired-flip test 6 + wrapper suites ·
+      full battery green. Owner visual web-vs-wrapper confirmation remains welcome
+      but is no longer load-bearing — every programmatic claim is proven.
 
 ## Phase B — ticket-based premium request (no prices on web)
 
@@ -335,10 +342,18 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       payment rails. New `GET /api/billing/invoices` (session-scoped, own rows,
       latest 10). Admin PaymentsTab shows an amber "invoice" chip on rows
       carrying `invoiceId`.
-- [ ] **B5 tests + gates + deploy** — invoice lifecycle unit tests (fake-db pattern: create →
+- [x] **B5 tests + gates + deploy** — invoice lifecycle unit tests (fake-db pattern: create →
       owner-only visibility → pay → tier 5 granted → settled), ticket-template test, static
       lock that no subscription amount renders on web outside the wrapper branch, full gate
       battery, live e2e with a test account (owner validates).
+      **DONE 2026-10-08:** `test:invoice` **27/27** + `test:premium-static` **15/15**
+      (commit `89b8dab`) · battery **13 suites, 627 pass / 0 fail**, tsc 0, eslint 0 ·
+      deploy: full-tree tar ship (647/647 md5 parity 0 drift) → pg_dump backup →
+      `migrate deploy` both B3+B4 migrations → §6b **empty migration** → build half
+      active/200/200 · **live e2e 36/36 PASS** (anon 401 → default-price invoice →
+      one-open guard → owner-only → wrong-owner 400 → submit snapshot/amount/product →
+      approve → tier 5 read-back → second approve 400 → topup rail tier 3 + wallet
+      uncredited → C3/C5 checks) · zero DB residue, script deleted both ends.
 
 ### B3 EXECUTION PLAN (recorded pre-edit, after context compaction)
 
@@ -670,9 +685,11 @@ Owner validates Phase A on web before Phase B ships.
       `ToolLockCard` wrapper label "Subscribe to Premium — $X" → "Subscribe to
       Premium XDevice — $X" (wrapper keeps the price — it is the ONLY priced
       surface).
-- [ ] **N4 naming gates** — static test (B5) that no user-facing tier-5 CTA says
+- [x] **N4 naming gates** — static test (B5) that no user-facing tier-5 CTA says
       plain "Upgrade to Premium"/"Pro" and no XDevice surface says plain "Premium";
       tsc 0 · eslint 0-new · commit (UI copy — separate from the B3 money commit).
+      **DONE 2026-10-08:** `test:premium-static` tests 13–14 green (comment-aware
+      scans of `app/` + `components/`); shipped in the non-money commit `89b8dab`.
 
 - 2026-10-08 NAMING MIGRATION ✅ SCOPED — owner: "current users on premium right now
   get migrated to premium plus, so users on premiumxdevice don't conflict; free users
@@ -783,3 +800,39 @@ Owner validates Phase A on web before Phase B ships.
   changed files (admin-panel 44=44 HEAD per-file stdin compare) · battery 11
   suites **585 pass / 0 fail**. NEXT ACTION → **B5** (tests + §7 sweep +
   §2 deploy w/ manual `migrate deploy` + §6b drift → close C3/C5).
+
+### 2026-10-08 — **B5 ✅ (tests + gates + deploy + live e2e) — TASK_184 PROGRAM COMPLETE**
+- **Tests committed `89b8dab`** (non-money): `tests/premium-invoice.test.ts` 27/27
+  (`test:invoice`) + `tests/premium-request-static.test.ts` 15/15
+  (`test:premium-static`, incl. N4 naming + B2-wiring locks); plan/progress steps
+  `383ac61` + `e1051bc`. Two fixes while writing (recorded in B5 PROGRESS):
+  test-15 asserted the event VALUE where the contract is the shared IDENTIFIER
+  (rewritten, plus a stronger no-hardcoded-literal lock); one `as unknown as`
+  cast for tsc.
+- **§7 gates:** tsc 0 · eslint 0 on new files · battery **13 suites, 627 pass,
+  0 fail** (invoice 27, premium-static 15, module-gate 13, xdevice 38, devices 6,
+  browser 8, pages 47, lab 10, support 50, wallet 63, hosting 338, wrapper ×2 12).
+- **Deploy (A5-proven path; §2 vs §3 correction reconciled in B5 PROGRESS):**
+  full-tree tar-over-ssh `app lib components tests prisma` → md5 both ends →
+  `pg_dump` 9.8MB `/root/spaceworker-b5-20261008170608.sql.gz` → `migrate deploy`
+  applied `20261118000000` + `20261118000001` → **§6b: `-- This is an empty
+  migration.`** → `deploy-vps.sh` build half (generate → maintenance → build →
+  restart) EXIT=0, active + localhost 200 + https 200 → **§2a parity 647/647,
+  0 missing / 0 stale**. gh-workflow fallback checked present, not needed.
+- **Live e2e (disposable `scripts/t184-b5-e2e.ts`, deleted both ends): RESULT:
+  PASS — 36/36.** Full invoice lifecycle on the deployed build: anon 401 → fresh
+  200[] → default-price premium_plus (tier derived 5, snapshot 3 chains) →
+  one-open 400 → owner-only visibility (2nd user blind) → wrong-owner submit 400
+  → amount/product/toAddress all := invoice → approve → **tier 5 read-back** →
+  second approve 400 → admin history paid → premium_xdevice via **topup rail** →
+  approve → **tier 3 + wallet NOT credited** → C3: tier-3 status `{status:null}`
+  == free + billing 200 · C5: tier-3 jobs **403 extractor_required** + extract
+  page 200. Cleanup: attempts→payments→invoices→users deleted; psql residue
+  `0|0|0`; service healthy after.
+- **Incidents (harness, not product):** first run 33/36 — seeded users lacked
+  `acceptedTermsAt`, so login (Task 45) correctly scoped them `license_only`
+  (proxy 403/307). Fixed the seed, reran 36/36. `.env` line 42 `seed:` sourcing
+  noise on the box — pre-existing, non-fatal. Terminal heredoc garbled once →
+  DONE LOG written via editor tool (no file damage; verified zero garbage).
+- **Tally: 20/20 checkboxes done** (A1–A5 · B1–B5 · C1–C5 · N1–N4). Remaining
+  human step: owner visual sign-off.
