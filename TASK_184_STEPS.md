@@ -82,14 +82,16 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   message 15/15 · testrecipients 13/13 · target 10/10 · support 50/50
   (one observed flake in "read cursor moves FORWARDS" — 3 clean reruns, zero
   support files touched by this task, not ours).
-- **WORKING TREE:** clean after commit `fcfde55` (only untracked file is
-  `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule).
-- **NEXT ACTION:** **B1–B5** ticket-based premium request (B1 strip prices → web ticket
-  CTA for BOTH requestable plans — Premium Plus (tier 5) and Premium XDevice (tier 3),
-  invoice pre-filled at each plan's configured default price and admin-editable before
-  sending; B2 support templates; B3 = money commit SEPARATE; B4 user pays; B5 gates +
-  tests + deploy) → then close C3 + C5 (billing-page ticket CTA visible to tier 3 +
-  owner's live wrapper device-access check) · N4 naming static test rides B5.
+- **WORKING TREE:** clean at `699f119` (B1+B2) + this steps commit; only untracked
+  file is `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule.
+- **NEXT ACTION:** **B3 admin invoice (MONEY — own commit, after B1/B2 landed ✅)** —
+  plan select (Premium Plus tier 5 / Premium XDevice tier 3), amount pre-filled from
+  each plan's configured default (webSubscriptionPriceUsd / xdevicePriceUsd), admin
+  can edit before sending → **B4** user pays (both plans) → **B5** tests + gates +
+  deploy (N4 rides B5) → then close **C3 + C5** (billing-page ticket CTA live for
+  tier 3 + owner's live wrapper device-access check).
+- **B1 ✅ B2 ✅** shipped at `699f119` (8 files, +359/−53; tsc 0 · eslint 0 errors/0
+  warnings · 11-suite battery, 585 assertions, 0 fail) — evidence in DONE LOG.
 
 **PREVIOUS SNAPSHOT (STEP 0):**
 - **A1 ✅** inventory done (in `TASK_184_*.md` §A1 RESULT): keys `extractor`/`cyberlab`/
@@ -231,12 +233,24 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
 
 ## Phase B — ticket-based premium request (no prices on web)
 
-- [ ] **B1 strip subscription prices from WEB** (branch on `useWrapperMode()` /
+- [x] **B1 strip subscription prices from WEB** (branch on `useWrapperMode()` /
       `sw_wrapper` cookie): `app/dashboard/billing/page.tsx` premium/xdevice quote card →
       WEB "Upgrade to Premium" with NO amount → ticket CTA, WRAPPER keeps price + Subscribe;
       `app/dashboard/settings/page.tsx:56-101` same split. Wallet TOP-UP amounts stay;
       `components/store.tsx` module prices stay. **WRAPPER branch must not regress.**
-- [ ] **B2 support ticket templates (SCOPED 2026-10-08 — TWO plans)** — NO
+      ✅ **DONE 2026-10-08 (commit `699f119`)** — billing: `useWrapperMode()` →
+      no-payment branch = `UpgradeFlow` (wrapper) / new `PremiumRequestCard` (web:
+      zero amounts, ticket CTA); `SpendFlow` wrapper-only; `StatusCardView` keeps
+      payment HISTORY on web and its rejected-resubmit becomes `PremiumRequestCard`
+      on web vs `UpgradeFlow` on wrapper (`wrapper` prop). settings card: wrapper
+      keeps `${xdevicePrice}` Link, web = `SupportTicketButton` (no amount).
+      device-console `ToolLockCard`: web never fetches `/api/store/prices`, label
+      "Upgrade to Premium XDevice" + ticket CTA; wrapper unchanged (price label +
+      billing link). `TopUpFlow` / store module prices / pricing page untouched
+      (allowed). **Static audit:** every remaining amount sits inside a
+      wrapper-only component, the wrapper ternary, or payment history (allowed by
+      decision). `wrapper-carrier` 6/6 + `wrapper-cookie` 6/6 = no wrapper regression.
+- [x] **B2 support ticket templates (SCOPED 2026-10-08 — TWO plans)** — NO
       migration (`SupportTicket.category` is free-text, `prisma/schema.prisma:3576`)
       → the support form (`components/support-widget.tsx` + POST
       `/api/support/tickets`) gets a `<select>` of templates:
@@ -251,6 +265,23 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       the device ToolLockCard on web → premium-xdevice (both plans unlock devices,
       XDevice is the cheaper preselect the user can switch).
       Admin queue filters on those two category values (flagged as premium requests).
+      ✅ **DONE 2026-10-08 (commit `699f119`)** — new `lib/support-templates.ts` = the
+      ONE contract (slugs ↔ categories + tiers, `SUPPORT_TEMPLATE_OPTIONS`,
+      `supportTemplateFromSlug()`: absent param → no preselect, unknown-present →
+      tier-5 default, `SUPPORT_OPEN_EVENT`) + new `components/support-ticket-cta.tsx`
+      (`openSupportTicket()` = `history.replaceState ?template=` + CustomEvent —
+      the widget persists in the shell across client navs, so the EVENT is the
+      in-page path and `?template=` the full-load path — plus `SupportTicketButton`).
+      Widget: template `<select>` above Subject, POST `category`
+      (route schema already allowed it — **NO API change**), preselect on mount +
+      event listener (2 house `set-state-in-effect` disables, both used). **CTA map:**
+      module lock cards → premium-plus (Link → SupportTicketButton;
+      `MODULE_UPGRADE_HREF` removed, zero refs anywhere incl. tests) · device
+      ToolLockCard on web → premium-xdevice · billing `PremiumRequestCard` →
+      product-aware · settings card → premium-xdevice. Admin queue: plan chip row
+      (Every plan / Premium Plus / Premium XDevice) → `?category=` (route →
+      `listAdminTickets` exact match already existed — **NO backend change**) + plan
+      badge on queue rows.
 - [ ] **B3 admin invoice (MONEY — own commit, after B1/B2 land)** — premium-request
       tickets flagged in the support inbox; on the user detail an action
       **"Send invoice"**:
@@ -278,10 +309,66 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       lock that no subscription amount renders on web outside the wrapper branch, full gate
       battery, live e2e with a test account (owner validates).
 
+### B1/B2 EXECUTION PLAN (recorded pre-edit, after context compaction)
+
+**Already verified (do not re-derive):** widget mounts at `components/shell.tsx:91`
+(`{!buildTarget && <SupportWidget />}`) → persists across client navs; POST
+`/api/support/tickets` schema already accepts `category: z.string().max(40).nullish()`
+→ NO API change; admin `listAdminTickets` filters `where.category = category` exact
+match (`lib/support/tickets.ts:577-578`) and route already passes `?category=` →
+NO backend change for the admin filter; `MODULE_UPGRADE_HREF` /
+`UPGRADE_TO_PREMIUM_PLUS` have zero usages outside `module-tool-lock.tsx` and no test
+references; settings page is a SERVER component with `wrapper` already resolved
+(env + cookie) at the top; device-console `ToolLockCard` fetches `/api/store/prices`
+and renders "Subscribe to Premium XDevice — $X" (a web price leak to fix); billing
+`subscription` branch = `UpgradeFlow` (no payment) / `StatusCardView` (payment) /
+`SpendFlow` above (wallet activation, price) / `TopUpFlow` (stays).
+
+**New files**
+- `lib/support-templates.ts` — pure data, no "use client": `SUPPORT_OPEN_EVENT =
+  "sw:open-support"`; slugs `premium-plus` ↔ `premium_request_plus` (tier 5) and
+  `premium-xdevice` ↔ `premium_request_xdevice` (tier 3); `SUPPORT_TEMPLATE_OPTIONS`
+  for the compose select (Technical issue `""` · Billing question `billing_question`
+  · the two premium requests); `supportTemplateFromSlug()` — absent `?template=` →
+  no preselect, present-but-unknown → premium-plus (B2's documented default).
+- `components/support-ticket-cta.tsx` ("use client") — `openSupportTicket(slug)`:
+  `history.replaceState` adds `?template=<slug>` then dispatches the event; plus
+  `SupportTicketButton` (usable from the server settings page).
+
+**support-widget.tsx** — `category` state (`""` = technical); `<select>` above
+Subject in compose; POST body gains `category: category || null`; preselect via
+mount-effect reading `window.location.search` (full-load path) AND
+`addEventListener(SUPPORT_OPEN_EVENT)` (in-page CTA path — layout persists, so
+mount does NOT re-fire on client nav). Sync setState in effects → house
+`// eslint-disable-next-line react-hooks/set-state-in-effect`.
+
+**B1 rule: web shows NO subscription quote; the wrapper branch stays byte-identical.**
+- billing: `const wrapperMode = useWrapperMode()` → web: hide `SpendFlow`; no-payment
+  → new `PremiumRequestCard(product)` (NO $ anywhere; button →
+  `openSupportTicket(product === "xdevice" ? "premium-xdevice" : "premium-plus")`);
+  `StatusCardView` payment-history rows KEEP (history ≠ quote); rejected-resubmit →
+  web `PremiumRequestCard`, wrapper keeps `UpgradeFlow`. `TopUpFlow`, store module
+  prices, pricing page untouched (explicitly allowed by B1).
+- settings: web → `SupportTicketButton template="premium-xdevice"` with no amount;
+  wrapper → current `${xdevicePrice}` Link untouched.
+- device-console `ToolLockCard`: `useWrapperMode()` — web: skip the price fetch,
+  label "Upgrade to Premium XDevice", CTA → `openSupportTicket("premium-xdevice")`;
+  wrapper: today's price + billing link.
+
+**CTA map** — module lock cards → premium-plus (flip Link→SupportTicketButton) ·
+device ToolLockCard (web) → premium-xdevice · billing PremiumRequestCard → product-aware ·
+settings XDevice card → premium-xdevice.
+
+**admin queue** — second chip row (All / Premium Plus / Premium XDevice) →
+`?category=` + premium badge on rows via `isPremiumRequestCategory()`.
+
+**Then:** gates (tsc · eslint 0-new · test battery) → commit B1+B2 (B3 = own money
+commit) → steps update + push.
+
 ---
 
 ## ORDER (binding)
-`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B1/B2 + owner live checks) → B1 → B5`.
+`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B5 deploy + owner live checks) → B1 ✅ B2 ✅ → B3 → B4 → B5`.
 Owner validates Phase A on web before Phase B ships.
 
 ## OWNER ADDENDUM (2026-10-08, same session)
@@ -405,3 +492,16 @@ Owner validates Phase A on web before Phase B ships.
   = 200 after. Disposable script deleted from both ends (pre-existing stub kept).
   Note: live API error key is `error` (not `code`) — fixed 6 assertions, gates were
   right on run 1.
+- 2026-10-08 **B1+B2 DONE** (commit `699f119`, 8 files, +359/−53, message file
+  `/tmp/t184-b1b2-msg.txt`) — evidence on the B1/B2 checkboxes above. **Gates:**
+  tsc 0 · eslint 0 errors / 0 warnings on all 8 changed files · battery: module-gate
+  13/13 · xdevice 38/38 · devices 6/6 · support 50/50 · browser 8/8 · pages 47/47 ·
+  hosting 338/338 · lab 10/10 · wallet 63/63 · wrapper-cookie 6/6 · wrapper-carrier
+  6/6 — **0 failures** (585 assertions). **Static B1 audit:** every amount outside
+  payment history is wrapper-guarded (verified by grep over the changed files).
+  One fix during gates: dropped an unused `set-state-in-effect` disable (the
+  `setCategory` inside `applyTemplate`'s useCallback isn't traced by the rule) →
+  eslint back to 0 warnings. Incident: the first `cat <<EOF` commit-message write
+  garbled/aborted in the interactive terminal (never staged anything) → rewrote the
+  message with the editor tool, committed clean. PRE-EXISTING: 8 eslint errors in
+  these files at HEAD (proven pre-existing earlier) — none touched.
