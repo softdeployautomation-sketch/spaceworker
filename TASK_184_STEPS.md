@@ -82,14 +82,16 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
   message 15/15 · testrecipients 13/13 · target 10/10 · support 50/50
   (one observed flake in "read cursor moves FORWARDS" — 3 clean reruns, zero
   support files touched by this task, not ours).
-- **WORKING TREE:** clean at `699f119` (B1+B2) + this steps commit; only untracked
+- **WORKING TREE:** code clean at `775cfa3` (B3 money) + steps commits
+  (`699f119` B1+B2 · `5a60f46` steps); only untracked
   file is `TASK_133_RMM_ENGINE_BRINGUP.md` — UNTRACKED-but-NEVER-TOUCH, house rule.
-- **NEXT ACTION:** **B3 admin invoice (MONEY — own commit, after B1/B2 landed ✅)** —
-  plan select (Premium Plus tier 5 / Premium XDevice tier 3), amount pre-filled from
-  each plan's configured default (webSubscriptionPriceUsd / xdevicePriceUsd), admin
-  can edit before sending → **B4** user pays (both plans) → **B5** tests + gates +
-  deploy (N4 rides B5) → then close **C3 + C5** (billing-page ticket CTA live for
-  tier 3 + owner's live wrapper device-access check).
+- **NEXT ACTION:** **B4 user pays (SCOPED: both plans)** — billing page shows the
+  open invoice (plan name + amount + snapshotted methods + instructions); user pays
+  externally and submits through the EXISTING `/api/billing/submit` |
+  `/api/billing/topup` (invoice ref optional); on admin approval → invoice `paid` +
+  grant **the invoice's own tier** via existing `grant-premium {tier: 3|5}`
+  (duration never shown to the user — TASK_181 rule). Then **B5** tests + gates +
+  deploy (N4 rides B5) → close **C3 + C5** live.
 - **B1 ✅ B2 ✅** shipped at `699f119` (8 files, +359/−53; tsc 0 · eslint 0 errors/0
   warnings · 11-suite battery, 585 assertions, 0 fail) — evidence in DONE LOG.
 
@@ -282,7 +284,7 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       (Every plan / Premium Plus / Premium XDevice) → `?category=` (route →
       `listAdminTickets` exact match already existed — **NO backend change**) + plan
       badge on queue rows.
-- [ ] **B3 admin invoice (MONEY — own commit, after B1/B2 land)** — premium-request
+- [x] **B3 admin invoice (MONEY — own commit, after B1/B2 land)** — premium-request
       tickets flagged in the support inbox; on the user detail an action
       **"Send invoice"**:
       - **plan select: Premium Plus (tier 5) | Premium XDevice (tier 3)**;
@@ -297,6 +299,27 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
         `PremiumInvoice { id, userId, plan "premium_plus"|"premium_xdevice", tier
         3|5, amountUsd, status "open"|"paid", methods Json, createdAt, paidAt? }`
         (additive-only migration — house rule) → visible to that user only.
+      ✅ **DONE 2026-10-08 (money commit `775cfa3`)** — plan recorded pre-edit (B3
+      EXECUTION PLAN below) then shipped: schema model + `User.premiumInvoices`
+      (Restrict — payment evidence must not die with the account row) · migration
+      `20261118000000_task184_premium_invoice` (CREATE TABLE + 2 indexes + FK +
+      CLOSED CHECKs on plan/tier — plan is CLOSED deliberately, unlike
+      SupportTicket.status: a garbage plan would carry a garbage tier into the
+      grant path) · `POST|GET /api/admin/users/[id]/invoices` (tier derived
+      SERVER-side from plan — body tier ignored; amount validated finite/>0/≤100000
+      or defaulted live from AdminSetting; methods SNAPSHOT `{btc, usdt_trc20,
+      usdt_erc20}` at send; **one open invoice per user** → 400 + invoiceId of the
+      existing) · `PATCH …/invoices/[invoiceId]` (edit amount and/or plan **only
+      while open**, 409 once settled; plan change re-derives tier; methods never
+      re-snapshot — destination must not change mid-flight) · new
+      `components/admin/user-invoice-cell.tsx` (lazy per-row: invoices +
+      `/api/admin/wallets` defaults on expand; plan switch re-prefills until the
+      admin touches the amount) · admin UsersTab **Invoice** column (import + th +
+      td only — logic stays in the new file). **Migration validated against the
+      real local Postgres in ROLLED-BACK transactions:** DDL ok · `plan_check`
+      fires · `tier_check` fires · `userId_fkey` fires · zero residue afterwards.
+      **Gates:** tsc 0 · eslint 0 problems on all 3 new files (admin-panel 46/46 =
+      identical to HEAD) · battery 11 suites / 590 tests / **585 pass / 0 fail**.
 - [ ] **B4 user pays (SCOPED: both plans)** — billing page shows the open invoice
       (plan name "Premium Plus"/"Premium XDevice" + amount + methods + instructions);
       user pays externally and submits through the EXISTING `/api/billing/submit` |
@@ -309,6 +332,50 @@ main @ `fcfde55`; commits: `8fec0ac` A2 · `a345c7b` A3 · `30e03d2` steps ·
       lock that no subscription amount renders on web outside the wrapper branch, full gate
       battery, live e2e with a test account (owner validates).
 
+### B3 EXECUTION PLAN (recorded pre-edit, after context compaction)
+
+**Scope (own MONEY commit): admin SENDS/EDITS the invoice. User-side display + pay +
+paid-transition = B4; tests + live e2e = B5.**
+
+**Schema (additive-only, house rule)**
+- New `PremiumInvoice { id cuid, userId → User relation, plan String
+  ("premium_plus"|"premium_xdevice"), tier Int (3|5), amountUsd Float, status String
+  @default("open") ("open"|"paid"), methods Json, createdAt, updatedAt, paidAt DateTime? }`
+  + `User.premiumInvoices[]`. STRING not enum (house convention —
+  SupportTicket.status / NotificationLog.outcome reasoning).
+- Migration `prisma/migrations/20261118000000_task184_premium_invoice/migration.sql` —
+  CREATE TABLE + FK + `@@index([userId, status])`. `npx prisma generate` locally
+  BEFORE tsc (playbook §3 order: schema → generate → tsc).
+
+**Routes (admin session → 403, grant-premium sibling style)**
+- `GET app/api/admin/users/[id]/invoices` — list for the admin form (user-side GET = B4).
+- `POST app/api/admin/users/[id]/invoices` — body `{ plan, amountUsd? }`:
+  - tier derived SERVER-side from plan (never from body);
+  - amount default from `getAdminSettings()` — `webSubscriptionPriceUsd` (Plus) /
+    `xdevicePriceUsd` (XDevice); admin-supplied amount validated (finite, >0, ≤100000);
+  - `methods` = SNAPSHOT of AdminSetting wallets `{btc, usdt_trc20, usdt_erc20}` at send;
+  - **one open invoice per user** → 400 if one exists (edit it instead).
+- `PATCH app/api/admin/users/[id]/invoices/[invoiceId]` — re-edit amount and/or plan
+  **only while status="open"** (else 409); plan change re-derives tier. (Next slug rule:
+  nested `[invoiceId]` under `invoices/` — no sibling dynamic dir, legal.)
+
+**Admin UI (user detail = UsersTab row, where the grant buttons live)**
+- New `components/admin/user-invoice-cell.tsx` ("use client"), lazy per-row: GET
+  invoices + `/api/admin/wallets` (defaults — same fetch WalletsTab already uses) on
+  expand; plan `<select>` (Premium Plus tier 5 / Premium XDevice tier 3); amount input
+  **prefilled from live defaults, freely editable**; plan switch re-prefills; open
+  invoice → shown + Save (PATCH); ✓ msg per user (grantMsg pattern).
+- `admin-panel.tsx` UsersTab: new **Invoice** column after Grant — thead th + td only,
+  all logic in the new file (keep the 6.9k file surgical).
+
+**Deliberately NOT in B3:** user billing display + GET, paid-transition + tier grant on
+approval (B4); unit tests + static lock + live e2e (B5); support-inbox deep link (B2's
+badge already flags plans in the queue; the action lives on the user detail per spec).
+
+**Then:** prisma generate → tsc 0 → eslint 0-new → battery green → **money commit
+(-F file)** → steps update → push.
+
+### B1/B2 EXECUTION PLAN (recorded pre-edit, after context compaction)
 ### B1/B2 EXECUTION PLAN (recorded pre-edit, after context compaction)
 
 **Already verified (do not re-derive):** widget mounts at `components/shell.tsx:91`
@@ -368,7 +435,7 @@ commit) → steps update + push.
 ---
 
 ## ORDER (binding)
-`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B5 deploy + owner live checks) → B1 ✅ B2 ✅ → B3 → B4 → B5`.
+`STEP 0 ✅ → A3 ✅ → A4 ✅ → A5 ✅ → C1 ✅ C2 ✅ C4 ✅ (C3/C5 = B5 deploy + owner live checks) → B1 ✅ B2 ✅ → B3 ✅ → B4 → B5`.
 Owner validates Phase A on web before Phase B ships.
 
 ## OWNER ADDENDUM (2026-10-08, same session)
@@ -505,3 +572,14 @@ Owner validates Phase A on web before Phase B ships.
   garbled/aborted in the interactive terminal (never staged anything) → rewrote the
   message with the editor tool, committed clean. PRE-EXISTING: 8 eslint errors in
   these files at HEAD (proven pre-existing earlier) — none touched.
+- 2026-10-08 **B3 ✅ (MONEY, commit `775cfa3`, message file `/tmp/t184-b3-msg.txt`)** —
+  PremiumInvoice end-to-end: additive schema model + `User.premiumInvoices` +
+  migration `20261118000000_task184_premium_invoice` (validated in ROLLED-BACK txns
+  against the real local Postgres: DDL applies · plan_check/tier_check/fkey all fire
+  · zero residue) + `GET|POST /api/admin/users/[id]/invoices` + `PATCH …/[invoiceId]`
+  (open-only edit, 409 settled, tier derived server-side, one-open-per-user guard,
+  payout-address snapshot) + `components/admin/user-invoice-cell.tsx` + admin
+  UsersTab Invoice column. Execution plan recorded pre-edit (B3 EXECUTION PLAN).
+  **Gates:** tsc 0 · eslint 0 problems on 3 new files / admin-panel 46=46 HEAD ·
+  battery 11 suites 590 tests **585 pass 0 fail** (browser 5 skip = baseline).
+  NEXT ACTION → **B4** (user pays, both plans).
