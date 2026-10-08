@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { ModuleToolLockCard } from "@/components/module-tool-lock";
+
 // TASK_155 P1 — the Hosting tab. Talks only to /api/hosting/*. Kept deliberately
 // plain (no new libraries): a status strip, an upload box, and a file list with
 // rename / copy-link / delete. The "zero-experience path" (PLAN §8) is the
@@ -829,7 +831,6 @@ export function HostingPanel() {
   if (!status) {
     return <div className="p-6 text-sm text-zinc-500">Loading hosting…</div>;
   }
-
   const pct = status.caps.storageQuotaMb > 0 ? Math.min(100, (status.usage.storageBytes / (status.caps.storageQuotaMb * 1024 * 1024)) * 100) : 0;
 
   return (
@@ -859,9 +860,15 @@ export function HostingPanel() {
         </div>
       )}
       {!status.entitled && (
-        <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          Hosting isn’t included on your account yet. Add the Hosting &amp; Pages module from the store to switch it on.
-        </div>
+        <ModuleToolLockCard
+          moduleKey="hosting"
+          entitled={status.entitled}
+          bullets={[
+            "Upload a file or page, publish a site, share a short link — and get a real URL back.",
+            "Your hosting status and quota stay visible; every write on this tab is refused server-side.",
+            "This tab stays open so you can see exactly how hosting works.",
+          ]}
+        />
       )}
 
       {/* Status strip: usage + the storage engine in play. */}
@@ -1104,8 +1111,8 @@ export function HostingPanel() {
                     />
                     <button
                       type="submit"
-                      disabled={busy}
-                      className="rounded bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+                      disabled={busy || !status.entitled}
+                      className="rounded bg-emerald-600 px-4 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       {busy ? "Working…" : "Upload zip → preview"}
                     </button>
@@ -1223,8 +1230,8 @@ export function HostingPanel() {
           </label>
           <button
             type="submit"
-            disabled={domainBusy === "add" || !domainInput.trim()}
-            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+            disabled={domainBusy === "add" || !domainInput.trim() || !status.entitled}
+            className="rounded bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
           >
             {domainBusy === "add" ? "Adding…" : "Add domain"}
           </button>

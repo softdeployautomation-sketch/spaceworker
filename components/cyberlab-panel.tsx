@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CyberLabAup } from "@/components/cyberlab-aup";
+import { ModuleToolLockCard } from "@/components/module-tool-lock";
 
 // TASK_156 C1 — the Cyber Lab tab, now carrying the REAL gate (§12.9) and the C0
 // AUP onboarding (§7 C0).
@@ -136,10 +137,12 @@ export function CyberLabPanel() {
           The Cyber Lab isn’t switched on yet. Existing tools keep working exactly as before.
         </div>
       )}
+      {/* TASK_184 A3 — the same lock card every other module shows. The AUP
+          above stays gated on `entitled` (a user who can't use the lab is never
+          asked to sign for it), and POST /api/cyberlab/consent refuses server-side
+          regardless — this is the honest UI half of that one gate. */}
       {!status.entitled && (
-        <div className="rounded-md border border-zinc-300 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300">
-          Cyber Lab access isn’t included on your account yet.
-        </div>
+        <ModuleToolLockCard moduleKey="cyberlab" entitled={status.entitled} />
       )}
 
       {/* §7 C0 — the AUP gate. Only shown to a user who can actually use the lab

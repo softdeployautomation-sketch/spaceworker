@@ -8,6 +8,7 @@ import { Badge, Spinner } from "@/components/ui";
 import { Dropdown } from "@/components/dropdown";
 import { timeAgo } from "@/lib/format-date";
 import { useConfirm } from "@/components/confirm-provider";
+import { ModuleToolLockCard, useModuleLock } from "@/components/module-tool-lock";
 import { LocalExtractPage } from "./local-extract";
 
 type JobStatus = "queued" | "running" | "done" | "failed" | "paused" | "stopped";
@@ -305,6 +306,11 @@ const EXPERIENCE_LEVELS = ["", "Junior", "Mid", "Senior"];
 
 export function WebExtractPage() {
   const confirm = useConfirm();
+  // TASK_184 A3 — the extractor lock (UI half of module-gate.ts). Default-open:
+  // `locked` only flips true once /api/entitlements answers without `extractor`,
+  // so a premium account never sees a lock flash and a failed read never paints
+  // one at all. The write routes 403 on their own regardless (A2).
+  const { locked: extractorLocked } = useModuleLock("extractor");
   const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJob, setSelectedJob] = useState<JobDetail | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -1089,12 +1095,18 @@ export function WebExtractPage() {
           <button
             type="button"
             onClick={openUploadModal}
-            className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5"
+            disabled={extractorLocked}
+            className="rounded-lg border border-border px-3 py-2 text-sm font-medium text-fg hover:bg-black/5 dark:hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Import leads
           </button>
         </div>
       </div>
+
+      {/* TASK_184 A3 — the lock banner. The tab stays browsable (every GET is
+          open), the copy explains what the tool is, and the button is the one
+          path out: support ticket → premium request (B2). */}
+      <ModuleToolLockCard moduleKey="extractor" />
 
       {/* Template picker */}
       <div className="rounded-xl border border-border bg-card p-4 flex flex-col gap-4">
@@ -1472,8 +1484,8 @@ export function WebExtractPage() {
         <div className="flex gap-2 items-center">
           <button
             onClick={() => void submitJob()}
-            disabled={submitting}
-            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+            disabled={submitting || extractorLocked}
+            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting ? "Submitting…" : "Search"}
           </button>
@@ -1555,14 +1567,16 @@ export function WebExtractPage() {
                     {job.status === "running" && (
                       <button
                         onClick={(e) => { e.stopPropagation(); void controlJob(job.id, "pause"); }}
-                        className="text-amber-600 hover:underline dark:text-amber-400"
+                        disabled={extractorLocked}
+                        className="text-amber-600 hover:underline dark:text-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         Pause
                       </button>
                     )}
                     <button
                       onClick={(e) => { e.stopPropagation(); void stopJob(job.id); }}
-                      className="text-red-500 hover:underline"
+                      disabled={extractorLocked}
+                      className="text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Stop
                     </button>
@@ -1578,7 +1592,8 @@ export function WebExtractPage() {
                     </button>
                     <button
                       onClick={(e) => { e.stopPropagation(); void deleteJob(job.id); }}
-                      className="text-fg-muted hover:text-red-500 hover:underline"
+                      disabled={extractorLocked}
+                      className="text-fg-muted hover:text-red-500 hover:underline disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Delete
                     </button>
@@ -1604,8 +1619,8 @@ export function WebExtractPage() {
                 </span>
                 <button
                   onClick={() => void confirmMergeSessions()}
-                  disabled={sessionMergeBusy}
-                  className="ml-auto rounded-lg bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:opacity-50"
+                  disabled={sessionMergeBusy || extractorLocked}
+                  className="ml-auto rounded-lg bg-brand-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {sessionMergeBusy ? "Merging…" : `Merge ${selectedJobIds.size} sessions`}
                 </button>
@@ -1651,7 +1666,8 @@ export function WebExtractPage() {
                   {selectedJob.status === "running" && (
                     <button
                       onClick={() => void controlJob(selectedJob.id, "pause")}
-                      className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-amber-600 hover:bg-black/5 dark:text-amber-400 dark:hover:bg-white/5"
+                      disabled={extractorLocked}
+                      className="rounded-lg border border-border px-3 py-1 text-xs font-medium text-amber-600 hover:bg-black/5 dark:text-amber-400 dark:hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Pause
                     </button>
@@ -1659,7 +1675,8 @@ export function WebExtractPage() {
                   {selectedJob.status === "paused" && (
                     <button
                       onClick={() => void controlJob(selectedJob.id, "resume")}
-                      className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500"
+                      disabled={extractorLocked}
+                      className="rounded-lg bg-brand-600 px-3 py-1 text-xs font-medium text-white hover:bg-brand-500 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       Resume
                     </button>
@@ -1749,6 +1766,7 @@ export function WebExtractPage() {
                           // by the owner as "these are all already validated"
                           // when really there was just nothing to check.
                           disabled:
+                            extractorLocked ||
                             validateBusy ||
                             !selectedJob.leads.some(
                               (l) =>
@@ -1766,6 +1784,7 @@ export function WebExtractPage() {
                           tone: "danger",
                           onSelect: () => void deleteDuplicateLeads(),
                           disabled:
+                            extractorLocked ||
                             deleteDuplicatesBusy ||
                             !selectedJob.leads.some((l) => l.validationStatus === "duplicate"),
                         },
@@ -1813,7 +1832,8 @@ export function WebExtractPage() {
                           <button
                             type="button"
                             onClick={() => void deleteInvalidLeads()}
-                            className="rounded-lg border border-red-500 px-3 py-1 text-xs font-medium text-red-500 hover:bg-red-50"
+                            disabled={extractorLocked}
+                            className="rounded-lg border border-red-500 px-3 py-1 text-xs font-medium text-red-500 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             Delete {vInvalid} invalid
                           </button>
@@ -2058,7 +2078,7 @@ export function WebExtractPage() {
                     type="file"
                     className="hidden"
                     accept=".txt,.csv,.tsv,.json,.xls,.xlsx"
-                    disabled={uploadBusy}
+                    disabled={uploadBusy || extractorLocked}
                     onChange={(e) => {
                       const f = e.target.files?.[0];
                       if (f) void performUpload(f);
