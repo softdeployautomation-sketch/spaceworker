@@ -146,3 +146,16 @@ count) come after this. VBS carrier work is CLOSED — see TASK_182 (S1-S8 all g
           (new main.rs really skips the local runtime spawn)
         - [x] cleaned up: test task + all vm_*.ps1 + png removed (VBS kept on VM
           Desktop for owner)
+        - [x] **OWNER VM SIGN-OFF: "i just tested it and it works well"**
+        - [x] **SUBSCRIBE BUG FIXED (2026-10-08, ec26c86):** owner — "when i
+          click on button to subscribe to premium on the wrapper, it just keeps
+          taking me back to the device dashboard". Root cause: proxy.ts wrapper
+          guard allowed only devices+settings, so the settings card's
+          `/dashboard/billing?product=xdevice` link 307'd back to devices.
+          Fix: `/dashboard/billing` (+ subpaths) added to BOTH allowlists
+          (lib/wrapper-mode.ts const + proxy.ts inline copy) + regression test
+          in tests/wrapper-cookie.test.ts (6/6). Gates: tsc 0, eslint 0.
+          **Live:** `Cookie: sw_wrapper=devices` + `/dashboard/billing?product=xdevice`
+          → 307 `/login` (normal auth, NOT devices); `/dashboard/extract` with
+          same cookie → still 307 `/dashboard/devices` (guard stays shut).
+          Hosted fix ⇒ wrapper window picks it up on reload, no EXE rebuild.
