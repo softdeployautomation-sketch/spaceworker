@@ -1,15 +1,18 @@
 # TASK_185 STEPS — progress log (compaction insurance)
 
-## STATUS (updated 2026-10-08, pre-code)
+## STATUS (updated 2026-10-08, POST-DEPLOY — owner confirmed live)
 
-- **TRACK:** owner reprioritized (TASK_184 done 20/20, live-testing it; TASK_183 wrapper
-  PARKED with W1–W9 design ready). Scope doc: `TASK_185_REPRIORITIZE_LIVE_VERIFY_SUPPORT.md`.
-- **PHASE:** research/scoping COMPLETE for P1 · P2 · N1 · N2 (P3/P4 scoped, P5 pending).
-  NO code written yet this task — no commits except this steps/scope doc.
-- **WORKING TREE:** HEAD `8fa1f0f` (TASK_184 close) + untracked `TASK_133_RMM_ENGINE_BRINGUP.md`
-  (not ours — do NOT commit it), plus these two TASK_185 docs.
-- **NEXT ACTION:** W1 — decide P1 fix (A: key idle by `vantraAgentId`, preferred vs B:
-  hostname column) + display-copy rule; then implement P1 → P2 (both small), run gates.
+- **TRACK:** TASK_184 done (20/20) · TASK_183 wrapper PARKED. Scope doc:
+  `TASK_185_REPRIORITIZE_LIVE_VERIFY_SUPPORT.md`.
+- **P1 ✅ + P2 ✅ — IMPLEMENTED, DEPLOYED, OWNER-CONFIRMED ("its fixed now").**
+  Remaining: **N1** (notification diagnose+wire) → **N2** (invoice composer) →
+  **P3/P4** (secret admin device page + deleted-devices) → **P5** (referral gating) → **W9** closeout.
+- **WORKING TREE:** HEAD = P1+P2 commit + this doc-only commit (steps update).
+  Stray untracked `TASK_133_RMM_ENGINE_BRINGUP.md` is NOT ours — never commit it.
+- **NEXT ACTION:** N1 — W3a DIAGNOSE on VPS first: `NotificationLog` rows for
+  `admin_pending_payment`, `ADMIN_EMAIL` set?, Resend key valid? (owner reports
+  Telegram arrived, EMAIL did not — likely `ADMIN_EMAIL` unset ⇒ fallback
+  `spaceworker@instaweb.top`.) Then `notifyAdminSupport` on ticket create/reply.
 
 ## RESEARCH DONE (don't re-research — evidence in scope doc)
 
@@ -63,7 +66,8 @@ sudo -u postgres psql -d spaceworker                   # $$..$$ literals over ss
   - Tests: chip 15/15 (3 expectations now "active") · provenance 9/9 (new
     agent-id-wins + name-fallback test) · `test:vantra` 90/90 · tsc 0 ·
     eslint 0 (both repos) · Vantra tsc 0.
-- [ ] W1c. Owner-visible check on live after deploy: device chip shows "online · …"
+- [x] **W1c. LIVE + OWNER-CONFIRMED (2026-10-08, "its fixed now")** — chips render
+      "online · …" (active/idle), "activity unknown" gone from the live UI.
 
 ### P2 — overview counts
 - [x] **W2a. FIXED (2026-10-08)** — `app/api/overview-stats/route.ts`: both
@@ -75,7 +79,26 @@ sudo -u postgres psql -d spaceworker                   # $$..$$ literals over ss
       test:overview`, 2/2): asserts both where-clauses carry the filters AND
       `status`/`lastSeenAt`-on-total are absent, window bound = 10 min ±5 s.
       Gates: tsc 0 · eslint 0.
-- [ ] W2c. Live verify: owner row reads honest numbers (e.g. "0 online of 2").
+- [x] **W2c. LIVE + OWNER-CONFIRMED (2026-10-08, "its fixed now")** — psql ran the
+      new count queries: owner's row = 9 db rows → **0 online of 2** (matches the
+      list exactly; owner: "none is online"). Evidence also captured: Vantra
+      `idle?orgId=…` returns BOTH keys (`idleByHostname {WilkSF9,Sc}` +
+      `idleByAgentId {TpvH…,bBt…}`), site 200 · `/api/devices` JSON 401 ·
+      `/api/overview-stats` 401, box greps confirm deployed code (16×
+      `idleByAgentId` in vantra-link, `lastSeenAt: { gte` in overview route).
+
+### DEPLOY RECORD (P1+P2, 2026-10-08 evening)
+
+- SpaceWorker: `14d41a3` pushed (`d5804bb..14d41a3`) — code+tests+steps; follow-up
+  doc-comment commit pushed with this steps update. `scripts/deploy-vps.sh`
+  completed CLEAN this run (build as trmm → restart → verify 200 → maintenance OFF).
+- Vantra: `c8b6680` pushed (`ac7197b..c8b6680`) — idle route only; rsync →
+  `sudo -u vantra npm run build` (BUILD_ID 2026-10-08 19:03:51) → restart →
+  active · root 200.
+- **Known cosmetic drift:** box `lib/device-idle.ts` predates the `:112` doc-comment
+  fix (comment-only; runtime byte-identical semantics) — next normal deploy picks it up.
+- Live internal proof (box curl, Bearer `SW_INTERNAL_TOKEN`):
+  `{"ok":true,"idleByHostname":{"WilkSF9":0,"Sc":0},"idleByAgentId":{"TpvHNDsKSawsfKGLJPZZssSAygmdUJxecwRtaCEP":0,"bBtQQvVvVTjJhJNqoYGzcfyrUfkMbEDsYqzitkZq":0},"idleUnit":"seconds"}` — hostnames vs agent ids = the exact drift that caused the bug.
 
 ### N1 — notifications
 - [ ] W3a. DIAGNOSE first: `NotificationLog` rows + `ADMIN_EMAIL` + Resend key on VPS

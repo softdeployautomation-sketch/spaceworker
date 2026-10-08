@@ -109,7 +109,7 @@ function latchKey(d: IdleChipDevice): string {
  *   idle, reading       → "online · idle 12 min"
  *   active, reading     → "online · active now"          (clears the latch)
  *   no reading, latched → "online · idle 12 min"         (holds through a hiccup)
- *   no reading, cold    → "online · activity unknown"    (honest — never "active")
+ *   no reading, cold    → "online · active"             (TASK_185 P1 — owner rule)
  *
  * `onlineWindowMs` is the server's window (GET /api/devices sends it). A reading
  * older than it is no longer evidence of anything, so the chip falls back to the
