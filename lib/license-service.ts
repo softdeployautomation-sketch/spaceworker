@@ -24,6 +24,53 @@ import { grantEntitlement, type EntitlementKey } from "./entitlements";
 // Idempotent: called once per approval, guarded by the approved-status check and
 // the ExeLicense.paymentId unique constraint, so a retry never double-mints.
 
+// ---------------------------------------------------------------------------
+// TASK_184 B4 — settle the PremiumInvoice a payment was submitted against.
+//
+// CLAIM-THEN-GRANT, deliberately: the conditional updateMany (status:"open" ⇒
+// "paid") is the atomic claim, so of two approvals racing on the same invoice
+// exactly ONE grants. Read-then-grant would let both see "open" and stack two
+// terms for one invoice.
+//
+// Order's failure mode, accepted on purpose: if the grant throws AFTER the
+// claim, the invoice reads paid with no grant — but the approval route's retry
+// (retry-license ⇒ handleApprovedPayment) then gets `false` here and falls
+// through to the normal product branch, which grants the same tier anyway. The
+// opposite order (grant first) would double-grant on a race, which has no such
+// recovery.
+//
+// The grant IS the existing grant-premium path: grantPremium (tier 5) or
+// grantXDeviceTerm (tier 3), one PREMIUM_DAYS_PER_CHARGE term exactly like
+// bumpWebTier — no new grant code, and no term/duration is ever rendered for
+// the user (TASK_181 wording rule).
+//
+// Returns true only when THIS call settled the invoice (claim won AND grant
+// ran). False = nothing to settle (no ref / not own / not open / claim lost).
+// ---------------------------------------------------------------------------
+type LinkedInvoicePayment = { id: string; userId: string; invoiceId: string | null };
+
+export async function settleLinkedInvoice(payment: LinkedInvoicePayment): Promise<boolean> {
+  if (!payment.invoiceId) return false;
+  const invoice = await db.premiumInvoice.findUnique({ where: { id: payment.invoiceId } });
+  // Not found / not this user's / not open ⇒ nothing to settle — caller runs its
+  // default consequence. (Ownership is defense-in-depth: submit/topup validated
+  // it at creation, but a forged ref must not settle somebody else's invoice.)
+  if (!invoice || invoice.userId !== payment.userId || invoice.status !== "open") return false;
+
+  const claim = await db.premiumInvoice.updateMany({
+    where: { id: invoice.id, status: "open" },
+    data: { status: "paid", paidAt: new Date() },
+  });
+  if (claim.count === 0) return false; // lost the race — another approval settled it
+
+  if (invoice.tier === 3) {
+    await grantXDeviceTerm(payment.userId, PREMIUM_DAYS_PER_CHARGE);
+  } else {
+    await grantPremium(payment.userId, PREMIUM_DAYS_PER_CHARGE);
+  }
+  return true;
+}
+
 /**
  * Applies the consequence of an already-approved payment: for a web subscription
  * this is today's exact tier bump; for any EXE product it issues a license key
@@ -36,6 +83,14 @@ export async function handleApprovedPayment(paymentId: string): Promise<void> {
     include: { user: { select: { id: true, email: true } } },
   });
   if (!payment || payment.status !== "approved") return;
+  // TASK_184 B4 — an invoice-linked payment: the INVOICE owns this approval's
+  // consequence (settle it + grant the invoice's own tier). True ⇒ return without
+  // the product branch below — one payment, one consequence, so a premium_plus
+  // invoice payment never ALSO runs bumpWebTier (the term would stack twice).
+  // False (no ref / invoice already settled by an earlier approval) ⇒ the normal
+  // product consequence runs, which is also the recovery path for a retry after
+  // a failed grant (see settleLinkedInvoice).
+  if (payment.invoiceId && (await settleLinkedInvoice(payment))) return;
   if (!payment.product || payment.product === "web_subscription") {
     await bumpWebTier(payment.userId);
     return;

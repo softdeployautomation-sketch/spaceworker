@@ -1078,9 +1078,17 @@ model Payment {
   // `WalletLedgerEntry.paymentId` rather than by trusting the caller to remember:
   // a replayed payment webhook is the normal way this would be done twice.
   walletEntries WalletLedgerEntry[]
+  // TASK_184 B4 — the PremiumInvoice this payment settles. OPTIONAL ("invoice
+  // ref optional"): most payments have never had an invoice and stay NULL.
+  // Restrict (not SetNull) for the same provenance reason ExeLicense.payment
+  // uses it — a settled payment pointing at a deleted invoice would be money
+  // with no record of what it bought.
+  invoiceId    String?
+  invoice      PremiumInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
 
   @@index([userId])
   @@index([status])
+  @@index([invoiceId])
 }
 
 // Task 42 — an issued desktop-app (EXE) license. Created exactly once per
@@ -3713,4 +3721,7 @@ model PremiumInvoice {
   @@index([userId, createdAt])
   // The "one open invoice per user" guard + admin queue views.
   @@index([userId, status])
+  // TASK_184 B4 — payments that settle this invoice (0..n; the ref is optional
+  // on submit). Lives on Payment.invoiceId; back-relation kept for queries.
+  payments    Payment[]
 }

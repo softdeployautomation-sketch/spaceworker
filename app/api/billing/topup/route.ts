@@ -67,7 +67,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { amountUsd?: unknown; kind?: unknown; paymentId?: unknown; txHash?: unknown };
+  let body: { amountUsd?: unknown; kind?: unknown; paymentId?: unknown; txHash?: unknown; invoiceId?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -172,20 +172,37 @@ async function attachHash(paymentId: string, txHashRaw: unknown, userId: string)
 }
 
 /** Step 1 — open the order. See the route header for why this credits nothing. */
-async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: string) {
+async function openOrder(body: { amountUsd?: unknown; kind?: unknown; invoiceId?: unknown }, userId: string) {
   const kind = typeof body.kind === "string" && body.kind ? body.kind : "usdt_trc20";
   if (!KINDS.includes(kind as Kind)) {
     return NextResponse.json({ error: "Invalid payment method" }, { status: 400 });
   }
 
-  // The amount arrives in DOLLARS because that is what the customer typed. The
-  // `amountUsd` column is already a Float in dollars (it predates the wallet), so
-  // storing dollars is the schema's existing convention, not a new inconsistency.
-  // The CENTS the wallet is eventually credited come from `creditApprovedPayment`,
-  // which recomputes them from this stored amount — never from anything the client
-  // sent at approval time.
-  const amountUsd = Number(body.amountUsd);
-  if (!Number.isFinite(amountUsd)) {
+  // TASK_184 B4 — optional invoice ref ("invoice ref optional … submit | topup").
+  // The invoice OWNS the economics below: amount is the admin-edited row (it
+  // overrides the self-typed floor/cap, which guard customer-typed amounts, not
+  // admin-authored ones), and the address is the SNAPSHOT for the chosen chain —
+  // the one the user was actually shown. Session already checked in POST.
+  let invoice: { id: string; amountUsd: number; methods: unknown } | null = null;
+  if (typeof body.invoiceId === "string" && body.invoiceId.length > 0) {
+    const found = await prisma.premiumInvoice.findUnique({ where: { id: body.invoiceId } });
+    // Own + open, re-checked here even though the UI only shows open invoices:
+    // a forged ref must never settle somebody else's or an already-paid invoice.
+    if (!found || found.userId !== userId) {
+      return NextResponse.json({ error: "Invoice not found" }, { status: 400 });
+    }
+    if (found.status !== "open") {
+      return NextResponse.json({ error: "Invoice already settled" }, { status: 400 });
+    }
+    invoice = found;
+  }
+
+  // TASK_184 B4 — an invoice's ADMIN-EDITED amount is the truth: the floor/cap
+  // below guard customer-typed amounts (a fat-finger, a too-small transfer), and
+  // an admin-authored row needs neither — it may legitimately be below the floor
+  // (a discounted migration price) and the admin already eyeballed it when sending.
+  const amountUsd = invoice ? invoice.amountUsd : Number(body.amountUsd);
+  if (!invoice && !Number.isFinite(amountUsd)) {
     return NextResponse.json({ error: "Enter an amount to add" }, { status: 400 });
   }
 
@@ -194,13 +211,13 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
 
   // Floor checked BEFORE the ceiling so the common mistake (too small) gets the
   // actionable message naming the actual minimum, rather than a cap error.
-  if (amountUsd < minimumUsd) {
+  if (!invoice && amountUsd < minimumUsd) {
     return NextResponse.json(
       { error: `The minimum top-up is $${minimumUsd.toFixed(2)}.` },
       { status: 400 },
     );
   }
-  if (amountUsd > MAX_TOPUP_USD) {
+  if (!invoice && amountUsd > MAX_TOPUP_USD) {
     return NextResponse.json(
       { error: `For amounts above $${MAX_TOPUP_USD.toLocaleString()}, email us and we'll take the transfer directly.` },
       { status: 400 },
@@ -210,10 +227,23 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
   // rule. A customer who asks for $10.001 must never be invoiced $10.00 and then
   // credited $10.00 — that is a silent shortfall, and the error is always in the
   // house's favour. Rounding up means the invoice is never short of the credit.
-  const amountUsdRounded = Math.ceil(amountUsd * 100) / 100;
+  // Invoice amounts are admin-authored and already two-decimal, so they pass
+  // through untouched (an invoice payment never credits the wallet anyway).
+  const amountUsdRounded = invoice ? amountUsd : Math.ceil(amountUsd * 100) / 100;
 
-  const toAddress =
-    kind === "btc"
+  // Invoice payments read the SNAPSHOT address for the chosen chain, never
+  // today's settings — the user pays what their invoice showed, even if the
+  // admin has rotated a wallet since sending it. A chain missing from the
+  // snapshot (admin only configured BTC, say) is refused by name.
+  const invoiceMethods = invoice
+    ? ((invoice.methods ?? {}) as Partial<Record<Kind, unknown>>)
+    : null;
+  const snapAddress = invoiceMethods ? invoiceMethods[kind as Kind] : null;
+  const toAddress = invoice
+    ? typeof snapAddress === "string" && snapAddress
+      ? snapAddress
+      : null
+    : kind === "btc"
       ? settings.btcWallet
       : kind === "usdt_erc20"
         ? settings.usdtErc20Wallet
@@ -222,7 +252,10 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
     // Same string as the subscription checkout uses, and the same cause: this is
     // the CRYPTO PAYOUT ADDRESS, not the SpaceWorker wallet (plan §1). The two
     // subsystems both use the word "wallet"; do not let it send you to the wrong one.
-    return NextResponse.json({ error: "Wallet not configured" }, { status: 400 });
+    return NextResponse.json(
+      { error: invoice ? "That payment method is not on this invoice" : "Wallet not configured" },
+      { status: 400 },
+    );
   }
 
   const payment = await prisma.payment.create({
@@ -238,6 +271,8 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
       txHash: null,
       toAddress,
       status: "pending",
+      // TASK_184 B4 — optional ref; null for every ordinary top-up.
+      invoiceId: invoice?.id ?? null,
     },
   });
 
@@ -245,7 +280,9 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
     data: {
       paymentId: payment.id,
       success: false,
-      note: "Wallet top-up opened — awaiting payment",
+      note: invoice
+        ? "Premium invoice payment opened — awaiting review"
+        : "Wallet top-up opened — awaiting payment",
     },
   });
 
@@ -254,7 +291,9 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
   // declared yet; the follow-up "attach" ping arrives when the customer submits).
   notifyAdminPendingPayment({
     paymentId: payment.id,
-    product: WALLET_TOPUP_PRODUCT_ID,
+    // TASK_184 B4 — an invoice payment rides the top-up rail but is NOT a wallet
+    // credit; the admin's queue must show it as what it is.
+    product: invoice ? "premium_invoice" : WALLET_TOPUP_PRODUCT_ID,
     amountUsd: payment.amountUsd,
     method: kind,
     stage: "opened",
@@ -265,12 +304,15 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
 
   return NextResponse.json({
     paymentId: payment.id,
-    // Explicitly NOT "approved" and NOT a balance. See the route header.
+    // Explicitly NOT "approved" AND NOT a balance. See the route header. An
+    // invoice payment settles the invoice at approval — the wallet never moves.
     status: "pending",
     kind,
     toAddress,
     amountUsd: payment.amountUsd,
-    note: "Send the exact amount to this address, then submit your transaction hash (optional — we confirm the payment manually). Your wallet is credited once we confirm it.",
+    note: invoice
+      ? "Send the exact amount to this address, then submit your transaction hash (optional — we confirm the payment manually). Your invoice is marked paid once we confirm it."
+      : "Send the exact amount to this address, then submit your transaction hash (optional — we confirm the payment manually). Your wallet is credited once we confirm it.",
   });
 }
 

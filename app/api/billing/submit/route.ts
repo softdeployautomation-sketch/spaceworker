@@ -38,7 +38,7 @@ function isEmail(v: unknown): v is string {
 export async function POST(req: Request) {
   const session = await getSession();
 
-  let body: { kind?: unknown; txHash?: unknown; product?: unknown; email?: unknown; durationDays?: unknown };
+  let body: { kind?: unknown; txHash?: unknown; product?: unknown; email?: unknown; durationDays?: unknown; invoiceId?: unknown };
   try {
     body = await req.json();
   } catch {
@@ -58,7 +58,39 @@ export async function POST(req: Request) {
   }
   const paymentKind = kind as Kind;
 
-  const productId = typeof body.product === "string" && body.product ? body.product : WEB_SUBSCRIPTION.id;
+  // TASK_184 B4 — optional invoice ref ("invoice ref optional"). The invoice
+  // OWNS the economics of this payment:
+  //   - product is DERIVED from invoice.plan — body.product is deliberately
+  //     ignored here, because a mismatched product would fire the wrong
+  //     consequence at approval;
+  //   - amountUsd is the ADMIN-EDITED invoice amount (what the on-chain check
+  //     and the admin queue must compare against, not today's list price);
+  //   - toAddress is the invoice's SNAPSHOT for the chosen chain — the address
+  //     the user was actually shown on their invoice.
+  // Session is mandatory: an invoice belongs to an account, and a ref must never
+  // settle somebody else's invoice (re-checked in settleLinkedInvoice anyway).
+  let invoice: { id: string; plan: string; amountUsd: number; methods: unknown } | null = null;
+  if (typeof body.invoiceId === "string" && body.invoiceId.length > 0) {
+    if (!session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    const found = await prisma.premiumInvoice.findUnique({ where: { id: body.invoiceId } });
+    if (!found || found.userId !== session.userId) {
+      return NextResponse.json({ error: "Invoice not found" }, { status: 400 });
+    }
+    if (found.status !== "open") {
+      return NextResponse.json({ error: "Invoice already settled" }, { status: 400 });
+    }
+    invoice = found;
+  }
+
+  const productId = invoice
+    ? invoice.plan === "premium_xdevice"
+      ? "xdevice"
+      : WEB_SUBSCRIPTION.id
+    : typeof body.product === "string" && body.product
+      ? body.product
+      : WEB_SUBSCRIPTION.id;
   const product = getProduct(productId);
   if (!product) {
     return NextResponse.json({ error: "Unknown product" }, { status: 400 });
@@ -109,14 +141,27 @@ export async function POST(req: Request) {
   }
 
   const settings = await getAdminSettings();
-  const toAddress =
-    paymentKind === "btc"
+  // TASK_184 B4 — invoice payments read the SNAPSHOT address, never today's
+  // settings: the user pays what their invoice showed, even if the admin has
+  // rotated a wallet since sending it.
+  const invoiceMethods = invoice
+    ? ((invoice.methods ?? {}) as Partial<Record<Kind, unknown>>)
+    : null;
+  const snapAddress = invoiceMethods ? invoiceMethods[paymentKind] : null;
+  const toAddress = invoice
+    ? typeof snapAddress === "string" && snapAddress
+      ? snapAddress
+      : null
+    : paymentKind === "btc"
       ? settings.btcWallet
       : paymentKind === "usdt_erc20"
         ? settings.usdtErc20Wallet
         : settings.usdtWallet;
   if (!toAddress) {
-    return NextResponse.json({ error: "Wallet not configured" }, { status: 400 });
+    return NextResponse.json(
+      { error: invoice ? "That payment method is not on this invoice" : "Wallet not configured" },
+      { status: 400 },
+    );
   }
 
   // A null txHash never collides (Postgres allows multiple NULLs under
@@ -128,8 +173,10 @@ export async function POST(req: Request) {
     }
   }
 
-  const amountUsd =
-    product.kind === "exe" && durationDays !== null
+  // TASK_184 B4 — an invoice's admin-edited amount wins over the list price.
+  const amountUsd = invoice
+    ? invoice.amountUsd
+    : product.kind === "exe" && durationDays !== null
       ? calculateExePrice(settings[product.priceField], durationDays)
       : settings[product.priceField];
 
@@ -143,6 +190,7 @@ export async function POST(req: Request) {
       txHash,
       toAddress,
       status: "pending",
+      invoiceId: invoice?.id ?? null,
     },
   });
 

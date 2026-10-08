@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
-import { handleApprovedPayment } from "@/lib/license-service";
+import { handleApprovedPayment, settleLinkedInvoice } from "@/lib/license-service";
 import { creditApprovedPayment } from "@/lib/wallet";
 import { isWalletTopup } from "@/lib/products";
 
@@ -51,6 +51,25 @@ export async function POST(
   // balance (plan §8.5) so a crash cannot leave a payment approved with an
   // uncredited wallet.
   if (isWalletTopup(payment.product)) {
+    // TASK_184 B4 — a top-up submitted with an invoice ref is an INVOICE payment
+    // riding the existing rail (spec: "invoice ref optional … submit | topup"):
+    // it settles the invoice + grants the invoice's tier, and does NOT credit the
+    // wallet — one payment, one consequence, exactly like the product arm below.
+    // `settleLinkedInvoice` returns false when there is nothing to settle (already
+    // paid / ref vanished), and the normal credit path then runs: the admin is
+    // approving a top-up in that case, which is what the row says it is.
+    if (payment.invoiceId && (await settleLinkedInvoice(payment))) {
+      await prisma.payment.update({ where: { id }, data: { status: "approved" } });
+      await prisma.paymentVerificationAttempt.create({
+        data: { paymentId: id, success: true, note: "Premium invoice settled" },
+      });
+      return NextResponse.json({
+        ok: true,
+        product: "wallet_topup",
+        invoiceId: payment.invoiceId,
+      });
+    }
+
     const creditCents = Math.ceil(payment.amountUsd * 100);
     const credited = await creditApprovedPayment({
       paymentId: payment.id,
