@@ -43,11 +43,19 @@ const MIN = 60_000;
 
 let sessionValue: { userId: string } | null = null;
 let linkRow: { orgId: string; privateOrgId: string | null; status: string } | null = null;
-let deviceRows: Array<{ id: string; name: string; status: string; lastSeenAt: Date | null }> = [];
+let deviceRows: Array<{
+  id: string;
+  name: string;
+  status: string;
+  lastSeenAt: Date | null;
+  vantraAgentId?: string | null;
+}> = [];
 let fetchCalls: string[] = [];
 let warns: string[] = [];
-/** What the outbound idle read answers with when it succeeds. */
+/** What the outbound idle read answers with when it succeeds (hostname key). */
 let idleMap: Record<string, number | null> = {};
+/** TASK_185 P1 — the additive agent-id key Vantra now reports alongside. */
+let agentIdleMap: Record<string, number | null> = {};
 /** When true the next outbound read throws, as a mesh socket timeout does. */
 let idleThrows = false;
 
@@ -58,6 +66,7 @@ function resetWorld(userId: string, orgId: string): void {
   fetchCalls = [];
   warns = [];
   idleMap = {};
+  agentIdleMap = {};
   idleThrows = false;
   // Default the tests to "no TTL" so a call always dials the socket — that is
   // what lets a single failing poll be observed. The TTL-hit test raises it.
@@ -140,7 +149,12 @@ globalThis.fetch = (async (url: unknown) => {
   return {
     ok: true,
     status: 200,
-    json: async () => ({ ok: true, idleByHostname: idleMap, idleUnit: "seconds" }),
+    json: async () => ({
+      ok: true,
+      idleByHostname: idleMap,
+      idleByAgentId: agentIdleMap,
+      idleUnit: "seconds",
+    }),
     text: async () => "",
   } as unknown as Response;
 }) as unknown as typeof fetch;
@@ -309,6 +323,35 @@ test("a device missing from a healthy map is unknown, not active", async () => {
   assert.equal(row(res.body.devices[0]).idleSeconds, null);
   const perRow = res.body.devices[0].idle as { state: string };
   assert.equal(perRow.state, "unknown");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_185 P1 — the LIVE defect behind "activity unknown": Device.name drifts
+// off the TRMM hostname (sync seeds it, then rename/heartbeat overwrites it),
+// so the name-keyed lookup missed even though the mesh had a reading. The
+// lookup now keys by STABLE agent id first, with the name match as fallback
+// (so an older Vantra without `idleByAgentId` behaves exactly as before).
+// ---------------------------------------------------------------------------
+test("a renamed device resolves idle via agent id; the name match stays as fallback", async () => {
+  // Scenario 1: renamed device — name no longer equals the hostname key.
+  resetWorld("u-agentkey", "org-agentkey");
+  deviceRows = [
+    { id: "d-re", name: "Sc-renamed", status: "online", lastSeenAt: new Date(), vantraAgentId: "agent-9" },
+  ];
+  idleMap = { "DESKTOP-OLDNAME": 720 }; // mesh reports under the OLD hostname key
+  agentIdleMap = { "agent-9": 720 }; // …and under the stable agent id
+  const viaAgent = await get();
+  assert.equal(row(viaAgent.body.devices[0]).idleSeconds, 720, "agent-id key must win over the drifted name");
+
+  // Scenario 2: agent map has no entry (older Vantra shape) → name fallback.
+  resetWorld("u-agentkey-fb", "org-agentkey-fb");
+  deviceRows = [
+    { id: "d-fb", name: "DESKTOP-OLDNAME", status: "online", lastSeenAt: new Date(), vantraAgentId: "agent-9" },
+  ];
+  idleMap = { "DESKTOP-OLDNAME": 300 };
+  agentIdleMap = {};
+  const viaName = await get();
+  assert.equal(row(viaName.body.devices[0]).idleSeconds, 300, "hostname-by-name fallback still works");
 });
 
 

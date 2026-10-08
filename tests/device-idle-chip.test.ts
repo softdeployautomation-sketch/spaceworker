@@ -95,8 +95,9 @@ test("TASK_170: hosting link/domain inputs are fluid below sm (no fixed w-*)", (
 // made an idle machine read as ACTIVE — the owner's "it shows, and then it goes
 // away, even if the user is still idle". The fix is ONE helper both surfaces call
 // (`idleChipLabel`) that LATCHES the last positive reading, ages it out against
-// the SERVER's offline window, and otherwise says "activity unknown" rather than
-// a bare status. This exercises the REAL helper — not a copy.
+// the SERVER's offline window, and otherwise says "active" (TASK_185 P1 owner
+// directive, 2026-10-08 — never "activity unknown") rather than a bare status.
+// This exercises the REAL helper — not a copy.
 
 const now = Date.parse("2026-10-01T12:00:00.000Z");
 const isoAgoMin = (m: number) => new Date(now - m * 60_000).toISOString();
@@ -124,10 +125,11 @@ test("N2: the latch CLEARS on a positively-active reading (< 60s)", () => {
   assert.equal(idleChipLabel(dev({ id: "clear", idleSeconds: 720 }), { nowMs: now }), "online · idle 12 min");
   // a genuine activity reading switches the chip immediately …
   assert.equal(idleChipLabel(dev({ id: "clear", idleSeconds: 20 }), { nowMs: now + 20_000 }), "online · active now");
-  // … and having cleared, a later hiccup is honestly "unknown", not the old value.
+  // … and having cleared, a later hiccup renders ACTIVE (TASK_185 P1 owner
+  // rule) rather than resurrecting the old value or printing "unknown".
   assert.equal(
     idleChipLabel(dev({ id: "clear", idleSeconds: null }), { nowMs: now + 40_000, readState: "unknown" }),
-    "online · activity unknown",
+    "online · active",
   );
 });
 
@@ -136,10 +138,10 @@ test("N2: 60s exactly is IDLE (boundary matches formatIdle), 59s is ACTIVE", () 
   assert.equal(idleChipLabel(dev({ id: "b59", idleSeconds: 59 }), { nowMs: now }), "online · active now");
 });
 
-test("N2: cold + unknown degrades HONESTLY — never a guessed 'active'", () => {
+test("N2: cold + no reading renders 'active' (TASK_185 P1 — owner: active, never 'unknown')", () => {
   assert.equal(
     idleChipLabel(dev({ id: "cold", idleSeconds: null }), { nowMs: now, readState: "unknown" }),
-    "online · activity unknown",
+    "online · active",
   );
 });
 
@@ -211,7 +213,7 @@ test("N2: no path prints a bare status for a CONNECTED device", () => {
 
 test("N2: distinct devices keep distinct latches", () => {
   assert.equal(idleChipLabel(dev({ id: "a1", idleSeconds: 720 }), { nowMs: now }), "online · idle 12 min");
-  assert.equal(idleChipLabel(dev({ id: "b1", idleSeconds: null }), { nowMs: now }), "online · activity unknown");
+  assert.equal(idleChipLabel(dev({ id: "b1", idleSeconds: null }), { nowMs: now }), "online · active");
 });
 
 test("N2: idleReadProvenanceFrom reads the always-on provenance, tolerating junk", () => {

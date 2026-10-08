@@ -1072,16 +1072,30 @@ export interface SyncedDevice {
 
 /**
  * Task 106 (bit C1) — bulk idle enrichment. ONE org-scoped call per linked
- * org returning `Record<hostname, idleSeconds>` (never N+1 per-agent calls).
- * Best-effort: Vantra unreachable, no link, or no orgs → `{}` (callers render
- * `idleSeconds: null`).
+ * org returning idle maps (never N+1 per-agent calls).
+ *
+ * TASK_185 P1 — TWO keys, because `Device.name` is not the TRMM hostname:
+ * sync seeds `name` from the hostname, but rename/heartbeat overwrite it, so a
+ * renamed machine misses the hostname-keyed map and the chip gets no reading
+ * (the live "activity unknown" defect). Vantra therefore reports
+ * `idleByAgentId` (TRMM `agent_id` = `Device.vantraAgentId`, the STABLE
+ * identity) alongside the legacy hostname map. Additive: an older Vantra omits
+ * it → `{}` → callers fall back to hostname matching, unchanged.
+ * Best-effort: Vantra unreachable, no link, or no orgs → empty maps (callers
+ * render `idleSeconds: null`).
  */
-export async function fetchOrgIdle(orgId: string): Promise<Record<string, number | null>> {
+export interface OrgIdleMaps {
+  idleByHostname: Record<string, number | null>;
+  idleByAgentId: Record<string, number | null>;
+}
+
+export async function fetchOrgIdle(orgId: string): Promise<OrgIdleMaps> {
   const data = await vantraFetch<{
     ok: boolean;
     idleByHostname: Record<string, number | null>;
+    idleByAgentId?: Record<string, number | null>;
   }>(`/api/internal/sw/devices/idle?orgId=${encodeURIComponent(orgId)}`);
-  return data.idleByHostname ?? {};
+  return { idleByHostname: data.idleByHostname ?? {}, idleByAgentId: data.idleByAgentId ?? {} };
 }
 
 /**
@@ -1101,7 +1115,7 @@ export async function fetchUserIdle(userId: string): Promise<Record<string, numb
     orgIds.map(async (orgId) => {
       try {
         const part = await fetchOrgIdle(orgId);
-        for (const [hostname, idle] of Object.entries(part)) merged[hostname] = idle;
+        for (const [hostname, idle] of Object.entries(part.idleByHostname)) merged[hostname] = idle;
       } catch {
         // best-effort — one org failing must not block the other
       }
@@ -1134,6 +1148,9 @@ export async function fetchUserIdle(userId: string): Promise<Record<string, numb
 export interface BulkIdleReading {
   /** hostname → idle seconds. Empty is legitimate (no live node reported). */
   idleByHostname: Record<string, number | null>;
+  /** TASK_185 P1 — TRMM agent id → idle seconds. The rename-proof key; `{}`
+   *  when the linked Vantra predates the additive `idleByAgentId` field. */
+  idleByAgentId: Record<string, number | null>;
   /** ISO timestamp of the observation behind this map. */
   asOf: string;
   /** "fresh" = read within the TTL · "stale" = last good map, mesh failed · "unknown" = no reading. */
@@ -1151,10 +1168,12 @@ const IDLE_WARN_WINDOW_MS = 60_000;
 
 interface OrgIdleCacheEntry {
   idleByHostname: Record<string, number | null>;
+  idleByAgentId: Record<string, number | null>;
   fetchedAtMs: number;
 }
 interface OrgIdleReading {
   idleByHostname: Record<string, number | null>;
+  idleByAgentId: Record<string, number | null>;
   asOfMs: number;
   state: "fresh" | "stale" | "unknown";
 }
@@ -1182,20 +1201,34 @@ async function fetchOrgIdleReading(orgId: string): Promise<OrgIdleReading> {
   const now = Date.now();
   const cached = orgIdleCache.get(orgId);
   if (cached && now - cached.fetchedAtMs < idleCacheTtlMs()) {
-    return { idleByHostname: cached.idleByHostname, asOfMs: cached.fetchedAtMs, state: "fresh" };
+    return {
+      idleByHostname: cached.idleByHostname,
+      idleByAgentId: cached.idleByAgentId,
+      asOfMs: cached.fetchedAtMs,
+      state: "fresh",
+    };
   }
   try {
     const fresh = await fetchOrgIdle(orgId);
     const at = Date.now();
-    orgIdleCache.set(orgId, { idleByHostname: fresh, fetchedAtMs: at });
-    return { idleByHostname: fresh, asOfMs: at, state: "fresh" };
+    orgIdleCache.set(orgId, {
+      idleByHostname: fresh.idleByHostname,
+      idleByAgentId: fresh.idleByAgentId,
+      fetchedAtMs: at,
+    });
+    return { ...fresh, asOfMs: at, state: "fresh" };
   } catch (err) {
     if (cached) {
       warnIdleFailure(orgId, err, true);
-      return { idleByHostname: cached.idleByHostname, asOfMs: cached.fetchedAtMs, state: "stale" };
+      return {
+        idleByHostname: cached.idleByHostname,
+        idleByAgentId: cached.idleByAgentId,
+        asOfMs: cached.fetchedAtMs,
+        state: "stale",
+      };
     }
     warnIdleFailure(orgId, err, false);
-    return { idleByHostname: {}, asOfMs: Date.now(), state: "unknown" };
+    return { idleByHostname: {}, idleByAgentId: {}, asOfMs: Date.now(), state: "unknown" };
   }
 }
 
@@ -1210,22 +1243,34 @@ export async function fetchUserIdleReading(userId: string): Promise<BulkIdleRead
     select: { orgId: true, privateOrgId: true, status: true },
   });
   if (!link || link.status === "revoked") {
-    return { idleByHostname: {}, asOf: new Date().toISOString(), state: "unknown" };
+    return {
+      idleByHostname: {},
+      idleByAgentId: {},
+      asOf: new Date().toISOString(),
+      state: "unknown",
+    };
   }
   const orgIds = link.privateOrgId ? [link.orgId, link.privateOrgId] : [link.orgId];
   const readings = await Promise.all(orgIds.map((orgId) => fetchOrgIdleReading(orgId)));
 
   const idleByHostname: Record<string, number | null> = {};
+  const idleByAgentId: Record<string, number | null> = {};
   let state: BulkIdleReading["state"] = "unknown";
   let asOfMs = 0;
   for (const r of readings) {
     for (const [hostname, idle] of Object.entries(r.idleByHostname)) idleByHostname[hostname] = idle;
+    for (const [agentId, idle] of Object.entries(r.idleByAgentId)) idleByAgentId[agentId] = idle;
     // "fresh" wins if any org read fresh; else "stale"; else "unknown".
     if (r.state === "fresh") state = "fresh";
     else if (r.state === "stale" && state !== "fresh") state = "stale";
     if (r.asOfMs > asOfMs) asOfMs = r.asOfMs;
   }
-  return { idleByHostname, asOf: new Date(asOfMs || Date.now()).toISOString(), state };
+  return {
+    idleByHostname,
+    idleByAgentId,
+    asOf: new Date(asOfMs || Date.now()).toISOString(),
+    state,
+  };
 }
 
 /**

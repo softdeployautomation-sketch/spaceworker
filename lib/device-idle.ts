@@ -173,10 +173,15 @@ export function idleChipLabel(
     return `${word} · ${formatIdle(seconds)}`;
   }
 
-  // No usable reading this poll. Hold the last positive one if we have it;
-  // otherwise say so plainly — absent evidence is never evidence of activity.
+  // No usable reading this poll. Hold the last positive one if we have it.
+  // TASK_185 P1 — with neither a reading nor a latch, the OWNER'S RULE
+  // (2026-10-08, "better it shows active instead of unknown"): a connected
+  // device renders ACTIVE, never "activity unknown". The status half of the
+  // chip is heartbeat-known either way; the idle half may simply not have
+  // arrived yet (fresh online, mesh lag) — and for that case the owner's
+  // instruction is explicit. "unknown" is retired from this chip.
   if (held) return `${word} · ${formatIdle(held.seconds)}`;
-  return `${word} · activity unknown`;
+  return `${word} · active`;
 }
 /**
  * Read the always-on provenance off a `GET /api/devices` body: the bulk read's

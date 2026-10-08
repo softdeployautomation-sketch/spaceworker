@@ -44,15 +44,38 @@ sudo -u postgres psql -d spaceworker                   # $$..$$ literals over ss
 ## STEPS
 
 ### P1 — activity "unknown"
-- [ ] W1a. Decide keying fix (A/B) + copy rule (fresh+online+no-entry ⇒ bare `online`?)
-- [ ] W1b. Implement; update `tests/device-idle-chip.test.ts` (:130/:142/:214) +
-      `tests/vantra-idle-provenance.test.ts` (+ Vantra-side test if A)
+- [x] **W1a. DECIDED (2026-10-08):**
+  - **Copy rule** (owner directive: "better it shows active instead of unknown"):
+    online/asleep + no reading + no latch ⇒ `${word} · active` — "activity unknown"
+    is retired in `idleChipLabel` (`lib/device-idle.ts:179`).
+  - **Keying fix = A (same-box feasible)** — Vantra idle route adds additive
+    `idleByAgentId` (TRMM `agent_id` → idle seconds); SpaceWorker merges it and
+    `GET /api/devices` looks up `idleByAgentId[vantraAgentId] ?? idleByHostname[name]`.
+    Backward compatible both ways (old Vantra ⇒ `{}` ⇒ name fallback). Vantra runs
+    on the SAME box (`/opt/vantra`, `vantra.service` port 3300, deploy per Vantra
+    `HOW_WE_MOVE_FAST.md`: rsync → `sudo -u vantra npm run build` → restart).
+- [x] **W1b. IMPLEMENTED + gates GREEN (2026-10-08):**
+  - SpaceWorker: `lib/device-idle.ts` copy rule · `lib/vantra-link.ts`
+    (`OrgIdleMaps` + `BulkIdleReading.idleByAgentId`, cache/merge carry it) ·
+    `app/api/devices/route.ts` two-key lookup (agent id first, name fallback).
+  - Vantra: `app/api/internal/sw/devices/idle/route.ts` emits `idleByAgentId`
+    (additive; mirrored `{}` in both catch paths).
+  - Tests: chip 15/15 (3 expectations now "active") · provenance 9/9 (new
+    agent-id-wins + name-fallback test) · `test:vantra` 90/90 · tsc 0 ·
+    eslint 0 (both repos) · Vantra tsc 0.
 - [ ] W1c. Owner-visible check on live after deploy: device chip shows "online · …"
 
 ### P2 — overview counts
-- [ ] W2a. Fix both counts in `app/api/overview-stats/route.ts` (filters above)
-- [ ] W2b. Unit test: removed + hosted + stale-status excluded; window-based online
-- [ ] W2c. Live verify: owner row reads "0 online of 2" (or honest current numbers)
+- [x] **W2a. FIXED (2026-10-08)** — `app/api/overview-stats/route.ts`: both
+      counts now `removedAt: null` + `deviceKind: { not: "hosted" }` (byte-for-byte
+      the `/api/devices` filters); online = `lastSeenAt >= now − DEVICE_ONLINE_WINDOW_MS`
+      (10-min window from `lib/devices`, imported — same clock as `isDeviceOnline`),
+      **never** the stale `status` column.
+- [x] **W2b. TESTED** — new `tests/overview-stats-counts.test.ts` (`npm run
+      test:overview`, 2/2): asserts both where-clauses carry the filters AND
+      `status`/`lastSeenAt`-on-total are absent, window bound = 10 min ±5 s.
+      Gates: tsc 0 · eslint 0.
+- [ ] W2c. Live verify: owner row reads honest numbers (e.g. "0 online of 2").
 
 ### N1 — notifications
 - [ ] W3a. DIAGNOSE first: `NotificationLog` rows + `ADMIN_EMAIL` + Resend key on VPS

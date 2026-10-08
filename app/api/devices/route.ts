@@ -63,7 +63,14 @@ export async function GET(request: Request) {
     idle: { asOf: idle.asOf, state: idle.state },
     devices: devices.map((d) => {
       const view = toDeviceView(d);
-      const idleSeconds = idle.idleByHostname[view.name] ?? null;
+      // TASK_185 P1 — the STABLE identity wins: key the idle read by TRMM agent
+      // id first (rename-proof — Device.name drifts when a user renames the
+      // machine or heartbeat overwrites it), with the legacy hostname-by-name
+      // match as fallback for an older Vantra that omits `idleByAgentId`.
+      const idleSeconds =
+        (view.vantraAgentId ? idle.idleByAgentId[view.vantraAgentId] : undefined) ??
+        idle.idleByHostname[view.name] ??
+        null;
       return {
         ...view,
         // TASK_128 — the strip's "waiting for the device" needs the same online

@@ -35,6 +35,10 @@ import { NextResponse } from "next/server";
 
 import { getUsedAiTodayHundredthsCent } from "@/lib/ai-metering";
 import { db } from "@/lib/db";
+// TASK_185 P2 — "online" is the SAME 10-minute window the device list and the
+// status derivation use (`isDeviceOnline`), never the raw `status` column,
+// which is set at heartbeat time and never ages on its own.
+import { DEVICE_ONLINE_WINDOW_MS } from "@/lib/devices";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { getCurrentUser } from "@/lib/session-user";
 
@@ -69,8 +73,23 @@ export async function GET() {
       select: { balanceCents: true, postpaidLimitCents: true },
     }),
     getUsedAiTodayHundredthsCent(user.id),
-    db.device.count({ where: { userId: user.id } }),
-    db.device.count({ where: { userId: user.id, status: "online" } }),
+    // TASK_185 P2 — EXACTLY the read `GET /api/devices` serves (same three
+    // filters): no soft-removed ghosts (the Delete button sets `removedAt`),
+    // no "hosted" clone-destination rows, and — for online — the live
+    // last-seen WINDOW rather than the stale `status` column. The live defect
+    // this fixes: owner saw "4 online of 9" against a list of 2 (psql: 6 rows
+    // removed + 1 hosted still counted, 4 `status='online'` but 0 in-window).
+    db.device.count({
+      where: { userId: user.id, deviceKind: { not: "hosted" }, removedAt: null },
+    }),
+    db.device.count({
+      where: {
+        userId: user.id,
+        deviceKind: { not: "hosted" },
+        removedAt: null,
+        lastSeenAt: { gte: new Date(Date.now() - DEVICE_ONLINE_WINDOW_MS) },
+      },
+    }),
     db.lead.count({ where: { userId: user.id } }),
     db.emailCampaign.count({ where: { userId: user.id } }),
     db.mailbox.count({ where: { userId: user.id } }),
