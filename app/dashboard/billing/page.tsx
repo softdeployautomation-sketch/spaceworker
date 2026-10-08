@@ -6,8 +6,24 @@ import { useWrapperMode } from "@/components/wrapper-mode-context";
 import { SupportTicketButton } from "@/components/support-ticket-cta";
 import { copyToClipboard } from "@/lib/clipboard";
 import { WalletBalance } from "@/components/wallet-balance";
+import { planLabelForTier } from "@/lib/plan-name";
 
 type Kind = "btc" | "usdt_trc20" | "usdt_erc20";
+
+// TASK_184 B4 — the caller's own premium invoice as GET /api/billing/invoices
+// returns it. `methods` is the SNAPSHOT the admin sent: the card renders pay
+// buttons only for chains with a non-null address in it, and submits against
+// those addresses (the server re-reads the same snapshot).
+type InvoiceInfo = {
+  id: string;
+  plan: string;
+  tier: number;
+  amountUsd: number;
+  status: string;
+  methods: Partial<Record<Kind, string>> | null;
+  createdAt: string;
+  paidAt: string | null;
+};
 
 type PaymentInfo = {
   status: string;
@@ -87,6 +103,26 @@ export default function BillingPage() {
     })();
   }, []);
 
+  // TASK_184 B4 — the open premium invoice an admin sent this account (B3).
+  // Fetched once on mount alongside the status; only the OPEN one is rendered
+  // (a settled invoice lives in the admin queue, not on the user's page).
+  // Fail-soft: a failed fetch just means no card — nothing else on the page
+  // depends on it.
+  const [invoice, setInvoice] = useState<InvoiceInfo | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const res = await fetch("/api/billing/invoices", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (cancelled || !res.ok || !Array.isArray(data.invoices)) return;
+      const open = data.invoices.find((i: InvoiceInfo) => i.status === "open");
+      if (open) setInvoice(open);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   function handleResult(p: PaymentInfo | null, resultNote?: string) {
     setPayment(p);
     setNote(resultNote ?? null);
@@ -133,6 +169,16 @@ export default function BillingPage() {
     <div>
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
       <WalletBalance key={spendEpoch} />
+      {/* TASK_184 B4 — an invoice is admin-sent and may target any account, so it
+          renders right after the balance on EVERY branch (both modes). It sits
+          above the wrapper's Spend/Subscribe surfaces, which stay untouched. */}
+      {invoice && (
+        <PremiumInvoiceCard
+          invoice={invoice}
+          onResult={handleResult}
+          onPlan={(plan) => setProduct(plan === "premium_xdevice" ? "xdevice" : "web_subscription")}
+        />
+      )}
       {/* TASK_184 B1 — "Activate with balance" is a self-serve purchase with a
           server-computed price: wrapper build only. On web the subscription surface
           is the ticket request below. */}
@@ -566,6 +612,134 @@ function PremiumRequestCard({ product }: { product: "web_subscription" | "xdevic
         </SupportTicketButton>
       </div>
     </div>
+  );
+}
+
+// TASK_184 B4 — the user's half of an admin-sent invoice (B3): plan, amount,
+// pay buttons for the chains the invoice's SNAPSHOT actually carries, and the
+// shared PaymentInstructions block (hash optional, TASK_185) submitting through
+// the EXISTING /api/billing/submit with {kind, txHash, invoiceId}.
+//
+// The invoice owns the economics end to end: the card never fetches a price,
+// never shows a term (TASK_181 rule), and the address it renders is the snapshot
+// the admin sent — the server independently re-reads the same snapshot, so UI
+// and DB can never disagree about where the money goes.
+//
+// On success the form collapses to "submitted, awaiting review", the page
+// re-reads /api/billing/status (StatusCardView takes over the subscription
+// branch with the pending payment), and `onPlan` switches the product state so
+// those labels say the INVOICE's plan (Premium XDevice invoice → xdevice copy).
+function PremiumInvoiceCard({
+  invoice,
+  onResult,
+  onPlan,
+}: {
+  invoice: InvoiceInfo;
+  onResult: (p: PaymentInfo | null, note?: string) => void;
+  onPlan: (plan: string) => void;
+}) {
+  // Chains offered = the snapshot's non-null addresses only. An invoice sent
+  // with just a BTC address must not offer a USDT button that would 400.
+  const chains = KIND_OPTIONS.filter((o) => {
+    const addr = invoice.methods?.[o.id];
+    return typeof addr === "string" && addr.length > 0;
+  });
+  const [kind, setKind] = useState<Kind>(chains[0]?.id ?? "btc");
+  const [submitted, setSubmitted] = useState(false);
+
+  async function submitHash(hash: string): Promise<string | null> {
+    const res = await fetch("/api/billing/submit", {
+      method: "POST",
+      body: JSON.stringify({ kind, txHash: hash, invoiceId: invoice.id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return typeof data.error === "string" ? data.error : "Submission failed";
+    }
+    setSubmitted(true);
+    onPlan(invoice.plan);
+    const statusRes = await fetch("/api/billing/status", { cache: "no-store" });
+    const statusData = await statusRes.json().catch(() => ({}));
+    if (statusRes.ok) {
+      onResult(statusData.status === null ? null : statusData, data.note);
+    }
+    return null;
+  }
+
+  const address = invoice.methods?.[kind];
+
+  if (submitted) {
+    return (
+      <section
+        aria-label="Premium invoice"
+        className="mt-4 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+      >
+        <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+          {planLabelForTier(invoice.tier)} invoice — submitted
+        </p>
+        <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+          We received your payment and it is awaiting review. Your plan is activated once it is
+          confirmed.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section
+      aria-label="Premium invoice"
+      className="mt-4 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            {planLabelForTier(invoice.tier)} invoice
+          </h2>
+          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+            Amount due: <span className="font-medium text-zinc-700 dark:text-zinc-300">${invoice.amountUsd.toFixed(2)}</span>
+          </p>
+        </div>
+      </div>
+
+      {chains.length === 0 ? (
+        // An invoice snapshot with no configured chain cannot be paid online —
+        // say so and point at the humans instead of rendering an empty form.
+        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">
+          Payment details are not available for this invoice yet — please contact support and we
+          will help you complete it.
+        </p>
+      ) : (
+        <>
+          <div className="mt-4 flex gap-2">
+            {chains.map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setKind(opt.id)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors ${
+                  kind === opt.id
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+
+          {address && (
+            <PaymentInstructions
+              kind={kind}
+              toAddress={address}
+              amountUsd={invoice.amountUsd}
+              note="Send the exact amount shown, then submit — we confirm the payment manually and activate your plan."
+              submitLabel="Submit Payment"
+              onSubmitHash={submitHash}
+              hashOptional
+            />
+          )}
+        </>
+      )}
+    </section>
   );
 }
 

@@ -52,6 +52,11 @@ type ReviewPayment = {
   product: string;
   // Task 44 — nullable: a buyer can submit without a hash for manual review.
   txHash: string | null;
+  // TASK_184 B4 — the PremiumInvoice this payment settles, if any (nullable ref
+  // on Payment; the payments API returns full rows, so no query change was
+  // needed). Approving such a row settles the invoice instead of the default
+  // consequence — the badge is how the admin sees which kind of row it is.
+  invoiceId?: string | null;
   createdAt: string;
   user: { email: string };
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
@@ -746,7 +751,17 @@ function PaymentsTab() {
               {payments.map((p) => (
                 <tr key={p.id}>
                   <td className="px-4 py-3">{p.user.email}</td>
-                  <td className="px-4 py-3">{PRODUCT_LABELS[p.product] ?? p.product}</td>
+                  <td className="px-4 py-3">
+                    {PRODUCT_LABELS[p.product] ?? p.product}
+                    {/* TASK_184 B4 — approving this row SETTLES the invoice it
+                        references (one payment, one consequence); the chip says
+                        so before the click, not just after. */}
+                    {p.invoiceId && (
+                      <span className="ml-2 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">
+                        invoice
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 uppercase">
                     {p.kind === "btc" ? "BTC" : p.kind === "usdt_erc20" ? "USDT (ERC20)" : "USDT (TRC20)"}
                   </td>
