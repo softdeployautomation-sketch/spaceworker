@@ -5,14 +5,17 @@
 - **TRACK:** TASK_184 done (20/20) · TASK_183 wrapper PARKED. Scope doc:
   `TASK_185_REPRIORITIZE_LIVE_VERIFY_SUPPORT.md`.
 - **P1 ✅ + P2 ✅ — IMPLEMENTED, DEPLOYED, OWNER-CONFIRMED ("its fixed now").**
-  Remaining: **N1** (notification diagnose+wire) → **N2** (invoice composer) →
-  **P3/P4** (secret admin device page + deleted-devices) → **P5** (referral gating) → **W9** closeout.
+  **N1+N2 EXTRACTED → `TASK_187_PAYMENT_ALERTS_INVOICE.md`** (payment email + support
+  notifications + support invoice composer; verification: `PROMPT_VERIFY_TASK_187.md`).
+  **P3+P4 EXTRACTED → `TASK_188_SECRET_ADMIN_DEVICES.md`** (secret `/admin/device/101`
+  page + deleted-devices recover/reassign; verification: `PROMPT_VERIFY_TASK_188.md`).
+  **TASK_185 NOW HOLDS ONLY: P5** (invite/referral login gating + link-tree attribution)
+  **and W9** (TASK_183 wrapper closeout).
 - **WORKING TREE:** HEAD = P1+P2 commit + this doc-only commit (steps update).
   Stray untracked `TASK_133_RMM_ENGINE_BRINGUP.md` is NOT ours — never commit it.
-- **NEXT ACTION:** N1 — W3a DIAGNOSE on VPS first: `NotificationLog` rows for
-  `admin_pending_payment`, `ADMIN_EMAIL` set?, Resend key valid? (owner reports
-  Telegram arrived, EMAIL did not — likely `ADMIN_EMAIL` unset ⇒ fallback
-  `spaceworker@instaweb.top`.) Then `notifyAdminSupport` on ticket create/reply.
+- **NEXT ACTION: P5** (referral/invite login gating + link-tree attribution — research
+  still open: invite infra? signup surface?) or W9 closeout. N1/N2/P3/P4 are no longer
+  TASK_185's — they live in TASK_187 / TASK_188 with their own verification prompts.
 
 ## RESEARCH DONE (don't re-research — evidence in scope doc)
 
