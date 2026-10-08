@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getAdminSession, requireAdminSession } from "@/lib/admin-auth";
-import { addAdminMessage } from "@/lib/support/tickets";
+import { getAdminTicket, addAdminMessage } from "@/lib/support/tickets";
+import { notifyUserTicketReply } from "@/lib/support-notify";
 
 // TASK_159 Phase 1 — POST /api/admin/support/tickets/<id>/messages   (admin reply)
 //
@@ -20,7 +21,14 @@ import { addAdminMessage } from "@/lib/support/tickets";
 // exists today. It goes in the nullable `authorId` column, which has no foreign key —
 // so it can never block an admin's account removal (§3.2).
 
-const messageSchema = z.object({ body: z.string().min(1).max(10_000) });
+// `invoiceId` — TASK_187 S3/B5: an admin message that carries a freshly-sent
+// invoice. Accepted here (so the composer's payload never 400s); validation +
+// persistence of the reference land with the invoice work. While it is absent
+// this route is the plain reply path below.
+const messageSchema = z.object({
+  body: z.string().min(1).max(10_000),
+  invoiceId: z.string().max(64).nullish(),
+});
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   if (!(await requireAdminSession())) {
@@ -41,5 +49,26 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
   }
+
+  // TASK_187 S2 — email the ticket's owner that an admin replied. Skipped when
+  // the message carries an invoice: that action sends its own `invoice_sent`
+  // email, and two emails for one action is noise. Fetch + notify are wrapped
+  // together in a try/catch with no await on the notify itself, so neither a
+  // lookup hiccup nor a thrown notify can change this 201.
+  if (!parsed.invoiceId) {
+    try {
+      const detail = await getAdminTicket(id);
+      if (detail.ok && detail.value.userEmail) {
+        notifyUserTicketReply({
+          ticketId: id,
+          to: detail.value.userEmail,
+          subject: detail.value.subject,
+        });
+      }
+    } catch {
+      // Best-effort — support-notify already logs its own failures.
+    }
+  }
+
   return NextResponse.json({ message: result.value }, { status: 201 });
 }

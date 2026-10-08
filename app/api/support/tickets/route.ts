@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { getCurrentUser } from "@/lib/session-user";
 import { createSupportTicket, listUserTickets } from "@/lib/support/tickets";
+import { notifyAdminTicketCreated } from "@/lib/support-notify";
 
 // TASK_159 Phase 1 — GET  /api/support/tickets   (the caller's OWN tickets)
 //                    POST /api/support/tickets   (open one)
@@ -66,5 +67,22 @@ export async function POST(request: Request) {
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
   }
+
+  // TASK_187 S2 — ping the OWNER on BOTH admin channels (Telegram + email) the
+  // moment a ticket lands. Fire-and-forget: no await, and the whole call sits
+  // in a try/catch, so a notification failure can never turn this 201 into a
+  // 500 — the ticket is already stored and that is what the caller cares about.
+  // `user.email` comes from the SESSION row, never from the request body.
+  try {
+    notifyAdminTicketCreated({
+      ticketId: result.value.id,
+      userEmail: user.email,
+      subject: result.value.subject,
+      category: result.value.category ?? "general",
+    });
+  } catch {
+    // Best-effort — support-notify already logs its own failures.
+  }
+
   return NextResponse.json({ ticket: result.value }, { status: 201 });
 }

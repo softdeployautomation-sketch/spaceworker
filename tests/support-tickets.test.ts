@@ -286,6 +286,29 @@ let sessionUser: { id: string } | null = { id: "user_a" };
 /** The admin session. `null` = not an admin, which is the default for no test. */
 let adminSession: { sub: string } | null = null;
 
+/**
+ * TASK_187 S2 (A3) — what the routes actually decided to notify, plus a switch
+ * that makes every notifier THROW.
+ *
+ * The notifier is stubbed in the loader below, so these record the ROUTE's
+ * decisions (who, what, when), not the helper's internals. `notifyThrows` is
+ * the other half of the contract: fire-and-forget is a promise that a dead
+ * notification channel can never change the HTTP response — a promise only
+ * counts if a test proves it.
+ */
+const notifyCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+let notifyThrows = false;
+const supportNotifyStub = {
+  notifyAdminTicketCreated: (args: Record<string, unknown>) => {
+    if (notifyThrows) throw new Error("notify channel down");
+    notifyCalls.push({ fn: "notifyAdminTicketCreated", args });
+  },
+  notifyUserTicketReply: (args: Record<string, unknown>) => {
+    if (notifyThrows) throw new Error("notify channel down");
+    notifyCalls.push({ fn: "notifyUserTicketReply", args });
+  },
+};
+
 const fakeNextResponse = {
   json: (data: unknown, init?: { status?: number }) => ({
     status: init?.status ?? 200,
@@ -309,7 +332,20 @@ loader._load = function patched(request, parent, isMain) {
     from.endsWith(ADMIN_MSG_ROUTE);
   if (isSupportRoute) {
     if (request === "next/server") return { NextResponse: fakeNextResponse };
-    if (request === "@/lib/session-user") return { getCurrentUser: async () => sessionUser };
+    if (request === "@/lib/session-user") {
+      // The fake returns only the id a test assigned, but the REAL
+      // getCurrentUser returns the full row — the ticket-create route reads
+      // `user.email` for the admin alert. Join it from the same index
+      // `withRelations` uses, so every session user has a realistic email.
+      return {
+        getCurrentUser: async () =>
+          sessionUser ? { ...sessionUser, email: userEmails[sessionUser.id] ?? "unknown@sw.dev" } : null,
+      };
+    }
+    // TASK_187 S2 (A3) — the routes import the notifier; without this stub the
+    // loader would reach the REAL support-notify.ts, whose `import
+    // "server-only"` throws under plain node and kills the whole file.
+    if (request === "@/lib/support-notify") return supportNotifyStub;
     if (request === "@/lib/admin-auth") {
       return {
         requireAdminSession: async () => adminSession !== null,
@@ -395,6 +431,9 @@ beforeEach(() => {
   clock = new Date("2026-10-04T10:00:00.000Z");
   sessionUser = { id: "user_a" };
   adminSession = null;
+  // TASK_187 S2 (A3) — every notify assertion starts from a clean slate.
+  notifyCalls.length = 0;
+  notifyThrows = false;
   // Reset the lookup index, not just the store: a test that adds an email must not
   // leak that account into the next test, or "an unknown email is refused" would
   // silently stop being true depending on test order.
@@ -715,6 +754,73 @@ test("§7.1 an admin reply records the session subject as its author", async () 
   await adminMsgRoute.POST(jsonReq("POST", { body: "on it" }), ctx("t_1"));
   assert.equal(store.messages[0].authorRole, "admin");
   assert.equal(store.messages[0].authorId, "admin");
+});
+
+// ===========================================================================
+// TASK_187 §S2 — THE NOTIFICATIONS. Both directions, both channels.
+//
+// What the ROUTES decided to send (the notifier itself is stubbed above), and
+// the promise that a notifier that THROWS cannot change the HTTP response.
+// ===========================================================================
+
+test("TASK_187 S2: opening a ticket pings the owner — session email, and the created id", async () => {
+  const res = await userListRoute.POST(
+    jsonReq("POST", { subject: "DNS help", body: "zone gives error 1016", category: "dns" })
+  );
+  assert.equal(res.status, 201);
+  const body = await readBody(res);
+  assert.equal(notifyCalls.length, 1, "exactly one alert for one ticket");
+  assert.equal(notifyCalls[0].fn, "notifyAdminTicketCreated");
+  assert.deepEqual(notifyCalls[0].args, {
+    ticketId: String(body.ticket?.id),
+    userEmail: "ada@sw.dev", // from the SESSION row via the loader join — never the body
+    subject: "DNS help",
+    category: "dns",
+  });
+  // A ticket with no category still reads sensibly in the alert.
+  await userListRoute.POST(jsonReq("POST", { subject: "second", body: "b" }));
+  assert.equal(notifyCalls[1].args.category, "general", "null category falls back for the alert");
+});
+
+test("TASK_187 S2: an admin reply emails the ticket's OWNER (not the admin)", async () => {
+  adminSession = { sub: "admin" };
+  store.tickets.push(ticket({ id: "t_1", userId: "user_a", subject: "Zone transfer failing" }));
+  const res = await adminMsgRoute.POST(jsonReq("POST", { body: "fixed now" }), ctx("t_1"));
+  assert.equal(res.status, 201);
+  assert.equal(notifyCalls.length, 1);
+  assert.equal(notifyCalls[0].fn, "notifyUserTicketReply");
+  assert.deepEqual(notifyCalls[0].args, {
+    ticketId: "t_1",
+    to: "ada@sw.dev", // the OWNER — resolved from the ticket, admin's session never emailed
+    subject: "Zone transfer failing",
+  });
+});
+
+test("TASK_187 S2: a reply carrying an invoiceId sends NO reply email — one arrival, one email", async () => {
+  adminSession = { sub: "admin" };
+  store.tickets.push(ticket({ id: "t_1", userId: "user_a" }));
+  const res = await adminMsgRoute.POST(
+    jsonReq("POST", { body: "invoice attached", invoiceId: "inv_1" }),
+    ctx("t_1")
+  );
+  assert.equal(res.status, 201, "invoiceId is accepted — it must not 400 the composer");
+  assert.equal(store.messages.length, 1, "the reply itself is still stored");
+  assert.deepEqual(notifyCalls, [], "the invoice-sent email covers this arrival");
+});
+
+test("TASK_187 S2: a THROWING notifier never changes the response — 201 stays 201", async () => {
+  notifyThrows = true;
+  const created = await userListRoute.POST(jsonReq("POST", { subject: "s", body: "b" }));
+  assert.equal(created.status, 201, "a dead notify channel must not fail a ticket create");
+  assert.equal((await readBody(created)).ticket !== undefined, true);
+
+  adminSession = { sub: "admin" };
+  // A distinct id — the user create above already consumed `t_1` from nextId.
+  store.tickets.push(ticket({ id: "t_admin", userId: "user_a" }));
+  const replied = await adminMsgRoute.POST(jsonReq("POST", { body: "ok" }), ctx("t_admin"));
+  assert.equal(replied.status, 201, "...nor an admin reply");
+  assert.equal(store.tickets.length, 2, "both writes landed anyway");
+  assert.equal(store.messages.length, 2, "the opening message + the reply");
 });
 
 // ===========================================================================
