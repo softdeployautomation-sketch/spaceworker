@@ -33,19 +33,30 @@ Owner (2026-10-07), three asks bundled (the third is scoped into TASK_184, not h
       override + assertions (open → 1 "opened" alert; no-hash attach → 1
       "attach"/hasHash=false). Gates: **tsc 0 · eslint 0 errors · topup 23/23 ·
       wallet 63/63**.
-- [ ] **S7 commit + push**
-- [ ] **S8 deploy** (deploy-vps.sh) + live check
-- [ ] **S9 confirm delivery** — next real pending payment must hit owner
-      Telegram; email goes to `EMAIL_FROM` unless owner sets `ADMIN_EMAIL=<their
-      real inbox>` in box `.env` (ask owner).
-- [ ] **S10 instaweb → joker** — box-only `static/joker.html` (repo `static/` is
-      runtime state, never committed — same rule as maintenance.html);
-      rewrite `/etc/nginx/sites-enabled/spaceworker.instaweb.top.conf` 443
-      block → serve joker for ALL paths (keep ACME + redirect + SSL), drop the
-      :3500 proxy/maintenance/browser/api locations; `nginx -t` + reload.
-- [ ] **S11 verify** — `curl https://spaceworker.instaweb.top/…` returns the
-      joker page (any path), `https://spaceworker.top` still 200.
-- [ ] **S12 steps + handoff updated** (this file, SENIOR_HANDOFF if needed).
+- [x] **S7 commit + push** — `baa36c9`.
+- [x] **S8 deploy** — deploy-vps.sh again SIGSTOPped mid-build (same harness
+      issue as TASK_185); recovered manually: kill stopped scripts → box build
+      had completed (BUILD_ID `jheeQGyPjVc48TRdBFQmo`) → restart spaceworker →
+      remove flag → reload nginx. Verified: site 200, no X-Maintenance,
+      `admin_pending_payment` strings present in deployed route chunks.
+- [x] **S9 delivery proof (code path)** — live test dispatch on box:
+      `TEST_NOTICE_DISPATCHED` exit 0 → NotificationLog row
+      `channel=email, recipient=spaceworker@instaweb.top, outcome="sent"` ✓.
+      Telegram fired via notifyAdmin (no DB row by design) — **owner to eyeball
+      the test message**: "💳 [ADMIN] Pending payment $500 · xdevice …". Email
+      lands on `EMAIL_FROM` until owner sets **`ADMIN_EMAIL=<real inbox>`** in
+      box `.env` (ask owner — one env line).
+- [x] **S10 instaweb → joker** — local `/tmp/joker.html` scp'd to
+      `/opt/spaceworker/static/joker.html` (4190 B, inline SVG card, no external
+      assets); nginx vhost rewritten: 80 keeps ACME+redirect, 443 serves
+      joker.html for ALL paths with `no-store`; **old 93-line proxy conf backed
+      up** at `/root/spaceworker.instaweb.top.conf.bak-task186`;
+      `nginx -t` ok + reload. First heredoc-over-ssh attempt mangled quoting →
+      switched to local-file + scp (recovery note for next time).
+- [x] **S11 verify** — `/` → joker 200 ✓ · deep path → joker 200 + no-store ✓ ·
+      `spaceworker.top` → 200 ✓ · main site functional post-recovery ✓.
+- [ ] **S12 steps + handoff updated** — this file; SENIOR_HANDOFF row added
+      after owner confirms Telegram receipt.
 
 ## Reference
 
