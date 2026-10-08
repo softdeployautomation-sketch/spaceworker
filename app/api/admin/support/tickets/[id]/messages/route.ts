@@ -22,9 +22,9 @@ import { notifyUserTicketReply } from "@/lib/support-notify";
 // so it can never block an admin's account removal (§3.2).
 
 // `invoiceId` — TASK_187 S3/B5: an admin message that carries a freshly-sent
-// invoice. Accepted here (so the composer's payload never 400s); validation +
-// persistence of the reference land with the invoice work. While it is absent
-// this route is the plain reply path below.
+// invoice. Parsed here, VALIDATED + stored inside `addAdminMessage` (the
+// invoice must exist and belong to the ticket's user — a bad ref 400s with
+// nothing written). While it is absent this route is the plain reply path.
 const messageSchema = z.object({
   body: z.string().min(1).max(10_000),
   invoiceId: z.string().max(64).nullish(),
@@ -45,7 +45,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const session = await getAdminSession();
-  const result = await addAdminMessage(id, parsed.body, session?.sub ?? null);
+  const result = await addAdminMessage(id, parsed.body, session?.sub ?? null, parsed.invoiceId);
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });
   }

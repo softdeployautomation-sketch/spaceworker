@@ -97,6 +97,8 @@ interface InvoiceRow {
   status: string;
   createdAt: Date;
   paidAt: Date | null;
+  /** TASK_187 — admin term override; NULL = standard term (30). */
+  days: number | null;
 }
 
 interface PaymentRow {
@@ -122,7 +124,7 @@ let idSeq = 0;
 const nextId = (prefix: string) => `${prefix}_${++idSeq}`;
 
 const store: {
-  users: { id: string }[];
+  users: { id: string; email: string }[];
   invoices: InvoiceRow[];
   payments: PaymentRow[];
   attempts: AttemptRow[];
@@ -180,12 +182,20 @@ const prisma = {
       return rows.map((r) => ({ ...r }));
     },
     create: async (args: {
-      data: { userId: string; plan: string; tier: number; amountUsd: number; methods: Record<string, string | null> };
+      data: {
+        userId: string;
+        plan: string;
+        tier: number;
+        amountUsd: number;
+        methods: Record<string, string | null>;
+        days?: number;
+      };
     }) => {
       const row: InvoiceRow = {
         id: nextId("inv"),
         status: "open",
         paidAt: null,
+        days: null, // overridden only when the admin sent one (TASK_187)
         createdAt: new Date(Date.now() + idSeq),
         ...args.data,
       };
@@ -288,6 +298,8 @@ interface Grant {
 const grants: Grant[] = [];
 const creditCalls: Array<Record<string, unknown>> = [];
 const notifyCalls: Array<Record<string, unknown>> = [];
+/** TASK_187 B3 — what the invoice-email notifier was asked to send. */
+const invoiceNotifyCalls: Array<Record<string, unknown>> = [];
 
 const PRISMA_SHIM = { prisma };
 const SESSION_SHIM = { getSession: async () => session };
@@ -328,7 +340,18 @@ function loadLicenseService(): {
 }
 
 function adminInvoiceDeps(): Overrides {
-  return { "@/lib/prisma": PRISMA_SHIM, "@/lib/admin-auth": ADMIN_SHIM, "@/lib/admin-settings": SETTINGS_SHIM };
+  return {
+    "@/lib/prisma": PRISMA_SHIM,
+    "@/lib/admin-auth": ADMIN_SHIM,
+    "@/lib/admin-settings": SETTINGS_SHIM,
+    // TASK_187 — the real module's `import "server-only"` throws under plain
+    // node; record the ROUTE's decision instead (same pattern as support-notify).
+    "@/lib/invoice-notify": {
+      notifyUserInvoiceSent: (input: Record<string, unknown>) => {
+        invoiceNotifyCalls.push(input);
+      },
+    },
+  };
 }
 
 function userInvoicesDeps(): Overrides {
@@ -390,6 +413,7 @@ function seedInvoice(p: Partial<InvoiceRow> & { id: string }): InvoiceRow {
     methods: { ...SNAPSHOT },
     status: "open",
     paidAt: null,
+    days: null,
     createdAt: new Date(Date.now() + idSeq),
     ...p,
   };
@@ -416,7 +440,10 @@ function seedPayment(p: Partial<PaymentRow> & { id: string }): PaymentRow {
 
 function resetStore(): void {
   idSeq = 0;
-  store.users = [{ id: "u1" }, { id: "u2" }];
+  store.users = [
+    { id: "u1", email: "u1@test.dev" },
+    { id: "u2", email: "u2@test.dev" },
+  ];
   store.invoices = [];
   store.payments = [];
   store.attempts = [];
@@ -425,6 +452,7 @@ function resetStore(): void {
   grants.length = 0;
   creditCalls.length = 0;
   notifyCalls.length = 0;
+  invoiceNotifyCalls.length = 0;
   settings = { ...DEFAULT_SETTINGS };
   session = null;
   isAdmin = true;
@@ -483,21 +511,138 @@ test("POST defaults amountUsd to the configured plan price and validates every o
   assert.equal(store.invoices[0].amountUsd, 49, "the admin's edited amount stands");
 });
 
-test("POST snapshots the payout methods from settings — never the request body", async () => {
+test("POST methods: absent ⇒ the settings snapshot; an explicit override wins key-by-key", async () => {
   const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
-  const res = await POST(
-    req({
-      plan: "premium_plus",
-      methods: { btc: "ATTACKER_ADDR", usdt_trc20: "EVIL", usdt_erc20: "MORE_EVIL" },
-    }),
+
+  // Absent key (TASK_184 contract) — silence never gives the body a say.
+  const snap = await POST(req({ plan: "premium_plus" }), ctx({ id: "u1" }));
+  assert.equal(snap.status, 201);
+  assert.deepEqual(
+    (snap.body as { invoice: InvoiceRow }).invoice.methods,
+    // The SETTINGS shim — i.e. the snapshot the send-time settings produce
+    // (distinct from the seeded-row SNAPSHOT default, which is *_AT_SEND).
+    { btc: "BTC_ADMIN", usdt_trc20: "TRC_ADMIN", usdt_erc20: "ERC_ADMIN" },
+    "no body methods ⇒ the AdminSettings snapshot at send time",
+  );
+
+  // One-open-per-user: settle the first so the override case can run.
+  store.invoices[0].status = "paid";
+
+  // TASK_187 — an explicit, chain-validated entry beats the snapshot key by
+  // key; chains the admin didn't mention keep the snapshot's value.
+  const over = await POST(
+    req({ plan: "premium_plus", methods: { btc: "COMPOSER_BTC" } }),
     ctx({ id: "u1" }),
   );
-  assert.equal(res.status, 201);
-  const invoice = (res.body as { invoice: InvoiceRow }).invoice;
+  assert.equal(over.status, 201);
   assert.deepEqual(
-    invoice.methods,
-    { btc: "BTC_ADMIN", usdt_trc20: "TRC_ADMIN", usdt_erc20: "ERC_ADMIN" },
-    "methods come from AdminSettings at send time; the body's copy is ignored",
+    (over.body as { invoice: InvoiceRow }).invoice.methods,
+    { btc: "COMPOSER_BTC", usdt_trc20: "TRC_ADMIN", usdt_erc20: "ERC_ADMIN" },
+    "override wins for btc; untouched chains keep the snapshot",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TASK_187 B8 — the term override (`days`), strict keys, and the invoice email.
+// ---------------------------------------------------------------------------
+
+test("POST stores a days override (integer ≥1); an absent key keeps NULL (standard term)", async () => {
+  const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
+
+  const ok = await POST(req({ plan: "premium_plus", days: 45 }), ctx({ id: "u1" }));
+  assert.equal(ok.status, 201);
+  assert.equal(store.invoices[0].days, 45, "the admin's term lands on the row");
+
+  store.invoices[0].status = "paid";
+  const absent = await POST(req({ plan: "premium_plus" }), ctx({ id: "u1" }));
+  assert.equal(absent.status, 201);
+  assert.equal(store.invoices[1].days, null, "no days key ⇒ NULL = standard term");
+});
+
+test("POST refuses invalid days (0, negative, fraction, non-number) and writes nothing", async () => {
+  const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
+  for (const bad of [0, -1, 1.5, "45", {}]) {
+    const res = await POST(req({ plan: "premium_plus", days: bad }), ctx({ id: "u1" }));
+    assert.equal(res.status, 400, `days ${JSON.stringify(bad)} must be refused`);
+  }
+  assert.equal(store.invoices.length, 0, "a refused term writes nothing");
+});
+
+test("POST refuses unknown body fields — a typo'd key never lands silently", async () => {
+  const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
+  const res = await POST(req({ plan: "premium_plus", daysx: 45 }), ctx({ id: "u1" }));
+  assert.equal(res.status, 400);
+  assert.match((res.body as { error: string }).error, /Unknown field: daysx/);
+  assert.equal(store.invoices.length, 0);
+});
+
+test("POST fires exactly ONE invoice email to the user's own address (invoice_sent)", async () => {
+  const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
+  const res = await POST(req({ plan: "premium_plus", amountUsd: 49 }), ctx({ id: "u1" }));
+  assert.equal(res.status, 201);
+  assert.equal(invoiceNotifyCalls.length, 1, "one 201 ⇒ exactly one notify");
+  assert.deepEqual(invoiceNotifyCalls[0], {
+    invoiceId: (res.body as { invoice: InvoiceRow }).invoice.id,
+    to: "u1@test.dev", // the SESSION user's own address — never body-derived
+    plan: "premium_plus",
+    amountUsd: 49,
+  });
+});
+
+test("PATCH sets and clears the days override while open; invalid days change nothing", async () => {
+  seedInvoice({ id: "inv_d", userId: "u1" });
+  const { PATCH } = loadRoute(PATCH_ROUTE, adminInvoiceDeps());
+
+  const set = await PATCH(req({ days: 45 }), ctx({ id: "u1", invoiceId: "inv_d" }));
+  assert.equal(set.status, 200);
+  assert.equal(store.invoices[0].days, 45);
+
+  const bad = await PATCH(req({ days: 0 }), ctx({ id: "u1", invoiceId: "inv_d" }));
+  assert.equal(bad.status, 400);
+  assert.equal(store.invoices[0].days, 45, "a refused value leaves the row alone");
+
+  const clear = await PATCH(req({ days: null }), ctx({ id: "u1", invoiceId: "inv_d" }));
+  assert.equal(clear.status, 200);
+  assert.equal(store.invoices[0].days, null, "null clears back to the standard term");
+});
+
+test("PATCH methods: absent ⇒ untouched even after rotation; explicit edit merges over the stored snapshot", async () => {
+  seedInvoice({ id: "inv_m", userId: "u1" });
+  settings.btcWallet = "BTC_ROTATED"; // admin rotates AFTER the invoice went out
+  const { PATCH } = loadRoute(PATCH_ROUTE, adminInvoiceDeps());
+
+  const untouched = await PATCH(req({ amountUsd: 70 }), ctx({ id: "u1", invoiceId: "inv_m" }));
+  assert.equal(untouched.status, 200);
+  assert.deepEqual(store.invoices[0].methods, { ...SNAPSHOT }, "an absent methods key never re-snapshots");
+
+  const edit = await PATCH(req({ methods: { btc: "PATCH_BTC" } }), ctx({ id: "u1", invoiceId: "inv_m" }));
+  assert.equal(edit.status, 200);
+  assert.deepEqual(
+    store.invoices[0].methods,
+    // Merged over the row's OWN stored snapshot (*_AT_SEND) — not today's
+    // settings (*_ADMIN), which is exactly what makes this test meaningful.
+    { btc: "PATCH_BTC", usdt_trc20: "TRC_AT_SEND", usdt_erc20: "ERC_AT_SEND" },
+    "the edit merges over the CURRENT stored snapshot, not today's settings",
+  );
+
+  const unknownChain = await PATCH(req({ methods: { doge: "D" } }), ctx({ id: "u1", invoiceId: "inv_m" }));
+  assert.equal(unknownChain.status, 400, "an unknown chain is refused, not stored");
+});
+
+test("settleLinkedInvoice honors the invoice's days override — both plans, both grants", async () => {
+  seedInvoice({ id: "inv_45p", userId: "u1", tier: 5, days: 45 });
+  seedInvoice({ id: "inv_14x", userId: "u2", plan: "premium_xdevice", tier: 3, days: 14 });
+  const ls = loadLicenseService();
+
+  assert.equal(await ls.settleLinkedInvoice({ id: "pay_45p", userId: "u1", invoiceId: "inv_45p" }), true);
+  assert.equal(await ls.settleLinkedInvoice({ id: "pay_14x", userId: "u2", invoiceId: "inv_14x" }), true);
+  assert.deepEqual(
+    grants,
+    [
+      { fn: "grantPremium", userId: "u1", days: 45 },
+      { fn: "grantXDeviceTerm", userId: "u2", days: 14 },
+    ],
+    "the override flows to BOTH grant paths; NULL still falls back to 30 (covered above)",
   );
 });
 

@@ -60,11 +60,36 @@ export interface TicketDomainRef {
   status: string;
 }
 
+/**
+ * TASK_187 B4 — an invoice attached to a thread message, as BOTH sides see it.
+ *
+ * `days` is deliberately ABSENT: it is an admin-only term override and must
+ * never reach a user-facing payload (TASK_181). The resolver below does not
+ * even select it, so there is no code path that could leak it.
+ */
+export interface ThreadInvoiceView {
+  id: string;
+  plan: string;
+  tier: number;
+  amountUsd: number;
+  status: string;
+  methods: unknown; // Json — the same {btc, usdt_trc20, usdt_erc20} shape the billing card renders
+  createdAt: string;
+  paidAt: string | null;
+}
+
 export interface SupportMessageView {
   id: string;
   authorRole: string;
   body: string;
   createdAt: string;
+  /**
+   * TASK_187 — the soft invoice ref stored on the row. Always present on
+   * DETAIL reads (null = no invoice attached); plain create-returns may omit.
+   */
+  invoiceId?: string | null;
+  /** TASK_187 — resolved LIVE at read time; null = dangling/not-this-user ref. */
+  invoice?: ThreadInvoiceView | null;
 }
 
 export interface SupportTicketView {
@@ -95,6 +120,13 @@ export interface SupportTicketDetailView extends SupportTicketView {
   domain: TicketDomainRef | null;
   /** Admin views only; omitted for the ticket's own owner. */
   userEmail?: string;
+  /**
+   * TASK_187 B7 — the OWNER's id, admin views only, for the invoice composer
+   * (POST /api/admin/users/[id]/invoices needs the target user). Same
+   * admin-only rule as userEmail: the owner already knows their own id, and a
+   * non-owner must never see it.
+   */
+  userId?: string;
 }
 
 /**
@@ -338,13 +370,76 @@ function toMessageView(row: {
   authorRole: string;
   body: string;
   createdAt: Date;
+  invoiceId?: string | null;
 }): SupportMessageView {
   return {
     id: row.id,
     authorRole: row.authorRole,
     body: row.body,
     createdAt: row.createdAt.toISOString(),
+    // TASK_187 — selected on DETAIL reads and on admin message creation;
+    // create-returns that didn't select it resolve to null (a fresh message
+    // never carries an invoice unless the admin just attached one).
+    invoiceId: row.invoiceId ?? null,
   };
+}
+
+/**
+ * TASK_187 B4 — resolve each message's soft `invoiceId` into a card-ready
+ * snapshot, LIVE at read time (never denormalized into the message row).
+ *
+ * - `findUnique` per DISTINCT id, sequentially: a thread carries 0–2 invoices,
+ *   and per-id lookups keep the path testable (the test fake matches equality
+ *   `where {id}` only — an `in:` batch would silently return nothing).
+ * - `ownerUserId` (user side only) resolves any invoice that is NOT the
+ *   caller's as absent: a forged or stale ref must never surface another
+ *   user's amount/addresses. The admin side omits it — admins see every
+ *   ticket, same asymmetry as readDomainRef.
+ * - Neither `days` nor `userId` is selected, so neither can escape here.
+ */
+async function resolveMessageInvoices(
+  messages: SupportMessageView[],
+  ownerUserId?: string
+): Promise<void> {
+  const wanted = new Set<string>();
+  for (const m of messages) if (m.invoiceId) wanted.add(m.invoiceId);
+  if (wanted.size === 0) return;
+
+  const byId = new Map<string, ThreadInvoiceView | null>();
+  for (const invoiceId of wanted) {
+    const row = await prisma.premiumInvoice.findUnique({
+      where: { id: invoiceId },
+      select: {
+        id: true,
+        userId: true,
+        plan: true,
+        tier: true,
+        amountUsd: true,
+        status: true,
+        methods: true,
+        createdAt: true,
+        paidAt: true,
+      },
+    });
+    if (!row || (ownerUserId !== undefined && row.userId !== ownerUserId)) {
+      byId.set(invoiceId, null); // missing, or not this user's → render no card
+      continue;
+    }
+    byId.set(invoiceId, {
+      id: row.id,
+      plan: row.plan,
+      tier: row.tier,
+      amountUsd: row.amountUsd,
+      status: row.status,
+      methods: row.methods,
+      createdAt: row.createdAt.toISOString(),
+      paidAt: row.paidAt ? row.paidAt.toISOString() : null,
+    });
+  }
+
+  for (const m of messages) {
+    if (m.invoiceId) m.invoice = byId.get(m.invoiceId) ?? null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -433,16 +528,20 @@ export async function getUserTicket(
       ...TICKET_LIST_SELECT,
       messages: {
         orderBy: { createdAt: "asc" as const },
-        select: { id: true, authorRole: true, body: true, createdAt: true },
+        select: { id: true, authorRole: true, body: true, createdAt: true, invoiceId: true },
       },
     },
   });
   if (!row) return ticketNotFound();
 
   const domain = row.domainRefId ? await readDomainRef(row.domainRefId, userId) : null;
+  const messages = row.messages.map(toMessageView);
+  // TASK_187 B4 — owner-scoped: an invoice that isn't THIS user's resolves as
+  // absent instead of ever rendering in their thread.
+  await resolveMessageInvoices(messages, userId);
   return {
     ok: true,
-    value: { ...toTicketView(row), messages: row.messages.map(toMessageView), domain },
+    value: { ...toTicketView(row), messages, domain },
   };
 }
 
@@ -601,23 +700,30 @@ export async function getAdminTicket(
     where: { id: ticketId },
     select: {
       ...TICKET_LIST_SELECT,
-      user: { select: { email: true } },
+      user: { select: { id: true, email: true } },
       messages: {
         orderBy: { createdAt: "asc" as const },
-        select: { id: true, authorRole: true, body: true, createdAt: true },
+        select: { id: true, authorRole: true, body: true, createdAt: true, invoiceId: true },
       },
     },
   });
   if (!row) return ticketNotFound();
 
   const domain = row.domainRefId ? await readDomainRef(row.domainRefId) : null;
+  const messages = row.messages.map(toMessageView);
+  // TASK_187 B4 — no owner scope on purpose: admins see every ticket, so a
+  // ref to ANY user's invoice resolves (same asymmetry as readDomainRef).
+  await resolveMessageInvoices(messages);
   return {
     ok: true,
     value: {
       ...toTicketView(row),
-      messages: row.messages.map(toMessageView),
+      messages,
       domain,
       userEmail: row.user.email,
+      // TASK_187 B7 — the composer needs the owner's id to POST an invoice
+      // at /api/admin/users/<id>/invoices.
+      userId: row.user.id,
     },
   };
 }
@@ -633,25 +739,56 @@ export async function getAdminTicket(
  *
  * `adminId` is nullable and stored as-is, matching the column: it is an audit hint,
  * not a relationship, so it must not be able to block an admin's account deletion.
+ *
+ * TASK_187 B5 — `invoiceId` optionally attaches an invoice to this message (the
+ * thread's invoice card). It is validated HERE, not in the route: the invoice
+ * must exist AND belong to the TICKET'S user, because attaching a stranger's
+ * invoice would put their amount and payout addresses into somebody else's
+ * thread. A bad ref is a 400 with nothing written.
  */
 export async function addAdminMessage(
   ticketId: string,
   body: string,
-  adminId: string | null
+  adminId: string | null,
+  invoiceId?: string | null
 ): Promise<SupportResult<SupportMessageView>> {
   const validated = validateBody(body);
   if (!validated.ok) return validated;
 
-  const exists = await prisma.supportTicket.findUnique({
+  // Empty/whitespace ref behaves like no invoice instead of failing validation.
+  const attachedInvoiceId = invoiceId && invoiceId.trim() !== "" ? invoiceId.trim() : null;
+
+  const ticket = await prisma.supportTicket.findUnique({
     where: { id: ticketId },
-    select: { id: true },
+    select: { id: true, userId: true },
   });
-  if (!exists) return ticketNotFound();
+  if (!ticket) return ticketNotFound();
+
+  if (attachedInvoiceId) {
+    const invoice = await prisma.premiumInvoice.findUnique({
+      where: { id: attachedInvoiceId },
+      select: { id: true, userId: true },
+    });
+    if (!invoice || invoice.userId !== ticket.userId) {
+      return {
+        ok: false,
+        status: 400,
+        code: "invoice_not_found",
+        message: "That invoice doesn't exist for this ticket's user.",
+      };
+    }
+  }
 
   const [message] = await prisma.$transaction([
     prisma.supportMessage.create({
-      data: { ticketId, authorRole: AUTHOR_ADMIN, authorId: adminId, body: validated.value },
-      select: { id: true, authorRole: true, body: true, createdAt: true },
+      data: {
+        ticketId,
+        authorRole: AUTHOR_ADMIN,
+        authorId: adminId,
+        body: validated.value,
+        invoiceId: attachedInvoiceId,
+      },
+      select: { id: true, authorRole: true, body: true, createdAt: true, invoiceId: true },
     }),
     // Stamp updatedAt explicitly rather than relying on an empty update: the queue
     // shows "last activity", and a reply that did not move that timestamp would make

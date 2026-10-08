@@ -3669,6 +3669,12 @@ model SupportMessage {
   // not become a hard dependency on that User row existing forever. There is no
   // relation, so no FK can break when an admin's account is removed.
   authorId   String?
+  // TASK_187 S3/B5 — SOFT reference to the PremiumInvoice this admin message
+  // carries (the support-thread invoice card). No FK, deliberately, house style
+  // like SupportTicket.domainRefId: the message must keep its body no matter
+  // what happens to the invoice row, and every reader treats a missing invoice
+  // as "no invoice attached" instead of failing the whole thread read.
+  invoiceId  String?
   body       String
   createdAt  DateTime      @default(now())
 
@@ -3704,6 +3710,14 @@ model PremiumInvoice {
   plan       String
   tier       Int // 3 | 5 — derived from plan, stored for self-description
   amountUsd  Float // admin-editable before send AND while open (validated > 0)
+  // TASK_187 S3 (MONEY) — admin-override term for THIS invoice, in days.
+  // NULL = the standard term (PREMIUM_DAYS_PER_CHARGE), so every pre-TASK_187
+  // row keeps its meaning without a backfill. Set only from the admin support
+  // composer (validated integer ≥ 1, plus a DB CHECK), consumed only by
+  // settleLinkedInvoice at approval time, and NEVER selected into any
+  // user-facing read — the customer sees plan + amount, never the term
+  // (TASK_181 wording rule).
+  days       Int?
   // "open" (awaiting payment) | "paid" (admin settled it). String, not enum —
   // same house convention as SupportTicket.status; readers treat ONLY "paid"
   // as settled, anything else renders as awaiting payment.

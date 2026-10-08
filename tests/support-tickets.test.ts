@@ -66,7 +66,26 @@ interface FakeMessage {
   authorRole: string;
   authorId: string | null;
   body: string;
+  /**
+   * TASK_187 — soft ref to the invoice the admin attached (absent/null = none).
+   * Optional so pre-TASK_187 literals keep compiling; reads coalesce to null.
+   */
+  invoiceId?: string | null;
   createdAt: Date;
+}
+
+/** TASK_187 B5 — invoice rows the thread-card resolver looks up. */
+interface FakeInvoice {
+  id: string;
+  userId: string;
+  plan: string;
+  tier: number;
+  amountUsd: number;
+  methods: Record<string, string | null>;
+  status: string;
+  createdAt: Date;
+  paidAt: Date | null;
+  days: number | null;
 }
 
 interface FakeDomain {
@@ -81,7 +100,8 @@ const store: {
   tickets: FakeTicket[];
   messages: FakeMessage[];
   domains: FakeDomain[];
-} = { tickets: [], messages: [], domains: [] };
+  invoices: FakeInvoice[];
+} = { tickets: [], messages: [], domains: [], invoices: [] };
 
 /** Every write, in order, so a test can prove nothing was written at all. */
 let writes: Array<{ op: string; data: Record<string, unknown> }> = [];
@@ -127,6 +147,27 @@ function ticket(over: Partial<FakeTicket> & { id: string; userId: string }): Fak
 }
 
 /**
+ * TASK_187 B5 — a seeded invoice for the attach/resolve tests. `days` exists
+ * only so a resolver that wrongly selected it would be visible in assertions:
+ * the ThreadInvoiceView must never contain it.
+ */
+function seedInvoice(over: Partial<FakeInvoice> & { id: string; userId: string }): FakeInvoice {
+  const row: FakeInvoice = {
+    plan: "premium_plus",
+    tier: 5,
+    amountUsd: 79.97,
+    methods: { btc: "BTC_A", usdt_trc20: "TRC_A", usdt_erc20: "ERC_A" },
+    status: "open",
+    createdAt: clock,
+    paidAt: null,
+    days: null,
+    ...over,
+  };
+  store.invoices.push(row);
+  return row;
+}
+
+/**
  * Attach the two relation-shaped extras the service's mapper reads.
  *
  * `take: 1` means the LIST projection ("last activity only"), anything else means the
@@ -147,9 +188,12 @@ function withRelations(t: FakeTicket, select: Record<string, unknown> | undefine
       id: m.id,
       authorRole: m.authorRole,
       body: m.body,
+      invoiceId: m.invoiceId,
       createdAt: m.createdAt,
     })),
-    user: { email: userEmails[t.userId] ?? "unknown@sw.dev" },
+    // `id` is what getAdminTicket's `userId` (the reply composer's owner id)
+    // reads — the REAL service selects it, so the join must carry it.
+    user: { id: t.userId, email: userEmails[t.userId] ?? "unknown@sw.dev" },
   };
 }
 
@@ -179,6 +223,21 @@ const fakePrisma = {
     findUnique: async ({ where }: { where: { id: string } }) => {
       queries.push({ op: "userDomain.findUnique", where });
       return store.domains.find((d) => d.id === where.id) ?? null;
+    },
+  },
+  // TASK_187 B5 — equality `where {id}` only, which is exactly the shape the
+  // service's per-id resolver uses (`in:` batches would match nothing here).
+  premiumInvoice: {
+    findUnique: async ({ where, select }: { where: { id: string }; select?: Record<string, unknown> }) => {
+      queries.push({ op: "premiumInvoice.findUnique", where });
+      const inv = store.invoices.find((i) => i.id === where.id);
+      if (!inv) return null;
+      if (!select) return { ...inv };
+      const picked: Record<string, unknown> = {};
+      for (const k of Object.keys(select)) {
+        if (select[k]) picked[k] = (inv as unknown as Record<string, unknown>)[k];
+      }
+      return picked;
     },
   },
   supportTicket: {
@@ -271,10 +330,17 @@ const fakePrisma = {
         authorRole: data.authorRole as string,
         authorId: (data.authorId ?? null) as string | null,
         body: data.body as string,
+        invoiceId: (data.invoiceId ?? null) as string | null,
         createdAt: clock,
       };
       store.messages.push(m);
-      return { id: m.id, authorRole: m.authorRole, body: m.body, createdAt: m.createdAt };
+      return {
+        id: m.id,
+        authorRole: m.authorRole,
+        body: m.body,
+        invoiceId: m.invoiceId,
+        createdAt: m.createdAt,
+      };
     },
   },
   /** The array form only — which is the only form the service uses. */
@@ -425,6 +491,7 @@ beforeEach(() => {
   store.tickets = [];
   store.messages = [];
   store.domains = [{ id: "d_mine", apex: "mine.com", status: "active", ownerKind: "user", ownerUserId: "user_a" }];
+  store.invoices = [];
   writes = [];
   queries = [];
   seq = 0;
@@ -799,6 +866,9 @@ test("TASK_187 S2: an admin reply emails the ticket's OWNER (not the admin)", as
 test("TASK_187 S2: a reply carrying an invoiceId sends NO reply email — one arrival, one email", async () => {
   adminSession = { sub: "admin" };
   store.tickets.push(ticket({ id: "t_1", userId: "user_a" }));
+  // The ref must VALIDATE (it exists AND belongs to the ticket's user) before
+  // the notify decision runs — B5's addAdminMessage checks membership first.
+  seedInvoice({ id: "inv_1", userId: "user_a" });
   const res = await adminMsgRoute.POST(
     jsonReq("POST", { body: "invoice attached", invoiceId: "inv_1" }),
     ctx("t_1")
@@ -806,6 +876,95 @@ test("TASK_187 S2: a reply carrying an invoiceId sends NO reply email — one ar
   assert.equal(res.status, 201, "invoiceId is accepted — it must not 400 the composer");
   assert.equal(store.messages.length, 1, "the reply itself is still stored");
   assert.deepEqual(notifyCalls, [], "the invoice-sent email covers this arrival");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_187 B5 — the invoice ATTACH: store, validate, resolve into a card.
+// ---------------------------------------------------------------------------
+
+test("TASK_187 B5: an attached invoice resolves into a card — WITHOUT days or userId", async () => {
+  adminSession = { sub: "admin" };
+  store.tickets.push(ticket({ id: "t_1", userId: "user_a" }));
+  seedInvoice({ id: "inv_ok", userId: "user_a" });
+
+  const res = await adminMsgRoute.POST(
+    jsonReq("POST", { body: "here is your invoice", invoiceId: "inv_ok" }),
+    ctx("t_1")
+  );
+  assert.equal(res.status, 201);
+  assert.equal(store.messages[0].invoiceId, "inv_ok", "the ref is stored on the message");
+
+  type Thread = { messages?: Array<Record<string, unknown>>; userId?: string };
+
+  // The OWNER reads the thread: the card resolves with ONLY public fields.
+  const userDetail = await readBody(await userIdRoute.GET(jsonReq("GET"), ctx("t_1")));
+  const userMsg = (userDetail.ticket as Thread | undefined)?.messages?.[0] as Record<string, unknown>;
+  assert.equal(userMsg.invoiceId, "inv_ok");
+  const card = userMsg.invoice as Record<string, unknown>;
+  assert.ok(card, "the owner sees the invoice card");
+  assert.equal(card.id, "inv_ok");
+  assert.equal(card.amountUsd, 79.97);
+  assert.equal(card.status, "open");
+  assert.equal("days" in card, false, "days is admin-only money — never on a card");
+  assert.equal("userId" in card, false, "a card carries no owner identity");
+
+  // The ADMIN reads it too — unscoped, plus the owner id the composer needs.
+  const adminDetail = await readBody(await adminIdRoute.GET(jsonReq("GET"), ctx("t_1")));
+  const adminThread = adminDetail.ticket as Thread | undefined;
+  const adminMsg = adminThread?.messages?.[0] as Record<string, unknown>;
+  assert.equal(adminMsg.invoiceId, "inv_ok");
+  assert.ok(adminMsg.invoice, "the admin side resolves the card too");
+  assert.equal(adminThread?.userId, "user_a", "the reply composer's owner id");
+});
+
+test("TASK_187 B5: attaching a stranger's invoice is a 400 with NOTHING written", async () => {
+  adminSession = { sub: "admin" };
+  store.tickets.push(ticket({ id: "t_1", userId: "user_a" }));
+  seedInvoice({ id: "inv_foreign", userId: "user_b" });
+
+  const res = await adminMsgRoute.POST(
+    jsonReq("POST", { body: "sneaky", invoiceId: "inv_foreign" }),
+    ctx("t_1")
+  );
+  assert.equal(res.status, 400);
+  assert.equal((await readBody(res)).code, "invoice_not_found");
+  assert.equal(store.messages.length, 0, "validation runs BEFORE any write");
+  assert.equal(notifyCalls.length, 0, "...and before any notify");
+});
+
+test("TASK_187 B5: a user-side foreign or dangling invoiceId renders NO card (thread intact)", async () => {
+  store.tickets.push(ticket({ id: "t_1", userId: "user_a" }));
+  seedInvoice({ id: "inv_foreign", userId: "user_b" });
+  // Forge the refs straight into the store — the USER side never writes them.
+  store.messages.push(
+    {
+      id: "m_forged",
+      ticketId: "t_1",
+      authorRole: "admin",
+      authorId: null,
+      body: "attached",
+      invoiceId: "inv_foreign",
+      createdAt: clock,
+    },
+    {
+      id: "m_dangling",
+      ticketId: "t_1",
+      authorRole: "admin",
+      authorId: null,
+      body: "gone",
+      invoiceId: "inv_missing",
+      createdAt: clock,
+    }
+  );
+
+  const res = await userIdRoute.GET(jsonReq("GET"), ctx("t_1"));
+  assert.equal(res.status, 200, "a bad ref must never break the thread");
+  const thread = (await readBody(res)).ticket as { messages?: Array<Record<string, unknown>> };
+  const forged = thread.messages?.find((m) => m.id === "m_forged") as Record<string, unknown>;
+  const dangling = thread.messages?.find((m) => m.id === "m_dangling") as Record<string, unknown>;
+  assert.equal(forged.invoice, null, "another user's invoice renders no card");
+  assert.equal(dangling.invoice, null, "a missing invoice renders no card");
+  assert.equal(forged.invoiceId, "inv_foreign", "the ref itself stays on the row");
 });
 
 test("TASK_187 S2: a THROWING notifier never changes the response — 201 stays 201", async () => {

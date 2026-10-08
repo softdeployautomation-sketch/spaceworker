@@ -40,9 +40,12 @@ import { grantEntitlement, type EntitlementKey } from "./entitlements";
 // recovery.
 //
 // The grant IS the existing grant-premium path: grantPremium (tier 5) or
-// grantXDeviceTerm (tier 3), one PREMIUM_DAYS_PER_CHARGE term exactly like
-// bumpWebTier — no new grant code, and no term/duration is ever rendered for
-// the user (TASK_181 wording rule).
+// grantXDeviceTerm (tier 3), one term exactly like bumpWebTier — no new grant
+// code, and no term/duration is ever rendered for the user (TASK_181 wording
+// rule). TASK_187 B6: the length of that term is `invoice.days ??` the
+// standard PREMIUM_DAYS_PER_CHARGE, so an admin's per-invoice override is
+// applied HERE and nowhere else — while a NULL `days` (every pre-TASK_187
+// invoice) settles exactly as before.
 //
 // Returns true only when THIS call settled the invoice (claim won AND grant
 // ran). False = nothing to settle (no ref / not own / not open / claim lost).
@@ -63,10 +66,13 @@ export async function settleLinkedInvoice(payment: LinkedInvoicePayment): Promis
   });
   if (claim.count === 0) return false; // lost the race — another approval settled it
 
+  // TASK_187 B6 — the admin's per-invoice term override wins when set; NULL
+  // keeps the standard term, so pre-TASK_187 invoices are unaffected.
+  const days = invoice.days ?? PREMIUM_DAYS_PER_CHARGE;
   if (invoice.tier === 3) {
-    await grantXDeviceTerm(payment.userId, PREMIUM_DAYS_PER_CHARGE);
+    await grantXDeviceTerm(payment.userId, days);
   } else {
-    await grantPremium(payment.userId, PREMIUM_DAYS_PER_CHARGE);
+    await grantPremium(payment.userId, days);
   }
   return true;
 }
