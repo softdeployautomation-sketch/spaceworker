@@ -6,6 +6,7 @@ import { verifyBtcPayment, verifyUsdtPayment, isPendingNote } from "@/lib/crypto
 import { handleApprovedPayment } from "@/lib/license-service";
 import { findOrCreateUser } from "@/lib/find-or-create-user";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
+import { notifyAdminPendingPayment } from "@/lib/payment-notify";
 import {
   getProduct,
   WEB_SUBSCRIPTION,
@@ -145,6 +146,21 @@ export async function POST(req: Request) {
     },
   });
 
+  // TASK_186 — every manual-review exit pings the owner (email + Telegram) on
+  // the usual admin route. Sync + fire-and-forget: it can never fail this
+  // response; approved payments don't ping (no confirmation is needed).
+  const alertAdmin = (stage: string, status: string, hasHash: boolean) =>
+    notifyAdminPendingPayment({
+      paymentId: payment.id,
+      product: product.id,
+      amountUsd,
+      method: paymentKind,
+      stage,
+      status,
+      hasHash,
+      userRef: userId ?? undefined,
+    });
+
   // No hash given — nothing to look up on-chain. Leave it "pending" for manual
   // admin review only; never call the verifier with an empty/null hash, and
   // never let it enter the on-chain result branches below (which is also what
@@ -154,6 +170,7 @@ export async function POST(req: Request) {
     await prisma.paymentVerificationAttempt.create({
       data: { paymentId: payment.id, success: false, note: "No transaction hash provided — awaiting manual review" },
     });
+    alertAdmin("submitted", "pending", false);
     return NextResponse.json({ paymentId: payment.id, status: "pending", note: "Awaiting manual review" });
   }
 
@@ -170,6 +187,7 @@ export async function POST(req: Request) {
         note: "USDT-ERC20 has no automated verification yet — awaiting manual review",
       },
     });
+    alertAdmin("submitted", "pending", true);
     return NextResponse.json({ paymentId: payment.id, status: "pending", note: "Awaiting manual review" });
   }
 
@@ -198,6 +216,8 @@ export async function POST(req: Request) {
   await prisma.paymentVerificationAttempt.create({
     data: { paymentId: payment.id, success: result.ok, note: result.note },
   });
+
+  if (status !== "approved") alertAdmin("submitted", status, true);
 
   return NextResponse.json({ paymentId: payment.id, status, note: result.note });
 }

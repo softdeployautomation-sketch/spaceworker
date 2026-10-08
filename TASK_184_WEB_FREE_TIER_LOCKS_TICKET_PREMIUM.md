@@ -66,6 +66,30 @@ Subscribe→billing path stays as-is (its $500 card is a wrapper feature).
       template dropdown present, price strings GONE from web pages (static
       grep-style lock), full gate battery, live e2e with a test account.
 
+## Phase C — tier-3 (Premium XDevice) behaves like FREE on the web app
+
+Owner (2026-10-07): people who subscribe for XDevice (tier 3) get **one
+organization + devices in the wrapper**; on the **web app** they must be limited
+exactly like a free user — they can SEE the other tools (extractor, cyberlabs,
+hosting, …) but can't ACCESS them, and they request premium through the same
+ticket flow as a free user to unlock the web tools. The devices entitlement is
+the ONLY thing tier 3 carries on the web.
+
+- [ ] **C1 entitlement audit** — confirm `devices` is tier-3's only live
+      entitlement and every other key (extractor/cyberlabs/hosting/web…) stays
+      ungranted at tier 3 (they are today — verify, don't assume).
+- [ ] **C2 gate alignment** — Phase A's gates must key off "has this module's
+      entitlement", NOT off "tier >= N" anywhere; a tier-3 session hitting an
+      A2-gated route gets the same 403 + reason as a free user.
+- [ ] **C3 premium card on wrapper billing** — tier-3 user opening
+      `/dashboard/billing` sees the same "Request for Premium" ticket CTA (B2)
+      as free users; the wrapper's own XDevice subscribe flow stays untouched.
+- [ ] **C4 tests** — extend A4: tier-3 session asserted against every Phase A
+      gate (403) AND allowed on devices routes (200) — the positive control
+      that proves we didn't over-lock.
+- [ ] **C5 gates + live check** — battery + e2e: tier-3 account on web sees
+      locked tools + ticket CTA; same account in wrapper keeps device access.
+
 ## Order
-Phase A first (locks are pure gate hardening), then B1→B5.
-Owner validates A on web before B ships.
+Phase A first (locks are pure gate hardening), then C (rides on A's gates),
+then B1→B5. Owner validates A on web before B ships.

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { getAdminSettings } from "@/lib/admin-settings";
+import { notifyAdminPendingPayment } from "@/lib/payment-notify";
 import { WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 
 // POST /api/billing/topup — the two halves of a top-up, in one route.
@@ -150,6 +151,19 @@ async function attachHash(paymentId: string, txHashRaw: unknown, userId: string)
     },
   });
 
+  // TASK_186 — the customer has declared "I paid" (hash optional): ping the
+  // owner on the usual admin channels so the review starts now, not later.
+  notifyAdminPendingPayment({
+    paymentId: payment.id,
+    product: WALLET_TOPUP_PRODUCT_ID,
+    amountUsd: existing.amountUsd,
+    method: existing.kind,
+    stage: "attach",
+    status: "pending",
+    hasHash: Boolean(txHash),
+    userRef: userId,
+  });
+
   return NextResponse.json({
     paymentId: payment.id,
     status: payment.status,
@@ -233,6 +247,20 @@ async function openOrder(body: { amountUsd?: unknown; kind?: unknown }, userId: 
       success: false,
       note: "Wallet top-up opened — awaiting payment",
     },
+  });
+
+  // TASK_186 — the order row exists the moment it opens, so the owner hears
+  // about it immediately (stage "opened" tells them the money hasn't been
+  // declared yet; the follow-up "attach" ping arrives when the customer submits).
+  notifyAdminPendingPayment({
+    paymentId: payment.id,
+    product: WALLET_TOPUP_PRODUCT_ID,
+    amountUsd: payment.amountUsd,
+    method: kind,
+    stage: "opened",
+    status: "pending",
+    hasHash: false,
+    userRef: userId,
   });
 
   return NextResponse.json({

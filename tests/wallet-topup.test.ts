@@ -219,11 +219,18 @@ const NEVER = "POST /api/billing/topup must never move money";
 const ALICE = { getSession: async () => ({ userId: "u_alice" }) };
 
 /** The dependency set shared by every /api/billing/topup test. */
+// TASK_186 — the route now imports lib/payment-notify (owner email+Telegram
+// alerts). Overridden with a RECORDING fake so no real email/Telegram can fire
+// from a test, and so assertions can prove the alert happens exactly when the
+// payment reaches the manual-review queue.
+let paymentNotices: Array<Record<string, unknown>> = [];
+const capturePaymentNotice = { notifyAdminPendingPayment: (n: Record<string, unknown>) => void paymentNotices.push(n) };
 const topupDeps = (prisma: unknown, settings: Overrides): Overrides => ({
   "next/server": { NextResponse: fakeNextResponse },
   "@/lib/prisma": { prisma },
   "@/lib/session": ALICE,
   "@/lib/admin-settings": fakeSettings(settings),
+  "@/lib/payment-notify": capturePaymentNotice,
   "@/lib/products": { WALLET_TOPUP_PRODUCT_ID: "wallet_topup" },
   "@/lib/wallet": explodingWallet(NEVER),
   "@/lib/license-service": {
@@ -235,6 +242,7 @@ const topupDeps = (prisma: unknown, settings: Overrides): Overrides => ({
 
 beforeEach(() => {
   overrides = {};
+  paymentNotices = [];
 });
 
 
@@ -315,6 +323,9 @@ test("a valid top-up is created PENDING, for the session's user, and credits not
   assert.equal(rows[0].txHash, null);
   // An audit row exists before any money moves, so the admin queue shows intent.
   assert.ok(calls.some((c) => c.model === "attempt" && c.op === "create"));
+  // TASK_186 — opening the order pings the owner too (stage "opened").
+  assert.equal(paymentNotices.length, 1, "one owner alert when the order opens");
+  assert.equal(paymentNotices[0]?.stage, "opened");
 });
 
 test("a top-up with no session is refused", async () => {
@@ -403,6 +414,10 @@ test("submitting WITHOUT a hash is accepted and stays PENDING (owner: hash optio
     String((attempt?.args?.data as { note?: string } | undefined)?.note),
     /No transaction hash provided/,
   );
+  // TASK_186 — the owner's email+Telegram alert fires exactly here.
+  assert.equal(paymentNotices.length, 1, "one owner alert per manual-review submission");
+  assert.equal(paymentNotices[0]?.stage, "attach");
+  assert.equal(paymentNotices[0]?.hasHash, false);
 });
 
 test("a customer cannot attach a hash to ANOTHER user's top-up", async () => {

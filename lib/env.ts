@@ -162,6 +162,10 @@ export const env = {
   // alert helper no-ops (fail-soft, same discipline as every other optional
   // notification channel here).
   adminTelegramChatId: process.env.ADMIN_TELEGRAM_CHAT_ID ?? "",
+  // TASK_186 — destination for owner-facing payment alerts (lib/payment-notify).
+  // Falls back to the platform's own sending address so there is ALWAYS a
+  // recipient; point ADMIN_EMAIL at the owner's real inbox to override.
+  adminEmail: (process.env.ADMIN_EMAIL || process.env.EMAIL_FROM || "").trim(),
 
   port: number("PORT", 3400),
 };
