@@ -35,6 +35,10 @@ const MODULE_CODES: Record<EntitlementKey, string> = {
   devices: "xdevice_required",
   cyberlab: "cyberlab_required",
   hosting: "hosting_required",
+  // TASK_184 A6 — the private browser is a web module like any other: tier 5 or
+  // an explicit `browser` grant. Tier-3 Premium XDevice carries `devices` only,
+  // so a wrapper subscriber is locked out of the browser exactly like free.
+  browser: "browser_required",
 };
 
 export async function moduleToolsDenied(

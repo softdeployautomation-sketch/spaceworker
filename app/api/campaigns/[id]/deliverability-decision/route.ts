@@ -95,7 +95,7 @@ async function tryEnterSending(
 
 function trialCapResponse(): NextResponse {
   return NextResponse.json(
-    { error: "Daily send-time limit reached for your plan. Try again after UTC midnight, or upgrade to Premium." },
+    { error: "Daily send-time limit reached for your plan. Try again after UTC midnight, or upgrade to Premium Plus." },
     { status: 429 },
   );
 }

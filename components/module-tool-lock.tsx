@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Lock } from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { UPGRADE_TO_PREMIUM_PLUS } from "@/lib/plan-name";
 
 // TASK_184 A3 — THE shared lock card for web modules, the UI half of
 // lib/module-gate.ts. Free (tier 1) and tier-3 XDevice accounts may OPEN every
@@ -19,7 +20,7 @@ import { cn } from "@/lib/cn";
 // card is UX, never protection.
 //
 // CTA note (A3 → B2): until the support-ticket template lands, "Upgrade to
-// Premium" goes to /dashboard/settings?template=premium. B2 flips every CTA to
+// Premium Plus" goes to /dashboard/settings?template=premium. B2 flips every CTA to
 // open the support widget preloaded with the premium-request template.
 
 export type ModuleLockKey = "extractor" | "cyberlab" | "hosting" | "browser";
@@ -162,7 +163,7 @@ export function ModuleToolLockCard({
         href={MODULE_UPGRADE_HREF}
         className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
       >
-        Upgrade to Premium
+        {UPGRADE_TO_PREMIUM_PLUS}
       </Link>
     </div>
   );

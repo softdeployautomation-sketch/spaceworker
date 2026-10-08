@@ -390,7 +390,7 @@ export function HostingPanel() {
       // while this form sat open). The server re-checks both anyway.
       if (siteForm.engine === "cloudflare" && !siteForm.credentialId) {
         if (!status?.premium) {
-          setError("Premium hosting is part of the premium plan — upgrade, or host this site on the free server.");
+          setError("Premium hosting is part of Premium Plus — upgrade, or host this site on the free server.");
           return;
         }
         if (!status?.platformReady) {
@@ -402,7 +402,7 @@ export function HostingPanel() {
         // §19.9 Q1 ANSWERED: "Yours" is premium too — the select disables it, this
         // only catches stale state (the plan lapsed while the form sat open).
         if (!status?.premium) {
-          setError("Premium hosting is part of the premium plan — upgrade, or host this site on the free server.");
+          setError("Premium hosting is part of Premium Plus — upgrade, or host this site on the free server.");
           return;
         }
         if ((status?.credentials.length ?? 0) === 0) {
@@ -991,7 +991,7 @@ export function HostingPanel() {
             </select>
             {!status.premium && (
               <span className="text-xs text-amber-600 dark:text-amber-400">
-                Free hosting is included. Premium and Yours are both part of the premium plan.
+                Free hosting is included. The Premium engine and Yours are both part of Premium Plus.
               </span>
             )}
             {status.premium && !status.platformReady && (

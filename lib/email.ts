@@ -139,7 +139,7 @@ export function tier1UpgradeEmailHtml(opts: { verified: boolean }): string {
       </p>
       ${actionLine}
       <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        Want unlimited access and top priority in the queue? Upgrade to Premium.
+        Want unlimited access and top priority in the queue? Upgrade to Premium Plus.
       </p>
       <p style="font-size:12px;line-height:1.5;color:#6b7280;margin:0;">
         Tier 1 trial usage has no effect on Premium accounts, and Premium work is always prioritized over trial work in the queue.

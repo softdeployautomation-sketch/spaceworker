@@ -48,7 +48,7 @@ export async function POST(
       const t = Number(body.tier);
       if (t !== 3 && t !== 5) {
         return NextResponse.json(
-          { error: "tier must be 3 (XDevice) or 5 (Premium)" },
+          { error: "tier must be 3 (Premium XDevice) or 5 (Premium Plus)" },
           { status: 400 },
         );
       }

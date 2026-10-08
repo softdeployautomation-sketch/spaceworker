@@ -6,6 +6,7 @@ import {
   revokeEntitlement,
   listEffectiveEntitlements,
   isEntitlementKey,
+  ENTITLEMENT_KEYS,
 } from "@/lib/entitlements";
 import { recordAgentActionAudit } from "@/lib/devices";
 
@@ -45,7 +46,9 @@ export async function POST(req: Request, ctx: RouteContext) {
   const key = body.key;
   if (!isEntitlementKey(key)) {
     return NextResponse.json(
-      { error: `key must be one of: extractor, mailer, assistant, devices, cyberlab` },
+      // Derived from the const — TASK_184 A6.2: this list was already missing
+      // `hosting` before the browser key landed; never hand-maintain it again.
+      { error: `key must be one of: ${ENTITLEMENT_KEYS.join(", ")}` },
       { status: 400 },
     );
   }

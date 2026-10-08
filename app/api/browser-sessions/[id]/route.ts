@@ -4,6 +4,7 @@ import { getSession } from "@/lib/session";
 import { SESSION_SAFE_SELECT } from "@/lib/browser-session-safe-select";
 import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime } from "@/lib/browser-runtime";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // GET /api/browser-sessions/[id] — status for the panel to poll.
 export async function GET(
@@ -36,6 +37,9 @@ export async function DELETE(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // TASK_184 A6.2 — a mutation inside the browser module: `browser` key only.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
   const { id } = await params; // MUST await — async in Next.js 16
 
   const row = await prisma.browserSession.findFirst({

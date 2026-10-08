@@ -3,7 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { createProfileDir } from "@/lib/browser-profiles";
 import { PROFILE_SAFE_SELECT } from "@/lib/browser-profile-safe-select";
-import { resolveUserTier } from "@/lib/premium";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // GET /api/browser-profiles — list the signed-in user's profiles.
 export async function GET() {
@@ -28,12 +28,18 @@ export async function GET() {
   );
 }
 
-// POST /api/browser-profiles — body: { name: string }. Pro tier required.
+// POST /api/browser-profiles — body: { name: string }. `browser` module required.
 export async function POST(req: Request) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+
+  // TASK_184 A6.2 — browser is a MODULE: the `browser` entitlement key decides
+  // (tier 5 or an explicit grant), never a tier number. Tier-3 Premium XDevice
+  // and free tier 1 both get 403 browser_required.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
 
   let body: { name?: string };
   try {
@@ -47,17 +53,6 @@ export async function POST(req: Request) {
     return NextResponse.json(
       { error: "Name must be 1-50 characters (letters, numbers, spaces, hyphens or underscores)" },
       { status: 400 }
-    );
-  }
-
-  const tier = await resolveUserTier(prisma, session.userId);
-  // Tier 1 trial — only Premium (tier 5) has Pro features; tier 1 is the free
-  // trial and must NOT get them (previously `tier < 1`, which would have let a
-  // trial user through once the default became 1).
-  if (tier === null || tier < 5) {
-    return NextResponse.json(
-      { error: "Pro plan required to create browser profiles" },
-      { status: 403 }
     );
   }
 

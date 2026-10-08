@@ -6,7 +6,8 @@ import { serializeSession } from "@/lib/browser-session-serialize";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { getAdminSettings } from "@/lib/admin-settings";
-import { canUseExitNodes, resolveUserTier } from "@/lib/premium";
+import { canUseExitNodes } from "@/lib/premium";
+import { moduleToolsDenied } from "@/lib/module-gate";
 import {
   proxyServerValue as buildProxyArg,
   checkIpThroughProxy,
@@ -86,6 +87,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // TASK_184 A6.2 — starting a session is THE browser mutation: `browser`
+  // entitlement only (tier 5 / grant). Tier-3 Premium XDevice and free both get
+  // 403 browser_required — an entitlement key decides, never a tier number.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
+
   let body: { profileId?: string; proxyMode?: string; exitNodeId?: string };
   try {
     body = await req.json();
@@ -100,15 +107,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "profileId is required" }, { status: 400 });
   }
 
-  // Pro tier required (browser profiles are a Pro feature too).
-  const tier = await resolveUserTier(prisma, session.userId);
-  // Tier 1 trial — only Premium (tier 5) has Pro features.
-  if (tier === null || tier < 5) {
-    return NextResponse.json(
-      { error: "Pro plan required to start a browser session" },
-      { status: 403 }
-    );
-  }
   // Admin node restriction only blocks actually PICKING an exit node —
   // proxyMode "free" with no exitNodeId is a direct connection (see
   // resolveProxy below), never a node, so a restricted user can still launch

@@ -9,7 +9,7 @@ import { isPremiumWithReversion, applyPremiumReversion, XDEVICE_TIER } from "./p
 // lazy-reversion semantics — NULL premiumExpiresAt on an existing tier-5 user
 // is GRANDFATHERED and never expires), so a UserEntitlement row is only
 // needed for module/admin grants that must survive a premium downgrade.
-export const ENTITLEMENT_KEYS = ["extractor", "mailer", "assistant", "devices", "cyberlab", "hosting"] as const;
+export const ENTITLEMENT_KEYS = ["extractor", "mailer", "assistant", "devices", "cyberlab", "hosting", "browser"] as const;
 export type EntitlementKey = (typeof ENTITLEMENT_KEYS)[number];
 
 export function isEntitlementKey(value: unknown): value is EntitlementKey {

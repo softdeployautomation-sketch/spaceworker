@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { encryptProxySecret, PROXY_SCHEMES, type ProxyScheme } from "@/lib/browser-proxy";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // PUT /api/browser-profiles/[id]/byo-proxy — add/edit a profile's own BYO proxy
 // (host, port, protocol, auth). Credentials are AES-256-GCM encrypted before
@@ -14,6 +15,9 @@ export async function PUT(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // TASK_184 A6.2 — a mutation inside the browser module: `browser` key only.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
   const { id } = await params; // MUST await — async in Next.js 16
 
   const profile = await prisma.browserProfile.findFirst({

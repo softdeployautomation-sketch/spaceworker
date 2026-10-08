@@ -12,6 +12,7 @@ import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
 import { ExeLicensePanel } from "./exe-license-panel";
+import { PLAN_FREE, planLabelForTier } from "@/lib/plan-name";
 import { LicensesSection } from "./licenses-section";
 import { SendRegionSettings } from "@/components/send-region-settings";
 import { HostingCredentialsSettings } from "@/components/hosting-credentials-settings";
@@ -62,8 +63,10 @@ export default async function SettingsPage() {
   const xdevicePrice = settings.xdevicePriceUsd;
   const premiumActive = user.tier >= 5 || user.tier === 3;
 
-  // Tier 1 trial — "Pro" is tier 5 (Premium) only; tier 1 (trial) shows Free.
-  const plan = user.tier >= 5 ? "Pro" : "Free";
+  // Tier 1 trial — TASK_184 addendum 2: tier 5 is "Premium Plus", tier 3 (a live
+  // XDevice term, which also reads as active here but only carries `devices`) is
+  // "Premium XDevice", everything else shows "Free".
+  const plan = planLabelForTier(user.tier);
 
   // Task 39 — Telegram connect link. When a bot username is configured and the
   // user isn't linked yet, ensure a short-lived link token exists (reusing a
@@ -104,7 +107,7 @@ export default async function SettingsPage() {
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold text-fg">Premium</h2>
+            <h2 className="text-lg font-semibold text-fg">Premium XDevice</h2>
             <p className="mt-1 text-sm text-fg-muted">
               Remote control, terminal commands, browser clones and screen
               monitoring — premium tools on devices you own. Your device list, its
@@ -119,7 +122,7 @@ export default async function SettingsPage() {
               href="/dashboard/billing?product=xdevice"
               className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
             >
-              Subscribe to Premium — ${xdevicePrice}
+              Subscribe to Premium XDevice — ${xdevicePrice}
             </Link>
           </div>
         )}
@@ -135,7 +138,7 @@ export default async function SettingsPage() {
           <div className="flex items-center justify-between gap-4">
             <dt className="text-fg-muted">Plan</dt>
             <dd>
-              <Badge tone={plan === "Pro" ? "success" : "neutral"}>{plan}</Badge>
+              <Badge tone={plan === PLAN_FREE ? "neutral" : "success"}>{plan}</Badge>
             </dd>
           </div>
           <div className="flex items-center justify-between gap-4">

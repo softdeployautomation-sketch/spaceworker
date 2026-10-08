@@ -68,12 +68,13 @@ function statusTone(status: string): string {
 }
 
 export default function BrowserSessionPanel({
-  tier,
+  entitled,
   exitNodes,
   initialProfiles,
   initialSessions,
 }: {
-  tier: number;
+  /** Server-computed `browser` entitlement (TASK_184 A6.3) — replaces `tier`. */
+  entitled: boolean;
   exitNodes: ExitNode[];
   initialProfiles: Profile[];
   initialSessions: Session[];
@@ -477,15 +478,13 @@ export default function BrowserSessionPanel({
 
         <div className="bg-[radial-gradient(60%_60%_at_50%_22%,rgba(184,114,26,0.08),transparent_60%)] bg-bg p-4 sm:p-6 dark:bg-[radial-gradient(60%_60%_at_50%_22%,rgba(234,165,61,0.10),transparent_60%),var(--bg)]">
 
-      {tier < 1 && (
-        <div className="mt-6 max-w-xl rounded-xl border border-amber-200 bg-amber-50 p-5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-900/20 dark:text-amber-300">
-          Interactive browser sessions require the Pro plan.
-        </div>
-      )}
-
-      {tier >= 1 && (
+      {/* TASK_184 A6.3 — the `tier` prop is gone: `entitled` (the `browser`
+          key) decides. The shared lock card renders on the PAGE above; inside
+          this panel history stays visible and only the launcher is gated. */}
+      {(
         <>
-          {/* --- Session launcher --- */}
+          {/* --- Session launcher (entitled only) --- */}
+          {entitled && (
           <div className="mx-auto mt-6 max-w-3xl rounded-xl border border-border bg-bg-elevated/80 p-6">
             <div className="text-center">
               <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-border bg-bg">
@@ -599,6 +598,7 @@ export default function BrowserSessionPanel({
               </>
             )}
           </div>
+          )}
 
           {/* --- Sessions list --- */}
           <div className="mt-8">

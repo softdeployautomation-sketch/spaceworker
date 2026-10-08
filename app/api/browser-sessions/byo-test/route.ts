@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { checkIpThroughProxy, PROXY_SCHEMES, type ProxyScheme } from "@/lib/browser-proxy";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // POST /api/browser-sessions/byo-test — test-connect a BYO proxy BEFORE trusting
 // it (same discipline as Task 4's mailbox test-connection). A live IP check is
@@ -10,6 +11,9 @@ export async function POST(req: Request) {
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // TASK_184 A6.2 — a mutation inside the browser module: `browser` key only.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
 
   let body: {
     host?: string;

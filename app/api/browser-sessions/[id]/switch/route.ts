@@ -5,6 +5,7 @@ import { browserRuntime } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { proxyServerValue as buildProxyArg } from "@/lib/browser-proxy";
 import { canUseExitNodes } from "@/lib/premium";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // POST /api/browser-sessions/[id]/switch — switch a FREE-route session to a
 // different exit node mid-session. Requires a process restart (Chrome is already
@@ -17,6 +18,10 @@ export async function POST(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // TASK_184 A6.2 — module gate FIRST (can this account use the browser at
+  // all?), then the exit-node restriction underneath it.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
   const { id } = await params; // MUST await — async in Next.js 16
 
   let body: { exitNodeId?: string };

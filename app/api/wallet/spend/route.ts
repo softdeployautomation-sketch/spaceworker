@@ -62,8 +62,8 @@ export async function POST(req: Request) {
       {
         error:
           typeof productId === "string" && productId.length > 0
-            ? `Wallet spend is not available for "${productId}" yet — web subscription and XDevice Premium only.`
-            : "Unknown product. Wallet spend covers the web subscription and XDevice Premium only.",
+            ? `Wallet spend is not available for "${productId}" yet — the web subscription (Premium Plus) and Premium XDevice only.`
+            : "Unknown product. Wallet spend covers the web subscription (Premium Plus) and Premium XDevice only.",
         code: "unsupported_product",
       },
       { status: 400 },

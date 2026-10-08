@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { deleteProfileDir } from "@/lib/browser-profiles";
+import { moduleToolsDenied } from "@/lib/module-gate";
 
 // DELETE /api/browser-profiles/[id] — delete a profile's DB record + directory.
 export async function DELETE(
@@ -12,6 +13,9 @@ export async function DELETE(
   if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
+  // TASK_184 A6.2 — a mutation inside the browser module: `browser` key only.
+  const denied = await moduleToolsDenied(session.userId, "browser");
+  if (denied) return denied;
   const { id } = await params; // MUST await — async in Next.js 16
 
   const profile = await prisma.browserProfile.findFirst({ where: { id, userId: session.userId } });

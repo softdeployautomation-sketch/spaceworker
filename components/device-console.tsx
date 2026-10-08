@@ -392,9 +392,10 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
 const TOOL_TABS = new Set<Tabs>(["control", "command", "clone", "monitoring"]);
 
 // The upgrade card that replaces a locked tool tab. P3 (step 30): price comes
-// from the admin-set xdevicePriceUsd via /api/store/prices — shown as owner
-// wording "Subscribe to Premium — $X". The subscription term is NEVER in the
-// copy (owner: "never show it on ui how long the premium is for").
+// from the admin-set xdevicePriceUsd via /api/store/prices — shown as
+// "Subscribe to Premium XDevice — $X" (TASK_184 addendum 2: tier 3 reads as
+// Premium XDevice, never a bare "Premium"). The subscription term is NEVER in
+// the copy (owner: "never show it on ui how long the premium is for").
 function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
   const [priceUsd, setPriceUsd] = useState<number | null>(null);
   useEffect(() => {
@@ -413,7 +414,10 @@ function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
       cancelled = true;
     };
   }, []);
-  const label = priceUsd !== null ? `Subscribe to Premium — $${priceUsd}` : "Subscribe to Premium";
+  const label =
+    priceUsd !== null
+      ? `Subscribe to Premium XDevice — $${priceUsd}`
+      : "Subscribe to Premium XDevice";
   return (
     <div
       className={cn(

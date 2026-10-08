@@ -6,6 +6,8 @@ import { listExitNodes } from "@/lib/exit-nodes";
 import { connectUrlFor } from "@/lib/browser-session-serialize";
 import BrowserSessionPanel from "@/components/browser-session-panel";
 import BrowserProfilesPanel from "@/app/dashboard/browser-profiles/browser-profiles-panel";
+import { ModuleToolLockCard } from "@/components/module-tool-lock";
+import { listEffectiveEntitlements } from "@/lib/entitlements";
 
 const TABS = [
   { value: "session", label: "Private Browser" },
@@ -58,6 +60,12 @@ export default async function BrowserPage({
   ]);
   if (!user) redirect("/login");
 
+  // TASK_184 A6.3 — `browser` is an entitlement KEY, never a tier number:
+  // tier 5 lights every key, tier-3 Premium XDevice carries `devices` only, so
+  // a wrapper subscriber gets the same lock a free account gets (Phase C).
+  const { keys } = await listEffectiveEntitlements(session.userId);
+  const entitled = keys.includes("browser");
+
   return (
     <div>
       {/* Browser Profiles folded in here as a sub-tab (was its own top-level nav
@@ -81,9 +89,13 @@ export default async function BrowserPage({
         ))}
       </div>
 
+      {/* TASK_184 A6.3 — tabs stay visible (can see, can't do); the shared lock
+          card is what a user without the `browser` key sees first. */}
+      <ModuleToolLockCard moduleKey="browser" entitled={entitled} className="mt-4" />
+
       {tab === "profiles" ? (
         <BrowserProfilesPanel
-          tier={user.tier}
+          entitled={entitled}
           initialProfiles={profiles.map((p) => ({
             id: p.id,
             name: p.name,
@@ -94,7 +106,7 @@ export default async function BrowserPage({
         />
       ) : (
         <BrowserSessionPanel
-          tier={user.tier}
+          entitled={entitled}
           exitNodes={listExitNodes().map((n) => ({
             id: n.id,
             city: n.city,

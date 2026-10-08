@@ -298,12 +298,12 @@ function UpgradeFlow({
               "Subscribe to Premium" + the admin-set price. NO term/duration
               copy, ever (owner: "never show it on ui how long the premium is
               for"). */}
-          {product === "xdevice" ? "Subscribe to Premium" : "Upgrade to Pro"}
+          {product === "xdevice" ? "Subscribe to Premium XDevice" : "Upgrade to Premium Plus"}
         </h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           {product === "xdevice"
             ? "Terminal, remote control, browser clones and screen monitoring — premium tools on devices you own."
-            : "Pro plan gives your jobs higher queue priority."}
+            : "Premium Plus gives your jobs higher queue priority."}
           {checkout
             ? product === "xdevice"
               ? ` $${checkout.amountUsd.toFixed(2)}.`
@@ -539,7 +539,7 @@ function StatusCardView({
   const labels: Record<string, { badge: string; text: string }> = {
     approved: {
       badge: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
-      text: "Pro — Active",
+      text: product === "xdevice" ? "Premium XDevice — Active" : "Premium Plus — Active",
     },
     pending: {
       badge: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400",
@@ -559,7 +559,9 @@ function StatusCardView({
   return (
     <div className="mt-6">
       <div className="max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-xl font-semibold tracking-tight">Pro plan</h2>
+        <h2 className="text-xl font-semibold tracking-tight">
+          {product === "xdevice" ? "Premium XDevice" : "Premium Plus"}
+        </h2>
         <div className="mt-3">
           <span className={`rounded-full px-3 py-1 text-sm font-medium ${label.badge}`}>
             {label.text}
@@ -689,10 +691,10 @@ function SpendFlow({ onSpent, product }: { onSpent: () => void; product: "web_su
         // how long the premium is for"). Web copy unchanged.
         message:
           product === "xdevice"
-            ? "Premium activated."
+            ? "Premium XDevice activated."
             : expiry
-              ? `Premium active until ${new Date(expiry).toLocaleDateString()}.`
-              : "Premium activated for 30 days.",
+              ? `Premium Plus active until ${new Date(expiry).toLocaleDateString()}.`
+              : "Premium Plus activated for 30 days.",
       });
       onSpent();
     } catch {
@@ -720,10 +722,12 @@ function SpendFlow({ onSpent, product }: { onSpent: () => void; product: "web_su
       <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Activate with balance</h2>
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         {state.premiumActive
-          ? "Premium is already active on this account — no charge was made."
+          ? product === "xdevice"
+            ? "Premium XDevice is already active on this account — no charge was made."
+            : "Premium Plus is already active on this account — no charge was made."
           : product === "xdevice"
-            ? `Subscribe to Premium for ${money} from your wallet balance.`
-            : `One month of Pro for ${money} from your wallet balance.`}
+            ? `Subscribe to Premium XDevice for ${money} from your wallet balance.`
+            : `One month of Premium Plus for ${money} from your wallet balance.`}
       </p>
       {!state.premiumActive && (
         <button
@@ -736,7 +740,7 @@ function SpendFlow({ onSpent, product }: { onSpent: () => void; product: "web_su
             : affordable
               ? product === "xdevice"
                 ? `Subscribe — ${money}`
-                : `Activate Pro — ${money}`
+                : `Activate Premium Plus — ${money}`
               : `Insufficient balance (need ${money})`}
         </button>
       )}

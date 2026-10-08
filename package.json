@@ -38,6 +38,7 @@
     "test:screennotify": "tsx --test tests/screen-notifications.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
     "test:xdevice": "tsx --test tests/xdevice-tier.test.ts tests/xdevice-route-gate.test.ts tests/xdevice-payment.test.ts",
+    "test:module-gate": "tsx --test tests/module-route-gate.test.ts",
     "test:idle": "tsx --test tests/vantra-idle-provenance.test.ts",
     "test:idlechip": "tsx --test tests/device-idle-chip.test.ts",
     "test:monitorctx": "tsx --test tests/monitor-agent-context.test.ts",
