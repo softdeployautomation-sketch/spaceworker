@@ -1,6 +1,6 @@
 # TASK_191_STEPS — XDevice users don't see the quarantine flow
 
-## BEFORE-PLAN (written 2026-10-10, before any code)
+## BEFORE-PLAN (written 2026-10-09, before any code)
 
 1. **S1** — `app/api/devices/route.ts`: when session user is a live tier-3
    account, map `onboarding: null` into every device of the response (shape
@@ -15,4 +15,36 @@
 5. Progress entry after EVERY step (dated, with proof).
 
 ## PROGRESS
+
+### 2026-10-09 12:38 — S1 DONE: route suppression + tests + all gates green
+
+**Code (3 files + 1 new test):**
+- `lib/entitlements.ts` — exported the existing pure `isXdeviceLive()` with a
+  TASK_191 doc comment (no logic change; it already decided live-vs-lapsed
+  tier 3 for `hasEntitlement`).
+- `app/api/devices/route.ts` — after the device query, reads the session
+  user's `{tier, premiumExpiresAt}` and computes
+  `suppressOnboarding = isXdeviceLive(user)`; the response map now emits
+  `onboarding: null` for every row when suppressed (field stays in the
+  payload → shape back-compat; device-list AND device-console both poll this
+  ONE route → zero client edits; sync/sweep untouched = UI-only per owner).
+- `tests/vantra-idle-provenance.test.ts` — its `fakePrisma` gained
+  `user.findUnique → {tier:1, premiumExpiresAt:null}` (free default keeps the
+  old idle assertions honest; the route now reads the user row).
+- `package.json` — `test:xdevice-onboarding-display` script added.
+- NEW `tests/xdevice-onboarding-display.test.ts` — house require-hook on the
+  REAL route + REAL `lib/entitlements.isXdeviceLive`: 7 cases — 401 no
+  session · live tier-3 future term → null (field present) · grandfathered
+  null → null · lapsed tier-3 → KEPT · tier-5 → KEPT · tier-1 → KEPT ·
+  no-row device → null for everyone.
+
+**Proofs:**
+- `npm run test:xdevice-onboarding-display` → `# tests 7 # pass 7 # fail 0`
+- regressions `npx tsx --test tests/vantra-idle-provenance.test.ts
+  tests/device-onboarding.test.ts tests/device-status.test.ts` →
+  `# tests 77 # pass 77 # fail 0`
+- `npx tsc --noEmit` → `tsc exit:0`
+- `npx eslint` on all 4 touched files → `eslint exit:0` (no new errors)
+
+**Next:** commit + push S1.
 

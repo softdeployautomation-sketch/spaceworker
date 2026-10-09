@@ -27,8 +27,15 @@ export interface EntitlementDecision {
   reason: "premium" | "grant" | "xdevice" | "none" | "expired";
 }
 
-/** Live XDevice (tier 3) term: NULL expiry = grandfathered, same rule as tier 5. */
-function isXdeviceLive(user: { tier: number; premiumExpiresAt: Date | null }): boolean {
+/**
+ * Live XDevice (tier 3) term: NULL expiry = grandfathered, same rule as tier 5.
+ *
+ * Exported for TASK_191 — `GET /api/devices` uses it to suppress the onboarding
+ * DISPLAY for tier-3 accounts (they never get a private org, so the quarantine
+ * strip/stage wording is meaningless to them; the sweep stages themselves keep
+ * running — owner: UI only).
+ */
+export function isXdeviceLive(user: { tier: number; premiumExpiresAt: Date | null }): boolean {
   if (user.tier !== XDEVICE_TIER) return false;
   if (user.premiumExpiresAt === null) return true;
   return user.premiumExpiresAt.getTime() > Date.now();

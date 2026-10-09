@@ -50,6 +50,7 @@
     "test:admin-presence": "tsx --test tests/user-presence.test.ts tests/admin-users-presence.test.ts",
     "test:overview": "tsx --test tests/overview-stats-counts.test.ts",
     "test:xdevice": "tsx --test tests/xdevice-tier.test.ts tests/xdevice-route-gate.test.ts tests/xdevice-payment.test.ts",
+    "test:xdevice-onboarding-display": "tsx --test tests/xdevice-onboarding-display.test.ts",
     "test:module-gate": "tsx --test tests/module-route-gate.test.ts",
     "test:maintenance-cache": "tsx --test tests/maintenance-cache.test.ts",
     "test:idle": "tsx --test tests/vantra-idle-provenance.test.ts",

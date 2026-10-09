@@ -1,6 +1,6 @@
 # TASK_192_STEPS — wrapper request-premium flow = web flow
 
-## BEFORE-PLAN (written 2026-10-10, before any code)
+## BEFORE-PLAN (written 2026-10-09, before any code)
 
 1. **S1** — settings card: delete the wrapper priced `<Link>` arm, render the
    web `SupportTicketButton template="premium-xdevice"` unconditionally;

@@ -8,7 +8,7 @@
 > a new device comes in, its just appears without showing the run the hide or
 > stay awake, it remains the same for premium plus since they can have 2 agents."
 
-Clarified by question (2026-10-10): **UI ONLY** — the sweep stages
+Clarified by question (2026-10-09): **UI ONLY** — the sweep stages
 (hide@5min / stay-awake@10min / release@20min) KEEP RUNNING silently for
 tier-3 accounts; only the DISPLAY goes away.
 

@@ -74,7 +74,12 @@ function resetWorld(userId: string, orgId: string): void {
 }
 
 const fakeVantraDb = { vantraLink: { findUnique: async () => linkRow } };
-const fakePrisma = { device: { findMany: async () => deviceRows } };
+// TASK_191 — the route now reads the user row for the tier-3 display
+// suppression; default to a free-tier user so the idle assertions stay as-is.
+const fakePrisma = {
+  device: { findMany: async () => deviceRows },
+  user: { findUnique: async () => ({ tier: 1, premiumExpiresAt: null }) },
+};
 
 type Loader = {
   _load: (request: string, parent: NodeModule | undefined, isMain: boolean) => unknown;

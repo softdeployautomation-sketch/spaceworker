@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
+import { isXdeviceLive } from "@/lib/entitlements";
 import {
   deviceListSelector,
   DEVICE_ONLINE_WINDOW_MS,
@@ -49,6 +50,22 @@ export async function GET(request: Request) {
     select: deviceListSelector,
   });
 
+  // TASK_191 — tier-3 (XDevice) accounts never get a private org (see
+  // `isPrivateAllowed` in lib/vantra-link.ts), so the quarantine strip, row
+  // badge and stage wording are meaningless to them: a new device should just
+  // APPEAR (owner: "take out that flow showing on the ui from xdevice users…
+  // it remains the same for premium plus"). Suppressed HERE, at the ONE read
+  // every devices surface goes through (device-list AND device-console both
+  // poll this route), so no client changes. Payload SHAPE is unchanged —
+  // `onboarding` is already nullable. The sweep stages themselves keep running
+  // (owner chose UI-only); nothing in lib/vantra-link.ts or the sweep changes.
+  // Live tier-3 test = the exact grandfathered/null rule the entitlements use.
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { tier: true, premiumExpiresAt: true },
+  });
+  const suppressOnboarding = user !== null && isXdeviceLive(user);
+
   // TASK_154 N1 — idle with provenance, and a tolerance the old path lacked.
   // `fetchUserIdleReading` never throws: on a mesh hiccup it serves the last
   // good map (state "stale") instead of blanking every row, and degrades to
@@ -76,10 +93,13 @@ export async function GET(request: Request) {
         // TASK_128 — the strip's "waiting for the device" needs the same online
         // derivation the rest of the app uses (`isDeviceOnline(lastSeenAt)`);
         // computing it here keeps the client helper free of the server-only
-        // module.
-        onboarding: view.onboarding
-          ? { ...view.onboarding, isOnline: isDeviceOnline(view.lastSeenAt) }
-          : null,
+        // module. TASK_191 — `suppressOnboarding` nulls it wholesale for live
+        // tier-3 accounts (see above); everything downstream (strip, row badge,
+        // stuck/failure alerts, console hide-stage wording) is null-gated.
+        onboarding:
+          suppressOnboarding || !view.onboarding
+            ? null
+            : { ...view.onboarding, isOnline: isDeviceOnline(view.lastSeenAt) },
         // Unchanged back-compat field every existing consumer already reads.
         idleSeconds,
         // TASK_154 N1 — opt-in per-row provenance so a client can tell a known
