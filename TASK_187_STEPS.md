@@ -5,7 +5,7 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
 `HOW_WE_MOVE_FAST.md` (§7 gates → §2/§3 deploy → §4 live evidence). Verification:
 `PROMPT_VERIFY_TASK_187.md`.
 
-## STATUS (updated 2026-10-08 — **COMMITS A `c96c272` + B `874162f` PUSHED · C1/C2/C3 DONE, ALL GATES GREEN incl. `CI=true` build · NEXT: commit C → S5 deploy)
+## STATUS (updated 2026-10-08 — **TASK_187 DEPLOYED + LIVE-VERIFIED: commits A `c96c272` · B `874162f` · C `515c92e` pushed · box BUILD_ID `F5n788UVXZqaX0b5cFb-j` · e2e PASS 26/26 · NEXT: owner eyeball (TG×2 + inbox×2) + verifier `PROMPT_VERIFY_TASK_187.md`)**
 
 - **TRACK:** TASK_185 holds only P5 + W9 now; N1+N2 live here as S1–S5.
 - **HEAD:** `c96c272` = **COMMIT A** (pushed 2026-10-08: `lib/support-notify.ts` + both
@@ -85,12 +85,85 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
     `.github/workflows/deploy.yml`'s mode, per its comment) — that is the
     canonical full-build gate locally. Also: editor tool rejects new_text >
     6000 chars — split big inserts into anchored pairs (hit once, fixed).
-- **NEXT ACTION: COMMIT C** (staged: `components/support-invoice-card.tsx` (new),
-  `components/admin/support-queue-panel.tsx`, `components/support-widget.tsx`,
-  `TASK_187_STEPS.md`, `TASK_187_PAYMENT_ALERTS_INVOICE.md` — 13 boxes ticked,
-  deploy box still open; NEVER `TASK_133_RMM_ENGINE_BRINGUP.md`; msg via
-  `/tmp/commit-c-msg.txt` + `git commit -F`) →
-  **S5** deploy per playbook §7 → §3 migrate (`sudo -u trmm npx prisma migrate
+- **COMMIT C PUSHED 2026-10-08: `515c92e`** (5 files, +1041/−16 —
+  `components/support-invoice-card.tsx` (new), `support-queue-panel.tsx`,
+  `support-widget.tsx`, this steps file, `TASK_187_PAYMENT_ALERTS_INVOICE.md`;
+  msg via `/tmp/commit-c-msg.txt` + `git commit -F`; push `874162f..515c92e`).
+  INCIDENTS: (a) heredoc `cat > /tmp/... <<EOF` silently failed under flaky
+  shell integration → wrote the msg with the EDITOR tool instead; (b) `git add`
+  and `git commit` issued as two commands in one call RACED (commit saw an
+  empty index: "nothing to commit") → re-ran add+commit as ONE chained
+  command. This steps file is NOW TRACKED (committed inside C) — every later
+  edit rides the S5/closeout commit. `TASK_133_RMM_ENGINE_BRINGUP.md` still
+  untracked, NEVER commit.
+- **S5 DEPLOY — IN PROGRESS 2026-10-08 (before-record; box state read-only first):**
+  - Box pre-state: `migrate status` = **103 applied, up to date** (newest
+    `20261118000001_task184_payment_invoice_ref`; my `20261119000000_task187_…`
+    NOT there yet); BUILD_ID `G-o2lqy1pCOcjJGcZ1N5o`; service was healthy when
+    checked earlier today (S1). CI: **all 3 pushes `c96c272`/`874162f`/`515c92e`
+    = build+typecheck success on GitHub Actions.**
+  - **DEPLOY DECISION (reconciled §2 vs §3, same reasoning TASK_184 recorded
+    and EXECUTED successfully TODAY):** §3's 2026-10-04 "VPS does NOT build"
+    correction came from TASK_157's PARTIAL-tree state; shipping FULL trees
+    first removes that failure mode, and A5 + TASK_184-B5 both proved the
+    full-tree path today (build ✓ active ✓ 200 ✓ parity 0/0 ✓ e2e PASS).
+    So: **A5-proven path**, in strict order:
+    1. §2 full-tree rsync `app lib components tests prisma` (`--exclude='.env'`)
+       + root files, then `chown -R trmm:trmm`
+    2. `pg_dump` snapshot to `/root/spaceworker-t187-<ts>.sql.gz` (§6b: always)
+    3. `sudo -u trmm npx prisma migrate deploy` (applies task187 migration;
+       deploy-vps.sh does NOT run it) → **§6b drift diff must be exactly
+       `-- This is an empty migration.`** (else filter `/days|invoiceid/i`)
+    4. `scripts/deploy-vps.sh /tmp/deploy-root.txt` build half
+       (generate → maintenance ON → build → restart → verify → maintenance OFF)
+    5. verify: fresh BUILD_ID, `is-active`, localhost:3500 200, `migrate
+       status` 104, §2a md5 parity on the 5 trees → 0 missing / 0 stale
+    6. §4 live e2e (disposable `scripts/t187-s5-e2e.ts`, self-cleaning) = G5
+  - **Fallback (never leave a clobbered `.next`):** if the box build dies with
+    a module-not-found (partial tree), fix forward per §3 — `gh workflow run
+    "Build & Deploy"` (`.github/workflows/deploy.yml` confirmed present, 412
+    lines: CI build → tar → box extract → `migrate deploy` → restart).
+- **S5 DEPLOY + LIVE E2E — DONE 2026-10-08 (AFTER record, every step evidence):**
+  - **Ship:** §2 rsync of `app lib components tests prisma` +
+    root `package.json HOW_WE_MOVE_FAST.md` (`--exclude='.env'`) →
+    `chown -R trmm:trmm`; migration folder confirmed on box.
+  - **Backup:** `pg_dump | gzip` → `/root/spaceworker-t187-20261009020437.sql.gz`
+    (13,024,853 bytes).
+  - **Migrate:** `sudo -u trmm npx prisma migrate deploy` applied
+    `20261119000000_task187_invoice_days_thread_ref` → **104 migrations, up to
+    date**; §6b drift diff = **exactly `-- This is an empty migration.`**
+  - **Build half** (`scripts/deploy-vps.sh /tmp/deploy-root.txt`): env snapshot →
+    runtime assert all ok → `prisma generate` → maintenance ON → `.next.prev`
+    taken → build ✓ → restart → `active` + `localhost:3500 → 200` →
+    maintenance OFF → `-- done`. **BUILD_ID `G-o2lqy1pCOcjJGcZ1N5o` →
+    `F5n788UVXZqaX0b5cFb-j` (fresh)**; journal `✓ Ready in 231ms` +
+    `[env-health] OK`; **https://spaceworker.top AND
+    https://spaceworker.instaweb.top → 200** (first external probe hit
+    `instaweb.top` — NOT this app's zone → 520; real `server_name`s found in
+    `/etc/nginx/sites-enabled/`).
+  - **§2a parity: 656 local = 656 remote → 0 missing / 0 stale / 0 extra.**
+  - **Live e2e (§4): disposable `scripts/t187-s5-e2e.ts` on the box, real HTTP
+    vs `localhost:3500` → `RESULT: PASS — 26 passed, 0 failed`:**
+    ticket 201 + `admin_support_ticket` → **myrate619@gmail.com** (outcome
+    sent) · admin reply → `support_reply` → user · invoice `days=45` stored,
+    open, methods snapshotted, `invoice_sent` → user · attach → **card on BOTH
+    sides, NO `days`/`userId` keys, amount 45/open** · submit no-hash →
+    `admin_pending_payment` → **owner inbox (S1b LIVE PROOF)** · approve →
+    paid + paidAt + **tier 5 + expiry = now+45d exactly (±5min)** + 2nd approve
+    refused 400 · **cleanup residue 0/0/0/0/0, no cleanup errors**. Script
+    deleted from both ends; 4 test-recipient email-log rows deleted with it;
+    **owner-inbox NotificationLog rows KEPT as audit evidence (4 ids)**; owner
+    Telegram received 2 real alerts during the run (eyeball). Service healthy
+    after: `active`, 200, journal clean.
+  - **Incidents (recorded, honest):** (a) parallel tool-call race hit TWICE
+    more — `git add`/`commit` earlier and rsync/e2e-run here were issued as
+    separate calls in ONE block and ran CONCURRENTLY (e2e ran before the file
+    landed, git commit saw an empty index) → **dependent commands must be ONE
+    chained command**; (b) tsx on the box compiles scripts as CJS → top-level
+    `await` transform error → e2e tail wrapped in `void (async () => …)()`;
+    (c) plain `tsx` does not load `.env` → needs `--env-file=.env` (else
+    `lib/env.ts required()` throws on `APP_BASE_URL`).
+- **NEXT ACTION: S5 DEPLOY** per playbook §7 → §3 migrate (`sudo -u trmm npx prisma migrate
   deploy` + generate) → §2 build → §4 verify; live evidence: next
   `admin_pending_payment` NotificationLog recipient = `myrate619@gmail.com`
   (S1b), invoice email row `invoice_sent` (B3), support TG/email (A).
@@ -171,7 +244,7 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
 ## IMPLEMENTATION PLAN (decided — follow this order)
 
 ### Commit A = S2 notifications (NOT money, NOT UI)
-- [ ] A1. NEW `lib/support-notify.ts` (server-only, mirrors payment-notify: outer
+- [x] A1. NEW `lib/support-notify.ts` (server-only, mirrors payment-notify: outer
       try/catch, fire-and-forget, `.catch(()=>{})` on sendEmail):
       `notifyAdminTicketCreated({ticketId,userEmail,subject,category})` → Telegram
       `notifyAdmin(...)` + email to `env.adminEmail` (skip if empty), eventType
@@ -179,42 +252,42 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
       `${env.appBaseUrl}/admin`; `notifyUserTicketReply({ticketId,to,subject})` → email
       only, subject `Re: <subject>`, link `${env.appBaseUrl}/dashboard`, eventType
       `support_reply` (skip if no "@").
-- [ ] A2. Wire: user tickets POST (after ok, `try{ notifyAdminTicketCreated(…
+- [x] A2. Wire: user tickets POST (after ok, `try{ notifyAdminTicketCreated(…
       user.email …) }catch{}` no await); admin messages POST (after ok, **ONLY when NO
       invoiceId** — invoice email covers that arrival; fetch ticket
       `{subject,user:{email}}` → `notifyUserTicketReply`). Neither may fail the request.
-- [ ] A3. Support tests: notify recorder called on create/reply; notify stub that THROWS
+- [x] A3. Support tests: notify recorder called on create/reply; notify stub that THROWS
       ⇒ request still succeeds. (Loader: add `@/lib/support-notify` to `isSupportRoute`
       branch; `sessionUser` gains `email`.)
 
 ### Commit B = MONEY (schema + invoice API + settle) — separate from UI
-- [ ] B1. Schema: `PremiumInvoice.days Int?` (optional duration; null ⇒ default 30d at
+- [x] B1. Schema: `PremiumInvoice.days Int?` (optional duration; null ⇒ default 30d at
       settle; **NEVER rendered to user**) + `SupportMessage.invoiceId String?` (soft ref,
       no FK); migration
       `prisma/migrations/20261119000000_task187_invoice_days_thread_ref/migration.sql`
       (2 additive ALTER TABLE ADD COLUMN, `CHECK ("days" IS NULL OR "days" >= 1)`,
       TASK_184-style header) + `LOCK.md` in that folder; `npx prisma generate`.
-- [ ] B2. POST invoices: accept `days` (absent/null→null; else Number.isInteger 1..3650
+- [x] B2. POST invoices: accept `days` (absent/null→null; else Number.isInteger 1..3650
       else 400) + `methods` (absent→settings snapshot; else object keys ⊆
       {btc,usdt_trc20,usdt_erc20}, values string|null trimmed ≤200, unknown key → 400,
       FULL REPLACE — unspecified chain = null). user select `{id,email}`; after create →
       `notifyUserInvoiceSent` (try/catch, no await). PATCH: also `days`+`methods` while
       open (explicit admin edit; "no re-snapshot" rule still governs AUTOMATIC snapshots).
-- [ ] B3. NEW `lib/invoice-notify.ts` — `notifyUserInvoiceSent({invoiceId,to,plan,amountUsd})`
+- [x] B3. NEW `lib/invoice-notify.ts` — `notifyUserInvoiceSent({invoiceId,to,plan,amountUsd})`
       → email with **Pay button → `${env.appBaseUrl}/dashboard/billing`**, eventType
       `invoice_sent`. **NEVER any duration/term string (TASK_181).**
-- [ ] B4. Thread read: getUserTicket/getAdminTicket messages select +`invoiceId`; per
+- [x] B4. Thread read: getUserTicket/getAdminTicket messages select +`invoiceId`; per
       unique id `prisma.premiumInvoice.findUnique({where:{id}})` (user side also require
       `invoice.userId === ticket.userId` else drop) → attach
       `invoice:{id,plan,tier,amountUsd,status,methods,createdAt,paidAt}|null` per message
       (**EXCLUDE `days`**). Views gain `invoiceId?` + `invoice?`.
-- [ ] B5. `addAdminMessage(ticketId, body, adminId, invoiceId?)`: invoiceId present →
+- [x] B5. `addAdminMessage(ticketId, body, adminId, invoiceId?)`: invoiceId present →
       ticket must exist with userId; invoice must exist AND belong to ticket's user else
       404/400; store on message. Admin messages route parses optional `invoiceId`.
-- [ ] B6. Settle: `const days = invoice.days ?? PREMIUM_DAYS_PER_CHARGE;` → both grants.
-- [ ] B7. getAdminTicket `user:{id,email}` + expose `userId` on admin detail (composer
+- [x] B6. Settle: `const days = invoice.days ?? PREMIUM_DAYS_PER_CHARGE;` → both grants.
+- [x] B7. getAdminTicket `user:{id,email}` + expose `userId` on admin detail (composer
       needs it for POST /api/admin/users/[id]/invoices).
-- [ ] B8. Tests — `test:invoice`: InvoiceRow `days` + seedInvoice; POST days validation
+- [x] B8. Tests — `test:invoice`: InvoiceRow `days` + seedInvoice; POST days validation
       (accept 45 / reject 0,-1,1.5,"x"), methods override beats snapshot + unknown key
       400; PATCH days+methods while open; settle days=45 → grant 45, null → 30;
       invoice-sent notify called. `test:support`: thread attaches invoice (owner-scoped,
@@ -236,18 +309,18 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
 - [x] C3. Update this steps file + tick `TASK_187_PAYMENT_ALERTS_INVOICE.md` S1–S5 boxes.
 
 ### S5 gates + deploy (playbook §7 → §3 → §2 → §4)
-- [ ] G1. `npx tsc --noEmit` = 0; eslint touched files = 0 NEW (admin-panel pre-existing
+- [x] G1. `npx tsc --noEmit` = 0; eslint touched files = 0 NEW (admin-panel pre-existing
       errors not ours).
-- [ ] G2. `test:invoice` + `test:support` green with new cases; regression: `test:xdevice`
+- [x] G2. `test:invoice` + `test:support` green with new cases; regression: `test:xdevice`
       38 · `test:wallet` 63 · `test:module-gate` 13 · `test:wrapper-cookie` 6
       (`test:maintenance-cache` does NOT exist — dropped).
-- [ ] G3. Commits A/B/C via `/tmp/<x>-msg.txt` + `git commit -F` → push (money separate
+- [x] G3. Commits A/B/C via `/tmp/<x>-msg.txt` + `git commit -F` → push (money separate
       from UI). NEVER `TASK_133_RMM_ENGINE_BRINGUP.md`.
-- [ ] G4. Deploy: sync source trees (§2 tar/rsync -azr, never --files-from for trees) +
+- [x] G4. Deploy: sync source trees (§2 tar/rsync -azr, never --files-from for trees) +
       `prisma/`; box: `sudo -u trmm npx prisma migrate deploy` + `generate` (§3) →
       `scripts/deploy-vps.sh` → fresh BUILD_ID, service active, site 200, repo↔box md5
       parity on touched files.
-- [ ] G5. Live evidence: test ticket → NotificationLog `admin_support_ticket` + owner
+- [x] G5. Live evidence: test ticket → NotificationLog `admin_support_ticket` + owner
       receives BOTH Telegram + email; admin reply → user email; composer invoice → thread
       card + `invoice_sent` email → pay → approve → `paid` + tier granted + `days`
       applied. **Requires owner to set ADMIN_EMAIL first (S1) — flag it.**
@@ -339,7 +412,7 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
       eslint 0)**. Contract changes flagged: tier accepted-ignored; methods
       override replaces TASK_184's "never the body" rule (test rewritten).
       Commit B next.
-- [ ] S3c. Composer UI in support-queue-panel (C1).
+- [x] S3c. Composer UI in support-queue-panel (C1).
 
 ## COMMIT B EXECUTION LOG — S3a/S3b/S4b MONEY CODE (started 2026-10-08)
 
@@ -486,15 +559,15 @@ to match each contract, both then passed.)
 
 ### B8 — EXACT EDIT LIST (ALL APPLIED ✓ — was the next-action list):
 `tests/premium-invoice.test.ts`:
-- [ ] P1 `adminInvoiceDeps()` += `"@/lib/invoice-notify"` recorder → NEW
+- [x] P1 `adminInvoiceDeps()` += `"@/lib/invoice-notify"` recorder → NEW
       `invoiceNotifyCalls` array (+ reset in `resetStore`).
-- [ ] P2 `store.users` type `{id,email}[]` + seed `u1@test.dev`/`u2@test.dev`
+- [x] P2 `store.users` type `{id,email}[]` + seed `u1@test.dev`/`u2@test.dev`
       (+ reset line ~:419) — POST now selects email.
-- [ ] P3 `InvoiceRow` += `days: number|null`; `seedInvoice` default
+- [x] P3 `InvoiceRow` += `days: number|null`; `seedInvoice` default
       `days:null`; fake `create` default `days:null` (BEFORE `...args.data`).
-- [ ] P4 ROUTE FIX: POST `ALLOWED_KEYS` += `"tier"` (change #1).
-- [ ] P5 REWRITE test #4 (change #2): absent → snapshot; explicit → override.
-- [ ] P6 NEW tests: POST days 45→stored / [0,-1,1.5,"x"]→400 + nothing
+- [x] P4 ROUTE FIX: POST `ALLOWED_KEYS` += `"tier"` (change #1).
+- [x] P5 REWRITE test #4 (change #2): absent → snapshot; explicit → override.
+- [x] P6 NEW tests: POST days 45→stored / [0,-1,1.5,"x"]→400 + nothing
       written / absent→null; POST unknown key `daysx`→400; POST partial
       methods override merges with snapshot; POST → `invoiceNotifyCalls` == 1
       {invoiceId, to:"u1@test.dev", plan, amountUsd}; PATCH days set 45 +
@@ -502,14 +575,14 @@ to match each contract, both then passed.)
       days=45 → `grants [{fn,userId,days:45}]` (existing test already covers
       null→30 fallback).
 `tests/support-tickets.test.ts`:
-- [ ] S1 `FakeMessage` += `invoiceId: string|null`; `supportMessage.create`
+- [x] S1 `FakeMessage` += `invoiceId: string|null`; `supportMessage.create`
       stores + returns it; `withRelations` messages map += `invoiceId`.
-- [ ] S2 `store.invoices` + `fakePrisma.premiumInvoice.findUnique` (equality
+- [x] S2 `store.invoices` + `fakePrisma.premiumInvoice.findUnique` (equality
       `where {id}` ONLY — fake `matches` can't do `in:`) + `seedInvoice`
       helper; reset in `beforeEach`.
-- [ ] S3 `withRelations` `user` += `id: t.userId` (B7 admin detail userId).
-- [ ] S4 FIX test #24: `seedInvoice({id:"inv_1", userId:"user_a"})` first.
-- [ ] S5 NEW tests: valid attach → stored + USER detail card with **no
+- [x] S3 `withRelations` `user` += `id: t.userId` (B7 admin detail userId).
+- [x] S4 FIX test #24: `seedInvoice({id:"inv_1", userId:"user_a"})` first.
+- [x] S5 NEW tests: valid attach → stored + USER detail card with **no
       `days`/`userId` keys** + ADMIN detail exposes `userId:"user_a"`;
       foreign-user invoice attach → 400 `invoice_not_found` + writes empty;
       user detail with foreign/dangling ref → `invoice:null` (still 200).
@@ -520,14 +593,14 @@ lib/support/tickets.ts, both invoice routes, admin messages route, 2 test
 files)** → push. UI stays untracked for commit C.
 
 ### S4 — user pays from ticket/email
-- [ ] S4a. Thread invoice cards + widget Pay button + invoice email (B3/C2).
+- [x] S4a. Thread invoice cards + widget Pay button + invoice email (B3/C2).
 - [x] S4b. **B6 DONE 2026-10-08** — settle uses `invoice.days ?? PREMIUM_DAYS_PER_CHARGE`
       for both grants. Grep-for-no-duration-strings still runs at S5 (G1).
 
 ### S5 — gates + deploy
-- [ ] S5a. `npx tsc --noEmit` 0; eslint touched files 0 NEW (G1).
-- [ ] S5b. `test:invoice` + `test:support` extended green + regression battery (G2).
-- [ ] S5c. Commits A/B/C (money separate from UI) → push → deploy (migrate → generate →
+- [x] S5a. `npx tsc --noEmit` 0; eslint touched files 0 NEW (G1).
+- [x] S5b. `test:invoice` + `test:support` extended green + regression battery (G2).
+- [x] S5c. Commits A/B/C (money separate from UI) → push → deploy (migrate → generate →
       build) → live evidence → record here (G3–G5).
 
 ### Closeout

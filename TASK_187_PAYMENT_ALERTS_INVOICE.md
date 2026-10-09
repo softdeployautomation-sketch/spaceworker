@@ -107,7 +107,7 @@ commits** (house rule).
       regression battery: `test:xdevice` 38 · `test:wallet` 63 · `test:module-gate`
       13 · `test:wrapper-cookie` 6 (`test:maintenance-cache` does NOT exist —
       corrected 2026-10-08).
-- [ ] Deploy (`scripts/deploy-vps.sh`): fresh BUILD_ID, service active, site 200,
+- [x] Deploy (`scripts/deploy-vps.sh`): fresh BUILD_ID, service active, site 200,
       repo↔box md5 parity. Live evidence: test ticket + pending payment →
       NotificationLog rows + owner receives BOTH Telegram and email (owner eyeball).
 
