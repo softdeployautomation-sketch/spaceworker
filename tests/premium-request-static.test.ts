@@ -368,6 +368,40 @@ test("B2 wiring: CTA event, composer options and admin queue all read the shared
   );
 });
 
+// ---------------------------------------------------------------------------
+// S3 (TASK_192) — WRAPPER composer: premium-plus request filtered out
+// ---------------------------------------------------------------------------
+
+test("S3: the wrapper's composer hides the premium-plus request and coerces a plus preselect to xdevice", () => {
+  const widget = stripComments(read("components/support-widget.tsx"));
+
+  assert.ok(
+    widget.includes('import { useWrapperMode } from "@/components/wrapper-mode-context";'),
+    "the widget reads wrapper mode from the shared context",
+  );
+  assert.match(
+    widget,
+    /wrapperMode !== null\s*\? SUPPORT_TEMPLATE_OPTIONS\.filter\(\(opt\) => opt\.value !== "premium_request_plus"\)\s*:\s*SUPPORT_TEMPLATE_OPTIONS;/,
+    "the option list drops premium_request_plus when, and only when, wrapperMode is set",
+  );
+  assert.match(
+    widget,
+    /\{templateOptions\.map\(\(opt\) =>/,
+    "the <select> maps the FILTERED list, not the raw shared constant",
+  );
+  assert.match(
+    widget,
+    /wrapperMode !== null && next === "premium_request_plus" \? "premium_request_xdevice" : next/,
+    "a plus preselect (old link / CTA event) is coerced to xdevice in the wrapper",
+  );
+  // Hosted web must keep BOTH request templates — the filter only arms in wrapper.
+  assert.equal(
+    SUPPORT_TEMPLATE_OPTIONS.filter((o) => o.value === "premium_request_plus").length,
+    1,
+    "the shared module still ships premium-plus for the hosted web",
+  );
+});
+
 
 
 

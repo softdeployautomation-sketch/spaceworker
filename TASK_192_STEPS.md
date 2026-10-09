@@ -130,3 +130,36 @@ header bullet 3 rewritten.
 **Next:** commit S2 → S3 (any remaining wrapper-vs-web purchase surfaces,
 then full-suite gates) → deploy → closeout.
 
+
+### 2026-10-09 13:02 — S3 DONE: wrapper composer can only request Premium XDevice
+
+**Plan item 3 executed verbatim** (support composer filter + static test):
+
+**Code (`components/support-widget.tsx`):**
+- `useWrapperMode` imported; inside `SupportWidget`:
+  `templateOptions = wrapperMode !== null ? SUPPORT_TEMPLATE_OPTIONS.filter(opt => opt.value !== "premium_request_plus") : SUPPORT_TEMPLATE_OPTIONS`
+  — hosted web (null) keeps BOTH request templates, unchanged.
+- The composer `<select>` now maps `templateOptions` (filtered), not the raw
+  shared constant.
+- `applyTemplate` coerces a plus PRESELECT to `premium_request_xdevice` in
+  wrapper mode (old `?template=` links / CTA events can no longer file a
+  plus request); `useCallback` dep `[wrapperMode]`. Shared module
+  (`lib/support-templates.ts`) untouched — its 4-option list is still the
+  web contract (B2 test at line 117 unchanged).
+
+**Tests (`tests/premium-request-static.test.ts`):** new S3 lock (test #16):
+wrapper context import present · the exact filter-ternary · select maps
+`templateOptions` · the coercion expression · shared module still ships
+premium-plus for web.
+
+**Proofs:**
+- `npx tsc --noEmit` → `tsc:0`
+- `npx eslint components/support-widget.tsx tests/…` → `eslint:0`
+- `npm run test:premium-static` → `16/16` (+1 S3, 0 fail)
+- regression `npm run test:support` → `57/57` (0 fail; suite has no
+  widget-source assertions — grep confirmed)
+
+**Next:** progress entry → commit S3 → plan step 4: full-suite
+`npm run test` → closeout entry → push.
+
+

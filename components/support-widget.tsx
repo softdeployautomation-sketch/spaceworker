@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button, Input, Textarea } from "@/components/ui";
 import { SupportInvoiceCard, type ThreadInvoiceCardData } from "@/components/support-invoice-card";
+import { useWrapperMode } from "@/components/wrapper-mode-context";
 import {
   SUPPORT_OPEN_EVENT,
   SUPPORT_TEMPLATE_OPTIONS,
@@ -192,6 +193,17 @@ export function SupportWidget() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  // TASK_192 S3 — the WRAPPER build may only ever request Premium XDevice (its
+  // one public agent): the "Request for Premium Plus" option is filtered out of
+  // the composer's <select> when wrapperMode is set (hosted web — null — keeps
+  // both request templates, unchanged). The context value is injected
+  // server-side by the dashboard layout, so it is stable from first render.
+  const wrapperMode = useWrapperMode();
+  const templateOptions =
+    wrapperMode !== null
+      ? SUPPORT_TEMPLATE_OPTIONS.filter((opt) => opt.value !== "premium_request_plus")
+      : SUPPORT_TEMPLATE_OPTIONS;
+
   /**
    * Guards double submits.
    *
@@ -206,12 +218,21 @@ export function SupportWidget() {
    * TASK_184 B2 — open the widget straight into compose with a template preselected.
    * Shared by both entry paths below so the preselect can never drift between them.
    */
-  const applyTemplate = useCallback((slug: string | null) => {
-    setCategory(supportTemplateFromSlug(slug));
-    setOpen(true);
-    setView("compose");
-    setFormError(null);
-  }, []);
+  const applyTemplate = useCallback(
+    (slug: string | null) => {
+      const next = supportTemplateFromSlug(slug);
+      // TASK_192 S3 — a premium-plus preselect (old ?template= link or a CTA
+      // event) must not survive in the wrapper: coerce it to the xdevice
+      // request, the only plan the wrapper may ask for.
+      setCategory(
+        wrapperMode !== null && next === "premium_request_plus" ? "premium_request_xdevice" : next,
+      );
+      setOpen(true);
+      setView("compose");
+      setFormError(null);
+    },
+    [wrapperMode],
+  );
 
   // Full-load path: ?template= already in the URL when the widget mounts (refresh,
   // pasted link, a Link navigation that fully loads the layout).
@@ -550,7 +571,7 @@ export function SupportWidget() {
                 aria-label="Ticket type"
                 className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-fg outline-none focus:border-brand-600"
               >
-                {SUPPORT_TEMPLATE_OPTIONS.map((opt) => (
+                {templateOptions.map((opt) => (
                   <option key={opt.value} value={opt.value}>
                     {opt.label}
                   </option>
