@@ -30,3 +30,20 @@
   (lib + CLI + unit tests). Record AFTER each slice below.
 
 ---
+
+---
+
+## 2026-10-09 — S1 PAUSED MID-SLICE (owner priority interrupt: XDevice remote-control bug)
+
+Owner: "try to pause the test task... quickly jump to this bug in the xdevice
+tier, they are getting blocked from remote control. it shows disconnect even
+when the device is online, but it works on premium plus".
+
+**State left behind (UNCOMMITTED WIP, do not commit until green):**
+- `lib/qa/battery.ts` created (~430 lines) — battery core, all 8 probe groups.
+- `scripts/qa-battery.ts` created (~250 lines) — CLI, real deps, origin
+  resolver (QA_ORIGIN → PORT → 3500 → 3000), human+JSON output, exit codes.
+- NOT yet done: `tests/qa-battery.test.ts`, package.json script entries,
+  tsc/eslint gates, test run, commit.
+Resume = write tests → gates → commit S1 exactly as planned.
+
