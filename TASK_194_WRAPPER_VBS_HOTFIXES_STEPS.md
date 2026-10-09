@@ -54,8 +54,85 @@ HEAD c8b6680 and rebuilding (see the earlier record).
 - Deployed Vantra: `BUILD_EXIT:0`, service `active`, http 200, BUILD_ID `YKzQRowfpmGHUnTWB7WjP`.
 - Deployed SpaceWorker: rsynced + rebuilt (`/tmp/t192-silent-build.log`), see below.
 
+## S6 — ROLLBACK: remove the uninstall prologue entirely (terminal still shows)  ⏳ IN PROGRESS
+
+2026-10-10. Owner after testing the S5-fixed VBS: "the powershell blue gui still
+shows before it shows the pdf, and then after the cmd gui shows looking for
+mesh agent, checking firewall.. the best fallback is to locate the push before
+the fix of the uninstall, so we just leave it that way." Directive: revert the
+VBS pipeline to the pre-uninstall-saga shape (silent install worked then),
+ship just those files to the VPS, commit+push locally.
+
+### Triage (compaction-proof record)
+
+- The saga = exactly 3 SpaceWorker commits: **0029633** (Oct 7 22:43, introduced
+  AGENT_CLEAN_SLATE + ensureAgentCleanSlate + wiring + tests), **d742580**
+  (Oct 9: -WindowStyle Hidden INSIDE the prologue), **43d1e5e** (Oct 9:
+  sc.exe→Get-Service INSIDE the prologue). Files touched by all three:
+  lib/vantra-carrier.ts, lib/vantra-link.ts, scripts/mint-vantra-carrier.ts,
+  tests/vantra-carrier.test.ts (+ docs).
+- `git diff 0029633^ HEAD` proves: vantra-carrier.ts, mint script and the test
+  file's ENTIRE post-Oct-7 diff is the clean-slate block → safe full checkout
+  revert. lib/vantra-link.ts also carries TASK_185 idle-provenance work
+  (idleByAgentId) → SURGICAL edit only (import + 2 call sites + comment).
+- The blue PowerShell GUI = UAC self-elevate (unavoidable, pre-existing, owner
+  accepted). The CMD/terminal window = child console processes; with the
+  prologue gone there are none (sc.exe source already removed; the mesh-agent
+  text comes from the enrollment script/tacticalagent, which pre-saga ran
+  without complaint on the VM).
+- Vantra repo edc71ec (Inno `-WindowStyle Hidden`) is KEPT — unrelated to
+  uninstall, only hides an installer window; reverting would risk flashes.
+
+### BEFORE (proof of state at rollback start)
+
+- Mint chain TODAY: normalize → ensureSilentEnroll → ensureAgentCleanSlate →
+  renderCarrierVbs (4 steps; pre-saga it was 3).
+- vantra-carrier tests 26/26 (6 of them clean-slate tests that go away with
+  the block).
+
+### Execution + AFTER proof (2026-10-09 evening)
+
+1. `git checkout 0029633^ -- lib/vantra-carrier.ts scripts/mint-vantra-carrier.ts
+   tests/vantra-carrier.test.ts` (full revert); surgical vantra-link.ts edits
+   (import + 2 call sites + pipeline comment).
+2. Gates: `grep ensureAgentCleanSlate|AGENT_CLEAN_SLATE` across
+   lib/app/scripts/tests → NONE; `tsc` exit 0; eslint exit 0; tests:
+   vantra-carrier **21/21** (pre-saga count), wrapper-carrier 6/6,
+   vantra-link-installer 90/90, openframe-carrier 6/6,
+   wrapper-vbs-download 5/5, vantra-idle-provenance 9/9.
+3. Commit **49aac13** pushed (msg /tmp/t194-s6-rollback-msg.txt via editor +
+   `git commit -F`).
+4. VPS: rsync'd the 3 files (vantra-carrier.ts, vantra-link.ts,
+   mint-vantra-carrier.ts); md5 verified BOTH ends: all 3 match
+   (1cef5c67…, 3a3fd4d7…, e4930ac8…). NOTE: the first remote md5 check
+   showed mismatch — false alarm, the check ran CONCURRENTLY with the rsync
+   in one tool call; sequential re-check = all YES.
+5. Build on box: first attempt BUILD_EXIT:1 (EACCES unlink .next/build/*.js —
+   root-owned leftovers); fixed with `chown -R trmm:trmm /opt/spaceworker/.next`,
+   relaunched → **BUILD_EXIT:0**.
+6. `systemctl restart` → active; **http:200** on :3500 (the unit's real port —
+   .env's PORT=3400 is stale, journal shows Next listening on 3500; do NOT
+   trust the .env PORT line for curl checks). BUILD_ID
+   **IDIqns4Lx77Na-nHCwbH-** (fresh). Remote grep: AGENT_CLEAN_SLATE=0,
+   ensureAgentCleanSlate=0 in shipped lib files.
+7. Test VBS minted for the owner's Desktop via the reverted local pipeline
+   (normalize → ensureSilentEnroll → renderCarrierVbs + the Downloads PDF):
+   **vantra-agent-t194-rollback-test.vbs** (70,060 bytes). Lint of the file:
+   `$swAg`/`unins000`/`Get-Service`/`sc.exe` all absent, `WindowStyle Hidden`
+   present, `--silent` present.
+
+### Trade-off accepted
+
+Re-install onto a machine with an older agent may keep stale config (the
+original TASK_182 failure mode: `-m install` refuses reconfigure). Owner
+chose pre-saga behaviour over the uninstall prologue; if the stale-config
+failure re-appears, re-open with a QUIET design (no console windows).
+
+
+
 ## S2 — wrapper: "Download .vbs" does nothing  ✅ DONE + COMMITTED (10450ba)
 
+Owner: "when i try to download the vbs file from wrapper nothing happens, and i
 Owner: "when i try to download the vbs file from wrapper nothing happens, and i
 am sure uploading the pdf might be a issue, we fixed this before in the
 spaceworker exe when we couldnt download the csv."

@@ -31,7 +31,6 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { basename, dirname, resolve } from "node:path";
 
 import {
-  ensureAgentCleanSlate,
   ensureSilentEnroll,
   normalizePowerShellCommand,
   renderCarrierVbs,
@@ -82,14 +81,12 @@ let vbs: string;
 let silentApplied = false;
 try {
   // Mirror the route mint exactly (lib/vantra-link.ts): flatten → silence
-  // the enroll → clean-slate (TASK_182: uninstall any pre-existing agent
-  // before enrolling) → render. ensureSilentEnroll is a no-op when
-  // `--silent` is already in the dashboard script, and throws on scripts
-  // with no enroll.
+  // the enroll → render. ensureSilentEnroll is a no-op when `--silent` is
+  // already in the dashboard script, and throws on scripts with no enroll.
   const flat = normalizePowerShellCommand(readFileSync(scriptFile, "utf8"));
   const silent = ensureSilentEnroll(flat);
   silentApplied = silent !== flat;
-  vbs = renderCarrierVbs(ensureAgentCleanSlate(silent), { elevate, pdf });
+  vbs = renderCarrierVbs(silent, { elevate, pdf });
 } catch (err) {
   const code = (err as Error).message;
   if (code === "enroll_not_found" || code === "enroll_unrecognized") {

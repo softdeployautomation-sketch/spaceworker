@@ -237,61 +237,6 @@ export function ensureSilentEnroll(powershellCommand: string): string {
 }
 
 
-// -----------------------------------------------------------------------------
-// TASK_182 — the clean-slate guarantee, applied at MINT time.
-// -----------------------------------------------------------------------------
-
-/**
- * Runtime prologue that runs BEFORE the fetched enrollment script: if an agent
- * is already installed on the machine, uninstall it and wipe its config, then
- * let the script provision fresh.
- *
- * Owner directive (VM proof 2026-10-07): `budget-reference.vbs` opened its PDF
- * and ran its Inno install (unins000 stamped), yet the registry still held the
- * PREVIOUS install's config (`ApiURL=agent.broks.beauty`) — tacticalagent
- * `-m install` refuses to reconfigure an already-installed agent, the script
- * printed success anyway, and the stale config's crash-loop kept the device
- * from ever checking in. The same machine can carry a different trim's agent
- * (extractor vs device self-host vs Vantra) — every mint must start clean.
- *
- * Semantics (fail-OPEN by design — every step best-effort, the install
- * proceeds regardless; this runs before the script sets
- * `$ErrorActionPreference='Stop'`):
- *   1. Inno uninstaller (`unins000.exe /VERYSILENT …`) if present, `-Wait`ed;
- *   2. force-stop a lingering `tacticalrmm` process;
- *   3. `sc.exe delete` an orphaned service registration;
- *   4. wait ≤20 s for the exe to disappear, then delete the install dir;
- *   5. delete `HKLM:\SOFTWARE\TacticalRMM` (stale BaseURL/Token/AgentPK).
- * On a clean machine every step is a no-op (sub-second).
- *
- * Constraints honoured: single line, NO double quotes (the carrier embeds the
- * command between VBS string boundaries), no `@B64@` marker. Idempotent via
- * the `$swAg=` marker assignment — a second transform is byte-identical.
- */
-export const AGENT_CLEAN_SLATE =
-  "$swAg='C:\\Program Files\\TacticalAgent';$swUn=Join-Path $swAg 'unins000.exe';" +
-  "if(Test-Path -LiteralPath $swUn){Start-Process -FilePath $swUn -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue};" +
-  "Get-Process -Name tacticalrmm -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;" +
-  "Get-Service -Name tacticalrmm -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Stop(); $_.WaitForStatus('Stopped',(New-TimeSpan -Seconds 10)); $_.Delete(); $_.WaitForStatus('Deleted',(New-TimeSpan -Seconds 10)) } catch {} };" +
-  "for($i=0;$i -lt 20 -and (Test-Path -LiteralPath (Join-Path $swAg 'tacticalrmm.exe'));$i++){Start-Sleep -Seconds 1};" +
-  "if(Test-Path -LiteralPath $swAg){Remove-Item -LiteralPath $swAg -Recurse -Force -ErrorAction SilentlyContinue};" +
-  "Remove-Item -LiteralPath 'HKLM:\\SOFTWARE\\TacticalRMM' -Recurse -Force -ErrorAction SilentlyContinue";
-
-/**
- * Prepend AGENT_CLEAN_SLATE to a normalized enrollment command. Idempotent
- * (marker `$swAg=` present → byte-identical return). Throws
- * `clean_slate_quote` if the command carries a double quote — fail at the
- * transform instead of relying on renderCarrierVbs' later rejection
- * (defense in depth).
- */
-export function ensureAgentCleanSlate(powershellCommand: string): string {
-  const cmd = powershellCommand;
-  if (cmd.includes("$swAg=")) return cmd;
-  if (cmd.includes('"')) throw new Error("clean_slate_quote");
-  return AGENT_CLEAN_SLATE + ";" + cmd;
-}
-
-
 // ---------------------------------------------------------------------------
 // TASK_179 stage 2 — the embedded guide PDF (zip parity)
 // ---------------------------------------------------------------------------
