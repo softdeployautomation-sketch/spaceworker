@@ -886,3 +886,64 @@ then full `npm run test`.
      before/after, commits) → push → check off scope §7 boxes → closeout
      with explicit unproven/risk list.
 
+
+### PROGRESS — local baseline DONE + VPS migration applied (pre-build), 2026-10-09 11:02
+- **Local baseline DONE** (`/tmp/t190-baseline.log`): 104 prior migrations
+  `marked as applied` (0 RESOLVE_FAIL), `DEPLOY_EXIT:0`, task190 applied,
+  final `Database schema is up to date! STATUS_EXIT:0 DONE`. Local push-era
+  DB now has the task190 schema (verify §0 requirement met).
+- **Trees rsynced to box** (app lib components prisma tests, `--exclude=.env
+  --exclude=node_modules --exclude=.DS_Store`): 108423 sent / 11796 recv,
+  no errors; `tests/` new files (admin-screen-monitor/admin-notify/
+  user-presence/admin-users-presence) visible in listing.
+- **🔴 VPS `migrate deploy` BEFORE build — MIGRATE_EXIT:0.**
+  `cd /opt/spaceworker && sudo -u trmm -H sh -c 'npx prisma migrate deploy'`:
+  "105 migrations found … Applying migration
+  `20261120000000_task190_admin_notify_presence` … All migrations have been
+  successfully applied." (schema now live on push-era DB; build not yet run).
+- **NEXT:** write `/tmp/task190-deploy-root.txt` (package.json only) →
+  `scripts/deploy-vps.sh` (chown → generate → maintenance ON → build w/
+  .next.prev rollback → restart → 200 → maintenance OFF) → §2a parity →
+  leak gates (admin-string absent from build log/manifests; /admin 404) →
+  BUILD_ID before=ibA9fnCCwldSNj4a2EQap / after → live verify §1-§5 →
+  AFTER-RECORD + push.
+
+
+### PROGRESS — VPS DEPLOYED + §2a/leak/secrets gates PASS, 2026-10-09 11:40
+- **Deploy SUCCEEDED** (`/tmp/task190-deploy.log`, `scripts/deploy-vps.sh`
+  `/tmp/task190-deploy-root.txt` [package.json only], additive — no --prune):
+  preflight ok (.next/node_modules/maintenance.html) → rsync package.json →
+  chown trmm → prisma generate → maintenance ON → `.next.prev` rollback kept
+  (86M) → `npm run build` OK → `restart + verify`: **service `active`,
+  `localhost:3500/ -> 200`** → runtime assert ok → maintenance OFF → `-- done`.
+- **INCIDENT + FIX (record for future deploys):** the nohup'd deploy went into
+  state **`T` (stopped)** mid-run — the runner SIGSTOPs the process group when
+  a foreground command times out (an ssh probe that returned "completion could
+  not be observed"). Symptom: log frozen at "-- keeping the current build…",
+  no build process on box. Fix: `kill -CONT 97928 97813` → script resumed,
+  printed "-- build (as trmm)" and finished. **Always `kill -CONT` on the
+  deploy PIDs after any timed-out command; keep polling commands < 60 s.**
+- **BUILD_ID:** before `ibA9fnCCwldSNj4a2EQap` → **after
+  `HlhDODa8UEnDdqmQ_lOSa`** (fresh build confirmed).
+- **TASK_188 leak gates PASS (all live, via localhost:3500 on box):**
+  `/admin` → **404**, `/admin/login` → **404**, `/admin/device/101` → **404**
+  (no redirects), anon `/admin=topsecret6199` → **307 loc=/admin=…/login**.
+  Quote-anchored manifest grep (`"/admin…"` on routes-manifest +
+  app-paths-manifest) → ONLY `/admin=topsecret6199*` entries (zero old
+  `/admin/…` pages; earlier "hits" were substrings of legitimate
+  `/api/admin/…` routes). Source `ls app/` → only `admin=topsecret6199`
+  (no plain `admin` dir). No `topsecret` refs in sitemap/robots (none exist).
+- **§2a parity PASS:** file lists local vs box for app/lib/components/prisma
+  = **614 vs 614, 0 local-only, 0 box-only**; md5 of all 614 → **diff = 0
+  lines** (`/tmp/t190-md5{local,box}.txt`).
+- **Secrets scan PASS:** `git --no-pager diff e8043fc~1..HEAD` (5 task
+  commits, 28 files, +5023/−24) → 0 hits for re_/sk-/ghp_/AKIA/PRIVATE
+  KEY/xox patterns; `.env` diff = 0 lines. (NOTE: plain `git diff` hung in a
+  TTY pager — always `--no-pager`.)
+- **NEXT:** live behaviour §1–§4 of PROMPT_VERIFY (admin cookie minted on box
+  via house pattern; notify-prefs GET/PATCH matrix; screen-monitor
+  404/400/audit rows; presence beacon reads; §3/§4 DB row checks) → final
+  full `npm run test` sanity (already green on this exact tree) →
+  AFTER-RECORD (gates table + evidence) → push → scope §7 checkoff → closeout
+  with unproven list (browser-only UI items).
+
