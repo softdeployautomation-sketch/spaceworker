@@ -63,3 +63,18 @@
 ### Git
 - Files: `components/store.tsx`, `app/store/page.tsx`, `app/pricing/page.tsx`, `TASK_189_STEPS.md`.
 - Commit msg → `/tmp/commit-189-msg.txt` + `git commit -F` → push. **NEVER** `TASK_133_RMM_ENGINE_BRINGUP.md`. TASK_188 untouched.
+- **DONE: `12a37f3` pushed** (`ed7f1f9..12a37f3`), 4 files, +205/−134. Tree clean except strays.
+
+### S7 DEPLOY — record written BEFORE starting (owner said "go ahead" to deploy)
+- No schema change → NO migrate needed; build+restart half only.
+- Method: files-from list (3 code files) → `scripts/deploy-vps.sh <list>` (rsync + chown + build + restart + verify, per §WHY header — never hand-rsync root files).
+- After: verify BUILD_ID bump, `/store`+`/pricing` 200, built chunk contains new strings (`Choose an app`, `Select an app`) and NOT old ones (`Subscribe to the full web app`, `Or pick just what you need`), append AFTER-RECORD.
+
+#### S7 AFTER-RECORD — DEPLOYED ✅ (2026-10-09 ~06:17 UTC)
+- Deploy: `bash scripts/deploy-vps.sh /tmp/deploy-189-files.txt` → log `/tmp/deploy189.log`.
+- Flow observed: preflight ✓ (env snapshot `spaceworker.env.bak-20261009051411`, `.env`/`.next`/`node_modules`/`maintenance.html` all survived) → rsync **4 files** (additive, no `--prune`) → `chown -R trmm` → `prisma generate` → maintenance ON → `.next.prev` rollback copy → **build exit 0** → restart + verify → maintenance OFF → `-- done`.
+- **BUILD_ID `F5n788UVXZqaX0b5cFb-j` → `1KWwOhU-lrarvxiQpQ01W`**; `systemctl is-active` = **active**; `localhost:3500/store` = **200**.
+- Public: **https://spaceworker.top/store → 200**, **https://spaceworker.top/pricing → 200**.
+- Chunk evidence (`.next/static/chunks/19kv91meso364.js`): **NEW present** — `Choose an app`, `Select an app`, `New to SpaceWorker? Start free`, `Sign up for SpaceWorker OS`, `request Premium from your dashboard`. **OLD absent** — `Subscribe to the full web app` (0 hits), `Or pick just what you need` (0 hits).
+- Journal: `✓ Ready in 357ms`, `[env-health] OK`, no errors.
+- Steps file re-committed after this record (this file was in the deploy list — the server copy predates this append; harmless, docs only).
