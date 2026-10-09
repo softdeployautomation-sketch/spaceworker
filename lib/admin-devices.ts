@@ -31,6 +31,8 @@ export interface AdminDeviceRow {
   tier: string;
   lastSeenAt: string | null;
   createdAt: string;
+  /** TASK_188 S3 — ISO timestamp while the row is soft-deleted, else null. */
+  removedAt: string | null;
   agentId: string | null;
   /** Best-effort MeshCentral idle (seconds); null when not looked up. */
   idleSeconds: number | null;
@@ -47,6 +49,7 @@ const ADMIN_DEVICE_SELECT = {
   tier: true,
   lastSeenAt: true,
   createdAt: true,
+  removedAt: true,
   vantraAgentId: true,
   user: { select: { id: true, email: true, tier: true } },
 } as const;
@@ -75,6 +78,8 @@ export async function listAdminDevices(opts: {
   status?: string;
   userId?: string;
   limit?: number;
+  /** TASK_188 S3 — true ⇒ ONLY soft-deleted rows (the Deleted subtab). */
+  removed?: boolean;
 }): Promise<{ devices: AdminDeviceRow[]; truncated: boolean }> {
   const q = opts.q?.trim() ?? "";
   const where = {
@@ -82,8 +87,12 @@ export async function listAdminDevices(opts: {
     // machine: same exclusion as the customer list, so it can never be picked as
     // a command target from the admin surface either.
     deviceKind: { not: "hosted" },
-    // TASK_128 §15 — a removed device leaves no ghost row.
-    removedAt: null,
+    // TASK_128 §15 — a removed device leaves no ghost row. TASK_188 S3 keeps
+    // that as the DEFAULT (callers that don't ask see exactly what they always
+    // saw) and inverts it ONLY for `removed: true`, which is the admin's
+    // Deleted subtab. It is a query flag, never a second code path: same
+    // selector, same status derivation, same limit.
+    removedAt: opts.removed ? ({ not: null } as const) : null,
     ...(opts.userId ? { userId: opts.userId } : {}),
     ...(q
       ? {
@@ -113,6 +122,7 @@ export async function listAdminDevices(opts: {
       tier: r.tier,
       lastSeenAt: r.lastSeenAt ? r.lastSeenAt.toISOString() : null,
       createdAt: r.createdAt.toISOString(),
+      removedAt: r.removedAt ? r.removedAt.toISOString() : null,
       agentId: r.vantraAgentId,
       idleSeconds: null as number | null,
       owner: { id: r.user.id, email: r.user.email, tier: r.user.tier },
@@ -151,6 +161,71 @@ export async function listAdminDevicesForUser(userId: string): Promise<{
   if (!owner) return { owner: null, devices: [] };
   const { devices } = await listAdminDevices({ userId });
   return { owner, devices };
+}
+
+/**
+ * TASK_188 S4 — recover a soft-deleted device, optionally handing it to a
+ * DIFFERENT user ("recover to any user I choose").
+ *
+ * `removedAt: null` is written EXPLICITLY, never as a side-effect of a sync:
+ * the Vantra sync deliberately skips removed rows (`lib/vantra-link.ts`,
+ * `if (saved.removedAt) continue;`) so it can never resurrect one — which also
+ * means it can never un-remove one either. TASK_185 P4 rule.
+ *
+ * Ownership is a plain `userId` flip on our own row. It does NOT touch Vantra:
+ * the agent keeps running under whatever org it was installed into (OUT OF
+ * SCOPE for this task), so a device moved to a user whose `sw-<userId>` org
+ * does not hold the agent will list fine but refuse admin commands — Vantra
+ * asserts the org itself (see `adminRunDeviceCommand`). Callers should prefer
+ * restoring to the ORIGINAL owner unless the row is being deliberately moved.
+ *
+ * Throws `device_not_found` (no such row) and `user_not_found` (target user
+ * does not exist) — both are terminal, nothing is written.
+ */
+export async function restoreAdminDevice(opts: {
+  deviceId: string;
+  userId?: string;
+}): Promise<{
+  id: string;
+  name: string;
+  removedAt: string | null;
+  owner: { id: string; email: string; tier: number };
+}> {
+  const device = await db.device.findUnique({
+    where: { id: opts.deviceId },
+    select: { id: true, name: true, userId: true },
+  });
+  if (!device) throw new Error("device_not_found");
+
+  if (opts.userId) {
+    const target = await db.user.findUnique({
+      where: { id: opts.userId },
+      select: { id: true },
+    });
+    if (!target) throw new Error("user_not_found");
+  }
+
+  const updated = await db.device.update({
+    where: { id: device.id },
+    data: {
+      // THE explicit clear — see the P4 rule above.
+      removedAt: null,
+      ...(opts.userId ? { userId: opts.userId } : {}),
+    },
+    select: {
+      id: true,
+      name: true,
+      removedAt: true,
+      user: { select: { id: true, email: true, tier: true } },
+    },
+  });
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    removedAt: updated.removedAt ? updated.removedAt.toISOString() : null,
+    owner: updated.user,
+  };
 }
 
 /**

@@ -16,6 +16,9 @@ export const dynamic = "force-dynamic";
 //   ?status= online | offline (matched against the DERIVED status, so it can't
 //            contradict the badge the panel renders)
 //   ?userId= pin to one owner (the Users-tab drill-down)
+//   ?removed=1  TASK_188 S3 — ONLY soft-deleted rows (the Deleted subtab).
+//            DEFAULT (flag absent) still excludes them byte-for-byte, so every
+//            existing caller is unaffected.
 //
 // Read-only: no command is ever run from a GET, so this cannot be CSRF'd into
 // touching a machine.
@@ -29,6 +32,7 @@ export async function GET(req: Request) {
       q: url.searchParams.get("q") ?? undefined,
       status: url.searchParams.get("status") ?? undefined,
       userId: url.searchParams.get("userId") ?? undefined,
+      removed: url.searchParams.get("removed") === "1",
     });
     return NextResponse.json({ ok: true, count: devices.length, truncated, devices });
   } catch (err) {
