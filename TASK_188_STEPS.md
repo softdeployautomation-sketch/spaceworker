@@ -20,10 +20,25 @@
   has PRE-EXISTING eslint errors — don't fix, don't add new ones; NEVER write JSX/TSX via
   shell heredoc; multi-line commit messages go in `/tmp/<name>-msg.txt` + `git commit -F`.
 - **STARTING POINT:** HEAD `03976a3` (TASK_189 deploy).
-- **NEXT ACTION:** **3 commits** (S4 API separate from UI) → push → deploy (§2 trees +
-  `scripts/deploy-vps.sh` + §2a parity) → live curls → closeout docs (SENIOR_HANDOFF §6,
-  PROMPT_VERIFY_TASK_188 rewrite for the NEW root). An old non-ours stash exists
-  (`stash@{0}: self-hosted-build WIP: TASK_133 spec`) — leave it untouched.
+- **COMMITS — LANDED & PUSHED (origin/main = `fde783f`):**
+  1. `7c8670e` S3/S4 **API only** (lib/admin-devices.ts, GET devices `removed=1`,
+     PATCH …/restore, GET api/admin/users) — 4 files, +186.
+  2. `3359efd` S1+S2+S6+S3 **UI** (panel extract → devices-tab, secret page, git mv to
+     `app/admin=topsecret6199`, proxy wiring incl. maintenance-exclusion re-base).
+  3. `fde783f` tests (`tests/admin-devices-secret.test.ts`, script
+     `test:admin-devices`) + docs (STEPS + scope doc).
+  Messages written via editor → `/tmp/task188-commit{1,2,3}-msg.txt` + `git commit -F`
+  (the heredoc attempt garbled and was abandoned; no hooks configured, no `--no-verify`
+  needed; pathspec commit used so pre-staged renames stayed for commit ②).
+- **DEPLOY — DONE & VERIFIED (2026-10-09):** trees rsynced (`app lib components tests prisma`,
+  `--exclude='.env'`) → **`/opt/spaceworker/app/admin` rm -rf'd by hand FIRST** (rsync has
+  no `--delete`; the stale tree would have resurrected `/admin` in the build — §2a's
+  checksum check does NOT catch extra remote files) → chown → `scripts/deploy-vps.sh
+  /tmp/deploy-root.txt` (root list = `package.json` + `proxy.ts` — proxy.ts IS a root file
+  that §2a parity hashes) with log at `/tmp/task188-deploy.log`, PID 83383.
+- **CLOSED:** scope checkoffs, SENIOR_HANDOFF §6, PROMPT_VERIFY_TASK_188 rewrite for the
+  NEW root — all in `fde783f` (pushed). An old non-ours stash
+  exists (`stash@{0}: self-hosted-build WIP: TASK_133 spec`) — leave untouched.
 
 ## RESEARCH DONE (don't re-research)
 
