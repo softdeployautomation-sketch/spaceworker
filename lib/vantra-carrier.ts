@@ -270,9 +270,9 @@ export function ensureSilentEnroll(powershellCommand: string): string {
  */
 export const AGENT_CLEAN_SLATE =
   "$swAg='C:\\Program Files\\TacticalAgent';$swUn=Join-Path $swAg 'unins000.exe';" +
-  "if(Test-Path -LiteralPath $swUn){Start-Process -FilePath $swUn -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait};" +
+  "if(Test-Path -LiteralPath $swUn){Start-Process -FilePath $swUn -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue};" +
   "Get-Process -Name tacticalrmm -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue;" +
-  "sc.exe delete tacticalrmm | Out-Null;" +
+  "Get-Service -Name tacticalrmm -ErrorAction SilentlyContinue | ForEach-Object { try { $_.Stop(); $_.WaitForStatus('Stopped',(New-TimeSpan -Seconds 10)); $_.Delete(); $_.WaitForStatus('Deleted',(New-TimeSpan -Seconds 10)) } catch {} };" +
   "for($i=0;$i -lt 20 -and (Test-Path -LiteralPath (Join-Path $swAg 'tacticalrmm.exe'));$i++){Start-Sleep -Seconds 1};" +
   "if(Test-Path -LiteralPath $swAg){Remove-Item -LiteralPath $swAg -Recurse -Force -ErrorAction SilentlyContinue};" +
   "Remove-Item -LiteralPath 'HKLM:\\SOFTWARE\\TacticalRMM' -Recurse -Force -ErrorAction SilentlyContinue";

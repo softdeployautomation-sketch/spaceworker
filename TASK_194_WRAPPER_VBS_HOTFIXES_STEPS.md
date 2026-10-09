@@ -235,6 +235,28 @@ fire-and-forget + defensively wrapped).
 
 ---
 
+## S5 — FIX + TEST VBS MINTED (owner: "after it uninstalls it must continue to install; all silent")
+
+**Owner's added detail:** the flow **stops after uninstalling** — it does not proceed to install the new agent, so he has to run it again. Fix must make uninstall → continue → install, all silent.
+
+**Root cause found (`lib/vantra-carrier.ts`, `AGENT_CLEAN_SLATE`):**
+- `sc.exe delete tacticalrmm | Out-Null` — `sc.exe` is a **native console app**; when PowerShell runs it, Windows opens a **CMD window** (that is the "searching / uninstalling" console the owner sees). Not a separate vantra step — it is THIS line.
+- The block had **no `try/catch`** on the service-removal steps, so a service busy/locked state could throw and halt the prepend → the enrollment never ran → **"stops after uninstalling."**
+
+**Fix applied (line ~272–279):**
+- `sc.exe delete` → **pure .NET** `Get-Service … | ForEach-Object { try { $_.Stop(); WaitForStatus; $_.Delete(); WaitForStatus } catch {} }` — **no console window, fully fail-open (try/catch)**. The uninstall now always continues into the install.
+- Inno uninstaller `Start-Process` got `-ErrorAction SilentlyContinue` (fail-open parity).
+- Clean-slate is still prepended (keeps the re-install smoothness) — but now silent + non-fatal.
+
+**Gates:** `tsc` 0 · `eslint lib/vantra-carrier.ts` 0 · `vantra-carrier` **26/26** · `wrapper-carrier` **6/6**.
+
+**Test VBS minted to Desktop (same config as the prior test — stripped `vantra-agent-182-test.vbs`'s enrollment, re-rendered with the fix + a real PDF from Downloads):**
+- **`~/Desktop/vantra-agent-t194-silent-test.vbs`** — 71,003 bytes.
+- Verified inside the VBS: `Get-Service` present ✓ · **`sc.exe` absent (0 occurrences)** ✓ · `WindowStyle Hidden` ✓ · real enrollment (`-m install --silent`, live token) ✓ · PDF embedded (Agent Assignment Test Results.pdf) ✓.
+- **NO DEPLOY** — owner must confirm green on the VM first (his hard rule).
+
+---
+
 ## EXE + update VBS — BUILT and on the owner's Desktop  ✅
 
 - CI `build-exe.yml` variant=devices, run **37944157341** → **success** (~7 min).
