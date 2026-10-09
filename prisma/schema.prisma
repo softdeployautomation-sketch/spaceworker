@@ -3778,9 +3778,11 @@ model PremiumInvoice {
 // TASK_190 S3 — singleton row (id always "singleton"): the admin's own
 // notification channels for admin-scope alerts (screen-monitor fan-out).
 // Defaults OFF on both channels — the admin opts in per channel, and a missing
-// row is read as "both off". `telegramChatId` is stamped by the owner-side
-// bot-linking webhook (the same link flow a User goes through): the admin links
-// the bot once, the chat id lands here, and it is never rendered back out.
+// row is read as "both off". `telegramChatId` is WRITE-ONLY by design
+// (paste-chat-id, PROMPT_CONTINUE): the admin pastes their numeric chat id into
+// the admin panel header (PATCH /api/admin/notification-prefs), the lib
+// validates it as a numeric string before storing, and no API ever renders it
+// back out — the GET view exposes only the boolean `telegramLinked`.
 model AdminNotificationPref {
   id              String   @id @default("singleton")
   telegramEnabled Boolean  @default(false)

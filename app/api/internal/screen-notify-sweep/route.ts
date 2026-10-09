@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/prisma";
 import { requireInternalBearer } from "@/lib/internal-auth";
+import { runAdminNotifyPass } from "@/lib/admin-notify";
 import {
   runTriggerPass,
   buildScreenDigest,
@@ -17,7 +18,12 @@ import {
 //      against its owner's keyword triggers (the DeviceScreenshot.triggerEvaluatedAt
 //      work marker keeps this a one-shot queue). Firings go through notifyUser and
 //      are rate-limited by the per-(trigger,device) cooldown.
-//   2. DIGEST PASS — for every user with the digest switched on and actually due,
+//   2. ADMIN PASS (TASK_190) — for every device with adminNotifyEnabled, notify
+//      the ADMIN's own channels about its newest summarized frame (120-min
+//      cooldown on Device.adminNotifyLastSentAt). Runs in ITS OWN try/catch so
+//      a dead Telegram token or a bad row can never fail the sweep (the
+//      per-channel sends are contained inside the lib as well).
+//   3. DIGEST PASS — for every user with the digest switched on and actually due,
 //      build one message covering ALL their monitored devices for the last cadence
 //      window. The (userId, windowStart) rollup unique key makes a re-fire a no-op.
 //
@@ -39,7 +45,19 @@ export async function POST(req: Request) {
     triggerPass = { error: err instanceof Error ? err.message : String(err) };
   }
 
-  // --- 2. Digests --------------------------------------------------------
+  // --- 2. Admin alerts (TASK_190) ------------------------------------------
+  // Its OWN try/catch, like the trigger pass above: a failure here is reported
+  // in the response but must never take the sweep down with it (PROMPT_VERIFY
+  // §3.6 — the notification failing is visible; the sweep still succeeds).
+  let adminPass: Awaited<ReturnType<typeof runAdminNotifyPass>> | { error: string };
+  try {
+    adminPass = await runAdminNotifyPass();
+  } catch (err) {
+    console.error("[screen-notify-sweep] admin pass failed:", err);
+    adminPass = { error: err instanceof Error ? err.message : String(err) };
+  }
+
+  // --- 3. Digests --------------------------------------------------------
   const candidates = await prisma.user.findMany({
     where: { screenDigestEnabled: true },
     select: { id: true },
@@ -69,11 +87,13 @@ export async function POST(req: Request) {
   console.log(
     `[screen-notify-sweep] triggers scanned ${"scanned" in triggerPass ? triggerPass.scanned : "n/a"}, ` +
       `fired ${"fired" in triggerPass ? triggerPass.fired : 0}; ` +
+      `admin notified ${"notified" in adminPass ? adminPass.notified : "n/a"}, ` +
       `digests generated ${digestsGenerated}, skipped ${digestsSkipped} of ${candidates.length} eligible`,
   );
 
   return NextResponse.json({
     triggers: triggerPass,
+    adminAlerts: adminPass,
     digests: {
       generated: digestsGenerated,
       skipped: digestsSkipped,

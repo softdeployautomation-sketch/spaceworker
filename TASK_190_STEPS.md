@@ -571,4 +571,152 @@ then full `npm run test`.
 - **Commit:** msg file `/tmp/t190-slice2-msg.txt` written with editor →
   `git commit -F` (never heredoc); staged explicitly (never
   `TASK_133_RMM_ENGINE_BRINGUP.md`).
+- **Commit:** msg file `/tmp/t190-slice2-msg.txt` written with editor →
+  `git commit -F` (never heredoc); staged explicitly (never
+  `TASK_133_RMM_ENGINE_BRINGUP.md`).
+
+### PROGRESS — slice ② PUSHED, 2026-10-09 (5)
+- `git add` explicit 8-file list → `git diff --cached --stat`:
+  `TASK_190_STEPS.md +216 · device/[deviceId]/page.tsx +34 ·
+  screen-monitor/route.ts +153 · devices-tab.tsx +159/-9 ·
+  screen-monitor-panel.tsx +267 · admin-devices.ts +166 ·
+  package.json +2 · tests/admin-screen-monitor.test.ts +538`
+  (8 files, 1526 insertions, 9 deletions). TASK_133 NOT staged.
+- `git commit -F /tmp/t190-slice2-msg.txt` → **`2db34de`**; `git push` →
+  `d585149..2db34de main -> main`. Working tree: only untracked
+  `TASK_133_RMM_ENGINE_BRINGUP.md` (correct — never committed).
+
+## SLICE ③ PLAN (S3+S4: admin notify channels + per-device admin alerts) — START 2026-10-09
+1. Read first: `lib/screen-notifications.ts` (claimFiring 136-162,
+   cooldownElapsed:81), `lib/email.ts`, `lib/telegram.ts`,
+   `lib/notification-log.ts`, `app/api/internal/screen-notify-sweep/route.ts`,
+   `components/admin/admin-shell.tsx`, `AdminNotificationPref` schema
+   (comment must be FIXED once paste-chat-id lands), admin-session pattern.
+2. `lib/admin-notify.ts` (server-only): `getAdminNotifyPrefs` (missing row →
+   both off), `setAdminNotifyPrefs` (chat id write-only, numeric-string),
+   `maybeAdminScreenNotify(deviceId, frameSummary, now)` claim-then-send w/
+   120-min cooldown on `Device.adminNotifyLastSentAt`, fan-out email
+   (`sendEmail`, eventType `admin_screen_alert`) + Telegram
+   (`sendTelegramMessage` gated by `telegramConfigured()`), log rows
+   `writeNotificationLog({userId: null, …})`, telegram failure never throws.
+3. Sweep hook: admin pass in OWN try/catch after trigger pass — devices
+   `adminNotifyEnabled:true` + summarized frame newer than
+   `adminNotifyLastSentAt ?? epoch`, newest summarized frame per device.
+4. `GET/PATCH /api/admin/notification-prefs` (own getAdminSession; GET
+   `{telegramEnabled, emailEnabled, telegramLinked}` — NEVER chat id).
+5. `admin-shell.tsx` header: two compact toggles + paste-chat-id input.
+6. Fix `AdminNotificationPref` schema comment to match paste-chat-id design.
+7. Tests `tests/admin-notify.test.ts` (Module._load pattern) + script
+   `test:admin-notify` (+ bare alias): default-off, GET never leaks chatId,
+   PATCH numeric validation, cooldown suppress/allow, telegram failure
+   contained, sweep-hook failure contained.
+8. Gates → PROGRESS → commit+push ③ (msg via /tmp + `git commit -F`).
+
+### PROGRESS — slice ③ DESIGN (ground truth reconciled across BOTH prompts), 2026-10-09
+- **CONTINUE vs VERIFY conflicts, resolved (superset/doc-driven):**
+  1. GET `/api/admin/notification-prefs` returns a SUPERSET:
+     `{ok, telegramEnabled, emailEnabled, telegramLinked, configured:{telegram,email},
+     prefs:{notifyEmail,notifyTelegram,telegramLinked}}` — trio per CONTINUE,
+     nested pair per VERIFY §2.2. `configured.telegram = telegramConfigured()`,
+     `configured.email = Boolean(env.adminEmail)` — VERIFY §0 requires the UI to
+     GREY OUT toggles when !configured. Never the chat id (write-only).
+  2. Auth code: VERIFY §2.5 pins **401 "Unauthorized"** for PATCH without cookie
+     (precedent: app/api/admin/support/tickets routes use 401) → both GET+PATCH
+     return 401 (not 403) on `!getAdminSession()`.
+  3. VERIFY §3.2 message MUST name: device, owner email, capturedAt, summary,
+     AND the `/admin=topsecret6199/device/{id}` link →
+     `maybeAdminScreenNotify(deviceId, frameSummary, now, capturedAt?)`
+     (4th arg optional, sweep passes frame.capturedAt; device select pulls
+     `user.email`).
+  4. **SECRECY-TEST CONFLICT:** tests/admin-screen-monitor.test.ts:511-537 walks
+     app/components/lib/public and flags ANY file containing
+     `/admin=topsecret6199/device/` outside the route tree + devices-tab. The
+     required message link puts that literal in `lib/admin-notify.ts` → add a
+     JUSTIFIED allowlist entry (server-only fan-out, never in a client bundle /
+     manifest) with a comment — not obfuscation. Recorded here + in commit.
+  5. NotificationLog rows (VERIFY §2.3/§3.2 family = eventType
+     admin_screen_alert, exactly one per channel attempt, userId null): email →
+     sendEmail's OWN row (it logs eventType pass-through in its finally — do
+     NOT double-log); telegram → sender's row is eventType "telegram_send"
+     (pre-existing) PLUS admin-notify writes the family row via
+     `writeNotificationLog({userId:null, eventType:"admin_screen_alert",
+     channel:"telegram", recipient:chatId, outcome, errorMessage})`.
+     Both channels OFF → return BEFORE any claim (zero rows, lastSentAt
+     untouched, VERIFY §2.3). sendEmail/sendTelegramMessage throws caught per
+     channel (§3.6: dead token ⇒ failed row, sweep still 200).
+- **Claim design (claimFiring pattern + reuse cooldownElapsed):** read device →
+  `!adminNotifyEnabled || removedAt` ⇒ false → channel readiness →
+  `cooldownElapsed(lastSentAt, 120, now)` fast-path ⇒ false → conditional
+  `updateMany({id, adminNotifyEnabled:true, removedAt:null, OR:[lastSentAt:null,
+  lte cutoff]}, data:{adminNotifyLastSentAt: now})` count>0 = own the send.
+  Update data contains ONLY `adminNotifyLastSentAt`.
+- **runAdminNotifyPass(now):** `device.findMany({adminNotifyEnabled:true,
+  removedAt:null}, select id+adminNotifyLastSentAt)` → per device
+  `deviceScreenshot.findFirst({deviceId, status:"captured",
+  summary:{not:null}, summarisedAt:{gt: lastSentAt ?? epoch}}, orderBy
+  summarisedAt desc)` → `maybeAdminScreenNotify(id, summary, now, capturedAt)`;
+  per-device try/catch; returns {eligible, notified, suppressed}.
+- **Sweep hook:** after trigger pass, BEFORE digests, own try/catch →
+  `adminPass = await runAdminNotifyPass()` or `{error}`; response gains
+  `adminAlerts`.
+- **Route zod:** mirror slice-② patchSchema style: optional booleans +
+  `telegramChatId: z.string().regex(/^-?\d+$/).nullable().optional()` +
+  refine "Nothing to update"; lib throws Error on bad chat id (belt+braces,
+  direct lib callers tested).
+- **Schema comment fix (paste-chat-id):** AdminNotificationPref comment
+  (prisma/schema.prisma:3780-3783) claims the bot-linking webhook stamps the
+  chat id — REWRITE to write-only paste-by-admin. Comment-only ⇒ NO new
+  migration, no prisma generate needed.
+- **UI (admin-shell header, VERIFY §2.1 "Notifications [Telegram] [Email]"):**
+  fetch GET on mount; two `role="switch"` buttons (emerald on / zinc off,
+  `disabled` when !configured.*); paste-chat-id input + Save shown when
+  !telegramLinked ("Telegram: not connected →"); toast on errors (useToast
+  already there); PATCH sends only changed key; response view updates state.
+- **Scripts:** `test:admin-notify` + bare alias `admin-notify` (slice-②
+  pattern; VERIFY §0 runs bare `admin-notify`). Slice ④ will need
+  `user-presence` AND `admin-users-presence` aliases (verify §0) +
+  `test:admin-presence`.
+- **Test fakes (parent-scoped branches):** from `/lib/admin-notify.ts`:
+  `./db`, `./env` (adminEmail+appBaseUrl), `./email` (sendEmail counter),
+  `./telegram` (sendTelegramMessage counter + telegramConfigured flag),
+  `./notification-log` (row recorder), `./screen-notifications` →
+  `originalLoad(abs)` REAL module with ITS deps faked (parent
+  `/lib/screen-notifications.ts`: `./db`, `./env`, `./notify`) so
+  `cooldownElapsed` under test is the REAL implementation. Sweep route fakes
+  `@/lib/{internal-auth,prisma,screen-notifications,admin-notify}`.
+
+
+
+### PROGRESS — slice ③ CODE+TESTS COMPLETE, all gates GREEN, 2026-10-09 (6th compaction)
+- **Fixed a broken insert from before compaction:** `tests/admin-notify.test.ts`
+  ended with a duplicated orphan fragment of the `calls` declaration (9 blank
+  lines + `findManyWhere…/frameWhere…} = {...}`) after the last test → esbuild
+  `Unexpected "}"` at :766, suite couldn't even parse. Removed lines 756-774
+  (`sed -i '' '756,$d'`) → file now 755 ln, ends on the static-schema test's `});`.
+  Verified seam: single `const calls` @98, single `const fakeDb` @116.
+- **tsc fix:** `lib/admin-notify.ts:327` passed `frame.capturedAt` (Date|null) to
+  `maybeAdminScreenNotify(…, capturedAt?: Date)` → TS2345. Now `frame.capturedAt
+  ?? undefined`.
+- **eslint fix (2 warnings, mine):** removed unused `bareReq` + `PrefsFn` in the
+  test.
+- **Gate proof (all rerun after fixes, outputs pasted above):**
+  - `npx tsc --noEmit` → **exit 0, 0 lines** of output.
+  - `npx eslint` on the 5 touched files (`lib/admin-notify.ts`, notification-prefs
+    route, screen-notify-sweep route, `admin-shell.tsx`, the test) → **exit 0,
+    0 problems** — no new lint issues (admin-panel pre-existing errors untouched).
+  - `npm run test:admin-notify` → **19/19 pass, 0 fail**.
+  - `npm run test:admin-screen-monitor` → **13/13 pass, 0 fail** (secrecy suite
+    intact WITH the allowlist edit).
+  - `npm run test:admin-devices` → **13/13 pass, 0 fail**.
+- **Slice ③ files (git diff --stat + untracked):** modified `prisma/schema.prisma`
+  (paste-chat-id comment rewrite — comment-only, NO new migration), `package.json`
+  (`test:admin-notify` + bare `admin-notify` alias), `app/api/internal/screen-notify-sweep/route.ts`
+  (admin pass hook after trigger pass, before digests, own try/catch → `adminAlerts`),
+  `components/admin/admin-shell.tsx` (2 role="switch" toggles + paste-chat-id UI),
+  `tests/admin-screen-monitor.test.ts` (justified `lib/admin-notify.ts` allowlist
+  for the §3.2 alert link — comment cites TASK_190 S3); NEW `lib/admin-notify.ts`,
+  `app/api/admin/notification-prefs/route.ts`, `tests/admin-notify.test.ts`.
+- **NEXT:** commit+push ③ (msg via /tmp file + `git commit -F`; NEVER
+  TASK_133_RMM_ENGINE_BRINGUP.md) → slice ④ owner presence beacon.
+
 

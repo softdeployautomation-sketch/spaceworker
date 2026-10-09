@@ -40,6 +40,8 @@
     "test:admin-devices": "tsx --test tests/admin-devices-secret.test.ts",
     "test:admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
     "admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
+    "test:admin-notify": "tsx --test tests/admin-notify.test.ts",
+    "admin-notify": "tsx --test tests/admin-notify.test.ts",
     "test:overview": "tsx --test tests/overview-stats-counts.test.ts",
     "test:xdevice": "tsx --test tests/xdevice-tier.test.ts tests/xdevice-route-gate.test.ts tests/xdevice-payment.test.ts",
     "test:module-gate": "tsx --test tests/module-route-gate.test.ts",

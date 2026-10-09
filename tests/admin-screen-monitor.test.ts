@@ -524,7 +524,13 @@ test("secrecy: only the route tree + devices-tab name the console URL; retired l
       const text = fs.readFileSync(full, "utf8");
       const inRouteTree = full.includes(routeTree);
       const isMenuOwner = full.endsWith(path.join("components", "admin", "devices-tab.tsx"));
-      if (text.includes(needle) && !inRouteTree && !isMenuOwner) offenders.push(full);
+      // TASK_190 S3 — the ADMIN's own alert message carries the console link
+      // (PROMPT_VERIFY §3.2), so server-only lib/admin-notify.ts is the one
+      // place outside the route tree allowed to name the URL: it runs on the
+      // server, ships to no client bundle and never enters the build manifest.
+      const isNotifyFanout = full.endsWith(path.join("lib", "admin-notify.ts"));
+      if (text.includes(needle) && !inRouteTree && !isMenuOwner && !isNotifyFanout)
+        offenders.push(full);
       // The pre-TASK_188 literal never appears outside the route's own folder
       // (the S1 dropdown replaced the old link style, not copied it).
       if (text.includes(retired) && !inRouteTree) offenders.push(full);
