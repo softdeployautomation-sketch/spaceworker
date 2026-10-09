@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 import { Modal } from "@/components/modal";
-import { Badge, Button, Card } from "@/components/ui";
+import { Badge, Button, Card, Select } from "@/components/ui";
 import { copyToClipboard } from "@/lib/clipboard";
 import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products";
 
@@ -28,10 +28,24 @@ type CheckoutInfo = {
 const EXE_DISCLOSURE = "Desktop app — license issued instantly, download link emailed right away.";
 const EXE_TRIAL_DISCLOSURE = "Free to try for 24 hours, no account or payment needed. Buy anytime to keep going.";
 
-export function Store() {
+// TASK_189 — rendered from BOTH /store and /pricing (they are near-identical
+// pages on purpose). The signup/account hrefs come in as props because this is
+// a client component and lib/exe-runtime is server-only — pages resolve them
+// with accountHref() exactly like their headers already do (EXE runtime must
+// bounce account paths to the hosted server).
+export function Store({
+  signupHref,
+  loginHref,
+}: {
+  signupHref: string;
+  loginHref: string;
+}) {
   const [products, setProducts] = useState<Product[] | null>(null);
   const [error, setError] = useState("");
   const [buying, setBuying] = useState<Product | null>(null);
+  // TASK_189 — the apps are sold from ONE dropdown: this is the selected
+  // product id. "" = nothing chosen yet (dropdown shows a placeholder option).
+  const [selectedId, setSelectedId] = useState("");
 
   useEffect(() => {
     void (async () => {
@@ -49,14 +63,20 @@ export function Store() {
     })();
   }, []);
 
+  // TASK_189 — only the desktop apps are sold here anymore (the web bundle and
+  // the modules left the store: sign up free, request Premium in the dashboard).
+  const exeProducts = products?.filter((p) => p.kind === "exe") ?? [];
+  const selected = exeProducts.find((p) => p.id === selectedId) ?? null;
+
   return (
     <section id="store" className="scroll-mt-24">
       <div className="max-w-5xl">
         <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Store</p>
-        <h2 className="mt-3 text-3xl font-bold text-fg">Buy SpaceWorker OS</h2>
+        <h2 className="mt-3 text-3xl font-bold text-fg">Sign up for SpaceWorker OS</h2>
         <p className="mt-2 max-w-2xl text-sm text-fg-muted">
-          Every tool we make, in one place. Subscribe to the full web app, or buy a
-          desktop edition outright. Prices below are the current launch prices.
+          Create your account for free — no pricing to pick here. Once you&rsquo;re in,
+          request Premium from the dashboard when you&rsquo;re ready. Desktop apps
+          don&rsquo;t need an account: choose one below and check out straight away.
         </p>
 
         {error && (
@@ -71,37 +91,42 @@ export function Store() {
 
         {products && (
           <>
-            {/* TASK_99 / plan §COMMERCIAL C3 (owner, 2026-09-26) — the bundle
-                first, then individual modules ("pick what you actually pay
-                for"), then the desktop apps. Grouped by kind so someone who
-                only wants Extractor doesn't have to hunt for it among the
-                EXE cards. */}
-            <div className="mt-8 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {products
-                .filter((p) => p.kind === "web")
-                .map((product) => (
-                  <StoreCard key={product.id} product={product} onBuy={(p) => setBuying(p)} />
-                ))}
-            </div>
-
-            {products.some((p) => p.kind === "module") && (
-              <div className="mt-10">
-                <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
-                  Or pick just what you need
+            {/* TASK_189 — where the web bundle's subscription card used to sit.
+                No pricing on the web app here anymore: the store's account
+                surface is pure signup; Premium is requested from inside the
+                dashboard (SupportTicketButton → invoice flow). */}
+            <div className="mt-8 flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border bg-bg-elevated p-5">
+              <div>
+                <p className="text-sm font-semibold text-fg">
+                  New to SpaceWorker? Start free.
                 </p>
                 <p className="mt-1 text-sm text-fg-muted">
-                  Each module is its own monthly subscription — mix and match, no bundle required.
+                  Sign up, then request Premium from your dashboard — no pricing to
+                  pick on this page.
                 </p>
-                <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                  {products
-                    .filter((p) => p.kind === "module")
-                    .map((product) => (
-                      <StoreCard key={product.id} product={product} onBuy={(p) => setBuying(p)} />
-                    ))}
-                </div>
               </div>
-            )}
+              <div className="flex gap-3">
+                <a
+                  href={signupHref}
+                  className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+                >
+                  Create account
+                </a>
+                <a
+                  href={loginHref}
+                  className="rounded-lg border border-border px-4 py-2 text-sm font-semibold text-fg hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  Sign in
+                </a>
+              </div>
+            </div>
 
+            {/* TASK_189 — the apps are sold from ONE dropdown (owner: "make the
+                apps sale a dropdown. so users can select which one and checkout
+                to payment"): pick an app → its card (price + Buy) renders below →
+                the existing crypto checkout modal. The server still sells every
+                product (/api/store/prices untouched — device-console reads it);
+                this page just no longer renders web/module cards. */}
             <div className="mt-10">
               <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">
                 Desktop apps
@@ -109,13 +134,40 @@ export function Store() {
               <p className="mt-1 text-sm text-fg-muted">
                 Run it locally instead — no subscription, one license, a real term.
               </p>
-              <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-                {products
-                  .filter((p) => p.kind === "exe")
-                  .map((product) => (
-                    <StoreCard key={product.id} product={product} onBuy={(p) => setBuying(p)} />
-                  ))}
-              </div>
+
+              {exeProducts.length > 0 ? (
+                <>
+                  <label className="mt-4 block max-w-md">
+                    <span className="text-sm font-medium text-fg">Choose an app</span>
+                    <Select
+                      className="mt-1"
+                      value={selectedId}
+                      onChange={(e) => setSelectedId(e.target.value)}
+                    >
+                      <option value="">Select an app…</option>
+                      {exeProducts.map((product) => (
+                        <option key={product.id} value={product.id}>
+                          {`${product.name} — $${product.priceUsd.toFixed(2)}`}
+                        </option>
+                      ))}
+                    </Select>
+                  </label>
+
+                  {selected ? (
+                    <div className="mt-4 max-w-md">
+                      <StoreCard product={selected} onBuy={(p) => setBuying(p)} />
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-fg-muted">
+                      Pick an app above to see its price and buy it.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p className="mt-4 text-sm text-fg-muted">
+                  The desktop apps are unavailable right now — check back shortly.
+                </p>
+              )}
             </div>
           </>
         )}
@@ -128,6 +180,9 @@ export function Store() {
   );
 }
 
+// TASK_189 — cards are desktop-app cards only now (web/module cards left the
+// store), but `kind` stays on the Product type because the checkout modal and
+// /api/store/prices still speak the full catalog.
 function StoreCard({
   product,
   onBuy,
@@ -135,56 +190,37 @@ function StoreCard({
   product: Product;
   onBuy: (p: Product) => void;
 }) {
-  const isWeb = product.kind === "web";
-  const isModule = product.kind === "module";
-  const isExe = product.kind === "exe";
   return (
     <Card className="flex flex-col p-5">
       <div className="flex items-start justify-between gap-2">
         <h3 className="text-lg font-semibold text-fg">{product.name}</h3>
-        {isExe && <Badge tone="neutral">Desktop app</Badge>}
-        {isModule && <Badge tone="neutral">Module</Badge>}
+        <Badge tone="neutral">Desktop app</Badge>
       </div>
       <p className="mt-2 text-sm text-fg-muted">{product.tagline}</p>
 
       <p className="mt-4 text-2xl font-bold text-fg">
         ${product.priceUsd.toFixed(2)}
-        <span className="text-sm font-normal text-fg-muted"> / {isExe ? "6 months" : "month"}</span>
+        <span className="text-sm font-normal text-fg-muted"> / 6 months</span>
       </p>
-      {isExe && <p className="text-xs text-fg-muted">1 month and 1 year terms available at checkout.</p>}
+      <p className="text-xs text-fg-muted">1 month and 1 year terms available at checkout.</p>
 
       <div className="mt-auto pt-4">
-        {isWeb || isModule ? (
-          <>
-            <p className="text-xs text-fg-muted">
-              {isWeb
-                ? "Everything, one subscription. Sign in (or create an account) to subscribe."
-                : "Sign in (or create an account) to subscribe to just this."}
-            </p>
-            <Button variant="primary" className="mt-2 w-full" onClick={() => onBuy(product)}>
-              Subscribe
-            </Button>
-          </>
-        ) : (
-          <>
-            <p className="text-xs text-fg-muted">
-              {product.downloadUrl ? EXE_TRIAL_DISCLOSURE : EXE_DISCLOSURE}
-            </p>
-            <div className="mt-2 flex gap-2">
-              {product.downloadUrl && (
-                <a
-                  href={product.downloadUrl}
-                  className="flex-1 inline-flex items-center justify-center rounded-lg border border-border px-4 py-2 text-sm font-semibold text-fg hover:bg-black/5 dark:hover:bg-white/5"
-                >
-                  Try for free
-                </a>
-              )}
-              <Button variant="primary" className="flex-1" onClick={() => onBuy(product)}>
-                Buy
-              </Button>
-            </div>
-          </>
-        )}
+        <p className="text-xs text-fg-muted">
+          {product.downloadUrl ? EXE_TRIAL_DISCLOSURE : EXE_DISCLOSURE}
+        </p>
+        <div className="mt-2 flex gap-2">
+          {product.downloadUrl && (
+            <a
+              href={product.downloadUrl}
+              className="flex-1 inline-flex items-center justify-center rounded-lg border border-border px-4 py-2 text-sm font-semibold text-fg hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              Try for free
+            </a>
+          )}
+          <Button variant="primary" className="flex-1" onClick={() => onBuy(product)}>
+            Buy
+          </Button>
+        </div>
       </div>
     </Card>
   );
@@ -202,11 +238,11 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
   const [result, setResult] = useState<{ status: string; note?: string } | null>(null);
   const [addressCopied, setAddressCopied] = useState(false);
   const [addressCopyFailed, setAddressCopyFailed] = useState(false);
-  // TASK_99 — web/module products need an existing session; surfaced
-  // distinctly from a generic error so the modal can point at Login/Signup
-  // instead of showing a broken-looking payment form with nothing to send to.
-  const [unauthorized, setUnauthorized] = useState(false);
-  const needsAccount = product.kind === "web" || product.kind === "module";
+  // TASK_189 — the web/module "Subscribe with your account" paths left the
+  // store with their cards: only desktop apps are buyable here, checkout for
+  // them is session-free, and the email field is therefore always shown. A 401
+  // can no longer come back from this fetch, so it falls into the generic
+  // error branch like any other failure.
 
   useEffect(() => {
     let cancelled = false;
@@ -216,7 +252,6 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
       // while keeping the reset-before-load behaviour.
       setCheckout(null);
       setError("");
-      setUnauthorized(false);
       setLoadingInfo(true);
       const qs = new URLSearchParams({ kind, product: product.id });
       if (product.kind === "exe") qs.set("durationDays", String(durationDays));
@@ -225,7 +260,6 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
       if (!cancelled) {
         setLoadingInfo(false);
         if (res.ok) setCheckout(data);
-        else if (res.status === 401) setUnauthorized(true);
         else setError(typeof data.error === "string" ? data.error : "Failed to load payment info");
       }
     })();
@@ -251,7 +285,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
     // can still submit; the payment just sits pending for manual review
     // instead of being auto-verified on-chain.
     const hash = txHash.trim();
-    if (!needsAccount && email.trim() && !email.includes("@")) {
+    if (email.trim() && !email.includes("@")) {
       setError("Enter a valid email — it receives your license key.");
       return;
     }
@@ -283,7 +317,7 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
   }
 
   return (
-    <Modal open onClose={onClose} title={`${needsAccount ? "Subscribe to" : "Buy"} ${product.name}`} wide>
+    <Modal open onClose={onClose} title={`Buy ${product.name}`} wide>
       {result ? (
         <div className="space-y-3 text-sm">
           <p className="font-medium text-fg">
@@ -295,43 +329,19 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
           </p>
           {result.note && <p className="text-fg-muted">{result.note}</p>}
           <p className="text-fg-muted">
-            {needsAccount
-              ? "Your account gets access the moment your payment is approved (or as soon as it verifies on-chain) — no separate key to keep track of."
-              : <>We&rsquo;ll email your license key to <span className="font-medium">{email || "your email"}</span>{" "}
-                the moment your payment is approved (or as soon as it verifies on-chain).</>}
+            We&rsquo;ll email your license key to <span className="font-medium">{email || "your email"}</span>{" "}
+            the moment your payment is approved (or as soon as it verifies on-chain).
           </p>
           <Button variant="secondary" type="button" onClick={onClose}>
             Close
           </Button>
         </div>
-      ) : unauthorized ? (
-        <div className="space-y-4 text-sm">
-          <p className="text-fg-muted">
-            Sign in — or create an account — to subscribe to {product.name}.
-          </p>
-          <div className="flex gap-3">
-            <a
-              href="/login"
-              className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-            >
-              Sign in
-            </a>
-            <a
-              href="/signup"
-              className="rounded-lg border border-border bg-bg-elevated px-4 py-2 text-sm font-semibold text-fg hover:bg-black/5 dark:hover:bg-white/5"
-            >
-              Create account
-            </a>
-          </div>
-        </div>
       ) : (
         <div className="space-y-4 text-sm">
           <p className="text-fg-muted">
-            {needsAccount
-              ? "Send the exact amount below; your subscription activates the moment your payment is approved."
-              : <>{EXE_DISCLOSURE} Send the exact amount below; a license key is issued
-                once your payment is approved, and downloads become available when the
-                build ships.</>}
+            {EXE_DISCLOSURE} Send the exact amount below; a license key is issued
+            once your payment is approved, and downloads become available when the
+            build ships.
           </p>
 
           <div>
@@ -380,18 +390,16 @@ function CheckoutModal({ product, onClose }: { product: Product; onClose: () => 
             </div>
           )}
 
-          {!needsAccount && (
-            <label className="block">
-              <span className="text-sm font-medium text-fg">Email for your license key</span>
-              <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-              />
-            </label>
-          )}
+          <label className="block">
+            <span className="text-sm font-medium text-fg">Email for your license key</span>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            />
+          </label>
 
           {loadingInfo ? (
             <p className="text-sm text-fg-muted">Loading payment details…</p>

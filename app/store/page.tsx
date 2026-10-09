@@ -41,12 +41,11 @@ export default function StorePage() {
         <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Store</p>
         <h1 className="mt-3 text-3xl font-bold text-fg">Pick what you pay for</h1>
         <p className="mt-2 max-w-2xl text-sm text-fg-muted">
-          Every SpaceWorker capability, priced on its own — extraction, outreach, the
-          desktop apps, and what&rsquo;s next as new modules ship. No bundle required to
-          start.
+          Sign up free, then request Premium from your dashboard when you&rsquo;re
+          ready — or pick a desktop app below and check out straight away.
         </p>
         <div className="mt-8">
-          <Store />
+          <Store signupHref={accountHref("/signup")} loginHref={accountHref("/login")} />
         </div>
       </main>
 

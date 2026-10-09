@@ -43,12 +43,11 @@ export default function PricingPage() {
         <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">Pricing</p>
         <h1 className="mt-3 text-3xl font-bold text-fg">Pay for what you actually use</h1>
         <p className="mt-2 max-w-2xl text-sm text-fg-muted">
-          SpaceWorker OS is one cloud cyber partner — device control, the AI assistant,
-          extraction and outreach, all priced per capability. Start free, upgrade the
-          pieces you need.
+          Sign up free, then request Premium from your dashboard when you&rsquo;re
+          ready — or pick a desktop app below and check out straight away.
         </p>
         <div className="mt-8">
-          <Store />
+          <Store signupHref={accountHref("/signup")} loginHref={accountHref("/login")} />
         </div>
       </main>
 
