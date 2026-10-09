@@ -148,6 +148,63 @@ then full-suite gates) → deploy → closeout.
   web contract (B2 test at line 117 unchanged).
 
 **Tests (`tests/premium-request-static.test.ts`):** new S3 lock (test #16):
+
+### 2026-10-09 13:10 — plan step 4: full-suite run #1 → 1316/1318, 1 known flake (documented, NOT S3-caused)
+
+`npm run test > /tmp/t192-fullsuite.log` → exit 1:
+`# tests 1318 · # pass 1316 · # fail 1 · # cancelled 0 · # skipped 1 · # todo 0`
+Sole failure: `not ok 975 - TASK_166 the read cursor only ever moves FORWARDS`
+(`tests/support-tickets.test.ts:1409`, assertion "a rewind must be corrected, not adopted").
+
+**Root cause (read the code, not a guess):** `ticket()` seeds
+`lastReadAt: null`; `markTicketRead` (`lib/support/tickets.ts:619-626`)
+stores **real wall-clock** `now` — so call 1 writes `T1`, the test rewinds
+to `T1−60s`, call 2 writes `T2` (rewind > now is false → adopts `now`), and
+the assert demands `T2 === T1`, i.e. **both route invocations must land in
+the same millisecond**. Under full-suite parallel CPU load the process is
+descheduled between the calls (`T2 > T1` → fail); isolated it is sub-ms.
+Pre-existing TASK_166 test — the same file was already documented as the
+one ms-flake during TASK_190's full run.
+
+**Not caused by S3:** S3 changed only `components/support-widget.tsx` +
+`tests/premium-request-static.test.ts` (committed `2f6acab`); the failing
+file, its route and lib are untouched since TASK_187 (`git log` shown in
+PROGRESS). Isolated re-run immediately after the failure: `npm run test:support`
+→ **57/57 pass, 0 fail**.
+
+### 2026-10-09 13:16 — full-suite run #2 GREEN + TASK_192 CLOSEOUT (S1-S3 complete)
+
+**Run #2 (flake confirmation):** `npm run test > /tmp/t192-fullsuite-rerun.log`
+→ **exit 0 · # tests 1318 · # pass 1317 · # fail 0 · # skipped 1** ·
+`grep '^not ok'` → empty. The TASK_166 cursor test passed on re-run, exactly
+as root-caused above (load-dependent same-millisecond assert, pre-existing).
+The 1 skipped is the long-standing documented skip, not from this task.
+
+**TASK_192 final state — all plan items done:**
+| Plan item | Slice | Commit | Proof |
+|---|---|---|---|
+| Support (in wrapper) still works — not removed | verified, no change needed | — | `test:support` 57/57; widget gate test (S1: renders in wrapper, mints `premium_request_plus`) |
+| No fixed price on the wrapper request | S1 | `a72d402` | price text gated to `!isWrapperMode`; `test:premium-static` 10/10 |
+| Payment flow = web free user (request, no charge) | S2 | `f69f66a` | billing page: plans→"Request instead of paying" in wrapper; settings CTA same path; static locks; 15/15 |
+| Request = **Premium XDevice** only (no Premium Plus) | S3 | `2f6acab` | composer filters `premium_request_plus` in wrapper + `applyTemplate` coercion; static lock #16; 16/16 |
+| Full-suite sanity | step 4 | — | run #1 1316/1318 (documented flake, root-caused) → run #2 **1317/1318 pass, 0 fail** exit 0 |
+
+**Final gates on tree `2f6acab`:** `npx tsc --noEmit` → 0 ·
+`npx eslint components/support-widget.tsx tests/premium-request-static.test.ts` → 0 ·
+`test:premium-static` 16/16 · `test:support` 57/57 · full battery exit 0.
+Hosted-web behavior unchanged everywhere (wrapper-gated conditionals only;
+shared `lib/support-templates.ts` untouched — web keeps both request options
+per user: "same as it is on the web").
+
+**Open for later (triage notes, per owner):** (a) screenshots taken but no
+viewer surface yet; (b) "Open console" reloads the page — owner says drop it
+since Remote control works (silent-viewer correction from TASK_190 S1);
+(c) TASK_193 login referral gate still open.
+
+
+**Action:** re-run full suite for the flake-confirmation proof (playbook
+flake rule) — result appended below.
+
 wrapper context import present · the exact filter-ternary · select maps
 `templateOptions` · the coercion expression · shared module still ships
 premium-plus for web.
