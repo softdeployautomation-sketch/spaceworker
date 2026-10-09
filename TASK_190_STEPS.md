@@ -1,10 +1,94 @@
 # TASK_190 — Admin screen-monitor actions + admin notify channels + owner presence
 
-Status: SCOPE LOCKED — not implemented yet. Next agent implements S1→S5 in order,
-running `npm run test:admin-devices` + the new suites after each step, then the
-full `npm run test` before deploy. Playbook: HOW_WE_MOVE_FAST.md (write scope →
-smallest shippable slice → every behaviour has a test → `prisma migrate deploy`
-on VPS → verify on live URL → commit+push per slice).
+Status: **IMPLEMENTING** — BEFORE-record written 2026-10-09, first edit not yet made.
+
+## EXECUTION RECORD (compaction insurance — update after EVERY step)
+
+### BEFORE (written before first edit)
+- **STARTING POINT:** HEAD `455d2c1` (this scope doc + PROMPT_VERIFY_TASK_190.md
+  pushed). Working tree clean except stray `TASK_133_RMM_ENGINE_BRINGUP.md`
+  (**NEVER commit**) and old non-ours `stash@{0}` (leave untouched).
+- **HOUSE RULES in force:** HOW_WE_MOVE_FAST.md — no stashes, no `.env` edits,
+  never batch-create+edit migration files in one call, multiline commit msgs via
+  `/tmp/<name>-msg.txt` + `git commit -F`, UI commits separate from money code,
+  checklist updated after every step, never claim what wasn't proven.
+- **ORDER OF ATTACK:** ① schema migration first (routes depend on the columns):
+  `AdminNotificationPref` + `UserPresenceEvent` tables, `User.lastSeenAt` /
+  `lastActiveAt` / `lastSeenPage`, `Device.adminNotifyEnabled` /
+  `adminNotifyLastSentAt` — one migration, `prisma migrate dev` locally, apply on
+  VPS with `migrate deploy` at rollout. ② S1+S2 devices-tab dropdown +
+  screen-monitor GET/PATCH routes + panel + `tests/admin-screen-monitor.test.ts`.
+  ③ S3+S4 `lib/admin-notify.ts` + prefs routes + header toggles +
+  `maybeAdminScreenNotify` sweep hook + `tests/admin-notify.test.ts`.
+  ④ S5 `lib/user-presence.ts` + `/api/presence` + beacon in dashboard layout +
+  admin reads (users list, users/[id]/presence, devices ownerPresence) + UsersTab
+  chips/drawer + devices-tab owner chip + presence tests. ⑤ Gates (tsc, eslint
+  touched files, test:admin-devices + 4 new suites + full `npm run test`).
+  ⑥ Deploy per §4 → live verify PROMPT_VERIFY_TASK_190.md → AFTER record →
+  commits pushed (slice-sized).
+- **COMMIT PLAN:** `① TASK_190 schema migration` · `② TASK_190 S1/S2 …` ·
+  `③ TASK_190 S3/S4 …` · `④ TASK_190 S5 …` · closeout docs commit.
+- **KNOWN RISKS to watch during implementation:** dropdown clipping by table
+  overflow; `assertAdminDeviceAccess` must be used by BOTH new device routes
+  (deep 404); admin NotificationLog rows must keep `userId: null`; beacon ONLY
+  in dashboard layout; presence writes transition-only; sweep hook in its own
+  try/catch; the repo's pre-existing eslint errors in admin-panel.tsx (don't fix,
+  don't add new).
+
+### PROGRESS — slice ① DONE (schema + migration), verified 2026-10-09
+- **Schema edits landed** in `prisma/schema.prisma`:
+  - User: `lastSeenAt` / `lastActiveAt` / `lastSeenPage` (right after
+    `screenDigestIntervalMinutes`), plus relation `userPresenceEvents
+    UserPresenceEvent[]` beside `notificationLogs`.
+  - Device: `adminNotifyEnabled` + `adminNotifyLastSentAt` (right after
+    `screenshotOnlineSinceAt`, before the TASK_128 `removedAt` block).
+  - EOF: new `AdminNotificationPref` (singleton, `@default("singleton")`) and
+    `UserPresenceEvent` models under the TASK_190 header comment.
+- **MISHAP + REPAIR — read this so it never repeats:** the EOF insert used
+  `insert_line` computed from a PRE-edit line count, but the three other schema
+  edits in the same batch had already added +20 lines — so the block landed
+  INSIDE the `PremiumInvoice` model and split it in half (prisma validate
+  reported 8-10 errors). Repaired with ONE replacement edit: PremiumInvoice's
+  tail (`createdAt`…`payments`) restored first, then the TASK_190 models
+  appended after it. LESSON: after parallel edits, never trust a stale line
+  count for `insert_line` — re-read the file tail and anchor on text instead.
+- **Migration created** (separate call from schema edits, house rule):
+  `prisma/migrations/20261120000000_task190_admin_notify_presence/migration.sql`
+  — additive-only; matches the schema EXACTLY (no extra indexes/checks).
+- **PROOF:** `npx prisma validate` → "The schema at prisma/schema.prisma is
+  valid 🚀"; `npx prisma generate` → ✔ Generated Prisma Client (v6.19.3);
+  runtime `node -e require('@prisma/client')` → `Prisma.ModelName.AdminNotificationPref`
+  + `UserPresenceEvent` present, `lastSeenPage` ∈ UserScalarFieldEnum,
+  `adminNotifyEnabled` ∈ DeviceScalarFieldEnum (AP=… UPE=… userCols=true
+  devCols=true). NOTE: earlier greps against `node_modules/.prisma/client/*`
+  showed 0 and were misleading — the ModelName/scalar-enum check above is the
+  authoritative one.
+- **Tree at this point:** `M TASK_190_STEPS.md`, `M prisma/schema.prisma`,
+  `?? prisma/migrations/20261120000000_task190_admin_notify_presence/`,
+  `?? TASK_133_RMM_ENGINE_BRINGUP.md` (stray — **NEVER commit**).
+
+### GROUND-TRUTH CORRECTION to the S1 scope (from implementation reads)
+- The row's current **"Remote control" button is the SILENT VIEWER**
+  (`openRemote` → `AdminRemoteViewer` iframe with a minted single-use
+  MeshCentral session) — NOT the `/device/101` deep link. So the S1 dropdown
+  gets **three** items: `Remote control` (existing silent viewer, same
+  behavior/busy state), `Screen monitor…` (S2 panel), `Open console`
+  (`window.open("/admin=topsecret6199/device/" + deviceId)`).
+
+### OPEN DECISION for the next agent — admin Telegram chat-id linking
+- Schema comment currently claims the admin's `telegramChatId` is "stamped by
+  the owner-side bot-linking webhook" — but that flow resolves
+  `User.telegramLinkToken` only, and the admin is NOT a User row. Two options:
+  (a) add `telegramLinkToken` to AdminNotificationPref via a tiny second
+  migration + extend the bot webhook (more moving parts), or
+  (b) **recommended: paste-chat-id** — admin header offers a "Telegram" toggle;
+  when prefs have no chat id yet, a small input asks for the numeric chat id
+  (from @userinfobot), PATCH validates it's a numeric string, stores it, and
+  it is NEVER rendered back (write-only). Zero extra schema. If (b) is chosen,
+  UPDATE the AdminNotificationPref schema comment to match (comment-only edit,
+  no migration needed) — house rule: docs must not claim what code doesn't do.
+
+
 Admin surface context: the SECRET admin panel lives at
 `/admin=topsecret6199` (TASK_188 — never resurrect `/admin` paths anywhere).
 

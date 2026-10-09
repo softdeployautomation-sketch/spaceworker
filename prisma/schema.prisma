@@ -119,6 +119,17 @@ model User {
   screenTriggerNotificationsEnabled Boolean @default(false)
   screenDigestEnabled               Boolean @default(false)
   screenDigestIntervalMinutes       Int     @default(120)
+  // TASK_190 S5 — owner presence (web). The STATE is derived, never stored:
+  //   online  = now - lastSeenAt <= 90s    idle = <= 5min    offline = older
+  // `lastSeenAt` is refreshed by the dashboard heartbeat (/api/presence);
+  // `lastSeenPage` is the route the beacon last reported (admin chip detail);
+  // `lastActiveAt` is the same stamp kept for a stable "last active" read.
+  // Transition-only history (login/online/idle/offline/logout) lives in
+  // UserPresenceEvent — these three columns exist purely so the admin lists can
+  // compute the chip in O(1) without touching the event table.
+  lastSeenAt                 DateTime?
+  lastActiveAt               DateTime?
+  lastSeenPage               String?
   createdAt                DateTime               @default(now())
   // TASK_158 W1 — the wallet. `balanceCents` is a CACHED TOTAL, never the record of
   // truth: the truth is the sum of `WalletLedgerEntry.amountCents`, and the whole
@@ -145,6 +156,7 @@ model User {
   browserProfiles          BrowserProfile[]
   browserSessions          BrowserSession[]
   notificationLogs         NotificationLog[]
+  userPresenceEvents       UserPresenceEvent[]
   searchJobs               SearchJob[]
   leads                    Lead[]
   campaignAutomations      CampaignAutomation[]
@@ -1939,6 +1951,16 @@ model Device {
   // lib/device-screenshots.ts (set/cleared inside listDueDevices) rather than
   // the heartbeat ingest path, so this feature needs no changes there.
   screenshotOnlineSinceAt     DateTime?
+  // TASK_190 S3/S4 — the ADMIN's own screen-monitoring surface, deliberately
+  // separate from the owner's switches above. `adminNotifyEnabled` says "notify
+  // me (the admin) when this device produces a summarized frame" — it never
+  // turns capturing ON: capture still requires the OWNER's
+  // screenshotMonitoringEnabled (TASK_127 consent boundary, untouched here).
+  // `adminNotifyLastSentAt` is the per-device 120-minute cooldown stamp,
+  // claimed with the same claim-then-send discipline the trigger pass uses
+  // (lib/screen-notifications.ts claimFiring) so two sweeps can't double-send.
+  adminNotifyEnabled          Boolean   @default(false)
+  adminNotifyLastSentAt       DateTime?
   // TASK_128 §15 — soft removal (the owner's Delete button, both tiers). A real
   // `db.device.delete()` is not available here: every Device child foreign key
   // except DeviceScreenshot/DeviceOnboarding defaults to RESTRICT, and a device
@@ -3727,6 +3749,7 @@ model PremiumInvoice {
   // they were shown even if the admin later rotates an address. Json because the
   // set of chains is a product decision, not a schema decision.
   methods    Json
+
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
   paidAt     DateTime? // set exactly once when status flips to "paid"
@@ -3738,4 +3761,51 @@ model PremiumInvoice {
   // TASK_184 B4 — payments that settle this invoice (0..n; the ref is optional
   // on submit). Lives on Payment.invoiceId; back-relation kept for queries.
   payments    Payment[]
+}
+
+// ===========================================================================
+// TASK_190 — admin notification channels + owner presence.
+// ===========================================================================
+//
+// Purely ADDITIVE: two new tables + five nullable/defaulted columns on User and
+// Device. Nothing reads or writes them until the admin flips a toggle or a
+// user's browser starts beating, so applying this migration changes no behaviour.
+//
+// Admin is NOT a User row (signed-token session, lib/admin-auth.ts), which is
+// why the admin's channel prefs live in their own singleton table instead of on
+// User — and why admin NotificationLog rows deliberately keep `userId: null`.
+
+// TASK_190 S3 — singleton row (id always "singleton"): the admin's own
+// notification channels for admin-scope alerts (screen-monitor fan-out).
+// Defaults OFF on both channels — the admin opts in per channel, and a missing
+// row is read as "both off". `telegramChatId` is stamped by the owner-side
+// bot-linking webhook (the same link flow a User goes through): the admin links
+// the bot once, the chat id lands here, and it is never rendered back out.
+model AdminNotificationPref {
+  id              String   @id @default("singleton")
+  telegramEnabled Boolean  @default(false)
+  telegramChatId  String?
+  emailEnabled    Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// TASK_190 S5 — transition-only presence history. A row is written ONLY when a
+// user's derived state CHANGES (login/online/idle/offline/logout), never on a
+// heartbeat ping — so a chatty session adds ~a handful of rows per day, not
+// thousands. Operational history, not audit: cascades with its User (same
+// reasoning as DeviceScreenshot). 90-day retention by retention-sweep.
+model UserPresenceEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // "login" | "online" | "idle" | "offline" | "logout". Unchecked String on
+  // purpose (house rule for evolving enums): an unknown value must fail safe in
+  // the reader, not break the heartbeat write.
+  state     String
+  // The route the beacon reported with the transition (null when unknown).
+  page      String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
 }
