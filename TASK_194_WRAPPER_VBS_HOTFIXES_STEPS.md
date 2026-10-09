@@ -105,7 +105,40 @@ Trap hit & fixed while writing the gate: the first `server-only` assertion grepp
 the bare word and false-failed on the comment that *explains* why the helper must
 not import it — the assertion now matches the import statement only.
 
-## S3 — quarantine/onboarding strip STILL shows for XDevice  ⏳ AFTER S2
+## S3 — quarantine/onboarding strip STILL shows for XDevice  ✅ CLOSED — NO CODE CHANGE (TASK_191 already correct)
+
+Owner screenshot showed the "Securing new device · hiding the agent" strip and
+per-row "Quarantine · 14:41" badges on a tier-3 XDevice account.
+
+### Proof chain (all against the LIVE box, not the source tree)
+
+1. **The code is deployed.** `route.js` is only a 729-byte Turbopack loader stub
+   that `require()`s shared chunks, so grepping it for `suppressOnboarding`
+   returns 0 and is MEANINGLESS (first trap — I nearly reported a false bug).
+   Grepping the real chunks: `premiumExpiresAt` (a Prisma select field that
+   survives minification) appears in **94 of 600** server chunks. Source on the
+   box is byte-identical to local (`md5 db47ee97…` both sides).
+2. **The logic is right.** `isXdeviceLive` = `tier === 3 && (expiry null || >
+   now)`. `GET /api/devices` nulls `onboarding` wholesale when true.
+3. **The account qualifies.** Live DB (`/tmp/t194-tiers.sql`): exactly **one**
+   tier-3 user, `premiumExpiresAt = 2026-11-07` → **live** ⇒ `suppressOnboarding`
+   = true ⇒ `onboarding` = null for that account.
+4. **Both visuals are `onboarding`-gated**, so with it null neither can render:
+   - the strip reads `onboardingStrip` built from `d.onboarding`
+     (`components/device-list.tsx:784`);
+   - the row pill is `onboardingRowLabel(d.onboarding, nowMs)`, guarded by
+     `d.onboarding &&` (`device-list.tsx:1782`); its text ("Quarantine · 14:41",
+     "…taking longer", "…stuck") is produced in `lib/device-onboarding.ts:429-433`.
+
+Conclusion: the owner tested either **before** the 13:30 deploy finished, or his
+tab/wrapper served a **stale cached poll** — a known prior failure mode here
+(TASK_185 was literally "maintenance responses poisoned client caches"). Ask him
+to hard-refresh the web tab and RESTART the wrapper (not just re-open the page),
+then re-test. If it still shows after that, re-open S3 with his account id —
+that would mean a session-vs-user mismatch, which the above cannot rule out.
+
+**No code change made, and none is justified by the evidence** (HOW_WE_MOVE_FAST:
+never claim what you didn't prove).
 
 Owner screenshot shows both the "Securing new device · … hiding the agent" strip
 AND per-row "Quarantine · 14:41" badges on a tier-3 XDevice account, which
