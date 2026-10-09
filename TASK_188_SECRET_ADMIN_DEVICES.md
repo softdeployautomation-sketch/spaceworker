@@ -87,7 +87,38 @@ commits/docs containing live secrets.
       shows in Deleted subtab, run-command works, Recover restores to a chosen user
       (owner eyeball = final).
 
-## OUT OF SCOPE
+### S6 — admin site root moves to `/admin=topsecret6199` (owner directive, 2026-10-09)
+
+**Owner's words (verbatim, 2026-10-09):** *\"I want to change the admin site to
+/admin=topsecret6199\".*
+
+- [ ] Rename the admin PAGE tree `app/admin/**` → `app/admin=topsecret6199/**`
+      (the `(protected)` panel, its `layout.tsx` guard, `login/`, and the secret
+      device page). Page URLs become `/admin=topsecret6199`,
+      `/admin=topsecret6199/login`, … (API tree `app/api/admin/**` does NOT move —
+      it is an API prefix, not the admin site).
+- [ ] Update every code reference (inventory from research):
+      `app/admin/(protected)/layout.tsx:17` `redirect("/admin/login")` ·
+      `app/admin/(protected)/page.tsx:9` `redirect("/admin/login")` ·
+      `components/admin/admin-login-form.tsx:29` `router.push("/admin")` ·
+      `components/admin/admin-shell.tsx:30` `router.push("/admin/login")` + `:39`
+      `Link href="/admin"` · `proxy.ts` (`pathname.startsWith("/admin")` `:224`,
+      `pathname === "/admin/login"` `:231`, `loginPath` `:238`, comments, and the
+      **matcher config** `"/admin/:path*"` `:274-277`).
+- [ ] **Old `/admin` must die silently:** it 404s — NO redirect that would print
+      the new path for anyone who guesses `/admin`. Old `/admin/login` likewise.
+- [ ] Secrecy: `grep -rn "topsecret6199" app components lib proxy.ts` → only the
+      route tree + the guard/login references that must name it; no nav, footer,
+      sitemap, robots, or marketing link mentions it.
+- [ ] Verify box-side config too (nginx `location /admin`, any deploy/docs
+      script, `scripts/deploy-vps.sh`-adjacent greps) — nothing may keep serving
+      the old path as an admin surface.
+- [ ] Gates: `npx tsc --noEmit` 0 · eslint 0 NEW · static-lock test that
+      `app/admin/` no longer exists and that `proxy.ts` gates the new prefix ·
+      live: `/admin` → 404, `/admin=topsecret6199` → redirect to login without
+      session, 200 with session; secret devices page reachable only with session.
+
+
 No change to `/api/devices` (user list) semantics; no MeshCentral changes; no nav
 changes elsewhere; Vantra agent keeps running on recovered devices (restore only flips
 our soft-delete + ownership); NEVER hard-delete rows.

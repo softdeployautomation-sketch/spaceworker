@@ -37,6 +37,7 @@
     "test:capturefail": "tsx --test tests/screen-capture-failure.test.ts",
     "test:screennotify": "tsx --test tests/screen-notifications.test.ts",
     "test:devices": "tsx --test tests/device-status.test.ts",
+    "test:admin-devices": "tsx --test tests/admin-devices-secret.test.ts",
     "test:overview": "tsx --test tests/overview-stats-counts.test.ts",
     "test:xdevice": "tsx --test tests/xdevice-tier.test.ts tests/xdevice-route-gate.test.ts tests/xdevice-payment.test.ts",
     "test:module-gate": "tsx --test tests/module-route-gate.test.ts",
