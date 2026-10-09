@@ -197,6 +197,20 @@ new `tests/invoice-support-badge.test.ts` **3/3** (helper exists and posts
 through `addAdminMessage`; the route calls it and imports it; the notice is
 fire-and-forget + defensively wrapped).
 
+### Deploy of S4 — ✅ LIVE on the hosted site
+
+- rsynced `lib/support/tickets.ts` + `app/api/admin/users/[id]/invoices/route.ts`.
+  **Trap:** the first rsync reported OK but the md5 check caught a MISMATCH
+  (box `a720a1bf…` vs local `b0771fce…`) — re-ran it and confirmed `b0771fce…`
+  on both sides. **Always md5 the box against local after rsync**; an rsync
+  "success" line is not proof of content.
+- Build `/tmp/t194-s4-build.log` → **`BUILD_EXIT:0`**; service `active`,
+  `http:200`, new BUILD_ID **`8OHP1mqgKFEcZuxrfYylK`**.
+- Deployed-output proof: `postInvoiceNoticeToUser` present in **2** server chunks,
+  the "Premium invoice" thread subject in **3**.
+  (`isUnread` shows 0 — it is a local function and minifies away; the badge
+  derivation itself predates this deploy and already worked on the support-panel path.)
+
 ---
 
 ## EXE + update VBS — BUILT and on the owner's Desktop  ✅
