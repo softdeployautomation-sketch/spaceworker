@@ -359,4 +359,51 @@ Open Q before building: which events notify (admin reply only? ticket created
 by admin? both?), and the from-address/reply-to to use.
 
 ---
+
+## S7 — standalone UNINSTALL-ONLY VBS (owner: "i just want to be able to uninstall the previous agent")  ✅ MINTED
+
+2026-10-10, after the S6 rollback. Owner wants the uninstall itself as a
+hand-run tool, separate from any install flow: a `.vbs` he can always run to
+clear a previous agent off a machine.
+
+**Built:** `scripts/mint-agent-uninstall-vbs.ts` (committed — regenerable with
+`npx tsx scripts/mint-agent-uninstall-vbs.ts`).
+
+- **Payload = `AGENT_CLEAN_SLATE` from `43d1e5e` (the final S5 commit), copied
+  byte-for-byte** — the only uninstall payload ever VM-proven: silent Inno
+  `unins000.exe /VERYSILENT` (-Wait, hidden) → kill `tacticalrmm` → **non-fatal
+  `Get-Service` stop+delete (S5 fix — NO `sc.exe`, that was the CMD-window
+  regression)** → ≤20 s wait → wipe install dir → wipe
+  `HKLM:\SOFTWARE\TacticalRMM`. Fail-open + idempotent: clean machine =
+  no-op, safe to re-run any time.
+- **Zero install code** — no `-m install`, no `--silent` enroll, no enrollment
+  token (archaeology note: git's object store contains NO larger uninstall
+  variant — the only `Get-CimInstance Win32_Service` blob is the unrelated
+  `migrate-openframe-to-spaceworker.ps1`; the saga payload above is all there
+  ever was).
+- Rendered via `renderCarrierVbs(..., { elevate: true })` (elevate is needed:
+  service/registry deletion requires admin; proven footer re-arms a dismissed
+  UAC 97×).
+- **Header rewritten** — the stock carrier header says "agent install carrier /
+  enrollment values baked into THIS file", both false and a confusion trap on
+  an uninstall tool; now reads "SpaceWorker UNINSTALL carrier". Guarded by a
+  lint check.
+- **Completion MsgBox appended**, gated `If Err.Number = 0 And rc = 0` —
+  popup only after a finished pass; dismissed UAC (rc=1), payload failure
+  (rc=2), or launcher error stay silent (same as every other carrier).
+
+**Lint battery (10/10 PASS at mint):** `Get-Service` present ✓ · no `sc.exe` ✓ ·
+`WindowStyle Hidden` ✓ · `unins000.exe` shipped ✓ · no `-m install` ✓ · no
+`--silent` ✓ · UAC retry footer (`Dim attempt : attempt = 97`) ✓ · MsgBox gated
+on rc ✓ · header no longer claims "install carrier" ✓ · ASCII-only executable
+lines (comments exempt — carrier header em-dashes are pre-existing and
+harmless in comments; WSH reads ANSI) ✓.
+
+**Gates:** `tsc --noEmit` 0 · `eslint scripts/mint-agent-uninstall-vbs.ts` 0 ·
+`vantra-carrier` **21/21** (post-S6-rollback suite).
+
+**Delivered:** `~/Desktop/vantra-agent-uninstall.vbs` (2,643 bytes, mode 600).
+No deploy involved — standalone file, nothing in the running app changes.
+
+---
 (kept open for the S2/S3 after-records)
