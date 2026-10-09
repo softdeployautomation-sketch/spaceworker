@@ -505,7 +505,39 @@ tells you something worse.
 
 ## 6. Current state — revise this block every session
 
-**Last verified: 2026-10-07 (TASK_181 device wrapper — P0a→P5 SHIPPED + LIVE-CONFIRMED).**
+**Last verified: 2026-10-09 (TASK_187 payment-alert email + support notifications +
+support invoice composer — INDEPENDENT VERIFIER PASS, `PROMPT_VERIFY_TASK_187.md`).**
+`main` @ **`af54d26`** (S5 closeout), pushed; tree clean except the never-commit stray
+`TASK_133_RMM_ENGINE_BRINGUP.md`. Commits **A `c96c272`** (support notify) · **B
+`874162f`** (money only) · **C `515c92e`** (UI) · **D `af54d26`** (docs) — money/UI
+separation respected. Deployed via box build: **BUILD_ID `F5n788UVXZqaX0b5cFb-j`**,
+service `active`, `spaceworker.top` → **200**, `spaceworker.instaweb.top` root = joker
+html with deep paths 307→app, `GET /api/devices` → **401**, `/dashboard` → **307**.
+Migration **`20261119000000_task187_invoice_days_thread_ref`** applied → **104
+migrations, up to date**, §6b drift = `-- This is an empty migration.`.
+**`ADMIN_EMAIL=myrate619@gmail.com` is now set** in `/opt/spaceworker/.env` + restart
+(the S1 root fix — before it, admin alert emails were sent to `EMAIL_FROM` itself and
+were invisible; Telegram was always fine). Proven this session: `tsc --noEmit` **0** ·
+eslint on all touched files **0** · `invoice` **34** · `support` **57 (×3 runs — the
+old non-reproducible `fail 1` never recurred)** · xdevice 38 · wallet 63 · module-gate
+13 · devices 6 · wrapper-cookie 6 — **0 fail**; **repo↔box md5 parity 16/16 = 0
+diff**; secrets scan over `62ffb3e..HEAD` = **0 hits**; disposable live harness
+**PASS 32/32** on the deployed build (new-ticket → TG + owner email `sent`;
+plain admin reply → user email `sent`; invoice-attached reply deliberately sends NO
+reply-email; thread invoice card on BOTH sides with NO `days`/`userId` keys; no-hash
+payment → `admin_pending_payment` → owner inbox; approve → paid + tier 5 + expiry =
+now + **exactly 60d**; owner-recipient audit rows **still present after cleanup**,
+residue 0) + disposable **live 403 `extractor_required`** for a free session
+(TASK_184 locks intact; anon = 401). Owner eyeball: test emails received.
+**Known tracker error corrected by the verifier:** the implementer's claim that 4
+owner-inbox NotificationLog rows were "kept" was false (their cleanup's userId-scoped
+delete removed them — `recordNotificationLog` resolves `userId` by recipient); code
+itself is correct. **Open:** browser-click UX of the composer; the first REAL
+payment's alert email (harness rows `cmv0e1sel…`/`cmv0e1ttv…` prove the path);
+**TASK_188 not started** (prompt `PROMPT_VERIFY_TASK_188.md` — do not run yet).
+Tracker: `TASK_187_STEPS.md`; verifier prompt rewritten for the next run.
+
+**Previous state (2026-10-07): TASK_181 device wrapper — P0a→P5 SHIPPED + LIVE-CONFIRMED.**
 `main` @ `672c0bd` (P5: admin tier-3 grant UI + live-confirm 21/21 + VBS carrier steps).
 Deployed by box build (`npm run build`, no migration in this phase): BUILD_ID
 **`qOhtBtkIXCxhsWeEjrz1p200`** (mtime `2026-10-07 21:21:11 +0200`), service active, site
@@ -606,12 +638,12 @@ cannot yet open one. Phase 2 = user composer + thread, then the admin queue.
 
 | | |
 |---|---|
-| Branch / HEAD | `main` @ **`bb6ff6c`** (TASK_155 P3). The last code commits before it: `435d419` (P2) and `a131835` (P1). Run `git log --oneline -1` to re-check — §6 can lag (trap 14). |
-| Sync | in sync with `origin/main` (`282ee9a..bb6ff6c` pushed); working tree **clean** |
-| Deployed to production | **`LjgrTG69r2eiN-w07Hj-i`**, `BUILD_ID` mtime **`2026-10-02 06:56:12 CEST`**, from `main` @ **`bb6ff6c`** — includes **P1 + P2 + P3** (hosting files engine, user-owned links, BYO credential store, **Pages engine: folder/zip → preview → publish, per-site engine picker, account chooser**). Verified live this session: `https://spaceworker.top/` → **200**, `/dashboard/hosting` → **307** (auth), `/api/hosting/sites` → **401** (auth-gated route exists), `/pv/<bad>` and `/hs/<bad>` → **404** (new public P3 handlers exist, no 500). |
-| Deploy run | **`36966548887`** (`workflow_dispatch` @ `bb6ff6c`). |
-| CI on current HEAD | push run for `bb6ff6c`: `Build & typecheck` green; `Deploy to production (manual only)` = skipped (workflow_dispatch-gated). |
-| Migrations applied | **`20261028000000_task155_p1_hosting_files`**, **`20261028000001_task155_p2_links_credentials_caps`** AND **`20261029000000_task155_p3_pages_sites`** are **applied to production** — the P3 deploy's in-window `prisma migrate deploy` reported *"Database schema is up to date!"* and the P3 migration is recorded (`finished_at 2026-10-02 06:58:17 CEST`). Production now has `HostedAsset`, `HostingUsageMonthly`, `HostingCredential`, **`HostingSite`, `HostingRevision`, `HostingJob`** and the extended `AdminSetting.hosting*` columns. `AdminSetting.hostingEnabled = true`. |
+| Branch / HEAD | `main` @ **`af54d26`** (TASK_187 S5 closeout; chain `c96c272` A → `874162f` B money → `515c92e` C UI → `af54d26` D docs). Re-check with `git log --oneline -1` — §6 can lag (trap 14). |
+| Sync | in sync with `origin/main` (`442d938..af54d26` pushed); working tree **clean** except the never-commit stray `TASK_133_RMM_ENGINE_BRINGUP.md` (untracked) |
+| Deployed to production | **`F5n788UVXZqaX0b5cFb-j`**, box build via `scripts/deploy-vps.sh` (previous `G-o2lqy1pCOcjJGcZ1N5o`), service `active`, journal `[env-health] OK`. Verified live 2026-10-09: `https://spaceworker.top/` → **200**, `/dashboard` → **307**, `GET /api/devices` → **401**, free-session `POST /api/jobs` → **403 `extractor_required`**, joker root-only on `spaceworker.instaweb.top`, composer strings (`Send invoice`, `Duration (days`, `blank = default`) in shipped client chunk `2gzfeeh89jks3.js`. |
+| Deploy run | box build (no gh run): full-tree rsync `app lib components tests prisma` + root files → backup `/root/spaceworker-t187-20261009020437.sql.gz` → `prisma migrate deploy` → `deploy-vps.sh` build half → §2a parity **656/656 = 0/0/0**; verifier md5 re-check of the 16 touched files = **0 diff**. |
+| CI on current HEAD | box-deploy path for TASK_187 (no gh run); `CI=true npm run build` locally → **exit 0** pre-push, `tsc --noEmit` **0**. |
+| Migrations applied | **`20261119000000_task187_invoice_days_thread_ref`** applied live 2026-10-09 → **104 migrations, up to date**; §6b drift = `-- This is an empty migration.` Adds `PremiumInvoice.days Int?`, `SupportMessage.invoiceId`, `Payment.invoiceId` (+ `LOCK.md` committed with it). `ADMIN_EMAIL=myrate619@gmail.com` now present in `/opt/spaceworker/.env` (TASK_187 S1 config fix) + service restarted. Earlier TASK_155 migrations (`20261028000000` / `20261028000001` / `20261029000000`) remain applied. |
 
 ### 6.2 What the deploy contained (verified live, not assumed)
 

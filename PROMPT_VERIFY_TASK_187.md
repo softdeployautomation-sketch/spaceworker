@@ -1,72 +1,72 @@
-# PROMPT — VERIFICATION AGENT for TASK_187 (payment-alert email + support notifications + support invoice composer)
+# PROMPT — VERIFICATION AGENT for TASK_187 (rolling RE-VERIFICATION after future deploys)
 
-TASK_187 implementation is expected to be COMPLETE when you run. Your job: independently
-verify it and close it out — or FAIL it loudly with repro steps. Sources of truth:
-**`TASK_187_PAYMENT_ALERTS_INVOICE.md`** (scope S1–S5, owner's verbatim words) and the
-implementer's **`TASK_187_STEPS.md`** (their tracker — MUST exist with every step checked
-+ evidence; missing/incomplete = FAIL and report). Playbook (binding):
-`HOW_WE_MOVE_FAST.md` (§7 gates → §2/§3 deploy → §4/§6 live evidence). NEVER git stash;
-never edit `.env`; never touch TASK_133; REJECT any commit/doc containing live secrets;
-money/invoice commits must be separate from UI commits — check `git log` for that.
+This prompt was **rewritten 2026-10-09 by the independent verifier who PASSed
+TASK_187** (full evidence + PASS/FAIL table in `TASK_187_STEPS.md` → "VERIFIER VERDICT",
+`SENIOR_HANDOFF.md` §6). The ORIGINAL one-shot verification already ran: **PASS** (live
+harness 32/32, live 403, all gates green, owner eyeballed test emails). Your job NOW is
+the rolling re-check: confirm TASK_187's invariants still hold after any later deploy —
+FAIL loudly with repro steps if one broke. A separate prompt exists for TASK_188
+(`PROMPT_VERIFY_TASK_188.md`) — **do not run it until TASK_188 is implemented.**
 
-Start: `git log --oneline -8` in `/Users/mikeolab/spaceworker`. Record
-`git rev-parse HEAD`. Everything of TASK_187 must be after the TASK_185 steps commit
-`62ffb3e`.
+**Binding:** `HOW_WE_MOVE_FAST.md` (§7 gates → §2/§3 deploy → §4/§6 live evidence).
+NEVER `git stash`; NEVER edit `.env` (flag problems instead); NEVER touch
+`TASK_133_RMM_ENGINE_BRINGUP.md`; REJECT commits/docs containing live secrets;
+money commits stay separate from UI commits (`git log` must show it).
 
-## 1. S1 — payment alert email actually arrives
-- `grep -n "notifyAdminPendingPayment" app/api/billing/submit/route.ts
-  app/api/billing/topup/route.ts` → still 3+ call sites (nothing regressed).
-- On the box (read-only): `NotificationLog` has recent `admin_pending_payment` rows
-  with `outcome:"sent"`; resolve what `env.adminEmail` points to — if the fix was
-  config, the OWNER must have confirmed receiving a real alert email. If the implementer
-  changed code, review `lib/payment-notify.ts` diff for: still fire-and-forget, still
-  best-effort (never throws into the route), Telegram path untouched.
-- Live trigger (house harness pattern, DELETE the harness from the box after): submit a
-  no-hash pending payment → owner receives **BOTH** Telegram and email. Ask owner to
-  eyeball the email = final evidence.
+Start: `git log --oneline -8` + `git rev-parse HEAD` in `/Users/mikeolab/spaceworker`.
+Baseline: TASK_187 = `c96c272` (A notify) · `874162f` (B money) · `515c92e` (C UI) ·
+`af54d26` (S5 docs) on top of `62ffb3e` (TASK_185).
 
-## 2. S2 — support notifications both directions
-- Code review: new-ticket POST (`app/api/support/tickets`) → admin Telegram + email;
-  admin reply (`app/api/admin/support/tickets/[id]/messages`) → user email. Both via
-  the shared pattern, wrapped so a notify failure can never fail the HTTP request
-  (grep for try/catch or void+promise discipline; find a test that proves it).
-- Static: `grep -rn "notifyAdmin\|sendEmail" app/api/support lib/support-notify.ts
-  lib/payment-notify.ts` shows the wiring; NotificationLog rows appear for a test
-  ticket create + reply.
-- Live: create a test ticket (box harness or owner) → owner gets Telegram + email;
-  admin reply → user email received (owner/test inbox).
+## 1. Config & alerting (S1 — the original root cause was CONFIG)
+- On the box (read-only): `grep -E '^ADMIN_EMAIL=' /opt/spaceworker/.env` must be
+  `ADMIN_EMAIL=myrate619@gmail.com`; if a deploy ever dropped it, admin alerts silently
+  fall back to `EMAIL_FROM` — that was the entire S1 bug.
+- psql (read-only; camelCase columns MUST be quoted, pipe SQL over stdin — nested-quote
+  ssh one-liners WILL mangle): recent `admin_pending_payment` rows must show
+  `recipient=myrate619@gmail.com, outcome=sent` (NOT `spaceworker@instaweb.top`).
+  Owner eyeball of a real alert email = final evidence.
 
-## 3. S3/S4 — support invoice composer + user pays from the ticket
-- `npx prisma migrate diff` or schema grep: `PremiumInvoice.days Int?` exists +
-  `invoiceId` on the support message model; migration + lock file committed.
-- UI (chunk grep of the built client): support panel contains the plan dropdown
-  (Premium Plus / Premium XDevice), amount input, optional duration field, and
-  "Send invoice"; methods override field present (manual payment details per invoice).
-- e2e with a test account: request → ticket flagged → admin composes invoice
-  (amount + optional days + custom or default methods) → invoice card visible IN the
-  thread + user email arrives with Pay button → `/dashboard/billing` shows the invoice
-  with its methods → user submits payment with `invoiceId` → admin approval → invoice
-  `paid`, tier granted, duration applied when set. **No duration/term string rendered
-  to the user anywhere** (grep billing/thread for day/term strings in user-facing copy).
-- Tests: `npm run test:invoice` + `npm run test:support` green with the NEW cases
-  (notify wiring, duration-on-settle, methods override, thread render).
+## 2. Support notifications (S2) + invoice composer (S3/S4)
+- Static: `notifyAdminTicketCreated` in `app/api/support/tickets/route.ts`;
+  `notifyUserTicketReply` in `app/api/admin/support/tickets/[id]/messages/route.ts`
+  (fires ONLY when `invoiceId` is absent — invoice-attached replies double-email by
+  design); `notifyAdminPendingPayment` ≥3 call sites across billing submit+topup.
+- Schema: `PremiumInvoice.days Int?`, `SupportMessage.invoiceId`, `Payment.invoiceId`;
+  migration `20261119000000_task187_invoice_days_thread_ref` (+ `LOCK.md`) applied
+  (`_prisma_migrations` newest) and §6b drift = `-- This is an empty migration.`
+- UI: shipped client chunk contains `Send invoice`, `Duration (days`, `blank = default`.
+  NO term/duration string on ANY user surface (invoice email, support card, widget);
+  billing page's "activated for 30 days." fallback predates 187 (wallet-spend path).
+- Suites: `test:invoice` ≥34, `test:support` ≥57 (run support ×3 — flake = investigate).
+  If you do a live e2e, follow the harness rules in §5 below.
 
-## 4. REGRESSIONS + DEPLOY-STATE
-- `npx tsc --noEmit` → 0; ESLint touched files → 0 NEW (stash A/B; admin-panel
-  pre-existing errors are not theirs).
-- Suites: `test:xdevice` 38 · `test:wallet` 63 · `test:module-gate` · `test:devices` 6 ·
-  `test:wrapper-cookie` 6 · `test:maintenance-cache` 6 · `test:invoice` · `test:support`.
-- Prior tasks intact: TASK_184 web locks (live 403), TASK_185 P1/P2 (no "activity
-  unknown", honest counts), TASK_186 (payment-notify on all billing paths), TASK_183
-  wrapper ($500 card still in wrapper branch — grep client chunk), joker page on
-  spaceworker.instaweb.top root only (deep paths proxy to app).
-- Deploy-state: fresh BUILD_ID, service active, site 200, repo↔box md5 parity on
-  touched files, secrets scan over new commits (placeholders only).
+## 3. Regressions + deploy-state
+- `npx tsc --noEmit` → 0; ESLint touched files → 0 NEW.
+- Suites: `test:xdevice` 38 · `test:wallet` 63 · `test:module-gate` 13 ·
+  `test:devices` 6 · `test:wrapper-cookie` 6 · `test:invoice` · `test:support`.
+  (`test:maintenance-cache` was listed by the ORIGINAL prompt but does NOT exist in
+  package.json — prompt drift, do not fail on it.)
+- Prior tasks intact: TASK_184 locks (anon 401 → free session **403
+  `extractor_required`**), TASK_185 ("activity unknown" never renders), TASK_186
+  (payment-notify on submit+topup), TASK_183 ($500 wrapper refs + Wrapper chunks),
+  joker page root-only on `spaceworker.instaweb.top`.
+- Deploy-state: fresh `BUILD_ID`, service `active`, `spaceworker.top` 200,
+  repo↔box md5 parity on touched files, secrets scan over new commits = 0 hits.
+
+## 4. Live-harness rules (learned the hard way — 2026-10-09)
+- tsx runs as CJS: **IIFE, never top-level await**; needs
+  `npx tsx --require ./scripts/stub-server-only.cjs --env-file=.env` from `/opt/spaceworker`.
+- Cleanup order: `PaymentVerificationAttempt` → `Payment` → `PremiumInvoice` →
+  messages → ticket → user (FK RESTRICT will abort you otherwise).
+- **NEVER delete NotificationLog rows by `userId`**: `recordNotificationLog` resolves
+  `userId` by recipient lookup, so owner-inbox rows share the owner's user id — that is
+  exactly how the implementer's "kept" audit rows vanished. Delete only rows whose
+  `recipient` is your throwaway address; re-assert owner rows AFTER cleanup.
+- Poll (~12s) for email rows — notify is fire-and-forget. Delete the harness from BOTH
+  ends after the run.
 
 ## 5. HANDOFF + REPORT
-- Check off / append evidence in `TASK_187_STEPS.md`; mark TASK_187 S1–S5 complete;
-  refresh `SENIOR_HANDOFF.md` §6; REWRITE THIS PROMPT for the next verifier; commit
-  with explicit messages; push.
+- Append evidence to `TASK_187_STEPS.md`; keep `SENIOR_HANDOFF.md` §6 current;
+  REWRITE this prompt again for the next rolling run; commit with explicit messages; push.
 - Report: PASS/FAIL table over §1–§3, regression output, deploy evidence (BUILD_ID,
-  chunk greps, NotificationLog rows), and an OPENLY UNVERIFIED list (browser clicks,
-  owner inbox items awaiting owner confirmation).
+  NotificationLog row ids, chunk greps), and an OPENLY UNVERIFIED list.

@@ -5,7 +5,7 @@ lose progress. Scope doc: `TASK_187_PAYMENT_ALERTS_INVOICE.md` (S1–S5). Playbo
 `HOW_WE_MOVE_FAST.md` (§7 gates → §2/§3 deploy → §4 live evidence). Verification:
 `PROMPT_VERIFY_TASK_187.md`.
 
-## STATUS (updated 2026-10-08 — **TASK_187 DEPLOYED + LIVE-VERIFIED: commits A `c96c272` · B `874162f` · C `515c92e` pushed · box BUILD_ID `F5n788UVXZqaX0b5cFb-j` · e2e PASS 26/26 · NEXT: owner eyeball (TG×2 + inbox×2) + verifier `PROMPT_VERIFY_TASK_187.md`)**
+## STATUS (updated 2026-10-09 — **TASK_187 VERIFIED PASS by the independent verifier**: verdict + evidence in "VERIFIER RUN" near EOF · commits A `c96c272` · B `874162f` · C `515c92e` · D `af54d26` all pushed · box BUILD_ID `F5n788UVXZqaX0b5cFb-j` active/200 · live harness **PASS 32/32** + live **403 extractor_required** · battery 0 fail (support ×3) · md5 16/16 · secrets 0 · SENIOR_HANDOFF §6 refreshed · `PROMPT_VERIFY_TASK_187.md` rewritten as rolling re-check · **owner eyeball: test emails received** · tracker-accuracy finding recorded (S5 "kept rows" claim was false — code fine) · **NEXT: nothing for 187; TASK_188 prompt exists but 188 NOT implemented — do not run it)**
 
 - **TRACK:** TASK_185 holds only P5 + W9 now; N1+N2 live here as S1–S5.
 - **HEAD:** `c96c272` = **COMMIT A** (pushed 2026-10-08: `lib/support-notify.ts` + both
@@ -604,5 +604,132 @@ files)** → push. UI stays untracked for commit C.
       build) → live evidence → record here (G3–G5).
 
 ### Closeout
-- [ ] Tick scope-doc checkboxes; verifier runs `PROMPT_VERIFY_TASK_187.md`; refresh
-      SENIOR_HANDOFF §6; rewrite verification prompt for next verifier.
+- [x] Tick scope-doc checkboxes; verifier runs `PROMPT_VERIFY_TASK_187.md`; refresh
+      SENIOR_HANDOFF §6; rewrite verification prompt for next verifier. — **DONE
+      2026-10-09: scope doc 14/14 ticked; independent verifier PASS (harness 32/32 +
+      live 403 + battery green + md5 16/16 + secrets 0 — see VERIFIER RUN section);
+      `SENIOR_HANDOFF.md` §6/§6.1 revised; prompt rewritten as rolling re-check.**
+
+## VERIFIER RUN (PROMPT_VERIFY_TASK_187) — STARTED 2026-10-09 — PRE-EDIT RECORD
+
+**Role:** independent verifier (owner: "only verify 187, 188 isnt done"). Binding: no stash,
+no `.env` edits, no TASK_133, no secrets in commits, money/UI commit separation.
+
+### Phase 0 findings (all rerun in this session — NOT copied from the tracker)
+- HEAD `af54d26`, `62ffb3e` ancestor OK; history `A c96c272 · B 874162f · C 515c92e · D af54d26`
+  = money separate from UI ✅; tree clean except `TASK_133_RMM_ENGINE_BRINGUP.md` (never touch).
+- Task file **14/14 ticked / 0 open**; steps 44 ticked + only the verifier line open.
+- §1 static: `notifyAdminPendingPayment` **5 call sites** (≥3 ✅); `git diff 62ffb3e..HEAD --
+  lib/payment-notify.ts lib/email.ts lib/telegram.ts` = **EMPTY** → S1 was config-only, nothing
+  regressed ✅.
+- §2 static: `notifyAdminTicketCreated` wired at `app/api/support/tickets/route.ts:77`;
+  `notifyUserTicketReply` at `app/api/admin/support/tickets/[id]/messages/route.ts:62` ✅.
+- **Box (read-only):** `ADMIN_EMAIL=myrate619@gmail.com` in `/opt/spaceworker/.env` ✅ ·
+  `systemctl is-active` → `active` ✅ · `BUILD_ID F5n788UVXZqaX0b5cFb-j` (matches S5 deploy) ✅.
+- **`NotificationLog` live (quote camelCase columns):**
+  - `admin_pending_payment` email → **7 rows, all `sent`, last 10-08 15:24, recipient
+    `spaceworker@instaweb.top`** (the pre-fix rows — unchanged).
+  - Window >10-09 00:00 → only **2 `telegram_send` rows (00:23:44/46, chat 6337977358,
+    sent)** = the e2e's 2 TG alerts.
+  - **`admin_support_ticket` / `support_reply` / `invoice_sent` = 0 rows ALL-TIME** and
+    **0 email rows to `myrate619` after the fix** → ⚠️ **DISCREPANCY:** tracker line 155
+    claims "owner-inbox NotificationLog rows KEPT (4 ids)" — they are GONE. Root cause most
+    likely: `email.ts recordNotificationLog` attaches `userId` by recipient-lookup (owner has
+    a User row) → e2e cleanup's userId-scoped delete removed owner rows too. **Not a product
+    bug** (`sendEmail` logs in `finally` unconditionally — reviewed lib/email.ts:55-96) but a
+    **tracker-accuracy FAIL point** + missing durable audit evidence → verifier must re-prove.
+- **Owner eyeball ✅** (this session): "i got the test emails from earlier" = S1 direct-API
+  test email ([TEST] subject) confirmed in the human inbox.
+
+### Plan (pre-edit — execute in this order)
+1. **V1 fresh live harness** `scripts/t187-verify-live.ts` (disposable, house pattern, run on
+   box vs `localhost:3500`, tsx + `--env-file=.env`, IIFE not top-level await): create test
+   user → (a) ticket create → `admin_support_ticket` → **myrate619 (KEEP row)** + TG delta;
+   (b) admin invoice `days=60` → `invoice_sent` row; (c) admin reply **with invoiceId** →
+   `support_reply` row + thread card BOTH sides without `days`/`userId`; (d) no-hash submit →
+   `admin_pending_payment` → **myrate619 (KEEP row)** + TG delta; (e) approve → paid + tier 5
+   + expiry ≈ +60d. Record ALL row ids. **Cleanup: entities + rows where recipient = test
+   user ONLY; owner-recipient rows explicitly verified still present AFTER cleanup** (the
+   implementer's exact failure mode). Delete script both ends.
+2. **V2 §3 static:** built-client chunk grep for plan dropdown / amount / days / "Send
+   invoice" / methods; user-facing duration-string grep (billing + support widgets).
+3. **V3 §4 gates locally:** tsc 0 · eslint touched · suites: invoice, support, xdevice,
+   wallet, module-gate, devices, wrapper-cookie (+ `test:maintenance-cache`/`test:vantra` —
+   note which scripts do NOT exist in package.json) · secrets scan A..af54d26 diff.
+4. **V4 prior-task spot checks:** 184 live 403, 185 chip/counts, 186 notify on all billing
+   paths, 183 `$500` in wrapper branch chunk, joker root-only on instaweb.top.
+5. **V5 md5 parity** touched files repo↔box.
+6. **V6 handoff:** append verdict §1–§5 to this file · tick line 607 · refresh
+   SENIOR_HANDOFF §6 · REWRITE `PROMPT_VERIFY_TASK_187.md` · commit (docs) · push · report
+   PASS/FAIL table + OPENLY UNVERIFIED list.
+
+**Known-bad to recheck:** the non-reproducible `support fail 1` (steps line 172) — rerun
+test:support ×3.
+
+
+### VERIFIER VERDICT (executed 2026-10-09 — POST-EDIT RECORD) — **PASS**
+
+**§1 payment alert — PASS (with the documented config fix):**
+- Static: 5 `notifyAdminPendingPayment` call sites; `payment-notify/email/telegram` have
+  **zero diff since `62ffb3e`** (config-only fix, nothing regressed).
+- Live: fresh `admin_pending_payment` email rows → `myrate619@gmail.com` outcome
+  **`sent`** — ids `cmv0dy5cq00fakpxb35za4jd8`, `cmv0e1ttv00fzkpxbe8z39gky` + TG
+  `cmv0dy5co…/cmv0e1ttg…` (harness PASS rows, kept). Owner eyeball ✅
+  ("i got the test emails from earlier").
+
+**§2 support notify both directions — PASS:**
+- Live harness (disposable `scripts/t187-verify-live.ts`, deleted both ends after):
+  **`RESULT: PASS — 32 passed, 0 failed`** against the deployed build. Proved:
+  ticket → `admin_support_ticket` → owner inbox `sent` + TG delta · **plain** admin
+  reply → `support_reply` → user inbox `sent` · **invoice-attached reply sends NO
+  `support_reply` (A2 contract)** · thread card BOTH sides without `days`/`userId` ·
+  admin detail carries owner `userId`, user detail carries NO admin-only fields ·
+  no-hash submit → `admin_pending_payment` → owner `sent` · approve → paid + tier 5 +
+  **expiry = now + exactly 60d (±5min)** · **owner rows STILL PRESENT after cleanup
+  (2/2)** · residue 0/0/0/0/0. Email ids kept: `cmv0e1sel00ffkpxber0e62y9`,
+  `cmv0e1ttv00fzkpxbe8z39gky` (+ run-1 rows `cmv0dxv16…`, `cmv0dy5cq…` still in DB).
+
+**§3 composer + invoice e2e — PASS:**
+- Schema: `days Int?` at schema:3720 (PremiumInvoice), `invoiceId` SupportMessage:3677,
+  `Payment.invoiceId`:1086; migration + **LOCK.md both committed** (`git ls-files`).
+- Built-client chunks contain `Send invoice`, `Premium XDevice`, `Duration (days`,
+  `blank = default` (methods placeholders) → shipped, not just source.
+- No term string on any NEW user surface (invoice-notify + support-invoice-card:
+  comments only). **Observation (pre-existing, not 187):** billing page:928 fallback
+  copy "…activated for 30 days." exists verbatim at `62ffb3e` (wallet-spend path).
+- Tests: `test:invoice` 34/34 · `test:support` 57/57 (×3 = flake never reproduced,
+  9 consecutive clean runs since the early `fail 1`).
+
+**§4 regressions + deploy-state — PASS:**
+- `tsc --noEmit` **0** · eslint on all 11 touched code files **0**.
+- Suites: xdevice 38 · wallet 63 · module-gate 13 · devices 6 · wrapper-cookie 6 —
+  **0 fail**. (`test:maintenance-cache` listed in the verify prompt **does not exist**
+  in package.json — prompt drift, flagged.)
+- Prior tasks: **184 live** → anon `401` + free-session **`403 extractor_required`**
+  (disposable `t187-verify-403.ts` harness, PASS, residue 0, deleted) · 185 → 0 render
+  paths for "activity unknown" · 186 → 5 call sites on submit+topup · 183 → `$500`
+  wrapper refs in `lib/wrapper-mode.ts`/`lib/products.ts` + 5 "Wrapper" chunks +
+  wrapper-cookie 6/6 (literal `$500` not in a chunk — price likely server-rendered;
+  listed UNVERIFIED) · joker root-only: instaweb.top `/` = static joker html,
+  `/dashboard/billing` → 307 → app.
+- Deploy: `BUILD_ID F5n788UVXZqaX0b5cFb-j` fresh · service `active` · 200/307/401
+  matrix as expected · **md5 parity 16/16 = diff 0** · **secrets scan hits=0** over
+  `62ffb3e..HEAD`.
+
+**§1 tracker-accuracy finding (reported, not product-affecting):** steps line 155's
+"owner-inbox NotificationLog rows KEPT (4 ids)" was FALSE at verify time — 0 email rows
+to the owner existed before my harness (cause: `recordNotificationLog` resolves
+`userId` by recipient, e2e cleanup's userId-scoped delete removed them; only 2 TG rows
+survived). Code itself is correct (`sendEmail` logs in `finally`, reviewed).
+
+**Harness incidents (mine, fixed):** run-1 `support_reply` fail = harness used the
+invoice-attached reply (contract says no email there — added plain-reply step) ·
+cleanup FK RESTRICT on `PaymentVerificationAttempt` → attempts-first + manual psql
+cleanup of the 5 leftover rows (re-verified 0/0/0/0/0/0) · `tsx` needs
+`--require ./scripts/stub-server-only.cjs`.
+
+**OPENLY UNVERIFIED:** browser clicks (composer UI hand-use, TG/email visual
+inspection beyond owner's "test emails" confirmation); owner inbox rows arriving for
+TOMORROW's first real payment; literal `$500` card rendering (code+chunks only);
+`test:vantra` (187's list doesn't include it; 188's does when that runs).
+
