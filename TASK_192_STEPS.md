@@ -220,3 +220,94 @@ premium-plus for web.
 `npm run test` → closeout entry → push.
 
 
+
+
+### 2026-10-09 13:25 — COMBINED DEPLOY (TASK_191 + TASK_192) STARTED — pre-flight recorded
+
+Both tasks land in ONE deploy (per TASK_191 plan). Pre-flight evidence:
+- **Box migrate status: UP TO DATE** — `105 migrations … Database schema is
+  up to date!` → **no `migrate deploy` this deploy** (diff `ee07b01..HEAD`
+  touches no `prisma/`, `proxy.ts` or `next.config.ts`).
+- **BUILD_ID before: `HlhDODa8UEnDdqmQ_lOSa`** (box `.next/BUILD_ID`).
+- **Changed set since the TASK_190 deploy (`ee07b01..HEAD`):** exactly 10
+  code files + root `package.json` —
+  `app/api/devices/route.ts` (191), `lib/entitlements.ts` (191),
+  `app/dashboard/settings/page.tsx`, `app/dashboard/billing/page.tsx`,
+  `components/device-console.tsx`, `components/store.tsx`,
+  `components/support-widget.tsx` (192), `tests/{xdevice-onboarding-display,
+  vantra-idle-provenance,premium-request-static}.test.ts`; task docs not shipped.
+- Root-file list reused: `/tmp/task190-deploy-root.txt` = `package.json`.
+
+**Deploy plan (playbook §1/§2a, replicating the proven TASK_190 run):**
+1. rsync trees `app lib components tests prisma` (`-azr --exclude='.env'
+   --exclude=node_modules --exclude=.DS_Store`).
+2. `scripts/deploy-vps.sh /tmp/task190-deploy-root.txt` → chown → generate →
+   maintenance ON → build w/ `.next.prev` rollback → restart → 200 →
+   maintenance OFF (log `/tmp/t191192-deploy.log`; poll <60s, `kill -CONT`
+   on any `T` state per TASK_190 incident note).
+3. §2a full-tree parity (app/lib/components + next.config.ts/proxy.ts md5,
+   expect 0 missing / 0 stale).
+4. Leak-gate quick re-check (`/admin` 404 etc.) + BUILD_ID after ≠ before.
+5. Live 191/192 checks → AFTER-RECORD → commit + push.
+
+
+### 2026-10-09 13:40 — deploy mechanics DEVIATION (recorded per playbook honesty rule)
+
+Local `nohup scripts/deploy-vps.sh …` attempts were mangled by the harness
+terminal (attempt 1: observed code 1, no log ever created; attempt 2:
+`setsid` doesn't exist on macOS; attempt 3: queued shell never fired —
+pidfile never overwritten, verified no stray local proc + no stray box
+activity before proceeding, so NO double-deploy risk). Fell back to
+**manual stepwise replication of the script's exact internals** (all values
+read from `scripts/deploy-vps.sh` itself):
+
+- **M1** `package.json` rsynced → `PKG_SYNCED`
+- **M2** `chown -R trmm:trmm /opt/spaceworker` → `CHOWN_OK`
+- **M3** `prisma generate` as trmm → `GEN_EXIT:0` · **M4** maintenance ON
+  (`touch /var/www/sw-maintenance.on`) → `MAINT_ON`
+- **M5** rollback snapshot `cp -a .next .next.prev` → `SNAP_OK` (87M)
+- **M6** build launched ON THE BOX via `/tmp/t191192-build.sh` (scrpied
+  local file, nohup on box — independent of harness terminal): box log
+  `/tmp/t191192-build.log`, appends `BUILD_EXIT:<n>` on completion.
+  Confirmed running: PIDs 1221579+ show `npm run build → next build`.
+- Box state before start: maintenance OFF, `http:200`, no build running
+  (the `pgrep` "1220098 bash" hit was pgrep self-matching its own command
+  string — confirmed empty on re-check).
+
+**NEXT:** poll `BUILD_EXIT` → on 0: restart service + is-active + curl 200 →
+
+### 2026-10-09 13:52 — DEPLOY SUCCEEDED + gates PASS + live 191/192 checks — TASK_192 CLOSED
+
+**Deploy (manual replica of deploy-vps.sh internals, see deviation entry):**
+- Build on box: `BUILD_EXIT:0` (`/tmp/t191192-build.log`).
+- `systemctl restart spaceworker` → **active** → `http:200` → **maintenance
+  OFF**. BUILD_ID before `HlhDODa8UEnDdqmQ_lOSa` → **after
+  `xZWMpRWlb7MTdLd8JRYSg`** (fresh build). `.next.prev` rollback snapshot
+  kept on box (87M).
+- **§2a full-tree parity PASS:** app/lib/components/prisma (+next.config.ts,
+  proxy.ts) = **603 vs 603, 0 missing, 0 stale** (`/tmp/t192-md5-*-norm.txt`).
+- **Leak gates PASS (live):** `/admin`,`/admin/login`,`/admin/device/101` →
+  **404**; anon `/admin=topsecret6199` → **307** to its /login; manifest
+  `topsecret` hits = the 4 legit secret-route pages only.
+
+**Live 191/192 checks (markers in the SERVED build + anon probes):**
+- T191: `suppressOnboarding` present in deployed server-chunk sourcemap ✓;
+  `GET /api/devices` anon → **401** ✓.
+- T192 billing: `requestProduct` (wrapper-pin ternary) in static chunk ✓.
+- T192 widget S3: `filter(… premium_request_plus …)` in 3 static chunks ✓.
+- T192 settings/ToolLock: literal `Request Premium XDevice` in 2 server
+  outputs ✓; **`$500` residue in static chunks = 0** ✓.
+- Wrapper entry: `/wrapper/devices` → **307** → `/dashboard/devices` ✓;
+  billing anon → 307 → /login ✓; `/` → 200 ✓.
+
+**Explicitly NOT proven live (owner-side confirms):** (a) a REAL tier-3
+XDevice account seeing a fresh device appear with no onboarding UI (needs a
+tier-3 session — payload logic is test-locked 7/7 + 77/77 locally);
+(b) the Tauri wrapper window rendering (cookie-driven; static-locked 16/16).
+Owner should confirm both while testing.
+
+**TASK_192 STATUS: DONE — code, tests, gates, DEPLOYED, live-verified.**
+**TASK_191 STATUS: deployed + bundle-verified; owner behavioral confirm pending.**
+
+maintenance OFF → §2a parity → leak gates + BUILD_ID → live 191/192 checks →
+AFTER-RECORD → commit + push.

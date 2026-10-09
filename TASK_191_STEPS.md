@@ -68,3 +68,28 @@
   next task (both land in one deploy).
 - **TASK_191 STATUS: DONE** (code complete, gates green, pushed).
 
+### 2026-10-09 13:25 — combined TASK_191+192 VPS deploy STARTED
+
+Live verification of TASK_191 happens in this deploy (as this file's S1
+closeout planned). Full deploy record, pre-flight and gates live in
+**TASK_192_STEPS.md** (combined-deploy entries dated 2026-10-09 13:25+);
+read that file for the proof — this file gets the outcome line after.
+
+
+### 2026-10-09 13:52 — DEPLOYED (combined deploy with TASK_192) + bundle-verified
+
+Combined deploy SUCCEEDED (full record + gates in TASK_192_STEPS.md,
+"DEPLOY SUCCEEDED" entry dated 13:52): BUILD_ID
+`HlhDODa8UEnDdqmQ_lOSa → xZWMpRWlb7MTdLd8JRYSg`, service active, 200,
+maintenance OFF, §2a parity 603/603 (0 missing/0 stale), leak gates 404s.
+
+**TASK_191 live proof:** `suppressOnboarding` marker found in the deployed
+server-chunk sourcemap; `GET /api/devices` anon → 401; source parity 0/0.
+**Pending owner confirm:** a real tier-3 XDevice account filing a NEW device
+and seeing it appear with no quarantine/strip/stage UI (payload logic is
+test-locked 7/7 + regressions 77/77 locally).
+
+**TASK_191 STATUS: DEPLOYED — code + gates + bundle markers done; one
+owner-side behavioral confirm outstanding (above).**
+
+
