@@ -1,6 +1,9 @@
 # TASK_190 — Admin screen-monitor actions + admin notify channels + owner presence
 
-Status: **IMPLEMENTING** — BEFORE-record written 2026-10-09, first edit not yet made.
+Status: **IN PROGRESS — slice ① (schema+migration) DONE + pushed at `e8043fc`.**
+NEXT AGENT: start from **`PROMPT_CONTINUE_TASK_190.md`** (full continuation
+prompt: mandatory rules, per-slice instructions, verified API facts) and
+continue with slice ②. Keep updating THIS file after every step.
 
 ## EXECUTION RECORD (compaction insurance — update after EVERY step)
 
