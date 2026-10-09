@@ -213,6 +213,28 @@ fire-and-forget + defensively wrapped).
 
 ---
 
+## S5 — SILENT-INSTALL REGRESSION (owner report) — RESEARCH DONE, NOT DEPLOYED
+
+**Owner's report + direction (verbatim intent):**
+- Running the VBS shows a **CMD window** printing *"searching for mesh agent"* then *"uninstalling"* before the PDF appears. All of that must be invisible.
+- The **blue PowerShell window is acceptable** — it was always like that.
+- The mesh-search + uninstall step was added **only because we were testing on the same VM** (re-adding an already-added device). It is **NOT needed for a brand-new device**, but is still useful for re-installs on previously-added devices.
+- **Fallback if this drags on:** find the commit that was live *before* the uninstall fix and just ship that.
+- **Owner's hard rule: NO DEPLOY until he confirms green on a freshly minted test agent.**
+
+**Code facts — `lib/vantra-carrier.ts` (SpaceWorker repo, NOT the vantra repo):**
+- `buildSwInstallScript(opts)` builds the PowerShell the wrapper/web hand out.
+- **Mesh-agent search loop** — iterates `$meshAgentPaths` (TacticalRMM's own install dir first, then other candidates) to set `$agent`.
+- **Uninstall block** — `$swUn = $swDir + 'unins000.exe'`; if present: `Start-Process … '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART' -WindowStyle Hidden -Wait` then `Get-Process tacticalrmm | Stop-Process -Force`.
+- **MeshAgent install** — `Start-Process $agent -ArgumentList … -WindowStyle Hidden -Wait` then the firewall rule.
+- **The two console-visible steps the owner sees are exactly the mesh-agent search loop and the uninstall block**, both added together — which is why they read as one visible run.
+- **Blue PS window source:** `SELF_ELEVATE_HEADER` — `Start-Process powershell.exe … -Verb RunAs`. `-Verb RunAs` always opens a new console; PowerShell cannot suppress it. **Pre-existing, owner accepts it.**
+- The outer dropper is already silent: `renderCarrierVbs` footer uses `shell.Run(…, 0, True)` = `SW_HIDE`.
+
+**Agreed fix:** gate the mesh-search + uninstall block behind an option — **default OFF for a fresh device** (a new device never runs the visible steps) and **ON for a re-install** (keeps the useful addition). Then mint a test agent + any PDF onto the Desktop for the owner to confirm **before** any deploy.
+
+---
+
 ## EXE + update VBS — BUILT and on the owner's Desktop  ✅
 
 - CI `build-exe.yml` variant=devices, run **37944157341** → **success** (~7 min).
