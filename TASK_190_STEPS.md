@@ -947,3 +947,22 @@ then full `npm run test`.
   AFTER-RECORD (gates table + evidence) → push → scope §7 checkoff → closeout
   with unproven list (browser-only UI items).
 
+## PROGRESS — 2026-10-09 (LIVE VERIFY SKIPPED → OWNER ACCEPTED; 2 deferred items)
+
+- **Owner tested the deployed build live himself (2026-10-09): "i have tested
+  it, it works fine."** → the scripted §1–§4 live-verify pass is SUPERSEDED
+  by owner acceptance; no further live probing planned for TASK_190.
+- **Two follow-up items the owner raised while testing — explicitly DEFERRED
+  ("just note that, we will triage that later"), NOT part of this task:**
+  1. **Screenshots have no viewer** — screen capture runs but there is no
+     place in the UI for him to see the captured screenshots.
+  2. **"Open console" button reloads the page** and is redundant now that
+     Remote control works — candidate for removal (triage later).
+- **TASK_190 STATUS: code + deploy + gates + owner-acceptance DONE.** Remaining
+  in this file only: final closeout bookkeeping (scope §7 checkoff line) —
+  do when convenient; no open technical work.
+- **PRIORITY HANDOFF → next tasks (owner, same message):** two urgent tasks
+  (XDevice onboarding-flow removal; wrapper request-premium flow parity) are
+  being created as TASK_191/TASK_192 immediately; the login-page referral
+  gating idea = TASK_193 (planned, not started).
+
