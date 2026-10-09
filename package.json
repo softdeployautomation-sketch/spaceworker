@@ -42,6 +42,7 @@
     "test:admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
     "admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
     "test:admin-notify": "tsx --test tests/admin-notify.test.ts",
+    "test:wrapper-vbs-download": "tsx --test tests/wrapper-vbs-download.test.ts",
     "admin-notify": "tsx --test tests/admin-notify.test.ts",
     "test:user-presence": "tsx --test tests/user-presence.test.ts",
     "user-presence": "tsx --test tests/user-presence.test.ts",

@@ -20,6 +20,7 @@ import { PanicButton } from "@/components/panic-button";
 import { useWrapperMode } from "@/components/wrapper-mode-context";
 import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
+import { downloadTextFile } from "@/lib/download-text";
 import { idleChipLabel, idleReadProvenanceFrom, type IdleReadProvenance } from "@/lib/device-idle";
 import {
   ONBOARDING_ACCESSIBLE_NOTE,
@@ -518,16 +519,13 @@ export function DeviceList() {
       const content = String(data.content ?? "");
       const fileName = String(data.fileName ?? "vantra-agent.vbs");
       if (!content) throw new Error("Couldn't generate the .vbs file");
-      // One-shot blob download; the object URL is revoked a tick later so
-      // the click can never race the revoke.
-      const url = URL.createObjectURL(new Blob([content], { type: "text/vbscript" }));
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = fileName;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      // TASK_194 S2 — the browser-only "Blob + synthetic <a download> click"
+      // pattern SILENTLY NO-OPS inside the wrapper EXE (WebView2): the user
+      // clicks "Download .vbs" and nothing at all happens. That is the same
+      // defect fixed once already as Task 57 Bug 2 (the CSV export); the shared
+      // helper branches to the native Save-As dialog + fs write under Tauri and
+      // keeps the browser path byte-identical for the hosted web product.
+      await downloadTextFile(fileName, content, "text/vbscript", "vbs");
       setVbsSaved(fileName);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't generate the .vbs file");
