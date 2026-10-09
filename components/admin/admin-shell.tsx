@@ -27,7 +27,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     } finally {
       setLoggingOut(false);
     }
-    router.push("/admin/login");
+    router.push("/admin=topsecret6199/login");
     router.refresh();
   }
 
@@ -36,7 +36,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-40 border-b border-border bg-bg-elevated/80 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <div className="flex items-center gap-3">
-            <Link href="/admin" className="text-lg font-bold text-brand-600 dark:text-brand-400">
+            <Link href="/admin=topsecret6199" className="text-lg font-bold text-brand-600 dark:text-brand-400">
               SpaceWorker · Admin
             </Link>
           </div>

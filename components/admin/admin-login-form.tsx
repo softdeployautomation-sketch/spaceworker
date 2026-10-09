@@ -26,7 +26,7 @@ export function AdminLoginForm() {
         setError(data.error ?? "Couldn't sign in. Please try again.");
         return;
       }
-      router.push("/admin");
+      router.push("/admin=topsecret6199");
       router.refresh();
     } catch {
       setError("Network error. Please try again.");

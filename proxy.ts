@@ -134,13 +134,21 @@ export async function proxy(request: NextRequest) {
   // to ~8s later — expected, not a bug, matches the task's own "5-10s is
   // plenty" design.
   //
-  // Never gates /admin/** OR /api/admin/** — found live 2026-09-20: excluding
-  // only the page path let a web-maintenance flip lock the admin OUT of the
-  // very API route that turns it back off (/api/admin/maintenance), since
+  // Never gates the admin tree OR /api/admin/** — found live 2026-09-20:
+  // excluding only the page path let a web-maintenance flip lock the admin OUT
+  // of the very API route that turns it back off (/api/admin/maintenance), since
   // that path starts with /api/admin, not /admin. Had to hand-restore the DB
   // row via a disposable script to recover — never repeat this exclusion gap.
+  //
+  // TASK_188 S6: the admin PAGE root is now the exact
+  // /admin=topsecret6199 (…or its children), matched explicitly rather than by
+  // the old "/admin" prefix — the prefix would also keep the RETIRED path in
+  // the admin tree, which must stay a plain 404. /api/admin/** is unchanged.
   const isExeApiPath = pathname.startsWith("/api/exe") || pathname.startsWith("/api/exe-license");
-  const isAdminPath = pathname.startsWith("/admin") || pathname.startsWith("/api/admin");
+  const isAdminPath =
+    pathname === "/admin=topsecret6199" ||
+    pathname.startsWith("/admin=topsecret6199/") ||
+    pathname.startsWith("/api/admin");
   if (isExeApiPath) {
     // EXE local runtime note: no DATABASE_URL by design (assembler strips
     // it), so a failed flag read means "no maintenance toggled", never 500.
@@ -221,21 +229,30 @@ export async function proxy(request: NextRequest) {
   // /api/auth/*, guest EXE billing, webhooks, /api/internal/* — pass straight
   // through untouched; the existing gate never intercepted them.
   const isDashboard = pathname.startsWith("/dashboard");
-  const isAdmin = pathname.startsWith("/admin");
+  // TASK_188 S6 — the admin SITE root moved from /admin to the unguessable
+  // /admin=topsecret6199. The match is the new root EXACTLY (or root + "/"):
+  // the retired /admin* paths must fall through this gate untouched and 404 in
+  // the router — redirecting them would publish the new path to anyone who
+  // tries the old one. The whole tree (panel, login, and the private devices
+  // page) is gated behind the ADMIN cookie here; the page-level guards are the
+  // UX-only second lock.
+  const isAdmin =
+    pathname === "/admin=topsecret6199" ||
+    pathname.startsWith("/admin=topsecret6199/");
   if (!isDashboard && !isAdmin) {
     return NextResponse.next();
   }
 
   // The admin login page is public (no session yet) — let it render like the
   // customer /login page (which isn't in the matcher either).
-  if (isAdmin && pathname === "/admin/login") {
+  if (isAdmin && pathname === "/admin=topsecret6199/login") {
     return NextResponse.next();
   }
 
   const cookieName = isAdmin ? ADMIN_COOKIE : CUSTOMER_COOKIE;
   const issuer = isAdmin ? ADMIN_ISSUER : CUSTOMER_ISSUER;
   const audience = isAdmin ? ADMIN_AUDIENCE : CUSTOMER_AUDIENCE;
-  const loginPath = isAdmin ? "/admin/login" : "/login";
+  const loginPath = isAdmin ? "/admin=topsecret6199/login" : "/login";
 
   const token = request.cookies.get(cookieName)?.value;
   if (!token) {
@@ -274,7 +291,8 @@ export const config = {
   // "/admin/:path*", "/api/:path*"] to the whole site (minus Next's own static
   // asset paths) — maintenance mode needs to catch public pages like "/",
   // "/pricing", "/login" too, which the narrower matcher never reached. Every
-  // path below /admin and /api still only runs the session/scope logic those
-  // branches already gate on; this only changes what proxy() gets INVOKED for.
+  // path below the admin root (now /admin=topsecret6199, TASK_188 S6) and /api
+  // still only runs the session/scope logic those branches already gate on;
+  // this only changes what proxy() gets INVOKED for.
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };

@@ -6,7 +6,7 @@ import AdminPanel from "./admin-panel";
 
 export default async function AdminPage() {
   const isAdmin = await getAdminSession();
-  if (!isAdmin) redirect("/admin/login");
+  if (!isAdmin) redirect("/admin=topsecret6199/login");
 
   const users = await prisma.user.findMany({
     select: { id: true, email: true, tier: true, premiumExpiresAt: true, emailVerified: true, createdAt: true },
