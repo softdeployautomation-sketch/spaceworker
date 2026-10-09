@@ -800,6 +800,49 @@ export async function addAdminMessage(
 }
 
 /**
+ * TASK_194 S4 — make an admin-issued invoice VISIBLE on the support button.
+ *
+ * The support badge is DERIVED, not stored: `unread` is true only when the
+ * thread's NEWEST message is an admin's and newer than the customer's lastReadAt
+ * (see `isUnread`). The users-panel invoice composer
+ * (`/api/admin/users/[id]/invoices`) wrote ONLY a `PremiumInvoice` row — no
+ * message — so a user whose newest message was their own (or who had no ticket
+ * at all) never lit the badge, even though the invoice existed and its email had
+ * been sent. The support-panel composer already got this right by posting a
+ * message with `invoiceId`; this closes the same gap for the other entry point.
+ *
+ * Find-or-create, in that order:
+ *  - reuse the user's most recent UNRESOLVED ticket (so the notice lands where
+ *    the conversation already is, and the invoice card renders inline);
+ *  - otherwise open a fresh ticket for it.
+ *
+ * Best-effort by contract: callers wrap this in try/catch and never await a
+ * failure into the 201 that already created the invoice.
+ */
+export async function postInvoiceNoticeToUser(
+  userId: string,
+  invoiceId: string,
+  adminId: string | null,
+  body: string,
+): Promise<SupportResult<SupportMessageView>> {
+  const existing = await prisma.supportTicket.findFirst({
+    where: { userId, status: { not: RESOLVED_STATUS } },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true },
+  });
+
+  if (existing) return addAdminMessage(existing.id, body, adminId, invoiceId);
+
+  // No open thread — open one, then post through addAdminMessage so the invoice
+  // binding + body validation run exactly once, on one path.
+  const created = await prisma.supportTicket.create({
+    data: { userId, subject: "Premium invoice" },
+    select: { id: true },
+  });
+  return addAdminMessage(created.id, body, adminId, invoiceId);
+}
+
+/**
  * Resolve / reopen / reprioritise.
  *
  * `resolvedAt` is DERIVED from `status` and can never be supplied by the caller — a

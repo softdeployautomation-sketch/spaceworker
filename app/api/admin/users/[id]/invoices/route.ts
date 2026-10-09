@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
 import { getAdminSettings } from "@/lib/admin-settings";
 import { notifyUserInvoiceSent } from "@/lib/invoice-notify";
+import { postInvoiceNoticeToUser } from "@/lib/support/tickets";
 
 // TASK_184 B3 (MONEY) — send a premium-plan invoice to a user.
 //
@@ -212,6 +213,25 @@ export async function POST(req: Request, ctx: RouteContext) {
     });
   } catch {
     // Best-effort — invoice-notify already logged its own failure.
+  }
+
+  // TASK_194 S4 — land the invoice in the SUPPORT THREAD too. The button's
+  // unread badge is derived from the thread's newest message, so a row-only
+  // invoice was invisible there (owner: "it didn't show the notification on the
+  // support button"). Same fire-and-forget contract as the email above: the 201
+  // that already created the invoice can never be changed by this.
+  try {
+    const planLabel = plan === "premium_plus" ? "Premium Plus" : "Premium XDevice";
+    void postInvoiceNoticeToUser(
+      userId,
+      invoice.id,
+      "admin",
+      `A ${planLabel} invoice for $${amountUsd} is waiting for you — open Billing to view and pay it.`,
+    ).catch(() => {
+      // Best-effort; support-tickets logs its own failures.
+    });
+  } catch {
+    // Best-effort — never let a notice failure fail the invoice that was sent.
   }
 
   return NextResponse.json({ invoice }, { status: 201 });

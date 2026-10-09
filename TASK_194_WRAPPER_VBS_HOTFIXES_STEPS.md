@@ -156,20 +156,63 @@ Open design question before S3: the API nulls onboarding only on the list route.
 The console page (:1884) renders the SAME 4-step strip — must be suppressed
 there too, and the row badge needs the tier, not just `onboarding: null`.
 
-## S4 — admin invoice → wrapper user: no support-button notification  ⏳ QUEUED
+## S4 — admin invoice → wrapper user: no support-button notification  ✅ DONE (code committed; ships on next deploy)
 
-Owner, 2026-10-09: "when i sent an invoice to the wrapper user, it didn't show
-the notification on the support button as it should."
+### Root cause (traced, not guessed)
 
-Leads to chase (NOT yet investigated — do not assume):
-- The wrapper keeps SUPPORT by design (owner instruction, TASK_183), so the
-  button itself is in scope. The unread badge is driven by the support widget's
-  poll — find what `scope`/user it polls for and compare with the account the
-  invoice was issued against (TASK_187 admin-issued `PremiumInvoice`).
-- Wrapper entry is a HOSTED window (`/wrapper/devices` → `/dashboard/devices`),
-  so the wrapper user IS a hosted session — but the scoped shell narrows nav;
-  check whether the unread endpoint is one the wrapper's fetch is allowed to hit
-  and whether the invoice lands in the ORG thread vs the OWNER's own thread.
+The badge is **DERIVED, never stored**: `lib/support/tickets.ts:316`
+`unread: isUnread(row.messages, row.lastReadAt)`, and the docstring is explicit —
+"It is the NEWEST message that decides" and "a ticket whose newest message is the
+customer's own is not unread either".
+
+There are TWO invoice entry points, and only one of them posted a message:
+
+| path | writes a SupportMessage? | badge lights? |
+|---|---|---|
+| support panel → `POST /api/admin/support/tickets/[id]/messages` with `invoiceId` (TASK_187) | yes | yes |
+| users panel → `POST /api/admin/users/[id]/invoices` (TASK_184 B3) | **NO** — only `premiumInvoice.create` + an email | **no** |
+
+So an invoice sent from the users panel produced a row + an email and nothing
+the support button could ever see. Not wrapper-specific: the wrapper is a window
+onto the HOSTED app, so this is a hosted-API bug that happens to be most visible
+from the wrapper.
+
+### Fix
+
+- `lib/support/tickets.ts` → new `postInvoiceNoticeToUser(userId, invoiceId,
+  adminId, body)`: reuses the user's most recent **unresolved** ticket, else
+  opens one, then posts through the EXISTING `addAdminMessage` so the invoice
+  binding + body validation run exactly once on one path (no second implementation).
+- `app/api/admin/users/[id]/invoices/route.ts` → after the invoice row + the
+  existing `notifyUserInvoiceSent` email, fire-and-forget the notice with a
+  plain-language body naming the plan and amount.
+
+Kept **best-effort** on purpose (`.catch()` + its own try): the 201 that already
+created the invoice can never be changed by a notice failure.
+
+### Gates
+
+`tsc` **0** · `eslint` on both files **0** · `npm run test:support` **57/57** ·
+new `tests/invoice-support-badge.test.ts` **3/3** (helper exists and posts
+through `addAdminMessage`; the route calls it and imports it; the notice is
+fire-and-forget + defensively wrapped).
+
+---
+
+## EXE + update VBS — BUILT and on the owner's Desktop  ✅
+
+- CI `build-exe.yml` variant=devices, run **37944157341** → **success** (~7 min).
+- Artifact `spaceworker-devices-windows` already contains the CI-minted
+  **EXE-in-VBS carrier** (TASK_181 P4b) alongside the installer.
+- Verified the VBS is the **silent** build: it launches with
+  `powershell … -WindowStyle Hidden` (1 occurrence, exactly the S1 fix's shape).
+- Placed on the Desktop: `SpaceWorker OS_0.1.0_x64-setup.vbs` (54.8 MB, embeds
+  the installer + SHA-256 check) and `SpaceWorker OS_0.1.0_x64-setup.exe` (40.3 MB).
+
+**This EXE carries S2** (the Save-As download fix), so the owner should install
+from the VBS and then re-test: download .vbs (Save-As dialog now appears), the
+silent agent install (guide PDF only, no PowerShell window), and the support
+badge after an invoice is sent.
 
 ## S5 — email the user on a new support message  ⏳ QUEUED (owner ask, not a bug)
 
