@@ -826,3 +826,63 @@ then full `npm run test`.
 - **NEXT → slice ⑤:** gates re-run → VPS (`prisma migrate deploy` BEFORE
   `next build`/restart) → live `PROMPT_VERIFY_TASK_190.md` → closeout.
 
+
+### PROGRESS — slice ⑤ STARTED (deploy pre-flight done), 2026-10-09 10:54 (9th compaction)
+- **Slice ④ PUSHED at `b6c2f25`** (16 files, +1531; message via
+  `/tmp/t190-slice4-msg.txt` + `git commit -F`; TASK_133 stray NOT staged).
+  `git log`: e8043fc ① → 2db34de ② → 071bab0 ③ → b6c2f25 ④. Tree clean
+  except `?? TASK_133_RMM_ENGINE_BRINGUP.md` (never commit it).
+- **Gates on the final tree = all GREEN** (proof in the slice-④ entry above):
+  tsc 0 · eslint touched-new 0 (admin-panel = its exact 42 baseline,
+  devices-tab = its 2 pre-existing) · battery 10 suites 0 fail (13+13+19+12+
+  15+6+38+63+13+6) · full `npm run test` **1310 tests / 1309 pass / 0 fail /
+  1 skipped** (run 2×; 1st run had one known-flaky ms off-by-one in
+  support-tickets "read cursor" — passes isolated 57/57 and on re-run).
+  The `test` script (`tsx --test tests/*.test.ts`) was ADDED per STEPS §511.
+- **Pre-flight facts captured (evidence, don't re-derive):**
+  - LOCAL `prisma migrate status`: 105 migrations, **NONE applied locally** —
+    push-era DB at 127.0.0.1:5432 `spaceworker`, 77 tables, task190 objects
+    (UserPresenceEvent/AdminNotificationPref/User+Device cols) all ABSENT.
+    Migration SQL verified purely additive (5 ALTER ADD + 2 CREATE + idx + FK).
+  - **Local baseline in progress** (Prisma adoption flow): script
+    `/tmp/t190-baseline.sh` → log `/tmp/t190-baseline.log` — resolves the 104
+    prior migrations as `--applied` (bookkeeping only), then `migrate deploy`
+    applies ONLY `20261120000000_task190_admin_notify_presence`, then status.
+    Detached via nohup (background `&` dies with the shell here). At 10:54:
+    84 lines, **0 RESOLVE_FAIL**, mid-list (~migration 20260911).
+  - VPS baseline (root@164.68.105.96, key `~/.ssh/tacticalrmm_vps`):
+    BUILD_ID **`ibA9fnCCwldSNj4a2EQap`**, `spaceworker.service` active,
+    `.env` has TELEGRAM_BOT_TOKEN+RESEND_API_KEY (grep -c = 2, values never
+    printed), box `prisma/migrations` ends at task187 ⇒ **task190 migration
+    NOT on the box yet** (rsync `prisma/` will bring it).
+- **Deploy plan decided (reconciles playbook §3 correction + STEPS §4 +
+  TODAY's proven TASK_188 pattern — remote `npm run build` via the script
+  SUCCEEDED today at 06:13, log `/tmp/task188-deploy.log`):**
+  1. `rsync -avz -e "ssh -i ~/.ssh/tacticalrmm_vps" --exclude='.env' app lib
+     components prisma tests root@164.68.105.96:/opt/spaceworker/` (additive
+     only — no deleted paths this task, so no stale-tree rm needed).
+  2. **`cd /opt/spaceworker && sudo -u trmm npx prisma migrate deploy` BEFORE
+     the build** (user mandate + playbook "apply schema before the build
+     lands"; the script itself does NOT migrate — only `prisma generate`).
+  3. `/tmp/task190-deploy-root.txt` = `package.json` (only changed root file;
+     proxy.ts unchanged) → `scripts/deploy-vps.sh …` (preflight snapshot →
+     chown → generate → maintenance ON → build w/ .next.prev rollback →
+     restart → is-active + curl 200 → runtime assert → maintenance OFF).
+  4. Playbook **§2a full-tree parity** (md5 app/lib/components + root files,
+     local vs box, expect 0 missing / 0 stale).
+  5. **Leak gates:** build log + `.next` manifests grepped for the
+     admin-string / `topsecret` (TASK_188 rule); `/admin`,`/admin/login`,
+     `/admin/device/101` → 404; `/admin=topsecret6199` → 307→login anon.
+  6. Record BUILD_ID before/after.
+- **WHAT'S LEFT (remaining slice-⑤ checklist):**
+  a. Wait for baseline → confirm `migrate status` = "up to date" locally
+     (log ends `DONE` + `STATUS_EXIT:0`); `npx prisma generate` if needed.
+  b. Execute deploy steps 1-6 above.
+  c. LIVE `PROMPT_VERIFY_TASK_190.md` §1-§5 (admin cookie minted ON the box
+     via `createAdminSessionToken()` — never print SESSION_SECRET; §0 env
+     check already green; §4 presence needs a real customer dashboard
+     session; §5 regression gates + local-vs-remote parity).
+  d. AFTER-RECORD in this file (gates table, deploy evidence, BUILD_ID
+     before/after, commits) → push → check off scope §7 boxes → closeout
+     with explicit unproven/risk list.
+
