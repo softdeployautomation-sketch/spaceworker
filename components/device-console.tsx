@@ -30,7 +30,6 @@ import {
 
 import { cn } from "@/lib/cn";
 import { useConfirm } from "@/components/confirm-provider";
-import { useWrapperMode } from "@/components/wrapper-mode-context";
 import { SupportTicketButton } from "@/components/support-ticket-cta";
 import { ScreenTimeline, captureFailureCopy } from "@/components/screen-timeline";
 import { ScreenAlertsCard } from "@/components/screen-alerts-card";
@@ -393,39 +392,15 @@ const TABS: Array<[Tabs, string, typeof Monitor]> = [
 // on every action route, so this is the honest UI half of one gate.
 const TOOL_TABS = new Set<Tabs>(["control", "command", "clone", "monitoring"]);
 
-// The upgrade card that replaces a locked tool tab. P3 (step 30): WRAPPER build
-// shows the admin-set xdevicePriceUsd via /api/store/prices — "Subscribe to Premium
-// XDevice — $X" (TASK_184 addendum 2: tier 3 reads as Premium XDevice, never a bare
-// "Premium"). WEB (TASK_184 B1) never fetches or renders a price — it shows the
-// request CTA that opens the support widget on the xdevice template instead. The
-// subscription term is NEVER in the copy (owner: "never show it on ui how long the
-// premium is for").
+// The upgrade card that replaces a locked tool tab. TASK_192 — NO build shows
+// a price here anymore (owner, 2026-10-09: "take out the fixed price, and make
+// the payment flow the same with the web free"): web AND wrapper render the
+// request CTA that opens the support widget on the xdevice template, and the
+// admin answers with an editable invoice. The subscription term is NEVER in
+// the copy (owner: "never show it on ui how long the premium is for"); TASK_184
+// addendum 2: tier 3 reads as Premium XDevice, never a bare "Premium".
 function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
-  const wrapperMode = useWrapperMode();
-  const isWrapper = wrapperMode !== null;
-  const [priceUsd, setPriceUsd] = useState<number | null>(null);
-  useEffect(() => {
-    if (!isWrapper) return; // web: no price fetch at all (B1)
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch("/api/store/prices", { cache: "no-store" });
-        const data = (await res.json()) as { products?: { id?: string; priceUsd?: unknown }[] };
-        const x = data.products?.find((p) => p.id === "xdevice");
-        if (!cancelled && x && typeof x.priceUsd === "number") setPriceUsd(x.priceUsd);
-      } catch {
-        // Fail-soft: render the wording without a price rather than a broken card.
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isWrapper]);
-  const label = isWrapper
-    ? priceUsd !== null
-      ? `Subscribe to Premium XDevice — $${priceUsd}`
-      : "Subscribe to Premium XDevice"
-    : "Upgrade to Premium XDevice";
+  const label = "Upgrade to Premium XDevice";
   return (
     <div
       className={cn(
@@ -440,21 +415,12 @@ function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
         premium tools on devices you own. Your device list, its summary and its
         activity stay free.
       </p>
-      {isWrapper ? (
-        <Link
-          href="/dashboard/billing?product=xdevice"
-          className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
-        >
-          {label}
-        </Link>
-      ) : (
-        <SupportTicketButton
-          template="premium-xdevice"
-          className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
-        >
-          {label}
-        </SupportTicketButton>
-      )}
+      <SupportTicketButton
+        template="premium-xdevice"
+        className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
+      >
+        {label}
+      </SupportTicketButton>
     </div>
   );
 }

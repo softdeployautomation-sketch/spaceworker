@@ -9,7 +9,6 @@ import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
 import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
-import { getAdminSettings } from "@/lib/admin-settings";
 import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
@@ -55,14 +54,15 @@ export default async function SettingsPage() {
   // licenses, security); the cross-product config cards below are web-only.
   // TASK_183 — `wrapper` resolved at the top of the function (env + cookie).
 
-  // TASK_181 P3 (step 30) — the Premium card. Price = the ADMIN-SET
-  // xdevicePriceUsd (read live, never hardcoded anywhere in the UI), wording
-  // per owner: "Subscribe to Premium — $<price>". The TERM/duration is NEVER
-  // rendered (owner: "never show it on ui how long the premium is for").
-  // getCurrentUser already applied lazy reversion, so tier 3 here = a LIVE
-  // XDevice term and tier >= 5 = live/grandfathered Premium.
-  const settings = await getAdminSettings();
-  const xdevicePrice = settings.xdevicePriceUsd;
+  // TASK_181 P3 (step 30) / TASK_192 — the Premium card carries NO price on
+  // ANY build (owner, 2026-10-09: "no need putting the price … make the
+  // request premium flow same on the wrapper exe as it is for free users on
+  // the web"). The button opens the support widget preselected on the
+  // "Request for Premium XDevice" template and the admin answers with an
+  // editable invoice. The TERM/duration is NEVER rendered (owner: "never show
+  // it on ui how long the premium is for"). getCurrentUser already applied
+  // lazy reversion, so tier 3 here = a LIVE XDevice term and tier >= 5 =
+  // live/grandfathered Premium.
   const premiumActive = user.tier >= 5 || user.tier === 3;
 
   // Tier 1 trial — TASK_184 addendum 2: tier 5 is "Premium Plus", tier 3 (a live
@@ -102,12 +102,12 @@ export default async function SettingsPage() {
         <p className="mt-1 text-sm text-fg-muted">Your account and preferences.</p>
       </div>
 
-      {/* TASK_181 P3 (step 30) / TASK_184 B1+B2 — Premium XDevice card. WEB shows
-          NO price: the button opens the support widget preselected on the
-          "Request for Premium XDevice" template and the admin answers with an
-          editable invoice (B3/B4). WRAPPER keeps its self-serve purchase link with
-          the admin-set xdevicePriceUsd (Wallets & Prices); NO term/duration copy
-          either way — the term lives server-side in premiumExpiresAt. */}
+      {/* TASK_181 P3 (step 30) / TASK_184 B1+B2 / TASK_192 — Premium XDevice
+          card. NO price on ANY build (web or wrapper): the button opens the
+          support widget preselected on the "Request for Premium XDevice"
+          template and the admin answers with an editable invoice (B3/B4).
+          NO term/duration copy either — the term lives server-side in
+          premiumExpiresAt. */}
       <Card className="max-w-2xl p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -122,18 +122,9 @@ export default async function SettingsPage() {
         </div>
         {!premiumActive && (
           <div className="mt-4">
-            {wrapper ? (
-              <Link
-                href="/dashboard/billing?product=xdevice"
-                className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700"
-              >
-                Subscribe to Premium XDevice — ${xdevicePrice}
-              </Link>
-            ) : (
-              <SupportTicketButton template="premium-xdevice" className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700">
-                Request Premium XDevice
-              </SupportTicketButton>
-            )}
+            <SupportTicketButton template="premium-xdevice" className="inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700">
+              Request Premium XDevice
+            </SupportTicketButton>
           </div>
         )}
       </Card>

@@ -248,42 +248,42 @@ test("C3: PremiumRequestCard is tier-independent — product prop only, both tem
 });
 
 // ---------------------------------------------------------------------------
-// B1 — SETTINGS / DEVICE-CONSOLE / MODULE-LOCK: price only behind the wrapper
+// B1 — SETTINGS / DEVICE-CONSOLE / MODULE-LOCK: NO price on ANY build
+//      (TASK_192 moved the line: the wrapper's request flow = the web's, so
+//      the old "price only behind the wrapper" split is deliberately gone)
 // ---------------------------------------------------------------------------
 
-test("B1: the settings XDevice card — wrapper gets the priced link, web gets the ticket button", () => {
+test("B1: the settings XDevice card is price-free on every build — ticket CTA only", () => {
   const settings = stripComments(read("app/dashboard/settings/page.tsx"));
 
+  assert.ok(
+    !/dashboard\/billing\?product=xdevice/.test(settings),
+    "the wrapper's priced billing link is gone (owner: no price anywhere)",
+  );
+  assert.ok(!/xdevicePrice/.test(settings), "no price interpolation left in the page");
+  assert.ok(!/Subscribe to Premium XDevice —/.test(settings), "no priced subscribe wording");
   assert.match(
     settings,
-    /\{wrapper \? \(\s*<Link\s+href="\/dashboard\/billing\?product=xdevice"[\s\S]{0,600}?Subscribe to Premium XDevice — \$\{xdevicePrice\}\s*<\/Link>\s*\) : \(\s*<SupportTicketButton template="premium-xdevice"[\s\S]{0,500}?>\s*Request Premium XDevice\s*<\/SupportTicketButton>\s*\)\}/,
-    "the price may live ONLY in the wrapper arm; web's arm is the ticket CTA",
-  );
-  assert.equal(
-    (settings.match(/\$\{xdevicePrice\}/g) ?? []).length,
-    1,
-    "one price interpolation in the whole page, inside that wrapper arm",
+    /<SupportTicketButton template="premium-xdevice"[\s\S]{0,300}?>\s*Request Premium XDevice\s*<\/SupportTicketButton>/,
+    "the card's CTA is the ticket button on web AND wrapper (TASK_192)",
   );
   assert.match(settings, /<h2[^>]*>Premium XDevice<\/h2>/, "the card names its plan (N4)");
 });
 
-test("B1: device-console never fetches or renders a price on web — guard first, label fallback has no $", () => {
+test("B1: device-console carries no price at all — no fetch, no $ label, ticket CTA", () => {
   const dc = stripComments(read("components/device-console.tsx"));
 
+  assert.ok(!/\/api\/store\/prices/.test(dc), "the price fetch is gone entirely (TASK_192)");
+  assert.ok(!/\$\$\{priceUsd\}|Subscribe to Premium XDevice —/.test(dc), "no priced label");
   assert.match(
     dc,
-    /if \(!isWrapper\) return;[\s\S]{0,600}?\/api\/store\/prices/,
-    "the guard must PRECEDE the only price fetch on this surface",
-  );
-  assert.equal(
-    (dc.match(/\/api\/store\/prices/g) ?? []).length,
-    1,
-    "exactly one price fetch, behind that guard",
+    /const label = "Upgrade to Premium XDevice";/,
+    "ONE N4-safe label, no build branch",
   );
   assert.match(
     dc,
-    /const label = isWrapper\s*\? priceUsd !== null\s*\? `Subscribe to Premium XDevice — \$\$\{priceUsd\}`\s*: "Subscribe to Premium XDevice"\s*: "Upgrade to Premium XDevice";/,
-    "the web arm of the label carries NO amount (B1)",
+    /<SupportTicketButton\s+template="premium-xdevice"[\s\S]{0,200}?>\s*\{label\}\s*<\/SupportTicketButton>/,
+    "the lock's CTA is the ticket button on web AND wrapper (TASK_192)",
   );
 });
 
