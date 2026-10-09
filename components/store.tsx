@@ -125,7 +125,8 @@ export function Store({
                 apps sale a dropdown. so users can select which one and checkout
                 to payment"): pick an app → its card (price + Buy) renders below →
                 the existing crypto checkout modal. The server still sells every
-                product (/api/store/prices untouched — device-console reads it);
+                product (/api/store/prices untouched — device-console's reader
+                went away in TASK_192, the public catalog itself stays);
                 this page just no longer renders web/module cards. */}
             <div className="mt-10">
               <p className="text-xs font-semibold uppercase tracking-wider text-fg-muted">

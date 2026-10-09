@@ -92,3 +92,41 @@ touched files → then progress entry + commit via /tmp msg file.
 
 **Next:** commit S1 → S2 (billing page wrapper arms).
 
+
+### 2026-10-09 12:55 — S2 DONE: billing page loses every self-serve purchase flow
+
+**Code (`app/dashboard/billing/page.tsx`, 976→719 lines):**
+- `UpgradeFlow` (crypto checkout quote) and `SpendFlow` (balance activation)
+  DELETED — not gated: no build shows a quote or a price anymore.
+- No-payment branch: unconditional `<PremiumRequestCard product={requestProduct} />`
+  with `requestProduct = wrapperMode !== null ? "xdevice" : product` — the
+  WRAPPER IS PINNED to xdevice (owner: "they can only request for
+  premiumxdevice not premium plus"); web keeps ?product= (invoice mapping).
+- StatusCardView: `wrapper` ternary removed → rejected resubmit is always the
+  request card with `requestProduct`; dead `onResult` prop removed (call-site
+  too); labels stay truthful to the payment's own product.
+- `setSpendEpoch` bump moved into `handleResult` (WalletBalance still remounts
+  on results); orphaned `CheckoutInfo` type deleted; comments rewritten.
+- `components/store.tsx` comment: "device-console reads it" → reader gone
+  (TASK_192); public catalog route untouched.
+
+**Tests (`tests/premium-request-static.test.ts`):** the two billing B1 locks
+INVERTED per plan: (a) zero `UpgradeFlow|SpendFlow` identifiers in stripped
+source, zero `wrapperMode ?` ternaries, pin expression present, 2×
+PremiumRequestCard; (b) zero `/api/billing/checkout` on the page + invoice
+card/`store/prices` asserts kept (region end marker `SpendFlow`→`StatusCardView`);
+header bullet 3 rewritten.
+
+**Proofs:**
+- `npx tsc --noEmit` → `tsc:0`
+- `npx eslint app/dashboard/billing/page.tsx tests/…` → `eslint:0`
+  (fixed the 1 NEW warning the deletion created — orphaned `CheckoutInfo`)
+- `npm run test:premium-static` → `15/15` · `test:maintenance-cache` → `6/6`
+  · `npx tsx --test tests/premium-invoice.test.ts` → `34/34`
+  · `npm run test:xdevice` → `38/38` · `npm run test:devices` → fail 0
+- repo-wide grep: no live `billing?product` links, `UpgradeFlow|SpendFlow`,
+  or UI `store/prices` readers left (only the public route + store page itself).
+
+**Next:** commit S2 → S3 (any remaining wrapper-vs-web purchase surfaces,
+then full-suite gates) → deploy → closeout.
+

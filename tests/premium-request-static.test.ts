@@ -22,7 +22,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // TASK_184 B5 — the STATIC half of the web free-tier locks (N4, C3) plus the
-// B2 template contract and the B1 wrapper/price split.
+// B2 template contract and the B1 no-price-anywhere split (TASK_192).
 //
 // THE FAILURES THIS SUITE EXISTS TO PREVENT:
 //   1. N4 naming drift — a tier-5 ask going back to bare "Upgrade to Premium"
@@ -31,9 +31,10 @@ import {
 //      XDevice" — display-name only, TASK_181 server strings untouched).
 //   2. C3 — the web request card regressing into a tier-branched or price-
 //      rendering component, or losing its SupportTicketButton arm.
-//   3. B1 — a subscription amount/quote leaking onto a WEB surface outside
-//      `useWrapperMode()`'s wrapper branch (billing's UpgradeFlow/SpendFlow,
-//      settings' self-serve link, device-console's price fetch).
+//   3. B1 — a subscription amount/quote leaking onto ANY surface. TASK_192
+//      removed the wrapper's self-serve purchase split entirely: billing's
+//      UpgradeFlow/SpendFlow, settings' self-serve link and device-console's
+//      price fetch are all gone, and no build shows a price anymore.
 //   4. B2 — the ticket template slugs/categories/tiers drifting apart from
 //      what the invoice flow (B3) grants on.
 //
@@ -145,76 +146,63 @@ test("N4: planLabelForTier maps the tiers to the owner's names — tier 3 is nev
 });
 
 // ---------------------------------------------------------------------------
-// B1/C3 — BILLING: quotes live in the wrapper branch, the web gets the card
+// B1/C3 — BILLING: no quote surface on ANY build; the request card everywhere
+//      (TASK_192 deleted UpgradeFlow/SpendFlow — the old "wrapper ternaries
+//      plus gated SpendFlow" locks below are deliberately inverted)
 // ---------------------------------------------------------------------------
 
 const BILLING = "app/dashboard/billing/page.tsx";
 
-test("B1: billing's quote surfaces are exactly the two wrapper ternaries plus the gated SpendFlow", () => {
+test("B1: billing renders no self-serve quote surface on any build — request card everywhere", () => {
   const billing = stripComments(read(BILLING));
 
-  // No-payment branch: WRAPPER buys, WEB requests.
+  assert.ok(
+    !/UpgradeFlow|SpendFlow/.test(billing),
+    "the wrapper's self-serve buy/spend components are deleted, not just gated (TASK_192)",
+  );
+  assert.ok(!/wrapperMode \?/.test(billing), "no build ternary left between buy and request");
   assert.match(
     billing,
-    /wrapperMode \? \(\s*<UpgradeFlow onResult=\{handleResult\} product=\{product\} \/>\s*\) : \(\s*<PremiumRequestCard product=\{product\} \/>/,
-    "the main subscription branch must stay wrapperMode ? UpgradeFlow : PremiumRequestCard",
+    /const requestProduct = wrapperMode !== null \? "xdevice" : product;/,
+    "a wrapper request is pinned to xdevice — never premium-plus (owner rule)",
   );
-  // Rejected-payment branch: same split on resubmit.
   assert.match(
     billing,
-    /wrapper \? \(\s*<>\s*<h3[^>]*>Submit a new payment hash<\/h3>\s*<UpgradeFlow onResult=\{onResult\} product=\{product\} \/>[\s\S]{0,80}?\) : \(\s*<PremiumRequestCard product=\{product\} \/>/,
-    "the rejected-resubmit branch must stay wrapper ? UpgradeFlow : PremiumRequestCard",
+    /: !payment \? \(\s*<PremiumRequestCard product=\{requestProduct\} \/>\s*\)/,
+    "the no-payment branch is the request card on every build",
   );
-  // Balance-activation quote: gated on wrapper mode being active at all.
   assert.match(
     billing,
-    /payment !== undefined && wrapperMode !== null && \(\s*<SpendFlow/,
-    "SpendFlow fetches a server price — it may only render in the wrapper build",
-  );
-
-  assert.equal(
-    (billing.match(/<UpgradeFlow/g) ?? []).length,
-    2,
-    "exactly two UpgradeFlow renders, both inside the ternaries above",
+    /<PremiumRequestCard product=\{requestProduct\} \/>/,
+    "the request card renders with the pinned product",
   );
   assert.equal(
     (billing.match(/<PremiumRequestCard/g) ?? []).length,
     2,
-    "exactly two PremiumRequestCard renders, both on the web side of those ternaries",
+    "exactly two request-card renders: main branch + rejected resubmit",
   );
 });
 
-test("B1: every checkout quote lives in a wrapper-only component; the invoice card never prices anything", () => {
+test("B1: billing fetches no quote on any build; the invoice card never prices anything", () => {
   const billing = stripComments(read(BILLING));
 
-  assert.equal(
-    (billing.match(/\/api\/billing\/checkout/g) ?? []).length,
-    2,
-    "exactly two quote fetches exist",
-  );
-  assert.equal(
-    (region(billing, "function UpgradeFlow", "function PremiumRequestCard").match(/\/api\/billing\/checkout/g) ?? []).length,
-    1,
-    "quote fetch #1 belongs to UpgradeFlow (wrapper-only)",
-  );
-  assert.equal(
-    (region(billing, "function SpendFlow", null).match(/\/api\/billing\/checkout/g) ?? []).length,
-    1,
-    "quote fetch #2 belongs to SpendFlow (gated by wrapperMode !== null)",
+  assert.ok(
+    !/\/api\/billing\/checkout/.test(billing),
+    "the quote endpoint is unreachable from the page — checkout fetches lived in the deleted flows",
   );
   assert.equal(
     (region(billing, "function PremiumRequestCard", "function PremiumInvoiceCard").match(/\/api\/billing\/checkout/g) ?? []).length,
     0,
-    "the web request card fetches no price",
+    "the request card fetches no price",
   );
   assert.equal(
-    (region(billing, "function PremiumInvoiceCard", "function SpendFlow").match(/\/api\/billing\/checkout/g) ?? []).length,
+    (region(billing, "function PremiumInvoiceCard", "function StatusCardView").match(/\/api\/billing\/checkout/g) ?? []).length,
     0,
     "the invoice card renders the invoice's own amount — no quote endpoint",
   );
   assert.ok(
     !/\/api\/store\/prices/.test(billing),
-    "billing quotes from checkout only — store/prices is a different surface's concern",
+    "billing quotes nothing — store/prices is a different surface's concern (also gone, TASK_192)",
   );
 });
 

@@ -35,13 +35,6 @@ type PaymentInfo = {
   autoApproved: boolean;
 };
 
-type CheckoutInfo = {
-  kind: string;
-  toAddress: string;
-  amountUsd: number;
-  note: string;
-};
-
 const KIND_OPTIONS: Array<{ id: Kind; label: string }> = [
   { id: "btc", label: "Bitcoin" },
   { id: "usdt_trc20", label: "USDT (TRC-20)" },
@@ -79,14 +72,16 @@ function CopyButton({ value }: { value: string }) {
 export default function BillingPage() {
   const [payment, setPayment] = useState<PaymentInfo | null | undefined>(undefined);
   const [note, setNote] = useState<string | null>(null);
-  // PLAN_TASK_158 W5 — bumped after every spend so SpendFlow re-reads price +
-  // premium state and WalletBalance re-fetches. A key-change remount, not a
-  // prop thread: the spend result must never linger as a stale "active" line.
+  // PLAN_TASK_158 W5 — bumped when a payment/invoice result lands so
+  // WalletBalance re-fetches (key-change remount, not a prop thread: the spend
+  // result must never linger as a stale "active" line). TASK_192: the bump lives
+  // in handleResult — SpendFlow, the old site, is gone.
   const [spendEpoch, setSpendEpoch] = useState(0);
-  // TASK_181 P3 (step 30) — ?product=xdevice drives both purchase flows below
-  // (crypto checkout quote + wallet-spend body). Read AFTER mount: window does
-  // not exist during SSR, so web renders first and xdevice is adopted on
-  // hydration without a server/client mismatch.
+  // TASK_181 P3 (step 30) / TASK_192 — ?product=xdevice selects the request
+  // card's plan label (the wrapper pins it to xdevice regardless); it also feeds
+  // the invoice onPlan mapping below. Read AFTER mount: window does not exist
+  // during SSR, so web renders first and xdevice is adopted on hydration
+  // without a server/client mismatch.
   const [product, setProduct] = useState<"web_subscription" | "xdevice">("web_subscription");
   useEffect(() => {
     const p = new URLSearchParams(window.location.search).get("product");
@@ -124,6 +119,9 @@ export default function BillingPage() {
   }, []);
 
   function handleResult(p: PaymentInfo | null, resultNote?: string) {
+    // TASK_192 — SpendFlow (the old bump site) is gone; a payment/invoice result
+    // is now the moment the balance can change, so remount WalletBalance here.
+    setSpendEpoch((n) => n + 1);
     setPayment(p);
     setNote(resultNote ?? null);
   }
@@ -140,28 +138,30 @@ export default function BillingPage() {
   // wallet. Rendering it once here (rather than inside each branch) also keeps it
   // mounted while `payment` resolves, so an amount someone is already typing
   // isn't thrown away by the state transition.
-  // TASK_184 B1 — WEB shows no subscription quote: without a payment on record the
-  // card becomes the ticket-based request (the admin answers with an invoice at the
-  // plan's default price, editable before it is sent — B3/B4); with a payment on
-  // record the status/history card stays (history ≠ quote). The WRAPPER build is
-  // byte-identical to before — self-serve payment is the wrapper's purchase surface.
+  // TASK_184 B1 / TASK_192 — NEITHER build shows a subscription quote anymore:
+  // without a payment on record the card is the ticket-based request (the admin
+  // answers with an invoice at the plan's price, editable before it is sent —
+  // B3/B4); with a payment on record the status/history card stays (history ≠
+  // quote). TASK_192 removed the wrapper's self-serve UpgradeFlow/SpendFlow
+  // surfaces: the wrapper requests exactly like web does, and it can only
+  // request Premium XDevice — its one public agent — never Premium Plus
+  // (owner: "they can only request for premiumxdevice not premium plus … when
+  // they request I just send an invoice … just the way it is on the web").
   const wrapperMode = useWrapperMode();
+  // TASK_192 — a wrapper request is pinned to xdevice no matter what ?product=
+  // says; the web keeps the query-param product (invoice plan mapping included).
+  const requestProduct = wrapperMode !== null ? "xdevice" : product;
   const subscription =
     payment === undefined ? (
       <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">Loading…</p>
     ) : !payment ? (
-      wrapperMode ? (
-        <UpgradeFlow onResult={handleResult} product={product} />
-      ) : (
-        <PremiumRequestCard product={product} />
-      )
+      <PremiumRequestCard product={requestProduct} />
     ) : (
       <StatusCardView
         payment={payment}
         note={note}
-        onResult={handleResult}
         product={product}
-        wrapper={wrapperMode !== null}
+        requestProduct={requestProduct}
       />
     );
 
@@ -170,23 +170,13 @@ export default function BillingPage() {
       <h1 className="text-2xl font-semibold tracking-tight">Billing</h1>
       <WalletBalance key={spendEpoch} />
       {/* TASK_184 B4 — an invoice is admin-sent and may target any account, so it
-          renders right after the balance on EVERY branch (both modes). It sits
-          above the wrapper's Spend/Subscribe surfaces, which stay untouched. */}
+          renders right after the balance on EVERY branch (both modes), above the
+          request/status cards. */}
       {invoice && (
         <PremiumInvoiceCard
           invoice={invoice}
           onResult={handleResult}
           onPlan={(plan) => setProduct(plan === "premium_xdevice" ? "xdevice" : "web_subscription")}
-        />
-      )}
-      {/* TASK_184 B1 — "Activate with balance" is a self-serve purchase with a
-          server-computed price: wrapper build only. On web the subscription surface
-          is the ticket request below. */}
-      {payment !== undefined && wrapperMode !== null && (
-        <SpendFlow
-          key={`${spendEpoch}-${product}`}
-          onSpent={() => setSpendEpoch((n) => n + 1)}
-          product={product}
         />
       )}
       <TopUpFlow />
@@ -195,8 +185,10 @@ export default function BillingPage() {
   );
 }
 
-// PLAN_TASK_167 W4 §4a — the ONE copy-address / submit-hash block, shared by the
-// subscription checkout and the wallet top-up. The plan forbids a second copy of
+// PLAN_TASK_167 W4 §4a / TASK_192 — the ONE copy-address / submit-hash block,
+// shared by the wallet top-up and the premium invoice card (the subscription
+// checkout that used to share it is gone — the wrapper requests via ticket now).
+// The plan forbids a second copy of
 // this component, and the reason is concrete: two copies means the hash rules
 // (trimmed, non-empty, submitted with the order it belongs to) drift apart, and
 // whichever copy falls behind stops checking. Everything chain-specific arrives
@@ -298,119 +290,6 @@ function PaymentInstructions({
       </div>
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-    </div>
-  );
-}
-
-function UpgradeFlow({
-  onResult,
-  product,
-}: {
-  onResult: (p: PaymentInfo | null, note?: string) => void;
-  // TASK_181 P3 (step 30) — "xdevice" quotes/charges xdevicePriceUsd and lands
-  // a tier-3 term; "web_subscription" behaves exactly as before.
-  product: "web_subscription" | "xdevice";
-}) {
-  const [kind, setKind] = useState<Kind>("btc");
-  const [checkout, setCheckout] = useState<CheckoutInfo | null>(null);
-  const [loadingInfo, setLoadingInfo] = useState(false);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- resets the previous quote when kind/product change; the fetch below is async (pre-existing pattern, rule flagged on HEAD too)
-    setCheckout(null);
-    setError("");
-    setLoadingInfo(true);
-    (async () => {
-      const res = await fetch(`/api/billing/checkout?kind=${kind}&product=${product}`, { cache: "no-store" });
-      const data = await res.json().catch(() => ({}));
-      if (!cancelled) {
-        setLoadingInfo(false);
-        if (res.ok) setCheckout(data);
-        else setError(typeof data.error === "string" ? data.error : "Failed to load payment info");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [kind, product]);
-
-  // Delegated to PaymentInstructions as its `onSubmitHash`: the shared block owns
-  // the input and the submitting state; this owns what the hash MEANS for a
-  // subscription — POST it to /api/billing/submit, then re-read the status and
-  // hand the page the row it should render. Returned string = error to show.
-  async function submitHash(hash: string): Promise<string | null> {
-    const res = await fetch("/api/billing/submit", {
-      method: "POST",
-      body: JSON.stringify({ kind, txHash: hash, product }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return typeof data.error === "string" ? data.error : "Submission failed";
-    }
-    const statusRes = await fetch("/api/billing/status", { cache: "no-store" });
-    const statusData = await statusRes.json().catch(() => ({}));
-    if (statusRes.ok) {
-      onResult(statusData.status === null ? null : statusData, data.note);
-    }
-    return null;
-  }
-
-  return (
-    <div className="mt-6">
-      <div className="max-w-2xl rounded-xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <h2 className="text-xl font-semibold tracking-tight">
-          {/* TASK_181 P3 (step 30) — owner wording for the wrapper premium:
-              "Subscribe to Premium" + the admin-set price. NO term/duration
-              copy, ever (owner: "never show it on ui how long the premium is
-              for"). */}
-          {product === "xdevice" ? "Subscribe to Premium XDevice" : "Upgrade to Premium Plus"}
-        </h2>
-        <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          {product === "xdevice"
-            ? "Terminal, remote control, browser clones and screen monitoring — premium tools on devices you own."
-            : "Premium Plus gives your jobs higher queue priority."}
-          {checkout
-            ? product === "xdevice"
-              ? ` $${checkout.amountUsd.toFixed(2)}.`
-              : ` $${checkout.amountUsd.toFixed(2)} / month.`
-            : ""}
-        </p>
-
-        <div className="mt-5 flex gap-2">
-          {KIND_OPTIONS.map((opt) => (
-            <button
-              key={opt.id}
-              onClick={() => setKind(opt.id)}
-              className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-                kind === opt.id
-                  ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
-                  : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
-              }`}
-            >
-              {opt.label}
-            </button>
-          ))}
-        </div>
-
-        {loadingInfo && (
-          <p className="mt-5 text-sm text-zinc-500 dark:text-zinc-400">Loading payment details…</p>
-        )}
-
-        {checkout && (
-          <PaymentInstructions
-            kind={kind}
-            toAddress={checkout.toAddress}
-            amountUsd={checkout.amountUsd}
-            submitLabel="Submit Payment"
-            onSubmitHash={submitHash}
-            hashOptional
-          />
-        )}
-
-        {error && <p className="mt-4 text-sm text-red-600 dark:text-red-400">{error}</p>}
-      </div>
     </div>
   );
 }
@@ -746,20 +625,18 @@ function PremiumInvoiceCard({
 function StatusCardView({
   payment,
   note,
-  onResult,
   product,
-  wrapper,
+  requestProduct,
 }: {
   payment: PaymentInfo;
   note: string | null;
-  onResult: (p: PaymentInfo | null, n?: string) => void;
-  // TASK_181 P3 — the rejected-payment resubmit must re-quote the SAME product
-  // the original payment was for (web vs xdevice), not silently fall back.
+  // TASK_181 P3 — labels/amount stay truthful to the product the payment was
+  // for (web vs xdevice), not a silent fallback.
   product: "web_subscription" | "xdevice";
-  // TASK_184 B1 — `wrapper` decides the resubmit surface below: the wrapper keeps
-  // its self-serve re-quote flow; on web a rejected payment's resubmit becomes the
-  // ticket request (no quote is rendered outside the wrapper).
-  wrapper: boolean;
+  // TASK_192 — the rejected-payment resubmit is the request card on EVERY build
+  // (the wrapper's self-serve UpgradeFlow is gone), pinned to the product the
+  // caller may request: xdevice on the wrapper, query-product on web.
+  requestProduct: "web_subscription" | "xdevice";
 }) {
   const labels: Record<string, { badge: string; text: string }> = {
     approved: {
@@ -827,159 +704,11 @@ function StatusCardView({
 
       {payment.status === "rejected" && (
         <div className="mt-8 border-t border-zinc-200 pt-6 dark:border-zinc-800">
-          {wrapper ? (
-            <>
-              <h3 className="text-lg font-semibold tracking-tight">Submit a new payment hash</h3>
-              <UpgradeFlow onResult={onResult} product={product} />
-            </>
-          ) : (
-            <PremiumRequestCard product={product} />
-          )}
+          {/* TASK_192 — resubmit = the request card on every build (no
+              self-serve re-quote anywhere anymore). */}
+          <PremiumRequestCard product={requestProduct} />
         </div>
       )}
     </div>
-  );
-}
-
-// PLAN_TASK_158 W5 — "Activate with balance". Reads the spend price + premium
-// state, then POSTs { product } — web_subscription (W5) or xdevice
-// (TASK_181 P3 step 30). No amount, no userId: the price is server-computed
-// from the same AdminSetting field as checkout, and the user comes from the
-// session. After a success the parent remounts (balance refresh) via onSpent.
-function SpendFlow({ onSpent, product }: { onSpent: () => void; product: "web_subscription" | "xdevice" }) {
-  const [state, setState] = useState<
-    | { kind: "loading" }
-    | { kind: "ready"; priceUsd: number; balanceCents: number; premiumActive: boolean }
-    | { kind: "error"; message: string }
-  >({ kind: "loading" });
-  const [spending, setSpending] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        // Price from the SAME source the spend route charges: the checkout
-        // quote for this product (AdminSetting.webSubscriptionPriceUsd /
-        // xdevicePriceUsd). No second constant anywhere — display and charge
-        // read one field.
-        const [walletRes, quoteRes] = await Promise.all([
-          fetch("/api/wallet", { cache: "no-store" }),
-          fetch(`/api/billing/checkout?kind=usdt_trc20&product=${product}`, { cache: "no-store" }),
-        ]);
-        if (!quoteRes.ok) throw new Error(`price lookup failed (${quoteRes.status})`);
-        const qd = (await quoteRes.json()) as { amountUsd?: unknown };
-        if (typeof qd.amountUsd !== "number" || !Number.isFinite(qd.amountUsd)) throw new Error("price lookup failed");
-        let balanceCents = 0;
-        if (walletRes.ok) {
-          const wd = (await walletRes.json()) as { wallet?: { balanceCents?: unknown } };
-          if (typeof wd.wallet?.balanceCents === "number") balanceCents = wd.wallet.balanceCents;
-        }
-        let premiumActive = false;
-        if (product === "xdevice") {
-          // The XDevice term is an ENTITLEMENT state, not a web-payment row: a
-          // live tier-3 term or a devices grant shows as `devices`, full
-          // Premium as `premium` — either already covers the device tools, so
-          // the spend would be refused server-side with already_active anyway.
-          const ent = await fetch("/api/entitlements", { cache: "no-store" });
-          if (ent.ok) {
-            const ed = (await ent.json()) as { premium?: unknown; keys?: unknown };
-            premiumActive =
-              ed.premium === true || (Array.isArray(ed.keys) && ed.keys.includes("devices"));
-          }
-        } else {
-          const st = await fetch("/api/billing/status", { cache: "no-store" });
-          if (st.ok) {
-            const sd = (await st.json()) as { status?: { status?: unknown } | null };
-            premiumActive = !!sd.status && (sd.status as { status?: unknown }).status === "approved";
-          }
-        }
-        setState({ kind: "ready", priceUsd: qd.amountUsd, balanceCents, premiumActive });
-      } catch {
-        setState({ kind: "error", message: "Could not load the subscription price. Try again shortly." });
-      }
-    })();
-  }, [product]);
-
-  async function spend() {
-    setSpending(true);
-    setResult(null);
-    try {
-      const res = await fetch("/api/wallet/spend", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ product }),
-      });
-      const data = (await res.json().catch(() => ({}))) as { error?: unknown; code?: unknown; premiumExpiresAt?: unknown };
-      if (!res.ok) {
-        const message = typeof data.error === "string" ? data.error : `Spend failed (${res.status})`;
-        setResult({ ok: false, message });
-        return;
-      }
-      const expiry = typeof data.premiumExpiresAt === "string" ? data.premiumExpiresAt : null;
-      setResult({
-        ok: true,
-        // xdevice: NEVER a date or a term length (owner: "never show it on ui
-        // how long the premium is for"). Web copy unchanged.
-        message:
-          product === "xdevice"
-            ? "Premium XDevice activated."
-            : expiry
-              ? `Premium Plus active until ${new Date(expiry).toLocaleDateString()}.`
-              : "Premium Plus activated for 30 days.",
-      });
-      onSpent();
-    } catch {
-      setResult({ ok: false, message: "Spend failed. Try again shortly." });
-    } finally {
-      setSpending(false);
-    }
-  }
-
-  if (state.kind === "loading") return null;
-  if (state.kind === "error") {
-    return (
-      <section aria-label="Activate with balance" className="mb-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <p className="text-sm text-zinc-500 dark:text-zinc-400">{state.message}</p>
-      </section>
-    );
-  }
-
-  const priceCents = Math.ceil(state.priceUsd * 100);
-  const affordable = state.balanceCents >= priceCents;
-  const money = `$${(priceCents / 100).toFixed(2)}`;
-
-  return (
-    <section aria-label="Activate with balance" className="mb-6 rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-      <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">Activate with balance</h2>
-      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-        {state.premiumActive
-          ? product === "xdevice"
-            ? "Premium XDevice is already active on this account — no charge was made."
-            : "Premium Plus is already active on this account — no charge was made."
-          : product === "xdevice"
-            ? `Subscribe to Premium XDevice for ${money} from your wallet balance.`
-            : `One month of Premium Plus for ${money} from your wallet balance.`}
-      </p>
-      {!state.premiumActive && (
-        <button
-          onClick={() => void spend()}
-          disabled={spending || !affordable}
-          className="mt-3 rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-50 dark:text-zinc-900 dark:hover:bg-zinc-300"
-        >
-          {spending
-            ? "Activating…"
-            : affordable
-              ? product === "xdevice"
-                ? `Subscribe — ${money}`
-                : `Activate Premium Plus — ${money}`
-              : `Insufficient balance (need ${money})`}
-        </button>
-      )}
-      {result && (
-        <p className={`mt-3 text-sm ${result.ok ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
-          {result.message}
-        </p>
-      )}
-    </section>
   );
 }
