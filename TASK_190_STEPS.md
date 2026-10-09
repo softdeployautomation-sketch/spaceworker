@@ -356,3 +356,219 @@ then full `npm run test`.
 - [ ] Deploy: migrate deploy → build → restart → PROMPT_VERIFY_TASK_190.md live
       pass → commit+push per slice
 
+
+### PROGRESS — slice ② STARTED (resume after context compaction), 2026-10-09
+- **Resume state verified:** HEAD `d585149` (handoff docs on top of slice-①
+  `e8043fc`); tree clean except stray `TASK_133_RMM_ENGINE_BRINGUP.md`
+  (untracked, NEVER commit). Read HOW_WE_MOVE_FAST (whole), this file (whole),
+  PROMPT_VERIFY_TASK_190 (whole), PROMPT_CONTINUE_TASK_190 (whole), plus:
+  components/admin/devices-tab.tsx (all 1319 ln), lib/admin-devices.ts (all),
+  tests/admin-devices-secret.test.ts (all — the pattern to clone),
+  app/api/admin/devices/[deviceId]/restore/route.ts (route pattern),
+  lib/devices.ts recordAgentActionAudit, lib/device-screenshots.ts
+  resolveScreenshotSettings, prisma/schema.prisma Device/DeviceScreenshot/
+  AdminSetting blocks, app/api/admin/screenshots/route.ts (AdminSetting
+  read pattern), app/api/settings/screen-notifications/route.ts (owner-land
+  contract to NOT break).
+- **Ground-truth confirmed in code:** the row's "Remote control" button
+  (~line 622-629) IS the silent viewer (`openRemote` → AdminRemoteViewer) —
+  NOT a console deep link; `assertAdminDeviceAccess` does NOT exist yet
+  (must be ADDED to lib/admin-devices.ts + reused by both new routes);
+  deleted-view rows share the trailing <td> with active rows today and must
+  stay unchanged (no dropdown there).
+- **SLICE-② DECISIONS (deviations recorded before coding):**
+  1. Audit action names: `screen_monitor_toggle` + `admin_notify_toggle`
+     (TASK_190_STEPS S2 + PROMPT_VERIFY §1.5 agree; PROMPT_CONTINUE's
+     `admin_screen_monitor` is the outlier — losing vote).
+  2. Soft-deleted device on GET/PATCH screen-monitor ⇒ **404** deep
+     ("Device not found."), NOT 400 "recover it first" — ground truth §1
+     line 171-172 + PROMPT_VERIFY §1.6 + the test spec all say 404.
+  3. PATCH body = `{enabled?, adminNotifyEnabled?}` (at least one required,
+     each boolean): the Notify-admin toggle must work live (PROMPT_VERIFY
+     §1.4/§2.3) and the Device columns already exist (slice ①). One audit
+     row per changed switch.
+  4. Cadence/retention read stays in the ROUTE (prisma.adminSetting +
+     resolveScreenshotSettings) — keeps lib/admin-devices.ts import graph
+     untouched so test:admin-devices stays green without stub changes.
+- **PLAN for slice ②:** lib get/set/assert helpers →
+  app/api/admin/devices/[deviceId]/screen-monitor/route.ts (GET+PATCH) →
+  devices-tab.tsx Actions ▾ fixed-position popover (Esc+outside-click close)
+
+### PROGRESS — slice ② lib+route DONE, UI/research complete — 2026-10-09 (2nd compaction)
+- **Proof of state:** `git status --short` → `M TASK_190_STEPS.md`, `M lib/admin-devices.ts`,
+  `?? app/api/admin/devices/[deviceId]/screen-monitor/` (route.ts 5625 B), untracked
+  stray `TASK_133_RMM_ENGINE_BRINGUP.md` (NEVER commit). HEAD still `d585149`.
+- **`lib/admin-devices.ts` added (verified by grep):** `assertAdminDeviceAccess` (line 260 —
+  findUnique incl. `removedAt` + owner select; unknown OR soft-deleted ⇒ throw
+  `device_not_found`), `AdminScreenMonitorView` type, `getAdminScreenMonitor` (line 300 —
+  guard + device switches + newest `status:"captured"` frame via
+  `deviceScreenshot.findFirst orderBy capturedAt desc`, ISO strings), `setAdminScreenMonitor`
+  (line 356/369 — builds `data` from ONLY the passed keys, throws `nothing_to_update` when
+  neither passed; owner trigger/digest columns unreachable by construction).
+- **Route created:** `app/api/admin/devices/[deviceId]/screen-monitor/route.ts` — GET + PATCH,
+  each self-asserts `getAdminSession()` (403), zod `patchSchema` `{enabled?, adminNotifyEnabled?}`
+  `.refine` at least one (else 400 "Nothing to update"), `libError` maps `device_not_found`→404 /
+  `nothing_to_update`→400, GET reads AdminSetting singleton via `prisma.adminSetting.upsert`
+  + `resolveScreenshotSettings` (cadence/retention read-only), PATCH writes one
+  `recordAgentActionAudit` per passed switch: actions `screen_monitor_toggle` /
+  `admin_notify_toggle`, `approvalChannel:"admin"`, `initiatingChannel:"api"`, owner's userId,
+  `sourceDeviceId`, detail `{name, <switch>: value}`.
+- **GROUND-TRUTH re-verified this session (commands → findings):**
+  1. `find app/admin=topsecret6199/device` → ONLY literal `101/host.tsx,101/page.tsx`.
+     **No dynamic `[deviceId]` route exists**, no next.config rewrite, no proxy rewrite ⇒
+     `window.open("/admin=topsecret6199/device/"+device.id)` (steps line 79 + PROMPT_CONTINUE
+     line 58 — the ground-truth-correction wording) would **404 today**.
+     DECISION: implement that URL AND add
+     `app/admin=topsecret6199/device/[deviceId]/page.tsx` (same getAdminSession guard +
+     `SecretDevicesHost`, direct render ⇒ 200, no redirect) so PROMPT_VERIFY §1.3
+     "`device/101`-style deep link, 200" passes for BOTH the static `101` and `{id}` URLs.
+     The literal `101` route stays untouched (static wins over dynamic in Next).
+  2. Secrecy static test (tests/admin-devices-secret.test.ts:426-454) checks substring
+     `"admin/device/101"` (OLD format) + dashboard files containing `topsecret6199` + admin-panel.tsx.
+     My new strings (`/admin=topsecret6199/device/` + id in devices-tab.tsx, the new
+     `[deviceId]` page) do NOT trip any of the three. Verified by inspection against the
+     exact walk code. (The old button's silent-viewer behaviour is unrelated to any URL.)
+  3. PROMPT_VERIFY §1.5 requires audit kind **`screen_monitor_toggle`** → reconfirms decision 1
+     (PROMPT_CONTINUE's `admin_screen_monitor` is the outlier). §1.6: soft-deleted ⇒ **404**
+     (reconfirms decision 2; PROMPT_CONTINUE's "400 recover it first" is the outlier).
+     §1.4 requires the **Notify-admin toggle** live in the panel → reconfirms decision 3.
+  4. Admin header is `sticky z-40` (admin-shell.tsx:36) ⇒ popover/panel must be **z-50** and
+     the table wrapper clips absolute menus ⇒ use **`position: fixed` popover** anchored to
+     `getBoundingClientRect` (steps line 181-183 explicitly allow this).
+  5. Restore route (…/restore/route.ts) is the exact pattern cloned: async
+     `{ params }: { params: Promise<{ deviceId: string }> }`, await params, `code ===` catch
+     mapping, audit-after-write. My route follows it line-for-line in structure.
+  6. Test harness to clone (tests/admin-devices-secret.test.ts:1-171): fakeNextResponse,
+     fakeDb with `calls` recorders, `Module._load` patch (request-in-overrides FIRST, then
+     `server-only`, `next/server`, then `/lib/admin-devices.ts` relative deps), `loadFresh`,
+     `adminValue` toggle for 403. Route deps to override in MY tests: `@/lib/admin-auth`,
+     `@/lib/devices` (audit recorder), `@/lib/prisma` (adminSetting.upsert fake),
+     `@/lib/device-screenshots` (resolveScreenshotSettings fake) — real
+     `lib/admin-devices.ts` runs against fakeDb (needs `deviceScreenshot.findFirst` +
+     select-shaped `device.findUnique` added to the fake).
+- **Remaining slice-② work:** devices-tab.tsx (state `actionsMenu {id,x,y}`, document
+  click+Escape close, active-view-only Actions ▾ replacing Remote control at lines 620-629,
+  Command button unchanged, deleted view byte-unchanged, monitor `<tr>` below row colSpan=8),
+  new `components/admin/screen-monitor-panel.tsx` (GET on mount; Monitoring toggle, cadence
+  + retention read-only, Latest summary w/ "no summary yet = NORMAL" copy, Notify-admin
+  toggle; PATCHes both switches), `[deviceId]/page.tsx`, `tests/admin-screen-monitor.test.ts`
+  (403 both routes; GET deep-404 unknown+removed; PATCH garbage→400; PATCH writes ONLY the
+  1-2 switch keys, never owner trigger/digest; audit rows both kinds; GET shape incl.
+  captureIntervalMinutes/retentionDays/latestFrame; static: 3 menu items, deleted view has
+  no dropdown, no OLD `admin/device/101` link), package.json `test:admin-monitor` →
+  gates (tsc, eslint touched, test:admin-monitor, test:admin-devices) → commit+push ②.
+
+
+### PROGRESS — slice ② research COMPLETE (3rd compaction), 2026-10-09 (3)
+- **State re-verified after compaction:** HEAD unchanged; `app/api/admin/devices/[deviceId]/screen-monitor/route.ts`
+  (153 ln: GET/PATCH, zod refine, libError→404/400, audits `screen_monitor_toggle` +
+  `admin_notify_toggle`) and lib helpers (assert/get/set, lines 231-395) both intact —
+  full file reads done, no re-work needed. `TASK_190_STEPS.md` tail cleaned (orphan
+  fragment from the previous insert removed; ends line 459).
+- **Spec re-reads this session (conflicts resolved → decisions STAND):**
+  - PROMPT_CONTINUE slice-② verbatim: THREE dropdown items (`Remote control` →
+    `openRemote` + `remoteBusy`, `Screen monitor…` → inline `<tr>` panel, `Open console` →
+    `window.open("/admin=topsecret6199/device/" + device.id)`), close on document click.
+  - PROMPT_VERIFY §1.2 lists only `Open console` + `Screen monitor…` — abbreviated (it omits
+    the pre-existing Remote control); **3 items** stands (TASK_190_STEPS ground-truth
+    correction + dropping Remote control would REMOVE the silent viewer entirely since its
+    button is being replaced). §1.2 also adds LIVE requirements: **Esc AND outside-click
+    close, row height unchanged, menu NOT clipped**; §1.4 panel content = Monitoring toggle,
+    cadence+retention read-only, Latest summary (normal "no summary yet" copy, NEVER error),
+    Notify-admin toggle; §1.3 target "…/device/101-style deep link, 200 (or the documented
+    guard)" — resolves in favour of steps-correction `+ device.id` + NEW dynamic page
+    (decision 1 in the entry above; `+ device.id` is what BOTH implementation docs code
+    verbatim; PROMPT_VERIFY header defers: "Scope + ground truth: TASK_190_STEPS.md";
+    static `101` route stays → literal curl of `…/device/101` also stays 200).
+  - Deleted-view note: TASK_188_STEPS S3c confirms deleted rows DELIBERATELY keep
+    Remote control + run-command + checkbox ("tools work on soft-deleted ids") — so
+    "unchanged" (both docs) = keep the plain Remote control button on deleted rows;
+    the shared trailing `<td>` (devices-tab :620-637) becomes `view === "active" ?
+    Actions ▾ : <existing Remote control button>` with Command unchanged for both.
+- **Secrecy static-test walk fully read (tests/admin-devices-secret.test.ts:426-454):**
+  trip-wire = literal `admin/device/101` (old format) in non-route files + `topsecret6199`
+  in `app/dashboard/**` + `topsecret6199` in `admin-panel.tsx` only. My strings
+  (`/admin=topsecret6199/device/` in devices-tab, `../101/host` import in the new
+  `[deviceId]/page.tsx`) trip NONE — but the new page must NEVER contain the literal
+  `admin/device/101` (e.g. no comment naming it). Only `admin-devices-secret.test.ts`
+  references `device/101`; `module-route-gate` clean → new sibling route breaks no test.
+- **Test harness fully re-read (lines 1-454):** clone recipe for
+  `tests/admin-screen-monitor.test.ts` = fakeNextResponse + Module._load patch
+  (overrides-first → `server-only` → `next/server` → `/lib/admin-devices.ts` relative deps)
+  + loadFresh + `adminValue` toggle. MY route additionally needs overrides for
+  `@/lib/admin-auth`, `@/lib/devices` (audit recorder), `@/lib/prisma`
+  (`adminSetting.upsert` fake), `@/lib/device-screenshots` (`resolveScreenshotSettings`
+  fake); real `lib/admin-devices.ts` runs against fakeDb → fakeDb must gain
+  `deviceScreenshot.findFirst`, select-shaped `device.findUnique` (guard select:
+  id/name/removedAt/user{id,email} · switches select: the 4 switch cols + tier), and
+  `device.update` recorder (assert `data` contains ONLY the passed keys).
+- **Gate-name corrections:** (a) verify pre-flight names suites `admin-notify`,
+  `admin-screen-monitor`, `user-presence`, `admin-users-presence` — so package.json script
+  = **`test:admin-screen-monitor`** (supersedes the `test:admin-monitor` shorthand in the
+  entry above) + a bare-name alias (`admin-screen-monitor`) so BOTH doc readings run;
+  same alias treatment planned for slice ③/④ suites. (b) **package.json has NO `test`
+  script** (`scripts.test` = undefined) → the docs' "full `npm run test`" would error;
+  plan: run `npx tsx --test tests/*.test.ts` as the real full-suite gate; if green, ADD
+  `"test": "tsx --test tests/*.test.ts"` so both docs' command works (evidence first).
+- **Build-log gate provenance checked:** local `.next` is STALE (pre-TASK_188 — contains
+  old `admin/*` routes, zero `topsecret6199` in any `.json`); TASK_188_STEPS has NO
+  build-log grep (only stale-`validator.ts` removal, S6); live gate per PROMPT_VERIFY
+  header = "`/admin` and friends 404, zero redirects/leaks, re-run at end". The
+  TASK_190_STEPS §4 wording stays OPEN until slice ⑤ — will grep the VPS build log for
+  RETIRED strings (`admin/device/101`, `"/admin/`) and record what manifests show before
+  claiming either way (house rule: never claim a gate I didn't run).
+- **NEXT ACTIONS (slice ②, in order):** 1) `app/admin=topsecret6199/device/[deviceId]/page.tsx`
+  (server, force-dynamic, own getAdminSession→redirect, renders `../101/host`'s
+  SecretDevicesHost, no `admin/device/101` literal) · 2) package.json 2 script lines ·
+  3) `components/admin/screen-monitor-panel.tsx` (GET on mount → Monitoring toggle /
+  cadence+retention read-only / Latest summary w/ normal copy / Notify-admin toggle,
+  PATCH per flip, Esc/close) · 4) devices-tab.tsx: `actions {id,x,y}` + `monitorId` state,
+  document click+Escape effect, shared-td conditional (active ▾ / deleted Remote control),
+  fixed z-50 popover from getBoundingClientRect (header is z-40), monitor `<tr colSpan={8}>`
+  below row · 5) `tests/admin-screen-monitor.test.ts` (routes 403/404/400 + lib data-key
+  audit + GET shape + static: 3 items / active-only dropdown / no old literal) ·
+  6) gates (tsc, eslint touched, test:admin-screen-monitor, test:admin-devices) →
+  PROGRESS entry → commit+push ② (msg via /tmp file + `git commit -F`).
+
+### PROGRESS — slice ② COMPLETE, all gates GREEN, 2026-10-09 (4)
+- **Shipped (files):** `app/api/admin/devices/[deviceId]/screen-monitor/route.ts` (153 ln)
+  + `lib/admin-devices.ts` helpers (lines 231-395) from slice-② part 1 ·
+  `components/admin/devices-tab.tsx` (5 edits: `type MouseEvent` + panel import;
+  `actions {id,right,top}` + `monitorId` state + outside-click/Escape effect +
+  `toggleActions` flip-up positioning; `load()` now resets both; shared trailing
+  td → `view === "active" ? Actions ▾ : <plain Remote control>` with Command
+  unchanged; fixed z-50 3-item popover; monitor `<tr colSpan={8}>` below row,
+  active-gated) · `components/admin/screen-monitor-panel.tsx` (GET on mount;
+  Monitoring/Notify-admin one-key PATCHes; cadence+retention read-only from
+  `resolveScreenshotSettings`; "No summary yet — normal…" in neutral zinc) ·
+  `app/admin=topsecret6199/device/[deviceId]/page.tsx` (own getAdminSession →
+  redirect; renders `../101/host`'s SecretDevicesHost; static `101` keeps route
+  precedence so its literal URL is unchanged) · `package.json`
+  (`test:admin-screen-monitor` + bare alias `admin-screen-monitor`) ·
+  `tests/admin-screen-monitor.test.ts` (534 ln, 13 tests).
+- **Gate proof (all run, outputs pasted above):**
+  - `npm run test:admin-screen-monitor` → **13/13 pass, 0 fail** (final run).
+    Two iterations fixed during red: deep-404 test forgot to `seedDevice()` the
+    live row before asserting its 200; static test anchored on the FIRST
+    `{view === "active" ? (` (an earlier cell also branches on view) → now
+    `lastIndexOf(..., trigger)` + first `) : (` after the trigger.
+  - `npm run test:admin-devices` → **13/13 pass, 0 fail** (secrecy suite intact;
+    my files trip no walk).
+  - `npx tsc --noEmit` → **exit 0** (baseline was also 0).
+  - `npx eslint` on all 6 touched files → **✖ 2 problems, both the pre-existing
+    `react-hooks/set-state-in-effect` at `void load()` / `void loadPins()`** —
+    identical rule + call sites as the baseline captured BEFORE edits (line
+    shift only); panel/page/test/lib/route contribute 0.
+- **Environment facts (checked, not assumed):** zod = 3.25.76 → route's
+  `e.errors[0]?.message` valid; tsx resolves `@/…` tsconfig paths natively
+  (`alias-ok: …/lib/admin-devices.ts`), so the test loads the REAL lib through
+  the alias while faking only `@/lib/{admin-auth,devices,device-screenshots,prisma}`.
+- **Verify-readiness notes for ③/④:** `package.json` still has NO `test`
+  script — full-suite gate = `npx tsx --test tests/*.test.ts` (add the script
+  only if that run is green; evidence first). Next suites to create:
+  `test:admin-notify`, `test:user-presence`, `test:admin-users-presence`
+  (+ bare aliases, same pattern).
+- **Commit:** msg file `/tmp/t190-slice2-msg.txt` written with editor →
+  `git commit -F` (never heredoc); staged explicitly (never
+  `TASK_133_RMM_ENGINE_BRINGUP.md`).
+

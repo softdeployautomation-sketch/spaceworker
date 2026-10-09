@@ -1,7 +1,8 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState, type MouseEvent } from "react";
 
+import { ScreenMonitorPanel } from "@/components/admin/screen-monitor-panel";
 import { useConfirm } from "@/components/confirm-provider";
 import { copyToClipboard } from "@/lib/clipboard";
 
@@ -192,6 +193,55 @@ export function DevicesTab({
   const [remote, setRemote] = useState<AdminRemoteSession | null>(null);
   const [remoteBusy, setRemoteBusy] = useState("");
   const [remoteErr, setRemoteErr] = useState("");
+  // TASK_190 S1/S2 — the row's Actions dropdown (a FIXED popover: the table
+  // wrapper's overflow-x-auto would clip an absolute menu, and the sticky
+  // admin header is z-40, so the menu sits at z-50) and the per-device Screen
+  // monitor panel, which renders as its own row below the device's.
+  const [actions, setActions] = useState<{ id: string; right: number; top: number } | null>(
+    null,
+  );
+  const [monitorId, setMonitorId] = useState<string | null>(null);
+
+  // TASK_190 S1 — the dropdown closes on ANY outside click and on Escape.
+  // Listeners exist only while a menu is open; clicks inside the menu never
+  // reach them (the menu stops propagation) — its items close it themselves.
+  useEffect(() => {
+    if (!actions) return;
+    const close = () => setActions(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setActions(null);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("click", close);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [actions]);
+
+  // TASK_190 S1 — open/toggle the dropdown on the button's screen position.
+  // stopPropagation keeps the document closer above from stomping the very
+  // click that opens it (switching rows would flash-open then instantly
+  // close). The menu height is fixed so it flips above a button near the
+  // viewport floor instead of being clipped.
+  function toggleActions(e: MouseEvent<HTMLButtonElement>, deviceId: string) {
+    e.stopPropagation();
+    if (actions?.id === deviceId) {
+      setActions(null);
+      return;
+    }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const menuHeight = 164;
+    const below = rect.bottom + 4;
+    setActions({
+      id: deviceId,
+      right: Math.max(8, window.innerWidth - rect.right),
+      top:
+        below + menuHeight > window.innerHeight
+          ? Math.max(8, rect.top - menuHeight - 4)
+          : below,
+    });
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -200,6 +250,10 @@ export function DevicesTab({
     // the admin can no longer see into the next bulk run — drop it with the list.
     setSelected([]);
     setExpandedId(null);
+    // TASK_190 — an open dropdown/panel must not outlive the list it was
+    // opened from (same reasoning as the selection reset above).
+    setActions(null);
+    setMonitorId(null);
     try {
       const res =
         view === "deleted"
@@ -617,16 +671,35 @@ export function DevicesTab({
                         </td>
                       </>
                     )}
+                    {/* TASK_190 S1 — on the active view the row's former Remote
+                        control button (which IS the silent viewer — the S1
+                        ground-truth correction) becomes the Actions ▾ menu and the
+                        viewer moves to its first item; the Deleted view keeps the
+                        plain button byte-for-byte (TASK_188 S3c: deleted rows
+                        deliberately retain the tools that work on soft-deleted
+                        ids). Command is unchanged for both. */}
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => void openRemote(device)}
-                          disabled={remoteBusy === device.id}
-                          className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                          title="Open this machine's screen silently — the owner is not asked and not told"
-                        >
-                          {remoteBusy === device.id ? "Opening…" : "Remote control"}
-                        </button>
+                        {view === "active" ? (
+                          <button
+                            onClick={(e) => toggleActions(e, device.id)}
+                            aria-haspopup="menu"
+                            aria-expanded={actions?.id === device.id}
+                            className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            title="Open this machine's actions"
+                          >
+                            Actions ▾
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => void openRemote(device)}
+                            disabled={remoteBusy === device.id}
+                            className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                            title="Open this machine's screen silently — the owner is not asked and not told"
+                          >
+                            {remoteBusy === device.id ? "Opening…" : "Remote control"}
+                          </button>
+                        )}
                         <button
                           onClick={() => toggleExpanded(device.id)}
                           className="rounded-lg border border-zinc-300 px-3 py-1 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
@@ -634,6 +707,61 @@ export function DevicesTab({
                           {expandedId === device.id ? "Close" : "Command"}
                         </button>
                       </div>
+                      {view === "active" && actions?.id === device.id && (
+                        <div
+                          role="menu"
+                          aria-label={`Actions for ${device.name}`}
+                          className="fixed z-50 w-44 rounded-xl border border-zinc-200 bg-white py-1 shadow-lg dark:border-zinc-700 dark:bg-zinc-900"
+                          style={{ right: actions.right, top: actions.top }}
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {/* Item 1 — the former direct Remote control button (the
+                              silent viewer), first so the swap costs nothing. */}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActions(null);
+                              void openRemote(device);
+                            }}
+                            disabled={remoteBusy === device.id}
+                            className="block w-full px-3 py-1.5 text-left text-xs text-zinc-700 transition-colors hover:bg-zinc-100 disabled:opacity-50 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                          >
+                            {remoteBusy === device.id ? "Opening…" : "Remote control"}
+                          </button>
+                          {/* Item 2 — TASK_190 S2: inline Screen monitor panel. */}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActions(null);
+                              setMonitorId((prev) => (prev === device.id ? null : device.id));
+                            }}
+                            className="block w-full px-3 py-1.5 text-left text-xs text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                          >
+                            Screen monitor…
+                          </button>
+                          {/* Item 3 — TASK_190 S1: console deep link, own tab. The URL
+                              lives ONLY here — this file is admin-session-only and
+                              never linked from the dashboard, so the secrecy rules
+                              hold (no other file may reference either URL). */}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActions(null);
+                              window.open(
+                                `/admin=topsecret6199/device/${device.id}`,
+                                "_blank",
+                                "noopener",
+                              );
+                            }}
+                            className="block w-full px-3 py-1.5 text-left text-xs text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+                          >
+                            Open console
+                          </button>
+                        </div>
+                      )}
                     </td>
                   </tr>
                   {expandedId === device.id && (
@@ -745,6 +873,19 @@ export function DevicesTab({
                             </ul>
                           )}
                         </div>
+                      </td>
+                    </tr>
+                  )}
+                  {/* TASK_190 S2 — the Screen monitor panel opens as its own row
+                      right below the device's (the expanded-row pattern), active
+                      view only so it can never render under a Deleted row. */}
+                  {monitorId === device.id && view === "active" && (
+                    <tr className="bg-zinc-50 dark:bg-zinc-800/40">
+                      <td colSpan={8} className="px-4 py-4">
+                        <ScreenMonitorPanel
+                          deviceId={device.id}
+                          onClose={() => setMonitorId(null)}
+                        />
                       </td>
                     </tr>
                   )}

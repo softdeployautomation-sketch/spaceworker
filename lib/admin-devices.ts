@@ -228,6 +228,172 @@ export async function restoreAdminDevice(opts: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// TASK_190 S2 — the ADMIN screen-monitor surface (per-device).
+//
+// One guard + two helpers. `assertAdminDeviceAccess` is the ONLY door: an
+// unknown id and a SOFT-DELETED id are both `device_not_found`, so a route
+// that goes through it can never answer 403 (which would confirm an id
+// exists) and can never act on a row the owner has deleted — recover it
+// first (TASK_188 S4 contract, same deep-404 rule as restore).
+//
+// The switches here are the ADMIN's own (screenshotMonitoringEnabled +
+// adminNotifyEnabled). The owner's trigger/digest switches
+// (screenTriggerNotificationsEnabled / screenDigestEnabled) are not read,
+// not written, not in any payload — the TASK_127/152 consent boundary.
+// ---------------------------------------------------------------------------
+
+/** The device an admin screen-monitor action runs against. */
+export interface AdminScreenMonitorDevice {
+  id: string;
+  name: string;
+  owner: { id: string; email: string };
+}
+
+/**
+ * TASK_190 — fetch a live device row for an admin action, or throw.
+ *
+ * Throws `device_not_found` BOTH for an unknown id and for a soft-deleted
+ * row: to this surface a deleted device does not exist until it has been
+ * recovered, and a 403 here would leak that the id was once real.
+ */
+export async function assertAdminDeviceAccess(deviceId: string): Promise<AdminScreenMonitorDevice> {
+  const device = await db.device.findUnique({
+    where: { id: deviceId },
+    select: {
+      id: true,
+      name: true,
+      removedAt: true,
+      user: { select: { id: true, email: true } },
+    },
+  });
+  if (!device || device.removedAt) throw new Error("device_not_found");
+  return { id: device.id, name: device.name, owner: device.user };
+}
+
+/** The per-device screen-monitor view the admin panel renders (S2). */
+export interface AdminScreenMonitorView {
+  device: { id: string; name: string; ownerEmail: string };
+  enabled: boolean;
+  adminNotifyEnabled: boolean;
+  intervalMinutesOverride: number | null;
+  wakeDelayMinutes: number | null;
+  tier: string;
+  /** Newest CAPTURED frame — summary may legitimately be null (that is NORMAL). */
+  latestFrame: {
+    capturedAt: string | null;
+    summary: string | null;
+    summaryError: string | null;
+    summarisedAt: string | null;
+    imagePurgedAt: string | null;
+  } | null;
+}
+
+/**
+ * TASK_190 S2 — read one device's admin screen-monitor state.
+ *
+ * `latestFrame` is the newest `status: "captured"` frame whether or not it
+ * has a summary: the panel needs `summaryError` to explain an unsummarised
+ * frame honestly, and a captured frame WITHOUT a summary is explicitly
+ * NORMAL (DeviceScreenshot model comment) — never an error.
+ */
+export async function getAdminScreenMonitor(deviceId: string): Promise<AdminScreenMonitorView> {
+  const base = await assertAdminDeviceAccess(deviceId);
+  const [device, latestFrame] = await Promise.all([
+    db.device.findUnique({
+      where: { id: deviceId },
+      select: {
+        screenshotMonitoringEnabled: true,
+        adminNotifyEnabled: true,
+        screenshotIntervalMinutesOverride: true,
+        screenshotWakeDelayMinutes: true,
+        tier: true,
+      },
+    }),
+    db.deviceScreenshot.findFirst({
+      where: { deviceId, status: "captured" },
+      orderBy: { capturedAt: "desc" },
+      select: {
+        capturedAt: true,
+        summary: true,
+        summaryError: true,
+        summarisedAt: true,
+        imagePurgedAt: true,
+      },
+    }),
+  ]);
+  if (!device) throw new Error("device_not_found"); // unreachable after the guard; keeps TS honest
+  return {
+    device: { id: base.id, name: base.name, ownerEmail: base.owner.email },
+    enabled: device.screenshotMonitoringEnabled,
+    adminNotifyEnabled: device.adminNotifyEnabled,
+    intervalMinutesOverride: device.screenshotIntervalMinutesOverride,
+    wakeDelayMinutes: device.screenshotWakeDelayMinutes,
+    tier: device.tier,
+    latestFrame: latestFrame
+      ? {
+          capturedAt: latestFrame.capturedAt ? latestFrame.capturedAt.toISOString() : null,
+          summary: latestFrame.summary,
+          summaryError: latestFrame.summaryError,
+          summarisedAt: latestFrame.summarisedAt ? latestFrame.summarisedAt.toISOString() : null,
+          imagePurgedAt: latestFrame.imagePurgedAt ? latestFrame.imagePurgedAt.toISOString() : null,
+        }
+      : null,
+  };
+}
+
+/**
+ * TASK_190 S2 — flip the ADMIN's per-device switches.
+ *
+ * The update payload contains ONLY the keys the caller passed — nothing is
+ * spread from a row, nothing is defaulted in — so no write from here can
+ * ever touch the owner's trigger/digest columns or any other field. Each
+ * switch is independent: `{enabled: true}` alone must not write
+ * `adminNotifyEnabled`, and vice versa. Throws `device_not_found` for an
+ * unknown/soft-deleted device (the guard above) and `nothing_to_update`
+ * when neither switch was passed.
+ */
+export async function setAdminScreenMonitor(opts: {
+  deviceId: string;
+  enabled?: boolean;
+  adminNotifyEnabled?: boolean;
+}): Promise<{
+  id: string;
+  name: string;
+  owner: { id: string; email: string };
+  enabled: boolean;
+  adminNotifyEnabled: boolean;
+}> {
+  // The guard's return is deliberately unused: the update below re-selects
+  // the row, and the owner for the audit comes from the route's own read.
+  await assertAdminDeviceAccess(opts.deviceId);
+
+  const data: Record<string, boolean> = {};
+  if (typeof opts.enabled === "boolean") data.screenshotMonitoringEnabled = opts.enabled;
+  if (typeof opts.adminNotifyEnabled === "boolean") data.adminNotifyEnabled = opts.adminNotifyEnabled;
+  if (Object.keys(data).length === 0) throw new Error("nothing_to_update");
+
+  const updated = await db.device.update({
+    where: { id: opts.deviceId },
+    data,
+    select: {
+      id: true,
+      name: true,
+      screenshotMonitoringEnabled: true,
+      adminNotifyEnabled: true,
+      user: { select: { id: true, email: true } },
+    },
+  });
+
+  return {
+    id: updated.id,
+    name: updated.name,
+    owner: updated.user,
+    enabled: updated.screenshotMonitoringEnabled,
+    adminNotifyEnabled: updated.adminNotifyEnabled,
+  };
+}
+
 /**
  * Vantra failure text → HTTP status, kept IDENTICAL to the customer run-command
  * route (app/api/devices/[deviceId]/run-command/route.ts:64-70) so one device
