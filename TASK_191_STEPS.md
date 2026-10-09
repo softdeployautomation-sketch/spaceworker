@@ -48,3 +48,23 @@
 
 **Next:** commit + push S1.
 
+
+### 2026-10-09 12:42 — S1 = WHOLE TASK (single-slice scope) — COMMITTED & PUSHED `65c12ca`
+
+- Commit `65c12ca` "TASK_191 S1 — hide the quarantine display from live
+  tier-3 XDevice accounts" pushed to origin/main (8 files: route,
+  entitlements export, new test, fakePrisma patch, script, 3 task docs).
+- Surface sweep after the commit: `grep -l onboarding components/ app/dashboard
+  app/api` → only `device-list.tsx` + `device-console.tsx` consume the
+  quarantine field (both poll the suppressed route) · cyberlab hits are the
+  unrelated AUP wording · the only API consumer of `lib/device-onboarding` is
+  the internal sweep route, deliberately untouched (owner: UI only, stages
+  keep running) · the ADMIN devices tab still sees rows (not the xdevice
+  user's UI; out of the owner's ask).
+- **TASK_191 ACCEPTANCE:** tier-3 account → new device just appears (no
+  strip/badge/stuck/failures/console stage wording); tier-5 + free unchanged
+  (payload tests 4–6); sweep journal will still show the stages ran
+  (silent). Live-server verification deferred to deploy verification of the
+  next task (both land in one deploy).
+- **TASK_191 STATUS: DONE** (code complete, gates green, pushed).
+
