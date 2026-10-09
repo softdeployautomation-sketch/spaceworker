@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 
 import { BuildTargetProvider } from "@/components/build-target-context";
 import { LicenseGate } from "@/components/license-gate";
+import { PresenceBeacon } from "@/components/presence-beacon";
 import { Shell } from "@/components/shell";
 import { WrapperModeProvider } from "@/components/wrapper-mode-context";
 import { exeBuildTarget } from "@/lib/exe-build-target";
@@ -85,7 +86,13 @@ export default async function DashboardLayout({
   return (
     <BuildTargetProvider value={undefined}>
       <WrapperModeProvider value={wrapper}>
-        <Shell>{children}</Shell>
+        <Shell>
+          {/* TASK_190 S5 — presence beacon lives ONLY here: the hosted
+              dashboard. localExe branches above run with no DB (and the admin
+              panel never mounts it), so owner pings are web-only. */}
+          <PresenceBeacon />
+          {children}
+        </Shell>
       </WrapperModeProvider>
     </BuildTargetProvider>
   );

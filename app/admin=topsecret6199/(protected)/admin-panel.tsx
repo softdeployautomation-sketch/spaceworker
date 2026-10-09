@@ -23,7 +23,44 @@ type AdminUser = {
   // ("extractor" | "mailer"). Empty for Premium users (never logged) and for
   // trial users who haven't run anything today.
   usageToday: Record<string, number>;
+  // TASK_190 S5 — owner presence stamps (ISO / raw page) from page.tsx; the
+  // chip + drawer derive from these with the lib's window constants.
+  lastSeenAt: string | null;
+  lastActiveAt: string | null;
+  lastSeenPage: string | null;
 };
+
+// TASK_190 S5 — mirrors lib/user-presence.ts deriveUserPresence exactly (the
+// client cannot import the server-only lib, so the windows are duplicated
+// here as constants and pinned by a static test). Keep the two in sync: the
+// symptom map's "chip flickers online↔idle" failure is precisely a drift
+// between these and the lib.
+const PRESENCE_ONLINE_WINDOW_S = 90;
+const PRESENCE_IDLE_WINDOW_S = 300;
+
+type PresenceState = "online" | "idle" | "offline";
+
+function derivePresenceClient(
+  lastActiveAt: string | null,
+  lastSeenAt: string | null,
+  nowMs: number,
+): PresenceState {
+  if (!lastSeenAt) return "offline";
+  const seenAge = (nowMs - new Date(lastSeenAt).getTime()) / 1000;
+  if (seenAge < 0 || seenAge > PRESENCE_ONLINE_WINDOW_S) return "offline";
+  const activeAt = lastActiveAt ?? lastSeenAt;
+  const activeAge = (nowMs - new Date(activeAt).getTime()) / 1000;
+  if (activeAge < 0 || activeAge <= PRESENCE_ONLINE_WINDOW_S) return "online";
+  if (activeAge <= PRESENCE_IDLE_WINDOW_S) return "idle";
+  return "idle"; // pings alive but input long stale ⇒ idle, never offline
+}
+
+// Module-level (NOT inline in a component body) so react-hooks/purity stays
+// happy — same pattern as devices-tab's formatWhen, which also calls
+// Date.now() from a plain function.
+function presenceNow(user: Pick<AdminUser, "lastActiveAt" | "lastSeenAt">): PresenceState {
+  return derivePresenceClient(user.lastActiveAt, user.lastSeenAt, Date.now());
+}
 
 // Tier 1 trial — must match TRIAL_DAILY_SECONDS_PER_TOOL in lib/trial.ts
 // (a server-only module this client component can't import directly).
@@ -397,6 +434,30 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
   // is purely admin-side; no term length ever renders in any end-user UI.
   const [grantDays, setGrantDays] = useState<Record<string, number>>({});
   const [error, setError] = useState("");
+  // TASK_190 S5 — activity drawer: which user's history is open + its rows.
+  const [presenceFor, setPresenceFor] = useState<AdminUser | null>(null);
+  const [presenceEvents, setPresenceEvents] = useState<
+    Array<{ state: string; page: string | null; createdAt: string }>
+  >([]);
+  const [presenceLoading, setPresenceLoading] = useState(false);
+  const [presenceError, setPresenceError] = useState("");
+
+  async function openPresence(user: AdminUser) {
+    setPresenceFor(user);
+    setPresenceEvents([]);
+    setPresenceError("");
+    setPresenceLoading(true);
+    try {
+      const res = await fetch(`/api/admin/users/${user.id}/presence`);
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && Array.isArray(data.events)) setPresenceEvents(data.events);
+      else setPresenceError(typeof data.error === "string" ? data.error : "Failed to load activity");
+    } catch {
+      setPresenceError("Network error");
+    } finally {
+      setPresenceLoading(false);
+    }
+  }
 
   async function saveTier(userId: string) {
     const raw = drafts[userId];
@@ -507,6 +568,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
           <thead>
             <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
               <th className="px-4 py-3 font-medium">Email</th>
+              <th className="px-4 py-3 font-medium">Presence</th>
               <th className="px-4 py-3 font-medium">Tier</th>
               <th className="px-4 py-3 font-medium">Premium / Usage</th>
               <th className="px-4 py-3 font-medium">Grant</th>
@@ -519,6 +581,12 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
             {users.map((user) => (
               <tr key={user.id}>
                 <td className="px-4 py-3">{user.email}</td>
+                {/* TASK_190 S5 — owner presence chip; click opens the
+                    activity drawer (verify §4.4). Distinct from anything
+                    device-side: this is the PERSON's browser. */}
+                <td className="px-4 py-3">
+                  <PresenceChip user={user} onClick={() => openPresence(user)} />
+                </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
                     <input
@@ -634,8 +702,103 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
           </tbody>
         </table>
       </div>
+
+      {/* TASK_190 S5 — activity drawer (verify §4.4): recent
+          UserPresenceEvent rows for the clicked owner, newest first, 7-day
+          window. Fetch-on-open keeps the list query cheap; backdrop/× close it. */}
+      {presenceFor && (
+        <div className="fixed inset-0 z-50 flex" role="dialog" aria-label={`Activity for ${presenceFor.email}`}>
+          <button
+            className="flex-1 cursor-default bg-black/40"
+            aria-label="Close activity drawer"
+            onClick={() => setPresenceFor(null)}
+          />
+          <aside className="h-full w-full max-w-md overflow-y-auto bg-white p-5 shadow-2xl dark:bg-zinc-900">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-base font-semibold">Activity</h3>
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">{presenceFor.email}</p>
+                <p className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+                  <PresenceDot state={presenceNow(presenceFor)} />
+                  {presenceNow(presenceFor)}
+                  {presenceFor.lastSeenPage ? ` · last page: ${presenceFor.lastSeenPage}` : ""}
+                </p>
+              </div>
+              <button
+                onClick={() => setPresenceFor(null)}
+                aria-label="Close"
+                className="rounded-lg border border-zinc-300 px-2 py-1 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                ×
+              </button>
+            </div>
+
+            {presenceLoading ? (
+              <p className="mt-4 text-sm text-zinc-500">Loading…</p>
+            ) : presenceError ? (
+              <p className="mt-4 text-sm text-red-600 dark:text-red-400">{presenceError}</p>
+            ) : presenceEvents.length === 0 ? (
+              <p className="mt-4 text-sm text-zinc-500">No activity in the last 7 days.</p>
+            ) : (
+              <ul className="mt-4 space-y-1.5">
+                {presenceEvents.map((e, i) => (
+                  <li
+                    key={`${e.createdAt}-${i}`}
+                    className="flex items-center justify-between gap-3 rounded-lg bg-zinc-50 px-3 py-2 text-sm dark:bg-zinc-800/60"
+                  >
+                    <span className="flex items-center gap-2">
+                      <PresenceDot state={e.state === "login" || e.state === "heartbeat" ? "online" : e.state === "ping" ? "idle" : "offline"} />
+                      {e.state}
+                      {e.page ? <span className="text-zinc-400">· {e.page}</span> : null}
+                    </span>
+                    <span className="whitespace-nowrap text-xs text-zinc-500 dark:text-zinc-400">
+                      {new Date(e.createdAt).toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </aside>
+        </div>
+      )}
     </div>
   );
+}
+
+// TASK_190 S5 — chip + dot: small, worded, and deliberately NOT the red/green
+// pill language used for device status anywhere (verify §4.6 confusion trap).
+function PresenceDot({ state }: { state: PresenceState }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`inline-block size-2 rounded-full ${
+        state === "online"
+          ? "bg-emerald-500"
+          : state === "idle"
+            ? "bg-amber-500"
+            : "bg-zinc-400 dark:bg-zinc-500"
+      }`}
+    />
+  );
+}
+
+function PresenceChip({ user, onClick }: { user: AdminUser; onClick: () => void }) {
+  const state = presenceNow(user);
+  return (
+    <button
+      onClick={onClick}
+      title="View recent activity"
+      className="flex items-center gap-1.5 rounded-full border border-zinc-200 px-2 py-0.5 text-xs text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800"
+    >
+      <PresenceDot state={state} />
+      {state}
+      {user.lastActiveAt ? ` · ${idleMinutes(user.lastActiveAt)}m` : ""}
+    </button>
+  );
+}
+
+function idleMinutes(iso: string): number {
+  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
 }
 
 function PaymentsTab() {

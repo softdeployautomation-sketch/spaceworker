@@ -720,3 +720,109 @@ then full `npm run test`.
   TASK_133_RMM_ENGINE_BRINGUP.md) → slice ④ owner presence beacon.
 
 
+
+### PROGRESS — slice ③ PUSHED, 2026-10-09 (7)
+- Commit `071bab0` "TASK_190 slice ③ — admin notify channels + per-device admin
+  screen alerts" — 9 files, 1506 insertions, 7 deletions; pushed
+  2db34de..071bab0 main → origin/main. Msg via /tmp/t190-slice3-msg.txt
+  (editor tool) + `git commit -F`. TASK_133 file NOT staged (still ?? untracked).
+- **NEXT: slice ④** — owner presence beacon + admin reads/UI + tests.
+
+
+## SLICE ④ PLAN (S5: owner presence) — START 2026-10-09
+- **CONFLICTS found (CONTINUE vs VERIFY §4) + resolution:**
+  1. CONTINUE: heartbeat updates lastSeenAt/lastActiveAt/lastSeenPage; admin
+     presence "derived from lastSeenAt". VERIFY §4.2: chip goes idle after
+     >5min NO INPUT while pings continue + `lastActiveAt` OLDER than
+     `lastSeenAt`. ⇒ With 60s pings continuing while idle, lastSeenAt stays
+     fresh ⇒ derive-from-lastSeenAt alone can NEVER show idle. Resolution:
+     beacon carries an `active` flag (pointermove/keydown/wheel/etc since last
+     ping); inactive ping writes ONLY lastSeenAt+lastSeenPage (⇒ VERIFY §4.5's
+     "two User columns"), active ping also stamps lastActiveAt. Chip state =
+     `deriveUserPresence(lastActiveAt, lastSeenAt, now)`: heartbeat stale
+     (>ONLINE_WINDOW_S on lastSeenAt) ⇒ offline (⇒ §4.3 "~3min" — pagehide ping
+     lands ≤60s before close, offline at ≤150s); else derivePresence(lastActive)
+     with its offline branch clamped to idle (pings alive but input long-stale).
+     `derivePresence(lastSeenAt, now)` stays EXACTLY as CONTINUE pins it
+     (89 online / 91 idle / 301 offline / null→offline — pure, tested).
+     Schema comment (prisma:123-126) rewritten to match (comment-only).
+  2. VERIFY §4.4 wants login/OFFLINE rows in the drawer; a stopped beacon means
+     NO server code runs to write "offline". Resolution: a heartbeat that
+     discovers prevState==="offline" (lastSeenAt non-null gap) writes an
+     "offline" row (page = OLD lastSeenPage) THEN a "login" row (page = new);
+     brand-new user (lastSeenAt null) writes "login" only. Steady pings → zero
+     rows (transition-only, §4.2).
+- **Files:** NEW `lib/user-presence.ts` (constants + derivePresence +
+  deriveUserPresence + heartbeat + stampLogout + listUserPresenceEvents +
+  sweepPresenceEvents(90d)) · `app/api/presence/route.ts` (getCurrentUser 401,
+  body {page?≤120, active?}) · `components/presence-beacon.tsx` (mount + 60s +
+  visibilitychange→visible + pagehide sendBeacon plain ping, activity ref) ·
+  `app/api/admin/users/[id]/presence/route.ts` (403/404, 7-day window, 100
+  rows, {state,page,createdAt}) · `tests/user-presence.test.ts` +
+  `tests/admin-users-presence.test.ts`.
+- **Edits:** dashboard layout hosted branch ONLY (never localExe) ·
+  logout route stamps stampLogout best-effort · GET /api/admin/users + BOTH
+  it AND (protected)/page.tsx (the Users tab's real data source) select
+  lastActiveAt/lastSeenAt/lastSeenPage → presence+lastSeenPage(+lastActiveAt
+  for "idle Xm") · admin-panel AdminUser+thead Presence column+chip (emerald/
+  amber/zinc)+click drawer · lib/admin-devices ADMIN_DEVICE_SELECT owner
+  stamps → `ownerPresence` every row · devices-tab type + dot under email
+  (NO new table column ⇒ colSpan 8/6 untouched) · retention-sweep own
+  try/catch → sweepPresenceEvents log count · package.json scripts
+  `user-presence` + `admin-users-presence` (VERIFY §0 bare) + `test:admin-presence`.
+- **Gates → PROGRESS → commit+push ④** (msg via /tmp + `git commit -F`).
+
+
+### PROGRESS — slice ④ CODE+TESTS COMPLETE, all gates GREEN, 2026-10-09 10:40 (8th compaction)
+- **Built (post-compaction):** `lib/user-presence.ts` (ONLINE 90s/IDLE 300s,
+  pure `derivePresence` + `deriveUserPresence` w/ §4.2 clamp, transition-only
+  `heartbeat` incl. gap offline+login pair + cold-start login + idle→online,
+  `stampLogout`, `listUserPresenceEvents`(≤100/desc/since), 90d
+  `sweepPresenceEvents`) · `app/api/presence/route.ts` (401 w/o session, page
+  ≤120, `{ok,state}`) · `components/presence-beacon.tsx` (mount+60s
+  interval+visibilitychange+pagehide sendBeacon, `active` input ref, renders
+  null) · `app/api/admin/users/[id]/presence/route.ts` (403 no admin, deep 404
+  ghost id, 7-day/100-row list) · beacon mounted ONCE in dashboard layout
+  hosted branch only (never localExe/admin) · logout stamps stampLogout in its
+  OWN try before cookie clear · retention-sweep own try/catch → `presenceSwept`.
+- **Admin reads/UI:** GET /api/admin/users + (protected)/page.tsx select
+  lastSeenAt/lastActiveAt/lastSeenPage → `presence`+stamps; AdminUser +
+  Presence th + `PresenceChip` (emerald/amber/zinc dot + word, client mirror
+  constants 90/300 EQUAL lib — verify §139 flicker trap) + click activity
+  drawer (fetch newest-first, 7d, ≤100, backdrop/× close); devices-tab
+  `ownerPresence` chip under Owner email (OWN row type+dot, no new column ⇒
+  colSpan untouched, renders BEFORE DeviceStatusBadge).
+- **Lint self-inflicted, fixed:** beacon ref-write moved into effect
+  (react-hooks/refs); admin-panel inline `Date.now()` in render (purity) →
+  module-level `presenceNow()` helper (formatWhen pattern).
+- **Tests:** `tests/user-presence.test.ts` 12/12 (lib boundaries 89/90/91/300/
+  301/null/future, transition-only dedupe, gap pair, idle→online row STEPS§299,
+  list clamp 100, 90d cutoff, page truncation) +
+  `tests/admin-users-presence.test.ts` 15/15 (routes 401/403/404/200 shapes +
+  static beacon/layout/logout/sweep/chip/mirrors/schema). Split per STEPS
+  §300-301. Corrections vs first draft: (a) online→idle ROW is UNREACHABLE by
+  design (prev/next share `now`) — chip flips idle client-side; test now pins
+  idle dedupe + idle→online instead (STEPS §299 ground truth); (b) route tests
+  use wall-clock windows (routes call `new Date()`), fixed NOW kept for lib.
+- **Scripts added:** `test:user-presence`, bare `user-presence`,
+  `test:admin-users-presence`, bare `admin-users-presence`,
+  `test:admin-presence` (both files), `test:maintenance-cache` (file existed,
+  script was MISSING although STEPS §305 + VERIFY §0 invoke it), and
+  `"test": "tsx --test tests/*.test.ts"` (STEPS §511 evidence-first rule).
+- **Gate proof (2026-10-09 ~10:35-10:40):** `npx tsc --noEmit` = 0 ·
+  eslint touched-new files = 0 errors (user-presence, admin-users-presence,
+  beacon, presence routes, logout, retention-sweep, users routes,
+  user-presence lib, devices-tab, dashboard layout, page.tsx) · admin-panel =
+  exactly **42** errors = HEAD baseline (0 added) · devices-tab = exactly the
+  **2** pre-existing (307,1128) · battery: admin-devices 13/13,
+  admin-screen-monitor 13/13, admin-notify 19/19, user-presence 12/12,
+  admin-users-presence 15/15, devices 6/6, xdevice 38/38, wallet 63/63,
+  module-gate 13/13, maintenance-cache 6/6 — **0 fail** · full
+  `npm run test` = **1310 tests, 1309 pass, 0 fail, 1 skipped, exit 0**
+  (run 2×; run 1 had 1 flake: support-tickets "read cursor" off-by-one ms under
+  parallel load — passes isolated 57/57 and on re-run; unrelated to TASK_190).
+- **Hygiene:** no stashes; `.env` untouched; TASK_133_RMM_ENGINE_BRINGUP.md
+  NOT staged.
+- **NEXT → slice ⑤:** gates re-run → VPS (`prisma migrate deploy` BEFORE
+  `next build`/restart) → live `PROMPT_VERIFY_TASK_190.md` → closeout.
+

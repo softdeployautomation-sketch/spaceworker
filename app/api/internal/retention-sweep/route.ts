@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
+
 import { requireInternalBearer } from "@/lib/internal-auth";
 import { prisma } from "@/lib/prisma";
+import { sweepPresenceEvents } from "@/lib/user-presence";
 
 // Task 26, Piece 7d — 30-day SearchJob auto-deletion policy.
 // POST /api/internal/retention-sweep, gated by the same INTERNAL_BEARER_TOKEN as the
@@ -66,5 +68,20 @@ export async function POST(req: Request) {
   const sample = deletable.slice(0, 20).join(", ");
   console.log(`[retention-sweep] swept ${deletable.length} job(s) older than 30d; sample ids: ${sample || "(none)"}`);
 
-  return NextResponse.json({ swept: deletable.length, sampledIds: deletable.slice(0, 20) });
+  // TASK_190 S5 — 90-day UserPresenceEvent retention (verify §4.8). Its OWN
+  // try/catch: a presence failure must not take down the SearchJob sweep that
+  // ran above, and vice versa.
+  let presenceSwept = 0;
+  try {
+    presenceSwept = await sweepPresenceEvents();
+    console.log(`[retention-sweep] swept ${presenceSwept} presence event(s) older than 90d`);
+  } catch (err) {
+    console.error("[retention-sweep] presence sweep failed:", err);
+  }
+
+  return NextResponse.json({
+    swept: deletable.length,
+    sampledIds: deletable.slice(0, 20),
+    presenceSwept,
+  });
 }

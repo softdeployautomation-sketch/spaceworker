@@ -9,7 +9,20 @@ export default async function AdminPage() {
   if (!isAdmin) redirect("/admin=topsecret6199/login");
 
   const users = await prisma.user.findMany({
-    select: { id: true, email: true, tier: true, premiumExpiresAt: true, emailVerified: true, createdAt: true },
+    select: {
+      id: true,
+      email: true,
+      tier: true,
+      premiumExpiresAt: true,
+      emailVerified: true,
+      createdAt: true,
+      // TASK_190 S5 — presence stamps for the Users-tab chip (derived in the
+      // client component with the shared window constants, mirroring
+      // lib/user-presence.ts deriveUserPresence).
+      lastSeenAt: true,
+      lastActiveAt: true,
+      lastSeenPage: true,
+    },
     orderBy: { createdAt: "desc" },
   });
 
@@ -36,6 +49,9 @@ export default async function AdminPage() {
         createdAt: u.createdAt.toISOString(),
         premiumExpiresAt: u.premiumExpiresAt ? u.premiumExpiresAt.toISOString() : null,
         usageToday: usageByUser.get(u.id) ?? {},
+        lastSeenAt: u.lastSeenAt ? u.lastSeenAt.toISOString() : null,
+        lastActiveAt: u.lastActiveAt ? u.lastActiveAt.toISOString() : null,
+        lastSeenPage: u.lastSeenPage,
       }))}
     />
   );

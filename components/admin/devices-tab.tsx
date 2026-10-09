@@ -31,6 +31,8 @@ type AdminDevice = {
   agentId: string | null;
   idleSeconds: number | null;
   owner: { id: string; email: string; tier: number };
+  /** TASK_190 S5 — OWNER beacon presence (chip under the email; NOT device Status). */
+  ownerPresence: "online" | "idle" | "offline";
 };
 
 type AdminCommandTarget = {
@@ -617,6 +619,26 @@ export function DevicesTab({
                       >
                         {device.owner.email}
                       </button>
+                      {/* TASK_190 S5 — OWNER presence, deliberately under the
+                          email and visually distinct from the device Status
+                          badge two cells over (verify §4.6): a small dot +
+                          word, never the green/red agent pill. */}
+                      <span
+                        className="mt-0.5 flex items-center gap-1 text-[11px] text-zinc-400 dark:text-zinc-500"
+                        title={`Owner ${device.ownerPresence} — the person's browser, not this machine`}
+                      >
+                        <span
+                          aria-hidden="true"
+                          className={`inline-block size-1.5 rounded-full ${
+                            device.ownerPresence === "online"
+                              ? "bg-emerald-500"
+                              : device.ownerPresence === "idle"
+                                ? "bg-amber-500"
+                                : "bg-zinc-400 dark:bg-zinc-500"
+                          }`}
+                        />
+                        owner {device.ownerPresence}
+                      </span>
                     </td>
                     {view === "active" ? (
                       <>

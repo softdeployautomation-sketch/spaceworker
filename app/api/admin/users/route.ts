@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
+import { deriveUserPresence } from "@/lib/user-presence";
 
 export const dynamic = "force-dynamic";
 
@@ -18,13 +19,38 @@ export const dynamic = "force-dynamic";
 // Read-only, admin session asserted by this route itself (app/api/admin/**
 // rule). No tier/expires/usage fields — none of the three is needed to pick a
 // person, and the least data exposed the better.
+//
+// TASK_190 S5 — ADDS presence: the derived chip + the raw stamps the Users
+// tab renders ("idle Xm" comes from lastActiveAt, page detail from
+// lastSeenPage). Derived here with the SAME lib helper the devices list and
+// the heartbeat use, so the two admin tabs can never disagree. The chat-id-
+// style rule applies to none of these: last-seen stamps are operational data
+// the admin panel already shows per device.
 export async function GET() {
   const isAdmin = await getAdminSession();
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
+  const now = new Date();
   const users = await prisma.user.findMany({
-    select: { id: true, email: true },
+    select: {
+      id: true,
+      email: true,
+      lastSeenAt: true,
+      lastActiveAt: true,
+      lastSeenPage: true,
+    },
     orderBy: { email: "asc" },
   });
-  return NextResponse.json({ ok: true, count: users.length, users });
+  return NextResponse.json({
+    ok: true,
+    count: users.length,
+    users: users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      presence: deriveUserPresence(u.lastActiveAt, u.lastSeenAt, now),
+      lastSeenAt: u.lastSeenAt ? u.lastSeenAt.toISOString() : null,
+      lastActiveAt: u.lastActiveAt ? u.lastActiveAt.toISOString() : null,
+      lastSeenPage: u.lastSeenPage,
+    })),
+  });
 }

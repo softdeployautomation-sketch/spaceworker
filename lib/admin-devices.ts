@@ -6,6 +6,7 @@ import { db } from "./db";
 import { deviceStatus } from "./devices";
 import { adminRunDeviceCommand } from "./device-tools";
 import { fetchUserIdle } from "./vantra-link";
+import { deriveUserPresence } from "./user-presence";
 
 // TASK_146 — the ADMIN side of the shared device layer.
 //
@@ -37,6 +38,12 @@ export interface AdminDeviceRow {
   /** Best-effort MeshCentral idle (seconds); null when not looked up. */
   idleSeconds: number | null;
   owner: { id: string; email: string; tier: number };
+  /**
+   * TASK_190 S5 — OWNER presence (NOT the device's own Status column):
+   * derived from the owner's beacon stamps with deriveUserPresence, so this
+   * chip provably agrees with the Users tab for the same person.
+   */
+  ownerPresence: "online" | "idle" | "offline";
 }
 
 const ADMIN_DEVICE_SELECT = {
@@ -51,7 +58,9 @@ const ADMIN_DEVICE_SELECT = {
   createdAt: true,
   removedAt: true,
   vantraAgentId: true,
-  user: { select: { id: true, email: true, tier: true } },
+  // TASK_190 S5 — the OWNER's presence stamps: chip derives from these with
+  // the same lib helper the Users tab uses, so both tabs agree.
+  user: { select: { id: true, email: true, tier: true, lastSeenAt: true, lastActiveAt: true } },
 } as const;
 
 /**
@@ -111,6 +120,7 @@ export async function listAdminDevices(opts: {
   });
 
   const limit = Math.min(1000, Math.max(1, Math.round(opts.limit ?? 500)));
+  const now = new Date();
   const filtered = rows
     .map((r) => ({
       id: r.id,
@@ -126,6 +136,10 @@ export async function listAdminDevices(opts: {
       agentId: r.vantraAgentId,
       idleSeconds: null as number | null,
       owner: { id: r.user.id, email: r.user.email, tier: r.user.tier },
+      // TASK_190 S5 — owner beacon presence, derived with the same helper the
+      // Users tab uses (both read the same two User columns at the same `now`
+      // within one request), so the two chips cannot disagree.
+      ownerPresence: deriveUserPresence(r.user.lastActiveAt, r.user.lastSeenAt, now),
     }))
     .filter((d) =>
       opts.status === "online" || opts.status === "offline" ? d.status === opts.status : true,
