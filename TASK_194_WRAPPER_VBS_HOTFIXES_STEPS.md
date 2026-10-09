@@ -407,3 +407,36 @@ No deploy involved — standalone file, nothing in the running app changes.
 
 ---
 (kept open for the S2/S3 after-records)
+
+---
+
+## S8 — OWNER-GREEN CONFIRMED + REGRESSION POST-MORTEM (2026-10-09 20:26)
+
+**Owner report:** "its fine now" — VM test of `vantra-agent-t194-rollback-test.vbs`
+is GREEN: silent install, PDF-only UI, no CMD window, flow continues into the
+install without a second run. Install-flow work **CLOSED**. (Owner-reported on
+their VM; I did not re-run it myself — recorded as claimed, not proven-by-me.)
+
+### Regression ledger — every break this saga produced, root cause, prevention
+
+| # | Regression | Introduced | Root cause | Prevention (now encoded) |
+|---|---|---|---|---|
+| R1 | CMD window pops during install ("searching for mesh agent / uninstalling") | `0029633` (Oct 8 eve) | `sc.exe delete` is a native console program — Windows opens a console to run it; elevation can't hide that | Console exes (`sc.exe`, `netsh`, `tasklist`…) **banned in silent flows** — use .NET/COM (`Get-Service`, `Win32_Service`) |
+| R2 | Flow **stops** after uninstall — owner had to re-run to get the install | `0029633` | Service stop/delete had **no try/catch**; a busy/locked service threw, killing the prepended prologue → enrollment never ran | Elevated prologues must be **try/catch fail-open**; a prepended step may never abort the payload |
+| R3 | Partial fix (`43d1e5e`) still showed a terminal | fix kept the block inline | Couldn't prove the fix quickly in the owner's loop | **Owner rule, adopted:** when a fix can't be proven fast, ROLL BACK to last-known-good instead of iterating — S6 executed exactly that |
+| R4 | Root design error: uninstall baked into the universal carrier | `0029633` | Same-VM re-install testing created a DIRTY-machine requirement, then baked it into the carrier **every new device** runs | Maintenance steps **never** go in the universal carrier; uninstall ships standalone: `vantra-agent-uninstall.vbs` (S7, regenerable via `scripts/mint-agent-uninstall-vbs.ts`) |
+| R5 | VBS mint 404 "device is mid update" | box drift | `/opt/vantra` on the box was stale vs local | Parity check after any deploy that touches vantra |
+| R6 | Wrapper "Download .vbs" did nothing | pre-existing | WebView2 ignores browser-only `<a download>` blob URLs | EXE-targeted downloads go through `lib/download-text.ts` (fetch → native dialog) |
+| R7 | Invoice sent → support badge never lit | pre-existing route gap | Invoice route wrote email+row but **no support message**; `unread` is derived from the thread | Every admin→user artifact must create a thread message (S4, live `8OHP1mqgKFEcZuxrfYylK`) |
+
+### Left open (deliberately, owner-prioritized)
+- **S2** — new wrapper EXE (download fix) delivered on Desktop; owner's
+  download-dialog confirm still pending.
+- **S5** — user email on admin support reply. Owner asked for it; verified
+  `grep sendEmail lib/support/tickets.ts` = **0 hits** → genuinely NOT built.
+  Queued **after** the QA battery (owner: "move to the test fast… before any
+  other task").
+- Bug-class tripwire: carrier shape guarded by unit tests + gets a **live**
+  tripwire in TASK_195's battery (`carrier` probe group).
+
+**TASK_194 → CLOSED**: S1✅ S2✅(delivered) S3✅(no-change) S4✅live S5→queued S6✅ S7✅ S8✅this.
