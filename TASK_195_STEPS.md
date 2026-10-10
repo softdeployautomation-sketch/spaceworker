@@ -47,3 +47,45 @@ when the device is online, but it works on premium plus".
   tsc/eslint gates, test run, commit.
 Resume = write tests → gates → commit S1 exactly as planned.
 
+---
+
+## 2026-10-10 — S1 DONE (resumed from pause; all gates green)
+
+Resumed exactly where the pause left off: wrote `tests/qa-battery.test.ts`
+(329 lines, 27 tests in 8 describe blocks, all hermetic — fake db/fetch/fs/env,
+no network/no DB). Added package.json `test:qa-battery`.
+
+**Defects the gates caught in the WIP core (all fixed before commit):**
+1. Carrier block called `const r = timed(...)` WITHOUT `await` — probe would
+   always report garbage (`r.ok` on a Promise). Fixed + `timed()` widened to
+   accept sync closures (`() => Promise<T> | T`).
+2. Shared http() now uses `redirect:"manual"` — with the default
+   `redirect:"follow"`, the secret-surface probe would see the 307→/login as
+   a 200 and FALSE-FAIL against a perfectly healthy app. Pinned by test.
+3. Test-harness bugs (not code bugs): fake fetch lacked the internal-route
+   paths and a network-throw wildcard; config probe ids use dashes not
+   underscores; freshness tests passed `now` in opts instead of deps.
+
+**GATES (final run, all three):**
+- `npx tsc --noEmit` → **0 errors**
+- `npx eslint lib/qa/battery.ts scripts/qa-battery.ts tests/qa-battery.test.ts`
+  → **clean (exit 0, 0 problems)**
+- `npm run test:qa-battery` → **27/27 pass, 0 fail** (8 suites, ~554 ms)
+
+**Coverage pinned (what a QA battery must guard, per the task plan):**
+platform (db/migrations/build-age/disk/uptime) · access (anon login 200,
+anon register 401 + side-effect row-count tripwire, anon admin API ≠200,
+secret surface never-200 via manual-redirect) · internal drift detector
+(every app/api/internal route auto-probed 401 with no bearer, discovered
+from fs so new sweeps are covered the day they ship) · freshness (screenshot
+6h / presence 30m STALE warns, no-rows = skip not red) · carrier tripwire
+(in-process render check: Hidden + --silent, no sc.exe/unins000 — the
+TASK_194 regression class) · build leak gate (admin-string in .next chunks)
+· vantra reach (R5 class) · config booleans (values NEVER in report output).
+
+**Files:** lib/qa/battery.ts (466) + scripts/qa-battery.ts (246) +
+tests/qa-battery.test.ts (329). CLI is READ-ONLY by construction; exit 0
+unless a probe FAILs. NEXT SLICE: S2 (admin UI panel + route) per plan,
+then S3 (deploy + live run + closeout).
+
+
