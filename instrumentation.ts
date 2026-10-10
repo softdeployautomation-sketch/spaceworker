@@ -5,6 +5,19 @@
 // incident 2026-09-24: extractor stuck "queued", private browser unconfigured,
 // US/Canada routes missing — all three were just missing env keys).
 export async function register(): Promise<void> {
+  // TASK_201 S7c — MUST be the very first thing: Turbopack compiles every
+  // serverExternalPackages require into a hashed alias ("pkg-<16hex>") whose
+  // directory the CI standalone build never materializes; without this shim
+  // the local runtime dies on `require("@electric-sql/pglite-<hash>")` before
+  // serving any request (run 38052488430). Dynamic import keeps the `module`
+  // builtin out of any edge-runtime evaluation of this hook. Inert on hosted.
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { installTurbopackExternalAliasShim } = await import(
+      "./lib/turbopack-external-alias"
+    );
+    installTurbopackExternalAliasShim();
+  }
+
   const { logEnvHealth } = await import("./lib/env-health");
   logEnvHealth();
 

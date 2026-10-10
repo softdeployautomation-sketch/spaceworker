@@ -41,6 +41,13 @@ function setDns(name: string, v4: string[] = [], v6: string[] = []): void {
 }
 
 setDns("smtp.gmail.com", ["142.250.185.109"], ["2a00:1450:400c:c05::6c"]);
+// 2026-10-10 — resolvers (macOS/Windows getaddrinfo) can hand back an
+// IPv4-MAPPED IPv6 even for a family:4 lookup; caught live creating a mailbox
+// in the mailer EXE. The guard must judge the embedded IPv4, not read "ffff"
+// as multicast.
+setDns("smtp.mapped-v4.test", ["::ffff:142.250.185.109"]);
+setDns("smtp.mapped-v4-internal.test", ["::ffff:127.0.0.1"]);
+setDns("smtp.mapped-v4-private.test", ["::ffff:10.0.0.5"]);
 setDns("relay.internal", ["127.0.0.1"]);
 setDns("db.internal", ["10.0.0.5"]);
 setDns("metadata.internal", ["169.254.169.254"]);
@@ -183,5 +190,16 @@ test("allowlist parsing: whitespace, IPv6 brackets, junk and out-of-range ports"
       { host: "127.0.0.1", port: 587 },
       { host: "::1", port: 2525 },
     ]);
+  });
+});
+
+test("IPv4-mapped IPv6 answers are judged by their embedded IPv4 (2026-10-10)", async () => {
+  await withAllowlist(undefined, async () => {
+    // A mapped PUBLIC address must pass — before the fix, "ffff" read as the
+    // first hextet of ff00::/8 multicast and every mapped answer was blocked.
+    assert.equal(await rejected("smtp.mapped-v4.test", 465), false);
+    // Mapped loopback / RFC1918 must still be blocked.
+    assert.equal(await rejected("smtp.mapped-v4-internal.test", 465), true);
+    assert.equal(await rejected("smtp.mapped-v4-private.test", 465), true);
   });
 });

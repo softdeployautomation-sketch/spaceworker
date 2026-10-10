@@ -213,4 +213,47 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   (expect the no-DB wall → design local campaign/template storage), then S4b
   hygiene pass.
 
+## S7c — Turbopack hashed-external shim + SMTP guard mapped-IPv6 fix (2026-01-10, second half)
+- SYMPTOM (run 38052488430 artifact): build GREEN, but the unpacked standalone
+  server died at boot — "Failed to load external module
+  @electric-sql/pglite-7966c14983af6418: Cannot find module". Also would have
+  hit bcrypt-a3fecf8c027c10c9 / @prisma/client-2c3a283f134fdcb6 at request time.
+- ROOT CAUSE (traced from the artifact, not guessed): Turbopack compiles every
+  serverExternalPackages require into a HASHED ALIAS "pkg-<16hex>" and Node
+  must find a directory of that exact name (the .nft.json traces literally
+  reference `node_modules/bcrypt-a3fecf8c027c10c9`). The CI Windows standalone
+  build never materializes those alias dirs. The REAL packages all ship fine
+  in standalone/node_modules (incl. 21MB @electric-sql/pglite wasm payload,
+  query_engine-windows.dll.node, db/schema.sql, .env.local with
+  BUILD_TARGET=mailer) — only the aliases are missing.
+- FIX: new `lib/turbopack-external-alias.ts` — installs a
+  Module._resolveFilename fallback (same technique as Next's own
+  require-hook.js): a failed request ending in `-[0-9a-f]{16}` is retried with
+  the suffix stripped. Idempotent; collision-free (npm forbids a final
+  16-hex segment); inert on hosted (fallback never fires). Installed FIRST in
+  instrumentation.ts register() via dynamic import under NEXT_RUNTIME==="nodejs".
+- SECOND BUG found during the same artifact's live round-trip: saving a
+  mailbox with host smtp.hostinger.com was rejected — the resolver returned
+  `::ffff:172.65.255.143` (IPv4-MAPPED IPv6, even for a family:4 lookup) and
+  v6IsNonRoutable read "ffff" as ff00::/8 multicast → EVERY mapped address
+  blocked. Real-user impact on any resolver that behaves this way (macOS /
+  Windows getaddrinfo). FIX: `v4FromMappedV6()` — mapped answers are judged by
+  the embedded IPv4 via v4IsNonRoutable (mapped loopback/RFC1918 still
+  blocked). Regression test with stub DNS covering public/mapped-loopback/
+  mapped-private.
+- PROOF (mimic = the real artifact booted on macOS with the shim preloaded and
+  the repo's darwin prisma engine swapped in for the windows one):
+  "[local-exe] database ready; auto-drain loop started", then live HTTP:
+  drain-settings GET {"autoDrain":true,"intervalSeconds":60} → mailbox create
+  (id returned) → campaign create via csv (recipientCount 2) → PATCH
+  savedAsTemplate true → GET shows flag + subjects → list shows the template.
+  Full standalone replica loop proven BEFORE spending CI minutes.
+- Tests: `test:tb-alias` 5/5 (alias resolves to real pkg incl. scoped;
+  unresolvable alias still throws; non-alias misses untouched; idempotent);
+  smtp-host-guard 11/11 (incl. new mapped-v6 case); local-exe 9/9;
+  tmplcontent 8/8. tsc 0; eslint 0 on touched files.
+- NEXT: CI mailer build → verify new artifact boots WITHOUT the preload shim →
+  hand installer to owner for Windows S5 test (campaign + save-template +
+  drain settings).
+
 
