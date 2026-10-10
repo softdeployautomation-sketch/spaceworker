@@ -5,6 +5,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import MailboxesPanel from "@/components/mailboxes-panel";
 import { SendingDomainsPanel } from "@/components/sending-domains-panel";
 import { useConfirm } from "@/components/confirm-provider";
+// TASK_201 S3 (owner, 2026-10-10) — the Mailer EXE is standalone and keeps NO
+// link to the extractor: "Pick from my leads" and the ?fromSearchJob deep
+// link are web-only paths into DB-backed lead data the EXE runtime doesn't
+// have (and by mandate must not depend on). CSV upload and type/paste are the
+// only recipient sources there — everything else stays byte-identical to web.
+import { useBuildTarget } from "@/components/build-target-context";
 // Task 30, item 1 — renderMerge is a pure string->string function with no
 // server-only dependencies, so it's safe to import into this client component to
 // show the user exactly what a recipient would receive (including the raw gap a
@@ -233,11 +239,17 @@ function CampaignsPageInner() {
   const [formError, setFormError] = useState("");
   const router = useRouter();
   const searchParams = useSearchParams();
+  // TASK_201 S3 — resolved once here; gates both extractor entry points below
+  // (the ?fromSearchJob deep link and the "leads" recipient source). The web
+  // buildTarget is undefined ⇒ isMailerBuild false ⇒ byte-identical behaviour.
+  const buildTarget = useBuildTarget();
+  const isMailerBuild = buildTarget === "mailer";
   // Arrived via "Create campaign from these leads" on the Lead Extractor page
   // (?fromSearchJob=<id>) — recipients come from that job's own leads
   // instead of a CSV upload, so the sender's list is exactly what this app
-  // already extracted, no manual export/re-upload round trip.
-  const fromSearchJobId = searchParams.get("fromSearchJob");
+  // already extracted, no manual export/re-upload round trip. Web-only: the
+  // mailer build ignores the param and falls back to the normal sources.
+  const fromSearchJobId = isMailerBuild ? null : searchParams.get("fromSearchJob");
   const [leadEmailCount, setLeadEmailCount] = useState<number | null>(null);
   const [leadCountError, setLeadCountError] = useState("");
 
@@ -432,6 +444,10 @@ function CampaignsPageInner() {
   }
 
   function chooseSource(src: "csv" | "leads" | "paste") {
+    // TASK_201 S3 — belt and braces: the "leads" button is not rendered in
+    // the mailer build, and this guard means even a stray call can't select
+    // a source that would fetch /api/leads/selectable (401/DB on the EXE).
+    if (isMailerBuild && src === "leads") return;
     setRecipientSource(src);
     setFormError("");
     if (src === "leads" && !pickerData && !pickerLoading) void loadPicker();
@@ -1395,9 +1411,11 @@ function CampaignsPageInner() {
 
               {!fromSearchJobId && (
                 <div className="flex flex-col gap-1 text-sm font-medium">
-                  Recipient source <span className="text-xs text-zinc-400">— a CSV, leads you have already extracted and validated, or a pasted/typed list</span>
+                  Recipient source <span className="text-xs text-zinc-400">— {isMailerBuild ? "a CSV upload or a pasted/typed list" : "a CSV, leads you have already extracted and validated, or a pasted/typed list"}</span>
                   <div className="mt-1 inline-flex flex-wrap rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-                    {(["csv", "leads", "paste"] as const).map((src) => (
+                    {(["csv", "leads", "paste"] as const)
+                      .filter((src) => !(isMailerBuild && src === "leads"))
+                      .map((src) => (
                       <button
                         key={src}
                         type="button"

@@ -111,7 +111,33 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   require pattern; MAILBOX_ENCRYPTION_KEY set BEFORE require).
 - Gates: tsc exit 0, eslint exit 0 on all 5 touched files, `npm run
   test:mailer-sources` 6/6. package.json script added.
-- NEXT: S3 — Mailer EXE UI trim (open owner question: campaigns+mailboxes+
-  templates only, or also recipients/leads import?). Then S4 CI dispatch
+
+### PROGRESS 2026-10-10 ~11:20 — S3 done: mailer UI trim (owner directives, no new tabs)
+- Owner (2026-10-10, three messages): campaign + mailbox tabs EXACTLY as web,
+  minus the extractor link; recipients = CSV upload or type/paste only (no
+  "pull from leads"); test email unchanged; menu = Campaigns + Settings only,
+  no Support/Agent — "a standalone, following the steps of the standalone
+  extractor", and STOP asking anything that links the EXE to the webapp.
+- `components/dashboard-nav.tsx`: `BUILD_ALLOWED_HREFS.mailer =
+  {"/dashboard/campaigns", "/dashboard/settings"}`. Campaigns covers the
+  mailboxes sub-tab (startsWith on ?tab=mailboxes). Overview deliberately
+  excluded (owner named exactly two entries; its stats are DB-backed and the
+  EXE has no DATABASE_URL). Support/Agent/Wallet/Logout needed NO change —
+  shell.tsx already renders none of them when buildTarget is set. Health QA
+  tab unaffected (admin panel, own chrome).
+- `app/dashboard/campaigns/page.tsx`: `useBuildTarget()` → isMailerBuild.
+  (1) ?fromSearchJob deep link (the Extract page's "Create campaign from
+  these leads") resolves to null in mailer builds — web unchanged; (2)
+  "Pick from my leads" source button filtered out + chooseSource() guard so
+  /api/leads/selectable can never be fetched from the EXE (401/DB there);
+  (3) recipient-source description text drops the leads phrase. CSV upload
+  (.csv,text/csv — unchanged, no txt claim) and type/paste untouched; test
+  email (manualInsert / testRecipientOverride) untouched; server payload
+  shape untouched.
+- Gates: tsc exit 0; eslint on both files = only the 2 pre-existing
+  react-hooks/set-state-in-effect errors at 299/309 (PROOF: identical on
+  stashed HEAD) — zero new issues; no test pins these surfaces.
+- NEXT: S4 — CI dispatch for the mailer variant
   (`gh workflow run build-exe.yml -f variant=mailer --ref mailer-exe`),
-  S5 VPS stays untouched until hotfix rules apply.
+  verify artifact naming/shape, then S5 QA battery (Health tab + CLI) and
+  the parked threads (TASK_196 watcher, TASK_193, TASK_200b auto-run).

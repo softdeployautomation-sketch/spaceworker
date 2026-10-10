@@ -80,6 +80,17 @@ const NAV_ITEMS: Omit<NavItem, "active">[] = [
 // exact ExeBuildTarget values from lib/exe-build-target.ts.
 const BUILD_ALLOWED_HREFS: Record<string, Set<string> | undefined> = {
   extractor: new Set(["/dashboard", "/dashboard/extract", "/dashboard/settings"]),
+  // TASK_201 S3 (owner, 2026-10-10) — the Mailer EXE menu is Campaigns +
+  // Settings ONLY: "the menu just becomes campaign and settings, with no
+  // support and agent, since it's just a standalone, following the steps of
+  // the standalone extractor." Support/Agent/Wallet/Logout need no entries
+  // here — components/shell.tsx already renders none of them when buildTarget
+  // is set. The Campaigns href covers BOTH sub-tabs (the mailboxes tab is
+  // ?tab=mailboxes, a startsWith match) and the overview page is deliberately
+  // NOT in the set: the owner named exactly two entries, and /dashboard's
+  // stats are DB-backed while the EXE runtime has no DATABASE_URL. The Health
+  // QA tab is unaffected — it lives in the admin panel, not this nav.
+  mailer: new Set(["/dashboard/campaigns", "/dashboard/settings"]),
 };
 
 // TASK_181 D1 (owner, 2026-10-07, Option B) — the wrapper build's nav: Devices +
