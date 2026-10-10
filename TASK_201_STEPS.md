@@ -51,3 +51,32 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
 - NEXT: S1 as described in PROMPT_CONTINUE_TASK_201.md §4.
 
 
+### PROGRESS 2026-10-10 ~10:05 — S1 done: mailer build plumbing (no behavior change)
+- `src-tauri/tauri.mailer.conf.json` created, mirroring the extractor conf
+  shape exactly: `productName: "SpaceWorker OS - Mailer"`,
+  `identifier: "com.spaceworker-os.mailer"`, bundle `{targets:["nsis"],
+  createUpdaterArtifacts:false}`. PROOF: `diff` of the two confs with
+  productName/identifier deleted = empty ("SHAPE: identical apart from
+  productName/identifier"); JSON.parse OK.
+- `.github/workflows/build-exe.yml`: added `- mailer` to the variant
+  `options:` list; updated the stale comments (the resolve-step comment that
+  claimed "extractor for both variants today" — now explains mailer passes
+  through the else-branch as BUILD_TARGET=mailer with WRAPPER_MODE omitted —
+  and the `args:` comment enumerating the per-variant confs). PROOF:
+  `grep -n mailer` shows lines 19/62-65; `js-yaml` load = "YAML OK".
+- runtime-assemble.mjs untouched (confirmed — `git diff --name-only` lists
+  only the workflow; the script already writes
+  `BUILD_TARGET=${process.env.BUILD_TARGET ?? "extractor"}` and omits
+  WRAPPER_MODE when unset). Base window sizes inherited from tauri.conf.json:
+  1280×860, min 1024×700 (lesson #5 satisfied).
+- Gates: `npx tsc --noEmit` exit 0 (no TS touched — plumbing only).
+- NO CI run yet (that's S4; per lesson #6/7 the authoritative build is CI,
+  and the mailer conf must reach the dispatched ref —
+  `gh workflow run build-exe.yml -f variant=mailer --ref mailer-exe`).
+- NEXT: S2 — `app/api/exe/mailer/sources` (license-authed,
+  isLocalExeRuntime() fail-closed, decrypted SMTP passwords via
+  lib/mailbox-crypto.ts + templates + sending domains; unit tests with fake
+  db). Open owner question before S3: UI trim scope (campaigns+mailboxes+
+  templates only, or also recipients/leads import?).
+
+

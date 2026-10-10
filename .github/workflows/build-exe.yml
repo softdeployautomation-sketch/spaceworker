@@ -16,6 +16,7 @@ on:
         options:
           - extractor
           - devices
+          - mailer
       tag_name:
         description: Release tag (e.g. v1.4.0) — leave blank to skip a GitHub Release
         required: false
@@ -55,9 +56,13 @@ jobs:
       # exeBuildTarget() has no "devices" value, so feeding the variant straight
       # into BUILD_TARGET would silently fall back to "extractor" — the exact
       # hazard the comment on the env below documents. The core target therefore
-      # stays "extractor" for both variants today; WRAPPER_MODE is "devices" only
-      # on the devices variant (empty elsewhere ⇒ runtime-assemble omits the line
-      # ⇒ that variant's .env.local is byte-identical to a build cut today).
+      # stays "extractor" for the devices variant (WRAPPER_MODE="devices" only
+      # there; empty elsewhere ⇒ runtime-assemble omits the line ⇒ that variant's
+      # .env.local is byte-identical to a build cut today).
+      # TASK_201 — `mailer` IS a real ExeBuildTarget ("extractor" | "mailer" |
+      # "combined" | "automation"), so the else-branch passes it through as
+      # build_target untouched: BUILD_TARGET=mailer, WRAPPER_MODE omitted
+      # (mailer is a sibling of the extractor build, not a wrapper over it).
       - name: Resolve variant env (BUILD_TARGET / WRAPPER_MODE)
         id: variant
         shell: bash
@@ -113,8 +118,9 @@ jobs:
         with:
           projectPath: .
           # One tauri conf per variant: extractor → tauri.extractor.conf.json,
-          # devices → tauri.devices.conf.json (TASK_181; both merge over the
-          # base tauri.conf.json, window title "SpaceWorker OS" inherited).
+          # devices → tauri.devices.conf.json (TASK_181), mailer →
+          # tauri.mailer.conf.json (TASK_201; all merge over the base
+          # tauri.conf.json, window title "SpaceWorker OS" inherited).
           args: --config src-tauri/tauri.${{ github.event.inputs.variant }}.conf.json
           tagName: ${{ github.event.inputs.tag_name }}
           releaseName: "SpaceWorker OS — ${{ github.event.inputs.variant }}"
