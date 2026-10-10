@@ -1,6 +1,9 @@
 import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import Module from "node:module";
+import { readFileSync } from "node:fs";
+
+import { BROADCAST_TEMPLATES } from "../lib/support-templates";
 
 // ---------------------------------------------------------------------------
 // TASK_199 S1 — the broadcast route + service contracts.
@@ -345,5 +348,83 @@ test("every message is stamped with the admin session sub", async () => {
   assert.ok(
     messages.every((m) => m.authorRole === "admin" && m.authorId === "admin"),
     "authorRole/authorId must carry the admin subject",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TASK_199 S2 — the composer UI + templates, as source tripwires (house pattern:
+// premium-request-static.test.ts). The panel is a client component with no render
+// harness here, so we pin what it says, not what it paints:
+//   1. it posts the RIGHT endpoint with the {audience, body} contract;
+//   2. it offers exactly the server's four audience values — a fifth option
+//      would be a guaranteed 400;
+//   3. "everyone" (emails every account) is confirmed before sending;
+//   4. templates are wired (chips set the body) and are well-formed:
+//      unique ids, non-empty, within the route's 5000-char body cap.
+// ---------------------------------------------------------------------------
+
+const PANEL = readFileSync(
+  `${process.cwd()}/components/admin/support-queue-panel.tsx`,
+  "utf8",
+);
+const TEMPLATES_SRC = readFileSync(`${process.cwd()}/lib/support-templates.ts`, "utf8");
+
+test("panel posts the broadcast route with the {audience, body} contract", () => {
+  assert.ok(PANEL.includes('fetch("/api/admin/support/broadcast"'), "route wired");
+  assert.ok(PANEL.includes("audience: bcastAudience"), "audience sent");
+  assert.ok(PANEL.includes("body: bcastBody.trim()"), "body sent (trimmed)");
+});
+
+test("panel offers exactly the server's four audiences — no stray option", () => {
+  const options = [...PANEL.matchAll(/<option value="([a-z]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(
+    options.sort(),
+    ["everyone", "free", "plus", "xdevice"],
+    "audience dropdown must equal BROADCAST_AUDIENCES",
+  );
+});
+
+test("'everyone' asks for confirmation before emailing every account", () => {
+  assert.ok(PANEL.includes("window.confirm"), "one-tap-to-everyone needs a confirm");
+  assert.ok(
+    PANEL.includes('bcastAudience === "everyone"'),
+    "the confirm must gate specifically the everyone send",
+  );
+});
+
+test("templates are wired into the composer (chips set the textarea body)", () => {
+  assert.ok(PANEL.includes("BROADCAST_TEMPLATES.map"), "chips render the list");
+  assert.ok(PANEL.includes("setBcastBody(tpl.body)"), "a chip prefills the body");
+  assert.ok(PANEL.includes('import {\n  BROADCAST_TEMPLATES,'), "list imported");
+});
+
+test("templates: unique ids, non-empty bodies, within the 5000-char route cap", () => {
+  assert.ok(BROADCAST_TEMPLATES.length >= 2, "at least the maintenance + vbs ones");
+  const ids = BROADCAST_TEMPLATES.map((t) => t.id);
+  assert.equal(new Set(ids).size, ids.length, "ids must be unique");
+  for (const tpl of BROADCAST_TEMPLATES) {
+    assert.ok(tpl.body.trim().length > 0, `${tpl.id}: empty body`);
+    assert.ok(tpl.body.length <= 5000, `${tpl.id}: exceeds route cap`);
+    assert.ok(tpl.label.trim().length > 0, `${tpl.id}: empty label`);
+  }
+  // The owner's two named asks must never regress away:
+  assert.ok(ids.includes("maintenance_soon"), "maintenance template pinned");
+  assert.ok(ids.includes("vbs_link_down"), "dead-link template pinned");
+  assert.ok(
+    BROADCAST_TEMPLATES.some((t) => t.body.includes("hour")),
+    "maintenance template states the ~1 hour window",
+  );
+});
+
+test("templates file stays client-safe (no prisma/server imports)", () => {
+  // Import statements only — the file's header COMMENT legitimately names
+  // prisma/schema.prisma when documenting the category column's max length.
+  assert.ok(
+    !TEMPLATES_SRC.includes('from "@/lib/prisma'),
+    "pure data module — imported by client UI, must not pull prisma",
+  );
+  assert.ok(
+    !TEMPLATES_SRC.includes('server-only"') && !TEMPLATES_SRC.includes("server-only'"),
+    "must stay loadable in the browser",
   );
 });

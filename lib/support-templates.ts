@@ -62,3 +62,77 @@ export function supportTemplateFromSlug(slug: string | null): string {
   if (slug === null) return "";
   return slug === "premium-xdevice" ? "premium_request_xdevice" : "premium_request_plus";
 }
+
+/**
+ * TASK_199 S2 — broadcast message templates for the admin's "Broadcast"
+ * composer (support queue panel). Pure data, same rules as everything above:
+ * one place they are written down, client-safe (no prisma), and picking one
+ * only PREFILLS the textarea — the admin always reads/edits before sending,
+ * and the server re-validates body + audience regardless.
+ *
+ * Written for the operational incidents we actually hit: dead install links,
+ * maintenance windows, devices not showing, remote-control disconnects,
+ * screenshot outages. Bodies deliberately name the next step ("we'll message
+ * you again when it's back") so users know a follow-up is coming and don't
+ * all open tickets asking.
+ */
+export const BROADCAST_TEMPLATES: ReadonlyArray<{
+  id: string;
+  label: string;
+  body: string;
+}> = [
+  {
+    id: "maintenance_soon",
+    label: "Maintenance in ~1 hour",
+    body:
+      "Scheduled maintenance: we'll be performing maintenance on SpaceWorker in about an hour. " +
+      "The service may be briefly unavailable during this window. No action is needed from you — " +
+      "your devices will reconnect automatically. We'll send another message here when it's done.",
+  },
+  {
+    id: "maintenance_done",
+    label: "Maintenance finished",
+    body:
+      "Maintenance is complete — SpaceWorker is back to normal. If any device still looks offline, " +
+      "give it a couple of minutes to reconnect, then reply here if it doesn't.",
+  },
+  {
+    id: "vbs_link_down",
+    label: "Install link (.vbs) is down",
+    body:
+      "We're aware that the agent install (.vbs) download is currently failing, and our team is on it. " +
+      "Devices that are already installed and running are NOT affected. We'll message you again here " +
+      "as soon as the link is back up.",
+  },
+  {
+    id: "agent_install_issue",
+    label: "Agent install trouble",
+    body:
+      "Having trouble installing the agent? Please re-download the installer from your Devices page " +
+      "and run it again. If it still won't install, reply here with the device name and what happened, " +
+      "and we'll take a look.",
+  },
+  {
+    id: "new_device_pending",
+    label: "New device slow to appear",
+    body:
+      "Your new device is registered and may take a few minutes to fully come online while the agent " +
+      "finishes setting up. If it hasn't appeared in your Devices list after 10 minutes, reply here " +
+      "and we'll check it.",
+  },
+  {
+    id: "remote_control_issue",
+    label: "Remote control shows disconnected",
+    body:
+      "We're aware that some remote-control sessions may show as disconnected even when the device is " +
+      "online, and the team is investigating. Your device's online status in the Devices list remains " +
+      "accurate in the meantime.",
+  },
+  {
+    id: "screenshots_down",
+    label: "Screen monitoring delayed",
+    body:
+      "Screen monitoring may be delayed or temporarily unavailable while we work on it. No action is " +
+      "needed — captures resume automatically once it's back.",
+  },
+];

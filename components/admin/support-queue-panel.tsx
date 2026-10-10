@@ -5,9 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 import { Button, Input, Textarea } from "@/components/ui";
 import { SupportInvoiceCard, type ThreadInvoiceCardData } from "@/components/support-invoice-card";
 import {
+  BROADCAST_TEMPLATES,
   PREMIUM_REQUEST_TEMPLATES,
   isPremiumRequestCategory,
 } from "@/lib/support-templates";
+// TASK_199 S2 — type-only import: erased at compile time, so the server module's
+// prisma import never reaches this client bundle. The VALUES live in the route.
+import type { BroadcastAudience } from "@/lib/support/tickets";
 
 // TASK_161 D3/D4 — the admin support queue.
 //
@@ -180,6 +184,15 @@ export default function SupportQueuePanel() {
   const [invBusy, setInvBusy] = useState(false);
   const [invError, setInvError] = useState<string | null>(null);
   const [priceDefaults, setPriceDefaults] = useState<PriceDefaults | null>(null);
+
+  // TASK_199 S2 — the broadcast composer. Its own state again (a half-typed
+  // announcement must not clobber a reply or an invoice draft). The audience
+  // values mirror BROADCAST_AUDIENCES in lib/support/tickets.ts.
+  const [bcastOpen, setBcastOpen] = useState(false);
+  const [bcastAudience, setBcastAudience] = useState<BroadcastAudience>("everyone");
+  const [bcastBody, setBcastBody] = useState("");
+  const [bcastBusy, setBcastBusy] = useState(false);
+  const [bcastError, setBcastError] = useState<string | null>(null);
 
   const load = useCallback(async (status: string, planCategory: string) => {
     setListError(null);
@@ -547,6 +560,52 @@ export default function SupportQueuePanel() {
     }
   }, [selected, detail, invBusy, invPlan, invAmount, invDays, invBtc, invTrc, invErc, invNote]);
 
+  /**
+   * TASK_199 S2 — send the broadcast. The response is COUNTS ONLY (the route
+   * never returns who), so the success line reads "sent N of M" and nothing
+   * else. "Everyone" emails every account on the platform — one confirm, one
+   * click, and the composer closes on success so it cannot be double-sent by
+   * accident. The server re-validates audience + body regardless.
+   */
+  const sendBroadcast = useCallback(async () => {
+    if (bcastBusy || !bcastBody.trim()) return;
+    if (
+      bcastAudience === "everyone" &&
+      !window.confirm(
+        "Send this message to EVERY user? Each one gets a support message and an email.",
+      )
+    ) {
+      return;
+    }
+    setBcastBusy(true);
+    setBcastError(null);
+    setNotice(null);
+    try {
+      const res = await fetch("/api/admin/support/broadcast", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience: bcastAudience, body: bcastBody.trim() }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        targeted?: number;
+        sent?: number;
+        failed?: number;
+      };
+      if (!res.ok) throw new Error(data.error || "Could not send the broadcast.");
+      setNotice(
+        `Broadcast sent — ${data.sent ?? 0} of ${data.targeted ?? 0} user(s)` +
+          ((data.failed ?? 0) > 0 ? `, ${data.failed} failed.` : "."),
+      );
+      setBcastBody("");
+      setBcastOpen(false);
+    } catch (e) {
+      setBcastError(e instanceof Error ? e.message : "Could not send the broadcast.");
+    } finally {
+      setBcastBusy(false);
+    }
+  }, [bcastBusy, bcastAudience, bcastBody]);
+
   return (
     <section>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -597,6 +656,17 @@ export default function SupportQueuePanel() {
           >
             {composing ? "Cancel" : "New ticket for a customer"}
           </Button>
+          {/* TASK_199 S2 — broadcast to everyone or one tier. */}
+          <Button
+            variant="secondary"
+            className="px-3 py-1.5 text-xs"
+            onClick={() => {
+              setBcastOpen((v) => !v);
+              setBcastError(null);
+            }}
+          >
+            {bcastOpen ? "Cancel" : "Broadcast"}
+          </Button>
         </div>
       </div>
 
@@ -633,6 +703,67 @@ export default function SupportQueuePanel() {
             onClick={() => void composeTicket()}
           >
             {busy ? "Creating…" : "Create ticket"}
+          </Button>
+        </div>
+      )}
+
+      {bcastOpen && (
+        <div className="mt-4 flex flex-col gap-2 rounded-xl border border-border bg-bg-elevated p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="text-xs font-medium text-fg-muted" htmlFor="bcast-audience">
+              Send to
+            </label>
+            {/* Mirrors BROADCAST_AUDIENCES in lib/support/tickets.ts — the server
+                rejects any value outside that enum with a 400. */}
+            <select
+              id="bcast-audience"
+              value={bcastAudience}
+              onChange={(e) => setBcastAudience(e.target.value as BroadcastAudience)}
+              className="rounded-lg border border-border bg-bg-elevated px-3 py-2 text-sm text-fg focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
+            >
+              <option value="everyone">Everyone</option>
+              <option value="free">Free users</option>
+              <option value="xdevice">Premium XDevice</option>
+              <option value="plus">Premium Plus</option>
+            </select>
+          </div>
+          {/* TASK_199 S2 — one-tap templates (lib/support-templates.ts). Picking
+              one REPLACES the textarea deterministically — no append-merge to
+              double-fire on accidental clicks; the admin always edits after. */}
+          <div className="flex flex-wrap gap-1.5">
+            {BROADCAST_TEMPLATES.map((tpl) => (
+              <button
+                key={tpl.id}
+                type="button"
+                onClick={() => setBcastBody(tpl.body)}
+                className="rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-fg-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+              >
+                {tpl.label}
+              </button>
+            ))}
+          </div>
+          <Textarea
+            value={bcastBody}
+            onChange={(e) => setBcastBody(e.target.value)}
+            placeholder="The message every selected user receives in their Support thread (and by email). Pick a template above or write your own."
+            rows={5}
+            maxLength={5000}
+            aria-label="Broadcast message"
+          />
+          <p className="text-xs text-fg-muted">
+            Each user gets it in their own Support thread — their open thread, or a new
+            “Announcement” thread if they have none. The same credential refusal the
+            customer gets applies here.
+          </p>
+          {bcastError && (
+            <p className="text-xs text-red-600 dark:text-red-400">{bcastError}</p>
+          )}
+          <Button
+            className="self-start text-xs"
+            disabled={bcastBusy || !bcastBody.trim()}
+            onClick={() => void sendBroadcast()}
+          >
+            {bcastBusy ? "Sending…" : "Send broadcast"}
           </Button>
         </div>
       )}
