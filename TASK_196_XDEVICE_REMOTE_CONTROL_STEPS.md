@@ -110,3 +110,38 @@ next ON-session captures the SW-vs-mesh state at the same instant.
 
 
 ---
+## 2026-10-10 — PROBE 4 (MeshCentral live node table) + watcher armed
+
+Ran vantra's exact control-channel token (`{"action":"nodes"}` as
+MESH_LOGIN_USER, standalone copy of makeLoginToken). 9 nodes total:
+
+- **CSFD-CHECKOUT (tier-5, online): the ONLY node with `conn=1`** — agent
+  mesh session active.
+- EVERY other node — both tier-3 "Sc" nodes (both ip 105.112.30.28 = ONE
+  physical machine enrolled to two tier-3 accounts) and every other tier-5
+  node — has **no `conn` field = no active mesh session**. Last-known
+  idletimes present (stale values from before disconnect).
+
+**Verdict so far**: MeshCentral, TRMM and spaceworker all AGREE at every
+layer, for every tier, at every instant sampled: tier is NOT discriminating
+anywhere in the chain. The only remotely-online agent system-wide is the
+tier-5 CSFD one; the owner's tier-3 test machine (105.112.30.28) has been
+OFFLINE the whole observation window — so the reported state could not be
+reproduced on demand.
+
+**Leading hypothesis (H4, fits every fact)**: a partial/interrupted agent
+install — the VBS uninstall/reinstall saga interrupted installs can leave an
+agent whose TRMM checkin works but whose meshagent session does not come up.
+Then: SW chip green (checkins fresh) + MeshCentral node dead → the iframe
+shows "disconnect". Premium Plus "works" because that account's install is
+the older clean one. Note the same physical VM is registered under TWO
+tier-3 accounts + one tier-5 account (three Sc rows!) — re-registrations
+never cleaned the previous agents' TRMM rows.
+
+**Watcher armed** (`/opt/spaceworker/t196-watch.ts`, 60s polls, 24h,
+log /tmp/t196-watch.log): logs a `*** DIVERGENCE ***` line the moment a
+tier-3 agent has fresh checkins (SW would show online) while its mesh view
+is NOT online — capturing the owner's exact bug state with server-side
+evidence whenever their machine is next on.
+
+
