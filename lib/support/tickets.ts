@@ -852,6 +852,96 @@ export async function postInvoiceNoticeToUser(
   return addAdminMessage(created.id, body, adminId, invoiceId);
 }
 
+// ---------------------------------------------------------------------------// TASK_199 — BROADCAST support message (owner: "a general support message i can
+// send that everyone gets, and put a dropdown so i can select different tiers,
+// or everyone").
+//
+// The audience is an ENUM the client picks from; the TIER FILTER is derived
+// server-side ONLY (a client-sent tier list would be a where-clause injection
+// and a lie about who gets it). Delivery rides the SAME path as any admin
+// reply — reuse the user's open thread, else open one ("Announcement") →
+// `addAdminMessage` — so the badge/unread derivation, credential scan and body
+// validation behave identically to every other support message. Email per
+// recipient is the TASK_187 S2 contract (a support message emails the user),
+// fire-and-forget: support-notify logs its own failures and never throws.
+// One bad user can never abort the batch — counts, not throws.
+
+export const BROADCAST_AUDIENCES = ["everyone", "free", "xdevice", "plus"] as const;
+export type BroadcastAudience = (typeof BROADCAST_AUDIENCES)[number];
+
+/** The tier filter for an audience — PURE so tests pin the mapping directly.
+ * Mirrors `planLabelForTier` (lib/plan-name.ts): Free = 0/1/4, XDevice = 3,
+ * Premium Plus = >= 5 (lazy reversion may leave stale higher tiers; gte keeps
+ * them in the audience they still pay for). "everyone" = no filter at all. */
+export function broadcastAudienceWhere(
+  audience: BroadcastAudience,
+): { tier?: { in: number[] } | { gte: number } } {
+  if (audience === "everyone") return {};
+  if (audience === "free") return { tier: { in: [0, 1, 4] } };
+  if (audience === "xdevice") return { tier: { in: [3] } };
+  return { tier: { gte: 5 } };
+}
+
+export interface BroadcastCounts {
+  audience: BroadcastAudience;
+  targeted: number;
+  sent: number;
+  failed: number;
+}
+
+/** Send one admin message to every user in an audience. Returns COUNTS ONLY —
+ * never user ids or emails (the route ships this shape verbatim).
+ *
+ * `notify` is INJECTED (the route passes `notifyUserTicketReply`): this module
+ * must stay free of `lib/support-notify` because that file imports
+ * `server-only`, which throws under the plain-node test runner — and because
+ * notification wiring belongs at the route, same as the admin reply path. */
+export async function broadcastAdminMessage(opts: {
+  audience: BroadcastAudience;
+  body: string;
+  adminId: string | null;
+  notify?: (n: { ticketId: string; to: string; subject: string }) => void;
+}): Promise<BroadcastCounts> {
+  const { audience, body, adminId, notify } = opts;
+  const users = await prisma.user.findMany({
+    where: broadcastAudienceWhere(audience),
+    select: { id: true, email: true },
+  });
+
+  const counts: BroadcastCounts = { audience, targeted: users.length, sent: 0, failed: 0 };
+
+  for (const user of users) {
+    try {
+      const open = await prisma.supportTicket.findFirst({
+        where: { userId: user.id, status: { not: RESOLVED_STATUS } },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true, subject: true },
+      });
+      const ticket =
+        open ??
+        (await prisma.supportTicket.create({
+          data: { userId: user.id, subject: "Announcement" },
+          select: { id: true, subject: true },
+        }));
+
+      const result = await addAdminMessage(ticket.id, body, adminId);
+      if (!result.ok) {
+        counts.failed++;
+        continue;
+      }
+      counts.sent++;
+      // TASK_187 S2 — email the owner that an admin replied; the notifier
+      // skips a non-email recipient itself, and this is never awaited into
+      // the batch (support-notify logs its own failures).
+      notify?.({ ticketId: ticket.id, to: user.email, subject: ticket.subject });
+    } catch {
+      // One bad thread (or a transient write error) must not abort the batch.
+      counts.failed++;
+    }
+  }
+  return counts;
+}
+
 /**
  * Resolve / reopen / reprioritise.
  *

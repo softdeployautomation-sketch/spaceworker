@@ -22,6 +22,20 @@
   - `lib/support/tickets.ts`: `broadcastAdminMessage({ audience, body, adminId })`.
   - `app/api/admin/support/broadcast/route.ts`.
   - Tests: new `tests/support-broadcast.test.ts` (audience→tier mapping, body validation, counts contract, admin guard, email-once-per-user wiring) + `package.json` script.
+
+### 2026-10-10 07:25 — PROGRESS: S1 COMPLETE (lib + route + tests, gates green, committing now)
+
+**Shipped:**
+1. `lib/support/tickets.ts` — `BROADCAST_AUDIENCES` enum (`everyone|free|xdevice|plus`), pure `broadcastAudienceWhere()` (free=[0,1,4], xdevice=[3], plus=gte 5, everyone={}), `broadcastAdminMessage()` — resolves users, per-user find-open-thread-else-create "Announcement" → real `addAdminMessage`, counts `{audience,targeted,sent,failed}` with per-user try/catch (one bad thread never aborts the batch).
+   - **Design deviation, recorded:** notify is INJECTED (`notify?` option) instead of imported — `lib/support-notify.ts` line 1 is `import "server-only"` which THROWS under plain-node tests (would break `support-tickets.test.ts`); the route passes `notifyUserTicketReply`, mirroring the admin-reply route pattern. Caught BEFORE tests ran.
+2. `app/api/admin/support/broadcast/route.ts` — `requireAdminSession` (401) → zod `.strict()` `{audience: enum, body: string.trim().min(1).max(5000)}` (400) → `getAdminSession().sub` → counts-only JSON (no ids/emails ever). `trim()` before `min(1)` so whitespace-only is a 400, not N failures behind a 200 (caught by test 3).
+3. `tests/support-broadcast.test.ts` — 12 tests, house require-hook (real route + REAL service, faked prisma/admin-auth/support-notify/next-server): server-derived tier filter, 401-writes-nothing, validation 400s, counts contract + PII-free serialization, per-audience targeting, exactly-one-email-per-sent-user, open-thread reuse + subject preserved, resolved-never-resurrected, batch-survives-one-bad-user, admin sub stamped.
+4. `package.json` — `test:support-broadcast`.
+
+**Gates (proof):** `test:support-broadcast` → **12/12** · `test:support` → **57/57** (tickets.ts unchanged behavior) · `tsc-errors:0` · `eslint:0`.
+
+S2 = UI composer in SupportQueuePanel + static contract assertions → commit; S3 = shared deploy + live broadcast verify.
+
   - Gates: tsc 0 · eslint 0 new · suite green → commit + push.
 - **S2 — UI** in `support-queue-panel.tsx`: Broadcast button → dropdown + textarea + Send → POST → notice shows `sent/failed` counts. Test: static contract assertions in `tests/support-broadcast.test.ts`.
   - Gates → commit + push.
