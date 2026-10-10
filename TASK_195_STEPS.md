@@ -132,3 +132,58 @@ registered/rendered/imported.
 NEXT SLICE: S3 — deploy to VPS (no migrate needed — no schema change),
 live-run the battery on the box (CLI + admin UI click), record the report,
 closeout TASK_195.
+
+
+---
+
+## 2026-10-10 — S3 IN PROGRESS (deployed + LIVE BATTERY RAN — it found 4 real FAILs)
+
+### Deploy facts (with two traps worth remembering forever)
+
+- rsync app/lib/components/tests/prisma + package.json → md5 parity confirmed. **MISSING: scripts/**
+  (had to rsync separately when the CLI couldn't find qa-battery.ts — always sync scripts/ too).
+- **TRAP 1 — `BUILD_EXIT:0` LIED.** First build "succeeded" (exit 0) but the type-check worker
+  had FAILED (`Type error: File '/opt/spaceworker/tests/hosting-domains.test.ts' not found`) and
+  .next/BUILD_ID was ABSENT → service crash-looped on "Could not find a production build".
+  Next 16.2.9: the worker's exit code does not propagate to `npx next build`'s status.
+  **Truthful build gate from now on: status file AND BUILD_ID exists AND `grep -c "Type error"` = 0.**
+- **TRAP 2 — rsync -a propagates LOCAL 600 PERMS + my UID.** `tests/hosting-domains.test.ts` was
+  mode 600 locally (stray from an old tooling mishap); rsync -a copied 600 + UID 501 to the box →
+  trmm couldn't read it → the type-check failure. Fixed: local chmod 644 (only such file in the
+  synced trees — audited), box chown -R trmm:trmm on app/lib/components/tests/prisma. **Post-rsync
+  habit: chown -R trmm:trmm the synced dirs.**
+- Rebuild (after both fixes): BUILD_ID **`1dQhxq9Kurl7BH78k2V60`**, type-errors 0, service
+  **active**, http:200. (Known quirk again: box .env PORT=3400 vs real listener :3500.)
+
+### LIVE BATTERY RUN — the first live run ever (CLI on the box as trmm)
+
+`npx tsx scripts/qa-battery.ts` → **32 probes: 26 pass, 1 warn, 4 fail, 1 skip.**
+This is the battery doing exactly its job. Triage so far:
+
+1. **FAIL access — anon POST /api/devices → 405, probe expected 401.** TRIAGED: the route is
+   GET-only (register lives in Vantra; spaceworker has NO anon write surface at all) — 405 is the
+   CORRECT secure answer, the PROBE's expectation was wrong (its unit test used a fake fetch and
+   never validated the real route shape). FIX IN PROGRESS: expect 401 OR 405 (405 = better).
+2. **FAIL internal — /api/internal/browser-profiles → 404, probe expected 401.** TRIAGED: the dir
+   exists but has NO route.ts (only a `[id]` subdir) — my `discoverInternalRoutes` lists ANY dir,
+   a blind spot. Local and box agree (no drift). FIX IN PROGRESS: only list dirs containing route.ts.
+3. **FAIL platform — Migration ledger: 1 unfinished/rolled-back row.** NOT YET TRIAGED — next:
+   identify the migration name on the box (read-only query), then resolve honestly.
+4. **FAIL build — 3 client chunks contain "topsecret6199".** TRIAGED: PRE-EXISTING (not from this
+   deploy) — the admin app's own source files (protected layout/page, devices-tab,
+   admin-login-form, device pages) legitimately reference the secret path and compile into client
+   chunks, so the path is discoverable by anyone pulling /_next/static JS. First surfaced ever by
+   this battery. Fix = derive the path at runtime (no literals) — a TASK_188-design change touching
+   several files. **DEFERRED to owner decision** (report it; the real gate is the admin session).
+5. **WARN freshness — screenshot pipeline STALE** (newest 2026-10-09T20:10Z, ~8h before run).
+   Informational — likely screenshots off or a stopped sweep; owner visibility only.
+
+Also proven live: /admin path → 307 (never 200), 13/14 internal guards 401 (the 14th is finding #2),
+carrier silent-install tripwire PASS on the REAL box render, presence freshness fresh, config
+(telegram/resend/internal-bearer) all configured, Vantra probe SKIP (VANTRA_URL unset in
+spaceworker's env — by design here).
+
+NEXT (this slice continues): fix probe #1 + #2 in lib/qa/battery.ts with unit tests → gates →
+rsync + rebuild (route bundle embeds battery) → live re-run expecting 2 fails gone → triage the
+migration row → admin-route live probe with minted session (`/tmp/t195-health-probe.ts` ready on
+box) → record final report → commit → owner summary (incl. deferred leak question + stale warn).
