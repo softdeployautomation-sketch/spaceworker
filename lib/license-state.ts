@@ -1,9 +1,9 @@
 import "server-only";
 
 import { mkdir, readFile, writeFile } from "fs/promises";
-import { homedir } from "os";
 import path from "path";
 
+import { exeDataDir } from "./exe-data-dir";
 import { getMachineId } from "./machine-id";
 
 // Local, per-machine persistence for the EXE's licensing gate. Holds (a) when
@@ -49,32 +49,10 @@ const DEFAULT_STATE: ExeLicenseLocalState = { version: 1 };
  * app-data dir), otherwise falls back to a per-OS app-data location.
  */
 export function licenseStatePath(): string {
-  const override = process.env.SPACEWORKER_LOCAL_DATA_DIR;
-  if (override) return path.join(override, "exe-license-state.json");
-
-  const sys = process.platform; // win32 | darwin | linux | ...
-  try {
-    if (sys === "win32") {
-      return path.join(
-        process.env.APPDATA ?? path.join(homedir(), "AppData", "Roaming"),
-        "SpaceWorkerOS",
-        "exe-license-state.json",
-      );
-    }
-    if (sys === "darwin") {
-      return path.join(
-        homedir(),
-        "Library",
-        "Application Support",
-        "SpaceWorkerOS",
-        "exe-license-state.json",
-      );
-    }
-    const dataHome = process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share");
-    return path.join(dataHome, "spaceworker-os", "exe-license-state.json");
-  } catch {
-    return path.join(process.env.TMPDIR ?? "/tmp", "spaceworker-os", "exe-license-state.json");
-  }
+  // TASK_201 S7 — the platform-dir logic moved verbatim to lib/exe-data-dir.ts
+  // (shared with the mailer EXE's local database + drain settings); the path
+  // this returns is byte-identical to before.
+  return path.join(exeDataDir(), "exe-license-state.json");
 }
 
 /** Reads the local state, returning defaults (never throwing) if absent/corrupt. */

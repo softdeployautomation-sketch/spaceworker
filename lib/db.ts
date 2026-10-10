@@ -19,7 +19,20 @@ const globalForPrisma = globalThis as unknown as {
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 function loadClient(): PrismaClient {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  // TASK_201 S7 — the mailer EXE's bundled local runtime: the client is the
+  // embedded PGlite Postgres (a real local replica — lib/local-exe-db.ts),
+  // constructed synchronously so this Proxy's property chains keep working.
+  // Shares lib/prisma.ts's globalForPrisma key, so whichever proxy is touched
+  // first wins and BOTH serve the same single client. Gated on BUILD_TARGET
+  // =mailer too: extractor/devices EXEs stay DB-free (no schema shipped).
+  if (process.env.SPACEWORKER_LOCAL_EXE === "true" && process.env.BUILD_TARGET === "mailer") {
+     
+    const { getLocalExePrismaSync } = require("./local-exe-db") as typeof import("./local-exe-db");
+    const c = globalForPrisma.prisma ?? getLocalExePrismaSync();
+    globalForPrisma.prisma = c;
+    return c;
+  }
+   
   const { PrismaClient } = require("@prisma/client") as typeof import("@prisma/client");
   const c =
     globalForPrisma.prisma ??

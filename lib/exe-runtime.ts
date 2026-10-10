@@ -23,6 +23,14 @@ export function isLocalExeRuntime(): boolean {
   return process.env.SPACEWORKER_LOCAL_EXE === "true";
 }
 
+/** TASK_201 S7 — the mailer EXE's bundled local runtime specifically (not the
+ * extractor/devices variants, which also set SPACEWORKER_LOCAL_EXE but keep
+ * their DB-free behaviour). Gates everything local-replica: the embedded
+ * database, the synthetic local session, and the drain settings route. */
+export function isLocalMailerRuntime(): boolean {
+  return isLocalExeRuntime() && process.env.BUILD_TARGET === "mailer";
+}
+
 // Confirmed live (2026-09-19): the marketing homepage/pricing page compile into
 // the EXE's bundled local runtime same as everything else, but that runtime has
 // NO DATABASE_URL (runtime-assemble.mjs deliberately strips the repo .env before

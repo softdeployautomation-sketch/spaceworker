@@ -5,6 +5,7 @@ import { SignJWT, jwtVerify } from "jose";
 import { cookies } from "next/headers";
 
 import { env } from "./env";
+import { isLocalMailerRuntime } from "./exe-runtime";
 
 // Session cookie name + params. httpOnly + Secure + SameSite=Lax.
 // Deliberately distinct from Vantra's ("vantra_session"/"vantra") so a session
@@ -113,6 +114,17 @@ export async function clearSessionCookie(): Promise<void> {
 
 /** Reads and validates the current session from cookies. Returns null if none. */
 export async function getSession(): Promise<SessionPayload | null> {
+  // TASK_201 S7 — the mailer EXE's bundled local runtime is a STANDALONE
+  // replica (owner directive 2026-10-10): exactly one local user, no hosted
+  // accounts, no cookie, nothing linking back to our server. Every route that
+  // calls getSession resolves to the same local premium user, which is what
+  // makes campaigns / mailboxes / saved templates work locally with zero
+  // linkage. Fail-closed elsewhere: this branch is unreachable unless
+  // SPACEWORKER_LOCAL_EXE=true, which only the bundled runtime ever sets.
+  if (isLocalMailerRuntime()) {
+    const { localExeSession } = await import("./local-exe-db");
+    return localExeSession();
+  }
   const store = await cookies();
   const token = store.get(SESSION_COOKIE)?.value;
   if (!token) return null;

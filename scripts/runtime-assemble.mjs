@@ -18,7 +18,9 @@
 // .exe). Override with EXE_TARGET_OS / EXE_TARGET_ARCH when cross-building.
 
 import { execFileSync, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, mkdtempSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,19 +119,63 @@ stripSourceFiles(RUNTIME_STANDALONE);
 // routes/nav compile in. .env.local outranks .env so nothing flips these off.
 rmSync(path.join(RUNTIME_STANDALONE, ".env"), { force: true });
 rmSync(path.join(RUNTIME_STANDALONE, ".env.local"), { force: true });
+const buildTarget = process.env.BUILD_TARGET ?? "extractor";
 const localEnvPath = path.join(RUNTIME_STANDALONE, ".env.local");
 const envLines = [
   "SPACEWORKER_LOCAL_EXE=true",
-  `BUILD_TARGET=${process.env.BUILD_TARGET ?? "extractor"}`,
+  `BUILD_TARGET=${buildTarget}`,
   `EXE_LICENSE_SECRET=${exeLicenseSecret}`,
   // TASK_181 — the devices-wrapper variant (build-exe.yml sets WRAPPER_MODE for
   // variant=devices). Written ONLY when actually set: every other variant's
   // .env.local stays byte-identical to today, and wrapperMode() fail-closes to
   // "no wrapper" when the line is absent.
   ...(process.env.WRAPPER_MODE ? [`WRAPPER_MODE=${process.env.WRAPPER_MODE}`] : []),
+  // TASK_201 S7 — mailer variant ONLY: the local server is a full replica, so
+  // it needs real crypto material of its own (nothing here ever touches the
+  // hosted backend; every value is random PER BUILD and used exclusively by the
+  // bundled runtime):
+  //   SESSION_SECRET          — signs the JWT session cookie machinery (the
+  //                             local session itself is synthetic, but env.ts
+  //                             loads the auth chain eagerly).
+  //   INTERNAL_BEARER_TOKEN   — authenticates the auto-drain loop's loopback
+  //                             POST to /api/internal/mail-queue-drain (the
+  //                             VPS's systemd timer equivalent; fail-closed if
+  //                             absent, same as the web).
+  //   MAILBOX_ENCRYPTION_KEY  — aes-256-gcm key (64 hex chars) protecting the
+  //                             user's own SMTP passwords at rest, locally.
+  //   APP_BASE_URL            — loopback base for link cloaking/test URLs; the
+  //                             fixed port is src-tauri/src/main.rs LOCAL_PORT.
+  ...(buildTarget === "mailer"
+    ? [
+        `SESSION_SECRET=${randomBytes(32).toString("hex")}`,
+        `INTERNAL_BEARER_TOKEN=${randomBytes(32).toString("hex")}`,
+        `MAILBOX_ENCRYPTION_KEY=${randomBytes(32).toString("hex")}`,
+        "APP_BASE_URL=http://127.0.0.1:34413",
+      ]
+    : []),
   "NEXT_TELEMETRY_DISABLED=1",
 ];
 writeFileSync(localEnvPath, envLines.join("\n") + "\n", "utf8");
+
+// TASK_201 S7 — mailer variant ONLY: ship the full database schema for the
+// bundled local Postgres (PGlite, lib/local-exe-db.ts). Generated here rather
+// than committing a second schema copy: `prisma migrate diff --from-empty
+// --to-schema-datamodel` derives the DDL from the SAME prisma/schema.prisma the
+// web app uses, so the local replica can never drift from the hosted one.
+// First boot applies it once (marker-table check in lib/local-exe-db.ts).
+if (buildTarget === "mailer") {
+  const requireFromRoot = createRequire(import.meta.url);
+  const prismaCli = requireFromRoot.resolve("prisma/build/index.js");
+  const schemaSql = execFileSync(
+    process.execPath,
+    [prismaCli, "migrate", "diff", "--from-empty", "--to-schema-datamodel", path.join(ROOT, "prisma", "schema.prisma"), "--script"],
+    { cwd: ROOT, encoding: "utf8", maxBuffer: 128 * 1024 * 1024 },
+  );
+  const dbDir = path.join(RUNTIME_STANDALONE, "db");
+  mkdirSync(dbDir, { recursive: true });
+  writeFileSync(path.join(dbDir, "schema.sql"), schemaSql, "utf8");
+  console.log(`[runtime-assemble] wrote local DB schema (db/schema.sql, ${schemaSql.length} bytes)`);
+}
 // ── 4. Provision the bundled Node runtime ────────────────────────────────────
 // A real Node binary so the EXE needs nothing running on the host machine. It is
 // renamed to a deterministic path the Tauri shell resolves via

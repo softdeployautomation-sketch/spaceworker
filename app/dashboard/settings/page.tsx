@@ -36,12 +36,19 @@ export default async function SettingsPage() {
   // security/etc. cards are web-host-only. Split here so the EXE build never
   // touches the DB. (Wrapper excluded above — see TASK_183.)
   if (isLocalExeRuntime() && !wrapper) {
+    // TASK_201 S7 — the mailer EXE is the standalone replica: its Settings
+    // carry the local drain controls (sending) above the licence panel. The
+    // extractor/devices EXEs keep their layout exactly as it was.
+    const { exeBuildTarget } = await import("@/lib/exe-build-target");
+    const { LocalDrainSettings } = await import("@/components/local-drain-settings");
+    const isMailer = exeBuildTarget() === "mailer";
     return (
       <div className="flex flex-col gap-6">
         <div>
           <h1 className="text-2xl font-bold text-fg">Settings</h1>
           <p className="mt-1 text-sm text-fg-muted">Licensing and preferences for this device.</p>
         </div>
+        {isMailer ? <LocalDrainSettings /> : null}
         <ExeLicensePanel buyHref={accountHref("/pricing")} />
       </div>
     );
