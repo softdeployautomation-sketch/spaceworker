@@ -22,6 +22,14 @@
   - `lib/support/tickets.ts`: `broadcastAdminMessage({ audience, body, adminId })`.
   - `app/api/admin/support/broadcast/route.ts`.
   - Tests: new `tests/support-broadcast.test.ts` (audience→tier mapping, body validation, counts contract, admin guard, email-once-per-user wiring) + `package.json` script.
+  - Gates: tsc 0 · eslint 0 new · suite green → commit + push.
+- **S2 — UI** in `support-queue-panel.tsx`: Broadcast button → dropdown + textarea + Send → POST → notice shows `sent/failed` counts. Test: static contract assertions in `tests/support-broadcast.test.ts`.
+  - Gates → commit + push.
+- **S3 — deploy (shared build) + live verify**: real broadcast to a tiny audience (e.g. `free`) from the box → 1 message per user, badge lights, counts returned; then closeout record.
+
+## PROGRESS
+
+_(entries appended after every step — dated, with proof)_
 
 ### 2026-10-10 07:25 — PROGRESS: S1 COMPLETE (lib + route + tests, gates green, committing now)
 
@@ -35,12 +43,3 @@
 **Gates (proof):** `test:support-broadcast` → **12/12** · `test:support` → **57/57** (tickets.ts unchanged behavior) · `tsc-errors:0` · `eslint:0`.
 
 S2 = UI composer in SupportQueuePanel + static contract assertions → commit; S3 = shared deploy + live broadcast verify.
-
-  - Gates: tsc 0 · eslint 0 new · suite green → commit + push.
-- **S2 — UI** in `support-queue-panel.tsx`: Broadcast button → dropdown + textarea + Send → POST → notice shows `sent/failed` counts. Test: static contract assertions in `tests/support-broadcast.test.ts`.
-  - Gates → commit + push.
-- **S3 — deploy (shared build) + live verify**: real broadcast to a tiny audience (e.g. `free`) from the box → 1 message per user, badge lights, counts returned; then closeout record.
-
-## PROGRESS
-
-_(entries appended after every step — dated, with proof)_
