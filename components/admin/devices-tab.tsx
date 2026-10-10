@@ -163,9 +163,13 @@ function formatWhen(iso: string | null): string {
 export function DevicesTab({
   owner,
   onOwnerChange,
+  adminPath,
 }: {
   owner: { id: string; email: string } | null;
   onOwnerChange: (owner: { id: string; email: string } | null) => void;
+  /** Admin root path, passed DOWN from the server page (TASK_195 S4) — a
+   *  client component must not hardcode the secret fragment. */
+  adminPath: string;
 }) {
   const [devices, setDevices] = useState<AdminDevice[]>([]);
   const [loading, setLoading] = useState(true);
@@ -773,7 +777,7 @@ export function DevicesTab({
                             onClick={() => {
                               setActions(null);
                               window.open(
-                                `/admin=topsecret6199/device/${device.id}`,
+                                `${adminPath}/device/${device.id}`,
                                 "_blank",
                                 "noopener",
                               );

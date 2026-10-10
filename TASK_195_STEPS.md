@@ -243,4 +243,59 @@ Admin panel → **Health** tab (fresh run each open, `no-store`), or on the box:
 (exit 0 only when no FAIL). TASK_195 code deliverable is COMPLETE; the task closes when the
 owner answers decision #1.
 
+
+---
+
+## 2026-10-10 — S4 STARTED: chunk-leak remediation (the owner's paste of the live battery = GO)
+
+Goal: `build-leak` FAIL → PASS, battery fully green, with ZERO behavior change to the admin
+panel. Strategy (principle: the literal secret path may live ONLY in server code):
+
+1. Enumerate every source file that hardcodes the admin path fragment (grep, whole repo).
+2. Identify which of those compile into CLIENT chunks (the probe's 3 files) — those get the
+   runtime-derivation treatment; server-only files may keep the literal.
+3. Fix shape: server components resolve the path server-side (lib/admin-path.ts, no
+   server-only import needed — it just computes a string from the real dir name / env) and
+   pass it DOWN to client components as props/params; client components stop importing the
+   literal. World-readable /_next/static assets then compile clean; the path only ever
+   arrives inside auth-gated RSC payloads. Honest limit (recorded): this is a tripwire-grade
+   fix — anyone with an admin session can still read the path from their own payload; the
+   REAL gate remains the session cookie (proven by the access probes).
+4. Gates per playbook: tsc · eslint (no new) · affected suites + full battery unit ·
+   admin-qa-health · rebuild3-style truthful build · live battery → expect build-leak PASS,
+   RESULT: PASS.
+5. Steps recorded before/after each step; commit per meaningful step.
+
 box) → record final report → commit → owner summary (incl. deferred leak question + stale warn).
+
+
+### 2026-10-10 06:07 — S4 STEP 1 DONE (code): literal out of all 3 client components
+
+**What changed** (zero behavior change, prop-threading only):
+- NEW `lib/admin-path.ts` — the ONE server-side home of the literal
+  (`ADMIN_PATH`, `ADMIN_LOGIN_PATH`). Server imports ONLY; doc warns a client
+  import would re-create the leak.
+- Client components now receive the path as a PROP: `AdminShell` (logout push
+  + logo Link), `AdminLoginForm` (post-login push), `DevicesTab` (window.open
+  deep link) + its client host `SecretDevicesHost`.
+- Server parents pass it: `(protected)/layout.tsx`, `login/page.tsx`,
+  `device/101/page.tsx`, `device/[deviceId]/page.tsx` (those two also switched
+  their `redirect(...)` to `ADMIN_LOGIN_PATH` — same literal, single source).
+- Tests: `admin-screen-monitor` S1-menu lock now asserts the PROP template
+  `${adminPath}/device/${device.id}` AND `!tab.includes("topsecret6199")`
+  (new tripwire); the console-URL secrecy walk drops the stale devices-tab
+  allowance (only route tree + lib/admin-notify.ts may name it now).
+
+**Gates (local, all green):**
+- tsc: **0 errors** (first run caught a real syntax bug of mine — `**/*.js`
+  inside the doc comment closed the block comment early; fixed, re-ran clean).
+- eslint on all touched files: **exit 0**. `devices-tab.tsx` = exactly the
+  **2 pre-existing** `react-hooks/set-state-in-effect` errors (verified same
+  on `git show HEAD:` version — NOT added by this change; not fixed, per rule).
+- `grep topsecret6199 components/` → **no files** (the 3 client sources clean).
+- Affected suites: admin-screen-monitor **13/13** · admin-devices **13/13** ·
+  qa-battery **30/30** · admin-qa-health **7/7** · admin-notify **19/19** ·
+  admin-users-presence **15/15** — **97/97, 0 fail**.
+
+**Next:** commit → rsync → rebuild on box → restart → LIVE battery, expecting
+`build-leak` PASS and `RESULT: PASS`.

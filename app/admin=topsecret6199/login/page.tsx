@@ -3,6 +3,7 @@ import Link from "next/link";
 
 import { AdminLoginForm } from "@/components/admin/admin-login-form";
 import { adminConfigured } from "@/lib/admin-auth";
+import { ADMIN_PATH } from "@/lib/admin-path";
 
 export const metadata: Metadata = { title: "Admin sign in" };
 
@@ -23,7 +24,9 @@ export default function AdminLoginPage() {
           </div>
         )}
         <div className="mt-6">
-          <AdminLoginForm />
+          {/* adminPath arrives from server code (TASK_195 S4) — the client
+              form must not hardcode the secret path itself. */}
+          <AdminLoginForm adminPath={ADMIN_PATH} />
         </div>
       </div>
     </div>

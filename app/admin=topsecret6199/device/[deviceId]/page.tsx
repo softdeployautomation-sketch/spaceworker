@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { getAdminSession } from "@/lib/admin-auth";
+import { ADMIN_PATH, ADMIN_LOGIN_PATH } from "@/lib/admin-path";
 
 import { SecretDevicesHost } from "../101/host";
 
@@ -22,12 +23,12 @@ export const dynamic = "force-dynamic";
 
 export default async function SecretAdminDeviceDeepLinkPage() {
   const session = await getAdminSession();
-  if (!session) redirect("/admin=topsecret6199/login");
+  if (!session) redirect(ADMIN_LOGIN_PATH);
 
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
       <main className="mx-auto max-w-6xl p-6">
-        <SecretDevicesHost />
+        <SecretDevicesHost adminPath={ADMIN_PATH} />
       </main>
     </div>
   );

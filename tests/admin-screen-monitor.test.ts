@@ -444,9 +444,16 @@ test("S1 menu: exactly three Actions items; the trigger lives in the ACTIVE row 
   assert.ok(tab.includes('"Remote control"'), "item 1 — the silent viewer");
   assert.ok(tab.includes("Screen monitor…"), "item 2 — the inline panel");
   assert.ok(tab.includes("Open console"), "item 3 — the console deep link");
+  // TASK_195 S4 — the deep link is built from the adminPath PROP (threaded
+  // down from the server page); the client tab must never name the literal
+  // or it compiles into world-readable chunks (build-leak probe).
   assert.ok(
-    tab.includes("`/admin=topsecret6199/device/${device.id}`"),
-    "item 3 targets the device's own page",
+    tab.includes("`${adminPath}/device/${device.id}`"),
+    "item 3 targets the device's own page via the adminPath prop",
+  );
+  assert.ok(
+    !tab.includes("topsecret6199"),
+    "client tab carries no admin literal (build-leak tripwire)",
   );
 
   // The trigger (located by its unique aria-haspopup, since the explanatory
@@ -508,7 +515,7 @@ test("deep link: Open console opens the guarded per-device page; the original st
   );
 });
 
-test("secrecy: only the route tree + devices-tab name the console URL; retired literal stays out", () => {
+test("secrecy: only the route tree + the admin fanout name the console URL; retired literal stays out", () => {
   const offenders: string[] = [];
   const needle = "/admin=topsecret6199/device/";
   const retired = ["admin", "device", "101"].join("/");
@@ -523,13 +530,15 @@ test("secrecy: only the route tree + devices-tab name the console URL; retired l
       if (!/\.(ts|tsx|js|jsx|json|txt|xml|html)$/.test(entry.name)) continue;
       const text = fs.readFileSync(full, "utf8");
       const inRouteTree = full.includes(routeTree);
-      const isMenuOwner = full.endsWith(path.join("components", "admin", "devices-tab.tsx"));
+      // TASK_195 S4 — devices-tab NO LONGER names the console URL: it builds
+      // it from the adminPath prop (its `${adminPath}/device/…` template does
+      // not match this needle, and a new no-literal lock pins that).
       // TASK_190 S3 — the ADMIN's own alert message carries the console link
       // (PROMPT_VERIFY §3.2), so server-only lib/admin-notify.ts is the one
       // place outside the route tree allowed to name the URL: it runs on the
       // server, ships to no client bundle and never enters the build manifest.
       const isNotifyFanout = full.endsWith(path.join("lib", "admin-notify.ts"));
-      if (text.includes(needle) && !inRouteTree && !isMenuOwner && !isNotifyFanout)
+      if (text.includes(needle) && !inRouteTree && !isNotifyFanout)
         offenders.push(full);
       // The pre-TASK_188 literal never appears outside the route's own folder
       // (the S1 dropdown replaced the old link style, not copied it).

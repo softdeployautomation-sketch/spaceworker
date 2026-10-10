@@ -5,7 +5,9 @@ import { useState } from "react";
 
 import { Button, Input, Label, Spinner } from "@/components/ui";
 
-export function AdminLoginForm() {
+// adminPath is a PROP (TASK_195 S4) — a client component must never
+// hardcode the admin path or it lands in world-readable client chunks.
+export function AdminLoginForm({ adminPath }: { adminPath: string }) {
   const router = useRouter();
   const [passcode, setPasscode] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -26,7 +28,7 @@ export function AdminLoginForm() {
         setError(data.error ?? "Couldn't sign in. Please try again.");
         return;
       }
-      router.push("/admin=topsecret6199");
+      router.push(adminPath);
       router.refresh();
     } catch {
       setError("Network error. Please try again.");

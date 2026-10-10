@@ -25,7 +25,18 @@ type PrefsView = {
 // time now, so that outer nav was just a second, redundant "Overview" sitting
 // beside the real one — removed. This shell now only owns the page chrome
 // every admin route shares: the top header and Log out.
-export function AdminShell({ children }: { children: React.ReactNode }) {
+// adminPath arrives as a PROP from the server layout (TASK_195 S4): this is
+// a client component, so hardcoding the admin path here would compile the
+// secret fragment into world-readable /.next/static chunks (the build-leak
+// probe FAILs exactly that). The literal lives only in lib/admin-path.ts,
+// imported by SERVER code.
+export function AdminShell({
+  children,
+  adminPath,
+}: {
+  children: React.ReactNode;
+  adminPath: string;
+}) {
   const router = useRouter();
   const toast = useToast();
   const [loggingOut, setLoggingOut] = useState(false);
@@ -98,7 +109,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
     } finally {
       setLoggingOut(false);
     }
-    router.push("/admin=topsecret6199/login");
+    router.push(`${adminPath}/login`);
     router.refresh();
   }
 
@@ -107,7 +118,7 @@ export function AdminShell({ children }: { children: React.ReactNode }) {
       <header className="sticky top-0 z-40 border-b border-border bg-bg-elevated/80 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
           <div className="flex items-center gap-3">
-            <Link href="/admin=topsecret6199" className="text-lg font-bold text-brand-600 dark:text-brand-400">
+            <Link href={adminPath} className="text-lg font-bold text-brand-600 dark:text-brand-400">
               SpaceWorker · Admin
             </Link>
           </div>

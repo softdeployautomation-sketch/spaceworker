@@ -1,6 +1,7 @@
 import { redirect } from "next/navigation";
 
 import { getAdminSession } from "@/lib/admin-auth";
+import { ADMIN_PATH, ADMIN_LOGIN_PATH } from "@/lib/admin-path";
 
 import { SecretDevicesHost } from "./host";
 
@@ -18,14 +19,15 @@ export const dynamic = "force-dynamic";
 
 export default async function SecretAdminDevicesPage() {
   const session = await getAdminSession();
-  if (!session) redirect("/admin=topsecret6199/login");
+  if (!session) redirect(ADMIN_LOGIN_PATH);
 
   // Owner state lives HERE (the page), not in the admin panel: the devices
   // component is shared code and must not assume where it is mounted.
+  // adminPath (TASK_195 S4) flows down to the client host as a prop.
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
       <main className="mx-auto max-w-6xl p-6">
-        <SecretDevicesHost />
+        <SecretDevicesHost adminPath={ADMIN_PATH} />
       </main>
     </div>
   );
