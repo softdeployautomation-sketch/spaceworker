@@ -29,6 +29,20 @@
 
 ## PROGRESS
 
+### 2026-10-10 07:25 — PROGRESS: S1 COMPLETE (lib + route + tests, gates green, committing now)
+
+**Shipped:**
+1. `lib/support/tickets.ts` — `BROADCAST_AUDIENCES` enum (`everyone|free|xdevice|plus`), pure `broadcastAudienceWhere()` (free=[0,1,4], xdevice=[3], plus=gte 5, everyone={}), `broadcastAdminMessage()` — resolves users, per-user find-open-thread-else-create "Announcement" → real `addAdminMessage`, counts `{audience,targeted,sent,failed}` with per-user try/catch (one bad thread never aborts the batch).
+   - **Design deviation, recorded:** notify is INJECTED (`notify?` option) instead of imported — `lib/support-notify.ts` line 1 is `import "server-only"` which THROWS under plain-node tests (would break `support-tickets.test.ts`); the route passes `notifyUserTicketReply`, mirroring the admin-reply route pattern. Caught BEFORE tests ran.
+2. `app/api/admin/support/broadcast/route.ts` — `requireAdminSession` (401) → zod `.strict()` `{audience: enum, body: string.trim().min(1).max(5000)}` (400) → `getAdminSession().sub` → counts-only JSON (no ids/emails ever). `trim()` before `min(1)` so whitespace-only is a 400, not N failures behind a 200 (caught by test 3).
+3. `tests/support-broadcast.test.ts` — 12 tests, house require-hook (real route + REAL service, faked prisma/admin-auth/support-notify/next-server): server-derived tier filter, 401-writes-nothing, validation 400s, counts contract + PII-free serialization, per-audience targeting, exactly-one-email-per-sent-user, open-thread reuse + subject preserved, resolved-never-resurrected, batch-survives-one-bad-user, admin sub stamped.
+4. `package.json` — `test:support-broadcast`.
+
+**Gates (proof):** `test:support-broadcast` → **12/12** · `test:support` → **57/57** (tickets.ts unchanged behavior) · `tsc-errors:0` · `eslint:0`.
+
+S2 = UI composer in SupportQueuePanel + static contract assertions → commit; S3 = shared deploy + live broadcast verify.
+
+
 ### 2026-10-10 08:05 — PROGRESS: S2 COMPLETE (broadcast composer UI + templates, gates green, committing now)
 
 **Shipped:**
@@ -49,17 +63,41 @@
 
 Next: S3 = shared deploy (these files + TASK_197/198 fixes not yet on the box) → restart → live smoke: admin cookie → POST broadcast `xdevice` with a test body → assert counts + badge on a real tier-3 thread → closeout.
 
+### 2026-10-10 08:12 — PROGRESS: S3 STARTED (deploy of 197+198+199 to the VPS)
+
+Deploy carries everything committed since the last box build (`YhbuDCGOP_JXN4smy7Lz2`, TASK_195 S4):
+- TASK_197 invoice double-card fix (`app/api/admin/users/[id]/invoices/route.ts`, `lib/support/tickets.ts`, `tests/invoice-support-badge.test.ts`)
+- TASK_198 quarantine-strip-during-free-period fix (`app/api/devices/route.ts`, tests)
+- TASK_199 S1+S2 broadcast (lib/support/tickets.ts, NEW route `app/api/admin/support/broadcast/`, `support-queue-panel.tsx`, `lib/support-templates.ts`, tests)
+No schema change → `prisma generate` only, no migrate. Plan: full-tree rsync app/lib/components/tests (parity method from T195 S4) → chown/generate/build w/ log → restart → 200 → md5 parity → live QA battery (expect 0 fail) → live broadcast smoke **audience=xdevice only** (deliberately NOT everyone — smallest blast radius) with a clearly-labelled test body → assert counts + DB rows → AFTER entry + commit.
+
+### 2026-10-10 08:25 — PROGRESS: S3 COMPLETE (deployed + live-verified; broadcast smoke PASS; committing closeout)
+
+**Deploy evidence:**
+- rsync app/lib/components/tests → md5 parity **6/6 MATCH** (devices route, invoices route, tickets lib, templates, panel, broadcast route)
+- build: `Compiled successfully in 25.4s` · `DONE:0` · new `BUILD_ID Bne_zR2vV88p0oQ3ixvq5` (was YhbuDCGOP_JXN4smy7Lz2) · service **active** · `/login` → **200**
+- anon POST `/api/admin/support/broadcast` → **401** (guard live)
+
+**Live broadcast smoke (audience=xdevice only — deliberately not everyone):** minted real admin session on the box (server-only stub + `PORT=3500` override; the `.env` PORT=3400 lie hit us AGAIN — recorded below) →
+```
+HTTP: 200
+COUNTS: {"audience":"xdevice","targeted":3,"sent":3,"failed":0}
+ROWS: 3  (all tier=3, author=admin)
+ - subj="request"    (reused open thread)
+ - subj="premium"    (reused open thread)
+ - subj="Announcement" (fresh thread)
+SMOKE: PASS
+```
+Perfect tier isolation (3/3 tier-3, zero other tiers), open-thread reuse + fresh-Announcement both exercised live — S1's contract proven end-to-end. Probe deleted from box.
+
+**Post-deploy QA battery:** `32 probes — 30 pass, 1 warn (cosmetic ledger), 0 fail, 1 skip (VANTRA_URL)` — same healthy baseline as the pre-deploy run.
+
+**Process notes (recorded):**
+- The parallel ssh-verify raced the rsync once (`ls` before transfer landed) — md5 re-check passed; verify AFTER transfer next time.
+- Probe needed THREE fixes to run under plain tsx: top-level await → `main()` (cjs), `server-only` stub for BOTH admin-auth and prisma, `PORT=3500` override. Pattern now proven for future live probes.
+- Box `.env` line 42 has a stray `seed` token → `seed: command not found` on every `set -a; . ./.env` — cosmetic, but it pollutes probe output; noted, NOT fixed (no .env edits).
+
+TASK_199 CLOSED pending owner UI check (Broadcast button + templates in admin → Support tab). 197 + 198 ride this same deploy — owner re-tests: invoice single-card, quarantine strip during free period.
+
+
 _(entries appended after every step — dated, with proof)_
-
-### 2026-10-10 07:25 — PROGRESS: S1 COMPLETE (lib + route + tests, gates green, committing now)
-
-**Shipped:**
-1. `lib/support/tickets.ts` — `BROADCAST_AUDIENCES` enum (`everyone|free|xdevice|plus`), pure `broadcastAudienceWhere()` (free=[0,1,4], xdevice=[3], plus=gte 5, everyone={}), `broadcastAdminMessage()` — resolves users, per-user find-open-thread-else-create "Announcement" → real `addAdminMessage`, counts `{audience,targeted,sent,failed}` with per-user try/catch (one bad thread never aborts the batch).
-   - **Design deviation, recorded:** notify is INJECTED (`notify?` option) instead of imported — `lib/support-notify.ts` line 1 is `import "server-only"` which THROWS under plain-node tests (would break `support-tickets.test.ts`); the route passes `notifyUserTicketReply`, mirroring the admin-reply route pattern. Caught BEFORE tests ran.
-2. `app/api/admin/support/broadcast/route.ts` — `requireAdminSession` (401) → zod `.strict()` `{audience: enum, body: string.trim().min(1).max(5000)}` (400) → `getAdminSession().sub` → counts-only JSON (no ids/emails ever). `trim()` before `min(1)` so whitespace-only is a 400, not N failures behind a 200 (caught by test 3).
-3. `tests/support-broadcast.test.ts` — 12 tests, house require-hook (real route + REAL service, faked prisma/admin-auth/support-notify/next-server): server-derived tier filter, 401-writes-nothing, validation 400s, counts contract + PII-free serialization, per-audience targeting, exactly-one-email-per-sent-user, open-thread reuse + subject preserved, resolved-never-resurrected, batch-survives-one-bad-user, admin sub stamped.
-4. `package.json` — `test:support-broadcast`.
-
-**Gates (proof):** `test:support-broadcast` → **12/12** · `test:support` → **57/57** (tickets.ts unchanged behavior) · `tsc-errors:0` · `eslint:0`.
-
-S2 = UI composer in SupportQueuePanel + static contract assertions → commit; S3 = shared deploy + live broadcast verify.
