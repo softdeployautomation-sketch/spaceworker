@@ -269,8 +269,12 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
       "Anonymous POST /api/devices {}",
       "/api/devices",
       { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
-      (s) => s === 401,
-      (s) => `POST /api/devices → ${s} (expect 401)`,
+      // TASK_195 S3 live-run correction: this route is GET-only (agent
+      // registration lives in Vantra), so a bare POST correctly answers 405 —
+      // no anon WRITE surface exists at all, which is even stricter than the
+      // 401 the probe originally expected. Both are secure answers.
+      (s) => s === 401 || s === 405,
+      (s) => `POST /api/devices → ${s} (expect 401 or 405 — no anon write surface)`,
     );
 
     // If that ever slips through as 2xx it may have CREATED a row — surface it.
@@ -564,12 +568,22 @@ export function createFsDeps(root: string = process.cwd()): Pick<QaDeps, "readBu
   };
 }
 
-/** Drift detector: static internal routes from the app dir (dynamic → skipped). */
+/**
+ * Drift detector: static internal routes from the app dir (dynamic → skipped).
+ * A directory only counts when it actually CONTAINS a `route.ts` — app/api
+ * trees legitimately hold dirs with just a `[id]` subdir (no endpoint), and
+ * listing those made the guard probe 404 and cry wolf (TASK_195 S3 live run).
+ */
 export function discoverInternalRoutes(root: string = process.cwd()): string[] {
   const dir = join(root, "app/api/internal");
   const out: string[] = [];
   for (const name of readdirSync(dir)) {
     if (name.startsWith("[")) continue; // v1: static paths only
+    try {
+      if (!statSync(join(dir, name, "route.ts")).isFile()) continue;
+    } catch {
+      continue; // no route.ts at the top of this dir → not a route
+    }
     out.push(`/api/internal/${name}`);
   }
   return out.sort();

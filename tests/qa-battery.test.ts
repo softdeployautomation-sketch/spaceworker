@@ -6,10 +6,14 @@
 
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   PROBE_TIMEOUT_MS,
   QA_GROUPS,
   SECRET_ADMIN_FRAGMENT,
+  discoverInternalRoutes,
   runBattery,
   type QaDb,
   type QaDeps,
@@ -169,6 +173,14 @@ describe("TASK_195 — access probes (anon against own origin)", () => {
     assert.equal(probe(open, "anon-device-register").status, "fail");
   });
 
+  it("405 on anon POST /api/devices is PASS — GET-only route = no write surface (S3 live-run fix)", async () => {
+    // The live box answered 405 (register lives in Vantra; this route is
+    // GET-only). 405 is an even stricter answer than 401 and must not cry wolf.
+    const r = await runBattery(baseDeps({ fetchImpl: fakeFetch({ ...HEALTHY_ROUTES, "/api/devices": 405 }) }), { groups: ["access"] });
+    assert.equal(probe(r, "anon-device-register").status, "pass");
+    assert.match(probe(r, "anon-device-register").detail ?? "", /405/);
+  });
+
   it("side-effect tripwire: device rows created during the battery ⇒ fail", async () => {
     let calls = 0;
     const counting: QaDb = {
@@ -326,4 +338,22 @@ describe("TASK_195 — vantra reach (R5 class) + config booleans", () => {
   it("every HTTP probe carries a bounded timeout", () => {
     assert.ok(PROBE_TIMEOUT_MS > 0 && PROBE_TIMEOUT_MS <= 10_000, "probe timeout must stay small and bounded");
   });
+
+describe("TASK_195 S3 — discoverInternalRoutes only lists dirs WITH a route.ts", () => {
+  it("skips a dir that has only a [id] subdir (the live 404 cry-wolf)", () => {
+    const root = mkdtempSync(join(tmpdir(), "qa-discover-"));
+    try {
+      const internal = join(root, "app/api/internal");
+      mkdirSync(join(internal, "real-sweep"), { recursive: true });
+      writeFileSync(join(internal, "real-sweep", "route.ts"), "export async function POST() {}");
+      mkdirSync(join(internal, "phantom-dir/[id]"), { recursive: true }); // dir WITHOUT route.ts
+      mkdirSync(join(internal, "[orgId]"), { recursive: true }); // dynamic → skipped
+      const found = discoverInternalRoutes(root);
+      assert.deepEqual(found, ["/api/internal/real-sweep"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 });
