@@ -40,3 +40,14 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
 - NEXT: S1 — tauri.mailer.conf.json + build-exe.yml mailer arm; verify
   runtime-assemble emits BUILD_TARGET=mailer as the only env delta.
 
+### PROGRESS 2026-10-10 ~09:55 — next-agent handoff prompt written
+- `PROMPT_CONTINUE_TASK_201.md` committed on `mailer-exe`: systems map (VPS,
+  vantra, QA battery, CI, probe patterns), BRANCHING DISCIPLINE section
+  (never deploy VPS from mailer-exe; live-hotfix = checkout main → fix →
+  deploy → return; merge main before CI/VPS work), commit conventions,
+  exact S1 resume point (tauri.mailer.conf.json + build-exe.yml mailer
+  arm, with verified facts), S2–S5 outline, parked threads (196/193/200b),
+  definition of done.
+- NEXT: S1 as described in PROMPT_CONTINUE_TASK_201.md §4.
+
+
