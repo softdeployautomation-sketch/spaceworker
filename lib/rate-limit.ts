@@ -23,7 +23,8 @@ export type RateLimitKind =
   | "wallet-read"
   | "wallet-spend"
   | "overview-stats"
-  | "vantra-link";
+  | "vantra-link"
+  | "exe-mailer-sources";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -77,6 +78,13 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // UI fires one POST per button click; 10/hr covers double-clicks + keyed
   // retries while stopping a script from hammering a spend.
   "wallet-spend": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  // TASK_201 S2 — POST /api/exe-license/mailer-sources hands back DECRYPTED
+  // SMTP passwords, so it is the most secrets-bearing unauthenticated-route
+  // in the app and gets the tightest read budget: the real pattern is one
+  // fetch when the Mailer EXE opens/refreshes its sources (plus rare
+  // retries), so 60/hr polices scraping while never touching a human user.
+  // Same per-IP NAT caveat as exe-license-eligibility, hence not tighter.
+  "exe-mailer-sources": [{ limit: 60, windowMs: 60 * 60 * 1000 }],
   // PLAN_TASK_165 P3 — GET /api/overview-stats, the status row under the welcome
   // panel. Same shape of traffic as wallet-read (it backs a dashboard that loads
   // once per visit, plus a manual Refresh button) and for the same reason: the

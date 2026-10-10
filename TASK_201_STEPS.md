@@ -80,3 +80,38 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   templates only, or also recipients/leads import?).
 
 
+
+
+### PROGRESS 2026-10-10 ~10:40 — S2 done: mailer sources pipeline (lib + both route halves + tests)
+- Architecture forced by the runtime, not taste: the EXE has NO DATABASE_URL
+  and NO MAILBOX_ENCRYPTION_KEY (runtime-assemble scrubs both), so query +
+  decryption happen HOSTED and the EXE receives plaintext HTTPS — the
+  owner-approved v1 tradeoff in TASK_201 (server-proxy toggle = v1.1).
+- `lib/mailer-sources.ts`: payload + store split. `prismaMailerSourcesStore(db)`
+  (query half, client injected) + `buildMailerSources(store, userId)` (shape
+  half) + per-row builders. Payload built FIELD BY FIELD — never spread — so
+  encryptedPassword/passwordIv/passwordTag and the DKIM private key can't
+  ride along. Per-row decrypt failure = `password:""` + `passwordError`
+  (actionable message from decryptSecretOrThrow), NOT a blanked list.
+- Hosted `POST /api/exe-license/mailer-sources/route.ts`: session-less,
+  three layers — (1) validateLicenseKey (HMAC+expiry+machine, failure surfaced
+  verbatim like /activate), (2) ExeLicense row: user+product+key OR
+  boundLicenseKey (unknown email ≡ no license = one DENIED body, no existence
+  oracle), (3) row.boundMachineId must match requester machineId when set.
+  New rate-limit kind `exe-mailer-sources` 60/hr.
+- Local `GET /api/exe/mailer/sources/route.ts`: isLocalExeRuntime() 404
+  fail-closed; 401 without activation; offline validateLicenseKey fail-CLOSED
+  (secrets endpoint, unlike status's fail-open revocation poll); proxies via
+  hostedFetch (maintenance-window retries) with product
+  `${exeBuildTarget()}_exe` + machineId.
+- Tests `tests/mailer-sources.test.ts` (6/6 pass): exact output key sets
+  (mailbox/domain/template), ciphertext/private-key never serializes, domain
+  query select whitelist, decrypt-failure isolation, per-query userId scoping
+  + savedAsTemplate filter — all against a recording fake db (house §4
+  require pattern; MAILBOX_ENCRYPTION_KEY set BEFORE require).
+- Gates: tsc exit 0, eslint exit 0 on all 5 touched files, `npm run
+  test:mailer-sources` 6/6. package.json script added.
+- NEXT: S3 — Mailer EXE UI trim (open owner question: campaigns+mailboxes+
+  templates only, or also recipients/leads import?). Then S4 CI dispatch
+  (`gh workflow run build-exe.yml -f variant=mailer --ref mailer-exe`),
+  S5 VPS stays untouched until hotfix rules apply.
