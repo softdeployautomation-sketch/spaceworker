@@ -30,4 +30,22 @@ TASK_197 + TASK_198 + TASK_199 + TASK_200 ship in **ONE VPS deploy** at the end 
 
 ## PROGRESS
 
+
+### 2026-10-10 06:45 — PROGRESS: S1 COMPLETE (double-card fix, local gates green, uncommitted → committing now)
+
+**Fix (3 layers, matching BEFORE plan):**
+1. Route `app/api/admin/users/[id]/invoices/route.ts` — new strict-body key `threadNotice` (ALLOWED_KEYS + typed body field); parse `absent ⇒ true`, non-boolean ⇒ **400 "threadNotice must be a boolean"**; the TASK_194 `postInvoiceNoticeToUser` block now lives inside `if (threadNotice)`.
+2. Belt `lib/support/tickets.ts::postInvoiceNoticeToUser` — **idempotency**: `supportMessage.findFirst({ where: { invoiceId } })` first; a message already bound to this invoice ⇒ return that view, never a second post.
+3. Composer `components/admin/support-queue-panel.tsx` — sends `threadNotice: false` (it posts its own invoice-bound note; the route notice was the duplicate). Users-panel composer unaffected (defaults true → badge still lights).
+
+**Root cause (accepted):** support composer's own note + route's TASK_194 notice BOTH bound the same invoice ⇒ two messages ⇒ two cards ("it sent two invoices").
+
+**Gates (proof):**
+- `tsc-errors:0` · `eslint:0` (4 touched files)
+- `test:invoice-support-badge` → **# tests 8 / # pass 8 / # fail 0** (3 pre-existing + 5 new TASK_197 S1 statics: allowlist, default+400, gate-before-call ordering, composer opt-out, idempotency-belt ordering)
+- `test:support` → **57/57**
+- `test:premium-static` → **16/16** (script name is `test:premium-static`, first attempt used a non-existent alias → exit 1, corrected)
+
+Stray `t197-forensics.ts` removed from repo root (kept in /tmp; never staged). `TASK_133_RMM_ENGINE_BRINGUP.md` untouched. S2 (deploy — batched per the deploy note) next; S3 closeout after.
+
 _(entries appended after every step — dated, with proof)_

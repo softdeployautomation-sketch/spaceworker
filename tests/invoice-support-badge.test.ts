@@ -44,3 +44,55 @@ describe("TASK_194 S4 — invoice lands in the support thread", () => {
     assert.ok(route.includes("never let a notice failure fail the invoice"), "must be defensively wrapped");
   });
 });
+
+describe("TASK_197 S1 — one invoice, one card (no double-notice)", () => {
+  const tickets = read("lib/support/tickets.ts");
+  const route = read("app/api/admin/users/[id]/invoices/route.ts");
+  const composer = read("components/admin/support-queue-panel.tsx");
+
+  it("route accepts a threadNotice key (strict-body allowlist updated)", () => {
+    assert.ok(
+      route.includes('"methods", "threadNotice"'),
+      "ALLOWED_KEYS must include threadNotice — otherwise the composer's opt-out 400s",
+    );
+  });
+
+  it("threadNotice defaults true and must be a boolean", () => {
+    assert.ok(
+      route.includes("body.threadNotice === undefined ? true : body.threadNotice"),
+      "absent ⇒ true (existing callers unchanged)",
+    );
+    assert.ok(
+      route.includes('"threadNotice must be a boolean"'),
+      "a string \"false\" must never silently pass as falsy-true",
+    );
+  });
+
+  it("the server notice is gated behind the flag", () => {
+    // The postInvoiceNoticeToUser block must live INSIDE `if (threadNotice)`.
+    const gated = route.indexOf("if (threadNotice) {");
+    const called = route.indexOf("void postInvoiceNoticeToUser(");
+    assert.ok(gated > 0, "notice block must be gated");
+    assert.ok(called > gated, "postInvoiceNoticeToUser must be called after (inside) the gate");
+  });
+
+  it("the support composer opts OUT (it posts its own invoice-bound note)", () => {
+    assert.ok(
+      composer.includes("body.threadNotice = false"),
+      "support-queue-panel must send threadNotice:false or its own note + the route notice double-post",
+    );
+  });
+
+  it("postInvoiceNoticeToUser is idempotent on invoiceId (belt, not just gate)", () => {
+    // The gate stops the KNOWN double path; the belt stops any future caller or
+    // a retry from binding the same invoice twice.
+    const beltAt = tickets.indexOf("if (bound) return { ok: true, value: toMessageView(bound) }");
+    assert.ok(beltAt > 0, "must return the existing binding instead of posting again");
+    const queryAt = tickets.indexOf("prisma.supportMessage.findFirst({", tickets.indexOf("export async function postInvoiceNoticeToUser"));
+    assert.ok(queryAt > 0 && queryAt < beltAt, "must look up by invoiceId before posting");
+    assert.ok(
+      tickets.slice(queryAt, beltAt).includes("where: { invoiceId }"),
+      "the idempotency lookup must key on invoiceId",
+    );
+  });
+});

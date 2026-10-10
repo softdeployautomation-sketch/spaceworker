@@ -436,6 +436,11 @@ export default function SupportQueuePanel() {
       days = n;
     }
     const body: Record<string, unknown> = { plan: invPlan, amountUsd: amt };
+    // TASK_197 S1 — this composer posts its OWN invoice-bound note (step 2),
+    // so the server-side thread notice must NOT also fire: one invoice, one
+    // card. threadNotice defaults true for the users-panel composer, which
+    // posts no note of its own.
+    body.threadNotice = false;
     if (days !== undefined) body.days = days;
     if (invBtc.trim() || invTrc.trim() || invErc.trim()) {
       body.methods = {

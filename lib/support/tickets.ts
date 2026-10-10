@@ -825,6 +825,16 @@ export async function postInvoiceNoticeToUser(
   adminId: string | null,
   body: string,
 ): Promise<SupportResult<SupportMessageView>> {
+  // TASK_197 S1 — idempotency belt: if ANY message already binds this invoice
+  // (the support composer's own note, a retried notice, or both entry points
+  // firing), posting again would render a SECOND card for ONE invoice — the
+  // owner's "it sent two invoices". Return the existing binding instead.
+  const bound = await prisma.supportMessage.findFirst({
+    where: { invoiceId },
+    orderBy: { createdAt: "desc" },
+  });
+  if (bound) return { ok: true, value: toMessageView(bound) };
+
   const existing = await prisma.supportTicket.findFirst({
     where: { userId, status: { not: RESOLVED_STATUS } },
     orderBy: { updatedAt: "desc" },

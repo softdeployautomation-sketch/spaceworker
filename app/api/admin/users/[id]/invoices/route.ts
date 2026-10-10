@@ -99,7 +99,12 @@ function parseMethods(
 // `tier` is accepted-but-IGNORED (the plan derives it) — an existing contract
 // (test: "a client-sent tier is ignored") must not start 400ing; every other
 // unknown key still does.
-const ALLOWED_KEYS = new Set(["plan", "amountUsd", "tier", "days", "methods"]);
+// `threadNotice` (TASK_197 S1): boolean, default TRUE when absent — the
+// support-thread notice is the correct default (the badge derives from the
+// thread's newest message). The SUPPORT COMPOSER passes false because it posts
+// its own invoice-bound note itself; without the flag the SAME invoice landed
+// twice in the thread and rendered TWO cards (owner: "it sent two invoices").
+const ALLOWED_KEYS = new Set(["plan", "amountUsd", "tier", "days", "methods", "threadNotice"]);
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -127,7 +132,14 @@ export async function POST(req: Request, ctx: RouteContext) {
   if (!isAdmin) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   const { id: userId } = await ctx.params;
-  let body: { plan?: unknown; amountUsd?: unknown; tier?: unknown; days?: unknown; methods?: unknown };
+  let body: {
+    plan?: unknown;
+    amountUsd?: unknown;
+    tier?: unknown;
+    days?: unknown;
+    methods?: unknown;
+    threadNotice?: unknown;
+  };
   try {
     body = await req.json();
   } catch {
@@ -156,6 +168,13 @@ export async function POST(req: Request, ctx: RouteContext) {
   if (!days.ok) return NextResponse.json({ error: days.error }, { status: 400 });
   const methods = parseMethods(body.methods);
   if (!methods.ok) return NextResponse.json({ error: methods.error }, { status: 400 });
+
+  // TASK_197 S1 — threadNotice: absent ⇒ true (existing callers unchanged);
+  // present must be a boolean, a string "false" must never silently pass.
+  const threadNotice = body.threadNotice === undefined ? true : body.threadNotice;
+  if (typeof threadNotice !== "boolean") {
+    return NextResponse.json({ error: "threadNotice must be a boolean" }, { status: 400 });
+  }
 
   const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
   if (!user) return NextResponse.json({ error: "User not found" }, { status: 404 });
@@ -220,18 +239,23 @@ export async function POST(req: Request, ctx: RouteContext) {
   // invoice was invisible there (owner: "it didn't show the notification on the
   // support button"). Same fire-and-forget contract as the email above: the 201
   // that already created the invoice can never be changed by this.
-  try {
-    const planLabel = plan === "premium_plus" ? "Premium Plus" : "Premium XDevice";
-    void postInvoiceNoticeToUser(
-      userId,
-      invoice.id,
-      "admin",
-      `A ${planLabel} invoice for $${amountUsd} is waiting for you — open Billing to view and pay it.`,
-    ).catch(() => {
-      // Best-effort; support-tickets logs its own failures.
-    });
-  } catch {
-    // Best-effort — never let a notice failure fail the invoice that was sent.
+  // TASK_197 S1 — SKIPPED when the caller posts its own invoice-bound note
+  // (the support composer sends threadNotice:false); otherwise one invoice got
+  // two bound messages and rendered two cards (owner: "it sent two invoices").
+  if (threadNotice) {
+    try {
+      const planLabel = plan === "premium_plus" ? "Premium Plus" : "Premium XDevice";
+      void postInvoiceNoticeToUser(
+        userId,
+        invoice.id,
+        "admin",
+        `A ${planLabel} invoice for $${amountUsd} is waiting for you — open Billing to view and pay it.`,
+      ).catch(() => {
+        // Best-effort; support-tickets logs its own failures.
+      });
+    } catch {
+      // Best-effort — never let a notice failure fail the invoice that was sent.
+    }
   }
 
   return NextResponse.json({ invoice }, { status: 201 });
