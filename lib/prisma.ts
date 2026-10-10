@@ -1,6 +1,8 @@
 import "server-only";
 import type { PrismaClient } from "@prisma/client";
 
+import { isLocalMailerRuntime } from "./exe-runtime";
+
 const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
 
 // Lazy — importing "@prisma/client" AT ALL throws in the EXE-local runtime
@@ -18,9 +20,9 @@ function loadClient(): PrismaClient {
   // TASK_201 S7 — the mailer EXE's bundled local runtime: the client is the
   // embedded PGlite Postgres (a real local replica — lib/local-exe-db.ts),
   // constructed synchronously so this Proxy's property chains keep working.
-  // Gated on BUILD_TARGET=mailer too: the extractor/devices EXEs also set
-  // SPACEWORKER_LOCAL_EXE but deliberately stay DB-free (no schema shipped).
-  if (process.env.SPACEWORKER_LOCAL_EXE === "true" && process.env.BUILD_TARGET === "mailer") {
+  // isLocalMailerRuntime() also excludes the CI build phase (see the comment on
+  // it): PGlite must never be constructed during `next build`'s prerender.
+  if (isLocalMailerRuntime()) {
     const { getLocalExePrismaSync } = require("./local-exe-db") as typeof import("./local-exe-db");
     const c = globalForPrisma.prisma ?? getLocalExePrismaSync();
     globalForPrisma.prisma = c;

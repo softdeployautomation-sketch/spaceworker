@@ -1,5 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 
+import { isLocalMailerRuntime } from "./exe-runtime";
+
 // Prisma client singleton — avoids exhausting connections in dev (hot reload)
 // and guards against duplicate instantiations across route handlers.
 //
@@ -23,9 +25,10 @@ function loadClient(): PrismaClient {
   // embedded PGlite Postgres (a real local replica — lib/local-exe-db.ts),
   // constructed synchronously so this Proxy's property chains keep working.
   // Shares lib/prisma.ts's globalForPrisma key, so whichever proxy is touched
-  // first wins and BOTH serve the same single client. Gated on BUILD_TARGET
-  // =mailer too: extractor/devices EXEs stay DB-free (no schema shipped).
-  if (process.env.SPACEWORKER_LOCAL_EXE === "true" && process.env.BUILD_TARGET === "mailer") {
+  // first wins and BOTH serve the same single client. isLocalMailerRuntime()
+  // also excludes the CI build phase (see the comment on it): PGlite must
+  // never be constructed during `next build`'s prerender.
+  if (isLocalMailerRuntime()) {
      
     const { getLocalExePrismaSync } = require("./local-exe-db") as typeof import("./local-exe-db");
     const c = globalForPrisma.prisma ?? getLocalExePrismaSync();

@@ -32,7 +32,31 @@ process.env.SPACEWORKER_LOCAL_DATA_DIR = mkdtempSync(path.join(tmpdir(), "exe-dr
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const drain = require("../lib/local-exe-drain") as typeof import("../lib/local-exe-drain");
+const exeRuntime = require("../lib/exe-runtime") as typeof import("../lib/exe-runtime");
 /* eslint-enable @typescript-eslint/no-require-imports */
+
+test("isLocalMailerRuntime is NEVER true during next build's prerender (CI regression)", () => {
+  // The exact CI failure (run 38051727461): the build job exports
+  // SPACEWORKER_LOCAL_EXE=true + BUILD_TARGET=mailer, and Next EXECUTES server
+  // code while prerendering /login — without the NEXT_PHASE clause the local
+  // branch ran at build time and crashed on the not-yet-written db/schema.sql.
+  process.env.SPACEWORKER_LOCAL_EXE = "true";
+  process.env.BUILD_TARGET = "mailer";
+  try {
+    process.env.NEXT_PHASE = "phase-production-build";
+    assert.equal(exeRuntime.isLocalMailerRuntime(), false, "build phase must not see the local runtime");
+
+    delete process.env.NEXT_PHASE;
+    assert.equal(exeRuntime.isLocalMailerRuntime(), true, "the bundled runtime itself must see it");
+
+    process.env.BUILD_TARGET = "extractor";
+    assert.equal(exeRuntime.isLocalMailerRuntime(), false, "extractor variant stays DB-free");
+  } finally {
+    delete process.env.NEXT_PHASE;
+    delete process.env.SPACEWORKER_LOCAL_EXE;
+    delete process.env.BUILD_TARGET;
+  }
+});
 
 test("missing settings file yields the defaults (auto-drain ON, 60s)", async () => {
   const settings = await drain.readDrainSettings();

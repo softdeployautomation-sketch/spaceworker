@@ -26,9 +26,21 @@ export function isLocalExeRuntime(): boolean {
 /** TASK_201 S7 — the mailer EXE's bundled local runtime specifically (not the
  * extractor/devices variants, which also set SPACEWORKER_LOCAL_EXE but keep
  * their DB-free behaviour). Gates everything local-replica: the embedded
- * database, the synthetic local session, and the drain settings route. */
+ * database, the synthetic local session, and the drain settings route.
+ *
+ * The NEXT_PHASE clause matters (CI failure 2026-10-10, run 38051727461): the
+ * CI build job exports SPACEWORKER_LOCAL_EXE=true at BUILD time too, and Next
+ * EXECUTES server code while prerendering static pages (`/login` calls
+ * getSession()). Without it, the local branch ran during `next build` and
+ * tried to read db/schema.sql — which only exists AFTER the build (written by
+ * runtime-assemble.mjs). The bundled server never runs with
+ * phase-production-build, so this clause only excludes the build itself. */
 export function isLocalMailerRuntime(): boolean {
-  return isLocalExeRuntime() && process.env.BUILD_TARGET === "mailer";
+  return (
+    isLocalExeRuntime() &&
+    process.env.BUILD_TARGET === "mailer" &&
+    process.env.NEXT_PHASE !== "phase-production-build"
+  );
 }
 
 // Confirmed live (2026-09-19): the marketing homepage/pricing page compile into

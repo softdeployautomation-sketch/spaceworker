@@ -14,11 +14,14 @@ export async function register(): Promise<void> {
   // up BEFORE any request is served: embedded PGlite Postgres + schema + the
   // single local user, then the auto-drain loop. The dynamic imports keep
   // PGlite entirely out of the web build's request path.
-  if (process.env.NEXT_RUNTIME === "nodejs" && process.env.SPACEWORKER_LOCAL_EXE === "true" && process.env.BUILD_TARGET === "mailer") {
-    const { initLocalExeDatabase } = await import("./lib/local-exe-db");
-    await initLocalExeDatabase();
-    const { startLocalExeDrainLoop } = await import("./lib/local-exe-drain");
-    startLocalExeDrainLoop();
-    console.log("[local-exe] database ready; auto-drain loop started");
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { isLocalMailerRuntime } = await import("./lib/exe-runtime");
+    if (isLocalMailerRuntime()) {
+      const { initLocalExeDatabase } = await import("./lib/local-exe-db");
+      await initLocalExeDatabase();
+      const { startLocalExeDrainLoop } = await import("./lib/local-exe-drain");
+      startLocalExeDrainLoop();
+      console.log("[local-exe] database ready; auto-drain loop started");
+    }
   }
 }
