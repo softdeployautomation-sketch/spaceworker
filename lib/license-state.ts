@@ -3,6 +3,7 @@ import "server-only";
 import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 
+import { exeBuildTarget } from "./exe-build-target";
 import { exeDataDir } from "./exe-data-dir";
 import { getMachineId } from "./machine-id";
 
@@ -47,12 +48,28 @@ const DEFAULT_STATE: ExeLicenseLocalState = { version: 1 };
  * Resolves where this machine's license state lives. Honours an explicit
  * SPACEWORKER_LOCAL_DATA_DIR override (the Tauri shell can point at its own
  * app-data dir), otherwise falls back to a per-OS app-data location.
+ *
+ * TASK_201 S8 — per-PRODUCT file. Every EXE variant compiles this same code
+ * and (previously) shared ONE `exe-license-state.json`, so the Extractor EXE's
+ * expired 24h trial was inherited by the Mailer EXE and gated a machine that
+ * had never run the Mailer (same bleed that hit the devices wrapper). The
+ * hosted server has always keyed trials/licenses per product (trial-ping +
+ * eligibility send `<target>_exe`); the local file now matches that. The
+ * filename carries the build target so each variant keeps its OWN trial clock
+ * and activation.
+ *
+ * Back-compat: `extractor` keeps the LEGACY unsuffixed name so the shipped
+ * Extractor EXE and the devices wrapper (which builds as target=extractor)
+ * keep their existing trial/activation byte-for-byte — zero migration, zero
+ * regression. Only non-legacy targets get a new isolated file.
  */
 export function licenseStatePath(): string {
   // TASK_201 S7 — the platform-dir logic moved verbatim to lib/exe-data-dir.ts
-  // (shared with the mailer EXE's local database + drain settings); the path
-  // this returns is byte-identical to before.
-  return path.join(exeDataDir(), "exe-license-state.json");
+  // (shared with the mailer EXE's local database + drain settings); the dir
+  // this joins is byte-identical to before.
+  const target = exeBuildTarget();
+  const fileName = target === "extractor" ? "exe-license-state.json" : `exe-license-state-${target}.json`;
+  return path.join(exeDataDir(), fileName);
 }
 
 /** Reads the local state, returning defaults (never throwing) if absent/corrupt. */

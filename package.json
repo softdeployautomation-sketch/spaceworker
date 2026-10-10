@@ -29,6 +29,7 @@
     "test:mailboxes": "tsx --test tests/campaign-mailboxes.test.ts",
     "test:tmplcontent": "tsx --test tests/campaign-template-content.test.ts",
     "test:local-exe": "tsx --test tests/local-exe-db.test.ts tests/local-exe-drain-settings.test.ts",
+    "test:licstate": "tsx --test tests/license-state-isolation.test.ts",
     "test:tb-alias": "tsx --test tests/turbopack-external-alias.test.ts",
     "test:mailer-sources": "tsx --test tests/mailer-sources.test.ts",
     "test:target": "tsx --test tests/test-target.test.ts",

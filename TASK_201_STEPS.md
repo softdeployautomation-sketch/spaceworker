@@ -272,4 +272,40 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   create campaign from CSV → Save as template → template appears in campaign
   creation picker → drain settings visible in Settings.
 
+## S8 — per-product local license state (stop cross-EXE trial bleed)
+- Owner report (2026-10-10): the Mailer EXE still gated as "24h trial expired"
+  inherited from the SpaceWorker Extractor EXE — "we had this same issue for the
+  spaceworker device wrapper". This is a DIFFERENT app; the bleed is a bug.
+- Root cause (confirmed): lib/license-state.ts wrote ONE shared
+  `exeDataDir()/exe-license-state.json` for EVERY variant. The Extractor EXE
+  already started (and expired) its 24h trial there; the Mailer EXE — same
+  codebase, same exeDataDir() — read that same file and gated on the
+  extractor's dead trial. The hosted server has ALWAYS keyed trials/licenses
+  per product (trial-ping + eligibility send `<target>_exe`); only the LOCAL
+  file was shared. Same class of bleed that hit the devices wrapper.
+- Fix: licenseStatePath() now carries the build target in the filename
+  (`exe-license-state-mailer.json`, etc.) so each variant keeps its OWN trial
+  clock + activation — matching the server model. This is exactly the
+  "license gate differently so we stop having this issues" the owner asked for:
+  the products are now genuinely independent.
+- Back-compat (the owner's "also check the spaceworker exe"): target=extractor
+  keeps the LEGACY unsuffixed name, so the shipped Extractor EXE and the
+  devices wrapper (builds as target=extractor) keep their existing
+  trial/activation byte-for-byte — zero migration, zero regression. The
+  Extractor EXE is NOT affected by this change.
+- Proof: tests/license-state-isolation.test.ts 7/7 (`test:licstate` added):
+  legacy name for extractor; suffixed name for mailer/combined/automation;
+  REGRESSION — an expired extractor trial does NOT bleed into mailer; an
+  extractor activation does NOT license mailer; each target writes only its own
+  file; corrupt/missing → defaults. tsc 0; eslint 0.
+- NOT done here (the owner's "or users with spaceworker extractor license get
+  to use the mailer for free" alternative): that would be a deliberate
+  cross-product ENTITLEMENT (extractor key unlocks mailer), a business decision
+  — recorded here, not silently implemented. Default chosen = independent
+  products (each licenses/trials separately). Flip to a shared entitlement
+  later if the owner wants it.
+- NEXT: kick a new mailer CI build; on Windows the Mailer now starts its OWN
+  fresh 24h trial (no longer inherits the extractor's expired one).
+
+
 
