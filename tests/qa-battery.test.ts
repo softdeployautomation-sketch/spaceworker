@@ -87,7 +87,9 @@ function baseDeps(over: Partial<QaDeps> = {}): QaDeps {
       INTERNAL_BEARER_TOKEN: "x",
       TELEGRAM_BOT_TOKEN: "x",
       RESEND_API_KEY: "x",
-      VANTRA_URL: "https://vantra.test",
+      // TASK_200 S1 — production configures the app via VANTRA_INTERNAL_URL;
+      // VANTRA_URL is legacy and only honored as a fallback by the probe.
+      VANTRA_INTERNAL_URL: "https://vantra.test",
     },
     origin: "http://qa.test",
     readBuildId: async () => "build-abc",
@@ -148,14 +150,15 @@ describe("TASK_195 — platform probes", () => {
     assert.equal(probe(unreadable, "migrations").status, "fail");
   });
 
-  it("stale ledger rows (retry later succeeded) ⇒ migrations PASS + artifacts WARN (S3 live-run fix)", async () => {
+  it("stale ledger rows (retry later succeeded) ⇒ migrations PASS + artifacts PASS (TASK_200 S1: history, not signal)", async () => {
     // assistant_foundation pair: rolled-back first attempt + successful retry
-    // 3s later. Unresolved count 0, artifacts 1 ⇒ no FAIL, honest WARN.
+    // 3s later. Unresolved count 0, artifacts 1 ⇒ no FAIL and no false WARN —
+    // the real-danger case (no successful retry) is the migrations FAIL above.
     const r = await runBattery(baseDeps({ db: fakeDb({ unfinished: 0, stale: 1 }) }), { groups: ["platform"] });
     assert.equal(probe(r, "migrations").status, "pass");
     const art = probe(r, "migration-artifacts");
-    assert.equal(art.status, "warn");
-    assert.match(art.detail ?? "", /cosmetic/);
+    assert.equal(art.status, "pass");
+    assert.match(art.detail ?? "", /superseded by successful retries/);
   });
 
   it("build-id: absent ⇒ warn; >7d ⇒ warn stale; fresh ⇒ pass", async () => {
@@ -332,13 +335,43 @@ describe("TASK_195 — build leak gate", () => {
   });
 });
 
-describe("TASK_195 — vantra reach (R5 class) + config booleans", () => {
-  it("VANTRA_URL unset ⇒ skip; any HTTP answer ⇒ pass; network error ⇒ fail", async () => {
-    const unset = await runBattery(baseDeps({ env: {} }), { groups: ["vantra"] });
-    assert.equal(probe(unset, "vantra-reach").status, "skip");
-    assert.equal(probe(await runBattery(baseDeps(), { groups: ["vantra"] }), "vantra-reach").status, "pass");
+describe("TASK_200 S1 — vantra reach uses the app's real key + default, config booleans (TASK_195)", () => {
+  /** fetch stub that records every URL it was asked to reach. */
+  function recordingFetch(status: number, seen: string[]): typeof fetch {
+    return (async (url: RequestInfo | URL) => {
+      seen.push(String(url));
+      return { status, text: async () => "" } as unknown as Response;
+    }) as typeof fetch;
+  }
+
+  it("no env at all ⇒ probes the app default (never SKIP); HTTP answer ⇒ pass", async () => {
+    const seen: string[] = [];
+    const r = await runBattery(baseDeps({ env: {}, fetchImpl: recordingFetch(200, seen) }), { groups: ["vantra"] });
+    assert.equal(probe(r, "vantra-reach").status, "pass");
+    assert.equal(seen[0], "https://vantra.spaceworker.top", "must probe the app's default Vantra URL");
+  });
+
+  it("VANTRA_INTERNAL_URL wins over legacy VANTRA_URL; trailing slash trimmed", async () => {
+    const seen: string[] = [];
+    const r = await runBattery(
+      baseDeps({ env: { VANTRA_INTERNAL_URL: "https://twin.internal/", VANTRA_URL: "https://legacy.test" }, fetchImpl: recordingFetch(200, seen) }),
+      { groups: ["vantra"] },
+    );
+    assert.equal(probe(r, "vantra-reach").status, "pass");
+    assert.equal(seen[0], "https://twin.internal");
+  });
+
+  it("legacy VANTRA_URL alone still honored (fallback)", async () => {
+    const seen: string[] = [];
+    const r = await runBattery(baseDeps({ env: { VANTRA_URL: "https://legacy.only" }, fetchImpl: recordingFetch(200, seen) }), { groups: ["vantra"] });
+    assert.equal(probe(r, "vantra-reach").status, "pass");
+    assert.equal(seen[0], "https://legacy.only");
+  });
+
+  it("network error ⇒ fail with the error surfaced", async () => {
     const down = await runBattery(baseDeps({ fetchImpl: fakeFetch({ "/": "throw" }) }), { groups: ["vantra"] });
     assert.equal(probe(down, "vantra-reach").status, "fail");
+    assert.match(probe(down, "vantra-reach").detail ?? "", /unreachable/);
   });
 
   it("config probes report booleans only — NEVER the secret values", async () => {

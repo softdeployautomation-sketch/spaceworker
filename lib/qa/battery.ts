@@ -228,10 +228,12 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
     } else if (stale.value === 0) {
       push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "pass", detail: "0 superseded rows", ms: stale.ms });
     } else {
-      // Cosmetic: a failed first attempt later superseded by a successful
-      // retry (assistant_foundation, 2026-09-22 — rolled back 12:37:52,
-      // succeeded 12:37:55). The schema IS applied; only the ledger row noise remains.
-      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "warn", detail: `${stale.value} rolled-back row(s) superseded by successful retries (cosmetic)`, ms: stale.ms });
+      // TASK_200 S1 — superseded-by-success rows are NORMAL retry history, not
+      // a health signal: the `migrations` probe above already FAILs the real
+      // danger case (rolled back/unfinished with NO successful retry). A
+      // permanent WARN on every healthy run trains the admin to ignore yellow,
+      // so this is PASS with the count kept visible in the detail.
+      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "pass", detail: `${stale.value} rolled-back row(s) superseded by successful retries (history)`, ms: stale.ms });
     }
 
     const bid = await timed(() => deps.readBuildId());
@@ -439,25 +441,27 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
   // -- vantra (the R5 class: link minting dies when the twin is down) ------
 
   if (wanted.has("vantra")) {
-    const url = deps.env.VANTRA_URL?.trim();
-    if (!url) {
-      push({ id: "vantra-reach", group: "vantra", label: "Vantra reachable", status: "skip", detail: "VANTRA_URL not configured" });
-    } else {
-      const r = await timed(async () => {
-        const res = await deps.fetchImpl(url, { method: "GET", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
-        await res.text().catch(() => undefined);
-        return res.status;
-      });
-      // ANY HTTP response = the twin is alive; only a network error is a red.
-      push({
-        id: "vantra-reach",
-        group: "vantra",
-        label: "Vantra reachable",
-        status: r.ok ? "pass" : "fail",
-        detail: r.ok ? `HTTP ${r.value} from VANTRA_URL` : `unreachable: ${r.error}`,
-        ms: r.ms,
-      });
-    }
+    // TASK_200 S1 — the app NEVER reads VANTRA_URL: lib/vantra-link.ts,
+    // lib/device-tools.ts and lib/clone-transport.ts all reach the twin via
+    // VANTRA_INTERNAL_URL (default https://vantra.spaceworker.top — the box
+    // .env sets VANTRA_INTERNAL_TOKEN only, so the default is what production
+    // actually uses). Probe the same key with the same default, else this
+    // SKIP lies about a healthy box forever.
+    const url = (deps.env.VANTRA_INTERNAL_URL ?? deps.env.VANTRA_URL)?.trim().replace(/\/+$/, "") || "https://vantra.spaceworker.top";
+    // ANY HTTP response = the twin is alive; only a network error is a red.
+    const r = await timed(async () => {
+      const res = await deps.fetchImpl(url, { method: "GET", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      await res.text().catch(() => undefined);
+      return res.status;
+    });
+    push({
+      id: "vantra-reach",
+      group: "vantra",
+      label: "Vantra reachable",
+      status: r.ok ? "pass" : "fail",
+      detail: r.ok ? `HTTP ${r.value} from ${url}` : `unreachable: ${r.error}`,
+      ms: r.ms,
+    });
   }
 
   // -- config (presence booleans only — values NEVER printed) --------------
