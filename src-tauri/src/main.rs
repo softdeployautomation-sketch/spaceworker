@@ -47,6 +47,27 @@ const WRAPPER_ENTRY_URL: &str = "https://spaceworker.top/wrapper/devices";
 /// anything else keeps the local-runtime behavior below, byte-identical.
 const WRAPPER_IDENTIFIER: &str = "com.spaceworker-os.devices";
 
+/// TASK_201 — mailer identifier, set ONLY by src-tauri/tauri.mailer.conf.json
+/// (same `--config` merge as the wrapper/extractor). Used to pick the mailer's
+/// landing route below so the window opens on Campaigns, not the extractor's
+/// Extract screen. Fail-closed: any other identifier keeps /dashboard/extract.
+const MAILER_IDENTIFIER: &str = "com.spaceworker-os.mailer";
+
+/// The first dashboard route the window navigates to once the bundled runtime
+/// answers. Per build target so each EXE lands on its own primary screen:
+/// the mailer opens on Campaigns (its nav is Campaigns + Settings only), the
+/// extractor (and the default) opens on Extract — byte-identical to the
+/// pre-TASK_201 behavior. Owner (2026-10): the mailer landing on the
+/// extractor's Extract page was a live bug — BUILD_TARGET=mailer was correct
+/// everywhere, but this hardcoded route ignored it.
+fn landing_route(identifier: &str) -> &'static str {
+    if identifier == MAILER_IDENTIFIER {
+        "/dashboard/campaigns"
+    } else {
+        "/dashboard/extract"
+    }
+}
+
 /// The spawned local-runtime child process — killed when the window closes.
 struct LocalRuntime(Mutex<Option<Child>>);
 
@@ -153,11 +174,15 @@ fn main() {
                 let win = app
                     .get_webview_window("main")
                     .expect("main window missing");
+                // TASK_201 — land on the build's own primary screen. Read the
+                // identifier once here (before the thread takes ownership of
+                // `win`) and move the resolved &'static route into the closure.
+                let route = landing_route(app.config().identifier.as_str());
                 thread::spawn(move || {
                     if wait_for_runtime(Duration::from_millis(300), 150) {
                         let url = Url::parse(&format!(
-                            "http://127.0.0.1:{}/dashboard/extract",
-                            LOCAL_PORT
+                            "http://127.0.0.1:{}{}",
+                            LOCAL_PORT, route
                         ))
                         .expect("invalid local url");
                         let _ = win.navigate(url);

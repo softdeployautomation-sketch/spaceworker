@@ -309,3 +309,42 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
 
 
 
+
+---
+
+## S9 — Mailer window landing on the extractor's Extract page (LIVE BUG, fixed)
+
+Symptom (owner, live on the VM): the Mailer EXE shows the Mailer title and the
+Mailer license gate, but after activation it lands on the EXTRACTOR screen.
+Reproduced on a second PC with no prior build — so NOT stale app state.
+
+Root cause (verified by observation on the VM, not theory):
+- `BUILD_TARGET=mailer` was correct EVERYWHERE — the runtime `.env.local` =
+  `mailer`, the compiled server chunk reads `process.env.BUILD_TARGET` at
+  RUNTIME (`exeBuildTarget`), the license gate renders "mailer", and the nav's
+  `mailer` set = Campaigns + Settings. All proven against the shipped build.
+- The bug was in the TAURI LAUNCHER: `src-tauri/src/main.rs` hardcoded the
+  post-runtime landing route to `http://127.0.0.1:PORT/dashboard/extract` for
+  EVERY build (ignored BUILD_TARGET). So the mailer window opened on the
+  extractor's Extract page — title/gate say Mailer, content says Extractor.
+
+Fix (smallest possible, mirrors the existing WRAPPER_IDENTIFIER pattern):
+- `main.rs`: added `MAILER_IDENTIFIER` + `landing_route(identifier)`; the
+  navigate call now uses `landing_route(app.config().identifier.as_str())`.
+  Mailer → `/dashboard/campaigns`; extractor/default → `/dashboard/extract`
+  (byte-identical to pre-S9 for the working Extractor EXE). Fail-closed.
+
+Proof:
+- `cargo check` in src-tauri: exit 0, no warnings.
+- Live on the VM's shipped mailer runtime: `/dashboard/campaigns` => HTTP 200,
+  renders "Campaigns"; `/dashboard/extract` => 200 but no Campaigns (the
+  extractor screen). Confirms the Campaigns route is valid and was only
+  unreachable because of the hardcoded nav.
+
+OUT OF SCOPE (recorded, not done): S4b artifact hygiene — the shipped runtime
+still contains the repo's *.md + scripts/ (seen in the VM standalone listing).
+Real `main.rs` behavior could not be visually confirmed headless (the gate is
+a client-side JS wall), but the compiled navigate target + the live route probe
+are conclusive.
+
+NEXT: commit + push mailer-exe; new mailer CI build lands on Campaigns.
