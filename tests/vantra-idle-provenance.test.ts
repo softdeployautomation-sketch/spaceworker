@@ -129,6 +129,15 @@ function installRequireHook(): void {
       }
       if (request === "@/lib/prisma") return { prisma: fakePrisma };
       if (request === "@/lib/session") return { getSession: async () => sessionValue };
+      // TASK_202 — the TASK_198 route reads wrapper mode via `cookies()`, which
+      // throws in the plain-node runner (no request async storage; production
+      // always has scope, so this is a TEST-HARNESS seam, not a product bug).
+      // Stubbed to null = hosted-web mode, which is exactly what THIS file's
+      // idle-provenance assertions should exercise; wrapper-scoped suppression
+      // is covered by tests/xdevice-onboarding-display.test.ts.
+      if (request === "@/lib/wrapper-mode") {
+        return { resolveWrapperMode: async () => null };
+      }
       if (request === "@/lib/devices") {
         return {
           deviceListSelector: {},

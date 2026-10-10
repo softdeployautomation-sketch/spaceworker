@@ -64,6 +64,8 @@ let messages: FakeMessage[] = [];
 let failCreateForUser: string | null = null;
 let adminSession: { sub: string } | null = { sub: "admin" };
 const emailCalls: Array<{ ticketId: string; to: string; subject: string }> = [];
+/** TASK_202 C — wall-clock time of each notify call, for the pacing test. */
+const emailTimes: number[] = [];
 
 function resetWorld(): void {
   users = [
@@ -75,6 +77,7 @@ function resetWorld(): void {
   tickets = [];
   messages = [];
   emailCalls.length = 0;
+  emailTimes.length = 0;
   failCreateForUser = null;
   adminSession = { sub: "admin" };
 }
@@ -108,6 +111,36 @@ const fakePrisma = {
       const t = tickets.find((row) => row.id === where.id);
       return t ? { id: t.id, userId: t.userId } : null;
     },
+    // TASK_202 D — the LIST projection: models what the REAL service sends
+    // (userId scope for user lists; the admin path ships a filter-free where and
+    // POST-filters Announcements after the query — see listAdminTickets) and
+    // returns rows shaped like TICKET_LIST_SELECT so the REAL toTicketView runs.
+    findMany: async ({
+      where,
+    }: {
+      where?: { userId?: string; status?: string };
+    } = {}) =>
+      tickets
+        .filter((t) => (where?.userId ? t.userId === where.userId : true))
+        .filter((t) => (where?.status ? t.status === where.status : true))
+        .map((t) => ({
+          id: t.id,
+          subject: t.subject,
+          status: t.status,
+          category: null,
+          priority: null,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+          resolvedAt: null,
+          domainRefId: null,
+          lastReadAt: null,
+          _count: { messages: messages.filter((m) => m.ticketId === t.id).length },
+          messages: messages
+            .filter((m) => m.ticketId === t.id)
+            .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+            .slice(0, 1)
+            .map((m) => ({ createdAt: m.createdAt, authorRole: m.authorRole })),
+        })),
     create: async ({ data }: { data: { userId: string; subject: string } }) => {
       if (failCreateForUser && data.userId === failCreateForUser) {
         throw new Error("simulated write failure");
@@ -193,6 +226,7 @@ function installRequireHook(): void {
         return {
           notifyUserTicketReply: (n: { ticketId: string; to: string; subject: string }) => {
             emailCalls.push(n);
+            emailTimes.push(Date.now());
           },
         };
       }
@@ -213,6 +247,14 @@ const route = require("../app/api/admin/support/broadcast/route") as {
 };
 const service = require("../lib/support/tickets") as {
   broadcastAudienceWhere: (a: string) => Record<string, unknown>;
+  listAdminTickets: (f?: Record<string, unknown>) => Promise<{
+    ok: boolean;
+    value?: Array<{ id: string; subject: string }>;
+  }>;
+  listUserTickets: (userId: string) => Promise<{
+    ok: boolean;
+    value?: Array<{ id: string; subject: string }>;
+  }>;
 };
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -426,5 +468,64 @@ test("templates file stays client-safe (no prisma/server imports)", () => {
   assert.ok(
     !TEMPLATES_SRC.includes('server-only"') && !TEMPLATES_SRC.includes("server-only'"),
     "must stay loadable in the browser",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// TASK_202 C/D — pacing and the announcement queue exclusion
+// ---------------------------------------------------------------------------
+
+test("TASK_202 C: per-user sends are SPACED — no two notify calls within 100ms (Resend: 10 req/s cap)", async () => {
+  const res = await post({ audience: "everyone", body: "pacing check" });
+  assert.equal(res.status, 200);
+  assert.equal(emailCalls.length, 4, "every user still gets exactly one email");
+  assert.ok(emailTimes.length >= 2, "timestamps recorded");
+  for (let i = 1; i < emailTimes.length; i++) {
+    const gap = emailTimes[i] - emailTimes[i - 1];
+    assert.ok(
+      gap >= 100,
+      `send ${i} fired ${gap}ms after the previous — pacing must keep ≥100ms (130ms nominal)`,
+    );
+  }
+});
+
+test("TASK_202 D: announcement threads are INVISIBLE to the admin queue but still the user's delivery", async () => {
+  // A real customer ticket, plus a broadcast that creates one Announcement
+  // thread per targeted user.
+  tickets.push({
+    id: "t_real",
+    userId: "u-x",
+    status: "open",
+    subject: "My install is stuck",
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+  const res = await post({ audience: "everyone", body: "maintenance soon" });
+  assert.equal(res.status, 200);
+  assert.ok(
+    tickets.some((t) => t.subject === "Announcement"),
+    "the delivery threads were created",
+  );
+
+  const adminList = await service.listAdminTickets({});
+  assert.equal(adminList.ok, true);
+  const adminSubjects = (adminList.value ?? []).map((t) => t.subject);
+  assert.deepEqual(adminSubjects, ["My install is stuck"], "the queue shows ONLY the real ticket");
+
+  // u-free had no open thread ⇒ got a fresh Announcement delivery thread.
+  const freeList = await service.listUserTickets("u-free");
+  assert.deepEqual(
+    (freeList.value ?? []).map((t) => t.subject),
+    ["Announcement"],
+    "the fresh-thread user still sees the announcement — the thread IS the delivery",
+  );
+
+  // u-x had an open ticket ⇒ the broadcast REPLIED into it (no Announcement
+  // thread) — the reuse rule, still visible in their own list.
+  const xList = await service.listUserTickets("u-x");
+  assert.deepEqual(
+    (xList.value ?? []).map((t) => t.subject),
+    ["My install is stuck"],
+    "open-thread reuse: the user sees the reply where they already were",
   );
 });

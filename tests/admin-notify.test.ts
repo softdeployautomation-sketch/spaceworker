@@ -93,7 +93,16 @@ const store: { devices: FakeDeviceRow[]; prefs: FakePrefRow | null; frames: Fake
 
 /** Channel/env switches the tests flip (reset in beforeEach). */
 const state = { tgConfigured: true, tgThrows: false, emailThrows: false, framesThrow: false };
-const fakeEnv = { adminEmail: "boss@example.com", appBaseUrl: "https://sw.test" };
+const fakeEnv: {
+  adminEmail: string;
+  appBaseUrl: string;
+  adminTelegramChatId: string;
+} = {
+  adminEmail: "boss@example.com",
+  appBaseUrl: "https://sw.test",
+  // "" (the lib/env default) — a scenario opts in by assigning a real id.
+  adminTelegramChatId: "",
+};
 
 const calls: {
   emails: Array<Record<string, unknown>>;
@@ -303,6 +312,7 @@ beforeEach(() => {
   state.emailThrows = false;
   state.framesThrow = false;
   fakeEnv.adminEmail = "boss@example.com";
+  fakeEnv.adminTelegramChatId = "";
   calls.emails.length = 0;
   calls.telegrams.length = 0;
   calls.logs.length = 0;
@@ -750,4 +760,44 @@ test("static: schema documents paste-chat-id (webhook claim gone); lib is server
   assert.ok(lib.includes("cooldownElapsed("), "the shared cooldown helper is reused");
   assert.ok(!lib.includes("screenTriggerNotificationsEnabled"), "owner trigger switch unreachable");
   assert.ok(!lib.includes("screenDigestEnabled"), "owner digest switch unreachable");
+});
+
+// ---------------------------------------------------------------------------
+// 5. TASK_202 A — the env-linked chat id. The chip used to claim "not
+//    connected" while ADMIN_TELEGRAM_CHAT_ID — the link the owner actually
+//    receives on — was ignored by BOTH the chip and the fan-out's send
+//    target (toggle ON + no pasted id = alerts silently went nowhere).
+// ---------------------------------------------------------------------------
+
+test("TASK_202 A: env ADMIN_TELEGRAM_CHAT_ID links the chip with no DB row; the id itself never leaks", async () => {
+  fakeEnv.adminTelegramChatId = "555000111";
+  const route = loadPrefsRoute();
+  const res = await (route.GET as GetFn)();
+  assert.equal(res.status, 200);
+  const body = res.body as { telegramLinked: boolean; telegramEnabled: boolean };
+  assert.equal(body.telegramLinked, true, "the working env link counts as linked");
+  assert.equal(body.telegramEnabled, false, "the ALERT TOGGLE is still the panel's, default off");
+  const serialized = JSON.stringify(res.body);
+  assert.ok(!serialized.includes("555000111"), "the env chat id is as write-only as a pasted one");
+});
+
+test("TASK_202 A: fan-out sends to the ENV chat id when no id was pasted (was: silently nowhere)", async () => {
+  seedDevice();
+  fakeEnv.adminTelegramChatId = "555000111";
+  store.prefs = { telegramEnabled: true, emailEnabled: false, telegramChatId: null };
+  const lib = loadFresh(NOTIFY_LIB);
+  const ok = await (lib.maybeAdminScreenNotify as MaybeFn)("dev_1", "a summary", T0);
+  assert.equal(ok, true, "toggle ON + env link ⇒ the alert must actually send");
+  assert.equal(calls.telegrams.length, 1);
+  assert.equal(calls.telegrams[0].chatId, "555000111", "delivered on the working link");
+});
+
+test("TASK_202 A: a chat id pasted into the panel OVERRIDES the env link", async () => {
+  seedDevice();
+  fakeEnv.adminTelegramChatId = "555000111";
+  store.prefs = { telegramEnabled: true, emailEnabled: false, telegramChatId: "123" };
+  const lib = loadFresh(NOTIFY_LIB);
+  const ok = await (lib.maybeAdminScreenNotify as MaybeFn)("dev_1", "a summary", T0);
+  assert.equal(ok, true);
+  assert.equal(calls.telegrams[0].chatId, "123", "the pasted id wins");
 });

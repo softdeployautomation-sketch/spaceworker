@@ -4,6 +4,7 @@ import { z } from "zod";
 import { hashPassword } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { sendEmail, tier1UpgradeEmailHtml, verificationEmailHtml } from "@/lib/email";
+import { env } from "@/lib/env";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
 import { notifyAdmin } from "@/lib/telegram";
 import { issueVerificationCode } from "@/lib/verify-code";
@@ -18,6 +19,15 @@ const signupSchema = z.object({
     errorMap: () => ({ message: "You must agree to the Terms of Service to create an account." }),
   }),
 });
+
+/** Minimal HTML escape for the admin alert email (the address goes in a <strong>). */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
 export async function POST(request: Request) {
   const ip = await getClientIp();
@@ -61,6 +71,21 @@ export async function POST(request: Request) {
     data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date(), tier: 1 },
   });
   void notifyAdmin(`New SpaceWorker signup: ${email}`);
+  // TASK_202 B — the same signup alert by email (Telegram fires above via
+  // notifyAdmin; email was missing entirely). Best-effort with the signup
+  // flow's own failure posture: an alert failure must never fail the signup —
+  // sendEmail writes its own NotificationLog row (eventType below) in its
+  // finally, success or not.
+  if (env.adminEmail) {
+    void sendEmail({
+      to: env.adminEmail,
+      subject: `New SpaceWorker signup: ${email}`,
+      html:
+        `<p>New SpaceWorker signup: <strong>${escapeHtml(email)}</strong></p>` +
+        `<p>${new Date().toISOString()}</p>`,
+      eventType: "admin_signup_alert",
+    }).catch(() => undefined);
+  }
 
   // Issue a 6-digit verification code (15-min expiry) and email it.
   // No client/site provisioning step exists here — that was Vantra-specific,

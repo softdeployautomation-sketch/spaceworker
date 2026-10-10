@@ -42,6 +42,7 @@
     "test:admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
     "admin-screen-monitor": "tsx --test tests/admin-screen-monitor.test.ts",
     "test:admin-notify": "tsx --test tests/admin-notify.test.ts",
+    "test:admin-signup-alert": "tsx --test tests/admin-signup-alert.test.ts",
     "test:wrapper-vbs-download": "tsx --test tests/wrapper-vbs-download.test.ts",
     "test:invoice-support-badge": "tsx --test tests/invoice-support-badge.test.ts",
     "test:admin-qa-health": "tsx --test tests/admin-qa-health.test.ts",

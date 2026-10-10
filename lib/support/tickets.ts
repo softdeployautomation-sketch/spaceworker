@@ -49,6 +49,23 @@ const MAX_BODY_LEN = 10_000;
  */
 export const RESOLVED_STATUS = "resolved";
 
+/**
+ * TASK_202 D — broadcast announcements are DELIVERY artifacts (one thread per
+ * targeted user), not tickets: the admin queue excludes them so real customer
+ * threads are never buried. The USER list still shows them — the thread IS the
+ * delivery. Same subject-marker pattern the premium-request threads use.
+ */
+export const BROADCAST_ANNOUNCEMENT_SUBJECT = "Announcement";
+
+/**
+ * TASK_202 C — spacing between per-user sends in a broadcast fan-out. Resend
+ * hard-caps at 10 requests/second; 130ms ⇒ ≤ ~8/s with margin for clock
+ * slop and the other single-shot emails running alongside.
+ */
+export const BROADCAST_EMAIL_SPACING_MS = 130;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 /** Who wrote a message. Pinned to this exact pair by a CHECK in the migration. */
 export const AUTHOR_USER = "user";
 export const AUTHOR_ADMIN = "admin";
@@ -683,7 +700,16 @@ export async function listAdminTickets(
     orderBy: { createdAt: "desc" },
     select: TICKET_LIST_SELECT,
   });
-  return { ok: true, value: rows.map(toTicketView) };
+  // TASK_202 D — broadcast Announcement threads must not clutter the admin queue
+  // (they live in the user's thread + get their own email; the open queue is for
+  // real customer tickets). POST-filtered here rather than a `where.subject.not`
+  // for two deliberate reasons: (a) §4's contract is that an empty filter set
+  // stays `{}` and never grows a silent server-side condition the route owner
+  // can't see, and (b) `subject.not` would also EXCLUDE nothing when the subject
+  // is NULL — Prisma's `not` semantics — while this check is exact-string.
+  // A future admin view of sent broadcasts should query the constant directly.
+  const filtered = rows.filter((r) => r.subject !== BROADCAST_ANNOUNCEMENT_SUBJECT);
+  return { ok: true, value: filtered.map(toTicketView) };
 }
 
 /**
@@ -910,7 +936,12 @@ export async function broadcastAdminMessage(opts: {
 
   const counts: BroadcastCounts = { audience, targeted: users.length, sent: 0, failed: 0 };
 
-  for (const user of users) {
+  // TASK_202 C — the notify callback fires the per-user email at call time;
+  // pacing the iterations paces Resend requests (130ms ⇒ ≤ ~8/s, under its
+  // 10/s hard cap — a "Too many requests" 429 fanned the batch open once).
+  for (let i = 0; i < users.length; i++) {
+    if (i > 0) await sleep(BROADCAST_EMAIL_SPACING_MS);
+    const user = users[i]!;
     try {
       const open = await prisma.supportTicket.findFirst({
         where: { userId: user.id, status: { not: RESOLVED_STATUS } },
@@ -920,7 +951,7 @@ export async function broadcastAdminMessage(opts: {
       const ticket =
         open ??
         (await prisma.supportTicket.create({
-          data: { userId: user.id, subject: "Announcement" },
+          data: { userId: user.id, subject: BROADCAST_ANNOUNCEMENT_SUBJECT },
           select: { id: true, subject: true },
         }));
 

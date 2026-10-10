@@ -122,6 +122,39 @@ before this task started.
 6. S2: deploy to VPS (rsync app lib components tests + build + restart), live-verify:
    admin chip reads "Telegram: linked ✓" without a pasted id; make a real test signup
    → admin email arrives; (Resend pacing + announcement exclusion visible in panel).
-7. Closeout: AFTER-RECORD, commit, push; then resume TASK_200 S2 (15-min auto-run
-   battery history in Health panel, tab-strip wrap to ~3 lines, mailer-EXE plan
-   doc TASK_201) per TASK_200_STEPS.md.
+### 2026-10-10 — S1 COMPLETE: all fixes + gates green (full suite exit 0)
+
+Resumed from the in-flight record above. Done in order:
+
+1. **D post-filter applied** — `listAdminTickets` now filters
+   `subject !== BROADCAST_ANNOUNCEMENT_SUBJECT` AFTER `findMany`, before
+   `map(toTicketView)`. Comment records the two reasons it is not a
+   `where.subject.not`: §4's "empty filter stays {}" contract, and Prisma
+   `not`-semantics on NULL subjects vs this exact-string check.
+2. **Broadcast fake trimmed** — the dead `subject.not` branch removed so the
+   fake models exactly the where the real service sends (userId/status only).
+3. **Gates:** test:support **57/57** (test-52 "read cursor" passed cleanly —
+   no flake this run) · support-broadcast **20/20** · admin-notify **22/22** ·
+   admin-signup-alert **3/3** · premium-static **16/16** · tsc **0** ·
+   eslint **clean**.
+4. **Full `npm run test` → exit 0: 1396 tests, 1395 pass, 0 fail** (1 skip,
+   pre-existing).
+5. **A process miss of mine, found and fixed (record for the playbook):**
+   the first full-suite run showed **9 failures, all in
+   tests/vantra-idle-provenance.test.ts**. Root cause: TASK_198's commit
+   `d4cfd17` added `resolveWrapperMode()` (→ Next `cookies()`) to
+   GET /api/devices; in the plain-node runner there is no request async
+   storage, so `cookies()` throws. **Production is unaffected** (real
+   requests always carry scope — live probes post-TASK_198 all 200), but
+   my TASK_198 closeout gates had run only the two onboarding suites and
+   not this one — the exact reason HOW_WE_MOVE_FAST mandates the full
+   battery before EVERY commit. Fix: the require-hook in that test now
+   stubs `@/lib/wrapper-mode → { resolveWrapperMode: async () => null }`
+   (web mode = what idle-provenance asserts; wrapper scoping stays owned
+   by xdevice-onboarding-display, 11/11 still green). Provenance suite
+   back to 9/9.
+
+All TASK_202 S1 code now committed: env chat-id fallback (chip + fan-out),
+admin signup email, broadcast pacing (130 ms/user), announcement
+queue-exclusion (constant + post-filter), 4 test suites extended/new.
+Ready for S2 deploy + live verify.

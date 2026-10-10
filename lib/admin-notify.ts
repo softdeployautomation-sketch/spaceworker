@@ -67,11 +67,26 @@ async function readPrefRow(): Promise<AdminNotificationPrefRow | null> {
   return db.adminNotificationPref.findUnique({ where: { id: "singleton" } });
 }
 
+/**
+ * TASK_202 A — the chat id admin alerts ACTUALLY go to: a chat id pasted into
+ * the panel overrides, and env ADMIN_TELEGRAM_CHAT_ID (the link the owner
+ * already receives on — notifyAdmin/Telegram alerts use it) is the always-on
+ * fallback. `""`/undefined env reads as null. Used by BOTH the chip's
+ * `telegramLinked` (the panel used to claim "not connected" while the env
+ * link worked fine) and the fan-out's send target (it used to send only to a
+ * pasted id — with none pasted, telegram alerts silently went nowhere).
+ */
+function effectiveAdminChatId(
+  row: Pick<AdminNotificationPrefRow, "telegramChatId"> | null,
+): string | null {
+  return row?.telegramChatId || env.adminTelegramChatId || null;
+}
+
 function toView(row: AdminNotificationPrefRow | null): AdminNotifyPrefsView {
   return {
     telegramEnabled: row?.telegramEnabled ?? false,
     emailEnabled: row?.emailEnabled ?? false,
-    telegramLinked: Boolean(row?.telegramChatId),
+    telegramLinked: Boolean(effectiveAdminChatId(row)),
     configured: {
       telegram: telegramConfigured(),
       email: Boolean(env.adminEmail),
@@ -208,7 +223,10 @@ export async function maybeAdminScreenNotify(
   if (!device || device.removedAt || !device.adminNotifyEnabled) return false;
 
   const prefs = await readPrefRow();
-  const chatId = prefs?.telegramChatId ?? null;
+  // TASK_202 A — same effective chat id as the chip: pasted panel id wins,
+  // env ADMIN_TELEGRAM_CHAT_ID is the fallback (previously a null row meant
+  // telegram alerts silently went nowhere even with the toggle ON).
+  const chatId = effectiveAdminChatId(prefs);
   const emailReady = Boolean(prefs?.emailEnabled && env.adminEmail);
   const telegramReady = Boolean(prefs?.telegramEnabled && chatId && telegramConfigured());
   if (!emailReady && !telegramReady) return false; // nothing can send — no claim
