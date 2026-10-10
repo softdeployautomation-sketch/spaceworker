@@ -348,3 +348,42 @@ a client-side JS wall), but the compiled navigate target + the live route probe
 are conclusive.
 
 NEXT: commit + push mailer-exe; new mailer CI build lands on Campaigns.
+
+---
+
+## S10 — Mailer leaking the web dashboard + wrong license domain (fixed)
+
+Owner (2026-10-10): the mailer still shows the wallet / AI-bills stats and a
+web-centric "Welcome back to SpaceWorker OS" heading, and the "Get a license"
+link should point at spaceworker.instaweb.top. Root cause: the mailer is a
+SUBSET build, but only the nav was trimmed — every other route to the web
+Overview page was still open.
+
+Fix (three independent leaks closed together — see EXE_BUILD_LESSONS_LEARNED §13):
+- `components/shell.tsx` — the "SpaceWorker OS" logo link is now
+  build-target-aware: mailer → `/dashboard/campaigns`, web/extractor unchanged
+  (was a hardcoded `/dashboard`).
+- `app/dashboard/page.tsx` — the Overview page fail-closes for the mailer:
+  `router.replace("/dashboard/campaigns")` + `return null` before render, so a
+  direct URL / stale bookmark / the old logo link can't reach the web stats.
+  (Narrows the hero "Launch a browser"/"Extract leads" + DB-backed
+  OverviewStatsRow away too.)
+- `lib/exe-runtime.ts` — added `LICENSE_PURCHASE_URL = "https://spaceworker.instaweb.top"`
+  as a SEPARATE constant from `HOSTED_APP_URL` (§15: the buy link vs the
+  license-validation API host must not be conflated). Repointed the three
+  `buyHref` call sites (dashboard/layout.tsx LicenseGate, settings/page.tsx +
+  licenses/page.tsx ExeLicensePanel) to it and dropped the now-unused
+  `accountHref` imports.
+
+Proof:
+- `tsc --noEmit` → exit 0.
+- `eslint` (page/layout/settings/licenses/shell/exe-runtime) → exit 0.
+- Mailer nav set unchanged (Campaigns + Settings); web + Extractor paths
+  byte-identical (guards are gated on `buildTarget === "mailer"`).
+
+Playbook: HOW_WE_MOVE_FAST.md §5 updated — CI `variant` now lists
+`extractor`/`devices`/`mailer` (was stale "only Extractor"); added the mailer
+subset-build triad note.
+
+NEXT: commit + push mailer-exe; new mailer CI build. Then RMM build.
+

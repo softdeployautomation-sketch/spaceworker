@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { Card } from "@/components/ui";
 import { ExeLicensePanel } from "@/app/dashboard/settings/exe-license-panel";
 import { LicensesSection } from "@/app/dashboard/settings/licenses-section";
-import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { isLocalExeRuntime, LICENSE_PURCHASE_URL } from "@/lib/exe-runtime";
 import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
@@ -37,7 +37,7 @@ export default async function LicensesPage() {
         <h1 className="text-2xl font-semibold tracking-tight">Licenses</h1>
         <p className="mt-2 text-sm text-fg-muted">Licensing for this device.</p>
         <div className="mt-6">
-          <ExeLicensePanel buyHref={accountHref("/pricing")} />
+          <ExeLicensePanel buyHref={LICENSE_PURCHASE_URL} />
         </div>
       </div>
     );

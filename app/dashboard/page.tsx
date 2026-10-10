@@ -1,7 +1,10 @@
 "use client";
 
+import { useEffect } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
+import { useBuildTarget } from "@/components/build-target-context";
 import { useNavItems } from "@/components/dashboard-nav";
 import { OverviewStatsRow } from "@/components/overview-stats-row";
 import { cn } from "@/lib/cn";
@@ -47,6 +50,22 @@ export default function DashboardPage() {
   // from context, which keeps the Extractor build's sidebar narrowed to
   // Overview/Extract/Settings instead of leaking the full web nav into the EXE.
   const items = useNavItems();
+
+  // TASK_201 S10 — the Mailer EXE has NO Overview page (its nav is Campaigns +
+  // Settings only; the wallet/AI/lead stats below are DB-backed and the hero
+  // copy is web-centric). The dock/menu already hide it, but a stale bookmark,
+  // a direct URL, or the OLD hardcoded logo link would still land here and show
+  // the web dashboard inside the mailer. Fail-closed: redirect to Campaigns
+  // before anything renders. router.replace (not push) so Back doesn't bounce
+  // the user straight back onto a page this build can't show. The web app and
+  // the Extractor EXE (both keep /dashboard) are untouched.
+  const buildTarget = useBuildTarget();
+  const router = useRouter();
+  useEffect(() => {
+    if (buildTarget === "mailer") router.replace("/dashboard/campaigns");
+  }, [buildTarget, router]);
+  if (buildTarget === "mailer") return null;
+
   // Confirmed live (2026-09-19) — the sidebar nav (dashboard-nav.tsx's
   // BUILD_ALLOWED_HREFS) already narrows to Extract-only for the Extractor
   // build, but these two hero buttons were hardcoded regardless of build

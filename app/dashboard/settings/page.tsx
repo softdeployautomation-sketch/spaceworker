@@ -8,7 +8,7 @@ import { ChangePasswordForm } from "@/components/change-password-form";
 import { NotificationsSettings } from "@/components/notifications-settings";
 import { db } from "@/lib/db";
 import { env } from "@/lib/env";
-import { accountHref, isLocalExeRuntime } from "@/lib/exe-runtime";
+import { isLocalExeRuntime, LICENSE_PURCHASE_URL } from "@/lib/exe-runtime";
 import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import { getCurrentUser } from "@/lib/session-user";
 import { generateTelegramLinkToken, parseTelegramLinkToken } from "@/lib/telegram";
@@ -49,7 +49,7 @@ export default async function SettingsPage() {
           <p className="mt-1 text-sm text-fg-muted">Licensing and preferences for this device.</p>
         </div>
         {isMailer ? <LocalDrainSettings /> : null}
-        <ExeLicensePanel buyHref={accountHref("/pricing")} />
+        <ExeLicensePanel buyHref={LICENSE_PURCHASE_URL} />
       </div>
     );
   }

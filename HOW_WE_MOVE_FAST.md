@@ -281,7 +281,13 @@ ssh -i ~/.ssh/tacticalrmm_vps myrat@192.168.0.104 "powershell -Command \"Get-Pro
 
 **Longer-term**: this should be fixed properly in the NSIS/Tauri bundling config so a normal reinstall (or better, a version-aware update) always replaces the runtime — worth its own task rather than remembering this manual step forever.
 
-**Only the Extractor variant is wired into CI today** — the workflow's `variant` dropdown (`.github/workflows/build-exe.yml`) only offers `extractor`, and `BUILD_TARGET` now correctly tracks whichever variant is selected (fixed 2026-09-20 — it used to be hardcoded regardless of input). Adding Mailer/Combined/Automation as real buildable variants is its own task, not assumed done.
+**CI `variant` dropdown** (`.github/workflows/build-exe.yml`) offers `extractor`, `devices`, and `mailer` (Mailer added TASK_201 S1, 2026-10-10; `combined`/`automation` are still not wired). `BUILD_TARGET` tracks whichever variant is selected (fixed 2026-09-20 — it used to be hardcoded regardless of input), and `src-tauri/tauri.<variant>.conf.json` supplies the per-variant `productName`/`identifier` via the `--config` merge.
+
+**Mailer EXE is a TRIM, not a theme — it ships NO Overview page** (TASK_201 S10, 2026-10-10). Its nav is Campaigns + Settings ONLY (`BUILD_ALLOWED_HREFS.mailer`), and the web Overview page (`app/dashboard/page.tsx`) is DB/embedded-backed with web-centric copy, so it must stay unreachable in the mailer. Three places enforce this and ALL THREE matter — a nav-set filter alone is not access control:
+1. `components/dashboard-nav.tsx` `BUILD_ALLOWED_HREFS.mailer` omits `/dashboard` (dock/menu/Window).
+2. `components/shell.tsx` logo link → `/dashboard/campaigns` when `buildTarget === "mailer"` (was a hardcoded `/dashboard`).
+3. `app/dashboard/page.tsx` fail-closed `router.replace("/dashboard/campaigns")` for `buildTarget === "mailer"` — catches direct URLs / stale bookmarks that bypass (1) and (2).
+The Mailer also lands on Campaigns via the Tauri launcher (`main.rs` `landing_route()`, not a hardcoded `/dashboard/extract`). The "Get a license" link uses `LICENSE_PURCHASE_URL` (`https://spaceworker.instaweb.top`), kept SEPARATE from `HOSTED_APP_URL` so the license-validation API (`/api/exe-license/*`) still hits the app server. See EXE_BUILD_LESSONS_LEARNED.md.
 
 **Faster alternative for backend-only changes**: if what you're verifying is a `/api/exe/*` route's logic and not literally the Windows GUI, run the EXE's local runtime directly on your dev machine instead of a full build+install cycle:
 ```bash
