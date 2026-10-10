@@ -213,21 +213,18 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
   return (
     <div className="min-h-screen bg-zinc-100 dark:bg-zinc-950">
       <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-        {/* flex-wrap + order lets the 7-tab nav drop to its own full-width,
-            horizontally-scrollable row on mobile (where it would otherwise
-            overflow) while staying inline with the header from md: up. The nav
-            stays overflow-x-auto at EVERY width (not just below md:) — it
-            previously switched to overflow-visible at md:, which assumed a wide
-            viewport always has room for the whole tab list. That broke inside
-            the Ops Console's Split view (a real, narrower iframe panel, not the
-            full browser width), where the tabs just got clipped by the panel's
-            edge instead of scrolling. min-w-0 lets the nav actually shrink
-            within the flex row instead of forcing an overflow. */}
+        {/* TASK_200 — the nav previously used overflow-x-auto (a horizontal
+            scroll strip). The owner found that unusable: picking a tab near
+            the end (e.g. Health) required scrolling to find it. Now the tabs
+            simply WRAP onto multiple rows (~3 lines) so every tab is visible
+            and clickable at once. Wrapping also degrades better than the old
+            scroll strip inside the Ops Console's narrow Split-view iframe —
+            tabs stack instead of being clipped or hidden behind a scrollbar. */}
         <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-3 px-4 py-4 sm:px-6">
           {/* TASK_126 — the outer AdminShell chrome already names the product
               ("SpaceWorker · Admin"); this header's own h1 said the same thing
               a second time right below it. Dropped, keeping just the tabs. */}
-          <nav className="order-3 flex w-full min-w-0 gap-1 overflow-x-auto md:order-none md:w-auto">
+          <nav className="flex w-full flex-wrap gap-1">
             {TABS.map((t) => (
               <button
                 key={t.id}

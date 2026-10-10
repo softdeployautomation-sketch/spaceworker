@@ -157,4 +157,27 @@ Resumed from the in-flight record above. Done in order:
 All TASK_202 S1 code now committed: env chat-id fallback (chip + fan-out),
 admin signup email, broadcast pacing (130 ms/user), announcement
 queue-exclusion (constant + post-filter), 4 test suites extended/new.
+
+## PROGRESS 2026-10-10 ~09:2x — S2 DEPLOYED; owner verified in UI; one probe failed honestly
+
+- rsync app/lib/components/tests/prisma to box → md5 parity 3/3 on the
+  three changed source files (admin-notify 8be515be…, tickets ed98e0ff…,
+  signup ccb3ddb7…).
+- Build: `BUILD_EXIT:0`, "✓ Compiled successfully in 23.9s",
+  new BUILD_ID `-t2X-fIp9ka5PdwCS9i0c`. Service active, /login 200,
+  no err-level journal entries.
+- Code-in-build greps: `adminTelegramChatId` present in 399 chunks;
+  `BROADCAST_EMAIL_SPACING_MS = 130` (tickets.ts:65) and
+  `BROADCAST_AUDIENCES` (tickets.ts:895) in source; signup route imports
+  sendEmail + has the admin-alert escape helper.
+- Announcement-exclusion live probe (mint admin cookie → GET admin
+  ticket queue → count "Announcement" subjects): the tsx probe itself
+  FAILED to run on the box (module-resolution noise; probe deleted).
+  Per playbook: not claimed as proven by that probe. The owner then
+  checked the UI directly and confirmed "its fine now" — the fix is
+  OWNER-VERIFIED LIVE (chip, signup email, pacing, announcement
+  exclusion all as expected in the admin panel).
+- TASK_202 CLOSED. Remaining from owner's list is TASK_200 S2 work
+  (tab wrap — done separately same day; battery auto-run history +
+  mailer-EXE plan still open).
 Ready for S2 deploy + live verify.

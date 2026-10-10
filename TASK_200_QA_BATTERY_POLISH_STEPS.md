@@ -68,3 +68,18 @@ S1 committed+pushed at `b31eeae`. S2 (15-min auto-run battery history in the
 Health panel, tab-strip wrap to ~3 lines, then the mailer-EXE plan doc
 TASK_201) is **NOT started** — resume here after TASK_202 closes. Full S2
 context lives in the plan section at the top of this file.
+
+### 2026-10-10 — RESUMED: S2a (tab-strip wrap) DONE, code committed
+
+Owner interrupt list from TASK_202 handled; back on TASK_200 S2.
+- **Tab strip fixed** (`admin-panel.tsx`): the header nav was
+  `overflow-x-auto` (horizontal scroll strip — owner: "selecting health
+  needs me to roll to the end"). Now `flex w-full flex-wrap gap-1`:
+  all 7 tabs wrap onto ~3 visible lines, nothing to scroll. Buttons keep
+  `shrink-0` so they wrap whole. The old comment's Split-view-iframe
+  rationale is superseded and recorded in the new comment (wrapping
+  degrades better than clipping/scrolling in a narrow iframe).
+- Gates: tsc 0 errors; eslint on admin-panel exactly 42 (the known
+  pre-existing baseline, +0); no test pins the old classes (grep'd).
+- STILL OPEN in S2: 15-min auto-run battery history (scroll) in the
+  Health panel, then the standalone mailer/campaign EXE plan (TASK_201).
