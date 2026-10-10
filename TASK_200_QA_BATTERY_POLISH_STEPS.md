@@ -61,3 +61,10 @@ Tests (`tests/qa-battery.test.ts`):
 
 Gates: `tsc` **0 errors** · eslint **0 problems** (clean) · `test:qa-battery`
 **33/33 pass** (was 30 — three new vantra tests).
+
+### 2026-10-10 — PAUSED for TASK_202 (owner interrupts; nothing lost)
+
+S1 committed+pushed at `b31eeae`. S2 (15-min auto-run battery history in the
+Health panel, tab-strip wrap to ~3 lines, then the mailer-EXE plan doc
+TASK_201) is **NOT started** — resume here after TASK_202 closes. Full S2
+context lives in the plan section at the top of this file.
