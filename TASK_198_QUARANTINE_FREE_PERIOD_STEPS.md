@@ -22,3 +22,18 @@
 ## PROGRESS
 
 _(entries appended after every step — dated, with proof)_
+
+
+### 2026-10-10 06:58 — PROGRESS: S1 COMPLETE (wrapper-scope suppression, gates green, committing now)
+
+**Fix:** `app/api/devices/route.ts` — `suppressOnboarding = user !== null && (isXdeviceLive(user) || wrapperScoped)` where `wrapperScoped = (await resolveWrapperMode()) !== null` (env `WRAPPER_MODE` first — EXE build — then `sw_wrapper` cookie; fail-closed, shared helper = one source of truth). ONE route change covers strip + row badge + console stage wording (all null-gate off this payload). Web never sets either scope ⇒ byte-identical to TASK_191.
+
+**Tests** (`tests/xdevice-onboarding-display.test.ts`, +4 cases, harness stubs `@/lib/wrapper-mode`):
+- wrapper + free tier-1 → suppressed (THE owner bug)
+- wrapper + tier 0 → suppressed
+- wrapper + expired tier-3 → suppressed (scope wins)
+- no wrapper + free tier-1 → KEPT (web half of the OR pinned)
+
+**Gates (proof):** `tsc-errors:0` · `eslint:0` (route + test) · `test:xdevice-onboarding-display` → **11/11** (7 pre-existing + 4 new) · `test:xdevice` → **38/38** · `test:qa-battery` → **30/30**.
+
+S2 = shared deploy (TASK_197 deploy note) + live probe; S3 closeout.

@@ -29,11 +29,15 @@ const MIN = 60_000;
 let sessionValue: { userId: string } | null = null;
 let userRow: { tier: number; premiumExpiresAt: Date | null } | null = null;
 let deviceRows: Array<Record<string, unknown>> = [];
+// TASK_198 — what the route's `resolveWrapperMode()` call sees (env/cookie
+// scope). Reset per case in resetWorld so tests never leak into each other.
+let wrapperScoped = false;
 
 /** One device that IS mid-quarantine — the state tier-3 must never see. */
 function resetWorld(tier: number, premiumExpiresAt: Date | null): void {
   sessionValue = { userId: "u-1" };
   userRow = { tier, premiumExpiresAt };
+  wrapperScoped = false;
   deviceRows = [
     {
       id: "d-1",
@@ -82,6 +86,11 @@ function installRequireHook(): void {
       }
       if (request === "@/lib/prisma") return { prisma: fakePrisma };
       if (request === "@/lib/session") return { getSession: async () => sessionValue };
+      // TASK_198 — wrapper scope resolver, stubbed (the real one reads env +
+      // next/headers; the route's OR-logic with isXdeviceLive is under test).
+      if (request === "@/lib/wrapper-mode") {
+        return { resolveWrapperMode: async () => (wrapperScoped ? "devices" : null) };
+      }
       if (request === "@/lib/devices") {
         return {
           deviceListSelector: {},
@@ -166,5 +175,35 @@ test("device with no onboarding row stays null for everyone (shape unchanged)", 
   resetWorld(5, null);
   deviceRows[0].onboarding = null;
   assert.equal((await get()).body.devices[0].onboarding, null);
+});
+
+// ---------------------------------------------------------------- TASK_198 ---
+// Wrapper scope (env EXE build or sw_wrapper cookie) suppresses the quarantine
+// display at ANY tier — the wrapper sells the one public agent, so the
+// hide/stay-awake strip is meaningless during the FREE period too.
+
+test("TASK_198: wrapper scope + FREE tier-1 → suppressed (the owner's bug)", async () => {
+  resetWorld(1, null);
+  wrapperScoped = true;
+  assert.equal((await get()).body.devices[0].onboarding, null);
+});
+
+test("TASK_198: wrapper scope + tier 0 → suppressed", async () => {
+  resetWorld(0, null);
+  wrapperScoped = true;
+  assert.equal((await get()).body.devices[0].onboarding, null);
+});
+
+test("TASK_198: wrapper scope + expired tier-3 term → still suppressed (scope wins)", async () => {
+  resetWorld(3, new Date(Date.now() - MIN));
+  wrapperScoped = true;
+  assert.equal((await get()).body.devices[0].onboarding, null);
+});
+
+test("TASK_198: NO wrapper scope (web) + free tier-1 → display KEPT (unchanged)", async () => {
+  // The web path must be byte-identical to TASK_191: wrapperScoped resets to
+  // false in resetWorld, so this pins the non-wrapper half of the OR.
+  resetWorld(1, null);
+  assert.ok((await get()).body.devices[0].onboarding);
 });
 

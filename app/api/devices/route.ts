@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { isXdeviceLive } from "@/lib/entitlements";
+import { resolveWrapperMode } from "@/lib/wrapper-mode";
 import {
   deviceListSelector,
   DEVICE_ONLINE_WINDOW_MS,
@@ -60,11 +61,19 @@ export async function GET(request: Request) {
   // `onboarding` is already nullable. The sweep stages themselves keep running
   // (owner chose UI-only); nothing in lib/vantra-link.ts or the sweep changes.
   // Live tier-3 test = the exact grandfathered/null rule the entitlements use.
+  // TASK_198 — WRAPPER SCOPE also suppresses, at ANY tier: the wrapper sells
+  // the one public agent (xdevice track), so the hide/stay-awake strip is
+  // meaningless during the FREE period too (owner: "it still shows during the
+  // free period before users on wrapper becomes premium, when they become [premium],
+  // it disappears"). `resolveWrapperMode` is env-first (EXE build), then the
+  // sw_wrapper cookie (hosted window), fail-closed — so the hosted WEB deploy,
+  // which never sets either, is byte-identical to TASK_191 behaviour.
   const user = await prisma.user.findUnique({
     where: { id: session.userId },
     select: { tier: true, premiumExpiresAt: true },
   });
-  const suppressOnboarding = user !== null && isXdeviceLive(user);
+  const wrapperScoped = (await resolveWrapperMode()) !== null;
+  const suppressOnboarding = user !== null && (isXdeviceLive(user) || wrapperScoped);
 
   // TASK_154 N1 — idle with provenance, and a tolerance the old path lacked.
   // `fetchUserIdleReading` never throws: on a mesh hiccup it serves the last
