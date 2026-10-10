@@ -255,5 +255,21 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
 - NEXT: CI mailer build → verify new artifact boots WITHOUT the preload shim →
   hand installer to owner for Windows S5 test (campaign + save-template +
   drain settings).
+- CI RESULT (run 38058592807, commit 6baad90): SUCCESS. Artifact
+  11671734440 "spaceworker-mailer-windows" downloaded + unpacked. Verification
+  on the fresh artifact with NO preload shim (fix proven baked into the
+  compiled chunks): boots straight to "[local-exe] database ready; auto-drain
+  loop started"; drain-settings GET ok; mailbox save with the REAL hostname
+  smtp.hostinger.com (the mapped-IP case that failed pre-fix) returns an id;
+  campaign create (csv, 2 recipients) → savedAsTemplate → listed with
+  subjects. Mimic-only caveat: the local boot test swaps the repo's darwin
+  prisma engine into the artifact (the shipped one is
+  query_engine-windows.dll.node, which the owner's Windows box loads natively
+  — nothing about that swap ships in the installer).
+- Installer for owner S5 test: run 38058592807 → "SpaceWorker OS -
+  Mailer_0.1.0_x64-setup.exe". Test on Windows: first boot (~10-20s PGlite
+  init) → dashboard opens with no login → create mailbox (real SMTP host) →
+  create campaign from CSV → Save as template → template appears in campaign
+  creation picker → drain settings visible in Settings.
 
 
