@@ -68,11 +68,18 @@ export interface QaDb {
   /** Cheap round-trip (SELECT 1). Throw = connection broken. */
   ping(): Promise<void>;
   /**
-   * Unfinished or rolled-back rows in `_prisma_migrations`.
+   * Unfinished or rolled-back rows in `_prisma_migrations` that have NO
+   * successful sibling row with the same name — i.e. migrations that never
+   * applied at all. A rolled-back first attempt superseded seconds later by a
+   * successful retry is NORMAL Prisma history (proven pair on the box:
+   * assistant_foundation, 2026-09-22) and is counted by
+   * `staleMigrationArtifacts` instead — not here.
    * Returns -1 when the table itself is unreadable (treated as FAIL — a
    * platform without a migration ledger is not a healthy platform).
    */
   unfinishedMigrations(): Promise<number>;
+  /** Rolled-back rows superseded by a successful same-name row (cosmetic ledger noise → WARN). */
+  staleMigrationArtifacts(): Promise<number>;
   /** Newest `createdAt` of DeviceScreenshot / UserPresenceEvent, or null. */
   newestCreatedAt(model: "DeviceScreenshot" | "UserPresenceEvent"): Promise<Date | null>;
   /** Device rows — used to detect a silent 2xx on the anon register probe. */
@@ -210,7 +217,21 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
     } else if (mig.value < 0) {
       push({ id: "migrations", group: "platform", label: "Migration ledger", status: "fail", detail: "_prisma_migrations unreadable", ms: mig.ms });
     } else {
-      push({ id: "migrations", group: "platform", label: "Migration ledger", status: "fail", detail: `${mig.value} unfinished / rolled-back`, ms: mig.ms });
+      push({ id: "migrations", group: "platform", label: "Migration ledger", status: "fail", detail: `${mig.value} unfinished with NO successful retry (real)`, ms: mig.ms });
+    }
+
+    const stale = await timed(() => deps.db.staleMigrationArtifacts());
+    if (!stale.ok) {
+      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "warn", detail: stale.error, ms: stale.ms });
+    } else if (stale.value < 0) {
+      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "warn", detail: "_prisma_migrations unreadable", ms: stale.ms });
+    } else if (stale.value === 0) {
+      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "pass", detail: "0 superseded rows", ms: stale.ms });
+    } else {
+      // Cosmetic: a failed first attempt later superseded by a successful
+      // retry (assistant_foundation, 2026-09-22 — rolled back 12:37:52,
+      // succeeded 12:37:55). The schema IS applied; only the ledger row noise remains.
+      push({ id: "migration-artifacts", group: "platform", label: "Ledger stale rows", status: "warn", detail: `${stale.value} rolled-back row(s) superseded by successful retries (cosmetic)`, ms: stale.ms });
     }
 
     const bid = await timed(() => deps.readBuildId());
@@ -498,7 +519,15 @@ export function createQaDb(client: QaPrismaLike): QaDb {
     },
     async unfinishedMigrations() {
       try {
-        const rows = await client.$queryRaw`SELECT 1 FROM "_prisma_migrations" WHERE "finished_at" IS NULL OR "rolled_back_at" IS NOT NULL`;
+        const rows = await client.$queryRaw`SELECT 1 FROM "_prisma_migrations" r WHERE ("finished_at" IS NULL OR "rolled_back_at" IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM "_prisma_migrations" r2 WHERE r2."migration_name" = r."migration_name" AND r2."finished_at" IS NOT NULL AND r2."rolled_back_at" IS NULL)`;
+        return (rows as unknown[]).length;
+      } catch {
+        return -1;
+      }
+    },
+    async staleMigrationArtifacts() {
+      try {
+        const rows = await client.$queryRaw`SELECT 1 FROM "_prisma_migrations" r WHERE "rolled_back_at" IS NOT NULL AND EXISTS (SELECT 1 FROM "_prisma_migrations" r2 WHERE r2."migration_name" = r."migration_name" AND r2."finished_at" IS NOT NULL AND r2."rolled_back_at" IS NULL)`;
         return (rows as unknown[]).length;
       } catch {
         return -1;

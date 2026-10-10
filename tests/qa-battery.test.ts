@@ -42,6 +42,7 @@ interface FakeDbOpts {
   pingThrows?: boolean;
   unfinished?: number;
   unfinishedThrows?: boolean;
+  stale?: number;
   newest?: Partial<Record<"DeviceScreenshot" | "UserPresenceEvent", Date | null>>;
   newestThrows?: boolean;
   devices?: number;
@@ -55,6 +56,9 @@ function fakeDb(o: FakeDbOpts = {}): QaDb {
     async unfinishedMigrations() {
       if (o.unfinishedThrows) throw new Error("ledger unreadable");
       return o.unfinished ?? 0;
+    },
+    async staleMigrationArtifacts() {
+      return o.stale ?? 0;
     },
     async newestCreatedAt(model) {
       if (o.newestThrows) throw new Error("query failed");
@@ -142,6 +146,16 @@ describe("TASK_195 — platform probes", () => {
     assert.match(probe(bad, "migrations").detail ?? "", /2 unfinished/);
     const unreadable = await runBattery(baseDeps({ db: fakeDb({ unfinished: -1 }) }), { groups: ["platform"] });
     assert.equal(probe(unreadable, "migrations").status, "fail");
+  });
+
+  it("stale ledger rows (retry later succeeded) ⇒ migrations PASS + artifacts WARN (S3 live-run fix)", async () => {
+    // assistant_foundation pair: rolled-back first attempt + successful retry
+    // 3s later. Unresolved count 0, artifacts 1 ⇒ no FAIL, honest WARN.
+    const r = await runBattery(baseDeps({ db: fakeDb({ unfinished: 0, stale: 1 }) }), { groups: ["platform"] });
+    assert.equal(probe(r, "migrations").status, "pass");
+    const art = probe(r, "migration-artifacts");
+    assert.equal(art.status, "warn");
+    assert.match(art.detail ?? "", /cosmetic/);
   });
 
   it("build-id: absent ⇒ warn; >7d ⇒ warn stale; fresh ⇒ pass", async () => {
