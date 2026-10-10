@@ -24,6 +24,10 @@ import {
   filterPickerLeads,
   pruneExcludedSelection,
 } from "@/lib/lead-filter";
+// TASK_201 S6 — single source of truth for "campaign as template" (decoupled
+// subjects/bodies columns OR legacy variant rows); its drift-apart inlined
+// variants-only checks were the dead "Save as template" button bug.
+import { campaignTemplateContent, hasTemplateContent } from "@/lib/campaign-template-content";
 
 type Campaign = {
   id: string;
@@ -36,6 +40,13 @@ type Campaign = {
   // this type is reused for contexts that don't need it, not because it can
   // actually be missing when loading a template's content below.
   variants?: { id: string; subject: string; bodyHtml?: string }[];
+  // TASK_201 S6 — decoupled content (Task 29): every campaign created from the
+  // web form stores its content as these two independent lists and has NO
+  // variant rows; GET /api/campaigns returns the full row, so they arrive here.
+  // Read only via campaignTemplateContent()/hasTemplateContent() — never with
+  // an inlined variants-length check (that's what broke the template button).
+  subjects?: string[];
+  bodies?: string[];
   // Opted into the "My campaigns" group of the template picker below (and,
   // separately, into the admin Campaign Templates tab's promote-to-general
   // review list). Off by default — not every one-off campaign is meant to be
@@ -623,17 +634,25 @@ function CampaignsPageInner() {
     setCampaignTemplateId(id);
     if (!id) return;
     const own = campaigns.find((c) => c.id === id);
-    const rawVariants = own
-      ? (own.variants ?? [])
-      : (templates.find((t) => t.id === id)?.variants ?? []);
+    if (own) {
+      // TASK_201 S6 — own campaigns resolve through the shared helper so the
+      // decoupled columns (what every new campaign actually has) load same as
+      // legacy variant rows did. No-op when there's nothing to load, so the
+      // currently-typed fields are never cleared by an empty pick.
+      const content = campaignTemplateContent(own);
+      if (content.subjects.length === 0 && content.bodies.length === 0) return;
+      setSubjects(content.subjects);
+      setBodies(content.bodies);
+      return;
+    }
+    const rawVariants = templates.find((t) => t.id === id)?.variants ?? [];
     if (rawVariants.length === 0) return;
-    // Coalesce on BOTH fields, for BOTH sources — the "own campaigns" branch
-    // only defaulted bodyHtml, never subject; the "ready-made templates"
-    // branch (the only one with real data today) defaulted neither. A null
-    // subject/bodyHtml flowed straight into state as `undefined`, which
-    // crashed the bodyLinks useMemo's unconditional `.trim()` — confirmed
-    // live via the exact browser stack trace (Cannot read properties of
-    // undefined (reading 'trim'), inside Array.map inside useMemo).
+    // Coalesce on BOTH fields — the "ready-made templates" branch (the only one
+    // with variant data today) defaulted neither. A null subject/bodyHtml
+    // flowed straight into state as `undefined`, which crashed the bodyLinks
+    // useMemo's unconditional `.trim()` — confirmed live via the exact browser
+    // stack trace (Cannot read properties of undefined (reading 'trim'),
+    // inside Array.map inside useMemo).
     const variants = rawVariants.map((v) => ({ subject: v.subject ?? "", bodyHtml: v.bodyHtml ?? "" }));
     setSubjects(variants.map((v) => v.subject));
     setBodies(variants.map((v) => v.bodyHtml));
@@ -919,9 +938,9 @@ function CampaignsPageInner() {
                         e.stopPropagation();
                         void toggleSavedAsTemplate(c.id, !c.savedAsTemplate);
                       }}
-                      disabled={templateBusyId === c.id || (c.variants?.length ?? 0) === 0}
+                      disabled={templateBusyId === c.id || !hasTemplateContent(c)}
                       title={
-                        (c.variants?.length ?? 0) === 0
+                        !hasTemplateContent(c)
                           ? "Add a subject/body before saving this as a template"
                           : c.savedAsTemplate
                             ? "Remove from your reusable templates"
@@ -1018,15 +1037,18 @@ function CampaignsPageInner() {
                   className="rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                 >
                   <option value="">Write my own subject/body below</option>
-                  {campaigns.filter((c) => c.savedAsTemplate && (c.variants?.length ?? 0) > 0).length > 0 && (
+                  {campaigns.filter((c) => c.savedAsTemplate && hasTemplateContent(c)).length > 0 && (
                     <optgroup label="My templates">
                       {campaigns
-                        .filter((c) => c.savedAsTemplate && (c.variants?.length ?? 0) > 0)
-                        .map((c) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name} ({c.variants!.length} variant{c.variants!.length === 1 ? "" : "s"})
-                          </option>
-                        ))}
+                        .filter((c) => c.savedAsTemplate && hasTemplateContent(c))
+                        .map((c) => {
+                          const content = campaignTemplateContent(c);
+                          return (
+                            <option key={c.id} value={c.id}>
+                              {c.name} ({content.subjects.length} subject{content.subjects.length === 1 ? "" : "s"})
+                            </option>
+                          );
+                        })}
                     </optgroup>
                   )}
                   {templates.length > 0 && (

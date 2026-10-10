@@ -27,6 +27,7 @@
     "test:message": "tsx --test tests/campaign-message.test.ts",
     "test:merge": "tsx --test tests/render-merge.test.ts",
     "test:mailboxes": "tsx --test tests/campaign-mailboxes.test.ts",
+    "test:tmplcontent": "tsx --test tests/campaign-template-content.test.ts",
     "test:mailer-sources": "tsx --test tests/mailer-sources.test.ts",
     "test:target": "tsx --test tests/test-target.test.ts",
     "test:testrecipients": "tsx --test tests/test-send-recipients.test.ts",

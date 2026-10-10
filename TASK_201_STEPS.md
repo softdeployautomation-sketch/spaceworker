@@ -175,4 +175,42 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   subject/body, not variants); EXE template flow must be PERSONAL (save →
   user's own saved templates in campaign creation), NOT the web's
   user+admin+general flow. Then S5 owner VM trial, then S4b hygiene.
+### PROGRESS 2026-10-10 ~13:30 — S6 done: dead "Save as template" button fixed (WEB bug, owner-confirmed)
+- Owner clarification after compaction: the unclickable button was observed on
+  the **web app**, not the EXE; there is no working mailer-EXE campaign flow
+  yet. Next after this = S5 EXE campaign test (create a campaign on the exe).
+- ROOT CAUSE (verified, not guessed): since Task 29 every campaign created
+  from the web form is DECOUPLED — createCampaign stores content in
+  `EmailCampaign.subjects[]/bodies[]` and creates ZERO CampaignVariant rows
+  (lib/campaign-create.ts:189-191; schema:687-688). Three inlined
+  variants-only checks in app/dashboard/campaigns/page.tsx were therefore
+  false for every real campaign: (1) row button `disabled` — permanently
+  unclickable; (2) "My templates" optgroup filter — saved decoupled campaigns
+  never listed; (3) applyTemplate own-campaign branch — picking one loaded
+  nothing. Server side verified CORRECT (GET returns full rows incl.
+  subjects/bodies; PATCH savedAsTemplate handles the flag) — zero API change.
+- FIX: new pure `lib/campaign-template-content.ts` — `campaignTemplateContent()`
+  (decoupled columns first, legacy variant rows fallback, trimmed + empties
+  dropped) and `hasTemplateContent()` (both a subject AND a body present).
+  Page now reads content only via the helper in all 3 spots; Campaign type
+  gains subjects/bodies; "My templates" label shows "N subjects".
+- Tests: `tests/campaign-template-content.test.ts` (8 cases: decoupled-only,
+  legacy-only, empty, nullish fields, whitespace drop, null variant fields,
+  decoupled-wins precedence, one-sided lists) — 8/8 pass; new
+  `test:tmplcontent` script. Gates: tsc exit 0; eslint = only the 2
+  pre-existing set-state-in-effect errors (count unchanged vs stashed HEAD,
+  line numbers shifted by added lines); test:message/mailboxes/merge all 0 fail.
+- Adjacent threads recorded (NOT in this slice): (a) automations builder's
+  "My campaigns" picker is a different mechanism (server-side variant clone)
+  — decoupled support there is its own thread; (b) creating a campaign inside
+  the mailer EXE will 401 today — /api/campaigns is session+DB and the local
+  runtime has neither (no DB by design); S5's exe campaign test needs the
+  local-first storage decision (ties into the owner's "templates must be
+  personal in the exe" directive).
+- Committed on mailer-exe; web deploy rides the normal main merge — NEVER
+  deployed from this branch (branching discipline).
+- NEXT: S5 — install the mailer build, try creating a campaign on the EXE
+  (expect the no-DB wall → design local campaign/template storage), then S4b
+  hygiene pass.
+
 
