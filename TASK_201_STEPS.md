@@ -30,3 +30,13 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   questions). No code written yet — S0 is docs + branch only.
 
 ## PROGRESS
+
+### PROGRESS 2026-10-10 ~09:40 — S0 committed; owner decision on send path
+- S0 pushed: branch `mailer-exe` (off main b653bd5), plan + steps committed
+  at cc587ee. No code.
+- Owner answered the send-path question: **local send default; v1 local-only;
+  server-proxy toggle deferred to v1.1** with one-time-code auth design kept
+  in the plan. Recorded in TASK_201_MAILER_EXE.md "DECISION" section.
+- NEXT: S1 — tauri.mailer.conf.json + build-exe.yml mailer arm; verify
+  runtime-assemble emits BUILD_TARGET=mailer as the only env delta.
+

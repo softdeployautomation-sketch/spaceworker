@@ -87,6 +87,25 @@ Variant = extractor pattern with three deltas:
 
 ## Rules for this build (from EXE_BUILD_LESSONS_LEARNED.md, non-negotiable)
 1. Reuse `scripts/runtime-assemble.mjs` — never rewrite the scrub logic.
+
+## DECISION (owner, 2026-10-10, recorded before S1)
+**Send path = local-first hybrid, v1 = LOCAL SEND ONLY.**
+- Default and only active send path in v1: the EXE sends locally from the
+  user's own machine/IP via its bundled nodemailer engine (reuses
+  `lib/mailer-send.ts`'s `transporterForMailbox` transport-building;
+  no exit-node proxying locally — the user's own connection is the point).
+- Sources are pulled dynamically post-activation (`/api/exe/mailer/sources`,
+  license-authed) WITH the decrypted SMTP passwords the local engine needs —
+  security tradeoff accepted: user's own credentials, user's own machine,
+  same as X Mailer storing them locally.
+- v1.1 (deferred, design kept): Settings toggle "Send via SpaceWorker
+  server" — server-proxied sends authenticate with a **one-time code**
+  rendered in a box beside the toggle (redeemed server-side for a scoped,
+  short-lived send token); powers the premium exit-node regions.
+- Owner's scope rule honored: server-proxy was flagged as possibly "too
+  broad" for v1 → v1 ships local-alone, toggle UI present but disabled
+  ("Send via server — coming soon").
+
 2. Tauri entry: `.run(...)`, not `.build(...)`.
 3. Resource lookup probes candidate paths incl. `_up_/`.
 4. Bundle FULL Windows node dir; build-guard runs `node --version`.
