@@ -298,4 +298,36 @@ box) → record final report → commit → owner summary (incl. deferred leak q
   admin-users-presence **15/15** — **97/97, 0 fail**.
 
 **Next:** commit → rsync → rebuild on box → restart → LIVE battery, expecting
-`build-leak` PASS and `RESULT: PASS`.
+
+### 2026-10-10 06:17 — S4 STEP 2 DONE (deploy + LIVE GREEN): build-leak FAIL → PASS, battery RESULT: OK
+
+**Deploy evidence (box):**
+- rsync of the 9 changed files → `RSYNC_OK`; md5 match (`b40d32961c0d628f620fe20d7cf674c4`
+  for lib/admin-path.ts both ends); box sources grep `topsecret6199` = **0** in
+  all 3 client components.
+- `next build` → **BUILD_EXIT:0** · service **active** · **http:200** ·
+  **BUILD_ID `YhbuDCGOP_JXN4smy7Lz2`** (was `sHlfJGEqXwxsLFqHSfh7c`).
+- Direct tripwire: `grep -rl topsecret6199 .next/static --include=*.js | wc -l` → **0**
+  (was **3** leaking chunks).
+
+**LIVE battery (run as trmm with .env, saved `/tmp/t195-s4-battery.txt`, EXIT:0):**
+```
+TOTAL: 32 probes — 30 pass, 1 warn, 0 fail, 1 skip
+RESULT: OK with warnings — read each WARN above.
+```
+- **`build-leak` → PASS — 0 hits** (the S3 close-gate FAIL is closed).
+- Freshness both PASS now (screenshot 33m — the S3 8h-stale warn cleared on its
+  own; presence 0m). Platform: ledger 0 unfinished · BUILD_ID current · disk 79.7%.
+- Remaining **1 WARN** = the known cosmetic superseded-ledger row (owner-visible
+  by design). **1 SKIP** = VANTRA_URL absent from the box `.env` (same as the
+  owner's baseline paste — pre-existing, not introduced here; and a stray
+  `.env: line 42: seed: command not found` on sourcing — pre-existing quirk,
+  recorded for the config backlog).
+- Admin **Health** tab channel: unchanged code path, live-proven in S3 (same
+  `runQaBattery`); the CLI run above IS the same battery.
+
+**TASK_195 STATUS: code + deploy COMPLETE, battery GREEN (0 fail).** The task's
+two owner-decision gates are now: (1) chunk leak — DONE, no decision needed;
+(2) screenshot staleness — cleared by itself, visibility kept. Task closes with
+this record; open items are only the documented pre-existing WARN/SKIP.
+
