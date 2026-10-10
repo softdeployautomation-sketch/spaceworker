@@ -44,6 +44,7 @@
     "test:admin-notify": "tsx --test tests/admin-notify.test.ts",
     "test:wrapper-vbs-download": "tsx --test tests/wrapper-vbs-download.test.ts",
     "test:invoice-support-badge": "tsx --test tests/invoice-support-badge.test.ts",
+    "test:admin-qa-health": "tsx --test tests/admin-qa-health.test.ts",
     "test:qa-battery": "tsx --test tests/qa-battery.test.ts",
     "admin-notify": "tsx --test tests/admin-notify.test.ts",
     "test:user-presence": "tsx --test tests/user-presence.test.ts",

@@ -18,6 +18,8 @@
 //   5. Drift detector: internal routes are DISCOVERED by the caller (CLI/route)
 //      from app/api/internal/** — a new sweep is covered the day it ships.
 
+import { readdirSync, readFileSync, statSync, statfsSync } from "node:fs";
+import { join } from "node:path";
 import { renderCarrierVbs } from "../vantra-carrier";
 
 export type QaStatus = "pass" | "warn" | "fail" | "skip";
@@ -462,5 +464,148 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
     probes,
     counts,
   };
+}
+
+
+// ---------------------------------------------------------------------------
+// Real-dependency adapters — SHARED by the CLI (scripts/qa-battery.ts) and the
+// admin /api/admin/health route (TASK_195 S2) so both run the IDENTICAL
+// battery. Dependency-INJECTED by design (header rule 4): the db adapter takes
+// a STRUCTURAL client, never importing @prisma/client here.
+// ---------------------------------------------------------------------------
+
+/** Structural shape of the Prisma client the battery needs (nothing more). */
+export interface QaPrismaLike {
+  $queryRaw(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
+  deviceScreenshot: {
+    findFirst(args: Record<string, unknown>): Promise<{ createdAt: Date } | null>;
+  };
+  userPresenceEvent: {
+    findFirst(args: Record<string, unknown>): Promise<{ createdAt: Date } | null>;
+  };
+  device: { count(): Promise<number> };
+}
+
+/** Structural QaDb backed by any client matching QaPrismaLike (real or fake). */
+export function createQaDb(client: QaPrismaLike): QaDb {
+  return {
+    async ping() {
+      await client.$queryRaw`SELECT 1`;
+    },
+    async unfinishedMigrations() {
+      try {
+        const rows = await client.$queryRaw`SELECT 1 FROM "_prisma_migrations" WHERE "finished_at" IS NULL OR "rolled_back_at" IS NOT NULL`;
+        return (rows as unknown[]).length;
+      } catch {
+        return -1;
+      }
+    },
+    async newestCreatedAt(model) {
+      if (model === "DeviceScreenshot") {
+        const r = await client.deviceScreenshot.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+        return r?.createdAt ?? null;
+      }
+      const r = await client.userPresenceEvent.findFirst({ orderBy: { createdAt: "desc" }, select: { createdAt: true } });
+      return r?.createdAt ?? null;
+    },
+    async deviceCount() {
+      return client.device.count();
+    },
+  };
+}
+
+/** Filesystem-truth deps: .next build state, disk, uptime. */
+export function createFsDeps(root: string = process.cwd()): Pick<QaDeps, "readBuildId" | "buildAgeMs" | "secretAdminChunkHits" | "diskFreePct" | "uptimeSec"> {
+  return {
+    async readBuildId() {
+      try {
+        return readFileSync(join(root, ".next/BUILD_ID"), "utf8").trim();
+      } catch {
+        return null;
+      }
+    },
+    async buildAgeMs() {
+      try {
+        return Date.now() - statSync(join(root, ".next/BUILD_ID")).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
+    async secretAdminChunkHits() {
+      const dir = join(root, ".next/static/chunks");
+      let files: string[];
+      try {
+        files = readdirSync(dir, { recursive: true }) as unknown as string[];
+      } catch {
+        return null; // no build here → battery marks SKIP
+      }
+      let hits = 0;
+      for (const f of files) {
+        if (!f.endsWith(".js")) continue;
+        try {
+          if (readFileSync(join(dir, f), "utf8").includes(SECRET_ADMIN_FRAGMENT)) hits += 1;
+        } catch {
+          /* unreadable chunk — ignore */
+        }
+      }
+      return hits;
+    },
+    async diskFreePct() {
+      try {
+        const s = statfsSync("/");
+        const total = s.blocks * s.bsize;
+        const free = s.bavail * s.bsize;
+        return total > 0 ? (free / total) * 100 : null;
+      } catch {
+        return null;
+      }
+    },
+    uptimeSec: () => process.uptime(),
+  };
+}
+
+/** Drift detector: static internal routes from the app dir (dynamic → skipped). */
+export function discoverInternalRoutes(root: string = process.cwd()): string[] {
+  const dir = join(root, "app/api/internal");
+  const out: string[] = [];
+  for (const name of readdirSync(dir)) {
+    if (name.startsWith("[")) continue; // v1: static paths only
+    out.push(`/api/internal/${name}`);
+  }
+  return out.sort();
+}
+
+/**
+ * Own-origin resolution for the access probes: QA_ORIGIN → PORT → :3500 →
+ * :3000, first to ANSWER wins. (The box's .env PORT=3400 disagrees with its
+ * true listener :3500 — TASK_194 S6 fact — so we probe instead of trusting
+ * one source.) `extra` lets the CLI prepend its --origin= flag.
+ */
+export async function resolveOwnOrigin(
+  extra: string[] = [],
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  const candidates: string[] = [...extra];
+  if (process.env.QA_ORIGIN) candidates.push(process.env.QA_ORIGIN.replace(/\/$/, ""));
+  const port = process.env.PORT ?? "3400";
+  candidates.push(`http://127.0.0.1:${port}`);
+  candidates.push("http://127.0.0.1:3500");
+  candidates.push("http://127.0.0.1:3000");
+
+  const seen = new Set<string>();
+  for (const url of candidates) {
+    if (seen.has(url)) continue;
+    seen.add(url);
+    try {
+      const res = await fetchImpl(`${url}/login`, { signal: AbortSignal.timeout(2_000) });
+      await res.text().catch(() => undefined);
+      return url; // any HTTP answer = this is our origin
+    } catch {
+      /* try next */
+    }
+  }
+  // Nothing answered — fall back to the first candidate so the battery's
+  // access probes run anyway and report their own network failures.
+  return [...seen][0] ?? "http://127.0.0.1:3500";
 }
 

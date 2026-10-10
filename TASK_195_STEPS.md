@@ -89,3 +89,46 @@ unless a probe FAILs. NEXT SLICE: S2 (admin UI panel + route) per plan,
 then S3 (deploy + live run + closeout).
 
 
+
+
+---
+
+## 2026-10-10 — S2 DONE (admin UI transparency; all gates green)
+
+Built the "one-click health check after deploy" surface:
+
+1. **Shared adapters moved into `lib/qa/battery.ts`** so the CLI and the admin
+   route run the IDENTICAL battery (they can never disagree about "healthy"):
+   `createQaDb(structuralClient)` (still NO prisma import — header rule 4 kept),
+   `createFsDeps(root)`, `discoverInternalRoutes(root)`, `resolveOwnOrigin()`.
+   `scripts/qa-battery.ts` now imports them; its local copies deleted; behaviour
+   identical (qa-battery suite stayed 27/27 through the refactor).
+2. **`app/api/admin/health/route.ts`** — GET: admin session FIRST (anon → 401,
+   battery never runs for them), then runBattery with the SHARED prisma
+   singleton (no second client pool), no-store JSON. Cast note: Prisma's
+   generic `$queryRaw` overloads don't structurally unify with QaPrismaLike
+   (TS assignability limit, documented in both call sites).
+3. **`components/admin/health-panel.tsx`** — click-to-run ONLY (no auto-run;
+   opening the tab costs nothing), PASS/WARN/FAIL/SKIP badges per probe,
+   grouped table, ALL-GREEN/OK-with-warnings/FAIL banner, ran-at/origin/ms
+   line, manual-checks footer (VM install, wrapper dialog, invoice→badge).
+   Response types declared locally — never imports lib/qa (node:fs+prisma
+   must not enter the client bundle).
+4. **admin-panel.tsx** — `health` tab appended LAST in TABS + Tab type +
+   render line + import.
+
+**GATES (final):** tsc **0 errors** · eslint on all five new/changed files
+**exit 0, 0 problems** · admin-panel.tsx **exactly its 42-error pre-existing
+baseline** (no new) · `test:admin-qa-health` **7/7** · `test:qa-battery`
+**27/27** (regression through the adapter move). package.json gained
+`test:admin-qa-health`.
+
+Tests pin: guard-before-battery order, 401, no-store, no `new PrismaClient`
+in the route, no admin-string in route/panel, shared-adapter exports exist,
+CLI has no duplicated adapter definitions, panel is click-only (no
+useEffect), renders all four statuses, never imports lib/qa, and the tab is
+registered/rendered/imported.
+
+NEXT SLICE: S3 — deploy to VPS (no migrate needed — no schema change),
+live-run the battery on the box (CLI + admin UI click), record the report,
+closeout TASK_195.

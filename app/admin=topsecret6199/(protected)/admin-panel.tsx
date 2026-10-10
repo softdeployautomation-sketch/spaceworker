@@ -9,6 +9,7 @@ import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 import DomainsPanel from "@/components/admin/domains-panel";
 import SupportQueuePanel from "@/components/admin/support-queue-panel";
+import { HealthPanel } from "@/components/admin/health-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
 
@@ -99,7 +100,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes";
+type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -136,6 +137,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   { id: "campaigns", label: "Campaigns" },
   { id: "automations", label: "Automations" },
   { id: "routes", label: "Routes" },
+  // TASK_195 S2 — one-click run of the read-only QA battery (same core as
+  // scripts/qa-battery.ts) so post-deploy health is visible without SSH.
+  { id: "health", label: "Health" },
 ];
 
 // Task 42 — human labels for Payment.product in the admin review table.
@@ -271,6 +275,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "campaigns" && <CampaignsTab />}
         {tab === "automations" && <AutomationsTab />}
         {tab === "routes" && <RoutesTab />}
+        {tab === "health" && <HealthPanel />}
       </main>
     </div>
   );
