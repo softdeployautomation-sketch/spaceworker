@@ -331,3 +331,24 @@ two owner-decision gates are now: (1) chunk leak — DONE, no decision needed;
 (2) screenshot staleness — cleared by itself, visibility kept. Task closes with
 this record; open items are only the documented pre-existing WARN/SKIP.
 
+### 2026-10-10 06:23 — S4 STEP 3 (authenticated render proof + gates final)
+
+Proved the prop-threaded pages actually RENDER for a logged-in admin (the
+behavior-change risk of S4), on the box:
+- Temp probe minted a real admin session cookie (sign-only replica of
+  `createAdminSessionToken` — importing it under tsx dies on `server-only`;
+  probe deleted from the box afterward: `PROBE_DELETED`).
+- `GET /admin=topsecret6199` **200** with "SpaceWorker" in the HTML →
+  AdminShell (new `adminPath` prop) renders live.
+- `GET /admin=topsecret6199/device/101` **200** → SecretDevicesHost +
+  DevicesTab render with the prop (rows/"Actions ▾" appear only after the
+  client fetch, so their absence in SSR HTML is expected).
+- Public login page **200** + anon root/deep-link **307** (both checked after
+  the rebuild — gates intact).
+
+FINAL GATES for TASK_195 S4: tsc 0 · eslint 0 new (2 pre-existing in
+devices-tab, byte-verified against HEAD) · affected suites 97/97 · live
+battery **0 fail / RESULT: OK with warnings (EXIT:0)** · build-leak **0 hits** ·
+commits `66e614d` + `82bd2da` pushed. **TASK_195 COMPLETE.**
+
+
