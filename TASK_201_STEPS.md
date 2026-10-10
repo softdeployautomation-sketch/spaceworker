@@ -141,3 +141,38 @@ Never commit TASK_133_RMM_ENGINE_BRINGUP.md.
   (`gh workflow run build-exe.yml -f variant=mailer --ref mailer-exe`),
   verify artifact naming/shape, then S5 QA battery (Health tab + CLI) and
   the parked threads (TASK_196 watcher, TASK_193, TASK_200b auto-run).
+
+### PROGRESS 2026-10-10 ~11:45 — S4 done: CI build + artifact verification (PASS; 3 hygiene findings)
+- Dispatch `gh workflow run build-exe.yml -f variant=mailer --ref mailer-exe` →
+  run 38044370678, windows-latest, ~12min, ALL GREEN. "Resolve variant env"
+  passed BUILD_TARGET=mailer (else-branch passthrough); "Render devices VBS
+  carrier" correctly `skipped` (if: variant==devices); artifact
+  `spaceworker-mailer-windows` = 40,292,928b.
+- Downloaded + 7z-unpacked `SpaceWorker OS - Mailer_0.1.0_x64-setup.exe`
+  → 6,632 files / 222MB. Runtime .env.local = EXACTLY the intended minimal set
+  (SPACEWORKER_LOCAL_EXE / BUILD_TARGET=mailer / EXE_LICENSE_SECRET /
+  NEXT_TELEMETRY_DISABLED). bundled node.exe = PE32+ x64 Windows, 71MB. Tauri
+  shell spaceworker-exe.exe present.
+- Secret scan (real values from repo .env, classified): DATABASE_URL 0 hits,
+  SESSION_SECRET 0, INTERNAL_BEARER_TOKEN 0, MAILBOX_ENCRYPTION_KEY 0 — the
+  4 true secrets do NOT ship. BUILD_TARGET stamped = mailer ✓.
+- Findings (NOT blockers for the owner's VM trial — none are runtime secrets;
+  fix in a S4b hygiene pass before any customer download):
+  1. scripts/runtime-assemble.mjs ships in the tree (contains only the PLACEHOLDER
+     string `dev_exe_license_secret_for_local_testing_only`, not the real secret).
+     Fix: stripSourceFiles should also drop `scripts/` + `*.mjs` config.
+  2. Real RESEND_API_KEY value inlined into 1 server chunk
+     (lib_email_ts… — lib/email.ts imports `env` from lib/env.ts whose object
+     literal the bundler inlines). Fix: read Resend key lazily at call time.
+  3. 190 internal .md docs ship (29 contain CF account id / internal host /
+     VPS IP — HOW_WE_MOVE_FAST, PLAN_*, TASK_*, HANDOFF). Fix: exclude *.md
+     from the runtime copy.
+- EMAIL_FROM (noreply@spaceworker.app) in 4 files = the public privacy page
+  contact address (intended); APP_BASE_URL (http://localhost:3400) = harmless
+  build-time default in chunks + .md. Neither is a secret.
+- NEXT: S6 template fix (owner directive) — "Save as template" disabled
+  because `c.variants?.length===0` on the list row (real campaigns keep
+  subject/body, not variants); EXE template flow must be PERSONAL (save →
+  user's own saved templates in campaign creation), NOT the web's
+  user+admin+general flow. Then S5 owner VM trial, then S4b hygiene.
+
