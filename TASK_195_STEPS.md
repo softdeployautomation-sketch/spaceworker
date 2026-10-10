@@ -186,4 +186,61 @@ spaceworker's env — by design here).
 NEXT (this slice continues): fix probe #1 + #2 in lib/qa/battery.ts with unit tests → gates →
 rsync + rebuild (route bundle embeds battery) → live re-run expecting 2 fails gone → triage the
 migration row → admin-route live probe with minted session (`/tmp/t195-health-probe.ts` ready on
+
+---
+
+## 2026-10-10 — S3 COMPLETE: probe fixes committed, rebuilt, LIVE-VERIFIED end-to-end
+
+### Probe refinements (all committed: 105fd40 anon-405 + discoverer, f360ef1 migration ledger)
+
+1. `anon-device-register` accepts **401 OR 405** — route is GET-only (register lives in Vantra);
+   405 = no anon write surface at all.
+2. `discoverInternalRoutes` lists only dirs **containing route.ts** (a lone [id] subdir is not a
+   route — that was the live 404 cry-wolf on browser-profiles).
+3. Migration ledger split in two probes after live triage proved the FAIL was a STALE DUPLICATE
+   row (`assistant_foundation`: rolled back 12:37:52, successful retry 12:37:55 — schema IS
+   applied): `migrations` now counts only rows with **no successful same-name sibling** (real
+   never-applied failures → FAIL); the superseded noise gets its own `migration-artifacts`
+   WARN probe. Gates: tsc 0 · eslint 0 · qa-battery **30/30** · admin-qa-health 7/7.
+   (Caught my own TS bug mid-slice: `timed()` is a discriminated union — must narrow via `.ok`.)
+
+### Final rebuild + service (rebuilt 3× this slice; each recorded with the TRUTHFUL gate)
+
+rebuild3: `BUILD_EXIT:0` + **type-errors 0** + BUILD_ID **`sHlfJGEqXwxsLFqHSfh7c`** → chown →
+restart → **active + http:200**. (Trap repeated once: box .env PORT=3400 vs real listener :3500 —
+probes/scripts must force PORT=3500.)
+
+### LIVE BATTERY — FINAL STATE (box CLI + admin route, both ran for real)
+
+**CLI** (`/tmp/t195-battery-final.log`): **28 pass / 2 warn / 1 fail / 1 skip.**
+**Admin route** (`/api/admin/health` with a REAL minted admin session — self-contained probe,
+inline jose mint with exact claims, token never printed): `status 200, cache-control: no-store`,
+counts identical to CLI: `{pass:28, warn:2, fail:1, skip:1}` — the admin UI channel is proven
+end-to-end live.
+
+All four live FAILs from the first run are RESOLVED (3 were probe false-fails, fixed; 1 real):
+- anon register → PASS (405, "no anon write surface")
+- browser-profiles guard cry-wolf → GONE (13/13 guards PASS)
+- migration ledger → PASS + honest cosmetic WARN
+- **REMAINING FAIL (real, pre-existing, deferred to owner): `build-leak` — 3 client chunks
+  contain the admin string** (admin app's own components/pages compile the path into client JS).
+- WARNs: Ledger stale rows (cosmetic) · Screenshot pipeline STALE ~8h (screenshots likely off —
+  visibility only) · Presence freshness flips pass/warn with real user activity (expected).
+- SKIP: Vantra probe (VANTRA_URL unset in spaceworker env — by design).
+Box probes t195-mig.ts + t195-health-probe.ts deleted (PROBES_CLEANED).
+
+### OWNER DECISIONS STILL OPEN (the only items between here and a 100% green battery)
+
+1. **Chunk leak remediation** (the one FAIL): derive the admin path at runtime in the ~6 source
+   files that hardcode it (client chunks then compile clean) — a TASK_188-design change; needs
+   owner go/no-go. Real protection (admin session gate) is already proven by the access probes.
+2. Screenshot staleness cause (feature off vs. sweep stopped) — visibility only.
+
+### How the owner runs it after any deploy
+
+Admin panel → **Health** tab (fresh run each open, `no-store`), or on the box:
+`sudo -u trmm -H bash -c 'cd /opt/spaceworker && set -a && . ./.env && set +a && npx tsx scripts/qa-battery.ts'`
+(exit 0 only when no FAIL). TASK_195 code deliverable is COMPLETE; the task closes when the
+owner answers decision #1.
+
 box) → record final report → commit → owner summary (incl. deferred leak question + stale warn).
