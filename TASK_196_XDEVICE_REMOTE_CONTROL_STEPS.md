@@ -72,4 +72,41 @@ status vs spaceworker's lastSeenAt; ask owner for the failing account/device +
 a screenshot if TRMM state looks coherent.
 
 
+## 2026-10-10 — PROBE 2 + PROBE 3 (TRMM view; same-instant table) + sync-trace
+
+**Probe 2** (TRMM direct): tier-3 "Sc" agents — TRMM detail OK, mesh_node_id present,
+last_seen == sw lastSeenAt EXACTLY; meshcentral endpoint → **overdue**. Only
+online agent system-wide: tier-5 CSFD-CHECKOUT (meshcentral **online**).
+
+**Probe 3** (same-instant, every device of tier-3+5, real user sessions):
+- `GET /api/devices` → 200 for every user; **mesh-urls → 200 for EVERY device
+  on both tiers** (8/8 devices, both tier-3 accounts included).
+- SW status mirrors TRMM status exactly (offline⇔overdue, online⇔online).
+  No SW-online/TRMM-offline divergence AT THIS INSTANT.
+- All tier-3 devices currently genuinely stale (checkins since 10-09 13:22 /
+  20:05) — the owner's test machine was NOT online during these probes.
+- Notable: BOTH tier-3 "Sc" agents share public IP 105.112.30.28 (same
+  physical machine enrolled to two accounts) — hostname "Sc" also exists in
+  tier-5 (different IP) → name-only node matching is unsafe for probe 4.
+
+**Sync-trace (code)**: `Device.status/lastSeenAt` are written ONLY by the
+vantra-link device sync (lib/vantra-link.ts:1321-1339, mirroring Vantra's
+`online`/`lastSeen` = TRMM checkins). There is NO independent spaceworker
+heartbeat → a SW "online" and TRMM "offline" can only diverge inside the
+5-min sync lag, or if TRMM checkins are alive while the agent's MESH session
+is dead (checkin path and mesh path are independent links of the same agent).
+
+**"disconnect" string**: zero hits in our UI. The console's control tab
+embeds MeshCentral's own page in an iframe (`src={mesh.control}`) — the
+disconnect verdict the owner sees is **MeshCentral's node state**, not ours.
+
+## NEXT (probe 4): MeshCentral live node table
+
+Query the mesh control channel ({"action":"nodes"}) as MESH_LOGIN_USER —
+print every node's name/ip/conn/idletime → check whether the tier-3 nodes
+are `conn`-alive in MeshCentral while TRMM reports overdue (that would pin
+the bug to the mesh link), then arm a 60s divergence watcher so the owner's
+next ON-session captures the SW-vs-mesh state at the same instant.
+
+
 ---
