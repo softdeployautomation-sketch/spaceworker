@@ -362,6 +362,43 @@ export async function POST(req: Request) {
     }
     }));
 
+  // Task 201 — terminal sweep. The per-mailbox "done" marking above only runs
+  // for a campaign whose items a mailbox actually PICKED UP this tick — it sits
+  // behind the `if (items.length === 0) return;` guard. So a campaign whose last
+  // items all FAILED (hard SMTP error → items become "failed", nothing left
+  // "queued") is only flipped to "done" on the exact tick those items were
+  // fetched. Any LATER tick — where every mailbox fetches zero items and
+  // early-returns — never re-enters that block, so the campaign can sit at
+  // "sending" forever: the operator sees a dead "Sending…" state with no natural
+  // exit (Stop is the only escape). Sweep every still-"sending" campaign here,
+  // INDEPENDENT of whether any mailbox touched it this tick, and flip any with
+  // zero queued items to "done" — mirroring the in-map transition, including the
+  // Tier 1 trial finalize gated on the updateMany actually transitioning the row.
+  // Safe + idempotent: a campaign with a soft-bounced item awaiting retry is
+  // still status:"queued" (see the catch block's `status: retryAt ? "queued" :
+  // "failed"`), so it's correctly skipped and stays "sending"; a campaign
+  // already "done" isn't in the list; the batch-gate loop below already
+  // `continue`s on `stillQueued === 0`, so it can't clobber this back.
+  for (const c of sendingCampaigns) {
+    const stillQueued = await prisma.emailQueueItem.count({
+      where: { campaignId: c.id, status: "queued" },
+    });
+    if (stillQueued > 0) continue;
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.emailCampaign.updateMany({
+        where: { id: c.id, status: "sending" },
+        data: { status: "done", pinnedOverride: Prisma.DbNull },
+      });
+      if (count > 0) {
+        await finalizeMailerStretch(tx, {
+          id: c.id,
+          userId: c.userId,
+          sendingStartedAt: c.sendingStartedAt,
+        });
+      }
+    });
+  }
+
   // Task 29, item 6 — batch gate: after dispatching a batch to a campaign, probe
   // its test mailbox and gate the NEXT batch. "inbox" => keep sending; "spam" or
   // "unknown" => pause the campaign, notify the owner, and let them decide
