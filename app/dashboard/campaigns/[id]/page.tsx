@@ -744,6 +744,34 @@ export default function CampaignDetailPage() {
     }
   }
 
+  // Task 201 — Stop while actively sending. "Pause" only halts the drain; if the
+  // send already failed (e.g. SMTP rejected every mailbox) the drain never
+  // transitions the campaign off "sending", so the page sits there showing
+  // "sending" with no way out but Pause. "Stop" is the terminal escape hatch —
+  // the deliverability-decision "stop" branch is explicitly allowed while
+  // "sending" (halting is always safe), flips status to "stopped", and the
+  // live-send poll's own `!== "sending"` guard then tears itself down.
+  async function stopCampaign() {
+    setPauseResumeBusy(true);
+    try {
+      const res = await fetch(`/api/campaigns/${id}/deliverability-decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string; status?: string };
+      if (!res.ok) {
+        setTestResult({ outcome: "failed", error: data.error ?? "Couldn't stop the campaign." });
+      } else if (data.status) {
+        patchCampaign({ status: data.status });
+      }
+    } catch {
+      setTestResult({ outcome: "failed", error: "Network error while stopping." });
+    } finally {
+      setPauseResumeBusy(false);
+    }
+  }
+
   // The "it went to spam — try a different subject" path at the INITIAL gate:
   // rotate the subject (deliverabilityDecision leaves status untouched here),
   // then immediately re-run the test-send so the user isn't left staring at a
@@ -1606,14 +1634,29 @@ export default function CampaignDetailPage() {
           {manualBoundary ? "your turn — test confirm" : campaign.status.replace("_", " ")}
         </span>
         {campaign.status === "sending" && (
-          <button
-            type="button"
-            onClick={() => void pauseCampaign()}
-            disabled={pauseResumeBusy}
-            className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
-          >
-            {pauseResumeBusy ? "…" : "Pause"}
-          </button>
+          <>
+            <button
+              type="button"
+              onClick={() => void pauseCampaign()}
+              disabled={pauseResumeBusy}
+              className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-medium text-amber-700 transition-colors hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-800 dark:text-amber-400 dark:hover:bg-amber-950/40"
+            >
+              {pauseResumeBusy ? "…" : "Pause"}
+            </button>
+            {/* Task 201 — Pause alone can't rescue a send that already failed
+                (SMTP rejected): the drain never leaves "sending", so the page
+                shows "sending" forever with no exit. Stop is the terminal
+                escape hatch (deliverability-decision "stop" is allowed while
+                sending) so the operator is never stuck. */}
+            <button
+              type="button"
+              onClick={() => void stopCampaign()}
+              disabled={pauseResumeBusy}
+              className="rounded-lg border border-red-300 px-3 py-1.5 text-xs font-medium text-red-700 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-800 dark:text-red-400 dark:hover:bg-red-950/40"
+            >
+              {pauseResumeBusy ? "…" : "Stop"}
+            </button>
+          </>
         )}
         {campaign.status === "paused_manual" && (
           <button
