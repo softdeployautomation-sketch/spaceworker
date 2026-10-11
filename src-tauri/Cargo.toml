@@ -36,6 +36,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "~2.7"
 tauri-plugin-fs = "~2.5"
 
+# Task 201 S13 — open external URLs (the "Get a license on the website →" link)
+# in the user's real browser. In a Tauri WebView2 window, <a target="_blank">
+# silently no-ops (there is no browser chrome to hand the link to), so external
+# links are dead unless they go through this plugin. Registered in main.rs;
+# the matching capability is opener:default in capabilities/default.json.
+tauri-plugin-opener = "~2"
+
 # Keep the dependency surface intentionally thin. The packaged EXE spawns the
 # bundled Node/Next runtime (the production sidecar, see scripts/runtime-assemble.mjs)
 # using std::process::Command in main.rs — no extra Tauri plugin is needed. serde

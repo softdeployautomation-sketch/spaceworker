@@ -64,12 +64,36 @@ export async function POST(req: Request) {
   }
 
   const currentMachineId = (await getCachedMachineId()).toLowerCase();
-  const validation = await validateLicenseKey(licenseKey, secret, {
-    currentMachineId,
-  });
 
-  if (!validation.valid) {
-    return NextResponse.json({ error: validation.error }, { status: 400 });
+  // Decode the payload WITHOUT verifying the signature — we need the product
+  // and licensee for the cheap, offline rejections below, and (critically) we
+  // must not let an offline signature check gate the activation of a key that
+  // was legitimately issued by the hosted server. See the big comment below.
+  const decoded = decodeLicenseKey(licenseKey);
+  if (!decoded) {
+    return NextResponse.json({ error: "That doesn't look like a valid license key." }, { status: 400 });
+  }
+  const hasMachineBinding = !!decoded.machine_id || (decoded.machine_ids?.length ?? 0) > 0;
+
+  // Offline signature check — used ONLY for an already-bound key, where there
+  // is no server round-trip to make. For a FRESH (unbound) key we deliberately
+  // SKIP it and go straight to the hosted auto-bind below.
+  //
+  // WHY (the bug this fixes): the offline check uses the EXE_LICENSE_SECRET
+  // BAKED INTO THE EXE AT CI BUILD TIME, while a key bought/minted on the hosted
+  // site is signed with the PRODUCTION secret. When those two ever drift (which
+  // they have — that is exactly why a legitimately-purchased mailer key showed
+  // "Invalid license key signature"), the offline check REJECTS a perfectly good
+  // key. The hosted auto-bind endpoint re-signs the key with the authoritative
+  // production secret anyway, so for a fresh key the offline pre-check adds
+  // nothing but a way to be wrong. The hosted server is the single source of
+  // truth for fresh activation; the offline check only stays as the fast path
+  // for a key that is ALREADY bound (where a network call may not be possible).
+  if (hasMachineBinding) {
+    const validation = await validateLicenseKey(licenseKey, secret, { currentMachineId });
+    if (!validation.valid) {
+      return NextResponse.json({ error: validation.error }, { status: 400 });
+    }
   }
 
   // Per-tool enforcement: a license is cryptographically signed for ONE
@@ -77,9 +101,11 @@ export async function POST(req: Request) {
   // the build currently running — checked BEFORE any auto-bind attempt, so a
   // key minted for the wrong tool never gets bound to a machine at all.
   // Fail-closed: a legacy key carrying no product field also lands here.
+  // Read straight from the decoded payload so it does not depend on the
+  // (possibly-drifted) offline signature check above.
   const expectedProduct = `${exeBuildTarget()}_exe`;
-  if (!validation.product || validation.product !== expectedProduct) {
-    const forName = getProduct(validation.product)?.name ?? "another SpaceWorker tool";
+  if (!decoded.product || decoded.product !== expectedProduct) {
+    const forName = getProduct(decoded.product)?.name ?? "another SpaceWorker tool";
     const currentName = getProduct(expectedProduct)?.name ?? "this SpaceWorker tool";
     return NextResponse.json(
       {
@@ -91,23 +117,22 @@ export async function POST(req: Request) {
 
   // Light anti-sharing check: the email entered must match the key's licensee
   // (Part A — "does this key belong to the account this person is typing", a
-  // usability/anti-sharing check, not a security boundary).
-  if (email.toLowerCase() !== validation.licensee.trim().toLowerCase()) {
+  // usability/anti-sharing check, not a security boundary). Read from the
+  // decoded payload (same reason as the product check above).
+  if (email.toLowerCase() !== String(decoded.licensee ?? "").trim().toLowerCase()) {
     return NextResponse.json(
       { error: "This key belongs to a different email. Use the address it was purchased with." },
       { status: 400 },
     );
   }
 
-  const decoded = decodeLicenseKey(licenseKey);
-  const hasMachineBinding = !!decoded?.machine_id || (decoded?.machine_ids?.length ?? 0) > 0;
-
   let activationKey = licenseKey;
   if (!hasMachineBinding) {
     // First activation of a fresh purchase-reference key — bind it to THIS
-    // machine now, server-side, instead of sending the buyer to claim it
-    // manually first. One network call; everything else on this route stays
-    // fully offline.
+    // machine now, server-side. The hosted auto-bind re-verifies the signature
+    // with the AUTHORITATIVE production secret (not the EXE's baked-in one) and
+    // returns a freshly re-signed, machine-bound key. One network call;
+    // everything after this on the route stays fully offline.
     const { response: res } = await hostedFetch(
         "/api/exe-license/auto-bind",
         {
@@ -141,13 +166,23 @@ export async function POST(req: Request) {
     machineId: currentMachineId,
   });
 
+  // Report the term from the key we ACTUALLY stored. For a fresh key that key
+  // is the freshly re-signed, machine-bound one returned by auto-bind (which
+  // preserves the ORIGINAL expiry, so binding never extends the term); for an
+  // already-bound key it's the key as entered. Decode it rather than reusing the
+  // offline `validation` (which no longer exists here — see the fast-path note
+  // above) so the echoed fields always match what's persisted.
+  const stored = decodeLicenseKey(activationKey);
+  const storedExpiry = stored?.expires_at ? new Date(stored.expires_at) : null;
+
   return NextResponse.json({
     licensed: true,
-    licensee: validation.licensee,
-    plan: validation.plan,
-    product: validation.product,
-    expiresAt: validation.expiresAt,
-    expiresAtDate: validation.expiresAtDate?.toISOString(),
+    licensee: email,
+    plan: stored?.plan ?? "",
+    product: stored?.product ?? "",
+    expiresAt: stored?.expires_at ?? "",
+    expiresAtDate:
+      storedExpiry && !Number.isNaN(storedExpiry.getTime()) ? storedExpiry.toISOString() : undefined,
     activatedAt: state.activation?.activatedAt,
   });
 }

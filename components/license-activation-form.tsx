@@ -6,10 +6,9 @@ import { Button, Input, Label } from "@/components/ui";
 import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products";
 
 // Shared EXE license activation form — POSTs to the app's own
-// /api/exe-license/activate (license key), /api/exe-license/password-activate
-// (email + password), or the /api/exe/billing/* proxies (buy now), all
-// local/offline-gated (or network-gated only for the parts that genuinely
-// need it — a fresh purchase, a password check), no session.
+// /api/exe-license/activate (license key), or the /api/exe/billing/* proxies
+// (buy now), all local/offline-gated (or network-gated only for the parts that
+// genuinely need it — a fresh purchase), no session.
 //
 // Used in two places:
 //   1. <LicenseGate> — the full-screen gate shown once the 24h silent trial has
@@ -18,11 +17,13 @@ import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products"
 //      licensed) can activate/replace a key immediately without waiting the
 //      trial clock out. Activation always replaces the current state outright.
 //
-// Owner-requested 2026-09-20 (password sign-in): "make exe sign in optional to
-// use either the password or license". Password sign-in doesn't mint a new
-// license out of nowhere — it looks up an EXISTING one already issued to that
-// account (via checkout or an admin issue) and binds it here, same end state
-// as the license-key path once you already have the key.
+// The "Email + password" sign-in tab was removed (Task 201 S14): it was an old
+// alternate path to the SAME end state as pasting a license key, it needed a
+// live network round-trip to verify the password (the key path validates fully
+// offline once activated), and it confused the gate. The license-key path —
+// with the device ID + email transfer hint below it — is now the single,
+// unambiguous way in. /api/exe-license/password-activate is left in place,
+// unreferenced, in case it's ever wanted again.
 //
 // Owner-requested 2026-09-20 (buy now): "as soon as the 24 hr elapses, lets
 // put the signup and payment flow, so users dont need to come to the web...
@@ -36,8 +37,8 @@ import { EXE_DURATION_OPTIONS, DEFAULT_EXE_DURATION_DAYS } from "@/lib/products"
 // the user closes the app before checking (the email with the key + claim
 // link still arrives regardless, as a fallback).
 //
-// All THREE modes share the same already-bound-elsewhere confirmation UX (see
-// needsTransferConfirm) since all three backend routes return the identical
+// The remaining modes share the same already-bound-elsewhere confirmation UX
+// (see needsTransferConfirm) since the routes return the identical
 // `code: "already_bound"` shape.
 //
 // `onActivated` fires only after a real success (res.ok && data.licensed); the
@@ -55,7 +56,7 @@ export interface LicenseActivationFormProps {
   showBuyTab?: boolean;
 }
 
-type Mode = "key" | "password" | "buy";
+type Mode = "key" | "buy";
 type PayKind = "btc" | "usdt_trc20" | "usdt_erc20";
 const PAY_KINDS: { value: PayKind; label: string }[] = [
   { value: "btc", label: "Bitcoin" },
@@ -73,9 +74,12 @@ export function LicenseActivationForm({
   const [mode, setMode] = useState<Mode>("key");
   const [licenseKey, setLicenseKey] = useState("");
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [activating, setActivating] = useState(false);
+  // This device's hardware machine ID (the license's device UUID). Shown under
+  // the email field so a user transferring a license can send us (device ID +
+  // email). Server-only value — fetched from the local status route on mount.
+  const [deviceId, setDeviceId] = useState("");
   // Set only when the server rejected the sign-in with code "already_bound" —
   // the credentials/key are genuinely valid, it's just active on a different
   // device. Never auto-transferred: the person has to see this and click
@@ -131,9 +135,24 @@ export function LicenseActivationForm({
     setMode(next);
     setError("");
     setNeedsTransferConfirm(false);
-    setPassword("");
     setTransferCodeInput("");
   }
+
+  // Fetch this device's machine ID once on mount so the transfer hint under the
+  // email field can show it. The status route returns `machineId` on every
+  // response (see app/api/exe-license/status/route.ts). Best-effort — a failure
+  // just leaves the field blank; it never blocks activation.
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await fetch("/api/exe-license/status", { method: "POST" });
+        const data = await res.json().catch(() => ({}));
+        if (typeof data.machineId === "string" && data.machineId) setDeviceId(data.machineId);
+      } catch {
+        // offline / not an EXE runtime — leave deviceId empty
+      }
+    })();
+  }, []);
 
   async function submitPayment() {
     setError("");
@@ -201,27 +220,21 @@ export function LicenseActivationForm({
     setError("");
     setActivating(true);
     try {
-      const url = mode === "key" ? "/api/exe-license/activate" : "/api/exe-license/password-activate";
-      // "key" mode no longer sends a bare confirmTransfer boolean — the
-      // server requires a real emailed code (Task 49 fix). "password" mode
-      // keeps the boolean: reaching that branch already required a correct
-      // password, a genuine server-verified credential, unlike a boolean.
-      const body =
-        mode === "key"
-          ? { licenseKey, email, transferCode: transferCodeInput.trim() || undefined }
-          : { email, password, confirmTransfer };
-      const res = await fetch(url, {
+      const res = await fetch("/api/exe-license/activate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          licenseKey,
+          email,
+          transferCode: transferCodeInput.trim() || undefined,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.licensed) {
         setNeedsTransferConfirm(false);
-        setPassword("");
         setTransferCodeInput("");
         onActivated?.();
-      } else if (data.code === "already_bound" && !(mode === "key" ? transferCodeInput.trim() : confirmTransfer)) {
+      } else if (data.code === "already_bound" && !transferCodeInput.trim()) {
         setNeedsTransferConfirm(true);
         setError(
           typeof data.error === "string"
@@ -237,9 +250,7 @@ export function LicenseActivationForm({
         setError(
           typeof data.error === "string"
             ? data.error
-            : mode === "key"
-              ? "Activation failed. Check the key and email and try again."
-              : "Sign-in failed. Check your email and password and try again.",
+            : "Activation failed. Check the key and email and try again.",
         );
       }
     } catch {
@@ -252,7 +263,6 @@ export function LicenseActivationForm({
 
   const tabs: { value: Mode; label: string }[] = [
     { value: "key", label: "License key" },
-    { value: "password", label: "Email + password" },
     ...(showBuyTab ? [{ value: "buy" as Mode, label: "Buy now" }] : []),
   ];
 
@@ -301,33 +311,36 @@ export function LicenseActivationForm({
               placeholder="you@example.com"
             />
           </div>
-        </>
-      )}
-
-      {mode === "password" && (
-        <>
-          <div>
-            <Label htmlFor="exe-password-email">Email</Label>
-            <Input
-              id="exe-password-email"
-              type="email"
-              autoComplete="email"
-              autoFocus={autoFocus}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-            />
-          </div>
-          <div>
-            <Label htmlFor="exe-password-password">Password</Label>
-            <Input
-              id="exe-password-password"
-              type="password"
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Your account password"
-            />
+          {/* This device's license-bound ID. Shown so a user moving their license
+              to another PC can send us exactly what identifies this install —
+              this device ID + the email on the license — and we can transfer it.
+              Copyable so they don't have to retype the hex. */}
+          <div className="rounded-lg border border-border bg-input px-3 py-2 text-xs text-fg-muted">
+            <div className="flex items-center justify-between gap-2">
+              <span>
+                Device ID:{" "}
+                <code className="font-mono text-fg" data-testid="exe-device-id">
+                  {deviceId || "…"}
+                </code>
+              </span>
+              {deviceId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void navigator.clipboard.writeText(deviceId);
+                    setCopyLabel("Copied!");
+                    setTimeout(() => setCopyLabel("Copy"), 1500);
+                  }}
+                  className="shrink-0 rounded border border-border px-2 py-0.5 hover:bg-black/5 dark:hover:bg-white/5"
+                >
+                  {copyLabel}
+                </button>
+              )}
+            </div>
+            <p className="mt-1">
+              Moving your license to a new PC? Send this Device ID and the email on your license to
+              support and we&apos;ll transfer it.
+            </p>
           </div>
         </>
       )}
@@ -515,7 +528,7 @@ export function LicenseActivationForm({
             )
           ) : (
             <Button variant="primary" type="button" onClick={() => submit(false)} disabled={activating}>
-              {activating ? (mode === "key" ? "Activating…" : "Signing in…") : mode === "key" ? submitLabel : "Sign in"}
+              {activating ? "Activating…" : submitLabel}
             </Button>
           )}
         </div>

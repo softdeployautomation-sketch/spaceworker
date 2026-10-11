@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { Badge, Button, Card, Input, Label, Spinner } from "@/components/ui";
 import { LicenseActivationForm } from "@/components/license-activation-form";
+import { openExternalUrl } from "@/lib/open-external";
 
 // The shared licensing/activation gate — ONE component compiled identically into
 // all four desktop EXE builds (Extractor / Mailer / Combined / Automation-
@@ -165,7 +166,7 @@ export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
         </Card>
 
         <p className="mt-4 max-w-md text-center text-xs text-fg-muted">
-          We'll use this email to deliver your license key when you upgrade — never
+          We&apos;ll use this email to deliver your license key when you upgrade — never
           for anything else. An internet connection is needed once, to start the trial.
         </p>
       </div>
@@ -196,7 +197,16 @@ export function LicenseGate({ build, buyHref, children }: LicenseGateProps) {
             actionSlot={
               <a
                 href={buyHref}
-                target="_blank"
+                onClick={(e) => {
+                  // In the desktop EXE, <a target="_blank"> silently no-ops in
+                  // WebView2 (no browser chrome) — the link looks fine but does
+                  // nothing. Route the click through the shell-aware opener so
+                  // it launches the real browser inside the EXE and still works
+                  // on the hosted web product. preventDefault stops the dead
+                  // native anchor navigation before it starts.
+                  e.preventDefault();
+                  void openExternalUrl(buyHref);
+                }}
                 rel="noreferrer"
                 className="text-sm font-medium text-brand-600 hover:text-brand-700 hover:underline"
               >

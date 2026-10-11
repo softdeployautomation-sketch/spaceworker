@@ -89,6 +89,7 @@
     "@electric-sql/pglite": "^0.5.8",
     "@noble/hashes": "^1.8.0",
     "@prisma/client": "^6",
+    "@tauri-apps/plugin-opener": "^2.7.1",
     "@types/http-proxy": "^1.17.17",
     "@types/nodemailer": "^8.0.1",
     "bcrypt": "^6",

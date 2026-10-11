@@ -144,6 +144,10 @@ fn main() {
         // writes it).
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Task 201 S13 — lets the webview hand external URLs (e.g. the "Get a
+        // license on the website →" link) to the OS's default browser. Without
+        // it, <a target="_blank"> is a dead no-op inside the EXE.
+        .plugin(tauri_plugin_opener::init())
         .manage(LocalRuntime(Mutex::new(None)))
         .setup(|app| {
             if !cfg!(debug_assertions) {
