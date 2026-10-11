@@ -148,9 +148,39 @@ export function tier1UpgradeEmailHtml(opts: { verified: boolean }): string {
   </body>
 </html>`;
 }
+// The license's REAL term, computed from the actual issued/expires dates (not a
+// hardcoded "6 months" — an admin can issue any day-count, and a claim re-signs
+// a key with the ORIGINAL remaining validity, so the dates are the only truth).
+// Renders e.g. "valid for 1 day", "valid for 6 months", "valid for 2 years",
+// or "valid for life" for a far-future/no-expiry key.
+function licenseValiditySentence(issuedAt: Date, expiresAt: Date): string {
+  const days = Math.round((expiresAt.getTime() - issuedAt.getTime()) / 86_400_000);
+  const plain = expiresAt.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  // A >=100-year term is our "lifetime / no expiry" sentinel.
+  if (!Number.isFinite(days) || days >= 100 * 365) {
+    return "Your license is valid for life — it never expires.";
+  }
+  if (days <= 0) return `Your license expires today (${plain}).`;
+  let term: string;
+  if (days % 365 === 0) {
+    const y = days / 365;
+    term = `${y} year${y === 1 ? "" : "s"}`;
+  } else if (days % 30 === 0) {
+    const m = days / 30;
+    term = `${m} month${m === 1 ? "" : "s"}`;
+  } else {
+    term = `${days} day${days === 1 ? "" : "s"}`;
+  }
+  return `Your license is valid for ${term} and expires on ${plain}.`;
+}
+
 // Unlike the public store page (which deliberately shows only a price), this
-// email must state the REAL 6-month expiry clearly, plus the honest status that
-// the desktop build isn't downloadable yet.
+// email must state the REAL term clearly, plus the honest status that the
+// desktop build isn't downloadable yet.
 //
 // Task 47 — the key issued at checkout is a PURCHASE REFERENCE, not an
 // activation key. The email must not read as "enter this in the app" — an unbound
@@ -160,17 +190,16 @@ export function tier1UpgradeEmailHtml(opts: { verified: boolean }): string {
 export function exeLicenseIssuedEmailHtml(opts: {
   productName: string;
   licenseKey: string;
+  issuedAt: Date;
   expiresAt: Date;
-  // Task 45 — single-use "view my license" claim link. When present (always, for
-  // newly issued licenses) it lets an EXE-only buyer prove email ownership and
-  // reach a narrow license_only session where they can claim / see this license.
+  // Task 45 — single-use "view my license" claim link. Optional: the admin
+  // generator (2026-10-11) no longer embeds it in customer emails — the claim
+  // route lives on the private app host (spaceworker.top), not the public site,
+  // and buyers don't need to go anywhere to use the app. When absent, the email
+  // falls back to in-app activation steps (see the else branch below).
   claimUrl?: string;
 }): string {
-  const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  const validitySentence = licenseValiditySentence(opts.issuedAt, opts.expiresAt);
   const claimSection = opts.claimUrl
     ? `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
         <strong style="color:#111827;">Next step — get your activation key:</strong> once you've
@@ -195,7 +224,7 @@ export function exeLicenseIssuedEmailHtml(opts: {
         Thanks for your purchase.
       </p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        <strong style="color:#b91c1c;">Your license is valid for 6 months and expires on ${plainDate}.</strong>
+        <strong style="color:#b91c1c;">${validitySentence}</strong>
         It will not renew automatically.
       </p>
       <p style="font-size:13px;line-height:1.6;color:#6b7280;margin:0 0 16px;">
@@ -231,37 +260,43 @@ export function exeLicenseIssuedEmailHtml(opts: {
 export function exeLicenseWelcomeEmailHtml(opts: {
   productName: string;
   licenseKey: string;
+  issuedAt: Date;
   expiresAt: Date;
-  claimUrl: string;
+  // Optional: the admin generator (2026-10-11) no longer embeds the claim link
+  // (private app host, not the public site). When absent, the welcome email
+  // still gives the license key + term and points to in-app activation.
+  claimUrl?: string;
 }): string {
-  const plainDate = opts.expiresAt.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  const validitySentence = licenseValiditySentence(opts.issuedAt, opts.expiresAt);
+  const getStartedSection = opts.claimUrl
+    ? `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <strong style="color:#111827;">Get started:</strong> open the link below to access your
+        account — from there you can view your license, set a password for future sign-ins, and
+        get the activation key for the desktop app.<br/>
+        <a href="${opts.claimUrl}" style="color:#4f46e5;word-break:break-all;">${opts.claimUrl}</a>
+      </p>`
+    : `<p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
+        <strong style="color:#111827;">Get started:</strong> open the ${opts.productName} desktop app,
+        enter the license key below on the activation screen, and follow the on-screen steps to
+        activate your license.
+      </p>`;
   return `<!doctype html>
 <html>
   <body style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f3f4f6;margin:0;padding:24px;">
     <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:12px;padding:32px;border:1px solid #e5e7eb;">
       <p style="font-size:20px;font-weight:700;margin:0 0 16px;color:#111827;">Welcome to SpaceWorker</p>
       <p style="font-size:15px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        An account has been set up for you with a ${opts.productName} license, valid until
-        <strong style="color:#b91c1c;">${plainDate}</strong>.
+        An account has been set up for you with a ${opts.productName} license. ${validitySentence}
       </p>
-      <p style="font-size:14px;line-height:1.6;color:#374151;margin:0 0 16px;">
-        <strong style="color:#111827;">Get started:</strong> open the link below to access your
-        account — from there you can view your license, set a password for future sign-ins, and
-        get the activation key for the desktop app.<br/>
-        <a href="${opts.claimUrl}" style="color:#4f46e5;word-break:break-all;">${opts.claimUrl}</a>
-      </p>
+      ${getStartedSection}
       <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;word-break:break-all;">
         <p style="font-size:12px;color:#6b7280;margin:0 0 6px;">
-          Purchase reference (this is <strong style="color:#b91c1c;">not</strong> your activation key — use the link above)
+          Your license key (enter this on the app's activation screen)
         </p>
         <p style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;color:#111827;margin:0;">${opts.licenseKey}</p>
       </div>
       <p style="font-size:13px;line-height:1.5;color:#6b7280;margin:12px 0 0;">
-        Keep this email safe — the link above is single-use and tied to this account.
+        Keep this email safe — your license key is tied to your account.
       </p>
     </div>
   </body>
