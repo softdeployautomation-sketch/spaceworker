@@ -95,6 +95,11 @@ export async function injectLiveCapture(opts: {
         domainCount,
         sessionTruncated: payload.truncated,
         capturedAt: new Date(payload.capturedAt),
+        // TASK_119A A4's acceptance: the port that actually carried the
+        // injection is stamped on the session, not just used and forgotten —
+        // otherwise nothing on the record proves the endpoint existed, and a
+        // later restart (which re-allocates it) has no old value to invalidate.
+        cdpPort: opts.cdpPort,
       },
     });
 

@@ -25,9 +25,21 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import { randomBytes } from "crypto";
 import { dirname, resolve } from "path";
-import { chmod, mkdir, readdir, rm, writeFile } from "fs/promises";
+import { chmod, mkdir, readdir, rm, stat, writeFile } from "fs/promises";
 import httpProxy from "http-proxy";
 import { startRelayIngress } from "./relay-ingress";
+import {
+  buildChromiumSupervisorConf,
+  cdpDockerArgs,
+  containerProfileDir,
+  pinnedDockerArgs,
+  type ChromiumSessionOptions,
+} from "./chromium-session-config";
+import {
+  ensurePinnedBrowser,
+  versionDirName,
+  containerPinnedVersionRoot,
+} from "./pinned-chromium";
 
 const execFileAsync = promisify(execFile);
 
@@ -116,6 +128,50 @@ interface Session {
   userId: string;
   profileDir: string;
   proxyServerValue: string;
+  /**
+   * TASK_119A A4 — a session that must be reachable over CDP (a `live` clone
+   * injects its captured cookies this way). Implies: a non-default
+   * user-data-dir, DevTools on, the swfwd forwarder running in the container,
+   * and a HOST-LOOPBACK port publish (cdpHostPort below).
+   */
+  cdp: boolean;
+  /**
+   * TASK_117's blocker list, carried here so it is enforced in one place: a
+   * clone session must not be launched browse-without-sign-in, and must name
+   * its profile's own password store (the container has no keyring).
+   */
+  cloneMode: boolean;
+  /**
+   * TASK_135 §3 — the pinned browser build this session must run, if the caller
+   * resolved one. `pinnedRoot` is the host-side cache dir that gets mounted
+   * read-only; `pinnedBrowserPath` is what Chromium is executed from inside the
+   * container; `pinnedBrowserVersion` is recorded as evidence of what was
+   * actually delivered (never as an intention).
+   */
+  pinnedRoot: string | null;
+  pinnedBrowserPath: string | null;
+  /** Where the cache dir above is mounted in the container. */
+  pinnedContainerRoot: string | null;
+  /** The same binary's path on the HOST — checked for existence before launch. */
+  pinnedHostBinaryPath: string | null;
+  pinnedBrowserVersion: string | null;
+  /** True when this launch had to download the build (false = cache hit). */
+  pinnedDownloaded: boolean;
+  /**
+   * TASK_135 §5 — reopen the previous session's tabs. Set by the app once it has
+   * actually staged a restored `Sessions/` directory, because the flag on its own
+   * does nothing useful and a flag without files would be a lie in the record.
+   */
+  restoreLastSession: boolean;
+  /**
+   * TASK_135 §4 — source-device identity, so sites do not see a Linux container
+   * where a Windows work PC should be. Validated in chromium-session-config
+   * (the values are interpolated into the conf's shell command line).
+   */
+  userAgent: string | null;
+  lang: string | null;
+  /** The host-loopback port the container's CDP forwarder is published on. */
+  cdpHostPort: number | null;
   pid: number | null;
   containerName: string | null;
   port: number | null;
@@ -151,6 +207,25 @@ function allocateEprRange(): string {
   const start = EPR_BASE + (portCursor - 1) * EPR_WIDTH;
   const end = start + EPR_WIDTH - 1;
   return `${start}-${end}`;
+}
+
+// TASK_119A A4 — where the swfwd forwarder binary lives on the host. Built by
+// scripts/engine-dist.mjs (`swfwd-linux-amd64`, a static linux/amd64 binary)
+// and rsynced with the other deploy artifacts, so it is versioned and hashed
+// alongside the Windows device bundle. Overridable for a different deploy
+// layout; a missing binary is a hard launch failure for a CDP session, never a
+// silent fallback (see startInternal).
+const SWFWD_BIN =
+  process.env.SWFWD_BIN ??
+  resolve(process.env.CLONE_ENGINE_DIST_DIR ?? "engine-dist", "swfwd-linux-amd64");
+// Host-loopback port range for CDP publishes. Must not overlap BASE_PORT
+// (Neko's web port) or EPR_BASE (WebRTC's UDP media range) — each of those is
+// bound on the host for every session, and a collision would fail the container
+// start with a docker port-allocation error.
+const CDP_BASE_PORT = Number(process.env.BROWSER_CDP_BASE_PORT ?? 33000);
+
+function allocateCdpHostPort(): number {
+  return CDP_BASE_PORT + (portCursor - 1);
 }
 
 function containerName(sessionId: string): string {
@@ -192,54 +267,12 @@ function chromiumConfDir(sessionId: string): string {
   return `${SESSION_TMP_DIR}/${sessionId}`;
 }
 
-function buildChromiumSupervisorConf(proxyServerValue: string): string {
-  // CONFIRMED LIVE 2026-09-08: if Chromium exits uncleanly on its very first
-  // launch inside a fresh container for ANY reason, it leaves its own
-  // SingletonLock/-Cookie/-Socket behind. supervisord's `autorestart=true`
-  // then relaunches it immediately, Chromium sees ITS OWN stale lock from
-  // the previous attempt, refuses to start ("profile appears to be in use by
-  // another Chromium process"), and this repeats forever -- a permanent
-  // crash-loop for the rest of that container's life, with no session ever
-  // actually coming up (Neko has nothing to show, so the viewer just sees
-  // its own connecting/loading state indefinitely). The Node-side
-  // cleanupProfileDir() only runs BEFORE the container starts -- it has no
-  // visibility into supervisord's internal restart loop once the container
-  // is already up. Fix: wrap the launch in a shell one-liner that clears
-  // those exact lock files immediately before every single attempt,
-  // including supervisord's own internal restarts, not just the first one.
-  const flags = [
-    "--no-sandbox",
-    "--window-position=0,0",
-    "--display=%(ENV_DISPLAY)s",
-    "--user-data-dir=/home/neko/.config/chromium",
-    "--no-first-run",
-    "--start-maximized",
-    "--bwsi",
-    "--force-dark-mode",
-    "--disable-file-system",
-    "--disable-gpu",
-    "--disable-software-rasterizer",
-    "--disable-dev-shm-usage",
-  ];
-  if (proxyServerValue) {
-    flags.push(`--proxy-server=${proxyServerValue}`);
-  }
-  const launchCmd = `rm -f /home/neko/.config/chromium/Singleton* && exec /usr/bin/chromium ${flags.join(" ")}`;
-  return [
-    "[program:chromium]",
-    'environment=HOME="/home/%(ENV_USER)s",USER="%(ENV_USER)s",DISPLAY="%(ENV_DISPLAY)s"',
-    `command=/bin/sh -c "${launchCmd}"`,
-    "stopsignal=INT",
-    "autorestart=true",
-    "priority=800",
-    "user=%(ENV_USER)s",
-    "stdout_logfile=/var/log/neko/chromium.log",
-    "stdout_logfile_maxbytes=100MB",
-    "stdout_logfile_backups=10",
-    "redirect_stderr=true",
-    "",
-  ].join("\n");
-}
+// The generated conf itself now lives in ./chromium-session-config.ts as a pure
+// function with a golden test — so both the flags the existing private-browser
+// path has been running since 2026-09-08 AND the CDP/clone additions (non-default
+// user-data-dir, DevTools, swfwd, no --bwsi) are asserted rather than trusted.
+// The stale-Singleton-lock one-liner described here is generated there, per
+// session, from the profile dir that session actually uses.
 
 /**
  * Writes this session's chromium.conf to a scratch dir and returns its host
@@ -247,12 +280,36 @@ function buildChromiumSupervisorConf(proxyServerValue: string): string {
  * is mounted and the image's own built-in conf is used unchanged, keeping
  * direct sessions byte-for-byte the same as before this fix.
  */
+/** The conf options one session launches with (see Session's own fields). */
+function chromiumOptions(session: Session): ChromiumSessionOptions {
+  return {
+    proxyServerValue: session.proxyServerValue,
+    cdp: session.cdp,
+    cloneMode: session.cloneMode,
+    // TASK_135 §3/§5 — only ever set for a session that resolved a pin and had
+    // state staged, so every other session's conf stays byte-identical.
+    pinnedBrowserPath: session.pinnedBrowserPath,
+    restoreLastSession: session.restoreLastSession,
+    // TASK_135 §4 — the identity parity flags. These fields existed on
+    // ChromiumSessionOptions from the start but nothing ever populated them, so
+    // the flags were unreachable: the conf could emit them and no session ever
+    // did. Carried through here so the feature is actually connected.
+    userAgent: session.userAgent,
+    lang: session.lang,
+  };
+}
+
 async function prepareChromiumConf(session: Session): Promise<string | null> {
-  if (!session.proxyServerValue) return null;
+  // A conf is written when the session needs ANY flag the image's own baked-in
+  // conf cannot express. That is no longer just the proxy case: a clone session
+  // must drop --bwsi and name its password store, and a CDP session must switch
+  // user-data-dir and start the forwarder. A direct, non-clone session keeps the
+  // image's built-in conf untouched — byte-for-byte as before this change.
+  if (!session.proxyServerValue && !session.cdp && !session.cloneMode) return null;
   const dir = chromiumConfDir(session.sessionId);
   await mkdir(dir, { recursive: true });
   const confPath = `${dir}/chromium.conf`;
-  await writeFile(confPath, buildChromiumSupervisorConf(session.proxyServerValue), "utf8");
+  await writeFile(confPath, buildChromiumSupervisorConf(chromiumOptions(session)), "utf8");
   return confPath;
 }
 
@@ -264,7 +321,7 @@ async function cleanupChromiumConf(sessionId: string): Promise<void> {
 function buildNekoArgs(session: Session, chromiumConfPath: string | null): string[] {
   const password = randomBytes(9).toString("base64url");
   session.nekoPassword = password; // stored so the frontend can auto-login — see Session.nekoPassword
-  const profileMount = `${session.profileDir}:/home/neko/.config/chromium`;
+  const profileMount = `${session.profileDir}:${containerProfileDir(chromiumOptions(session))}`;
   const args: string[] = [
     "run",
     "-d",
@@ -290,6 +347,31 @@ function buildNekoArgs(session: Session, chromiumConfPath: string | null): strin
   ];
   if (chromiumConfPath) {
     args.push("-v", `${chromiumConfPath}:/etc/neko/supervisord/chromium.conf:ro`);
+  }
+  // TASK_119A A4 — the CDP endpoint, when this session needs one: the forwarder
+  // binary (read-only) plus its HOST-LOOPBACK port publish. Throws on an
+  // unallocated port or an unconfigured binary path, so a `live` clone can never
+  // start without the endpoint its cookie injection depends on.
+  args.push(
+    ...cdpDockerArgs({
+      cdp: session.cdp,
+      cdpHostPort: session.cdpHostPort,
+      swfwdPath: SWFWD_BIN,
+    }),
+  );
+  // TASK_135 §3 — the pinned build, read-only. Fail closed on an inconsistent
+  // session rather than starting a clone on the image's own Chromium while the
+  // conf says otherwise: that mismatch would half-load a profile.
+  if (session.pinnedBrowserPath) {
+    if (!session.pinnedRoot || !session.pinnedContainerRoot) {
+      throw new Error("pinned_browser_mount_unconfigured");
+    }
+    args.push(
+      ...pinnedDockerArgs({
+        pinnedRoot: session.pinnedRoot,
+        containerVersionRoot: session.pinnedContainerRoot,
+      }),
+    );
   }
   if (HOST_PUBLIC_IP) {
     // Without this, Neko advertises the container's internal Docker IP as its
@@ -382,6 +464,32 @@ async function cleanupProfileDir(profileDir: string): Promise<void> {
   }
 }
 
+/**
+ * TASK_135 §3 — the pinned-build request from a caller, validated BEFORE any
+ * work happens. Shape errors are 400s: the request is built by our own app, so a
+ * malformed one is a programming error rather than a runtime condition, and it
+ * must not get as far as a download.
+ */
+function parsePinnedRequest(value: unknown): {
+  request: { fullVersion: string; downloadUrl: string } | null;
+  problem?: string;
+} {
+  if (value === undefined || value === null) return { request: null };
+  if (typeof value !== "object") {
+    return { request: null, problem: "pinnedBrowser must be an object" };
+  }
+  const raw = value as { fullVersion?: unknown; downloadUrl?: unknown };
+  const fullVersion = typeof raw.fullVersion === "string" ? raw.fullVersion.trim() : "";
+  const downloadUrl = typeof raw.downloadUrl === "string" ? raw.downloadUrl.trim() : "";
+  if (!versionDirName(fullVersion)) {
+    return { request: null, problem: "pinnedBrowser.fullVersion is not a version" };
+  }
+  if (!/^https?:\/\//.test(downloadUrl)) {
+    return { request: null, problem: "pinnedBrowser.downloadUrl must be http(s)" };
+  }
+  return { request: { fullVersion, downloadUrl } };
+}
+
 async function startInternal(session: Session): Promise<string> {
   await cleanupProfileDir(session.profileDir);
   const entry = registry.get(session.sessionId);
@@ -392,6 +500,28 @@ async function startInternal(session: Session): Promise<string> {
   session.containerName = containerName(session.sessionId);
   session.port = allocatePort();
   session.eprRange = allocateEprRange();
+  if (session.cdp) {
+    // Fail FAST, before any container exists: a live clone whose forwarder is
+    // not on disk would otherwise come up as a browser nothing can reach, and
+    // the failure would surface later as an unexplained injection error.
+    const present = await stat(SWFWD_BIN).then(() => true).catch(() => false);
+    if (!present) {
+      throw new Error(`swfwd_binary_missing: ${SWFWD_BIN}`);
+    }
+    session.cdpHostPort = allocateCdpHostPort();
+  }
+  if (session.pinnedBrowserPath) {
+    // Same fail-fast reasoning as the forwarder above: a pinned session whose
+    // binary is not on disk would come up on nothing at all (the conf execs a
+    // path that does not exist), and the error would surface much later as an
+    // unexplained dead session.
+    const present = await stat(session.pinnedHostBinaryPath ?? "")
+      .then((info) => info.isFile())
+      .catch(() => false);
+    if (!present) {
+      throw new Error(`pinned_browser_binary_missing: ${session.pinnedHostBinaryPath}`);
+    }
+  }
   session.status = "starting";
   registry.set(session.sessionId, session);
 
@@ -515,6 +645,10 @@ function publicSession(s: Session) {
     status: s.status,
     startedAt: s.startedAt,
     nekoPassword: s.nekoPassword,
+    // Host-loopback only, and only ever set for a session that asked for CDP —
+    // reported for observability (an admin can see which port to probe), never
+    // as something a caller may treat as reachable from outside the host.
+    cdpPort: s.cdpHostPort,
   };
 }
 
@@ -692,20 +826,106 @@ const server = createServer(async (req, res) => {
       return;
     }
     try {
+      // TASK_135 §3 — install (or find) the pinned build WITHOUT starting a
+      // session. This is what lets the app materialise a restored profile only
+      // once the build is guaranteed to exist: download first, write the files
+      // second, launch third. The other order would leave files staged for a
+      // browser the launch then failed to deliver, and the documented fallback
+      // would open them with the WRONG build — the corruption the pin exists to
+      // prevent.
+      if (url === "/pinned/ensure") {
+        const pin = parsePinnedRequest(body.pinnedBrowser);
+        if (pin.problem || !pin.request) {
+          json(res, 400, { error: pin.problem ?? "pinnedBrowser is required" });
+          return;
+        }
+        const installed = await ensurePinnedBrowser(pin.request);
+        if (!installed.ok) {
+          json(res, 409, { error: installed.error });
+          return;
+        }
+        json(res, 200, {
+          ok: true,
+          fullVersion: pin.request.fullVersion,
+          hostRoot: installed.hostRoot,
+          containerBinaryPath: installed.containerBinaryPath,
+          downloaded: installed.downloaded,
+        });
+        return;
+      }
       if (url === "/sessions/start") {
         const userId = String(body.userId ?? "");
         const profileDir = String(body.profileDir ?? "");
         // Empty proxyServerValue is valid — direct connection, no exit node.
         const proxyServerValue = String(body.proxyServerValue ?? "");
+        // TASK_119A A4 — opted into by the clone launcher only. `cdp` implies a
+        // non-default user-data-dir, DevTools, the in-container forwarder and a
+        // host-loopback publish; `cloneMode` drops --bwsi and names the
+        // container's password store. Both default OFF, so every existing caller
+        // (and the private browser) keeps today's behaviour exactly.
+        const cdp = body.cdp === true;
+        const cloneMode = body.cloneMode === true;
+        const restoreLastSession = body.restoreLastSession === true;
+        // TASK_135 §4 — identity parity. Optional; absent means no flags at all,
+        // which is what keeps every non-clone session's conf unchanged. Length
+        // is capped before validation so an absurd value cannot reach the conf
+        // builder at all.
+        const userAgent = typeof body.userAgent === "string" ? body.userAgent.slice(0, 512).trim() : "";
+        const lang = typeof body.lang === "string" ? body.lang.slice(0, 64).trim() : "";
         if (!userId || !profileDir) {
           json(res, 400, { error: "userId and profileDir are required" });
           return;
+        }
+        // TASK_135 §3 — the pinned build, installed (or found in the cache)
+        // BEFORE a container exists. A version that cannot be delivered is a 409
+        // naming the reason, with no container to clean up and no session on the
+        // wrong browser. The fallback decision is deliberately NOT taken here:
+        // lib/clone-hosted-launch.ts owns the job record and retries explicitly
+        // without the pin, so the outcome is recorded rather than silent.
+        let pinnedRoot: string | null = null;
+        let pinnedBrowserPath: string | null = null;
+        let pinnedContainerRoot: string | null = null;
+        let pinnedHostBinaryPath: string | null = null;
+        let pinnedBrowserVersion: string | null = null;
+        let pinnedDownloaded = false;
+        const pin = parsePinnedRequest(body.pinnedBrowser);
+        if (pin.problem) {
+          json(res, 400, { error: pin.problem });
+          return;
+        }
+        if (pin.request) {
+          const installed = await ensurePinnedBrowser(pin.request);
+          if (!installed.ok) {
+            json(res, 409, { error: `pinned_browser_unavailable: ${installed.error}` });
+            return;
+          }
+          pinnedRoot = installed.hostRoot;
+          pinnedBrowserPath = installed.containerBinaryPath;
+          // Derived from the SAME version name as the binary path above, via the
+          // pin module, so the mount destination and the exec'd path can never
+          // describe different places (the 2026-09-28 bug).
+          pinnedContainerRoot = containerPinnedVersionRoot(versionDirName(pin.request.fullVersion) ?? "");
+          pinnedHostBinaryPath = installed.hostBinaryPath;
+          pinnedBrowserVersion = pin.request.fullVersion;
+          pinnedDownloaded = installed.downloaded;
         }
         const session: Session = {
           sessionId,
           userId,
           profileDir: resolve(profileDir),
           proxyServerValue,
+          cdp,
+          cloneMode,
+          pinnedRoot,
+          pinnedBrowserPath,
+          pinnedContainerRoot,
+          pinnedHostBinaryPath,
+          pinnedBrowserVersion,
+          pinnedDownloaded,
+          restoreLastSession,
+          userAgent: userAgent || null,
+          lang: lang || null,
+          cdpHostPort: null,
           pid: null,
           containerName: null,
           port: null,
@@ -722,6 +942,15 @@ const server = createServer(async (req, res) => {
           port: finalSession?.port ?? null,
           containerId: container,
           nekoPassword: finalSession?.nekoPassword ?? null,
+          // TASK_119A A4 — the host-loopback port the clone's CDP endpoint is
+          // published on, for lib/clone-hosted-launch.ts to inject through.
+          // null for every session that did not ask for CDP.
+          cdpPort: finalSession?.cdpHostPort ?? null,
+          // TASK_135 §3 — what was ACTUALLY delivered, so the app can stamp
+          // evidence on the job instead of echoing its own intent back at itself.
+          pinnedBrowserVersion: finalSession?.pinnedBrowserVersion ?? null,
+          pinnedDownloaded: finalSession?.pinnedDownloaded ?? false,
+          restoreLastSession: finalSession?.restoreLastSession ?? false,
         });
         return;
       }
@@ -746,7 +975,14 @@ const server = createServer(async (req, res) => {
           proxyServerValue,
           startedAt: Date.now(),
         });
-        json(res, 200, { ok: true, port: registry.get(sessionId)?.port ?? null });
+        json(res, 200, {
+          ok: true,
+          port: registry.get(sessionId)?.port ?? null,
+          // A restart re-allocates the CDP port (startInternal). Returning it
+          // keeps a caller that holds the old value from injecting into a port
+          // that is now someone else's session (or nothing at all).
+          cdpPort: registry.get(sessionId)?.cdpHostPort ?? null,
+        });
         return;
       }
     } catch (e) {

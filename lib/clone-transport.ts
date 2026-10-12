@@ -5,6 +5,9 @@ import crypto from "node:crypto";
 import { db } from "./db";
 import { recordAgentActionAudit } from "./devices";
 import { browserRuntime } from "./browser-runtime";
+// The one browser vocabulary. Imported (not only re-exported) because this file
+// guards its own call sites with it.
+import { CLONE_BROWSERS, type CloneBrowser } from "./clone-browsers";
 
 // TASK_108 (bit B2) — SpaceWorker side of the Browser Clone agent transport.
 //
@@ -94,11 +97,25 @@ async function requireOwnedDevice(opts: {
   return { id: deviceRow.id, vantraAgentId: deviceRow.vantraAgentId, name: deviceRow.name, deviceKind: deviceRow.deviceKind };
 }
 
-export type CloneBrowser = "chrome" | "edge" | "firefox";
+export {
+  CHROMIUM_BROWSERS,
+  CLONE_BROWSERS,
+  NON_CARRIABLE_BROWSERS,
+  cloneBrowserCarryRefusal,
+  cloneBrowserLabel,
+  isCarriableBrowser,
+  isCloneBrowser,
+  type ChromiumBrowser,
+  type CloneBrowser,
+  type NonCarriableBrowser,
+} from "./clone-browsers";
 export type CloneEgress = "relay" | "direct";
 export type CloneStep = "capture" | "receive" | "launch" | "status" | "revoke" | "relay-install" | "relay-probe";
 
-const BROWSERS: ReadonlySet<string> = new Set(["chrome", "edge", "firefox"]);
+// Derived from the one list in lib/clone-browsers.ts, not restated: a fourth
+// hand-written copy here is exactly how the doors into this feature drifted away
+// from the pipe that implements it.
+const BROWSERS: ReadonlySet<string> = new Set(CLONE_BROWSERS);
 
 /** DeviceCapability values this transport registers (schema-documented set). */
 export const CLONE_CAPABILITIES = ["clone-capture", "clone-host", "relay", "live-capture"] as const;

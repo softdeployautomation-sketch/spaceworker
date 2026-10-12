@@ -70,6 +70,58 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      # TASK_135 — the clone checks. These run BEFORE the build so a broken clone
+      # contract fails fast and cheap.
+      #
+      # The Go half needs a toolchain; ubuntu-latest ships one. It is not just
+      # `go test`: the exclusion-list check below compares the device's list with
+      # the server's, because those two lists are deliberately duplicated on
+      # either side of a trust boundary and drift between them is silent by
+      # nature (the server would carry a file the device refused to send, or the
+      # device would send one the server never asked for, with nothing to report
+      # it).
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: michael/browser-clone/engine/go.sum
+
+      - name: Clone engine — format, build, vet, test
+        working-directory: michael/browser-clone/engine
+        run: |
+          # gofmt -l prints files that are NOT formatted; non-empty output is a
+          # failure, which `test -z` turns into an exit code.
+          test -z "$(gofmt -l ./cmd ./pkg)" || { echo "gofmt found unformatted files:"; gofmt -l ./cmd ./pkg; exit 1; }
+          go build ./...
+          go vet ./pkg/wake/
+          go test -count=1 ./...
+          go test -race -count=1 ./pkg/wake/
+
+      - name: Clone contract — device and server exclusion lists must agree
+        run: npm run check:clone-contract
+
+      # `test:clone` is the sync-plan suite (first-time clone vs sync on
+      # reconnect). `test:browser` additionally builds cmd/relay so the five REAL
+      # relay integration tests actually RUN: they skip themselves when the
+      # binary is absent, and that runner fails the step if they skip, so green
+      # here means the egress path a clone's privacy depends on was exercised.
+      - name: Clone sync plan + browser server tests
+        run: |
+          npm run test:clone
+          npm run test:browser
+
+      # TASK_135 — the DEVICE half, which no JS suite can reach: the PowerShell that
+      # walks a real profile, the cookie-capture chain (REAL cmd/native-host + the REAL
+      # extension service worker) and the silent-trigger harness. This is the first time
+      # these run automatically. They used to be hand-run on Windows only, because
+      # without a job key they seal with DPAPI — which throws on any non-Windows
+      # platform — so CI's ubuntu runner could not execute them at all and quietly did
+      # not. The runner supplies a random key per run to take the platform-independent
+      # AES-256-GCM path, and it fails the step if a suite passes while asserting too
+      # little. A real Brave cookie-capture bug lived in those files for exactly one
+      # reason: nothing ran them.
+      - name: Device PowerShell suites — profile capture, cookie chain, silent trigger
+        run: npm run test:ps
+
       - name: Build
         run: npm run build
         env:

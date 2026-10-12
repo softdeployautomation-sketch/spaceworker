@@ -8,15 +8,68 @@
 
 $script:Magic = [byte[]](0x53,0x57,0x43,0x4C,0x4E,0x31,0x00)  # SWCLN1\0
 
+<#
+  THE ONE PLACE that maps a Chromium browser to its "User Data" directory.
+
+  Every function here and in CdpCookies.ps1 that needs that root reads it from this
+  map. The alternative was already in this file and is the reason the map exists: one
+  function had a `switch` and another had `if ($Browser -eq 'chrome') {…} else {…Edge…}`,
+  so a THIRD Chromium browser would have silently resolved to Edge's directory — the
+  clone would carry another browser's history and every exit code would still be 0.
+
+  Firefox is absent by design: it is not "User Data"/`Default`, it lives under
+  Roaming and it is a list of profile directories (see Get-BrowserProfileDir).
+#>
+$script:ChromiumUserDataSubdirs = @{
+    'chrome' = 'Google\Chrome\User Data'
+    'edge'   = 'Microsoft\Edge\User Data'
+    'brave'  = 'BraveSoftware\Brave-Browser\User Data'
+}
+
+<#
+  The browsers whose COOKIES this module can move — the same set as the map above,
+  and deliberately a list of its own so `check:clone-contract` can compare the two.
+
+  WHY A SHARED CONSTANT RATHER THAN LITERALS AT THE CALL SITES: the cookie branch in
+  Invoke-CaptureFromDir and the import branch in Invoke-Restore each spelled the
+  browsers out inline — and the two had already DISAGREED. Capture said
+  `@('chrome','edge')`; restore said `@('chrome','edge','brave')`. So a Brave clone
+  captured its history, bookmarks and tabs, skipped its cookies, and still reported
+  exit code 0: a clean-looking clone with no session, which is exactly the
+  silent-partial failure this whole feature exists to eliminate.
+
+  The lesson is the same one the User Data map above records: a list written out
+  twice is a list that can disagree with itself, and the disagreement surfaces as a
+  wrong result rather than an error. One constant cannot.
+#>
+$script:CarriableBrowsers = @('chrome', 'edge', 'brave')
+
+function Get-ChromiumUserDataRoot {
+    <#
+      The LOCALAPPDATA-relative "User Data" root for a Chromium browser, or $null when
+      this environment has no LOCALAPPDATA (off-Windows, or a stripped service
+      environment). Returning $null rather than a relative path is deliberate: the
+      callers all treat "no root" as "cannot answer", never as a path to test.
+    #>
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave')][string]$Browser)
+    $sub = $script:ChromiumUserDataSubdirs[$Browser]
+    if (-not $sub) { return $null }
+    if (-not $env:LOCALAPPDATA) { return $null }
+    return (Join-Path $env:LOCALAPPDATA $sub)
+}
+
 function Get-BrowserProfileDir {
-    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','firefox')][string]$Browser,
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave','firefox')][string]$Browser,
           [string]$ProfileName)
+    # Chromium browsers share one layout and differ only by root, so the root comes
+    # from the shared map; Firefox is its own shape and is handled on its own.
     $base = $null
-    switch ($Browser) {
-        'chrome'  { $base = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data' }
-        'edge'    { $base = Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data' }
-        'firefox' { $base = Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles' }
+    if ($Browser -eq 'firefox') {
+        if ($env:APPDATA) { $base = Join-Path $env:APPDATA 'Mozilla\Firefox\Profiles' }
+    } else {
+        $base = Get-ChromiumUserDataRoot -Browser $Browser
     }
+    if (-not $base) { throw "browser profile base not resolvable for '$Browser' in this environment" }
     if (-not (Test-Path $base)) { throw "browser profile base not found: $base" }
     if ($Browser -eq 'firefox') {
         $dir = if ($ProfileName) { Join-Path $base $ProfileName } else {
@@ -45,21 +98,55 @@ function Get-ProfileFileList {
       capture silently contained zero cookies.
     #>
     param([Parameter(Mandatory=$true)][string]$ProfileDir)
+    # Patterns are written with the PLATFORM separator rather than a hardcoded `\`.
+    # On Windows (the device) this is byte-for-byte the same list as before. On
+    # pwsh/Linux — where this file's tests run — a backslash is an ordinary
+    # filename character, so `'Extensions\*'` matched NOTHING and a check could not
+    # tell "this profile has no extensions" apart from "the separator is wrong".
+    # That is the same class of silent-empty failure this function's own review fix
+    # F1 was about, so it is worth removing the ambiguity.
+    $sep = [System.IO.Path]::DirectorySeparatorChar
     $patterns = @(
         'Preferences', 'Secure Preferences', 'Bookmarks', 'Bookmarks.bak',
         # legacy + current Chromium cookie locations
         'Cookies', 'Cookies-journal',
-        'Network\*',
+        "Network${sep}*",
         'Login Data', 'Login Data-journal', 'Login Data-wal', 'Login Data-shm',
         'Web Data', 'History', 'Favicons',
-        'Extensions\*',
-        'Local Storage\leveldb\*',
-        'Session Storage\*',
-        'Extension State\*', 'Sync Extension Settings\*'
+        # TABS / window state. Chromium keeps the last session in
+        # Sessions\Session_<ts> and Sessions\Tabs_<ts> (legacy builds used
+        # root-level Current Session / Current Tabs). These carry tab, window and
+        # navigation-group state and are NOT encrypted — unlike Cookies/Login
+        # Data, a copy survives a machine move — so "…down to tabs" is achievable
+        # by copy. They were simply absent from this list, which is why a
+        # restored clone came up with an empty window.
+        "Sessions${sep}*",
+        'Current Session', 'Current Tabs', 'Last Session', 'Last Tabs',
+        # NOTE: the Extensions root is walked RECURSIVELY further down, not by a
+        # one-level pattern. `Extensions\*` can only match loose files directly
+        # inside Extensions, and every real extension lives at
+        # `Extensions\<id>\manifest.json` — so that pattern matched nothing, a
+        # capture of a browser full of extensions carried none of them, and the
+        # run still reported success. One level deeper is not enough either: an
+        # extension without its payload is a broken extension, so the whole
+        # subtree goes.
+        "Local Storage${sep}leveldb${sep}*",
+        "Session Storage${sep}*",
+        "Extension State${sep}*", "Sync Extension Settings${sep}*"
     )
     $files = @()
     foreach ($p in $patterns) {
         Get-ChildItem -Path (Join-Path $ProfileDir $p) -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $files += $_.FullName.Substring($ProfileDir.Length + 1) }
+    }
+    # Extensions, recursively (see the NOTE in $patterns). Kept separate from the
+    # pattern loop because a recursive walk is a different operation from a glob, and
+    # folding `-Recurse` into the shared loop would also recurse Network\, Local
+    # Storage\ and Session Storage\ — where the files sit directly in the root and a
+    # deep walk would pull in unrelated megabytes for no gain.
+    $extRoot = Join-Path $ProfileDir 'Extensions'
+    if (Test-Path $extRoot) {
+        Get-ChildItem -Path $extRoot -File -Recurse -ErrorAction SilentlyContinue |
             ForEach-Object { $files += $_.FullName.Substring($ProfileDir.Length + 1) }
     }
     foreach ($p in @('prefs.js','key4.db','logins.json','cookies.sqlite','cookies.sqlite-wal',
@@ -67,6 +154,67 @@ function Get-ProfileFileList {
         if (Test-Path (Join-Path $ProfileDir $p)) { $files += $p }
     }
     return $files | Sort-Object -Unique
+}
+
+function Get-BrowserMajorVersion {
+    <#
+      The MAJOR version of a browser, or $null when it cannot be determined.
+
+      WHY IT MATTERS (two independent consumers):
+      1. Costing a file move. Chromium refuses (or silently migrates) a profile
+         written by a NEWER build, and extension/Preferences formats are
+         version-sensitive — so the hosted browser that a captured profile is
+         restored into must be the same major version. That is the
+         "detect the version, deliver a matching browser" step, and the number
+         has to be captured HERE, on the device, because nothing else knows it.
+      2. Cookie capture support. Windows Chrome/Edge 127+ writes `v20`
+         (App-Bound-Encrypted) cookie values that NO out-of-process reader can
+         decrypt — see CdpCookies.ps1's header and TASK_117 F10/F11. For those
+         versions the file route is refused with a named reason instead of
+         silently producing a zero-cookie archive.
+    #>
+    param([Parameter(Mandatory=$true)][ValidateSet('chrome','edge','brave','firefox')][string]$Browser,
+          [string]$ProfileDir)
+    $version = $null
+
+    if ($Browser -eq 'firefox') {
+        # compatibility.ini sits in the profile and records the version that
+        # last wrote it: "LastVersion=141.0".
+        if ($ProfileDir) {
+            $ini = Join-Path $ProfileDir 'compatibility.ini'
+            if (Test-Path $ini) {
+                $m = [regex]::Match((Get-Content -LiteralPath $ini -Raw -ErrorAction SilentlyContinue),
+                                    'LastVersion=(\d+(?:\.\d+)*)')
+                if ($m.Success) { $version = $m.Groups[1].Value }
+            }
+        }
+    } else {
+        # `Last Version` in the User Data root is written by the browser itself
+        # on every update and needs no process spawn (the engine's Go detector
+        # reads it too — one convention, both layers). The configured root is
+        # preferred; LOCALAPPDATA is the fallback and is absent off-Windows, so
+        # it is only joined when it actually exists.
+        $dirs = @()
+        if ($ProfileDir) { $dirs += (Split-Path $ProfileDir -Parent) }
+        # The SAME map Get-BrowserProfileDir uses. As a map rather than
+        # `if chrome … else Edge`, because that branch is exactly how Brave would have
+        # read its version out of EDGE's directory — and a wrong major version silently
+        # changes which hosted build a clone is pinned to, which is the one thing the
+        # destination refuses rather than guesses at.
+        $configuredRoot = Get-ChromiumUserDataRoot -Browser $Browser
+        if ($configuredRoot) { $dirs += $configuredRoot }
+        foreach ($dir in $dirs) {
+            $lv = Join-Path $dir 'Last Version'
+            if (Test-Path $lv) {
+                $m = [regex]::Match((Get-Content -LiteralPath $lv -Raw -ErrorAction SilentlyContinue),
+                                    '(\d+(?:\.\d+){1,3})')
+                if ($m.Success) { $version = $m.Groups[1].Value; break }
+            }
+        }
+    }
+
+    if (-not $version) { return $null }              # unknown is a valid answer
+    return ($version -split '\.')[0]
 }
 
 function Copy-WithRetry {
@@ -129,23 +277,63 @@ function Invoke-CaptureFromDir {
             Copy-Item -LiteralPath $localState -Destination (Join-Path $metaDir 'Local State') -Force -ErrorAction SilentlyContinue
         }
 
+        # ── source browser version (the version-match input) ────────────────
+        # Captured HERE because this is the only place that can see the real
+        # install. It decides (a) which browser build the hosted side must
+        # present to accept this profile and (b) whether out-of-process cookie
+        # capture is even possible (below).
+        $majorVersion = Get-BrowserMajorVersion -Browser $Browser -ProfileDir $ProfileDir
+
         $cookieTransfer = 'none'
         $cookieInfo = $null
-        if ($WithCookies -and @('chrome', 'edge') -contains $Browser) {
-            if (-not (Test-Path $localState)) {
+        if ($WithCookies -and $script:CarriableBrowsers -contains $Browser) {
+            if ($majorVersion -and [int]$majorVersion -ge 127) {
+                # DECISIVE, and not a bug to work around here: Chrome and Edge 127+
+                # seal cookie values with the App-Bound key (v20), released only
+                # to a path-validated browser process. Any out-of-process reader
+                # gets nothing, and a relocated copy makes the browser DELETE the
+                # rows (TASK_117 F10/F11/F12, F4). Attempting the old export here
+                # produced a silent zero-cookie archive and burned minutes
+                # launching a headless browser; naming it up front is what lets
+                # the console offer the route that DOES work — the live session
+                # (in-browser capture via the extension, TASK_119B → CDP
+                # injection). Everything else in this archive is unaffected.
+                #
+                # The gate is applied to the whole Chromium family rather than
+                # guessed per browser, so an affected Brave is refused BY NAME here
+                # instead of silently exporting nothing.
+                $cookieTransfer = 'unsupported:app-bound-encryption'
+            } elseif (-not (Test-Path $localState)) {
                 $cookieTransfer = 'skipped:no-local-state'
             } elseif (-not (Get-Command Export-CdpCookies -ErrorAction SilentlyContinue)) {
                 $cookieTransfer = 'skipped:cdp-module-not-loaded'
             } else {
                 try {
                     New-Item -ItemType Directory -Path $metaDir -Force | Out-Null
-                    $cookieInfo = Export-CdpCookies -Browser $Browser -ProfileDir $profileDir `
+                    $cookieInfo = Export-CdpCookies -Browser $Browser -ProfileDir $ProfileDir `
                         -OutFile (Join-Path $metaDir 'cookies.json')
                     $cookieTransfer = 'cdp'
                 } catch {
                     $cookieTransfer = 'failed:' + $_.Exception.Message
                 }
             }
+        }
+
+        # The capture's own manifest: what the archive is, and the browser
+        # version it came from. Reference-only (restore skips _meta\ entirely —
+        # see the _meta note above), plus the same values are reported on stdout
+        # so the pipeline can record them on the clone job.
+        if ($majorVersion -or (Test-Path $metaDir)) {
+            New-Item -ItemType Directory -Path $metaDir -Force | Out-Null
+            $manifest = [pscustomobject]@{
+                browser        = $Browser
+                major_version  = $majorVersion
+                os             = [System.Environment]::OSVersion.VersionString
+                captured_at    = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                source_profile = (Split-Path $ProfileDir -Leaf)
+            }
+            $manifest | ConvertTo-Json -Depth 4 |
+                Set-Content -LiteralPath (Join-Path $metaDir 'source-browser.json') -Encoding UTF8
         }
 
         $zip = "$stage.zip"
@@ -180,6 +368,10 @@ function Invoke-CaptureFromDir {
     # A failed cookie transfer means the session did not move — that is a partial
     # clone (exit 1), not a clean one.
     if ($cookieTransfer -like 'failed:*') { $exit = 1 }
+    # Nor did an app-bound refusal (Chrome/Edge 127+): the archive carries
+    # history/bookmarks/tabs but no session. Exit 1, with the reason named, so
+    # the caller reports a partial clone instead of "done".
+    if ($cookieTransfer -eq 'unsupported:app-bound-encryption') { $exit = 1 }
     # A cookie transfer that completed but moved ZERO cookies is also partial: the
     # archive restores a browser with no logins (review fix F2, 2026-09-23).
     if ($cookieTransfer -eq 'cdp' -and $cookieInfo -and $cookieInfo.count -eq 0) {
@@ -187,9 +379,12 @@ function Invoke-CaptureFromDir {
         $exit = 1
     }
     [pscustomobject]@{
-        op = 'capture'; browser = $Browser; profile_dir = $profileDir
+        op = 'capture'; browser = $Browser; profile_dir = $ProfileDir
         out = $Out; files_captured = $copied; files_skipped = $skipped.Count
         skipped_names = $skipped; protected_by = $(if ($Key) {'aes-256-gcm'} else {'dpapi-user'})
+        # The hosted side needs this to pick a matching browser build; $null
+        # means "undetermined", never "assume latest".
+        browser_major_version = $majorVersion
         cookie_transfer = $cookieTransfer
         cookies_captured = $(if ($cookieInfo) { $cookieInfo.count } else { 0 })
         session_cookies = $(if ($cookieInfo) { $cookieInfo.session_only } else { 0 })
@@ -268,7 +463,7 @@ function Invoke-Restore {
         $cookieResult = $null
         $cookiePayload = Join-Path $stage '_meta\cookies.json'
         if (Test-Path $cookiePayload) {
-            $browserForCdp = if ($BrowserHint -in @('chrome', 'edge')) { $BrowserHint } else { 'chrome' }
+            $browserForCdp = if ($script:CarriableBrowsers -contains $BrowserHint) { $BrowserHint } else { 'chrome' }
             if (-not (Get-Command Import-CdpCookies -ErrorAction SilentlyContinue)) {
                 $cookieTransfer = 'skipped:cdp-module-not-loaded'
             } else {

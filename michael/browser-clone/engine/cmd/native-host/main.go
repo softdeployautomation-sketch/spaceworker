@@ -53,6 +53,7 @@ import (
 
 	"spaceworker.browser-clone/pkg/procattr"
 	"spaceworker.browser-clone/pkg/types"
+	"spaceworker.browser-clone/pkg/wake"
 )
 
 // maxMessageBytes caps a single native-messaging message (1 MiB is far more
@@ -89,6 +90,15 @@ const (
 	maxCaptureBytes = 25 << 20
 	// capturePOSTTimeout bounds the single POST.
 	capturePOSTTimeout = 2 * time.Minute
+	// captureRequestEnv / captureResultEnv override the mailbox file locations
+	// (see pkg/wake). They default to the directory holding this host's own
+	// config, i.e. the per-machine location the one-click setup already writes,
+	// so the broker and the host agree without either of them inventing a path.
+	captureRequestEnv = "SPACEWORKER_CLONE_REQUEST"
+	captureResultEnv  = "SPACEWORKER_CLONE_RESULT"
+	// captureRequestName / captureResultName are the default file names.
+	captureRequestName = "capture-request.json"
+	captureResultName  = "capture-result.json"
 )
 
 // captureConfig is the host's own per-device configuration.
@@ -121,6 +131,11 @@ type captureState struct {
 	truncated  bool
 	cookies    []types.Cookie
 	bytes      int
+	// pending is the claimed silent-capture request, when this capture came from
+	// the mailbox rather than from the popup. Its nonce is what lets the broker
+	// match the result to the wake it performed (pkg/wake), so it is carried for
+	// the lifetime of the port and never written anywhere else.
+	pending *wake.CaptureRequest
 }
 
 func (s *captureState) reset() { *s = captureState{} }
@@ -146,6 +161,11 @@ type response struct {
 	Accepted  int    `json:"accepted,omitempty"`
 	Domains   int    `json:"domains,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
+	// CloneJobID / Browser answer poll_capture_request: they tell the service
+	// worker WHICH capture to run, and are echoed straight back in the chunks it
+	// sends. Neither is a secret; the job id is already in the poll request.
+	CloneJobID string `json:"clone_job_id,omitempty"`
+	Browser    string `json:"browser,omitempty"`
 }
 
 func main() {
@@ -191,9 +211,95 @@ func handle(payload []byte, capture *captureState) {
 		if resp, reply := handleCaptureChunk(req, capture); reply {
 			writeMessage(resp)
 		}
+	case "poll_capture_request":
+		// TASK_135 — the silent path's trigger. The extension asks; the host
+		// answers "capture_requested" or "idle". This is the ONLY way a capture
+		// can start without a human, because a native host is started BY the
+		// extension and can never push to it.
+		writeMessage(handlePollCaptureRequest(capture))
 	default:
 		writeMessage(response{Status: "error", Error: "unknown_command"})
 	}
+}
+
+// ---------------------------------------------------------------------------
+// TASK_135 — the silent capture mailbox (poll + result)
+// ---------------------------------------------------------------------------
+//
+// Why the extension must ASK and can never be TOLD: a native messaging host is
+// started BY the extension, so the host cannot push to it, and an MV3 service
+// worker has no listening socket. The extension therefore polls on an alarm, and
+// poll_capture_request is what it polls. The whole exchange is shaped by the
+// owner's hard condition — no popup, no click, no window, no notification — so
+// the user must never learn a capture happened from anything on their screen.
+//
+// The request is CLAIMED here (single use, time-boxed; see pkg/wake), so a broker
+// that walks away mid-wake cannot leave a capture armed for later. "idle" is the
+// overwhelmingly common answer and is not an error.
+
+// mailboxPath prefers an env override, then the directory of this host's own
+// config (the per-machine dir the one-click setup already writes, so the broker
+// and the host agree without either inventing a path), then the current dir.
+func mailboxPath(env, name, cfgPath string) string {
+	if p := strings.TrimSpace(os.Getenv(env)); p != "" {
+		return p
+	}
+	base := strings.TrimSpace(cfgPath)
+	if base == "" {
+		return name
+	}
+	return filepath.Join(filepath.Dir(base), name)
+}
+
+// captureConfigFile resolves the first candidate config path, or "".
+func captureConfigFile() string {
+	if paths := captureConfigPaths(); len(paths) > 0 {
+		return paths[0]
+	}
+	return ""
+}
+
+func captureRequestPath(cfgPath string) string {
+	return mailboxPath(captureRequestEnv, captureRequestName, cfgPath)
+}
+
+func captureResultPath(cfgPath string) string {
+	return mailboxPath(captureResultEnv, captureResultName, cfgPath)
+}
+
+// handlePollCaptureRequest claims a pending silent-capture request, if any.
+func handlePollCaptureRequest(st *captureState) response {
+	req, ok, reason := wake.ClaimRequest(captureRequestPath(captureConfigFile()), time.Now().UTC())
+	if !ok {
+		if reason != "" {
+			// Worth reporting once: the file is already gone, so it cannot repeat.
+			return response{Status: "error", Error: reason}
+		}
+		return response{Status: "idle"}
+	}
+	// Held for the life of the capture: the nonce is what stamps the result the
+	// broker is waiting for, and the job id lets finishCapture address the jar
+	// even when the broker did not supply one.
+	st.pending = &req
+	return response{Status: "capture_requested", CloneJobID: req.CloneJobID, Browser: req.Browser}
+}
+
+// writeCaptureResult records the COUNTS-ONLY outcome for the broker. Failures
+// here are deliberately ignored: the capture has already succeeded or failed, and
+// the broker's own deadline is the backstop.
+func writeCaptureResult(st *captureState, resp response) {
+	if st.pending == nil {
+		return
+	}
+	res := wake.CaptureResult{
+		Nonce:     st.pending.Nonce,
+		Status:    resp.Status,
+		Accepted:  resp.Accepted,
+		Domains:   resp.Domains,
+		Truncated: resp.Truncated,
+		Reason:    resp.Error,
+	}
+	_ = wake.WriteResult(captureResultPath(captureConfigFile()), res, time.Now().UTC())
 }
 
 // handleClone runs the CLI clone command and returns the clone id.
@@ -293,10 +399,19 @@ func handleCaptureChunk(req request, st *captureState) (response, bool) {
 	return finishCapture(st), true
 }
 
-// finishCapture assembles the ONE POST body and sends it. Every failure is a
+// finishCapture assembles the ONE POST body, sends it, and then records the
+// outcome in the mailbox, so a broker that performed a silent wake learns what
+// happened at once instead of waiting out its whole deadline. Every failure is a
 // named reason; neither the reply nor any log may contain a cookie value or the
 // device token.
 func finishCapture(st *captureState) response {
+	resp := finishCaptureInner(st)
+	writeCaptureResult(st, resp)
+	return resp
+}
+
+// finishCaptureInner does the assembly and the single POST.
+func finishCaptureInner(st *captureState) response {
 	payload := types.CapturePayload{
 		CloneJobID: st.jobID,
 		Browser:    st.browser,
