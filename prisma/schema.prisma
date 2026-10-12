@@ -284,6 +284,12 @@ model AdminSetting {
   // in Admin > Wallets & Prices like every other price here.
   xdevicePriceUsd                Float    @default(500)
 
+  // TASK_203 — XDevice Monitor (self-hosted standalone device monitor) price.
+  // Mirrors xdevicePriceUsd: a real column so the product's priceField is a
+  // valid keyof AdminSettingPriceFields. NOT shown on the store (the product
+  // is not in ALL_PRODUCTS); only meaningful as an admin-set reference price.
+  deviceMonitorExePriceUsd       Float    @default(0)
+
   // PLAN_TASK_167 W4 — the smallest wallet top-up a user may open, in whole
   // DOLLARS (every other price on this model is a Float in dollars too, so a
   // second unit in this one table would be the thing that confuses a future

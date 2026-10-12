@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { requireAdminSession } from "@/lib/admin-auth";
 import { prisma } from "@/lib/prisma";
-import { EXE_PRODUCTS } from "@/lib/products";
+import { LICENSABLE_EXE_PRODUCTS } from "@/lib/products";
 import { generateLicenseKey } from "@/lib/exe-license";
 import { bindExeLicenseToMachine, LicenseBindError, transferExeLicenseToMachine, LicenseTransferError, unbindExeLicense, keyExpiryIsAfter, originalExpiry } from "@/lib/exe-license-bind";
 import { findOrCreateUser } from "@/lib/find-or-create-user";
@@ -301,7 +301,7 @@ async function issueLicense(
   body: Record<string, unknown>,
 ): Promise<NextResponse> {
   const productId = typeof body.product === "string" ? body.product.trim() : "";
-  const product = EXE_PRODUCTS.find((p) => p.id === productId);
+  const product = LICENSABLE_EXE_PRODUCTS.find((p) => p.id === productId);
   if (!product) {
     return NextResponse.json(
       { error: "Pick a valid SpaceWorker EXE product." },
@@ -499,7 +499,7 @@ export async function GET(req: Request) {
       id: l.id,
       email: l.user.email,
       product: l.product,
-      productName: EXE_PRODUCTS.find((p) => p.id === l.product)?.name ?? l.product,
+      productName: LICENSABLE_EXE_PRODUCTS.find((p) => p.id === l.product)?.name ?? l.product,
       issuedAt: l.issuedAt.toISOString(),
       boundMachineId: l.boundMachineId,
       boundMachineLabel: l.boundMachineLabel,

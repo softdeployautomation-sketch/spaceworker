@@ -20,7 +20,13 @@ export type ProductId =
   | "combined_exe"
   | "automation_exe"
   | "agent_exe"
-  | "xdevice";
+  | "xdevice"
+  // TASK_203 — the SELF-HOSTED standalone device monitor ("XDevice Monitor",
+  // white-labeled "SpaceWorker Engine"). Admin-issued only, NOT a store
+  // product: deliberately NOT in EXE_PRODUCTS/ALL_PRODUCTS (no store card, no
+  // price-form row), but registered in BY_ID below so getProduct() resolves it
+  // for trial-ping/status/validate — the hosted trial needs the product known.
+  | "device_monitor_exe";
 
 // TASK_99 / plan §COMMERCIAL C3 — "module" is new: a pick-your-capability web
 // subscription that grants ONE OR MORE entitlements (lib/entitlements.ts)
@@ -71,6 +77,10 @@ export type AdminSettingPriceFields = {
   hostingModulePriceUsd: number;
   agentExePriceUsd: number;
   xdevicePriceUsd: number;
+  // TASK_203 — device_monitor_exe's priceField (mirrors xdevicePriceUsd as a
+  // real AdminSetting column). Never read on the store (not in ALL_PRODUCTS);
+  // only relevant to an admin-set price if/when the admin issue form offers it.
+  deviceMonitorExePriceUsd: number;
 };
 
 export const WEB_SUBSCRIPTION: StoreProduct = {
@@ -220,6 +230,26 @@ export const XDEVICE: StoreProduct = {
   kind: "xdevice",
 };
 
+// TASK_203 — the self-hosted standalone monitor. Distinct from XDEVICE (the
+// platform-connected premium above): this runs on the customer's own box via
+// the SpaceWorker Engine bring-up and requires an admin-issued, device-bound,
+// offline-validated license. kind "exe" so trial-ping's `product.kind !== "exe"`
+// check accepts it; plan "device_monitor" matches the license-key payload slug.
+export const DEVICE_MONITOR_EXE: StoreProduct = {
+  id: "device_monitor_exe",
+  name: "XDevice Monitor",
+  tagline:
+    "Self-hosted SpaceWorker Engine device monitor — watch and control your fleet from one private dashboard.",
+  priceField: "deviceMonitorExePriceUsd",
+  kind: "exe",
+  plan: "device_monitor",
+};
+
+// TASK_203 — the admin issue form/route's product list: every store EXE plus
+// the non-store, admin-issued XDevice Monitor. The store lists (EXE_PRODUCTS /
+// ALL_PRODUCTS) are deliberately unchanged — nothing here is sellable publicly.
+export const LICENSABLE_EXE_PRODUCTS: StoreProduct[] = [...EXE_PRODUCTS, DEVICE_MONITOR_EXE];
+
 export const ALL_PRODUCTS: StoreProduct[] = [WEB_SUBSCRIPTION, ...MODULE_PRODUCTS, ...EXE_PRODUCTS, XDEVICE];
 
 /**
@@ -248,7 +278,12 @@ export function isWalletTopup(productId: string | null | undefined): boolean {
   return productId === WALLET_TOPUP_PRODUCT_ID;
 }
 
-const BY_ID = new Map<string, StoreProduct>(ALL_PRODUCTS.map((p) => [p.id, p]));
+// BY_ID = every product getProduct() may resolve — the store list PLUS
+// non-store products (DEVICE_MONITOR_EXE: admin-issued, never rendered from
+// ALL_PRODUCTS anywhere).
+const BY_ID = new Map<string, StoreProduct>(
+  [...ALL_PRODUCTS, DEVICE_MONITOR_EXE].map((p) => [p.id, p]),
+);
 
 export function getProduct(id: string): StoreProduct | null {
   const product = BY_ID.get(id);

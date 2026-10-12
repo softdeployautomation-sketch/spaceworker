@@ -3,7 +3,7 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import type { ServiceState } from "@/lib/services-control";
 import { useConfirm } from "@/components/confirm-provider";
-import { ALL_PRODUCTS, EXE_PRODUCTS, WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
+import { ALL_PRODUCTS, EXE_PRODUCTS, LICENSABLE_EXE_PRODUCTS, WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
@@ -4584,7 +4584,7 @@ function ExeLicensesTab() {
               onChange={(e) => setProductId(e.target.value)}
               className="w-full rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-zinc-700 dark:bg-zinc-800 sm:w-1/2"
             >
-              {EXE_PRODUCTS.map((p) => (
+              {LICENSABLE_EXE_PRODUCTS.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
                 </option>
