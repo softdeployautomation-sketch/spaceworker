@@ -52,6 +52,7 @@ export const GOVERNOR_FEATURES = [
   "cloneSessions",
   "hostedPool",
   "deviceScreenshots",
+  "labRanges",
 ] as const;
 
 export type GovernorFeature = (typeof GOVERNOR_FEATURES)[number];
@@ -330,7 +331,8 @@ export type GovernorCapColumn =
   | "deviceActionsMaxConcurrent"
   | "cloneMaxConcurrent"
   | "hostedPoolSize"
-  | "screenshotCapturesMaxConcurrent";
+  | "screenshotCapturesMaxConcurrent"
+  | "cyberlabFreeMaxConcurrentRanges";
 
 export type GovernorEnabledColumn =
   | "dispatchLightEnabled"
@@ -339,9 +341,10 @@ export type GovernorEnabledColumn =
   | "vantraLinksEnabled"
   | "deviceActionsEnabled"
   | "cloneSessionsEnabled"
-  | "screenshotMonitoringEnabled";
+  | "screenshotMonitoringEnabled"
+  | "cyberlabEnabled";
 
-export type GovernorPerUserColumn = "clonePerUserCap";
+export type GovernorPerUserColumn = "clonePerUserCap" | "cyberlabFreeMaxConcurrentRanges";
 
 /** The AdminSetting columns the registry reads (structural subset). */
 export type GovernorFeatureRow = {
@@ -535,6 +538,38 @@ export const FEATURE_REGISTRY: Record<GovernorFeature, GovernorFeatureDefinition
       db.deviceScreenshot.count({
         where: {
           status: "capturing",
+          ...(scope.userId ? { userId: scope.userId } : {}),
+        },
+      }),
+  },
+  labRanges: {
+    key: "labRanges",
+    // TASK_156 C2a — a lab range is a "live" row while it holds a slot:
+    // provisioning|active. The schema dial (cyberlabFreeMaxConcurrentRanges)
+    // is worded PER USER ("how many lab ranges one user may hold"), so the
+    // per-user check is the real gate; the same dial doubles as the platform
+    // ceiling until C2b (owner infra) adds a global RAM-based one — that makes
+    // the default CONSERVATIVE (never over-admits), never lax. With the
+    // governor off (today's default) only the per-user check applies
+    // (enforceWhenDisabled: false), which is exactly the schema's wording.
+    //
+    // The "live count IS the slot" rule (same as deviceScreenshots): the slot
+    // is released the moment the range leaves provisioning|active — torn_down
+    // or failed — so there is no separate release call to forget. `cyberlabEnabled`
+    // is the lab master switch: paused feature = refused before queueing.
+    label: "Cyber Lab ranges (concurrent runs)",
+    maxColumn: "cyberlabFreeMaxConcurrentRanges",
+    maxDefault: 1,
+    perUserColumn: "cyberlabFreeMaxConcurrentRanges",
+    perUserDefault: 1,
+    enabledColumn: "cyberlabEnabled",
+    pausedReason: "cyberlab_disabled",
+    queueable: true,
+    enforceWhenDisabled: false,
+    liveCount: (scope) =>
+      db.labRange.count({
+        where: {
+          state: { in: ["provisioning", "active"] },
           ...(scope.userId ? { userId: scope.userId } : {}),
         },
       }),

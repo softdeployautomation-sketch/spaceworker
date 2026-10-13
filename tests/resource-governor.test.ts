@@ -121,6 +121,8 @@ let live: {
   hostedDevices: number;
   /** TASK_127: device screen captures in flight (status "capturing"). */
   deviceScreenshots: number;
+  /** TASK_156 C2a: lab ranges in flight (state provisioning|active). */
+  labRanges: number;
 };
 
 beforeEach(() => {
@@ -151,6 +153,8 @@ beforeEach(() => {
     governorSwapHardMb: 1024,
     governorQueueTimeoutSec: 900,
     governorStarvationPromoteMin: 10,
+    cyberlabEnabled: true,
+    cyberlabFreeMaxConcurrentRanges: 1,
   };
   live = {
     light: 0,
@@ -162,6 +166,7 @@ beforeEach(() => {
     clonesByUser: {},
     hostedDevices: 0,
     deviceScreenshots: 0,
+    labRanges: 0,
   };
 });
 
@@ -182,6 +187,8 @@ const fakeDb = {
   // TASK_127: the in-flight screen captures. The "capturing" row IS the slot,
   // so the governor's live count is simply how many exist.
   deviceScreenshot: { count: async () => live.deviceScreenshots },
+  // TASK_156 C2a: a lab range in provisioning|active IS the slot.
+  labRange: { count: async () => live.labRanges },
   governorQueueEntry: {
     create: async (args: DbArgs) => {
       const data = args.data ?? {};
@@ -448,7 +455,8 @@ test("the registry covers every high-RAM consumer, including the clone pair", ()
   );
   // The features that genuinely hold VPS RAM are the queueable ones. TASK_127
   // added `deviceScreenshots`: a capture is a real headless Chromium on THIS box,
-  // so it belongs in exactly this list.
+  // so it belongs in exactly this list. TASK_156 C2a adds `labRanges` (a range
+  // holds a governor slot while provisioning|active).
   assert.deepEqual(
     GOVERNOR_FEATURES.filter((key) => FEATURE_REGISTRY[key].queueable),
     [
@@ -458,6 +466,7 @@ test("the registry covers every high-RAM consumer, including the clone pair", ()
       "cloneSessions",
       "hostedPool",
       "deviceScreenshots",
+      "labRanges",
     ]
   );
   // Its cap is the one the owner tunes from the admin panel.

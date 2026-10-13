@@ -157,10 +157,16 @@ export function CyberLabPanel() {
       )}
 
       <section className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-600 dark:border-zinc-700 dark:text-zinc-300">
-        <p className="font-medium text-zinc-900 dark:text-zinc-100">Not available yet</p>
+        <p className="font-medium text-zinc-900 dark:text-zinc-100">Dry-run first — live ranges come with the lab hosts</p>
         <p className="mt-1">
-          The lab engine (isolated ranges, the abuse sentinel, the evidence chain) is being built. The settings below
-          are the live load envelope your admin controls — they are shown so nothing about the lab’s capacity is hidden.
+          What runs today is a documented <strong>dry-run</strong>: attested-target pre-flight, an isolated range lifecycle with a
+          hard TTL, and a signed, append-only evidence episode — produced from <strong>synthetic</strong> telemetry that is labelled
+          as such in every artefact. No packet leaves the platform and no real host is touched. Live execution on the lab
+          hosts is the next phase and reuses this exact gate → pre-flight → range → evidence chain.
+        </p>
+        <p className="mt-2">
+          Attesting a target is your declaration that you own or are authorised for it — the platform can only verify
+          ownership inside its own lab ranges.
         </p>
       </section>
 

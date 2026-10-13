@@ -1,0 +1,207 @@
+// TASK_156 C2a (PLAN_TASK_156 §7 C2 item 4, §8, §5.2) — the run orchestrator.
+//
+// `startLabRun` is the ONE path that may create a LabRange. Order is the
+// playbook's, and every step is a hard gate, not a suggestion:
+//   1. cyberLabGate — enabled + premium entitlement + current-AUP consent (§12.9).
+//   2. scenario must exist AND be enabled (the allow-list, §6).
+//   3. daily run cap (AdminSetting.cyberlabMaxRunsPerDay).
+//   4. pre-flight: every target must match a FRESH attested LabTarget row;
+//      any refusal writes the LabAbuseReport and refuses the run (§5.2).
+//   5. createLabRange(pending) → governor requestSlot("labRanges") →
+//      provision → activate with the HARD TTL (cyberlabFreeMaxRangeMinutes).
+//   6. dry-run execute: synthetic telemetry, guarded so it can only mention the
+//      pre-flight-attested targets (lib/lab/runner.ts).
+//   7. createEpisode: signed manifest, append-only row (monthly cap enforced).
+//   8. teardown: beginTeardown → completeTeardown(verified). Anything that
+//      throws between 5 and 8 lands the range in `failed` with the error — a
+//      range NEVER dangles in a live state after the run attempt.
+//
+// HONEST LIMIT: mode is "dry-run" — the evidence artefacts are SYNTHETIC and
+// say so in their own content; nothing here touches a real host. Live
+// execution is the owner-infra phase (C2b) and will reuse this same
+// gate → preflight → range → episode chain.
+//
+// Governor wiring: the slot's live-count IS the LabRange state (see the
+// labRanges registry entry) — reaching torn_down/failed releases it, so there
+// is no separate release call to forget. A queued (not granted) decision is
+// refused to the caller with the position; C2a does not block-wait.
+
+import "server-only";
+
+import { requestSlot } from "@/lib/resource-governor";
+import { getAdminSettings } from "@/lib/admin-settings";
+import { db } from "@/lib/db";
+
+import { cyberLabGate } from "./gate";
+import { createEpisode } from "./episode";
+import type { EvidenceArtefact } from "./evidence";
+import { activateRange, beginTeardown, completeTeardown, createLabRange, failRange, provisionRange } from "./range";
+import { generateSmokeTelemetry, type TimelineEntry } from "./runner";
+import { getScenarioBySlug, SMOKE_SCENARIO_SLUG } from "./scenarios";
+import { preflightRunTargets, type NormalizedTarget, type PreflightInput } from "./targets";
+
+/** A run the lab refused, with the machine-readable reason in the message. */
+export class LabRunRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LabRunRefusedError";
+  }
+}
+
+export interface LabRunResult {
+  rangeId: string;
+  episodeId: string;
+  scenarioSlug: string;
+  mode: "dry-run";
+  targets: NormalizedTarget[];
+  techniques: string[];
+  telemetrySignatures: string[];
+  timeline: TimelineEntry[];
+  /** The artefacts the signed manifest covers (incl. timeline.json). */
+  artefacts: EvidenceArtefact[];
+  signedHash: string | null;
+  verified: boolean;
+}
+
+/**
+ * Start (and, in C2a, complete) one dry-run. Synchronous by design: a dry-run
+ * has nothing to wait for, so the range is provisioned, executed, evidenced
+ * and torn down within the call — the TTL exists for the live phase (C2b).
+ */
+export async function startLabRun(params: {
+  userId: string;
+  scenarioSlug?: string;
+  targets: PreflightInput[];
+  sourceIp?: string | null;
+}): Promise<LabRunResult> {
+  // 1. The §12.9 door: disabled master switch, missing entitlement or stale
+  //    consent all refuse here, server-side, before anything else happens.
+  const gate = await cyberLabGate(params.userId);
+  if (!gate.open) {
+    const why = !gate.enabled ? "disabled" : !gate.entitled ? "not_entitled" : "consent_missing";
+    throw new LabRunRefusedError(`lab_gate_closed (${why})`);
+  }
+
+  // 2. Allow-listed scenario only.
+  const slug = params.scenarioSlug ?? SMOKE_SCENARIO_SLUG;
+  const scenario = await getScenarioBySlug(slug);
+  if (!scenario || !scenario.enabled) throw new LabRunRefusedError(`scenario_not_allowed (${slug})`);
+
+  const settings = await getAdminSettings();
+  if (params.targets.length === 0) throw new LabRunRefusedError("no_targets");
+  if (params.targets.length > settings.cyberlabMaxTargetsPerScenario) {
+    throw new LabRunRefusedError(`too_many_targets (${params.targets.length}/${settings.cyberlabMaxTargetsPerScenario})`);
+  }
+  // The smoke runner addresses its targets as lab hosts; two host/IP targets
+  // are required. (Live scenarios will carry their own target requirements.)
+  if (slug === SMOKE_SCENARIO_SLUG && (params.targets.length !== 2 || params.targets.some((t) => t.kind !== "host"))) {
+    throw new LabRunRefusedError("smoke_scenario_needs_two_host_targets");
+  }
+
+  // 3. Daily run cap (counts every range this user started today).
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  const runsToday = await db.labRange.count({ where: { userId: params.userId, createdAt: { gte: dayStart } } });
+  if (runsToday >= settings.cyberlabMaxRunsPerDay) {
+    throw new LabRunRefusedError(`daily_run_cap (${runsToday}/${settings.cyberlabMaxRunsPerDay})`);
+  }
+
+  // 5a. The range row first — the governor slot and the pre-flight audit both
+  //     hang off its id.
+  const range = await createLabRange({
+    userId: params.userId,
+    scenarioId: scenario.id,
+    consentId: gate.consent?.id ?? null,
+  });
+
+  try {
+    // 5b. Admission through the ONE governor (never a second authority).
+    const slot = await requestSlot("labRanges", { userId: params.userId, ref: range.id });
+    if (slot.status !== "granted") {
+      throw new LabRunRefusedError(
+        slot.status === "queued" ? `lab_range_capacity (position ${slot.position})` : `lab_range_refused (${slot.reason})`,
+      );
+    }
+
+    // 4. Pre-flight AFTER the range exists so range-bound rows and the audit
+    //    trail have a rangeId; any refusal is recorded and rethrown.
+    const targets = await preflightRunTargets({
+      userId: params.userId,
+      rangeId: range.id,
+      targets: params.targets,
+      sourceIp: params.sourceIp ?? null,
+    });
+
+    // 5c. Lifecycle with the hard TTL stamped on activation.
+    await provisionRange(range.id);
+    await activateRange(range.id, settings.cyberlabFreeMaxRangeMinutes);
+
+    // 6. Dry-run execute (synthetic, attested-targets-guarded).
+    const startedAt = new Date();
+    const endedAt = new Date();
+    const smoke = generateSmokeTelemetry({
+      rangeId: range.id,
+      scenarioSlug: slug,
+      targets: targets.map((t) => t.value),
+      startedAt,
+      endedAt,
+    });
+    const artefacts: EvidenceArtefact[] = [
+      ...smoke.artefacts,
+      { path: "timeline.json", content: JSON.stringify({ mode: "dry-run", scenarioSlug: slug, entries: smoke.timeline }, null, 2) },
+    ];
+
+    // 7. Signed, append-only episode (monthly cap enforced inside).
+    const episode = await createEpisode({
+      rangeId: range.id,
+      userId: params.userId,
+      scenarioSlug: slug,
+      mode: "dry-run",
+      techniqueIds: smoke.techniques,
+      telemetrySignatures: smoke.telemetrySignatures,
+      timeline: smoke.timeline,
+      artefacts,
+      startedAt,
+      endedAt,
+      outcome: "completed_dry_run",
+    });
+
+    // 8. Verified teardown — the only acceptable exit besides `failed`.
+    //    C2a verification basis (honest): the dry-run provisions NOTHING
+    //    outside this database, and the runner has no I/O, so teardown is
+    //    proven by the state transition completing with the range's own row
+    //    as the whole inventory. Live ranges (C2b) verify against real hosts.
+    await beginTeardown(range.id);
+    await completeTeardown(range.id, true);
+
+    return {
+      rangeId: range.id,
+      episodeId: episode.id,
+      scenarioSlug: slug,
+      mode: "dry-run",
+      targets,
+      techniques: smoke.techniques,
+      telemetrySignatures: smoke.telemetrySignatures,
+      timeline: smoke.timeline,
+      artefacts,
+      signedHash: episode.signedHash,
+      verified: true,
+    };
+  } catch (err) {
+    // A range must never dangle in a live state after a failed attempt.
+    await ensureRangeFailed(range.id, err);
+    throw err;
+  }
+}
+
+/** Best-effort: mark a non-terminal range `failed` (never touches terminal states). */
+async function ensureRangeFailed(rangeId: string, error: unknown): Promise<void> {
+  const range = await db.labRange.findUnique({ where: { id: rangeId } });
+  if (!range || range.state === "failed" || range.state === "torn_down") return;
+  try {
+    await failRange(rangeId, error instanceof Error ? error.message : String(error));
+  } catch {
+    // A concurrent transition won; the range is not dangling either way.
+  }
+}
+

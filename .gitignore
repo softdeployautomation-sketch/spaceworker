@@ -30,3 +30,5 @@ engine-dist/
 # defence in depth for older checkouts and for local dev.
 browser-profiles/
 browser-sessions-tmp/
+# TASK_156 C2a — evidence bundles written by `npm run lab:dry-run` (owner-local).
+.cyberlab-runs/
