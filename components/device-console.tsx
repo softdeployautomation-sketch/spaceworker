@@ -329,6 +329,26 @@ function isCloneLiveStatus(status: string): boolean {
   );
 }
 
+// TASK_204 — can the Open button actually produce a session right now?
+// `ready` counts: by the time a clone is `ready`, `validateInjected` has
+// PASSED (cookies are in) — the only thing between it and a live browser is
+// the `stepLaunch` call that `openCloneSession` now makes on the user's behalf.
+// `launching` counts too (the launch is already in flight; opening just watches
+// it land). Anything earlier has no injected profile yet, and terminal states
+// are dead. NOTE: this is a *clickability* gate, not a permission gate — the
+// server remains the only real authority.
+function canOpenClone(status: string): boolean {
+  return status === "active" || status === "ready" || status === "launching";
+}
+
+// Why the button is (not) clickable, said in human words for the tooltip.
+function cloneOpenTitle(status: string): string {
+  if (status === "active") return "Open the cloned browser in a new tab";
+  if (status === "ready") return "Launch the browser and open it — your cookies are already in";
+  if (status === "launching") return "The browser is starting — open it now and watch it come up";
+  return "The session opens once the browser is ready";
+}
+
 function isCloneTerminalStatus(status: string): boolean {
   return (
     status === "expired_idle" ||
@@ -641,6 +661,10 @@ export function DeviceConsole({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // TASK_204 S3 — clone ids the poll has already auto-kicked, so a stalled
+  // `ready` clone is driven once (the 12-step loop inside driveCloneLifecycle
+  // does the rest) instead of being re-kicked every 15 s tick forever.
+  const healKickedRef = useRef<Set<string>>(new Set());
 
   // TASK_123 (B12) — keep-awake + wake-availability read model.
   const [powerView, setPowerView] = useState<PowerView | null>(null);
@@ -715,6 +739,33 @@ export function DeviceConsole({
         const rows = Array.isArray(data.clones) ? data.clones : [];
         setClones(rows.filter((r: CloneRow) => r && r.status !== "deleted"));
         setClonesLoaded(true);
+        // TASK_204 S3 — self-heal. Once a clone is `ready`, the profile
+        // (cookies) is injected — it is a *real, usable* clone; the only thing
+        // missing is the hosted browser session, which only stepLaunch writes.
+        // The old one-shot driveCloneLifecycle bailed at `ready` (browsers not
+        // yet installed) and nothing ever retried, so clones sat "Almost
+        // ready" forever. Now the poll kicks the launch once per stalled
+        // clone: `ready` (any age — the user is waiting on this exact thing)
+        // or `launching` with no session and no movement for 3 minutes (a
+        // launch that died mid-flight; withCloneLock serialises this against
+        // any live launch so we cannot double-start one). One kick per id —
+        // advance is idempotent and the 12-step loop finishes the job. NOTE:
+        // this runs inside useCallback, not an effect body, so the
+        // set-state-in-effect suppression above does not cover it and does
+        // not need to.
+        for (const r of rows as CloneRow[]) {
+          if (!r || r.terminal) continue;
+          if (r.session) continue; // already has a session — nothing to heal
+          const stalledReady = r.status === "ready";
+          const stalledLaunch =
+            r.status === "launching" &&
+            !r.session &&
+            Date.now() - Date.parse(r.updatedAt || "") > 3 * 60_000;
+          if (!stalledReady && !stalledLaunch) continue;
+          if (healKickedRef.current.has(r.id)) continue;
+          healKickedRef.current.add(r.id);
+          void driveCloneLifecycle(r.id);
+        }
       }
       if (e.ok) {
         const data = await e.json().catch(() => ({}));
@@ -736,6 +787,14 @@ export function DeviceConsole({
     } catch {
       // non-fatal — tabs render with what we have
     }
+  // TASK_204: `driveCloneLifecycle` is a plain function declaration later in
+  // this component body — it is hoisted, so the self-heal call inside works,
+  // but adding it to the deps would defeat the memoisation (a new identity
+  // every render → loadToolData recreated → the load effect re-fires). The
+  // function it calls (pollClone) is a stable useCallback and the heal itself
+  // is one-shot per clone id via healKickedRef, so there is nothing actually
+  // stale here.
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- see note above
   }, [deviceId]);
 
   // Task 111 — single-clone poll used while a clone is mid-flight so each
@@ -1479,9 +1538,32 @@ export function DeviceConsole({
     setCloneBusy(`open-${cloneId}`);
     setCloneError("");
     try {
+      // TASK_204 — clicking Open on a `ready` clone used to 404: the hosted
+      // session row (and its viewUrl) is only written by stepLaunch, and
+      // NOTHING was advancing `ready` after the one-shot driveCloneLifecycle
+      // bailed. So the click itself drives the pipeline: advance (which at
+      // `ready` = launch the browser) → poll → open once `active`.
+      // `launching` is safe to advance too: withCloneLock serialises this call
+      // behind the in-flight launch, which then sees `active`. We never advance
+      // earlier states here (IN_FLIGHT guard would fail a mid-transfer clone)
+      // — the button is disabled for those anyway (canOpenClone).
+      const row = clones.find((r) => r.id === cloneId) ?? null;
+      if (row && row.status !== "active" && canOpenClone(row.status)) {
+        await driveCloneLifecycle(cloneId);
+      }
       const res = await fetch(`/api/clones/${cloneId}/session`);
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error("The session is not ready yet — try again in a moment.");
+      if (!res.ok) {
+        // If we just drove a launch that the governor queued (202) or paused,
+        // say the honest thing rather than a generic "not ready".
+        const after = clones.find((r) => r.id === cloneId) ?? null;
+        const queued = after?.queuePosition !== null && after?.queuePosition !== undefined;
+        throw new Error(
+          queued
+            ? "The browser is waiting for a free slot — it starts on its own."
+            : "The session is not ready yet — try again in a moment.",
+        );
+      }
       const url = typeof data.openUrl === "string" && data.openUrl ? data.openUrl : `/clone/${cloneId}`;
       window.open(url, "_blank", "noopener");
     } catch (e) {
@@ -2455,6 +2537,12 @@ function ScreenMonitoringCard({
 
 function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
+  // TASK_204 S4 — the user's OWN saved browser profiles, derived from their
+  // clone history. `profileName` is per-job here (lib/clone.ts launches each
+  // clone in its own profile dir named by this string), so a name the user
+  // picks here is "a profile for that user" — the picker just makes past
+  // names one click instead of re-typing. Sorted by most-recent first, deduped.
+  const profileOptions = Array.from(new Set(props.clones.map((r) => r.profileName).filter((n): n is string => !!n)));
   return (
     <div className="space-y-4">
       {props.err && <p className="text-sm text-red-500">{props.err}</p>}
@@ -2466,7 +2554,7 @@ function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg
         steps={props.setupSteps}
         onSetup={props.onSetup}
       />
-      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} egress={props.egress} setEgress={props.setEgress} sessionMode={props.sessionMode} setSessionMode={props.setSessionMode} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
+      <CloneStartCard browser={props.browser} setBrowser={props.setBrowser} profile={props.profile} setProfile={props.setProfile} profileOptions={profileOptions} egress={props.egress} setEgress={props.setEgress} sessionMode={props.sessionMode} setSessionMode={props.setSessionMode} premium={props.premium} premiumLoaded={props.premiumLoaded} busy={props.busy} onStart={props.onStart} setup={props.setup} />
       <ProfileStateCard
         busy={props.busy}
         result={props.stateSync}
@@ -2621,7 +2709,8 @@ function CloneHistoryRow(props: { row: CloneRow; busy: string; onOpen: (id: stri
           <>
             <button
               onClick={() => onOpen(row.id)}
-              disabled={row.status !== "active" || busy === `open-${row.id}`}
+              disabled={!canOpenClone(row.status) || busy === `open-${row.id}`}
+              title={cloneOpenTitle(row.status)}
               className="rounded border border-border px-2 py-1 text-xs text-fg-muted transition-colors hover:text-fg disabled:pointer-events-none disabled:opacity-50"
             >
               Open
@@ -2689,8 +2778,8 @@ function CloneLiveCard(props: { row: CloneRow; busy: string; premium: boolean; o
       <div className="mt-2 flex flex-wrap gap-2">
         <button
           onClick={() => onOpen(row.id)}
-          disabled={row.status !== "active" || busy === `open-${row.id}`}
-          title={row.status === "active" ? "Open the cloned browser in a new tab" : "The session opens once the browser is ready"}
+          disabled={!canOpenClone(row.status) || busy === `open-${row.id}`}
+          title={cloneOpenTitle(row.status)}
           className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:pointer-events-none disabled:opacity-50"
         >
           {busy === `open-${row.id}` ? "Opening…" : "Open session"}
@@ -2816,8 +2905,8 @@ function CloneSetupCard(props: {
   );
 }
 
-function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
-  const { browser, setBrowser, profile, setProfile, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
+function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; profileOptions: string[]; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+  const { browser, setBrowser, profile, setProfile, profileOptions, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
   // /api/entitlements answers — before that the direct button renders
@@ -2871,13 +2960,31 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
         </span>
         <label className="block text-xs text-fg-muted">
           Profile (optional)
+          {/* TASK_204 S4 — combobox: pick one of this account's saved profile
+              names (one click = "open session under that profile") or type a
+              new name to create a fresh profile. The server already routes it
+              by name — profile → job.profileName → stepLaunch launches the
+              browser in that profile dir — so this is pure discoverability on
+              top of a routing that already worked. */}
           <input
             value={profile}
             onChange={(e) => setProfile(e.target.value)}
             placeholder="Default"
             maxLength={64}
+            list="clone-profile-options"
+            autoComplete="off"
             className="mt-1 w-full rounded-lg border border-border bg-bg-elevated px-2 py-1.5 text-sm text-fg placeholder:text-fg-muted/70 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/30"
           />
+          <datalist id="clone-profile-options">
+            {profileOptions.map((name) => (
+              <option key={name} value={name} />
+            ))}
+          </datalist>
+          {profileOptions.length > 0 && (
+            <span className="mt-1 block text-[11px] text-fg-muted">
+              Your profiles: {profileOptions.join(", ")} — type a new name for a new one
+            </span>
+          )}
         </label>
         <span className="block text-xs text-fg-muted">
           Network
