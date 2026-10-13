@@ -3,18 +3,17 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CyberLabAup } from "@/components/cyberlab-aup";
+import { CyberLabConsole } from "@/components/cyberlab-console";
 import { ModuleToolLockCard } from "@/components/module-tool-lock";
 
-// TASK_156 C1 — the Cyber Lab tab, now carrying the REAL gate (§12.9) and the C0
-// AUP onboarding (§7 C0).
+// TASK_156 C1 — the Cyber Lab tab, now carrying the REAL gate (§12.9), the C0
+// AUP onboarding (§7 C0), and the C2a console (§7 C2 item 5).
 //
-// Honest and deliberately small: the lab engine is not built (§7 C2+), so this
-// renders the true state — the platform switch, the user's premium `cyberlab`
-// entitlement, whether they have accepted the current AUP, and the load envelope
-// the owner can already tune in admin. It is the ONE door (§12.9): there is no
-// staff badge and no staff gate. The panel exists so the menu and dashboard card
-// point somewhere real, the AUP can be accepted before anything runs, and the load
-// numbers the governor will eventually queue against are visible from day one.
+// Honest and deliberately small: the gate state, the entitlement, the AUP and
+// the load envelope are all real reads. Behind `gate.open` the C2a console
+// offers the ONE dry-run scenario against attested targets — synthetic
+// telemetry, signed evidence episode, no live host until C2b (owner infra).
+// It is the ONE door (§12.9): there is no staff badge and no staff gate.
 //
 // A newly-accepted AUP is reflected by re-reading the status endpoint (the gate
 // state is server-authoritative — the client never assumes acceptance succeeded).
@@ -113,6 +112,7 @@ export function CyberLabPanel() {
 
   // House pattern (cf. components/hosting-panel.tsx): fire-and-forget on mount.
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- every setState in load sits behind the fetch await, never synchronous (same accepted pattern as components/overview-stats-row.tsx)
     void load();
   }, [load]);
 
@@ -169,6 +169,13 @@ export function CyberLabPanel() {
           ownership inside its own lab ranges.
         </p>
       </section>
+
+      {/* TASK_156 C2a item 5 — the interactive console (scenario list +
+          attested targets + Start dry-run + run history + signed episode
+          viewer). Rendered ONLY when the server-side gate is fully open
+          (enabled && entitled && consented) — before the AUP is accepted
+          there is no Start button to click. */}
+      {status.gate.open && <CyberLabConsole onChanged={load} />}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {CAP_ROWS.map((row) => (
