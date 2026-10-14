@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { CyberLabAup } from "@/components/cyberlab-aup";
-import { CyberLabConsole } from "@/components/cyberlab-console";
 import { ModuleToolLockCard } from "@/components/module-tool-lock";
 
 // TASK_156 C1 — the Cyber Lab tab, now carrying the REAL gate (§12.9), the C0
@@ -170,12 +169,23 @@ export function CyberLabPanel() {
         </p>
       </section>
 
-      {/* TASK_156 C2a item 5 — the interactive console (scenario list +
-          attested targets + Start dry-run + run history + signed episode
-          viewer). Rendered ONLY when the server-side gate is fully open
-          (enabled && entitled && consented) — before the AUP is accepted
-          there is no Start button to click. */}
-      {status.gate.open && <CyberLabConsole onChanged={load} />}
+      {/* TASK_156B UI-1 — the dashboard keeps a LAUNCHER card (PLAN §3: the
+          interactive console moved to its own top-level /cyberlab section).
+          The launcher appears ONLY when the server-side gate is fully open
+          (enabled && entitled && consented) — a user who hasn't accepted the
+          AUP never gets a door. The gate itself is still re-checked on every
+          /api/cyberlab/* call, so this is UX, never the security boundary. */}
+      {status.gate.open && (
+        <a
+          href="/cyberlab"
+          className="block rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900 transition-colors hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200 dark:hover:bg-emerald-900"
+        >
+          <span className="font-medium">Open the Operation Console →</span>
+          <span className="mt-0.5 block text-xs opacity-80">
+            Scenarios, attested targets, the radial-rings console and signed evidence episodes — in its own section.
+          </span>
+        </a>
+      )}
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {CAP_ROWS.map((row) => (

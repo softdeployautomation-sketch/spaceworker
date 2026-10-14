@@ -2,6 +2,110 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
+/* ── TASK_156B UI-1 — the Cyber Lab section theme (owner gate 3 approved:
+   the lab MAY diverge from the dashboard palette). Everything below is scoped
+   to `.lab-ops`: the section ships its OWN always-dark SOC canvas regardless
+   of the Night Studio light/dark toggle — entering /cyberlab should feel like
+   entering another place. Palette is deliberately NOT the warm brand amber:
+   thin cyan/teal strokes on near-black, glow only on LIVE elements. */
+.lab-ops {
+  --lab-bg: #070c10;
+  --lab-bg-elev: #0c141b;
+  --lab-panel: #0f1922;
+  --lab-line: #1b2b38;
+  --lab-line-bright: #274052;
+  --lab-text: #d7e7ef;
+  --lab-muted: #6d8794;
+  --lab-accent: #35d0ba;      /* sweep + live elements */
+  --lab-accent-dim: rgba(53, 208, 186, 0.16);
+  --lab-amber: #e8b04a;       /* warnings / dry-run chips */
+  --lab-red: #ff5d5d;         /* detections */
+  --lab-green: #4ade80;       /* verified signatures / teardown */
+  --lab-font-mono: var(--font-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  background-color: var(--lab-bg);
+  color: var(--lab-text);
+}
+
+.lab-ops .lab-panel {
+  background: var(--lab-panel);
+  border: 1px solid var(--lab-line);
+}
+
+.lab-ops .lab-chip {
+  border: 1px solid var(--lab-line-bright);
+  background: var(--lab-bg-elev);
+  color: var(--lab-muted);
+}
+
+/* The honest watermark on every panel (owner gate 2 — wording approved). */
+.lab-ops .lab-watermark {
+  font-family: var(--lab-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--lab-muted);
+  opacity: 0.75;
+  user-select: none;
+}
+
+.lab-ops .lab-glow-accent { box-shadow: 0 0 12px rgba(53, 208, 186, 0.45); }
+.lab-ops .lab-glow-red { box-shadow: 0 0 12px rgba(255, 93, 93, 0.55); }
+
+/* Radar sweep: rotation of the beam wedge. Only mounted while a run's events
+   are actually playing (the console unmounts it otherwise), so a still screen
+   is honest "nothing is running" instead of decorative motion. */
+@keyframes labSweep {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.lab-ops .lab-sweep {
+  transform-origin: 50% 50%;
+  animation: labSweep 4s linear infinite;
+}
+
+/* Detection pulse at a node — fires once per real detection event (keyed by
+   React on the event's real `at`, never a free-running loop). */
+@keyframes labPulse {
+  from { opacity: 0.9; transform: scale(0.4); }
+  to { opacity: 0; transform: scale(2.6); }
+}
+.lab-ops .lab-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: labPulse 1.2s ease-out forwards;
+}
+
+/* Arc "flow" dashes travelling from attacker-side to target-side of a real
+   flow event. */
+@keyframes labFlow {
+  to { stroke-dashoffset: -24; }
+}
+.lab-ops .lab-arc {
+  stroke-dasharray: 6 6;
+  animation: labFlow 0.9s linear infinite;
+}
+
+/* Node entrance + feed-row entrance (presentation of a real event). */
+@keyframes labBlipIn {
+  from { opacity: 0; transform: scale(0.2); }
+  to { opacity: 1; transform: scale(1); }
+}
+.lab-ops .lab-blip {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: labBlipIn 0.35s ease-out;
+}
+
+/* PLAN §5 — reduced motion kills every sweep/arc/pulse/entrance while keeping
+   state changes (colour, text, presence of nodes) fully visible. */
+@media (prefers-reduced-motion: reduce) {
+  .lab-ops *,
+  .lab-ops *::before,
+  .lab-ops *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
 /* "Night Studio" — warm amber lamp-glow accent, replacing the old generic
    indigo. Kept the "brand" scale name so every existing bg-brand-600 /
    text-brand-600 / hover:bg-brand-700 class across the app repoints to the
