@@ -57,3 +57,10 @@ _(entries appended after every slice — dated, with proof)_
 - Zero file overlap with the other agent's `spaceworker` hosting work; `main` is now 6 ahead of `origin/main` (C2a, C2a-console, clone fix, C2b×2, UI-1).
 - NEXT (owner decision): (a) `prisma db push` + deploy the whole cyberlab line to VPS, or (b) continue UI-1 to S7 Episode Replay / tool deep-links (mailer/extractor/RMM) per PLAN §3. No further UI-1 build step exists until an owner gate is answered.
 
+### 2026-10-14 — Deploy HANDED OFF (owner redirected run+deploy to the deploy owner; I do NOT deploy)
+- Owner approved the deploy but redirected execution to the agent who owns the `spaceworker` deploy flow. **I ran NO rsync / NO db push / NO restart / NO push.** Cyberlab stays local on `sw-lab main` @ `3765ab4` (local-only, unpushed; `origin/main` has 0 cyberlab files).
+- Re-verified live state (real ssh/psql, 2026-10-14): VPS is still **C1 only** — no `app/cyberlab/`, no ops-console, `lib/lab/` = aup/catalog-seed/consent/gate/research/tools, `app/api/cyberlab/` = consent+status; `spaceworker.service` active, `BUILD_ID=TPjU5_KQzyOIG3DELTbt2`. Live `LabTarget` has **no `sourceDeviceId`** ⇒ `prisma db push` is the hard pre-rsync step.
+- Wrote **`HANDOFF_CYBERLAB_UI1_DEPLOY.md`** (committed) for the deploy owner: the biggest gotcha is that the code is **not in the `spaceworker` checkout** — deploy must run with `LOCAL_ROOT=/Users/mikeolab/sw-lab` (or push+merge first), the exact cyberlab-only file list (clone-fix commit `3e641ba` excluded), the `db push` prerequisite, shared-file coordination note vs task-205, and post-deploy verification steps.
+- **NEXT (my lane, per owner): plan the next cyberlab task** — see the new planning doc (S7 Episode Replay + tool deep-links). No code until that plan is approved.
+
+
