@@ -39,6 +39,7 @@ import { activateRange, beginTeardown, completeTeardown, createLabRange, failRan
 import { generateSmokeTelemetry, type TimelineEntry } from "./runner";
 import { getScenarioBySlug, SMOKE_SCENARIO_SLUG } from "./scenarios";
 import { preflightRunTargets, type NormalizedTarget, type PreflightInput } from "./targets";
+import { collectVictimSensor } from "./victim-sensor";
 
 /** A run the lab refused, with the machine-readable reason in the message. */
 export class LabRunRefusedError extends Error {
@@ -61,6 +62,15 @@ export interface LabRunResult {
   artefacts: EvidenceArtefact[];
   signedHash: string | null;
   verified: boolean;
+  /**
+   * C2b victim-sensor summary when the run named the user's own devices
+   * (null = no victim devices requested / dry-run attack only).
+   */
+  victim: {
+    deviceCount: number;
+    window: { from: string; to: string };
+    counts: { heartbeats: number; audit: number; jobs: number; actions: number };
+  } | null;
 }
 
 /**
@@ -73,6 +83,13 @@ export async function startLabRun(params: {
   scenarioSlug?: string;
   targets: PreflightInput[];
   sourceIp?: string | null;
+  /**
+   * C2b (§13 BYOT) — the user's OWN devices acting as the victim sensor. When
+   * given, their agent rows for the run window join the signed evidence. A
+   * device this user cannot read is a §5.2 refusal (LabAbuseReport + 403), not
+   * a silent skip.
+   */
+  victimDeviceIds?: string[];
 }): Promise<LabRunResult> {
   // 1. The §12.9 door: disabled master switch, missing entitlement or stale
   //    consent all refuse here, server-side, before anything else happens.
@@ -146,10 +163,36 @@ export async function startLabRun(params: {
       startedAt,
       endedAt,
     });
+    // 6b. C2b victim sensor (§13): the user's OWN devices' agent rows for this
+    //     run's window become REAL evidence — same manifest, same signature.
+    //     A refusal here (device not readable by this user) fails the range and
+    //     rethrows; the abuse report is already written by the sensor module.
+    //     Collected BEFORE the artefacts so timeline.json and the stored episode
+    //     timeline cover the same entries (they must never disagree).
+    let victim: LabRunResult["victim"] = null;
+    let victimEnvelope: Record<string, unknown> | null = null;
+    if (params.victimDeviceIds && params.victimDeviceIds.length > 0) {
+      const sensor = await collectVictimSensor({
+        userId: params.userId,
+        rangeId: range.id,
+        deviceIds: params.victimDeviceIds,
+        startedAt,
+        endedAt,
+      });
+      smoke.timeline.push(...sensor.timelineEntries);
+      victim = sensor.summary;
+      victimEnvelope = sensor.envelope as unknown as Record<string, unknown>;
+    }
+
     const artefacts: EvidenceArtefact[] = [
       ...smoke.artefacts,
       { path: "timeline.json", content: JSON.stringify({ mode: "dry-run", scenarioSlug: slug, entries: smoke.timeline }, null, 2) },
     ];
+    if (victimEnvelope !== null) {
+      // The manifest hashes the artefact bytes; the episode timeline Json stores
+      // the same envelope object — both views of one truth.
+      artefacts.push({ path: "victim/agent-sensor.json", content: JSON.stringify(victimEnvelope, null, 2) });
+    }
 
     // 7. Signed, append-only episode (monthly cap enforced inside).
     const episode = await createEpisode({
@@ -161,6 +204,7 @@ export async function startLabRun(params: {
       telemetrySignatures: smoke.telemetrySignatures,
       timeline: smoke.timeline,
       artefacts,
+      victim: victimEnvelope,
       startedAt,
       endedAt,
       outcome: "completed_dry_run",
@@ -186,6 +230,7 @@ export async function startLabRun(params: {
       artefacts,
       signedHash: episode.signedHash,
       verified: true,
+      victim,
     };
   } catch (err) {
     // A range must never dangle in a live state after a failed attempt.

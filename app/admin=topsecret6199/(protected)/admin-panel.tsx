@@ -6,6 +6,7 @@ import { useConfirm } from "@/components/confirm-provider";
 import { ALL_PRODUCTS, EXE_PRODUCTS, LICENSABLE_EXE_PRODUCTS, WALLET_TOPUP_PRODUCT_ID } from "@/lib/products";
 import { copyToClipboard } from "@/lib/clipboard";
 import { ResearchTab } from "@/components/admin-research-view";
+import { LabRunsTab } from "@/components/admin-lab-runs-view";
 import PlatformAccountsPanel from "@/components/admin/platform-accounts-panel";
 import DomainsPanel from "@/components/admin/domains-panel";
 import SupportQueuePanel from "@/components/admin/support-queue-panel";
@@ -100,7 +101,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "labruns" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -129,6 +130,9 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // every LabToolCatalog row. Sits right after Infrastructure because that is
   // where the Cyber Lab's admin dials live.
   { id: "research", label: "Research" },
+  // TASK_156B C2b §13.3 — ALL lab runs across users + the §5.2 refusals beside
+  // them; the attack/defence trace the owner asked for ("all should be traceable").
+  { id: "labruns", label: "Lab Runs" },
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
@@ -264,6 +268,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
         {tab === "research" && <ResearchTab />}
+        {tab === "labruns" && <LabRunsTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}

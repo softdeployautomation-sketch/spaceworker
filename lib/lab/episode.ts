@@ -45,6 +45,12 @@ export interface EpisodeWrite {
   timeline: TimelineEntry[];
   /** Raw artefacts of the run. The manifest hashes their exact bytes. */
   artefacts: EvidenceArtefact[];
+  /**
+   * C2b — the victim-sensor envelope, stored INSIDE the timeline Json (same
+   * additive trick mode/scenarioSlug use) so the defence view can show what the
+   * victim's own agent recorded, without a schema change.
+   */
+  victim?: Record<string, unknown> | null;
   startedAt: Date;
   endedAt: Date;
   outcome?: string;
@@ -79,7 +85,12 @@ export async function createEpisode(write: EpisodeWrite) {
       userId: write.userId,
       startedAt: write.startedAt,
       endedAt: write.endedAt,
-      timeline: { mode: write.mode, scenarioSlug: write.scenarioSlug, entries: write.timeline } as unknown as Prisma.InputJsonValue,
+      timeline: {
+        mode: write.mode,
+        scenarioSlug: write.scenarioSlug,
+        entries: write.timeline,
+        ...(write.victim ? { victim: write.victim } : {}),
+      } as unknown as Prisma.InputJsonValue,
       techniques: write.techniqueIds,
       telemetrySignatures: write.telemetrySignatures,
       outcome: write.outcome ?? write.mode,

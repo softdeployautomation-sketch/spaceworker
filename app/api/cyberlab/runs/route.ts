@@ -7,6 +7,7 @@ import { startLabRun, LabRunRefusedError } from "@/lib/lab/engine";
 import { EpisodeCapError } from "@/lib/lab/episode";
 import { RangeTransitionError } from "@/lib/lab/range";
 import { TargetRefusedError } from "@/lib/lab/targets";
+import { VictimDeviceRefusedError } from "@/lib/lab/victim-sensor";
 import { moduleToolsDenied } from "@/lib/module-gate";
 import { getCurrentUser } from "@/lib/session-user";
 
@@ -24,6 +25,10 @@ const StartBody = z.object({
     .array(z.object({ kind: z.enum(["host", "network", "url", "domain", "email"]), value: z.string().min(1).max(512) }))
     .min(1)
     .max(32),
+  // C2b (§13 BYOT) — the caller's OWN device ids acting as the victim sensor.
+  // The server never trusts these as an ownership claim: the sensor's userId-
+  // scoped query decides readability and a miss is a §5.2 refusal (403).
+  victimDeviceIds: z.array(z.string().min(1).max(64)).max(8).optional(),
 });
 
 export async function POST(req: Request) {
@@ -41,6 +46,7 @@ export async function POST(req: Request) {
       scenarioSlug: parsed.data.scenarioSlug,
       targets: parsed.data.targets,
       sourceIp: clientIp(req),
+      victimDeviceIds: parsed.data.victimDeviceIds,
     });
     return NextResponse.json({
       ok: true,
@@ -54,10 +60,17 @@ export async function POST(req: Request) {
       timeline: result.timeline,
       signedHash: result.signedHash,
       verified: result.verified,
+      victim: result.victim,
     });
   } catch (err) {
     if (err instanceof TargetRefusedError) {
       return NextResponse.json({ error: err.message, issues: err.issues }, { status: 403 });
+    }
+    if (err instanceof VictimDeviceRefusedError) {
+      // The §5.2 report is already written by the sensor; the caller just gets
+      // the honest refusal (never "the device wasn't found" — that would leak
+      // whether an id exists on another account).
+      return NextResponse.json({ error: err.message, missing: err.missing }, { status: 403 });
     }
     if (err instanceof LabRunRefusedError) {
       return NextResponse.json({ error: err.message }, { status: 409 });
