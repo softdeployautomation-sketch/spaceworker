@@ -3418,6 +3418,12 @@ model LabTarget {
   value         String
   attestedAt    DateTime @default(now())
   attestationId String?
+  // TASK_156B C2b (PLAN §13.5) — which of the user's OWN Device rows this
+  // attested address came from ("pick from your devices"). Nullable: targets
+  // may also be typed by hand (a UTM guest, a web app they own). Validated at
+  // attest time (owner match, not hosted, not removed) — never trusted from
+  // the client. Pure traceability; nothing in pre-flight depends on it.
+  sourceDeviceId String?
   createdAt     DateTime @default(now())
 
   @@unique([userId, kind, value])

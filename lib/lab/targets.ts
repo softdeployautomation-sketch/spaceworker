@@ -62,15 +62,40 @@ export async function listLabTargets(userId: string) {
  * Attest (or re-attest) one target. Normalisation happens here so the stored
  * value IS the canonical form the pre-flight matches against. Invalid values
  * are a validation error, never an audit event (see boundary note above).
+ *
+ * TASK_156B C2b (PLAN §13.5) — optional `sourceDeviceId`: which of the user's
+ * OWN devices this address belongs to ("pick from your devices"). The client
+ * value is NEVER trusted: it must match a device row owned by this user that
+ * is a real workstation (not `hosted`, not removed) or we throw a plain
+ * validation error. Traceability only — pre-flight does not depend on it.
  */
-export async function attestTarget(input: { userId: string; kind: string; value: string }) {
+export async function attestTarget(input: {
+  userId: string;
+  kind: string;
+  value: string;
+  sourceDeviceId?: string | null;
+}) {
   const norm = normalizeTarget(input.kind, input.value);
   if (!norm) throw new Error(`invalid_target (${input.kind}: ${input.value})`);
+  let sourceDeviceId: string | null = null;
+  if (input.sourceDeviceId) {
+    const device = await db.device.findFirst({
+      where: {
+        id: input.sourceDeviceId,
+        userId: input.userId,
+        deviceKind: { not: "hosted" },
+        removedAt: null,
+      },
+      select: { id: true },
+    });
+    if (!device) throw new Error(`invalid_source_device (${input.sourceDeviceId})`);
+    sourceDeviceId = device.id;
+  }
   const now = new Date();
   return db.labTarget.upsert({
     where: { userId_kind_value: { userId: input.userId, kind: norm.kind, value: norm.value } },
-    update: { attestedAt: now },
-    create: { userId: input.userId, kind: norm.kind, value: norm.value, attestedAt: now },
+    update: { attestedAt: now, sourceDeviceId },
+    create: { userId: input.userId, kind: norm.kind, value: norm.value, attestedAt: now, sourceDeviceId },
   });
 }
 

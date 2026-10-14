@@ -37,6 +37,20 @@ interface TargetView {
   kind: string;
   value: string;
   attestedAt: string;
+  sourceDeviceId?: string | null;
+}
+
+// TASK_156B C2b (§13.5) — one of the user's own devices, from GET
+// /api/cyberlab/devices (same filter as the Devices tab). `lastIp` is the
+// latest AGENT-REPORTED heartbeat address — a hint to prefill, never a claim
+// of reachability (NAT/LAN addresses are common; the caption says so).
+interface DeviceView {
+  id: string;
+  name: string;
+  osName: string | null;
+  status: string;
+  lastSeenAt: string | null;
+  lastIp: string | null;
 }
 
 interface RunView {
@@ -107,20 +121,24 @@ export function CyberLabConsole({ onChanged }: { onChanged?: () => void }) {
   const [attestKind, setAttestKind] = useState<(typeof TARGET_KINDS)[number]>("host");
   const [attestValue, setAttestValue] = useState("");
   const [attesting, setAttesting] = useState(false);
+  const [devices, setDevices] = useState<DeviceView[]>([]);
+  const [attestDeviceId, setAttestDeviceId] = useState("");
   const [openEpisode, setOpenEpisode] = useState<{ detail: EpisodeDetail; signatureValid: boolean } | null>(null);
   const [loadingEpisode, setLoadingEpisode] = useState("");
 
   const refresh = useCallback(async () => {
-    const [sc, tg, rn, ep] = await Promise.all([
+    const [sc, tg, rn, ep, dv] = await Promise.all([
       fetch("/api/cyberlab/scenarios").then((r) => (r.ok ? r.json() : { scenarios: [] })),
       fetch("/api/cyberlab/targets").then((r) => (r.ok ? r.json() : { targets: [] })),
       fetch("/api/cyberlab/runs").then((r) => (r.ok ? r.json() : { runs: [] })),
       fetch("/api/cyberlab/episodes").then((r) => (r.ok ? r.json() : { episodes: [] })),
+      fetch("/api/cyberlab/devices").then((r) => (r.ok ? r.json() : { devices: [] })),
     ]);
     setScenarios(sc.scenarios ?? []);
     setTargets(tg.targets ?? []);
     setRuns(rn.runs ?? []);
     setEpisodes(ep.episodes ?? []);
+    setDevices(dv.devices ?? []);
   }, []);
 
   useEffect(() => {
@@ -145,7 +163,11 @@ export function CyberLabConsole({ onChanged }: { onChanged?: () => void }) {
       const res = await fetch("/api/cyberlab/targets", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind: attestKind, value: attestValue.trim() }),
+        body: JSON.stringify({
+          kind: attestKind,
+          value: attestValue.trim(),
+          sourceDeviceId: attestDeviceId || null,
+        }),
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) {
@@ -153,6 +175,7 @@ export function CyberLabConsole({ onChanged }: { onChanged?: () => void }) {
         return;
       }
       setAttestValue("");
+      setAttestDeviceId("");
       await refresh();
     } catch {
       setError("Network error — couldn’t attest that target.");
@@ -303,11 +326,45 @@ export function CyberLabConsole({ onChanged }: { onChanged?: () => void }) {
                 {t.kind}
               </span>
               <span className="font-mono">{t.value}</span>
+              {t.sourceDeviceId && (
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                  from {devices.find((d) => d.id === t.sourceDeviceId)?.name ?? "your device"}
+                </span>
+              )}
               <span className="text-xs text-zinc-400">attested {new Date(t.attestedAt).toLocaleDateString()}</span>
             </label>
           ))}
         </div>
         <div className="mt-3 flex flex-wrap items-center gap-2">
+          {/* TASK_156B C2b (§13.5) — pick from the user's OWN devices (the same
+              rows the Devices tab shows). Selecting prefills the address with the
+              agent's last reported IP — a HINT only (NAT/LAN values are common;
+              the caption below says so) — and links the target to the device for
+              traceability. Everything stays attested-target-only: the picker just
+              makes the right target easier to declare. */}
+          <select
+            value={attestDeviceId}
+            onChange={(e) => {
+              const id = e.target.value;
+              setAttestDeviceId(id);
+              const dev = devices.find((d) => d.id === id);
+              if (dev?.lastIp && !attestValue.trim()) {
+                setAttestKind("host");
+                setAttestValue(dev.lastIp);
+              }
+            }}
+            className="rounded-md border border-zinc-300 bg-white px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-950"
+            aria-label="Pick from your devices"
+          >
+            <option value="">Pick from your devices (optional)…</option>
+            {devices.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+                {d.osName ? ` — ${d.osName}` : ""}
+                {d.lastIp ? ` (${d.lastIp})` : ""}
+              </option>
+            ))}
+          </select>
           <select
             value={attestKind}
             onChange={(e) => setAttestKind(e.target.value as (typeof TARGET_KINDS)[number])}
@@ -334,6 +391,11 @@ export function CyberLabConsole({ onChanged }: { onChanged?: () => void }) {
             {attesting ? "Attesting…" : "Attest"}
           </button>
         </div>
+        <p className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
+          The device list is your own machines (same as the Devices tab). The address it fills in is what the agent
+          last reported — often a LAN address. Scans run from our servers, so for the run to reach that machine you
+          must expose the service under test (e.g. port-forward RDP/SMB) or target a machine you can reach directly.
+        </p>
       </section>
 
       {error && (

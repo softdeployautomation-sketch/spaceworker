@@ -259,6 +259,10 @@ const fakeDb = {
   },
   device: {
     findMany: async ({ where }: { where: Row }) => state.devices.filter((d) => matches(d, where)),
+    // §13.5 — attestTarget's ownership check (owner match, not hosted, not
+    // removed). Same `matches` semantics as every other fake in this file.
+    findFirst: async ({ where }: { where: Row }) =>
+      state.devices.find((d) => matches(d, where)) ?? null,
   },
   deviceHeartbeat: streamModel(() => state.heartbeats),
   deviceAudit: streamModel(() => state.audits),
@@ -566,5 +570,61 @@ test("CATALOG_SEED: the §13.2 researched tool rows exist with licence + derivat
   assert.match(vt?.legalBasis ?? "", /BYO/, "VirusTotal row must carry the BYO-key terms caveat");
   // No duplicate slugs after the addition.
   assert.equal(new Set(slugs).size, slugs.length, "duplicate slugs");
+});
+
+// ---------------------------------------------------------------------------
+// 4. PLAN §13.5 — device-linked attestation ("pick from your devices").
+//    The client's sourceDeviceId is NEVER trusted: it must be this user's own
+//    live workstation (the devices-tab filter, enforced server-side), or the
+//    attest is a plain validation error with NO row written.
+// ---------------------------------------------------------------------------
+
+test("attestTarget with the user's OWN device — value normalised, sourceDeviceId link stored", async () => {
+  state.devices.push({ id: "dev-own", userId: USER, deviceKind: "workstation", removedAt: null, name: "Win-PC" });
+  const row = await targetsMod.attestTarget({
+    userId: USER,
+    kind: "host",
+    value: "203.0.113.7",
+    sourceDeviceId: "dev-own",
+  });
+  assert.equal(row.sourceDeviceId, "dev-own");
+  assert.equal(row.value, "203.0.113.7");
+  assert.equal(state.targets.length, 1);
+});
+
+test("attestTarget with a device owned by ANOTHER user — validation error, NO row written", async () => {
+  state.devices.push({ id: "dev-foreign", userId: OTHER_USER, deviceKind: "workstation", removedAt: null });
+  await assert.rejects(
+    () =>
+      targetsMod.attestTarget({ userId: USER, kind: "host", value: "203.0.113.8", sourceDeviceId: "dev-foreign" }),
+    /invalid_source_device/,
+    "a foreign device id must never be accepted (and never become an ownership oracle)",
+  );
+  assert.equal(state.targets.length, 0);
+});
+
+test("attestTarget: hosted or removed devices are rejected — the devices-tab filter is enforced", async () => {
+  state.devices.push({ id: "dev-hosted", userId: USER, deviceKind: "hosted", removedAt: null });
+  state.devices.push({ id: "dev-gone", userId: USER, deviceKind: "workstation", removedAt: new Date() });
+  await assert.rejects(
+    () => targetsMod.attestTarget({ userId: USER, kind: "host", value: "203.0.113.9", sourceDeviceId: "dev-hosted" }),
+    /invalid_source_device/,
+  );
+  await assert.rejects(
+    () => targetsMod.attestTarget({ userId: USER, kind: "host", value: "203.0.113.10", sourceDeviceId: "dev-gone" }),
+    /invalid_source_device/,
+  );
+  assert.equal(state.targets.length, 0);
+});
+
+test("attestTarget without a device — hand-typed target still works, link null (BYOT allows non-device targets)", async () => {
+  const row = await targetsMod.attestTarget({
+    userId: USER,
+    kind: "url",
+    value: "https://staging.example.com",
+  });
+  assert.equal(row.sourceDeviceId, null);
+  assert.equal(row.kind, "url");
+  assert.equal(state.targets.length, 1);
 });
 

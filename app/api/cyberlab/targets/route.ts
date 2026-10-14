@@ -23,6 +23,10 @@ import { getCurrentUser } from "@/lib/session-user";
 const AttestBody = z.object({
   kind: z.enum(["host", "network", "url", "domain", "email"]),
   value: z.string().min(1).max(512),
+  // TASK_156B C2b (§13.5) — optional link to one of the user's OWN devices
+  // ("pick from your devices"). Validated server-side in attestTarget; the
+  // client value is never trusted (owner match, not hosted, not removed).
+  sourceDeviceId: z.string().min(1).max(64).nullish(),
 });
 
 export async function GET() {
@@ -33,7 +37,13 @@ export async function GET() {
 
   const targets = await listLabTargets(user.id);
   return NextResponse.json({
-    targets: targets.map((t) => ({ id: t.id, kind: t.kind, value: t.value, attestedAt: t.attestedAt })),
+    targets: targets.map((t) => ({
+      id: t.id,
+      kind: t.kind,
+      value: t.value,
+      attestedAt: t.attestedAt,
+      sourceDeviceId: t.sourceDeviceId,
+    })),
   });
 }
 
@@ -65,6 +75,24 @@ export async function POST(req: Request) {
     }
   }
 
-  const row = await attestTarget({ userId: user.id, kind: norm.kind, value: norm.value });
-  return NextResponse.json({ ok: true, target: { id: row.id, kind: row.kind, value: row.value, attestedAt: row.attestedAt } });
+  let row;
+  try {
+    row = await attestTarget({
+      userId: user.id,
+      kind: norm.kind,
+      value: norm.value,
+      sourceDeviceId: parsed.data.sourceDeviceId ?? null,
+    });
+  } catch (err) {
+    // A sourceDeviceId that isn't this user's own live workstation is a
+    // validation error (400), never an audit event — no run was refused.
+    if (err instanceof Error && err.message.startsWith("invalid_source_device")) {
+      return NextResponse.json({ error: "invalid_source_device" }, { status: 400 });
+    }
+    throw err;
+  }
+  return NextResponse.json({
+    ok: true,
+    target: { id: row.id, kind: row.kind, value: row.value, attestedAt: row.attestedAt, sourceDeviceId: row.sourceDeviceId },
+  });
 }
