@@ -39,6 +39,20 @@
 #
 set -euo pipefail
 
+# 2026-10-14 (owner: "we keep going from one issue to another… why can't you just
+# fix this"): the deploy repeatedly FROZE mid-run — the local process group went to
+# state `T` (SIGTSTP-suspended) while blocked on an `ssh … systemctl restart` or
+# `ssh … prisma generate`, stranding the box with maintenance ON. Root cause: a
+# controlling-terminal job-control signal (SIGTSTP, e.g. when the foreground
+# command's stdout is captured/closed) suspends the whole process group. macOS has
+# no `setsid`, and a wrapper's `trap "" TSTP` does not reliably protect the child
+# `bash deploy-vps.sh`. Fix at the source: ignore TSTP/STOP/TTIN/TTOU for the life
+# of this script so a stray signal can never stall a build/restart again.
+trap '' TSTP TTIN TTOU
+# STOP cannot be trapped, but ignoring the tty stop signals above removes the
+# practical trigger. Kept explicit for the next reader.
+
+
 VPS_HOST="${VPS_HOST:-root@164.68.105.96}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/tacticalrmm_vps}"
 APP_DIR="${APP_DIR:-/opt/spaceworker}"

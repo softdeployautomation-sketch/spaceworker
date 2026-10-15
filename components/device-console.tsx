@@ -93,6 +93,7 @@ type DeviceView = {
     timerStartedAt: string;
     hideDoneAt: string | null;
     stayOnDoneAt: string | null;
+    movedAt: string | null;
     releasedAt: string | null;
     hideLabel: string | null;
     destinationOrgId: string | null;
@@ -2029,6 +2030,7 @@ function OnboardingCard({ device }: { device: DeviceView }) {
       timerStartedAt: row.timerStartedAt,
       hideDoneAt: row.hideDoneAt,
       stayOnDoneAt: row.stayOnDoneAt,
+      movedAt: row.movedAt,
       releasedAt: row.releasedAt,
       destinationOrgId: row.destinationOrgId,
       isOnline: device.status === "online" || device.status === "asleep",
