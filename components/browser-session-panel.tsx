@@ -1,8 +1,9 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { Globe } from "lucide-react";
 import { useConfirm } from "@/components/confirm-provider";
+import { buildTouchInjectionScript, toggleMod } from "@/lib/touch-controls";
 
 type Session = {
   id: string;
@@ -55,6 +56,51 @@ function hideRemoteCursorDoubling(e: React.SyntheticEvent<HTMLIFrameElement>) {
   } catch {
     /* cross-origin or blocked for some other reason — leave the default cursor */
   }
+}
+
+// TASK_208 S2 — run on every iframe load: the original cursor fix, plus the
+// touch → mouse / keyboard bridge (lib/touch-controls.ts). Idempotent via the
+// injected script's own `__swTouchInstalled` guard AND a DOM marker id, so an
+// iframe that reloads internally (Neko reconnects do this) never double-binds.
+// Entirely best-effort — if Neko's DOM changes, users fall back to the old
+// touch behaviour, never a broken embed.
+function installTouchControls(e: React.SyntheticEvent<HTMLIFrameElement>) {
+  hideRemoteCursorDoubling(e);
+  try {
+    const doc = e.currentTarget.contentDocument;
+    if (!doc) return; // cross-origin — can't inject (shouldn't happen: /browser/ proxy is same-origin)
+    if (doc.getElementById("sw-touch-controls")) return; // already installed
+    const script = doc.createElement("script");
+    script.id = "sw-touch-controls";
+    script.textContent = buildTouchInjectionScript();
+    (doc.body || doc.documentElement).appendChild(script);
+  } catch {
+    /* leave Neko's defaults */
+  }
+}
+
+// Touch-device detection for the on-screen keyboard bar (TASK_208 S2).
+// useSyncExternalStore (not useState+useEffect) so this is hydration-safe:
+// the server snapshot is `false`, so SSR markup and the client's first render
+// match, and the bar simply appears after hydration on touch devices — no
+// setState-in-effect, no mismatch. Re-evaluates on viewport resize (e.g. a
+// phone rotating or a user opening the OS keyboard that shrinks the layout).
+function subscribeTouchUi(onStoreChange: () => void): () => void {
+  window.addEventListener("resize", onStoreChange);
+  return () => window.removeEventListener("resize", onStoreChange);
+}
+function getTouchUiSnapshot(): boolean {
+  try {
+    return (
+      window.matchMedia?.("(pointer: coarse)").matches === true ||
+      "ontouchstart" in window
+    );
+  } catch {
+    return false; // matchMedia unavailable — treat as desktop (bar stays hidden)
+  }
+}
+function getTouchUiServerSnapshot(): boolean {
+  return false;
 }
 
 function statusTone(status: string): string {
@@ -130,6 +176,35 @@ export default function BrowserSessionPanel({
       return next;
     });
   }
+
+  // TASK_208 S2 — on-screen keyboard bar state: sticky VNC-style modifiers
+  // (Ctrl/Alt/Shift hold across keypresses) + per-session iframe refs so the
+  // bar can reach each Neko frame's injected __swKey bridge directly.
+  const touchUi = useSyncExternalStore(
+    subscribeTouchUi,
+    getTouchUiSnapshot,
+    getTouchUiServerSnapshot
+  );
+  const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
+  const frameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+
+  // Forward a key into the Neko iframe via the injected __swKey bridge. The
+  // iframe is same-origin so contentWindow is reachable; still try/catch — if
+  // the frame navigated away mid-keystroke this must never throw. Takes the
+  // session id explicitly so a keystroke always routes to the right frame.
+  const sendKey = useCallback(
+    (sessionId: string, key: string, down: boolean) => {
+      try {
+        const win = frameRefs.current[sessionId]?.contentWindow as
+          | (Window & { __swKey?: (k: string, d: boolean, m: unknown) => void })
+          | null;
+        win?.__swKey?.(key, down, mods);
+      } catch {
+        /* frame gone / cross-origin — ignore */
+      }
+    },
+    [mods]
+  );
 
   // First-time users have no profile yet — rather than sending them to a
   // separate Browser Profiles tab before they can do anything, silently
@@ -778,13 +853,17 @@ export default function BrowserSessionPanel({
                               </button>
                             </div>
                           ) : (
+                            <>
                             <div className="relative mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
                               <iframe
+                                ref={(el) => {
+                                  frameRefs.current[s.id] = el;
+                                }}
                                 src={s.connectUrl}
                                 title="Private browser session"
                                 allow="clipboard-read; clipboard-write; autoplay; fullscreen"
                                 className="h-full w-full border-0"
-                                onLoad={hideRemoteCursorDoubling}
+                                onLoad={installTouchControls}
                               />
                               {!readyIds.has(s.id) && (
                                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
@@ -795,6 +874,91 @@ export default function BrowserSessionPanel({
                                 </div>
                               )}
                             </div>
+                            {/* TASK_208 S2 — on-screen keyboard bar (touch
+                                devices only). Sticky modifiers + nav keys +
+                                a capture input so the OS keyboard's keystrokes
+                                are forwarded into the Neko frame via __swKey. */}
+                            {touchUi && (
+                              <div className="mt-2 rounded-lg border border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-900">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {(["ctrl", "alt", "shift"] as const).map((m) => (
+                                    <button
+                                      key={m}
+                                      type="button"
+                                      onClick={() => setMods((prev) => toggleMod(prev, m))}
+                                      className={`rounded border px-2.5 py-1.5 text-xs font-medium capitalize transition-colors ${
+                                        mods[m]
+                                          ? "border-zinc-900 bg-zinc-900 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-900"
+                                          : "border-zinc-300 text-zinc-600 dark:border-zinc-700 dark:text-zinc-400"
+                                      }`}
+                                    >
+                                      {m}
+                                    </button>
+                                  ))}
+                                  {(
+                                    [
+                                      ["Escape", "Esc"],
+                                      ["Tab", "Tab"],
+                                      ["Backspace", "⌫"],
+                                      ["Enter", "⏎"],
+                                      ["ArrowLeft", "←"],
+                                      ["ArrowUp", "↑"],
+                                      ["ArrowDown", "↓"],
+                                      ["ArrowRight", "→"],
+                                    ] as const
+                                  ).map(([key, label]) => (
+                                    <button
+                                      key={key}
+                                      type="button"
+                                      onClick={() => {
+                                        // Fire keydown + keyup as one press.
+                                        try {
+                                          const win = frameRefs.current[s.id]
+                                            ?.contentWindow as
+                                            | (Window & {
+                                                __swKey?: (
+                                                  k: string,
+                                                  d: boolean,
+                                                  m: unknown
+                                                ) => void;
+                                              })
+                                            | null;
+                                          win?.__swKey?.(key, true, mods);
+                                          win?.__swKey?.(key, false, mods);
+                                        } catch {
+                                          /* frame gone — ignore */
+                                        }
+                                      }}
+                                      className="rounded border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800"
+                                    >
+                                      {label}
+                                    </button>
+                                  ))}
+                                  <input
+                                    type="text"
+                                    value=""
+                                    onChange={() => {
+                                      /* capture-only: the field stays empty; keys are forwarded into the frame */
+                                    }}
+                                    onKeyDown={(e) => {
+                                      e.preventDefault(); // never type into this field — forward instead
+                                      sendKey(s.id, e.key, true);
+                                    }}
+                                    onKeyUp={(e) => {
+                                      e.preventDefault();
+                                      sendKey(s.id, e.key, false);
+                                    }}
+                                    placeholder="Type here…"
+                                    autoCapitalize="off"
+                                    autoCorrect="off"
+                                    autoComplete="off"
+                                    spellCheck={false}
+                                    className="min-w-32 flex-1 rounded border border-zinc-300 bg-transparent px-2 py-1.5 text-sm outline-none focus:border-zinc-500 dark:border-zinc-700"
+                                  />
+                                </div>
+                              </div>
+                            )}
+                            </>
                           )}
                         </>
                       )}
