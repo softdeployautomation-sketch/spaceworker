@@ -1417,10 +1417,14 @@ test("TASK_166 the read cursor only ever moves FORWARDS", async () => {
   // rather than adopted, or the badge reappears under a customer reading the thread.
   store.tickets[0].lastReadAt = new Date(first.getTime() - 60_000);
   await userReadRoute.POST(jsonReq("POST"), ctx("t_1"));
-  assert.equal(
-    store.tickets[0].lastReadAt?.getTime(),
-    first.getTime(),
-    "a rewind must be corrected, not adopted",
+  const after = store.tickets[0].lastReadAt?.getTime();
+  // The invariant is "never backwards", not exact equality: markTicketRead stores
+  // `now` when the stored cursor is stale (lib/support/tickets.ts:640-643), so the
+  // corrected value is the second call's timestamp — equal to `first` only when the
+  // clock has not ticked between the calls (it does tick under a full-suite run).
+  assert.ok(
+    typeof after === "number" && after >= first.getTime(),
+    "a rewind must be corrected, not adopted (cursor never moves backwards)",
   );
 });
 

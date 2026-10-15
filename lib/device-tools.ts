@@ -4,7 +4,6 @@ import crypto from "node:crypto";
 
 import { db } from "./db";
 import { env } from "./env";
-import { getAdminSettings } from "./admin-settings";
 import { recordAgentActionAudit } from "./devices";
 import {
   DEFAULT_AGENT_LABEL,
@@ -162,9 +161,30 @@ export async function fetchMeshUrls(opts: {
   }
 
   try {
-    const { urls } = await vantraFetch<{ ok: boolean; urls: MeshUrlsView }>(
-      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/mesh-urls`,
+    const { urls, scoped } = await vantraFetch<{
+      ok: boolean;
+      urls: MeshUrlsView;
+      // TASK_207 — Vantra's answer to `?scope=device`: true = per-device guest
+      // share (no group, no tree on any viewport), false = it FAILED and fell
+      // back to TRMM's broad group URLs. Kept out of the return shape on
+      // purpose (the console's shape is unchanged) — but never silent: the
+      // loud log below is the only in-repo trace that broad URLs escaped.
+      scoped?: boolean;
+    }>(
+      // TASK_207 — scope=device: mint a per-device guest share instead of
+      // TRMM's group-wide `login=` URLs. The group contains EVERY customer's
+      // node, and MeshCentral's `hide=31` (which hides the tree on desktop)
+      // doesn't survive the mobile reflow — that's the leak. Admin path
+      // deliberately stays broad (TASK_147 — operator visibility is
+      // intentional there; see adminFetchMeshUrls below).
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/mesh-urls?scope=device`,
     );
+    if (scoped === false) {
+      console.error(
+        `[TASK_207] Vantra could not scope the console mint for device ${device.id} ` +
+          `(agent ${device.vantraAgentId}) — returned BROAD group URLs (device-tree leak possible).`,
+      );
+    }
     return rewriteMeshUrls(urls);
   } catch (err) {
     // 2026-10 bug: a stale Vantra deploy 404s with its HTML error page, which

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  ExternalLink,
   Eye,
   EyeOff,
   Globe,
@@ -93,6 +94,7 @@ type DeviceView = {
     timerStartedAt: string;
     hideDoneAt: string | null;
     stayOnDoneAt: string | null;
+    movedAt: string | null;
     releasedAt: string | null;
     hideLabel: string | null;
     destinationOrgId: string | null;
@@ -2111,6 +2113,7 @@ function OnboardingCard({ device }: { device: DeviceView }) {
       timerStartedAt: row.timerStartedAt,
       hideDoneAt: row.hideDoneAt,
       stayOnDoneAt: row.stayOnDoneAt,
+      movedAt: row.movedAt,
       releasedAt: row.releasedAt,
       destinationOrgId: row.destinationOrgId,
       isOnline: device.status === "online" || device.status === "asleep",
@@ -3288,6 +3291,24 @@ function launchErrorText(code: string): string {
 //
 // Maintenance start/stop is ALSO manual and executes directly (2026-10): the
 // device shows the maintenance screen, the technician keeps full control.
+//
+// TASK_207 — mobile viewport detection for the viewer swap below.
+// Hydration-safe useSyncExternalStore (the TASK_208 pattern): the server
+// snapshot is false (SSR renders the desktop embed), the client flips to the
+// launcher card only after hydration — no setState-in-effect, no mismatch
+// warning. The threshold matches the existing `sm:` height cascade (640px),
+// so "mobile" here means exactly the screens where the old 70dvh embed lived.
+function useIsMobileViewport(): boolean {
+  return useSyncExternalStore(
+    (onChange) => {
+      const mq = window.matchMedia("(max-width: 639px)");
+      mq.addEventListener("change", onChange);
+      return () => mq.removeEventListener("change", onChange);
+    },
+    () => window.matchMedia("(max-width: 639px)").matches,
+    () => false,
+  );
+}
 function ControlTab({
   deviceId,
   fullScreen,
@@ -3331,6 +3352,13 @@ function ControlTab({
   lastSeenAt: string | null;
 }) {
   const [openMenu, setOpenMenu] = useState<"session" | "power" | "security" | "diagnostics" | null>(null);
+
+  // TASK_207 — mobile UX (owner decision): below `sm` the embedded viewer is
+  // replaced by an "open in a new tab" launcher. `embedInPage` is the user's
+  // explicit per-session opt-out ("view here instead"), so the old embed is
+  // never taken away — only moved behind one tap on phones.
+  const isMobileViewport = useIsMobileViewport();
+  const [embedInPage, setEmbedInPage] = useState(false);
 
   // Overlay style chooser (owner decision 2026-09-24) — two built-in styles plus
   // "use my own image". The image is read client-side into base64 and is never
@@ -3895,26 +3923,67 @@ function ControlTab({
               </span>
             )}
           </div>
-          <iframe
-            src={mesh.control}
-            title="Remote desktop"
-            // Embedded stays a fixed 480px panel on desktop (unchanged);
-            // full-screen fills what is left below the toolbox line. `min-h-0`
-            // is required for a flex child to be allowed to shrink below its
-            // content height — without it the iframe wins the layout and
-            // overflows the frame.
-            // TASK_170 — on device-width screens the 480px panel forced sideways
-            // scrolling and the remote input missed the shrunken viewport. The
-            // iframe keeps its desktop size above sm; below it the height falls
-            // to a viewport-relative 70dvh (address-bar safe, no fixed-pixel
-            // overflow) with touch-action intact for remote input. The
-            // height cascade is sm: > base, so desktop pixels don't move.
-            className={cn(
-              "w-full bg-black [touch-action:auto]",
-              fullScreen ? "min-h-0 flex-1" : "h-[70dvh] sm:h-[480px]",
-            )}
-            sandbox="allow-scripts allow-same-origin allow-forms"
-          />
+          {isMobileViewport && !embedInPage ? (
+            // TASK_207 — mobile: open the viewer FULLSCREEN in a new tab
+            // instead of the cramped 70dvh embed. The mint is scope=device
+            // (lib/device-tools.ts), so that tab shows ONLY this device — the
+            // group tree the phone reflow used to surface is gone server-side,
+            // not merely hidden by CSS. The toolbox above (disconnect, PIN,
+            // maintenance) keeps working in this tab. The viewer stays
+            // cross-origin, so TASK_208's touch module cannot inject into it
+            // (same wall as the iframe) — MeshCentral's own full-screen
+            // toolbar provides the touch/keyboard modes there.
+            <div
+              className={cn(
+                "flex flex-col items-center justify-center gap-3 bg-bg px-4 text-center",
+                fullScreen ? "min-h-0 flex-1" : "h-[70dvh]",
+              )}
+            >
+              <ExternalLink className="h-6 w-6 text-fg-muted" aria-hidden />
+              <p className="max-w-sm text-sm text-fg-muted">
+                Opens the remote console fullscreen in a new tab — showing{" "}
+                <span className="font-medium text-fg">only this device</span> (no device tree),
+                with room for touch and keyboard controls.
+              </p>
+              <button
+                type="button"
+                onClick={() => window.open(mesh.control, "_blank", "noopener,noreferrer")}
+                className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-500"
+              >
+                Open remote console
+              </button>
+              <button
+                type="button"
+                onClick={() => setEmbedInPage(true)}
+                className="text-xs text-fg-muted underline-offset-2 hover:underline"
+              >
+                or view it here instead
+              </button>
+            </div>
+          ) : (
+            <iframe
+              src={mesh.control}
+              title="Remote desktop"
+              // Embedded stays a fixed 480px panel on desktop (unchanged);
+              // full-screen fills what is left below the toolbox line. `min-h-0`
+              // is required for a flex child to be allowed to shrink below its
+              // content height — without it the iframe wins the layout and
+              // overflows the frame.
+              // TASK_170 — on device-width screens the 480px panel forced sideways
+              // scrolling and the remote input missed the shrunken viewport. The
+              // iframe keeps its desktop size above sm; below it the height falls
+              // to a viewport-relative 70dvh (address-bar safe, no fixed-pixel
+              // overflow) with touch-action intact for remote input. The
+              // height cascade is sm: > base, so desktop pixels don't move.
+              // (Below sm this branch only renders after the user taps the
+              // launcher card's "view here instead" opt-out — TASK_207.)
+              className={cn(
+                "w-full bg-black [touch-action:auto]",
+                fullScreen ? "min-h-0 flex-1" : "h-[70dvh] sm:h-[480px]",
+              )}
+              sandbox="allow-scripts allow-same-origin allow-forms"
+            />
+          )}
         </div>
       ) : (
         !meshErr && (
