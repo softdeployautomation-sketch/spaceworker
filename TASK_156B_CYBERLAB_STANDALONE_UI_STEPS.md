@@ -99,4 +99,16 @@ _(entries appended after every slice — dated, with proof)_
 - FINAL Gates GREEN: `tsc --noEmit -p .` = 0 · eslint on changed files = 0 · `npm run test:lab` = **65/65** (was 64, +1 UI guard).
 - Zero overlap with the hosting agent (Slice 2 touches only cyberlab-scoped files). Local commit only — no push, no deploy.
 
+### 2026-10-14 — REAL EGRESS scoped (PLAN ONLY, awaiting owner sign-off before code)
+- Owner directive: "no protection against abuse — off Premium Plus, grant-only, tough verification; reduce friction to zero so we can run real attacks, film the ad video." This deliberately RELAXES the §5.2 "no third-party scanning" dry-run discipline at owner instruction — recorded honestly in the plan.
+- **`PLAN_CYBERLAB_REAL_EGRESS.md`** (new, DRAFT) — scopes real egress:
+  - The engine seam already exists: `lib/lab/engine.ts` ~L215 `isRecon ? generateReconTelemetry : generateSmokeTelemetry`. Real egress = a THIRD runner behind a master switch; gate/range/governor/episode-signing/teardown all unchanged (they ARE the product).
+  - **Posture = owner dials default OPEN (friction 0)**, new `AdminSetting`: `cyberlabLiveEgressEnabled` (ship false), `cyberlabEgressRequireOwnershipProof` (false), `cyberlabEgressScopeGuard` (false), `cyberlabEgressAllowList` (empty). Re-tightenable per-range without a rebuild.
+  - **KEPT because it's the sell, not friction:** audit trail (LabAbuseReport/episode signing/victim sensor), honest labelling (watermark flips "SIMULATION"→"AUTHORIZED TEST · YOUR EQUIPMENT", artefacts `synthetic:false`/`mode:"live"` — protects the ad's credibility), consent checkbox.
+  - **Two paths (owner chose Both):** A server egress (VPS→public target; can't see LAN/wifi) + B agent/on-site egress (tacticalrmm agent on the user's network — the ONLY path to a LAN VM or wifi; mirrors `lib/lab/victim-sensor.ts`).
+  - **4 build slices:** E1 seam+dial+relabel (no-op switch), E2 server egress (real `node:net` probe), E3 agent/LAN egress, E4 ad-video replay player.
+  - **4 owner gates before E1:** posture sign-off, exact label wording, ship-dark agreement, E2-vs-E3 first.
+- NO CODE written yet — this is a security/liability change, so it gets an owner gate per the playbook. Docs + steps only this turn. Local commit only — no push, no deploy.
+
+
 
