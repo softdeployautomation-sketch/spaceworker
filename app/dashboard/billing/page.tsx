@@ -546,6 +546,10 @@ function PremiumInvoiceCard({
   }
 
   const address = invoice.methods?.[kind];
+  // TASK_CYBERLAB — plan-aware label: invoice rows are named by `plan` FIRST,
+  // because tier 6 is the Cyber Lab sentinel which planLabelForTier
+  // deliberately cannot name (it maps USER tiers, test-pinned >=5 ⇒ Premium).
+  const planLabel = invoice.plan === "cyberlab" ? "Cyber Lab" : planLabelForTier(invoice.tier);
 
   if (submitted) {
     return (
@@ -554,7 +558,7 @@ function PremiumInvoiceCard({
         className="mt-4 max-w-2xl rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
       >
         <p className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
-          {planLabelForTier(invoice.tier)} invoice — submitted
+          {planLabel} invoice — submitted
         </p>
         <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
           We received your payment and it is awaiting review. Your plan is activated once it is
@@ -572,7 +576,7 @@ function PremiumInvoiceCard({
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
-            {planLabelForTier(invoice.tier)} invoice
+            {planLabel} invoice
           </h2>
           <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
             Amount due: <span className="font-medium text-zinc-700 dark:text-zinc-300">${invoice.amountUsd.toFixed(2)}</span>

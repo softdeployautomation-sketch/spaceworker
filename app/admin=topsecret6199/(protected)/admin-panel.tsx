@@ -102,7 +102,7 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "research" | "labruns" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
@@ -126,14 +126,12 @@ const TABS: Array<{ id: Tab; label: string }> = [
   // Vantra links) under a label that had nothing to do with any of them —
   // literally why the resource governor toggle was hard to find (2026-09-26).
   { id: "infrastructure", label: "Infrastructure" },
-  // TASK_156 C1 — the §12.1 research gate's read-only admin page: the pinned
-  // ATT&CK release, the feed list, the refresh/stale cadence and the currency of
-  // every LabToolCatalog row. Sits right after Infrastructure because that is
-  // where the Cyber Lab's admin dials live.
-  { id: "research", label: "Research" },
-  // TASK_156B C2b §13.3 — ALL lab runs across users + the §5.2 refusals beside
-  // them; the attack/defence trace the owner asked for ("all should be traceable").
-  { id: "labruns", label: "Lab Runs" },
+  // TASK_156B Slice 4 (owner ask) — ONE home for everything Cyber Lab: the
+  // limits dials that used to sit under Infrastructure, the §12.1 research gate
+  // (pinned ATT&CK release, feed list, refresh/stale cadence, LabToolCatalog
+  // currency), and ALL lab runs + §5.2 refusals. Grouped so the owner can track
+  // the whole product from a single tab.
+  { id: "cyberlab", label: "Cyber Lab" },
   { id: "services", label: "Services" },
   { id: "templates", label: "Campaign Templates" },
   { id: "ai", label: "AI" },
@@ -268,8 +266,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
         {tab === "support" && <SupportQueuePanel />}
         {tab === "queue" && <QueueTab />}
         {tab === "infrastructure" && <InfrastructureTab />}
-        {tab === "research" && <ResearchTab />}
-        {tab === "labruns" && <LabRunsTab />}
+        {tab === "cyberlab" && <CyberLabAdminTab />}
         {tab === "services" && <ServicesTab />}
         {tab === "templates" && <CampaignTemplatesTab />}
         {tab === "ai" && <AiTab />}
@@ -408,6 +405,7 @@ function OverviewTab({ onNavigate }: { onNavigate: (tab: Tab) => void }) {
         {(
           [
             { tab: "infrastructure" as Tab, label: "Infrastructure", hint: "Governor, admission, clone limits, hosting limits, worker, Vantra links" },
+            { tab: "cyberlab" as Tab, label: "Cyber Lab", hint: "Cyber Lab limits, research gate, and all lab runs" },
             { tab: "wallets" as Tab, label: "Wallets & Prices", hint: "Admin-editable pricing for every product" },
             { tab: "notifications" as Tab, label: "Notifications", hint: "Every attempted send, most recent first" },
             { tab: "users" as Tab, label: "Users", hint: "Tiers, trial usage, premium grants" },
@@ -3347,7 +3345,7 @@ function InfrastructureTab() {
       <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
         Every system-level control that isn&apos;t about one product feature: admission,
         the extraction worker, the resource governor, browser-clone limits, hosting
-        limits, Cyber Lab limits, and linked Vantra devices.
+        limits, and linked Vantra devices.
       </p>
 
       <div className="mt-6 grid items-start gap-6 lg:grid-cols-2">
@@ -3370,8 +3368,29 @@ function InfrastructureTab() {
           purpose: a `pending` domain cannot go live until one of THESE accounts' tokens
           can create/edit its zone, so the two are one workflow, not two settings. */}
       <DomainsPanel />
-      <CyberLabCapsPanel />
       <VantraLinksPanel />
+    </div>
+  );
+}
+
+function CyberLabAdminTab() {
+  return (
+    <div>
+      <h2 className="text-2xl font-semibold tracking-tight">Cyber Lab</h2>
+      <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+        Everything Cyber Lab in one place: the access/egress limits dials (moved out
+        of Infrastructure), the §12.1 research gate, and every lab run with its §5.2
+        refusals.
+      </p>
+      <div className="mt-6">
+        <CyberLabCapsPanel />
+      </div>
+      <div className="mt-6">
+        <ResearchTab />
+      </div>
+      <div className="mt-6">
+        <LabRunsTab />
+      </div>
     </div>
   );
 }

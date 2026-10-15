@@ -17,7 +17,9 @@ import { useState } from "react";
 //   - everything else (tier, methods, validation) is the SERVER's job — this
 //     component never computes a tier and never sends one.
 
-type PlanName = "premium_plus" | "premium_xdevice";
+// + `cyberlab` (TASK_CYBERLAB): the standalone add-on — its row's tier is the
+// sentinel 6, never a user tier (the SERVER derives it; this cell sends none).
+type PlanName = "premium_plus" | "premium_xdevice" | "cyberlab";
 
 type Invoice = {
   id: string;
@@ -28,11 +30,14 @@ type Invoice = {
   createdAt: string;
 };
 
-type Defaults = { premium_plus: number; premium_xdevice: number };
+type Defaults = { premium_plus: number; premium_xdevice: number; cyberlab: number };
 
 const PLAN_LABELS: Record<PlanName, string> = {
   premium_plus: "Premium Plus (tier 5)",
   premium_xdevice: "Premium XDevice (tier 3)",
+  // Not "(tier 6)": the sentinel is internal bookkeeping, not a real tier —
+  // the operator is choosing a product to invoice, and 6 must stay invisible.
+  cyberlab: "Cyber Lab (add-on)",
 };
 
 export function UserInvoiceCell({ userId }: { userId: string }) {
@@ -84,8 +89,9 @@ export function UserInvoiceCell({ userId }: { userId: string }) {
         const d: Defaults = {
           premium_plus: Number(prices.webSubscriptionPriceUsd),
           premium_xdevice: Number(prices.xdevicePriceUsd),
+          cyberlab: Number(prices.cyberlabModulePriceUsd),
         };
-        if (Number.isFinite(d.premium_plus) && Number.isFinite(d.premium_xdevice)) {
+        if (Number.isFinite(d.premium_plus) && Number.isFinite(d.premium_xdevice) && Number.isFinite(d.cyberlab)) {
           setDefaults(d);
           if (!existing) {
             setAmountTouched(false);

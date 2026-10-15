@@ -26,7 +26,13 @@ export type ProductId =
   // product: deliberately NOT in EXE_PRODUCTS/ALL_PRODUCTS (no store card, no
   // price-form row), but registered in BY_ID below so getProduct() resolves it
   // for trial-ping/status/validate — the hosted trial needs the product known.
-  | "device_monitor_exe";
+  | "device_monitor_exe"
+  // TASK_CYBERLAB — Cyber Lab's own id: the standalone module add-on. Like
+  // device_monitor_exe it is NOT in ALL_PRODUCTS (no store card — it is sold
+  // ONLY through the admin invoice flow, owner: no self-serve prices on web),
+  // but registered in BY_ID so billing/submit's invoice-plan → product
+  // derivation resolves it and the approval fall-through grants the module.
+  | "cyberlab_module";
 
 // TASK_99 / plan §COMMERCIAL C3 — "module" is new: a pick-your-capability web
 // subscription that grants ONE OR MORE entitlements (lib/entitlements.ts)
@@ -81,6 +87,11 @@ export type AdminSettingPriceFields = {
   // real AdminSetting column). Never read on the store (not in ALL_PRODUCTS);
   // only relevant to an admin-set price if/when the admin issue form offers it.
   deviceMonitorExePriceUsd: number;
+  // TASK_CYBERLAB — the Cyber Lab add-on's default invoice price (schema
+  // default 29). Admin-only surface: no store card; edited via
+  // /api/admin/wallets and pre-filled (always editable) into both invoice
+  // composers.
+  cyberlabModulePriceUsd: number;
 };
 
 export const WEB_SUBSCRIPTION: StoreProduct = {
@@ -94,10 +105,10 @@ export const WEB_SUBSCRIPTION: StoreProduct = {
 
 // TASK_99 / plan §COMMERCIAL C3 (owner, 2026-09-26) — pick-your-capability
 // modules. Each grants its own UserEntitlement key(s) on successful payment
-// (lib/license-service.ts) instead of the full bundle above. Cyber Lab is
-// deliberately NOT listed as a module yet — same "don't sell what doesn't
-// exist" rule TASK_100's marketing pillars follow: TASK_98 has no dashboard
-// route anywhere in the codebase today.
+// (lib/license-service.ts) instead of the full bundle above. Cyber Lab ships
+// but is deliberately STILL not a store module: its surface is standalone
+// (app/cyberlab) and it is sold ONLY through the admin invoice flow
+// (owner: no self-serve prices on web) — see CYBERLAB_MODULE below.
 export const EXTRACTOR_MODULE: StoreProduct = {
   id: "extractor_module",
   name: "Extractor",
@@ -139,6 +150,21 @@ export const HOSTING_MODULE: StoreProduct = {
   priceField: "hostingModulePriceUsd",
   kind: "module",
   entitlementKeys: ["hosting"],
+};
+
+// TASK_CYBERLAB — the standalone Cyber Lab add-on product. Registered in BY_ID
+// only: billing/submit derives Payment.product from the admin invoice's plan
+// (`cyberlab` ⇒ this id), so the approval fall-through (license-service) grants
+// its entitlement instead of bumping a tier — but it never appears in
+// ALL_PRODUCTS, so no store card / price row / self-serve purchase can exist.
+export const CYBERLAB_MODULE: StoreProduct = {
+  id: "cyberlab_module",
+  name: "Cyber Lab",
+  tagline:
+    "Isolated ranges, attested targets and evidence-trailed attack runs — sold as an add-on through the admin invoice flow.",
+  priceField: "cyberlabModulePriceUsd",
+  kind: "module",
+  entitlementKeys: ["cyberlab"],
 };
 
 export const MODULE_PRODUCTS: StoreProduct[] = [
@@ -279,10 +305,10 @@ export function isWalletTopup(productId: string | null | undefined): boolean {
 }
 
 // BY_ID = every product getProduct() may resolve — the store list PLUS
-// non-store products (DEVICE_MONITOR_EXE: admin-issued, never rendered from
-// ALL_PRODUCTS anywhere).
+// non-store products (DEVICE_MONITOR_EXE: admin-issued; CYBERLAB_MODULE:
+// invoice-flow only — neither is ever rendered from ALL_PRODUCTS anywhere).
 const BY_ID = new Map<string, StoreProduct>(
-  [...ALL_PRODUCTS, DEVICE_MONITOR_EXE].map((p) => [p.id, p]),
+  [...ALL_PRODUCTS, DEVICE_MONITOR_EXE, CYBERLAB_MODULE].map((p) => [p.id, p]),
 );
 
 export function getProduct(id: string): StoreProduct | null {

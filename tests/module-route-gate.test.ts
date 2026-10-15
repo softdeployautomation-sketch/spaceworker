@@ -18,7 +18,9 @@ import path from "node:path";
 //   free tier 1            → 403 *_required on every mutation; GETs stay open
 //   tier 3 live XDevice    → the SAME 403s (carries `devices` ONLY — C2/C4),
 //                            while a device route still passes (positive control)
-//   tier 5                 → passes
+//   tier 5                 → passes (EVERY module except cyberlab — the
+//                            add-on is never implied, owner: out of Premium
+//                            Plus; its own grant row opens it)
 //   free + live grant row  → passes (the grant IS the purchase record)
 //   no session             → 401 before any entitlement read
 // ---------------------------------------------------------------------------
@@ -529,10 +531,20 @@ test("tier 5 premium passes every web module mutation", async () => {
   assert.equal(r3.status, 200);
   assert.deepEqual(r3.body, { ok: true, id: "fil_1" });
 
+  // TASK_CYBERLAB (owner: "cyberlab ... no more part of the premiumplus") —
+  // tier 5 no longer IMPLIES the add-on: the consent route refuses bare
+  // premium exactly like a free user would, until the grant exists.
   const consent = loadRoute(CONSENT_ROUTE, DEPS.consent);
   const r4 = await consent.POST(req({}));
-  assert.equal(r4.status, 200);
-  assert.equal((r4.body as { ok?: boolean }).ok, true);
+  assert.equal(r4.status, 403);
+  assert.deepEqual(r4.body, { error: "cyberlab_required" });
+  assert.equal(consentCalls, 0, "a non-holder must never reach recordConsent");
+
+  // …and the add-on grant alone opens it — the grant IS the purchase record.
+  seedGrant("u_mod", "cyberlab");
+  const r4b = await consent.POST(req({}));
+  assert.equal(r4b.status, 200);
+  assert.equal((r4b.body as { ok?: boolean }).ok, true);
   assert.equal(consentCalls, 1, "an entitled user must actually record consent");
 
   const profiles = loadRoute(BROWSER_PROFILES_ROUTE, DEPS.browserProfiles);

@@ -266,6 +266,7 @@ const prisma = {
 type AdminSettings = {
   webSubscriptionPriceUsd: number;
   xdevicePriceUsd: number;
+  cyberlabModulePriceUsd: number;
   btcWallet: string | null;
   usdtWallet: string | null;
   usdtErc20Wallet: string | null;
@@ -281,6 +282,7 @@ const SNAPSHOT: Record<string, string | null> = {
 const DEFAULT_SETTINGS: AdminSettings = {
   webSubscriptionPriceUsd: 79.97,
   xdevicePriceUsd: 29,
+  cyberlabModulePriceUsd: 45,
   btcWallet: "BTC_ADMIN",
   usdtWallet: "TRC_ADMIN",
   usdtErc20Wallet: "ERC_ADMIN",
@@ -296,6 +298,13 @@ interface Grant {
   days: number | undefined;
 }
 const grants: Grant[] = [];
+/** TASK_CYBERLAB — what the entitlement grant path was asked for (module grants). */
+const entitlementCalls: Array<{
+  userId: string;
+  key: string;
+  source?: string;
+  expiresInDays?: number;
+}> = [];
 const creditCalls: Array<Record<string, unknown>> = [];
 const notifyCalls: Array<Record<string, unknown>> = [];
 /** TASK_187 B3 — what the invoice-email notifier was asked to send. */
@@ -335,7 +344,16 @@ function loadLicenseService(): {
       },
       PREMIUM_DAYS_PER_CHARGE: 30,
     },
-    "./entitlements": { grantEntitlement: async () => {} },
+    "./entitlements": {
+      grantEntitlement: async (args: {
+        userId: string;
+        key: string;
+        source?: string;
+        expiresInDays?: number;
+      }) => {
+        entitlementCalls.push(args);
+      },
+    },
   }) as unknown as ReturnType<typeof loadLicenseService>;
 }
 
@@ -450,6 +468,7 @@ function resetStore(): void {
   store.lastFindManyArgs = null;
   store.loseClaimRace = false;
   grants.length = 0;
+  entitlementCalls.length = 0;
   creditCalls.length = 0;
   notifyCalls.length = 0;
   invoiceNotifyCalls.length = 0;
@@ -495,6 +514,26 @@ test("POST derives tier from plan — a client-sent tier is ignored (plus=5, xde
   const b = (xd.body as { invoice: InvoiceRow }).invoice;
   assert.equal(b.tier, 3, "premium_xdevice grants tier 3");
   assert.equal(b.amountUsd, 29, "each plan defaults to its OWN configured price");
+});
+
+// TASK_CYBERLAB — the add-on through the money route: derived sentinel tier,
+// its own configured default, admin-editable amount like every other plan.
+test("POST cyberlab — the add-on derives sentinel tier 6 and its own configured default", async () => {
+  const { POST } = loadRoute(CREATE_ROUTE, adminInvoiceDeps());
+
+  const res = await POST(req({ plan: "cyberlab", tier: 5 }), ctx({ id: "u1" }));
+  assert.equal(res.status, 201);
+  const row = (res.body as { invoice: InvoiceRow }).invoice;
+  assert.equal(row.plan, "cyberlab");
+  assert.equal(row.tier, 6, "sentinel 6 from PLANS — a body tier never reaches the row");
+  assert.equal(row.status, "open");
+  assert.equal(row.amountUsd, 45, "defaults to cyberlabModulePriceUsd, not a plan price");
+
+  // The owner's rule holds for the add-on too: the default is pre-filled and
+  // the admin's edited amount is what the user is asked to pay.
+  const edited = await POST(req({ plan: "cyberlab", amountUsd: 19.5 }), ctx({ id: "u2" }));
+  assert.equal(edited.status, 201);
+  assert.equal((edited.body as { invoice: InvoiceRow }).invoice.amountUsd, 19.5);
 });
 
 test("POST defaults amountUsd to the configured plan price and validates every override", async () => {
@@ -644,6 +683,43 @@ test("settleLinkedInvoice honors the invoice's days override — both plans, bot
     ],
     "the override flows to BOTH grant paths; NULL still falls back to 30 (covered above)",
   );
+});
+
+// TASK_CYBERLAB — settlement of the add-on: the entitlement it bought, NEVER a
+// plan tier (sentinel 6 must never reach grantPremium), with the invoice's
+// term override honored exactly like the two plans.
+test("settleLinkedInvoice — a cyberlab invoice grants the MODULE entitlement, never a tier", async () => {
+  seedInvoice({ id: "inv_cyb", userId: "u1", plan: "cyberlab", tier: 6, days: 40 });
+  const ls = loadLicenseService();
+
+  assert.equal(await ls.settleLinkedInvoice({ id: "pay_cyb", userId: "u1", invoiceId: "inv_cyb" }), true);
+  assert.deepEqual(
+    entitlementCalls,
+    [{ userId: "u1", key: "cyberlab", source: "module", expiresInDays: 40 }],
+    "the add-on settles into its entitlement with the invoice's own term",
+  );
+  assert.equal(grants.length, 0, "no tier grant of any kind leaves a cyberlab settlement");
+  assert.equal(store.invoices[0].status, "paid");
+});
+
+// TASK_CYBERLAB — submit derives Payment.product from the plan, so the
+// approval (including the already-settled recovery fall-through) routes to the
+// MODULE consequence — a cyberlab payment can never bump a tier.
+test("submit: a cyberlab invoice derives the cyberlab_module product (module consequence, not a tier)", async () => {
+  seedInvoice({ id: "inv_c", userId: "u1", plan: "cyberlab", tier: 6, amountUsd: 45 });
+  session = { userId: "u1" };
+  const { POST } = loadRoute(SUBMIT_ROUTE, submitDeps());
+
+  const res = await POST(req({ kind: "btc", product: "wallet_topup", invoiceId: "inv_c" }));
+  assert.equal(res.status, 200);
+  const payment = store.payments[0];
+  assert.equal(
+    payment.product,
+    "cyberlab_module",
+    "plan-derived product — body.product ignored, or approval would fire the wrong consequence",
+  );
+  assert.equal(payment.amountUsd, 45, "the invoice's amount, not a list price");
+  assert.equal(payment.invoiceId, "inv_c");
 });
 
 test("POST enforces ONE open invoice per user and points at the existing row", async () => {

@@ -304,11 +304,15 @@ test("listEffectiveEntitlements: tier 3 expired → no devices key (agrees with 
   assert.equal(store.users[0].tier, 1, "and the row reverted");
 });
 
-test("listEffectiveEntitlements: tier 5 → all keys, premium true (unchanged)", async () => {
+test("listEffectiveEntitlements: tier 5 → every key EXCEPT cyberlab (the add-on is never implied)", async () => {
   seedUser("u_p", 5, null);
   const out = await listEffectiveEntitlements("u_p");
   assert.equal(out.premium, true);
-  assert.deepEqual(out.keys.length, ent.ENTITLEMENT_KEYS.length);
+  assert.ok(
+    !out.keys.includes("cyberlab"),
+    "owner: cyberlab is out of the premium-plus catch-all — it needs its own grant",
+  );
+  assert.deepEqual(out.keys.length, ent.ENTITLEMENT_KEYS.length - 1);
 });
 
 test("listEffectiveEntitlements: tier 3 unions its devices key with live grants", async () => {

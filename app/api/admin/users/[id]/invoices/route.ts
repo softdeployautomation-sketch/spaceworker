@@ -5,7 +5,9 @@ import { getAdminSettings } from "@/lib/admin-settings";
 import { notifyUserInvoiceSent } from "@/lib/invoice-notify";
 import { postInvoiceNoticeToUser } from "@/lib/support/tickets";
 
-// TASK_184 B3 (MONEY) — send a premium-plan invoice to a user.
+// TASK_184 B3 (MONEY) — send an invoice to a user: a premium plan (TASK_184)
+// or the Cyber Lab add-on (TASK_CYBERLAB — an extension for any plan, not a
+// plan itself).
 //
 // The bridge between a premium-request ticket (B2's flagged queue rows) and an
 // actual payment: the admin picks a plan, the amount comes PRE-FILLED with the
@@ -30,11 +32,17 @@ import { postInvoiceNoticeToUser } from "@/lib/support/tickets";
 //     amounts for the same plan).
 //
 // The plan constants live here and in PATCH's sibling — the DB CHECK pins the
-// same two strings, so an unknown plan cannot enter the table at all.
+// same three strings (the TASK_CYBERLAB migration widened it), so an unknown
+// plan cannot enter the table at all.
 
 const PLANS = {
   premium_plus: 5, // Premium Plus — every web module
   premium_xdevice: 3, // Premium XDevice — devices only
+  // TASK_CYBERLAB — SENTINEL tier for the add-on, never a User.tier value:
+  // settleLinkedInvoice branches on `plan` FIRST, so 6 can only ever reach the
+  // entitlement grant, never grantPremium (and planLabelForTier(6) is never
+  // asked to label an invoice — every invoice reader names the plan first).
+  cyberlab: 6,
 } as const;
 type PlanName = keyof typeof PLANS;
 
@@ -194,7 +202,9 @@ export async function POST(req: Request, ctx: RouteContext) {
   const amountUsd = Number.isNaN(amount.value)
     ? plan === "premium_plus"
       ? settings.webSubscriptionPriceUsd
-      : settings.xdevicePriceUsd
+      : plan === "cyberlab"
+        ? settings.cyberlabModulePriceUsd
+        : settings.xdevicePriceUsd
     : amount.value;
 
   const invoice = await prisma.premiumInvoice.create({
@@ -244,7 +254,8 @@ export async function POST(req: Request, ctx: RouteContext) {
   // two bound messages and rendered two cards (owner: "it sent two invoices").
   if (threadNotice) {
     try {
-      const planLabel = plan === "premium_plus" ? "Premium Plus" : "Premium XDevice";
+      const planLabel =
+        plan === "premium_plus" ? "Premium Plus" : plan === "cyberlab" ? "Cyber Lab" : "Premium XDevice";
       void postInvoiceNoticeToUser(
         userId,
         invoice.id,

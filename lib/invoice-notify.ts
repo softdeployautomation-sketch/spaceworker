@@ -16,16 +16,18 @@ import { env } from "./env";
 export interface InvoiceSentNotice {
   invoiceId: string;
   to: string; // the invoice's user's email (from the DB row, not the body)
-  plan: string; // "premium_plus" | "premium_xdevice" — DB CHECK pins both
+  plan: string; // "premium_plus" | "premium_xdevice" | "cyberlab" — CHECK pins all three
   amountUsd: number;
 }
 
-// Display names for the two plan strings the DB CHECK allows. Local map (not
-// support-templates) because this is a money email, not a ticket template —
-// and it must keep working even if support copy is reworded.
+// Display names for the plan strings the DB CHECK allows (the two premium
+// plans plus the Cyber Lab add-on). Local map (not support-templates) because
+// this is a money email, not a ticket template — and it must keep working even
+// if support copy is reworded.
 const PLAN_LABELS: Record<string, string> = {
   premium_plus: "Premium Plus",
   premium_xdevice: "Premium XDevice",
+  cyberlab: "Cyber Lab",
 };
 
 // Pay target: the billing page hosts the PremiumInvoiceCard (pay form) — same

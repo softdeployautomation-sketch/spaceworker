@@ -82,10 +82,11 @@ function region(src: string, from: string, to: string | null): string {
 // B2 — THE TEMPLATE CONTRACT (slugs ↔ categories ↔ tiers ↔ plan names)
 // ---------------------------------------------------------------------------
 
-test("B2: exactly two requestable plans, each carrying the tier its invoice will grant", () => {
+test("B2: three requestable products (two plans + the Cyber Lab add-on), each carrying the tier its invoice will grant", () => {
   assert.deepEqual([...PREMIUM_REQUEST_CATEGORIES], [
     "premium_request_plus",
     "premium_request_xdevice",
+    "premium_request_cyberlab",
   ]);
   assert.deepEqual({ ...PREMIUM_REQUEST_TEMPLATES.premium_request_plus }, {
     slug: "premium-plus",
@@ -99,12 +100,21 @@ test("B2: exactly two requestable plans, each carrying the tier its invoice will
     tier: 3,
     planName: "Premium XDevice",
   });
+  // TASK_CYBERLAB — the add-on asks with its own template (owner: "upgrade" is
+  // misleading on an already-premium account) and carries sentinel tier 6.
+  assert.deepEqual({ ...PREMIUM_REQUEST_TEMPLATES.premium_request_cyberlab }, {
+    slug: "cyberlab",
+    label: "Request for Cyber Lab",
+    tier: 6,
+    planName: "Cyber Lab",
+  });
 });
 
 test("B2: supportTemplateFromSlug routes ?template= — null stays technical, unknown falls to tier 5", () => {
   assert.equal(supportTemplateFromSlug(null), "", "absent ?template= preselects nothing");
   assert.equal(supportTemplateFromSlug("premium-xdevice"), "premium_request_xdevice");
   assert.equal(supportTemplateFromSlug("premium-plus"), "premium_request_plus");
+  assert.equal(supportTemplateFromSlug("cyberlab"), "premium_request_cyberlab");
   assert.equal(
     supportTemplateFromSlug("typo-future"),
     "premium_request_plus",
@@ -114,7 +124,7 @@ test("B2: supportTemplateFromSlug routes ?template= — null stays technical, un
 });
 
 test("B2: the composer's options carry the template labels verbatim, and the event name is fixed", () => {
-  assert.equal(SUPPORT_TEMPLATE_OPTIONS.length, 4);
+  assert.equal(SUPPORT_TEMPLATE_OPTIONS.length, 5);
   assert.equal(SUPPORT_TEMPLATE_OPTIONS[0].value, "", "plain technical ticket is first");
   for (const cat of PREMIUM_REQUEST_CATEGORIES) {
     const opt = SUPPORT_TEMPLATE_OPTIONS.find((o) => o.value === cat);
@@ -123,6 +133,7 @@ test("B2: the composer's options carry the template labels verbatim, and the eve
   }
   assert.equal(isPremiumRequestCategory("premium_request_plus"), true);
   assert.equal(isPremiumRequestCategory("premium_request_xdevice"), true);
+  assert.equal(isPremiumRequestCategory("premium_request_cyberlab"), true);
   assert.equal(isPremiumRequestCategory("billing_question"), false);
   assert.equal(isPremiumRequestCategory(""), false);
   assert.equal(isPremiumRequestCategory(null), false);
@@ -284,6 +295,17 @@ test("B1/C3: the module tool lock is price-free and always offers the ticket CTA
     lock,
     /<SupportTicketButton template="premium-plus">/,
     "the locked free-tier surface always offers the tier-5 ticket request (C3)",
+  );
+  // TASK_CYBERLAB — per-module CTA: Cyber Lab asks with its OWN template
+  // (an add-on for any plan), while the tier locks keep the tier-5 request.
+  assert.match(
+    lock,
+    /<SupportTicketButton template="cyberlab">/,
+    "the cyberlab lock asks via the cyberlab add-on template, never an upgrade CTA",
+  );
+  assert.ok(
+    lock.includes("Add Cyber Lab to your subscription"),
+    "the cyberlab CTA uses the owner's extension wording",
   );
 });
 

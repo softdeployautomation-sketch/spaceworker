@@ -87,7 +87,9 @@ export async function POST(req: Request) {
   const productId = invoice
     ? invoice.plan === "premium_xdevice"
       ? "xdevice"
-      : WEB_SUBSCRIPTION.id
+      : invoice.plan === "cyberlab"
+        ? "cyberlab_module" // the add-on's module id: approval fall-through grants the entitlement, never a tier
+        : WEB_SUBSCRIPTION.id
     : typeof body.product === "string" && body.product
       ? body.product
       : WEB_SUBSCRIPTION.id;

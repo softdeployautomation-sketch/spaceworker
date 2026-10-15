@@ -126,26 +126,31 @@ const CATEGORY_FILTERS = [
   { value: "", label: "Every plan" },
   { value: "premium_request_plus", label: "Premium Plus" },
   { value: "premium_request_xdevice", label: "Premium XDevice" },
+  { value: "premium_request_cyberlab", label: "Cyber Lab" },
 ] as const;
 
-/** TASK_187 C1 — the two plans the invoice composer can send. */
-type PlanName = "premium_plus" | "premium_xdevice";
+/** TASK_187 C1 — the products the invoice composer can send (plans + add-on). */
+type PlanName = "premium_plus" | "premium_xdevice" | "cyberlab";
 
 /** Configured defaults from /api/admin/wallets — prefill only, never hardcoded. */
 interface PriceDefaults {
   premium_plus: number;
   premium_xdevice: number;
+  cyberlab: number;
 }
 
 /** Labels from the one source of plan names (support-templates), not retyped. */
 const PLAN_OPTIONS: { value: PlanName; label: string }[] = [
   { value: "premium_plus", label: PREMIUM_REQUEST_TEMPLATES.premium_request_plus.planName },
   { value: "premium_xdevice", label: PREMIUM_REQUEST_TEMPLATES.premium_request_xdevice.planName },
+  { value: "cyberlab", label: PREMIUM_REQUEST_TEMPLATES.premium_request_cyberlab.planName },
 ];
 
-/** The ticket's category picks the starting plan; re-inferred for every ticket. */
+/** The ticket's category picks the starting product; re-inferred for every ticket. */
 function planFromCategory(category: string | null): PlanName {
-  return category === "premium_request_xdevice" ? "premium_xdevice" : "premium_plus";
+  if (category === "premium_request_xdevice") return "premium_xdevice";
+  if (category === "premium_request_cyberlab") return "cyberlab";
+  return "premium_plus";
 }
 
 export default function SupportQueuePanel() {
@@ -400,8 +405,13 @@ export default function SupportQueuePanel() {
       const d: PriceDefaults = {
         premium_plus: Number(prices.webSubscriptionPriceUsd),
         premium_xdevice: Number(prices.xdevicePriceUsd),
+        cyberlab: Number(prices.cyberlabModulePriceUsd),
       };
-      if (Number.isFinite(d.premium_plus) && Number.isFinite(d.premium_xdevice)) {
+      if (
+        Number.isFinite(d.premium_plus) &&
+        Number.isFinite(d.premium_xdevice) &&
+        Number.isFinite(d.cyberlab)
+      ) {
         setPriceDefaults(d);
         if (!invAmountTouched) setInvAmount(String(d[invPlan]));
       }
@@ -519,7 +529,7 @@ export default function SupportQueuePanel() {
       // a bare card never arrives with an empty message above it.
       const note =
         invNote.trim() ||
-        `Your ${invPlan === "premium_xdevice" ? "Premium XDevice" : "Premium Plus"} invoice is ready — the card below has the amount and payment addresses.`;
+        `Your ${PLAN_OPTIONS.find((o) => o.value === invPlan)?.label ?? "Premium Plus"} invoice is ready — the card below has the amount and payment addresses.`;
       const mres = await fetch(
         `/api/admin/support/tickets/${encodeURIComponent(selected)}/messages`,
         {

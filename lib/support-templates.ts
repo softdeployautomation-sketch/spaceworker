@@ -11,7 +11,13 @@
 /** Custom-event name: an Upgrade CTA opens the widget in place, wherever it lives. */
 export const SUPPORT_OPEN_EVENT = "sw:open-support";
 
-/** Two requestable plans. `tier` is what the admin's invoice grants (B3/B4). */
+/**
+ * Three requestable products: the two premium plans (B3/B4) plus Cyber Lab —
+ * granted as a standalone add-on entitlement (owner: NOT part of Premium Plus;
+ * "upgrade" wording is misleading on an already-premium account). `tier` is what
+ * the admin's invoice row carries; Cyber Lab uses sentinel 6 (module entitlement,
+ * not a tier), so every display reader must branch on `plan` FIRST.
+ */
 export const PREMIUM_REQUEST_TEMPLATES = {
   premium_request_plus: {
     slug: "premium-plus",
@@ -24,6 +30,12 @@ export const PREMIUM_REQUEST_TEMPLATES = {
     label: "Request for Premium XDevice",
     tier: 3,
     planName: "Premium XDevice",
+  },
+  premium_request_cyberlab: {
+    slug: "cyberlab",
+    label: "Request for Cyber Lab",
+    tier: 6,
+    planName: "Cyber Lab",
   },
 } as const;
 
@@ -43,10 +55,15 @@ export const SUPPORT_TEMPLATE_OPTIONS: ReadonlyArray<{ value: string; label: str
   { value: "billing_question", label: "Billing question" },
   { value: "premium_request_plus", label: PREMIUM_REQUEST_TEMPLATES.premium_request_plus.label },
   { value: "premium_request_xdevice", label: PREMIUM_REQUEST_TEMPLATES.premium_request_xdevice.label },
+  { value: "premium_request_cyberlab", label: PREMIUM_REQUEST_TEMPLATES.premium_request_cyberlab.label },
 ];
 
 export function isPremiumRequestCategory(value: string | null | undefined): value is PremiumRequestCategory {
-  return value === "premium_request_plus" || value === "premium_request_xdevice";
+  return (
+    value === "premium_request_plus" ||
+    value === "premium_request_xdevice" ||
+    value === "premium_request_cyberlab"
+  );
 }
 
 /**
@@ -54,13 +71,16 @@ export function isPremiumRequestCategory(value: string | null | undefined): valu
  *
  * - ABSENT (null) → "" (no preselect: a plain "New ticket" stays a technical ticket).
  * - `premium-xdevice` → tier-3 template.
+ * - `cyberlab` → the Cyber Lab add-on template (extension, not an upgrade).
  * - anything else present (incl. `premium-plus` and unknown future values) → tier-5
  *   template — premium-plus is B2's documented default for a present-but-unrecognized
  *   slug, so a typo can never silently file a premium request under "technical".
  */
 export function supportTemplateFromSlug(slug: string | null): string {
   if (slug === null) return "";
-  return slug === "premium-xdevice" ? "premium_request_xdevice" : "premium_request_plus";
+  if (slug === "premium-xdevice") return "premium_request_xdevice";
+  if (slug === "cyberlab") return "premium_request_cyberlab";
+  return "premium_request_plus";
 }
 
 /**

@@ -69,7 +69,18 @@ export async function settleLinkedInvoice(payment: LinkedInvoicePayment): Promis
   // TASK_187 B6 — the admin's per-invoice term override wins when set; NULL
   // keeps the standard term, so pre-TASK_187 invoices are unaffected.
   const days = invoice.days ?? PREMIUM_DAYS_PER_CHARGE;
-  if (invoice.tier === 3) {
+  // TASK_CYBERLAB — the add-on settles into the MODULE entitlement it bought,
+  // never a plan tier: `plan` branches FIRST so the sentinel tier 6 can only
+  // reach grantEntitlement (which upserts/stacks like every module grant),
+  // never grantPremium. Priority matters — branch order is plan, then tier.
+  if (invoice.plan === "cyberlab") {
+    await grantEntitlement({
+      userId: payment.userId,
+      key: "cyberlab",
+      source: "module",
+      expiresInDays: days,
+    });
+  } else if (invoice.tier === 3) {
     await grantXDeviceTerm(payment.userId, days);
   } else {
     await grantPremium(payment.userId, days);

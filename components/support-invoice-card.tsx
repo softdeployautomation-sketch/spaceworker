@@ -33,6 +33,7 @@ export interface ThreadInvoiceCardData {
 const PLAN_LABELS: Record<string, string> = {
   premium_plus: PREMIUM_REQUEST_TEMPLATES.premium_request_plus.planName,
   premium_xdevice: PREMIUM_REQUEST_TEMPLATES.premium_request_xdevice.planName,
+  cyberlab: PREMIUM_REQUEST_TEMPLATES.premium_request_cyberlab.planName,
 };
 
 const CHAINS = [

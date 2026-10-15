@@ -19,9 +19,12 @@ import { UPGRADE_TO_PREMIUM_PLUS } from "@/lib/plan-name";
 // answers) no lock is painted. The server gate is the authority either way; this
 // card is UX, never protection.
 //
-// CTA (B2, shipped): "Upgrade to Premium Plus" opens the support widget in place,
-// preselected on the "Request for Premium Plus" template — no prices on web (B1),
-// and the admin answers the request with the invoice flow (B3/B4).
+// CTA (B2, shipped; cyberlab per-module): the three premium tools open the support
+// widget in place, preselected on the "Request for Premium Plus" template — no prices
+// on web (B1), and the admin answers the request with the invoice flow (B3/B4).
+// Cyber Lab is deliberately NOT that CTA: owner's call — "upgrade to Premium Plus" is
+// misleading on an account that is already Premium Plus, so Cyber Lab asks with its
+// own template: an extension users bolt onto whatever plan they have (free included).
 
 export type ModuleLockKey = "extractor" | "cyberlab" | "hosting" | "browser";
 
@@ -92,11 +95,11 @@ const MODULE_LOCK_COPY: Record<ModuleLockKey, LockCopy> = {
     ],
   },
   cyberlab: {
-    title: "Cyber Lab is a premium tool",
+    title: "Cyber Lab is a separate add-on",
     bullets: [
-      "Isolated ranges, attested targets and evidence-trailed runs are premium.",
-      "The lab's live capacity envelope stays visible — nothing about it is hidden.",
-      "This tab stays open so you can see exactly what the lab does.",
+      "Run real scans and attack simulations against systems you own — every run recorded as evidence.",
+      "An extension that works alongside your current plan, whatever plan you're on.",
+      "Request it here and the admin grants access for the duration you're invoiced for.",
     ],
   },
   hosting: {
@@ -157,9 +160,13 @@ export function ModuleToolLockCard({
           <li key={line}>{line}</li>
         ))}
       </ul>
-      <SupportTicketButton template="premium-plus">
-        {UPGRADE_TO_PREMIUM_PLUS}
-      </SupportTicketButton>
+      {moduleKey === "cyberlab" ? (
+        <SupportTicketButton template="cyberlab">Add Cyber Lab to your subscription</SupportTicketButton>
+      ) : (
+        <SupportTicketButton template="premium-plus">
+          {UPGRADE_TO_PREMIUM_PLUS}
+        </SupportTicketButton>
+      )}
     </div>
   );
 }

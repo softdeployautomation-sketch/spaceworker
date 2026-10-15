@@ -3805,10 +3805,12 @@ model PremiumInvoice {
   // REFUSE rather than silently destroy the record of money owed/paid.
   user       User      @relation(fields: [userId], references: [id], onDelete: Restrict)
   // "premium_plus" (tier 5 — every web module) | "premium_xdevice" (tier 3 —
-  // devices only). Pinned with a CHECK in the migration: an unknown plan would
-  // grant the wrong tier, so unlike SupportTicket.status this one is CLOSED.
+  // devices only) | "cyberlab" (SENTINEL tier 6 — the standalone add-on: its
+  // settlement grants the module entitlement, never a User.tier). Pinned with
+  // a CHECK in the migration: an unknown plan would grant the wrong tier, so
+  // unlike SupportTicket.status this one is CLOSED.
   plan       String
-  tier       Int // 3 | 5 — derived from plan, stored for self-description
+  tier       Int // 3 | 5 | 6 — derived from plan, stored for self-description
   amountUsd  Float // admin-editable before send AND while open (validated > 0)
   // TASK_187 S3 (MONEY) — admin-override term for THIS invoice, in days.
   // NULL = the standard term (PREMIUM_DAYS_PER_CHARGE), so every pre-TASK_187

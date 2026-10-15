@@ -15,6 +15,9 @@ import { getAdminSession } from "@/lib/admin-auth";
 const PLANS = {
   premium_plus: 5,
   premium_xdevice: 3,
+  // TASK_CYBERLAB — sentinel tier for the add-on (see POST sibling: settle
+  // branches on `plan` first, so 6 never reaches a tier-grant path).
+  cyberlab: 6,
 } as const;
 type PlanName = keyof typeof PLANS;
 

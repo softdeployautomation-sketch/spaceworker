@@ -3,7 +3,13 @@ import { prisma } from "@/lib/prisma";
 import { getAdminSession } from "@/lib/admin-auth";
 import { ALL_PRODUCTS, type AdminSettingPriceFields } from "@/lib/products";
 
-const PRICE_FIELDS = ALL_PRODUCTS.map((p) => p.priceField);
+// TASK_CYBERLAB — Cyber Lab's price is admin-only (a BY_ID product with no
+// store card), so no ALL_PRODUCTS entry carries its priceField: listed
+// explicitly so it still reads/writes with the same "> 0" rule as every other
+// price and both invoice composers can prefill from it.
+const EXTRA_PRICE_FIELDS = ["cyberlabModulePriceUsd"] as const;
+
+const PRICE_FIELDS = [...ALL_PRODUCTS.map((p) => p.priceField), ...EXTRA_PRICE_FIELDS];
 
 // TASK_99 (2026-09-26) — reads/writes every product's price generically from
 // ALL_PRODUCTS instead of a hand-maintained field list, so adding a product
