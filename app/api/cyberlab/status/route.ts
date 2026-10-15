@@ -60,6 +60,12 @@ export async function GET() {
       maxRunsPerDay: settings.cyberlabMaxRunsPerDay,
       toolStaleAfterDays: settings.cyberlabToolStaleAfterDays,
       researchRefreshDays: settings.cyberlabResearchRefreshDays,
+      // TASK_156B REAL EGRESS — the friction=0 posture, surfaced so the UI can
+      // explain (not enforce) it. The master switch gates every real packet.
+      liveEgressEnabled: settings.cyberlabLiveEgressEnabled === true,
+      egressRequireOwnershipProof: settings.cyberlabEgressRequireOwnershipProof === true,
+      egressScopeGuard: settings.cyberlabEgressScopeGuard === true,
+      egressAllowList: settings.cyberlabEgressAllowList ?? "",
     },
   });
 }

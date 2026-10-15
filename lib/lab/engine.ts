@@ -19,10 +19,14 @@
 //      throws between 5 and 8 lands the range in `failed` with the error — a
 //      range NEVER dangles in a live state after the run attempt.
 //
-// HONEST LIMIT: mode is "dry-run" — the evidence artefacts are SYNTHETIC and
-// say so in their own content; nothing here touches a real host. Live
-// execution is the owner-infra phase (C2b) and will reuse this same
-// gate → preflight → range → episode chain.
+// HONEST LIMIT: the smoke and recon scenarios run in "dry-run" mode — the
+// evidence artefacts are SYNTHETIC and say so in their own content; nothing
+// touches a real host. The LIVE scenario (klass "live", REAL EGRESS) makes REAL
+// TCP connects out of the platform, but ONLY when the ship-dark master dial
+// (AdminSetting.cyberlabLiveEgressEnabled) is on — while it is off (the default)
+// a live-class scenario is refused, so no packet can leave by accident. Live
+// runs reuse this exact gate → preflight → range → episode chain and label their
+// artefacts `synthetic: false` / `mode: "live"`.
 //
 // Governor wiring: the slot's live-count IS the LabRange state (see the
 // labRanges registry entry) — reaching torn_down/failed releases it, so there
@@ -40,6 +44,8 @@ import { createEpisode } from "./episode";
 import type { EvidenceArtefact } from "./evidence";
 import { validateReconScope } from "./recon-core";
 import { generateReconTelemetry } from "./recon-runner";
+import { generateLiveTelemetry } from "./live-runner";
+import { validateLiveScope, LIVE_DEFAULT_PORTS, normalizeLivePort } from "./live-core";
 import { activateRange, beginTeardown, completeTeardown, createLabRange, failRange, provisionRange } from "./range";
 import { generateSmokeTelemetry, type TimelineEntry } from "./runner";
 import { getScenarioBySlug, SMOKE_SCENARIO_SLUG } from "./scenarios";
@@ -58,7 +64,7 @@ export interface LabRunResult {
   rangeId: string;
   episodeId: string;
   scenarioSlug: string;
-  mode: "dry-run";
+  mode: "dry-run" | "live";
   targets: NormalizedTarget[];
   techniques: string[];
   telemetrySignatures: string[];
@@ -95,6 +101,14 @@ export async function startLabRun(params: {
    * a silent skip.
    */
   victimDeviceIds?: string[];
+  /**
+   * TASK_156B REAL EGRESS — the ports a `live` scenario probes per host. Only
+   * honoured when the scenario class is `live` AND the ship-dark master dial is
+   * on; ignored (and defaulted to LIVE_DEFAULT_PORTS) otherwise. Values are
+   * normalised to 1..65535 server-side; an out-of-range port is a refusal, never
+   * a silent clamp, so the caller's declared scope and the evidence agree.
+   */
+  ports?: number[];
 }): Promise<LabRunResult> {
   // 1. The §12.9 door: disabled master switch, missing entitlement or stale
   //    consent all refuse here, server-side, before anything else happens.
@@ -116,6 +130,18 @@ export async function startLabRun(params: {
   const isRecon = scenario.klass === "recon";
 
   const settings = await getAdminSettings();
+
+  // TASK_156B REAL EGRESS — the `live` seam. A `live`-class scenario makes REAL
+  // TCP connects out of the platform, but ONLY when the ship-dark master dial is
+  // on. While it is off (the default), a live-class scenario is refused outright
+  // (scenario_not_allowed reaches it via the disabled row) so no packet can be
+  // sent by accident. The dial check is re-asserted here so a manually re-enabled
+  // row can never bypass the switch.
+  const isLive = scenario.klass === "live" && settings.cyberlabLiveEgressEnabled === true;
+  if (scenario.klass === "live" && !isLive) {
+    throw new LabRunRefusedError(`live_egress_disabled (${slug})`);
+  }
+
   if (params.targets.length === 0) throw new LabRunRefusedError("no_targets");
   if (params.targets.length > settings.cyberlabMaxTargetsPerScenario) {
     throw new LabRunRefusedError(`too_many_targets (${params.targets.length}/${settings.cyberlabMaxTargetsPerScenario})`);
@@ -154,17 +180,48 @@ export async function startLabRun(params: {
     // 4. Pre-flight AFTER the range exists so range-bound rows and the audit
     //    trail have a rangeId; any refusal is recorded and rethrown.
     //
-    //    Two paths (Slice 2):
-    //      • attested (default) — every target must match a FRESH attested
-    //        LabTarget row (§5.2); a refusal writes LabAbuseReport and throws.
-    //      • recon (scan-first) — NO attested device required. The caller's
-    //        declared scope is validated by validateReconScope: `invalid` values
-    //        are a plain validation refusal (no abuse report — mirrors the
+    //    Three paths (Slice 2 + REAL EGRESS):
+    //      • live (scan-first, REAL packets) — NO attested device required. The
+    //        caller's declared scope is validated by validateLiveScope with the
+    //        owner's OPTIONAL dials (breadth guard + allow-list, both default
+    //        open). `not_normalized` is a plain refusal; a guard refusal is a
+    //        plain TargetRefusedError (NOT audited — this is the owner's
+    //        friction=0 posture, not the third-party-scanning guard). Only
+    //        reachable when the ship-dark master dial is on (checked above).
+    //      • recon (scan-first, SIMULATED) — NO attested device required. The
+    //        caller's declared scope is validated by validateReconScope: `invalid`
+    //        values are a plain validation refusal (no abuse report — mirrors the
     //        attest boundary note); a `tooBroad` network is the §5.2
     //        third-party-scanning guard — audited (reason recon_scope_refused)
     //        and refused with TargetRefusedError (403).
+    //      • attested (default) — every target must match a FRESH attested
+    //        LabTarget row (§5.2); a refusal writes LabAbuseReport and throws.
     let targets: NormalizedTarget[];
-    if (isRecon) {
+    let livePorts: number[] | null = null;
+    if (isLive) {
+      const allowList = (settings.cyberlabEgressAllowList ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const scope = validateLiveScope(params.targets, {
+        scopeGuard: settings.cyberlabEgressScopeGuard === true,
+        allowList,
+      });
+      if (scope.issues.length > 0) {
+        throw new TargetRefusedError(
+          `live scope refused: ${scope.issues.map((p) => `${p.value} (${p.reason})`).join(", ")}`,
+          scope.issues.map((p) => ({ kind: p.kind, value: p.value, reason: p.reason })),
+        );
+      }
+      // Ports: honour the caller's list, else the default service set. An
+      // out-of-range port is a plain refusal (never a silent clamp) so the
+      // declared scope and the signed evidence always agree.
+      const requested = params.ports && params.ports.length > 0 ? params.ports : [...LIVE_DEFAULT_PORTS];
+      const badPort = requested.find((p) => normalizeLivePort(p) === null);
+      if (badPort !== undefined) throw new LabRunRefusedError(`live_port_invalid (${badPort})`);
+      livePorts = requested.map((p) => normalizeLivePort(p) as number);
+      targets = scope.kept;
+    } else if (isRecon) {
       const scope = validateReconScope(params.targets);
       if (scope.invalid.length > 0) {
         throw new LabRunRefusedError(
@@ -207,20 +264,32 @@ export async function startLabRun(params: {
 
     // 6. Dry-run execute (synthetic, declared-targets-guarded). The runner is
     //    chosen by scenario class: recon → generateReconTelemetry (declared
-    //    scope); anything else → generateSmokeTelemetry (attested lab hosts).
-    //    Both return the same shape and enforce the same hard line (they throw
-    //    if synthetic telemetry references a value outside the declared set).
+    //    scope); live → generateLiveTelemetry (REAL TCP connects); anything
+    //    else → generateSmokeTelemetry (attested lab hosts). All return the
+    //    same shape and enforce the same hard line (they throw if telemetry
+    //    references a value outside the declared set). `mode` is threaded
+    //    through so the evidence, the episode row and the result all agree.
     const startedAt = new Date();
     const endedAt = new Date();
-    const run = isRecon
-      ? generateReconTelemetry({ rangeId: range.id, scenarioSlug: slug, targets, startedAt, endedAt })
-      : generateSmokeTelemetry({
+    const mode: "dry-run" | "live" = isLive ? "live" : "dry-run";
+    const run = isLive
+      ? await generateLiveTelemetry({
           rangeId: range.id,
           scenarioSlug: slug,
-          targets: targets.map((t) => t.value),
+          targets,
+          ports: livePorts ?? [],
           startedAt,
           endedAt,
-        });
+        })
+      : isRecon
+        ? generateReconTelemetry({ rangeId: range.id, scenarioSlug: slug, targets, startedAt, endedAt })
+        : generateSmokeTelemetry({
+            rangeId: range.id,
+            scenarioSlug: slug,
+            targets: targets.map((t) => t.value),
+            startedAt,
+            endedAt,
+          });
     // 6b. C2b victim sensor (§13): the user's OWN devices' agent rows for this
     //     run's window become REAL evidence — same manifest, same signature.
     //     A refusal here (device not readable by this user) fails the range and
@@ -244,7 +313,7 @@ export async function startLabRun(params: {
 
     const artefacts: EvidenceArtefact[] = [
       ...run.artefacts,
-      { path: "timeline.json", content: JSON.stringify({ mode: "dry-run", scenarioSlug: slug, entries: run.timeline }, null, 2) },
+      { path: "timeline.json", content: JSON.stringify({ mode, scenarioSlug: slug, entries: run.timeline }, null, 2) },
     ];
     if (victimEnvelope !== null) {
       // The manifest hashes the artefact bytes; the episode timeline Json stores
@@ -257,7 +326,7 @@ export async function startLabRun(params: {
       rangeId: range.id,
       userId: params.userId,
       scenarioSlug: slug,
-      mode: "dry-run",
+      mode,
       techniqueIds: run.techniques,
       telemetrySignatures: run.telemetrySignatures,
       timeline: run.timeline,
@@ -265,14 +334,17 @@ export async function startLabRun(params: {
       victim: victimEnvelope,
       startedAt,
       endedAt,
-      outcome: "completed_dry_run",
+      outcome: isLive ? "completed_live" : "completed_dry_run",
     });
 
     // 8. Verified teardown — the only acceptable exit besides `failed`.
     //    C2a verification basis (honest): the dry-run provisions NOTHING
     //    outside this database, and the runner has no I/O, so teardown is
     //    proven by the state transition completing with the range's own row
-    //    as the whole inventory. Live ranges (C2b) verify against real hosts.
+    //    as the whole inventory. A LIVE run's verification is the completed
+    //    teardown PLUS the recorded probe results in surface.json — real
+    //    packets were sent and every open port is captured in the signed
+    //    evidence (REAL EGRESS §2).
     await beginTeardown(range.id);
     await completeTeardown(range.id, true);
 
@@ -280,7 +352,7 @@ export async function startLabRun(params: {
       rangeId: range.id,
       episodeId: episode.id,
       scenarioSlug: slug,
-      mode: "dry-run",
+      mode,
       targets,
       techniques: run.techniques,
       telemetrySignatures: run.telemetrySignatures,

@@ -29,6 +29,11 @@ const StartBody = z.object({
   // The server never trusts these as an ownership claim: the sensor's userId-
   // scoped query decides readability and a miss is a §5.2 refusal (403).
   victimDeviceIds: z.array(z.string().min(1).max(64)).max(8).optional(),
+  // TASK_156B REAL EGRESS — ports a `live` scenario probes per host. Only
+  // honoured when the scenario class is `live` AND the ship-dark master dial is
+  // on; the engine defaults to LIVE_DEFAULT_PORTS when omitted and refuses an
+  // out-of-range port. Capped so one request cannot enumerate the whole space.
+  ports: z.array(z.number().int().min(1).max(65_535)).min(1).max(64).optional(),
 });
 
 export async function POST(req: Request) {
@@ -47,6 +52,7 @@ export async function POST(req: Request) {
       targets: parsed.data.targets,
       sourceIp: clientIp(req),
       victimDeviceIds: parsed.data.victimDeviceIds,
+      ports: parsed.data.ports,
     });
     return NextResponse.json({
       ok: true,

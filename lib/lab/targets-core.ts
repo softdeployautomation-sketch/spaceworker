@@ -29,7 +29,11 @@ export type PreflightRefusalReason =
   // RECON_MIN_NETWORK_PREFIX (lib/lab/recon-core.ts). It is a real pre-flight
   // refusal (the §5.2 third-party-scanning guard), so it belongs in this union
   // rather than being flattened into "unattested".
-  | "too_broad_scope";
+  | "too_broad_scope"
+  // TASK_156B REAL EGRESS — the optional live-egress allow-list dial refused a
+  // declared target (lib/lab/live-core.ts). Only emitted when the owner turns
+  // cyberlabEgressAllowList on; a real pre-flight refusal, so it belongs here.
+  | "not_in_allow_list";
 
 export interface PreflightInput {
   kind: string;

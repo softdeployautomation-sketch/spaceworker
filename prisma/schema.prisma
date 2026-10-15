@@ -627,6 +627,26 @@ model AdminSetting {
   cyberlabSentinelFreezeOnRefusals    Int    @default(3)
   cyberlabToolStaleAfterDays          Int    @default(180)
   cyberlabResearchRefreshDays         Int    @default(30)
+  // TASK_156B REAL EGRESS (PLAN_CYBERLAB_REAL_EGRESS.md §1) — the owner's
+  // friction=0 posture, as DIALS that default OPEN so the posture is the
+  // owner's policy, re-tightenable per-range without a rebuild. Ships DARK:
+  // cyberlabLiveEgressEnabled=false means today's synthetic dry-run is
+  // unchanged until the owner flips it before filming the ad.
+  //   cyberlabLiveEgressEnabled             = THE master switch for real packets.
+  //                                           false => every run stays synthetic.
+  //   cyberlabEgressRequireOwnershipProof   = if true, a public server-egress
+  //                                           target must carry a DNS-TXT
+  //                                           challenge token first (anti-proxy).
+  //                                           false for the grant-only closed beta.
+  //   cyberlabEgressScopeGuard              = if true, re-applies the /24 breadth
+  //                                           guard on declared scopes. false =
+  //                                           scan however you like.
+  //   cyberlabEgressAllowList               = comma-separated CIDRs/hosts egress
+  //                                           may reach; empty = allow all.
+  cyberlabLiveEgressEnabled             Boolean @default(false)
+  cyberlabEgressRequireOwnershipProof   Boolean @default(false)
+  cyberlabEgressScopeGuard              Boolean @default(false)
+  cyberlabEgressAllowList               String  @default("")
 }
 
 model Mailbox {

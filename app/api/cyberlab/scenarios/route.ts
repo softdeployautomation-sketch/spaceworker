@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
-import { ensureReconScenario, ensureSmokeScenario, getEnabledScenarios } from "@/lib/lab/scenarios";
+import { getAdminSettings } from "@/lib/admin-settings";
+import { ensureLiveEgressScenario, ensureReconScenario, ensureSmokeScenario, getEnabledScenarios } from "@/lib/lab/scenarios";
 import { moduleToolsDenied } from "@/lib/module-gate";
 import { getCurrentUser } from "@/lib/session-user";
 
@@ -10,7 +11,9 @@ import { getCurrentUser } from "@/lib/session-user";
 // (idempotent upsert) so a fresh environment always has exactly one runnable
 // dry-run scenario. TASK_156B Slice 2 — the recon (scan-first) row is ensured
 // the same way, so scan-first recon is always available without an attested
-// device (see lib/lab/recon-core.ts).
+// device (see lib/lab/recon-core.ts). TASK_156B REAL EGRESS — the live row is
+// ensured but bound to the ship-dark master dial (it only appears when
+// cyberlabLiveEgressEnabled is on), and its reported `mode` is honest: "live".
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -18,8 +21,10 @@ export async function GET() {
   const denied = await moduleToolsDenied(user.id, "cyberlab");
   if (denied) return denied;
 
+  const settings = await getAdminSettings();
   await ensureSmokeScenario();
   await ensureReconScenario();
+  await ensureLiveEgressScenario();
   const scenarios = await getEnabledScenarios();
   return NextResponse.json({
     scenarios: scenarios.map((s) => ({
@@ -31,8 +36,11 @@ export async function GET() {
       blastRadius: s.blastRadius,
       cleanup: s.cleanup,
       author: s.author,
-      // C2a runs dry-run only; live mode is C2b (owner infra).
-      mode: "dry-run",
+      // Honest per-row mode: a `live` row sends real packets; everything else is
+      // a dry-run. `liveEgressEnabled` is surfaced so the UI can explain WHY the
+      // live scenario is (or is not) present without a second settings call.
+      mode: s.klass === "live" ? "live" : "dry-run",
     })),
+    liveEgressEnabled: settings.cyberlabLiveEgressEnabled === true,
   });
 }

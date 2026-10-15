@@ -8,11 +8,15 @@ import "server-only";
 import { db } from "@/lib/db";
 import { SMOKE_TECHNIQUE_IDS } from "./runner";
 import { RECON_TECHNIQUE_IDS } from "./recon-core";
+import { LIVE_TECHNIQUE_IDS } from "./live-core";
 
 export const SMOKE_SCENARIO_SLUG = "smoke-network-baseline";
 
 /** TASK_156B Slice 2 — the scan-first recon scenario (klass "recon"). */
 export const RECON_SCENARIO_SLUG = "recon-attack-surface";
+
+/** TASK_156B REAL EGRESS — the live server-egress scan scenario (klass "live"). */
+export const LIVE_EGRESS_SCENARIO_SLUG = "live-server-egress";
 
 /**
  * Idempotently ensure the smoke scenario row exists and is enabled. The
@@ -77,4 +81,46 @@ export async function ensureReconScenario() {
 
 export async function getScenarioBySlug(slug: string) {
   return db.labScenario.findUnique({ where: { slug } });
+}
+
+/**
+ * TASK_156B REAL EGRESS (§2) — idempotently ensure the LIVE server-egress scan
+ * scenario row. Unlike smoke/recon, its `enabled` flag is BOUND to the ship-dark
+ * master dial (AdminSetting.cyberlabLiveEgressEnabled): while the dial is OFF
+ * (the default), the row is created/updated DISABLED, so it never appears in the
+ * allow-list and no real packet can ever be sent. The owner flips the dial on
+ * right before filming the ad, and the scenario self-heals to enabled on the
+ * next /api/cyberlab/scenarios read.
+ *
+ * `blastRadius` is the plain-language worst case (§6), and for a live run it is
+ * HONEST: real TCP packets leave the platform and touch the host you name. It
+ * only enumerates the scope you declare; the breadth guard and allow-list are
+ * optional dials (default open) — the guardrail that actually matters is that
+ * CyberLab is grant-only and off the Premium Plus catch-all, so the only people
+ * who ever reach this button are hand-verified by the owner.
+ */
+export async function ensureLiveEgressScenario() {
+  // The row stays ALWAYS enabled — the engine's master-dial check
+  // (isLive = klass === "live" && cyberlabLiveEgressEnabled) is the SOLE gate.
+  // Binding row.enabled to the dial here would be redundant AND harmful: the
+  // dial can flip after this ensure (tests, or the owner toggling mid-session),
+  // and a disabled row would short-circuit to scenario_not_allowed before the
+  // engine's honest live_egress_disabled refusal ever ran.
+  return db.labScenario.upsert({
+    where: { slug: LIVE_EGRESS_SCENARIO_SLUG },
+    update: { enabled: true },
+    create: {
+      slug: LIVE_EGRESS_SCENARIO_SLUG,
+      name: "Live server egress scan (real packets)",
+      klass: "live",
+      techniqueIds: [...LIVE_TECHNIQUE_IDS],
+      adversaryProfile: "authorized-pentest",
+      blastRadius:
+        "REAL. This run sends real TCP connect probes from our servers to the host you declare and records open/closed/filtered for each port. It only touches the exact scope you name — no broader network is swept — but the packets genuinely leave the platform, so only ever point it at equipment you own and are authorized to test.",
+      cleanup:
+        "Automatic: the LabRange reaches torn_down via a VERIFIED teardown before the run is considered finished; an unverified teardown fails the range (§8.5).",
+      enabled: true,
+      author: "staff",
+    },
+  });
 }
