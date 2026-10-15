@@ -65,3 +65,23 @@ The money-flow batch (`3eb3186`) **is deployed**. Confirmed on the box:
 - **Replay 404s** → the `app/cyberlab/replay/[id]` dir didn't rsync (bracketed `[id]` path — some rsync configs need `-s`/shell-escape; verify the literal `[id]` dir exists on the box).
 - **Guide missing in admin** → the 4-line `admin-panel.tsx` edit didn't land (check the import at L17).
 - **Tool-bridge attach 404s** → same `[id]` bracket issue on the artefacts API route.
+
+---
+
+## DEPLOY RECORD — executed & verified (senior verification agent · 2026-10-15 18:20 CEST)
+
+**How:** `spaceworker/scripts/deploy-vps.sh` with `LOCAL_ROOT=/Users/mikeolab/sw-lab`, file list = §2's `3eb3186..5682d9b` 15-file delta **+ this handoff doc (16 paths)**, no `--prune` (additive). `npm ci` skipped deliberately: the `package.json` delta is scripts-only (`test:lab` line); dependencies untouched.
+
+**Preflight (all green):** drift matrix — every shared file on the box was byte-identical to the `3eb3186` base (`admin-panel.tsx` c1d59cb0, `cyberlab-ops-console.tsx` 086c8819, `package.json` e132c06a), so the §4 merge question resolved itself: task205's hosting edits never touched `admin-panel.tsx`, and the 4-line guide diff applied as a pure fast-forward. Import closure: 0 broken, 9 in-ship-set, 20 external deps all present on the box. No `prisma/` paths in the delta. Safety copy taken: `/root/.next.LSBPhV9fXXLIV3nozjbo6-safety`.
+
+**Result:**
+- BUILD_ID `LSBPhV9fXXLIV3nozjbo6` → **`nzk9TP7dXmPl0ATw-2IqI`**; restart 17:59:44 CEST; service active; maintenance OFF; runtime paths (`.env`/`.next`/`node_modules`/`static`) asserted; rollback available (`.next.prev` + safety copy).
+- md5: **16/16** shipped files byte-identical to sw-lab `12ff9a8`.
+- `npm run test:lab` on the box: **71/71 pass, 0 fail** — all 10 files ran (replay/bridge/guide test lines confirmed in the log; §5's "97/97" was an estimate).
+- Functional (`spaceworker/scripts/cyberlab-s7-functional.sh` → `/tmp/cy7-functional.txt`): `/cyberlab` 200 · `/cyberlab/replay/<id>` **200 (NEW route → the new build serves)** · GET artefacts **405** (route mounted, POST-only) · POST unauth **401** · POST auth'd **403 `cyberlab_required`** (gate live; ZERO cyberlab entitlement rows exist yet — grant via the new admin Guide). All refusal paths — zero rows written.
+- Sweeps: box root `*.test.*=0 *.bak=0 *.orig=0`; cyberlab dirs 0 strays; literal `[id]` dirs present (`runs/[id]/artefacts/`, `replay/[id]/page.tsx`); journal clean since restart; public root 200.
+
+**Known pre-existing (NOT from this deploy):** 54 untracked legacy `*.tsx` copies at `/opt/spaceworker/` root (mtimes 09-08 → 10-08; untracked in every repo; tsc reads them — HANDOFF_T209_FINISH noted "13", actual 54).
+
+**Still unpushed:** sw-lab `main` (now +1 docs commit) remains LOCAL-ONLY per §3.
+
