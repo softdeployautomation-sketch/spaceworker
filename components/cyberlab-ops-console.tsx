@@ -8,6 +8,7 @@ import {
   type LabStageId,
 } from "@/lib/lab/console-map";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { CyberLabToolBridge } from "@/components/cyberlab-tool-bridge";
 
 // TASK_156B UI-1 (PLAN_CYBERLAB_STANDALONE_UI.md §3 S2/S3) — the Operation
 // Console, the standalone /cyberlab section's main event. Three panes — the
@@ -779,6 +780,14 @@ export function CyberLabOpsConsole() {
             ))}
           </div>
         </section>
+
+        {/* ── Tool bridge (S7-B): deep-links out, output returns signed ────── */}
+        <CyberLabToolBridge
+          rangeId={openFrame?.rangeId ?? null}
+          onAttached={() => {
+            void refresh();
+          }}
+        />
 
         {/* ── Attested targets (the legal spine) ───────────────────────────── */}
         <section className="lab-panel rounded-lg p-5">
