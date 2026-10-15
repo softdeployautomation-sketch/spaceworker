@@ -116,3 +116,10 @@ Gates at commit time (all green): `npx prisma generate` ok · `npx tsc --noEmit`
 - **No `migrate deploy`, no repair of the 2026-09-22 failed row, no task205 shipping** — pre-existing platform/history state, flagged for the deploy + hosting owners.
 - **Zero overlap** with the hosting agent's runtime code beyond the shared-file notes above.
 
+
+
+---
+
+## 6. Addendum (same day, after this doc was committed in the money-flow batch)
+
+A later commit — **S7-A Episode Replay player** (`lib/lab/replay.ts`, `components/cyberlab-replay-player.tsx`, `app/cyberlab/replay/[id]/`, one added link inside `components/cyberlab-ops-console.tsx`, `tests/lab-replay.test.ts`, `package.json` test:lab entry) — landed on `sw-lab/main` AFTER the batch this handoff covers. **It is deliberately NOT in §3's rsync list** (new client files + one new route, no schema change) and **`cyberlab-ops-console.tsx` was NOT in §3's list either** — so if HEAD has advanced past the money-flow commit, the §3 file list still governs this deploy; S7-A ships with the NEXT deploy. If you would rather include it: it needs no DB step and the only shared file it touches is `cyberlab-ops-console.tsx` (additive "Replay ▶" link per episode row).

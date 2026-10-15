@@ -911,6 +911,13 @@ export function CyberLabOpsConsole() {
                 </button>
                 <span className="text-xs opacity-60">{new Date(e.startedAt).toLocaleString()}</span>
                 <span className="lab-chip rounded px-1.5 py-0.5 text-xs">{e.outcome}</span>
+                <a
+                  href={`/cyberlab/replay/${e.id}`}
+                  className="rounded px-1.5 py-0.5 text-xs underline underline-offset-2"
+                  style={{ color: "var(--lab-accent)" }}
+                >
+                  Replay ▶
+                </a>
                 {e.techniques.length > 0 && <span className="text-xs opacity-70">{e.techniques.join(", ")}</span>}
               </div>
             ))}

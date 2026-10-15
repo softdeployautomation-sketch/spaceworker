@@ -250,6 +250,21 @@ _(entries appended after every slice — dated, with proof)_
 > **ADDENDUM (end of batch):** all three remaining steps executed — combined deploy handoff **`HANDOFF_CYBERLAB_DEPLOY_ALL.md`** written (verified live probes: through-2497294 live, old CHECKs confirmed, task205 + failed `assistant_foundation` row documented ⇒ targeted `psql -f`, NOT db push/migrate deploy), **ALL committed in `d727200`** (23 files, +599/−78), tree clean, `main` **15 ahead** of origin/main. NOT pushed, NOT deployed — deploy agent runs the handoff on owner's word.
 
 
+
+#### SLICE 5 (S7-A) — AFTER record — BUILD COMPLETE, gates GREEN, committed (see below)
+**Built (only new files + 1 additive link — deliberately zero overlap with HANDOFF_CYBERLAB_DEPLOY_ALL §3 rsync list, so the concurrent deploy is unaffected):**
+- `lib/lab/replay.ts` (pure): `parseEpisodeTimeline` (tolerant; hostile/foreign shapes → 0 frames, never throws), `replayWatermark` (live → `AUTHORIZED LIVE TEST · REAL PACKETS`, else `SIMULATION · YOUR EQUIPMENT`), `buildReplayFrames` — topology computed ONCE from `targetsFromTimeline(full list)` and reused every frame (replay reveals, never invents hosts); each frame = console-map `buildRadarModel` over a real prefix (O(n²) by design, timelines are bounded).
+- `components/cyberlab-replay-player.tsx`: Play/Pause + range scrub + 1×/2×/4×; kill-chain rail via `mapEventToStage`; radar SVG driven by the SAME `RadarModel` as the live console; evidence feed up to scrub position; signature VERIFIED/INVALID shown verbatim from server; mode-aware watermark; ignored-address honesty note; no ambient motion (reduced-motion friendly); `idxRef` avoids setState-in-updater + stale interval closures; NO sync setState in effect (the `react-hooks/set-state-in-effect` rule preempted by removing `setState("loading")`).
+- `app/cyberlab/replay/[id]/page.tsx`: inherits `.lab-ops` layout; auth/ownership/signature live in the episodes/[id] API (foreign id → 404, not an oracle).
+- `components/cyberlab-ops-console.tsx`: "Replay ▶" link per episode row (entry point).
+- `tests/lab-replay.test.ts` (9 tests) registered in `test:lab`.
+**Owner gates (PLAN §A) defaulted to safe:** authenticated only (no public share), URL `/cyberlab/replay/[id]`, return → `/cyberlab`.
+**Bugs found & fixed during build:** my own topology assertion compared aggregate-vs-frame (fixed to frame0-as-baseline); lint-rule preempt above.
+**Gates:** no schema change (prisma generate n/a) · `tsc --noEmit` **0** · eslint changed files **0** · replay tests **9/9** · `test:lab` **86/86** · full `npm test` **1479 tests → 1478 pass, 0 fail, 1 pre-existing skip**. NOTE: one intermediate full run failed on `tests/support-tickets.test.ts` TASK_166 ("read cursor") with a **1 ms timestamp race — known flake, unrelated** (57/57 twice in isolation; passes in the final full run).
+**NOT in the current money-flow deploy** (ships with the NEXT deploy: client files + new route, no schema change; handoff addendum says so).
+
+#### (BEFORE — original goal, retained for compaction) : /cyberlab/replay/[id] video-style scrubber over a REAL signed episode (plan PLAN_CYBERLAB_NEXT_S7 §A). NEW files only (lib/lab/replay.ts, components/cyberlab-replay-player.tsx, app/cyberlab/replay/[id]/page.tsx, tests/lab-replay.test.ts) — deliberately NOT touching any file in HANDOFF_CYBERLAB_DEPLOY_ALL §3 deploy list, so the concurrent deploy stays coherent. Owner gates defaulted to safe: authenticated only (no public share), URL /cyberlab/replay/[id], return to /cyberlab. Hard line: every frame derives from the stored signed timeline via console-map — nothing invented.
+
 **AFTER record (supersedes the "research only" state above):**
 - **P1 lock CTA done** — `module-tool-lock.tsx`: `MODULE_LOCK_COPY.cyberlab` = `{template:"cyberlab", title:"Cyber Lab is an add-on", ...}` + per-module `SupportTicketButton` (cyberlab uses its own template; browser/extract/hosting keep `premium-plus`/UPGRADE_TO_PREMIUM_PLUS); render site `cyberlab-panel.tsx:144` only.
 - **P3a templates done** — `support-templates.ts`: 3rd entry `premium_request_cyberlab` {slug:"cyberlab", label:"Request for Cyber Lab", tier:6, planName:"Cyber Lab"} + `SUPPORT_TEMPLATE_OPTIONS` row + `isPremiumRequestCategory` arm + `supportTemplateFromSlug` arm (unknown slug still defaults premium-plus).
