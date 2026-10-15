@@ -14,6 +14,7 @@ import { HealthPanel } from "@/components/admin/health-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
 import { CyberLabAccessCell } from "@/components/admin/cyberlab-access-cell";
+import { CyberLabGuide } from "@/components/admin/cyberlab-guide";
 
 type AdminUser = {
   id: string;
@@ -3382,6 +3383,9 @@ function CyberLabAdminTab() {
         of Infrastructure), the §12.1 research gate, and every lab run with its §5.2
         refusals.
       </p>
+      <div className="mt-6">
+        <CyberLabGuide />
+      </div>
       <div className="mt-6">
         <CyberLabCapsPanel />
       </div>
