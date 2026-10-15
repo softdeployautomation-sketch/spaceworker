@@ -166,6 +166,28 @@ print('stale on prod:', len(stale), stale)
 
 Fix anything it finds by rsyncing the real directories over (`app/`, `lib/`, `components/` wholesale, not a hand-picked file list), rebuild, restart, then re-run the same check and confirm zero `missing`/`stale` before moving on. This is cheap (a few seconds) — run it any time you're about to tell the user a deploy is done, not just when something's already gone wrong.
 
+### Deploy preflight — run BEFORE every deploy list (TASK_210)
+
+Two checks stand between a deploy file list and this week's two incidents. Run both from the repo root, paste their output into the task's STEPS doc, and do not ship a list that fails either:
+
+```bash
+# S3 — shared-file clobber detector: diffs every listed file against every local
+# branch (+ origin/mailer-exe). Non-zero if another branch carries a different
+# copy of a listed file (the 2026-10-15 .vbs revert). --ack <branch> marks a
+# known, accepted divergence.
+scripts/preflight-shared-drift.sh /tmp/deploy-list.txt main
+
+# S4 — import closure: every @/… and relative import in the listed files must
+# resolve locally, and with --box under /opt/spaceworker too (the 2026-10-14
+# missing-sibling outage: components/device-console.tsx → lib/clone-browsers.ts).
+scripts/preflight-import-closure.sh /tmp/deploy-list.txt --box
+```
+
+Two safety nets now exist on the box automatically — no per-deploy action needed, just know they are there when reading a failed run:
+
+- **`/root/last-build.log`** — the COMPLETE output of every `npm run build`, overwritten per deploy run (the local echo is still only the last 25 lines; the real error is always in this file).
+- **`/root/.next.<BUILD_ID>-safety`** — per-build safety copy of `.next`, rotated to the last 3 by mtime. The in-tree `.next.prev` is *consumed* by rollback; these are what recovery falls back to when that happens.
+
 ## 3. Schema changes (Prisma migration)
 
 > **⚠️ CORRECTION 2026-10-04 — the VPS does NOT build. Do not run `npm run build` on it.**
