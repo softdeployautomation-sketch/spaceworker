@@ -126,6 +126,9 @@ interface OpenFrame {
 
 const TARGET_KINDS = ["host", "network", "url", "domain", "email"] as const;
 
+/** Scenario slug for scan-first recon (see lib/lab/scenarios.ts). No attested device required. */
+const RECON_SCENARIO_SLUG = "recon-attack-surface";
+
 /** Pacing bounds for revealing real events (presentation only; `at` shown is real). */
 const REPLAY_MIN_GAP_MS = 220;
 const REPLAY_MAX_GAP_MS = 900;
@@ -243,6 +246,9 @@ export function CyberLabOpsConsole() {
   const [attestValue, setAttestValue] = useState("");
   const [attesting, setAttesting] = useState(false);
   const [attestDeviceId, setAttestDeviceId] = useState("");
+  const [reconKind, setReconKind] = useState<(typeof TARGET_KINDS)[number]>("network");
+  const [reconValue, setReconValue] = useState("");
+  const [scanning, setScanning] = useState(false);
   const [openEpisode, setOpenEpisode] = useState<{ detail: EpisodeDetail; signatureValid: boolean } | null>(null);
   const [loadingEpisode, setLoadingEpisode] = useState("");
 
@@ -373,6 +379,47 @@ export function CyberLabOpsConsole() {
       setError("Network error — the run did not start.");
     } finally {
       setStarting(null);
+    }
+  }
+
+  /**
+   * Scan-first recon: the real-world "how would someone break in" step that
+   * does NOT need an attested device. It declares a scope (e.g. a /24 network)
+   * and POSTs it as a recon run — the engine validates the scope (no
+   * third-party / too-broad scanning) and runs the simulated recon. On success
+   * it opens the same SSE replay as any run, so radar + rail + feed all move
+   * off the real signed timeline. This is a *simulated* recon: no packet
+   * leaves the platform.
+   */
+  async function startRecon() {
+    const value = reconValue.trim();
+    if (!value) {
+      setError("Declare a scope to scan (e.g. 10.0.0.0/24).");
+      return;
+    }
+    setScanning(true);
+    setError("");
+    try {
+      const res = await fetch("/api/cyberlab/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenarioSlug: RECON_SCENARIO_SLUG, targets: [{ kind: reconKind, value }] }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        rangeId?: string;
+      };
+      if (!res.ok) {
+        setError(data.error ?? `recon refused (${res.status})`);
+        await refresh();
+        return;
+      }
+      if (data.rangeId) replay(data.rangeId);
+      await refresh();
+    } catch {
+      setError("Network error — the scan did not start.");
+    } finally {
+      setScanning(false);
     }
   }
 
@@ -624,14 +671,60 @@ export function CyberLabOpsConsole() {
           </p>
         )}
 
-        {/* ── Scenarios (the ONE allow-list the engine also reads) ─────────── */}
+        {/* ── Scan-first recon (Slice 2): no attested device required ───────── */}
         <section className="lab-panel rounded-lg p-5">
           <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-lg font-semibold" style={{ color: "var(--lab-text)" }}>Scenarios</h2>
+            <h2 className="text-lg font-semibold" style={{ color: "var(--lab-text)" }}>1 · Scan for weaknesses</h2>
             <span className="lab-watermark">SIMULATION · YOUR EQUIPMENT</span>
           </div>
           <p className="mt-1 text-sm" style={{ color: "var(--lab-muted)" }}>
-            Each run needs at least one attested target. Attesting is your declaration that you own or are authorised for the asset.
+            A real attack never starts with a device you already own — it starts by <em>looking</em>. Declare a scope you&rsquo;re
+            authorised to assess and run a scan-first recon. No attested device needed. This is a
+            <strong> simulated</strong> recon: no packet leaves the platform, and the findings are synthetic — but the run,
+            timeline and signed evidence are real, exactly like every other lab run. Scopes broader than a /24 are refused so we
+            never simulate scanning someone else&rsquo;s network.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <select
+              value={reconKind}
+              onChange={(e) => setReconKind(e.target.value as (typeof TARGET_KINDS)[number])}
+              className="rounded-md border bg-transparent px-2 py-1.5 text-sm"
+              style={{ borderColor: "var(--lab-line)", color: "var(--lab-text)" }}
+            >
+              {TARGET_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {k}
+                </option>
+              ))}
+            </select>
+            <input
+              value={reconValue}
+              onChange={(e) => setReconValue(e.target.value)}
+              placeholder="10.0.0.0/24  ·  lab.example.com  ·  10.0.0.7"
+              spellCheck={false}
+              className="flex-1 min-w-56 rounded-md border bg-transparent px-3 py-1.5 text-sm font-mono"
+              style={{ borderColor: "var(--lab-line)", color: "var(--lab-text)" }}
+            />
+            <button
+              type="button"
+              onClick={startRecon}
+              disabled={scanning}
+              className="rounded-md px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+              style={{ background: "var(--lab-accent)", color: "#04211d" }}
+            >
+              {scanning ? "Scanning…" : "Run scan-first recon"}
+            </button>
+          </div>
+        </section>
+
+        {/* ── Scenarios (the ONE allow-list the engine also reads) ─────────── */}
+        <section className="lab-panel rounded-lg p-5">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-lg font-semibold" style={{ color: "var(--lab-text)" }}>2 · Simulate the break-in</h2>
+            <span className="lab-watermark">SIMULATION · YOUR EQUIPMENT</span>
+          </div>
+          <p className="mt-1 text-sm" style={{ color: "var(--lab-muted)" }}>
+            Once you&rsquo;ve scanned, simulate an actual intrusion on equipment you own. Each run needs at least one attested target — attesting is your declaration that you own or are authorised for the asset.
           </p>
           <div className="mt-4 space-y-3">
             {scenarios.length === 0 && <p className="text-sm" style={{ color: "var(--lab-muted)" }}>No scenarios available yet.</p>}

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { ensureSmokeScenario, getEnabledScenarios } from "@/lib/lab/scenarios";
+import { ensureReconScenario, ensureSmokeScenario, getEnabledScenarios } from "@/lib/lab/scenarios";
 import { moduleToolsDenied } from "@/lib/module-gate";
 import { getCurrentUser } from "@/lib/session-user";
 
@@ -8,7 +8,9 @@ import { getCurrentUser } from "@/lib/session-user";
 // The engine and the UI read the SAME rows (getEnabledScenarios) — there is no
 // second copy of the allow-list anywhere. The smoke row is self-healing
 // (idempotent upsert) so a fresh environment always has exactly one runnable
-// dry-run scenario.
+// dry-run scenario. TASK_156B Slice 2 — the recon (scan-first) row is ensured
+// the same way, so scan-first recon is always available without an attested
+// device (see lib/lab/recon-core.ts).
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -17,6 +19,7 @@ export async function GET() {
   if (denied) return denied;
 
   await ensureSmokeScenario();
+  await ensureReconScenario();
   const scenarios = await getEnabledScenarios();
   return NextResponse.json({
     scenarios: scenarios.map((s) => ({

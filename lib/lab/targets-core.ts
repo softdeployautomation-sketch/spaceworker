@@ -20,7 +20,16 @@ import { isIP } from "node:net";
 /** The LabTarget.kind vocabulary (schema §6). */
 export type LabTargetKind = "host" | "network" | "url" | "domain" | "email";
 
-export type PreflightRefusalReason = "not_normalized" | "unattested" | "stale_attestation" | "range_mismatch";
+export type PreflightRefusalReason =
+  | "not_normalized"
+  | "unattested"
+  | "stale_attestation"
+  | "range_mismatch"
+  // TASK_156B Slice 2 — a scan-first recon `network` scope broader than
+  // RECON_MIN_NETWORK_PREFIX (lib/lab/recon-core.ts). It is a real pre-flight
+  // refusal (the §5.2 third-party-scanning guard), so it belongs in this union
+  // rather than being flattened into "unattested".
+  | "too_broad_scope";
 
 export interface PreflightInput {
   kind: string;

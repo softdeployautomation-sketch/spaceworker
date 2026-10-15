@@ -7,8 +7,12 @@ import "server-only";
 
 import { db } from "@/lib/db";
 import { SMOKE_TECHNIQUE_IDS } from "./runner";
+import { RECON_TECHNIQUE_IDS } from "./recon-core";
 
 export const SMOKE_SCENARIO_SLUG = "smoke-network-baseline";
+
+/** TASK_156B Slice 2 — the scan-first recon scenario (klass "recon"). */
+export const RECON_SCENARIO_SLUG = "recon-attack-surface";
 
 /**
  * Idempotently ensure the smoke scenario row exists and is enabled. The
@@ -39,6 +43,36 @@ export async function ensureSmokeScenario() {
 /** The allow-list the UI and the engine both read — never a separate copy. */
 export async function getEnabledScenarios() {
   return db.labScenario.findMany({ where: { enabled: true }, orderBy: { klass: "asc" } });
+}
+
+/**
+ * TASK_156B Slice 2 (§3.3) — idempotently ensure the scan-first recon scenario
+ * row exists and is enabled. Same self-healing pattern as ensureSmokeScenario:
+ * a fresh environment always has exactly one runnable recon dry-run.
+ *
+ * The `blastRadius` text is the plain-language worst case (§6) — here: nothing,
+ * because recon is SIMULATED and enumerates only the scope the caller declared
+ * (and which validateReconScope already bounded to /24-or-narrower). No packet
+ * leaves the platform; no real host is contacted.
+ */
+export async function ensureReconScenario() {
+  return db.labScenario.upsert({
+    where: { slug: RECON_SCENARIO_SLUG },
+    update: { enabled: true },
+    create: {
+      slug: RECON_SCENARIO_SLUG,
+      name: "Attack-surface recon (scan-first, simulated)",
+      klass: "recon",
+      techniqueIds: [...RECON_TECHNIQUE_IDS],
+      adversaryProfile: "curious-probe",
+      blastRadius:
+        "None. This is a SIMULATED recon in dry-run mode: it enumerates only the scope you declare (a single host, or a network no broader than /24), generates SYNTHETIC surface data, sends no packet, and contacts no real host.",
+      cleanup:
+        "Automatic: the LabRange reaches torn_down via a VERIFIED teardown before the run is considered finished; an unverified teardown fails the range (§8.5).",
+      enabled: true,
+      author: "staff",
+    },
+  });
 }
 
 export async function getScenarioBySlug(slug: string) {

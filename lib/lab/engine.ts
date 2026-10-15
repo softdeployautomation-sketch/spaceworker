@@ -5,8 +5,11 @@
 //   1. cyberLabGate — enabled + premium entitlement + current-AUP consent (§12.9).
 //   2. scenario must exist AND be enabled (the allow-list, §6).
 //   3. daily run cap (AdminSetting.cyberlabMaxRunsPerDay).
-//   4. pre-flight: every target must match a FRESH attested LabTarget row;
-//      any refusal writes the LabAbuseReport and refuses the run (§5.2).
+//   4. pre-flight: for an attested scenario, every target must match a FRESH
+//      attested LabTarget row; for a recon scenario (Slice 2, scan-first) the
+//      caller's declared scope is validated by validateReconScope instead (no
+//      attested device required; a too-broad network is refused + audited).
+//      Any attested-scenario refusal writes the LabAbuseReport and refuses (§5.2).
 //   5. createLabRange(pending) → governor requestSlot("labRanges") →
 //      provision → activate with the HARD TTL (cyberlabFreeMaxRangeMinutes).
 //   6. dry-run execute: synthetic telemetry, guarded so it can only mention the
@@ -35,10 +38,12 @@ import { db } from "@/lib/db";
 import { cyberLabGate } from "./gate";
 import { createEpisode } from "./episode";
 import type { EvidenceArtefact } from "./evidence";
+import { validateReconScope } from "./recon-core";
+import { generateReconTelemetry } from "./recon-runner";
 import { activateRange, beginTeardown, completeTeardown, createLabRange, failRange, provisionRange } from "./range";
 import { generateSmokeTelemetry, type TimelineEntry } from "./runner";
 import { getScenarioBySlug, SMOKE_SCENARIO_SLUG } from "./scenarios";
-import { preflightRunTargets, type NormalizedTarget, type PreflightInput } from "./targets";
+import { preflightRunTargets, TargetRefusedError, type NormalizedTarget, type PreflightInput } from "./targets";
 import { collectVictimSensor } from "./victim-sensor";
 
 /** A run the lab refused, with the machine-readable reason in the message. */
@@ -104,6 +109,12 @@ export async function startLabRun(params: {
   const scenario = await getScenarioBySlug(slug);
   if (!scenario || !scenario.enabled) throw new LabRunRefusedError(`scenario_not_allowed (${slug})`);
 
+  // TASK_156B Slice 2 — the scan-first seam. A `recon`-class scenario runs
+  // WITHOUT a pre-attested device: the caller declares a scope (validated by
+  // validateReconScope) instead of matching a fresh attested LabTarget row.
+  // Every other class keeps the attested pre-flight, byte-for-byte unchanged.
+  const isRecon = scenario.klass === "recon";
+
   const settings = await getAdminSettings();
   if (params.targets.length === 0) throw new LabRunRefusedError("no_targets");
   if (params.targets.length > settings.cyberlabMaxTargetsPerScenario) {
@@ -142,27 +153,74 @@ export async function startLabRun(params: {
 
     // 4. Pre-flight AFTER the range exists so range-bound rows and the audit
     //    trail have a rangeId; any refusal is recorded and rethrown.
-    const targets = await preflightRunTargets({
-      userId: params.userId,
-      rangeId: range.id,
-      targets: params.targets,
-      sourceIp: params.sourceIp ?? null,
-    });
+    //
+    //    Two paths (Slice 2):
+    //      • attested (default) — every target must match a FRESH attested
+    //        LabTarget row (§5.2); a refusal writes LabAbuseReport and throws.
+    //      • recon (scan-first) — NO attested device required. The caller's
+    //        declared scope is validated by validateReconScope: `invalid` values
+    //        are a plain validation refusal (no abuse report — mirrors the
+    //        attest boundary note); a `tooBroad` network is the §5.2
+    //        third-party-scanning guard — audited (reason recon_scope_refused)
+    //        and refused with TargetRefusedError (403).
+    let targets: NormalizedTarget[];
+    if (isRecon) {
+      const scope = validateReconScope(params.targets);
+      if (scope.invalid.length > 0) {
+        throw new LabRunRefusedError(
+          `recon_scope_invalid (${scope.invalid.map((i) => `${i.value} (${i.reason})`).join(", ")})`,
+        );
+      }
+      if (scope.tooBroad.length > 0) {
+        await db.labAbuseReport.create({
+          data: {
+            userId: params.userId,
+            rangeId: range.id,
+            reason: "recon_scope_refused",
+            severity: "low",
+            evidenceJson: {
+              requested: params.targets.map((t) => ({ kind: t.kind, value: t.value })),
+              tooBroad: scope.tooBroad.map((p) => ({ kind: p.kind, value: p.value, reason: p.reason })),
+              sourceIp: params.sourceIp ?? null,
+              at: new Date().toISOString(),
+            },
+          },
+        });
+        throw new TargetRefusedError(
+          `recon scope refused: ${scope.tooBroad.map((p) => `${p.value} (${p.reason})`).join(", ")}`,
+          scope.tooBroad.map((p) => ({ kind: p.kind, value: p.value, reason: p.reason })),
+        );
+      }
+      targets = scope.kept;
+    } else {
+      targets = await preflightRunTargets({
+        userId: params.userId,
+        rangeId: range.id,
+        targets: params.targets,
+        sourceIp: params.sourceIp ?? null,
+      });
+    }
 
     // 5c. Lifecycle with the hard TTL stamped on activation.
     await provisionRange(range.id);
     await activateRange(range.id, settings.cyberlabFreeMaxRangeMinutes);
 
-    // 6. Dry-run execute (synthetic, attested-targets-guarded).
+    // 6. Dry-run execute (synthetic, declared-targets-guarded). The runner is
+    //    chosen by scenario class: recon → generateReconTelemetry (declared
+    //    scope); anything else → generateSmokeTelemetry (attested lab hosts).
+    //    Both return the same shape and enforce the same hard line (they throw
+    //    if synthetic telemetry references a value outside the declared set).
     const startedAt = new Date();
     const endedAt = new Date();
-    const smoke = generateSmokeTelemetry({
-      rangeId: range.id,
-      scenarioSlug: slug,
-      targets: targets.map((t) => t.value),
-      startedAt,
-      endedAt,
-    });
+    const run = isRecon
+      ? generateReconTelemetry({ rangeId: range.id, scenarioSlug: slug, targets, startedAt, endedAt })
+      : generateSmokeTelemetry({
+          rangeId: range.id,
+          scenarioSlug: slug,
+          targets: targets.map((t) => t.value),
+          startedAt,
+          endedAt,
+        });
     // 6b. C2b victim sensor (§13): the user's OWN devices' agent rows for this
     //     run's window become REAL evidence — same manifest, same signature.
     //     A refusal here (device not readable by this user) fails the range and
@@ -179,14 +237,14 @@ export async function startLabRun(params: {
         startedAt,
         endedAt,
       });
-      smoke.timeline.push(...sensor.timelineEntries);
+      run.timeline.push(...sensor.timelineEntries);
       victim = sensor.summary;
       victimEnvelope = sensor.envelope as unknown as Record<string, unknown>;
     }
 
     const artefacts: EvidenceArtefact[] = [
-      ...smoke.artefacts,
-      { path: "timeline.json", content: JSON.stringify({ mode: "dry-run", scenarioSlug: slug, entries: smoke.timeline }, null, 2) },
+      ...run.artefacts,
+      { path: "timeline.json", content: JSON.stringify({ mode: "dry-run", scenarioSlug: slug, entries: run.timeline }, null, 2) },
     ];
     if (victimEnvelope !== null) {
       // The manifest hashes the artefact bytes; the episode timeline Json stores
@@ -200,9 +258,9 @@ export async function startLabRun(params: {
       userId: params.userId,
       scenarioSlug: slug,
       mode: "dry-run",
-      techniqueIds: smoke.techniques,
-      telemetrySignatures: smoke.telemetrySignatures,
-      timeline: smoke.timeline,
+      techniqueIds: run.techniques,
+      telemetrySignatures: run.telemetrySignatures,
+      timeline: run.timeline,
       artefacts,
       victim: victimEnvelope,
       startedAt,
@@ -224,9 +282,9 @@ export async function startLabRun(params: {
       scenarioSlug: slug,
       mode: "dry-run",
       targets,
-      techniques: smoke.techniques,
-      telemetrySignatures: smoke.telemetrySignatures,
-      timeline: smoke.timeline,
+      techniques: run.techniques,
+      telemetrySignatures: run.telemetrySignatures,
+      timeline: run.timeline,
       artefacts,
       signedHash: episode.signedHash,
       verified: true,

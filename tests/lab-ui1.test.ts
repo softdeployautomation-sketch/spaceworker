@@ -36,6 +36,9 @@ import { fileURLToPath } from "node:url";
 
 const CONSOLE_MAP_PATH = fileURLToPath(new URL("../lib/lab/console-map.ts", import.meta.url));
 
+/** Mirrors RECON_SCENARIO_SLUG in components/cyberlab-ops-console.tsx + lib/lab/scenarios.ts. */
+const RECON_SCENARIO_SLUG_TOKEN = "recon-attack-surface";
+
 process.env.DATABASE_URL = "postgresql://t156:t156@localhost:5432/task156_placeholder";
 process.env.SESSION_SECRET = "task156-test-session-secret";
 (process.env as Record<string, string>).NODE_ENV = "test";
@@ -367,4 +370,20 @@ test("the Operation Console header carries the house ThemeToggle and a how-to gu
   assert.ok(src.includes("dry-run"), "the guide is honest about today's dry-run reality");
   assert.ok(src.includes("scan"), "the guide explains the scan-first journey");
 });
+
+// TASK_156B V2 (Slice 2) — the scan-first recon section ships in the console and
+// posts a declared scope as a recon run (NO attested device required), then opens
+// the same SSE replay as any run. These guards keep the two-stage journey honest.
+test("the console ships a scan-first recon section that runs WITHOUT an attested device", () => {
+  const src = readFileSync(fileURLToPath(new URL("../components/cyberlab-ops-console.tsx", import.meta.url)), "utf8");
+  assert.ok(src.includes(RECON_SCENARIO_SLUG_TOKEN), "the recon section posts the recon scenario slug");
+  assert.ok(src.includes("Run scan-first recon"), "the scan-first action is present");
+  assert.ok(src.includes("async function startRecon"), "a dedicated recon runner exists");
+  assert.ok(src.includes("no packet leaves the platform"), "the recon section is honest it is simulated");
+  // It must NOT gate on the attested-targets `selected` set the way start() does.
+  const reconFn = src.slice(src.indexOf("async function startRecon"));
+  const reconFnBody = reconFn.slice(0, reconFn.indexOf("\n  }"));
+  assert.ok(!reconFnBody.includes("selected.has"), "startRecon must not require an attested target");
+});
+
 
