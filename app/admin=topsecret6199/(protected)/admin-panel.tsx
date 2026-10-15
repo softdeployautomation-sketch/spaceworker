@@ -13,6 +13,7 @@ import SupportQueuePanel from "@/components/admin/support-queue-panel";
 import { HealthPanel } from "@/components/admin/health-panel";
 import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
+import { CyberLabAccessCell } from "@/components/admin/cyberlab-access-cell";
 
 type AdminUser = {
   id: string;
@@ -579,6 +580,7 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
               <th className="px-4 py-3 font-medium">Tier</th>
               <th className="px-4 py-3 font-medium">Premium / Usage</th>
               <th className="px-4 py-3 font-medium">Grant</th>
+              <th className="px-4 py-3 font-medium">Cyber Lab</th>
               <th className="px-4 py-3 font-medium">Invoice</th>
               <th className="px-4 py-3 font-medium">Verified</th>
               <th className="px-4 py-3 font-medium">Created</th>
@@ -684,6 +686,12 @@ function UsersTab({ initialUsers }: { initialUsers: AdminUser[] }) {
                       <span className="text-xs text-emerald-600 dark:text-emerald-400">{grantMsg[user.id]}</span>
                     )}
                   </div>
+                </td>
+                {/* TASK_156B V2 — Cyber Lab is its own product (off Premium Plus):
+                    the owner's allow/restrict toggle per user. Talks to the
+                    existing /api/admin/users/[id]/entitlements route (key:cyberlab). */}
+                <td className="px-4 py-3">
+                  <CyberLabAccessCell userId={user.id} />
                 </td>
                 {/* TASK_184 B3 — send/edit a premium-plan invoice for this user.
                     All logic lives in UserInvoiceCell (lazy fetch on expand). */}

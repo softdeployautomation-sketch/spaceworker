@@ -12,6 +12,22 @@ import { isPremiumWithReversion, applyPremiumReversion, XDEVICE_TIER } from "./p
 export const ENTITLEMENT_KEYS = ["extractor", "mailer", "assistant", "devices", "cyberlab", "hosting", "browser"] as const;
 export type EntitlementKey = (typeof ENTITLEMENT_KEYS)[number];
 
+/**
+ * TASK_156B V2 (owner 2026-10-14) — CyberLab is NO LONGER bundled in Premium
+ * Plus. It is its own product: access comes ONLY from an explicit per-user
+ * grant (an admin grant today, a dedicated CyberLab subscription later), never
+ * from the tier-5 premium catch-all. Every other key still rides premium as
+ * before. This is the single source of truth both `hasEntitlement` (the gate)
+ * and `listEffectiveEntitlements` (the UI lock-state) read, so they can never
+ * disagree about whether premium implies cyberlab.
+ */
+export const PREMIUM_EXCLUDED_KEYS: readonly EntitlementKey[] = ["cyberlab"];
+
+/** True when the given key is NOT covered by the Premium Plus catch-all. */
+export function isPremiumExcluded(key: EntitlementKey): boolean {
+  return PREMIUM_EXCLUDED_KEYS.includes(key);
+}
+
 export function isEntitlementKey(value: unknown): value is EntitlementKey {
   return typeof value === "string" && (ENTITLEMENT_KEYS as readonly string[]).includes(value);
 }
@@ -64,7 +80,11 @@ export async function hasEntitlement(userId: string, key: EntitlementKey): Promi
   });
   if (!user) return { allowed: false, reason: "none" };
 
-  if (isPremiumWithReversion(user)) return { allowed: true, reason: "premium" };
+  // Tier 5 premium covers every key EXCEPT the premium-excluded ones (TASK_156B
+  // V2: cyberlab). For an excluded key we deliberately do NOT return here — we
+  // fall through to the per-user UserEntitlement grant check below, so a Premium
+  // Plus user gets cyberlab ONLY if it was explicitly granted to them.
+  if (isPremiumWithReversion(user) && !isPremiumExcluded(key)) return { allowed: true, reason: "premium" };
   // Persist the Task 55 lazy downgrade if the premium term just passed. Tier 3
   // shares the column, so an expired XDevice term reverts to tier 1 HERE too.
   await applyPremiumReversion(user.id, user.tier, user.premiumExpiresAt);
@@ -175,8 +195,15 @@ export async function listEffectiveEntitlements(userId: string): Promise<{
   const live = grants.filter(
     (g) => !g.revokedAt && (!g.expiresAt || g.expiresAt.getTime() > now),
   );
-  const keys = premium
-    ? [...ENTITLEMENT_KEYS]
-    : [...new Set([...(xdevice ? (["devices"] as const) : []), ...live.map((g) => g.key)])];
+  // TASK_156B V2 — premium covers every key EXCEPT the premium-excluded ones
+  // (cyberlab). A premium user still shows cyberlab ONLY if they hold an
+  // explicit live grant for it (merged in below), so the UI lock-state can never
+  // paint the upgrade card over a paying, explicitly-granted user.
+  const premiumKeys = premium
+    ? ENTITLEMENT_KEYS.filter((k) => !isPremiumExcluded(k))
+    : [];
+  const keys = [
+    ...new Set([...premiumKeys, ...(xdevice ? (["devices"] as const) : []), ...live.map((g) => g.key)]),
+  ];
   return { keys, premium, grants };
 }
