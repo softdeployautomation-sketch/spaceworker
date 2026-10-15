@@ -133,6 +133,12 @@ export interface OnboardingViewInput {
   timerStartedAt: string | Date;
   hideDoneAt: string | Date | null;
   stayOnDoneAt: string | Date | null;
+  /**
+   * When the device was moved to private, if it has been. Carried through from
+   * the API payload so a moved device's strip advances past step 2 (TASK_206).
+   * Mirrors the deployed runtime's field type exactly to avoid merge drift.
+   */
+  movedAt?: string | Date | null;
   releasedAt?: string | Date | null;
   /** Null for a free/trial account with no private org — step 4 says so. */
   destinationOrgId?: string | null;
