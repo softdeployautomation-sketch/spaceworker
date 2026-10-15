@@ -57,6 +57,17 @@ _(entries appended after every slice — dated, with proof)_
 - Zero file overlap with the other agent's `spaceworker` hosting work; `main` is now 6 ahead of `origin/main` (C2a, C2a-console, clone fix, C2b×2, UI-1).
 - NEXT (owner decision): (a) `prisma db push` + deploy the whole cyberlab line to VPS, or (b) continue UI-1 to S7 Episode Replay / tool deep-links (mailer/extractor/RMM) per PLAN §3. No further UI-1 build step exists until an owner gate is answered.
 
+### 2026-10-14 — Slice 1 (V2): lab light/dark toggle + how-to guide (AFTER record)
+- Owner redirected: UI-1 is deployed; new expected outcome = a **learn-to-defend lab** (scan → find → simulate → protect), plus a light/dark toggle, an in-app guide, an admin guide + user-access picker, and CyberLab as its **own subscription** (off Premium Plus). Wrote `PLAN_CYBERLAB_V2_EXPECTED_OUTCOME.md` capturing all of it as 6 slices; only **Slice 1** built this turn (safe, no security/behavior change); Slices 2–5 GATED pending owner answers (esp. relaxing "attest before run" and pulling cyberlab off Premium Plus).
+- Built Slice 1:
+  - `app/globals.css` — `.lab-ops` is now the LIGHT "blueprint console" palette; `.dark .lab-ops` re-applies the near-black SOC canvas. Lab follows the SAME app-wide toggle instead of being hard-forced dark (fixes "too dark").
+  - `app/cyberlab/layout.tsx` — comment updated; no longer claims always-dark.
+  - `components/cyberlab-ops-console.tsx` — imports the house `ThemeToggle` (`components/theme-toggle.tsx`, same `spaceworker-theme` key) and mounts it in the header; adds a collapsible `CyberLabGuide` ("How Cyber Lab works") that explains the scan→simulate→protect journey and is honest that today is signed **dry-run** only and what's built next.
+  - `tests/lab-ui1.test.ts` — +2 guards: theme follows the toggle (light default + `.dark .lab-ops` variant), header carries ThemeToggle + guide (dry-run + scan copy). test:lab now **53/53**.
+- Gates GREEN: `tsc --noEmit -p .` = 0 · eslint on changed files = 0 · `npm run test:lab` = 53/53.
+- Zero overlap with the hosting agent's `spaceworker` work (Slice 1 touches only cyberlab-scoped files). Local commit only — no push, no deploy.
+- NEXT (owner decisions on PLAN §6 gates 1–5): Slice 2 scan-first recon, Slice 4 standalone subscription (shared billing/premium files — sequence w/ hosting agent), Slice 5 admin guide + user picker.
+
 ### 2026-10-14 — Deploy HANDED OFF (owner redirected run+deploy to the deploy owner; I do NOT deploy)
 - Owner approved the deploy but redirected execution to the agent who owns the `spaceworker` deploy flow. **I ran NO rsync / NO db push / NO restart / NO push.** Cyberlab stays local on `sw-lab main` @ `3765ab4` (local-only, unpushed; `origin/main` has 0 cyberlab files).
 - Re-verified live state (real ssh/psql, 2026-10-14): VPS is still **C1 only** — no `app/cyberlab/`, no ops-console, `lib/lab/` = aup/catalog-seed/consent/gate/research/tools, `app/api/cyberlab/` = consent+status; `spaceworker.service` active, `BUILD_ID=TPjU5_KQzyOIG3DELTbt2`. Live `LabTarget` has **no `sourceDeviceId`** ⇒ `prisma db push` is the hard pre-rsync step.

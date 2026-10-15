@@ -7,6 +7,7 @@ import {
   buildRadarModel,
   type LabStageId,
 } from "@/lib/lab/console-map";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 // TASK_156B UI-1 (PLAN_CYBERLAB_STANDALONE_UI.md §3 S2/S3) — the Operation
 // Console, the standalone /cyberlab section's main event. Three panes — the
@@ -149,6 +150,84 @@ function nodeXY(ring: number, angleDeg: number): { x: number; y: number } {
   const r = RING_RADIUS[ring] ?? RING_RADIUS[1];
   const rad = (angleDeg * Math.PI) / 180;
   return { x: 200 + r * Math.cos(rad), y: 200 + r * Math.sin(rad) };
+}
+
+// TASK_156B V2 (Slice 1) — the in-console "How Cyber Lab works" guide. It
+// explains the intended learn-to-defend journey (scan → find → simulate →
+// protect) and is honest about what is live TODAY (a signed dry-run evidence
+// chain) versus the scan-first recon we are building toward. Collapsible so it
+// never crowds the console; state (open/closed) is local, no persistence.
+function CyberLabGuide() {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="lab-panel rounded-lg p-4">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-3 text-left"
+      >
+        <span className="text-base font-semibold" style={{ color: "var(--lab-text)" }}>
+          How Cyber Lab works
+        </span>
+        <span className="lab-chip rounded px-2 py-0.5 text-xs">{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div className="mt-4 space-y-4 text-sm" style={{ color: "var(--lab-text)" }}>
+          <p style={{ color: "var(--lab-muted)" }}>
+            Cyber Lab is a safe place to see how an attacker gets in — and how to stop them — using
+            your own equipment. The idea is simple: <strong>look before you attack</strong>.
+          </p>
+
+          <ol className="space-y-2">
+            <li>
+              <strong>1 · Scan &amp; recon.</strong> First you scan a host, an IP range, or your
+              network — no device takeover, nothing invasive — to find what&rsquo;s exposed, just like
+              a real attacker would start.
+            </li>
+            <li>
+              <strong>2 · Find vulnerabilities.</strong> See the weaknesses a scan surfaces on your
+              own machines.
+            </li>
+            <li>
+              <strong>3 · Simulate the break-in.</strong> Optionally run the on-device agent as a
+              controlled malware simulation to show how easy it is to get in <em>if</em> a machine is
+              exposed — always on equipment you own, always attested, always torn down.
+            </li>
+            <li>
+              <strong>4 · Learn to protect.</strong> Every run produces a signed, tamper-evident
+              record of what happened, so you know exactly what to fix.
+            </li>
+          </ol>
+
+          <div
+            className="rounded-md border p-3 text-xs"
+            style={{ borderColor: "var(--lab-line-bright)", background: "var(--lab-bg-elev)", color: "var(--lab-muted)" }}
+          >
+            <p className="font-semibold" style={{ color: "var(--lab-amber)" }}>Where this is today</p>
+            <p className="mt-1">
+              Live now: the Operation Console and its signed evidence chain run in{" "}
+              <strong>dry-run mode</strong> — the telemetry is synthetic and labelled as such; no
+              packet leaves the platform and no real host is contacted. A run currently needs at
+              least one attested target.
+            </p>
+            <p className="mt-1">
+              Building next: <strong>scan-first recon</strong> (scan hosts / ranges / Wi-Fi without a
+              device first), then the agent-as-malware simulation, then the defence payoff. That
+              ordering — scan, then break in, then protect — is the whole point of the lab.
+            </p>
+          </div>
+
+          <p className="text-xs" style={{ color: "var(--lab-muted)" }}>
+            Rings on the radar are <strong>layout, not latency</strong>. Nothing on screen moves
+            unless a real event moved it. Use the theme toggle in the header to switch between the
+            light blueprint and dark SOC views.
+          </p>
+        </div>
+      )}
+    </section>
+  );
 }
 
 export function CyberLabOpsConsole() {
@@ -402,8 +481,17 @@ export function CyberLabOpsConsole() {
               Real tool output on attested targets — rings are layout, not latency; nothing moves unless a real event moved it.
             </p>
           </div>
-          <span className="lab-watermark">SIMULATION · YOUR EQUIPMENT</span>
+          <div className="flex items-center gap-3">
+            <span className="lab-watermark">SIMULATION · YOUR EQUIPMENT</span>
+            <ThemeToggle />
+          </div>
         </header>
+
+        {/* ── How Cyber Lab works (Slice 1 guide) — the honest roadmap + how to
+              use the console. Collapsible so it never crowds the console. The
+              caption states plainly what is live today vs. the scan-first
+              journey we are building toward — no overclaiming. */}
+        <CyberLabGuide />
 
         {/* ── The three-pane console (S2) ───────────────────────────────────── */}
         <section className="grid gap-4 lg:grid-cols-[190px_1fr_360px]">

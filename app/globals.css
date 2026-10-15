@@ -2,13 +2,32 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/* ── TASK_156B UI-1 — the Cyber Lab section theme (owner gate 3 approved:
-   the lab MAY diverge from the dashboard palette). Everything below is scoped
-   to `.lab-ops`: the section ships its OWN always-dark SOC canvas regardless
-   of the Night Studio light/dark toggle — entering /cyberlab should feel like
-   entering another place. Palette is deliberately NOT the warm brand amber:
-   thin cyan/teal strokes on near-black, glow only on LIVE elements. */
+/* ── TASK_156B UI-1 → V2 (Slice 1) — the Cyber Lab section theme. Scoped to
+   `.lab-ops`, but NO LONGER always-dark: it now follows the SAME app-wide
+   light/dark toggle as the rest of the product (the `.dark` class on <html>,
+   driven by components/theme-toggle.tsx). The base block below is the LIGHT
+   "blueprint console" palette; `.dark .lab-ops` re-applies the original
+   near-black SOC canvas. Palette is deliberately NOT the warm brand amber:
+   thin cyan/teal strokes, glow only on LIVE elements. */
 .lab-ops {
+  --lab-bg: #eef3f6;
+  --lab-bg-elev: #ffffff;
+  --lab-panel: #f7fafb;
+  --lab-line: #cdd9e0;
+  --lab-line-bright: #a9bcc7;
+  --lab-text: #10222b;
+  --lab-muted: #5a6b76;
+  --lab-accent: #0f9c8a;      /* sweep + live elements (darkened for light bg) */
+  --lab-accent-dim: rgba(15, 156, 138, 0.14);
+  --lab-amber: #a9701a;       /* warnings / dry-run chips */
+  --lab-red: #d33b3b;         /* detections */
+  --lab-green: #17944a;       /* verified signatures / teardown */
+  --lab-font-mono: var(--font-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  background-color: var(--lab-bg);
+  color: var(--lab-text);
+}
+
+.dark .lab-ops {
   --lab-bg: #070c10;
   --lab-bg-elev: #0c141b;
   --lab-panel: #0f1922;
@@ -21,9 +40,6 @@
   --lab-amber: #e8b04a;       /* warnings / dry-run chips */
   --lab-red: #ff5d5d;         /* detections */
   --lab-green: #4ade80;       /* verified signatures / teardown */
-  --lab-font-mono: var(--font-mono), ui-monospace, "SF Mono", Menlo, monospace;
-  background-color: var(--lab-bg);
-  color: var(--lab-text);
 }
 
 .lab-ops .lab-panel {

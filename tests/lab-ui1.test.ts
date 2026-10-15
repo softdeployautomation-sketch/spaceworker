@@ -346,3 +346,25 @@ test("the dashboard keeps only a launcher card to /cyberlab (no console rendered
   assert.ok(panel.includes('href="/cyberlab"'), "the panel links out to the new section");
   assert.ok(!panel.includes("CyberLabConsole"), "the panel no longer renders the old console");
 });
+
+// TASK_156B V2 (Slice 1) — the lab now follows the app-wide light/dark toggle
+// (no longer hard-forced dark), the header carries the house ThemeToggle, and
+// an honest "How Cyber Lab works" guide ships with the console. These guards
+// keep that promise and prevent the always-dark regression from returning.
+test("the lab theme follows the app-wide light/dark toggle (light default + .dark variant, no forced dark)", () => {
+  const css = readFileSync(fileURLToPath(new URL("../app/globals.css", import.meta.url)), "utf8");
+  assert.ok(/\.lab-ops\s*\{/.test(css), "the light .lab-ops palette block exists");
+  assert.ok(/\.dark\s+\.lab-ops\s*\{/.test(css), "the dark .lab-ops variant is keyed off the .dark class");
+  const layout = readFileSync(fileURLToPath(new URL("../app/cyberlab/layout.tsx", import.meta.url)), "utf8");
+  assert.ok(layout.includes("lab-ops"), "the section still ships its own scoped theme");
+});
+
+test("the Operation Console header carries the house ThemeToggle and a how-to guide", () => {
+  const src = readFileSync(fileURLToPath(new URL("../components/cyberlab-ops-console.tsx", import.meta.url)), "utf8");
+  assert.ok(src.includes('from "@/components/theme-toggle"'), "the house toggle is imported, not reinvented");
+  assert.ok(src.includes("<ThemeToggle />"), "the toggle is mounted in the header");
+  assert.ok(src.includes("How Cyber Lab works"), "the how-to guide ships");
+  assert.ok(src.includes("dry-run"), "the guide is honest about today's dry-run reality");
+  assert.ok(src.includes("scan"), "the guide explains the scan-first journey");
+});
+
