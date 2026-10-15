@@ -335,6 +335,15 @@ test("the SIMULATION · YOUR EQUIPMENT watermark is present in the Operation Con
   assert.ok(src.includes("SIMULATION · YOUR EQUIPMENT"), "watermark copy must ship");
 });
 
+test("the header watermark is mode-aware: live runs are labelled REAL PACKETS, never SIMULATION", () => {
+  const src = readFileSync(fileURLToPath(new URL("../components/cyberlab-ops-console.tsx", import.meta.url)), "utf8");
+  // The derived label keys off the server-reported run mode…
+  assert.ok(/openFrame\?\.mode === "live"/.test(src), "watermark must branch on the server-reported run mode");
+  assert.ok(src.includes("AUTHORIZED LIVE TEST · REAL PACKETS"), "a live run must be labelled as real packets");
+  // …and the run-tied header watermark renders that derived value, not a literal.
+  assert.ok(/<span className="lab-watermark">\{watermark\}<\/span>/.test(src), "the header watermark must render the mode-aware value");
+});
+
 test("/cyberlab is a session-gated top-level route with its own .lab-ops theme; the old in-dashboard console is gone", () => {
   const page = readFileSync(fileURLToPath(new URL("../app/cyberlab/page.tsx", import.meta.url)), "utf8");
   assert.ok(page.includes("getSession"), "the top-level route self-gates on a valid session");

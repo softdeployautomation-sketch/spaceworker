@@ -629,11 +629,13 @@ model AdminSetting {
   cyberlabResearchRefreshDays         Int    @default(30)
   // TASK_156B REAL EGRESS (PLAN_CYBERLAB_REAL_EGRESS.md §1) — the owner's
   // friction=0 posture, as DIALS that default OPEN so the posture is the
-  // owner's policy, re-tightenable per-range without a rebuild. Ships DARK:
-  // cyberlabLiveEgressEnabled=false means today's synthetic dry-run is
-  // unchanged until the owner flips it before filming the ad.
+  // owner's policy, re-tightenable per-range without a rebuild.
+  // OWNER DECISION: cyberlabLiveEgressEnabled now ships ON (true). The guardrail
+  // is NOT a technical brake — it is that CyberLab is OFF the Premium Plus
+  // catch-all and GRANT-ONLY: only the owner's hand-verified operators can reach
+  // these buttons, so a real packet is the whole point (break into your own VM).
   //   cyberlabLiveEgressEnabled             = THE master switch for real packets.
-  //                                           false => every run stays synthetic.
+  //                                           true => live runs send real TCP probes.
   //   cyberlabEgressRequireOwnershipProof   = if true, a public server-egress
   //                                           target must carry a DNS-TXT
   //                                           challenge token first (anti-proxy).
@@ -643,7 +645,7 @@ model AdminSetting {
   //                                           scan however you like.
   //   cyberlabEgressAllowList               = comma-separated CIDRs/hosts egress
   //                                           may reach; empty = allow all.
-  cyberlabLiveEgressEnabled             Boolean @default(false)
+  cyberlabLiveEgressEnabled             Boolean @default(true)
   cyberlabEgressRequireOwnershipProof   Boolean @default(false)
   cyberlabEgressScopeGuard              Boolean @default(false)
   cyberlabEgressAllowList               String  @default("")

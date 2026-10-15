@@ -12,8 +12,10 @@
 //      LINE (throws on empty scope, empty ports, or an out-of-range port).
 //   3. Engine (REAL startLabRun): a `live` scenario with the master dial ON runs
 //      to a SIGNED episode (mode "live", completed_live) with NO attested target;
-//      with the dial OFF (shipped default) it is refused (live_egress_disabled)
-//      and NO range is created, so no packet can escape by accident.
+//      with the dial OFF it is refused (live_egress_disabled) and NO range is
+//      created, so no packet can escape by accident. (The dial now ships ON by
+//      owner decision — grant-only access is the guardrail — but these tests pin
+//      it explicitly per-case rather than relying on the schema default.)
 //
 // HOW: same house require hook as tests/lab-recon.test.ts — every lib/lab/*
 // module is REAL; only the EDGES are faked (in-memory db, mutable admin settings,
@@ -516,8 +518,9 @@ test("startLabRun(live): dial ON → SIGNED live episode, NO attested target, re
   assert.equal(episode.outcome, "completed_live");
 });
 
-test("startLabRun(live): dial OFF (shipped default) → refused (live_egress_disabled), NO range created", async () => {
-  // beforeEach leaves cyberlabLiveEgressEnabled = false (the ship-dark default).
+test("startLabRun(live): dial OFF → refused (live_egress_disabled), NO range created", async () => {
+  // beforeEach leaves cyberlabLiveEgressEnabled = false (this test pins the dial
+  // OFF explicitly — it exercises the refusal path, not the shipped default).
   await assert.rejects(
     () =>
       startLabRun({

@@ -22,11 +22,14 @@
 // HONEST LIMIT: the smoke and recon scenarios run in "dry-run" mode — the
 // evidence artefacts are SYNTHETIC and say so in their own content; nothing
 // touches a real host. The LIVE scenario (klass "live", REAL EGRESS) makes REAL
-// TCP connects out of the platform, but ONLY when the ship-dark master dial
-// (AdminSetting.cyberlabLiveEgressEnabled) is on — while it is off (the default)
-// a live-class scenario is refused, so no packet can leave by accident. Live
-// runs reuse this exact gate → preflight → range → episode chain and label their
-// artefacts `synthetic: false` / `mode: "live"`.
+// TCP connects out of the platform, gated by the master dial
+// (AdminSetting.cyberlabLiveEgressEnabled). OWNER DECISION: the dial now ships
+// ON (default true) because CyberLab is grant-only and off the Premium Plus
+// catch-all — the only people who reach this are the owner's hand-verified
+// operators. It remains a dial, so the owner can turn it off and a live-class
+// scenario is then refused (no packet leaves). Live runs reuse this exact gate →
+// preflight → range → episode chain and label their artefacts
+// `synthetic: false` / `mode: "live"`.
 //
 // Governor wiring: the slot's live-count IS the LabRange state (see the
 // labRanges registry entry) — reaching torn_down/failed releases it, so there

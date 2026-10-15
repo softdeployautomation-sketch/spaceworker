@@ -21,8 +21,11 @@ import { ThemeToggle } from "@/components/theme-toggle";
 //     a real event moved it. Ring distance is LAYOUT, captioned as such.
 //   - `live:false` streams are labelled REPLAY — a real recorded run's real
 //     timeline, replayed with its own timestamps (the S7 ad-factory seed).
-//   - Every panel carries the owner-approved watermark SIMULATION · YOUR
-//     EQUIPMENT (gate 2); prefers-reduced-motion kills all motion while every
+//   - Every panel carries a watermark. The header one is MODE-AWARE: it reads
+//     the server-reported run `mode` and shows SIMULATION · YOUR EQUIPMENT for a
+//     dry-run (the default) or AUTHORIZED LIVE TEST · REAL PACKETS when a live
+//     server-egress run is playing — so a real scan is never mislabelled
+//     "simulation". prefers-reduced-motion kills all motion while every
 //     state change stays visible (the .lab-ops block in app/globals.css).
 //   - Refusals are shown verbatim from the server (the C2a contract); nothing
 //     here re-implements or softens a gate.
@@ -208,17 +211,23 @@ function CyberLabGuide() {
             className="rounded-md border p-3 text-xs"
             style={{ borderColor: "var(--lab-line-bright)", background: "var(--lab-bg-elev)", color: "var(--lab-muted)" }}
           >
-            <p className="font-semibold" style={{ color: "var(--lab-amber)" }}>Where this is today</p>
+            <p className="font-semibold" style={{ color: "var(--lab-amber)" }}>How to use it</p>
             <p className="mt-1">
-              Live now: the Operation Console and its signed evidence chain run in{" "}
-              <strong>dry-run mode</strong> — the telemetry is synthetic and labelled as such; no
-              packet leaves the platform and no real host is contacted. A run currently needs at
-              least one attested target.
+              <strong>1 · Scan for weaknesses</strong> — pick a kind (host / network / url / domain /
+              email), type a scope you&rsquo;re authorised to assess, and run. No attested device
+              needed. If the <strong>live server-egress</strong> scenario is enabled, this sends{" "}
+              <strong>real TCP probes</strong> out of our servers and records what&rsquo;s actually
+              open on your machine — point it only at equipment you own.
             </p>
             <p className="mt-1">
-              Building next: <strong>scan-first recon</strong> (scan hosts / ranges / Wi-Fi without a
-              device first), then the agent-as-malware simulation, then the defence payoff. That
-              ordering — scan, then break in, then protect — is the whole point of the lab.
+              <strong>2 · Simulate the break-in</strong> — run a scenario (attest a target you own)
+              to rehearse the intrusion and get a signed evidence record of exactly what happened.
+            </p>
+            <p className="mt-1">
+              Watch it on the radar: rings are <strong>layout, not latency</strong>, and nothing
+              moves unless a real event moved it. The header watermark tells you what kind of run
+              you&rsquo;re watching — <strong>SIMULATION</strong> for a dry-run,{" "}
+              <strong>AUTHORIZED LIVE TEST · REAL PACKETS</strong> when a live run is playing.
             </p>
           </div>
 
@@ -512,6 +521,16 @@ export function CyberLabOpsConsole() {
   const activeStageId = played.length > 0 ? played[played.length - 1].stage : null;
   const playing = openFrame !== null && done === null;
 
+  // TASK_156B REAL EGRESS — the watermark is MODE-AWARE. A `live` run sends
+  // REAL TCP packets out of the platform, so labelling it "SIMULATION" would be
+  // a lie about what just touched your equipment. The run frame's own `mode`
+  // (recomputed server-side from the stored timeline) decides the label:
+  //   live    → an authorized live test, real packets left the platform
+  //   dry-run → the owner-approved SIMULATION · YOUR EQUIPMENT (the default,
+  //             and what shows whenever no run is on screen)
+  // We never flip the label off a client guess — only the server-reported mode.
+  const watermark = openFrame?.mode === "live" ? "AUTHORIZED LIVE TEST · REAL PACKETS" : "SIMULATION · YOUR EQUIPMENT";
+
   return (
     <div className="lab-ops min-h-screen">
       <div className="mx-auto max-w-7xl space-y-6 p-6">
@@ -529,7 +548,7 @@ export function CyberLabOpsConsole() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="lab-watermark">SIMULATION · YOUR EQUIPMENT</span>
+            <span className="lab-watermark">{watermark}</span>
             <ThemeToggle />
           </div>
         </header>

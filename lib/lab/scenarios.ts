@@ -85,12 +85,12 @@ export async function getScenarioBySlug(slug: string) {
 
 /**
  * TASK_156B REAL EGRESS (§2) — idempotently ensure the LIVE server-egress scan
- * scenario row. Unlike smoke/recon, its `enabled` flag is BOUND to the ship-dark
- * master dial (AdminSetting.cyberlabLiveEgressEnabled): while the dial is OFF
- * (the default), the row is created/updated DISABLED, so it never appears in the
- * allow-list and no real packet can ever be sent. The owner flips the dial on
- * right before filming the ad, and the scenario self-heals to enabled on the
- * next /api/cyberlab/scenarios read.
+ * scenario row. The row stays ALWAYS enabled: the engine's master-dial check
+ * (isLive = klass === "live" && cyberlabLiveEgressEnabled) is the SOLE gate, so
+ * an honest live_egress_disabled refusal can run instead of a short-circuit
+ * scenario_not_allowed. The dial now ships ON (owner decision — CyberLab is
+ * grant-only and off the Premium Plus catch-all, so only hand-verified operators
+ * reach this button); it remains a dial the owner can turn off.
  *
  * `blastRadius` is the plain-language worst case (§6), and for a live run it is
  * HONEST: real TCP packets leave the platform and touch the host you name. It
