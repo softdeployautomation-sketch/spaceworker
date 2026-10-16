@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
 
 import { desktopOnlyInterstitialHtml, isMobileUserAgent, recordLinkClick, resolveLink } from "@/lib/hosting/links";
-import { getReferralLinkByCode, recordReferralClick } from "@/lib/referral";
+import { getInviteByCode, getReferralLinkByCode, recordReferralClick } from "@/lib/referral";
 
 const REFERRAL_COOKIE = "sw_ref";
 const REFERRAL_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
@@ -38,6 +38,24 @@ export async function GET(
   const referralLink = await getReferralLinkByCode(token);
   if (referralLink && referralLink.isActive) {
     await recordReferralClick(token);
+    const cookieStore = await cookies();
+    cookieStore.set(REFERRAL_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: REFERRAL_COOKIE_MAX_AGE,
+    });
+    return NextResponse.redirect(new URL("/login", process.env.APP_BASE_URL ?? "/"));
+  }
+
+  // 1b. Personalized invite (Model C) — an admin-generated, email-bound invite
+  // also gates /login. Like a universal referral link it only stamps the sw_ref
+  // cookie here (we can't know who's browsing pre-auth); the hard email-match
+  // gate is enforced in the signup route. A redeemed/consumed invite no longer
+  // gates (markInviteRedeemed flips isActive off).
+  const invite = await getInviteByCode(token);
+  if (invite && invite.isActive && !invite.redeemedAt) {
     const cookieStore = await cookies();
     cookieStore.set(REFERRAL_COOKIE, token, {
       httpOnly: true,

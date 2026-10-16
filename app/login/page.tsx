@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
-import { validateReferral } from "@/lib/referral";
+import { hasAccessGate } from "@/lib/referral";
 
 export const metadata: Metadata = { title: "Sign in" };
 
@@ -27,17 +27,15 @@ export default async function LoginPage({
     ? searchParams.ref[0]
     : searchParams.ref;
 
-  // Resolve the referral: cookie takes precedence, otherwise a ?ref=CODE link
-  // stamps the cookie and proceeds.
-  let referred = await (async () => {
-    if (refCookie) return validateReferral(refCookie);
-    return null;
-  })();
+  // Access gate: cookie takes precedence, otherwise a ?ref=CODE link stamps the
+  // cookie and proceeds. Accepts a valid universal referral OR an active,
+  // unredeemed personalized invite (Model C). The hard invite email-match is
+  // enforced later at signup, not here — this only decides "may they see the form".
+  let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
 
-  if (!referred && refQuery) {
-    const link = await validateReferral(refQuery);
-    if (!link) redirect("/?error=referral_required");
-    referred = link;
+  if (!hasAccess && refQuery) {
+    hasAccess = await hasAccessGate(refQuery);
+    if (!hasAccess) redirect("/?error=referral_required");
     cookieStore.set(REFERRAL_COOKIE, refQuery, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -47,8 +45,8 @@ export default async function LoginPage({
     });
   }
 
-  if (!referred) {
-    // No valid referral at all — cannot reach the login form.
+  if (!hasAccess) {
+    // No valid referral/invite at all — cannot reach the login form.
     redirect("/?error=referral_required");
   }
 

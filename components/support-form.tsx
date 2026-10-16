@@ -3,9 +3,10 @@
 import { useState } from "react";
 
 /**
- * Public support message form — reachable without an account. Used by visitors
- * who landed on the invite-only homepage and need to request a referral or ask
- * a question. Rate-limited by IP at the route handler.
+ * Public support message form (owner, 2026-10-16: text-free gate edition).
+ * Appears only after the joker scramble is solved. No headings or
+ * explanation — bare fields and a send button, styled for the dark gate.
+ * Rate-limited by IP at the route handler.
  */
 export default function SupportForm() {
   const [name, setName] = useState("");
@@ -38,58 +39,39 @@ export default function SupportForm() {
   };
 
   return (
-    <section className="mb-12 rounded-xl border border-[#f4c2c2] bg-[#ffe4e2] p-6">
-      <h2 className="text-base font-semibold mb-3">Need an invite?</h2>
-      <p className="text-sm text-[#9f3434] mb-4">
-        No referral link yet? Drop us a message and we'll get back to you.
-      </p>
-      <form onSubmit={submit} className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
-        <div className="col-span-2 sm:col-span-1">
-          <label className="block text-xs text-[#9f3434] mb-1">Name (optional)</label>
-          <input
-            className="w-full rounded border border-[#fca5a5] bg-[#fff5f5] px-3 py-2 text-sm text-[#7f1d1d] focus:outline-none focus:ring-2 focus:ring-[#ff4d4d]"
-            placeholder="Your name"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </div>
-        <div className="col-span-2 sm:col-span-1">
-          <label className="block text-xs text-[#9f3434] mb-1">Email (optional)</label>
-          <input
-            className="w-full rounded border border-[#fca5a5] bg-[#fff5f5] px-3 py-2 text-sm text-[#7f1d1d] focus:outline-none focus:ring-2 focus:ring-[#ff4d4d]"
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
-        </div>
-        <div className="col-span-2">
-          <label className="block text-xs text-[#9f3434] mb-1">Message</label>
-          <textarea
-            className="w-full rounded border border-[#fca5a5] bg-[#fff5f5] px-3 py-2 text-sm text-[#7f1d1d] focus:outline-none focus:ring-2 focus:ring-[#ff4d4d]"
-            rows={4}
-            placeholder="How can we help?"
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-          />
-        </div>
-        <button
-          type="submit"
-          disabled={status === "sending"}
-          className="col-span-2 sm:col-span-1 rounded-lg bg-[#c0392b] px-4 py-2 text-sm font-medium text-white hover:bg-[#a93226] disabled:opacity-60"
-        >
-          {status === "sending" ? "Sending…" : "Send message"}
-        </button>
-        {status === "ok" && (
-          <p className="col-span-2 mt-2 text-sm text-[#1e7a3c] font-medium">
-            Message received — we&rsquo;ll get back to you.
-          </p>
-        )}
-        {status === "bad" && (
-          <p className="col-span-2 mt-2 text-sm text-[#b91c1c] font-medium">
-            Couldn&rsquo;t send. Try again in a moment.
-          </p>
-        )}
-      </form>
-    </section>
+    <form
+      onSubmit={submit}
+      className="grid grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4 rounded-xl border border-white/10 bg-white/[0.04] p-5 backdrop-blur"
+    >
+      <input
+        className="rounded border border-white/15 bg-black/40 px-3 py-2.5 text-sm text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-[#ff3c3c]"
+        placeholder="Name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+      />
+      <input
+        className="rounded border border-white/15 bg-black/40 px-3 py-2.5 text-sm text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-[#ff3c3c]"
+        placeholder="Email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+      />
+      <textarea
+        className="sm:col-span-2 rounded border border-white/15 bg-black/40 px-3 py-2.5 text-sm text-white placeholder:text-white/35 focus:outline-none focus:ring-2 focus:ring-[#ff3c3c]"
+        rows={4}
+        placeholder="Message"
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+      />
+      <button
+        type="submit"
+        disabled={status === "sending"}
+        className="sm:col-span-2 rounded-lg bg-[#c0392b] px-4 py-2.5 text-sm font-medium text-white hover:bg-[#a93226] disabled:opacity-60 transition-colors"
+      >
+        {status === "sending" ? "…" : status === "ok" ? "✓" : "Send"}
+      </button>
+      {status === "bad" && (
+        <p className="sm:col-span-2 text-sm text-[#ff6b6b] font-medium">!</p>
+      )}
+    </form>
   );
 }

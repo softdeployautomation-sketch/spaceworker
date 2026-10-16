@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { requireAdminSession } from "@/lib/admin-auth";
 import { env } from "@/lib/env";
 import { sendEmail } from "@/lib/email";
-import { getUserReferralLink, listReferralLinks } from "@/lib/referral";
+import { getUserReferralLink, listReferralLinks, createInvite, listInvites } from "@/lib/referral";
 import { prisma } from "@/lib/prisma";
 
 // Invite-only / hidden-login (owner, 2026-10-16). Admin API for the Referrals
@@ -11,8 +11,12 @@ import { prisma } from "@/lib/prisma";
 // through it), POST sends a user their own referral link by email — one user
 // ({ action: "send", userId }) or everyone ({ action: "bulk" }).
 
+// Hidden-login invite links ALWAYS belong to the main app host
+// (spaceworker.top) — `publicLinkBaseUrl` is TASK_122's movable install/vantra
+// link host (set to instaweb on the box) and sending a new user there would
+// land them on the static joker page instead of /login (owner, 2026-10-16).
 function referralUrl(code: string): string {
-  return `${env.publicLinkBaseUrl}/r/${code}`;
+  return `${env.appBaseUrl}/r/${code}`;
 }
 
 function inviteHtml(code: string): string {
@@ -37,7 +41,7 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  const [users, links] = await Promise.all([
+  const [users, links, invites] = await Promise.all([
     prisma.user.findMany({
       select: {
         id: true,
@@ -49,6 +53,7 @@ export async function GET() {
       orderBy: { createdAt: "desc" },
     }),
     listReferralLinks(),
+    listInvites(),
   ]);
 
   const linkByOwner = new Map(links.map((l) => [l.ownerId, l]));
@@ -77,6 +82,9 @@ export async function GET() {
         referredBy: u.referredBy,
       };
     }),
+    // Model C: personalized invites (admin-generated, email-bound), separate from
+    // the user-referral tree above. Each shows invitee email + redemption status.
+    invites,
   });
 }
 
@@ -85,11 +93,32 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let body: { action?: string; userId?: string };
+  let body: { action?: string; userId?: string; email?: string; send?: boolean };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
+  }
+
+  // Model C — generate a personalized invite bound to one email. Idempotent: the
+  // same email returns the existing live invite rather than minting a duplicate.
+  if (body.action === "invite") {
+    const email = (body.email ?? "").trim().toLowerCase();
+    if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return NextResponse.json({ error: "Enter a valid email address" }, { status: 400 });
+    }
+    const invite = await createInvite(email);
+    if (body.send) {
+      try {
+        await sendInvite(invite.inviteeEmail, invite.code);
+      } catch (err) {
+        return NextResponse.json(
+          { ok: true, invite, sendError: (err as Error).message },
+          { status: 200 },
+        );
+      }
+    }
+    return NextResponse.json({ ok: true, invite });
   }
 
   if (body.action === "bulk") {

@@ -3,7 +3,7 @@ import { cookies } from "next/headers";
 import { z } from "zod";
 
 import { hashPassword } from "@/lib/auth";
-import { attributeReferral, getUserReferralLink, validateReferral } from "@/lib/referral";
+import { attributeReferral, getInviteByCode, getUserReferralLink, markInviteRedeemed, validateReferral } from "@/lib/referral";
 import { db } from "@/lib/db";
 import { prisma } from "@/lib/prisma";
 import { sendEmail, tier1UpgradeEmailHtml, verificationEmailHtml } from "@/lib/email";
@@ -66,12 +66,36 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(parsed.password);
 
-  // Resolve the referral that brought this visitor in (stamped on /login or
-  // /signup via ?ref=CODE or the /r/:code redirect → sw_ref cookie).
+  // Resolve the access token that brought this visitor in (stamped on /login or
+  // /signup via ?ref=CODE or the /r/:code redirect → sw_ref cookie). It is either
+  // a universal referral link, or — Model C — a personalized invite bound to a
+  // single email.
   const cookieStore = await cookies();
   const refCookie = cookieStore.get("sw_ref")?.value;
   const referredLink =
     refCookie ? await validateReferral(refCookie) : null;
+  // Only look for an invite if this isn't already a universal referral (a code
+  // resolves to at most one of the two — separate tables).
+  const invite =
+    !referredLink && refCookie ? await getInviteByCode(refCookie) : null;
+
+  if (invite) {
+    if (!invite.isActive || invite.redeemedAt) {
+      // Already consumed / revoked — it must not be usable to create an account.
+      return NextResponse.json(
+        { error: "This invite has already been used." },
+        { status: 403 },
+      );
+    }
+    // The hard Model C gate: only the exact invited email may redeem. Reject
+    // BEFORE any account is created.
+    if (invite.inviteeEmail !== email) {
+      return NextResponse.json(
+        { error: "This invite is for a different email address." },
+        { status: 403 },
+      );
+    }
+  }
 
   const user = await db.user.create({
     // Tier 1 trial — new signups get the trial tier immediately (email
@@ -90,6 +114,14 @@ export async function POST(request: Request) {
       referrerCode: referredLink.code,
       referrerEmail: referredLink.ownerEmail,
     });
+    await getUserReferralLink(user.id).catch(() => undefined);
+  } else if (invite) {
+    // Model C: the invite row itself is the record — tracked in the admin
+    // "Invites" panel by invitee email + redemption status. Consume it so it can't
+    // be reused, and give the new user their own universal link. No user-tree
+    // attribution: the admin is a separate JWT identity, not a user account, so
+    // invite signups are never nested under a user in the referral tree.
+    await markInviteRedeemed(invite.id, user.id).catch(() => undefined);
     await getUserReferralLink(user.id).catch(() => undefined);
   }
 

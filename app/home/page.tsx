@@ -1,11 +1,9 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { getSession } from "@/lib/auth";
 import { accountHref } from "@/lib/exe-runtime";
-import { validateReferral } from "@/lib/referral";
 
 // Task 42 — the "SpaceWorker OS" landing page.
 //
@@ -45,21 +43,16 @@ const NAV = [
   { label: "Pricing", href: "/pricing" },
 ];
 
-const REFERRAL_COOKIE = "sw_ref";
-
-// Hidden-login / invite-only (owner, 2026-10-16): the marketing page is
-// reachable ONLY with a live session or a valid referral cookie. Everyone
-// else lands on the public clown + CAPTCHA page at `/`. The content below is
-// the original Task 42 / TASK_100 marketing page, moved here verbatim from
-// the old `/` route.
+// Hidden-login / invite-only (owner, 2026-10-16; tightened same day: "always
+// redirect to top if user is not authenticated"): the marketing page is
+// reachable ONLY with a live session. Referral cookies no longer open `/home`
+// — they open `/login` / `/signup` only, so a referred visitor signs up first
+// and sees marketing after login. Every unauthenticated visitor lands on the
+// public joker + puzzle page at `/`. The content below is the original
+// Task 42 / TASK_100 marketing page, moved here verbatim from the old `/` route.
 export default async function HomePage() {
   const session = await getSession();
-  if (!session) {
-    const cookieStore = await cookies();
-    const refCookie = cookieStore.get(REFERRAL_COOKIE)?.value;
-    const validRef = refCookie ? await validateReferral(refCookie) : null;
-    if (!validRef) redirect("/");
-  }
+  if (!session) redirect("/");
 
   return (
     <div className="min-h-screen bg-bg">

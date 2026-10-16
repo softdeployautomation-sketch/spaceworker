@@ -210,3 +210,117 @@ function mapLink(l: {
     createdAt: l.createdAt.toISOString(),
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Invite-only (Model C) — personalized, admin-only invites bound to one email.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** A personalized invite: only `inviteeEmail` may redeem it. */
+export type InviteLinkView = {
+  id: string;
+  code: string;
+  createdBy: string;
+  inviteeEmail: string;
+  isActive: boolean;
+  redeemedAt: string | null;
+  createdAt: string;
+  url: string;
+};
+
+function inviteUrl(code: string): string {
+  // Invites always resolve on the MAIN app host (spaceworker.top), never the
+  // movable install/vantra link host — same rule as universal referral links.
+  const base = process.env.APP_BASE_URL ?? "";
+  return `${base}/r/${code}`;
+}
+
+const INVITE_SELECT = {
+  id: true, code: true, createdBy: true, inviteeEmail: true,
+  isActive: true, redeemedAt: true, createdAt: true,
+} as const;
+
+function mapInvite(i: {
+  id: string; code: string; createdBy: string; inviteeEmail: string;
+  isActive: boolean; redeemedAt: Date | null; createdAt: Date;
+}): InviteLinkView {
+  return {
+    id: i.id,
+    code: i.code,
+    createdBy: i.createdBy,
+    inviteeEmail: i.inviteeEmail,
+    isActive: i.isActive,
+    redeemedAt: i.redeemedAt ? i.redeemedAt.toISOString() : null,
+    createdAt: i.createdAt.toISOString(),
+    url: inviteUrl(i.code),
+  };
+}
+
+/** Look up an active invite by its short code (used by /r/:code + signup). */
+export async function getInviteByCode(code: string): Promise<InviteLinkView | null> {
+  const i = await prisma.inviteLink.findUnique({
+    where: { code },
+    select: INVITE_SELECT,
+  });
+  return i ? mapInvite(i) : null;
+}
+
+/**
+ * Create (or return the existing) personalized invite for `inviteeEmail`.
+ * Idempotent per invitee email — the unique constraint means re-inviting the same
+ * address returns the live invite rather than minting a duplicate.
+ */
+export async function createInvite(inviteeEmail: string): Promise<InviteLinkView> {
+  const email = inviteeEmail.trim().toLowerCase();
+
+  const existing = await prisma.inviteLink.findUnique({
+    where: { inviteeEmail: email },
+    select: INVITE_SELECT,
+  });
+  if (existing) return mapInvite(existing);
+
+  // Fresh, unique short code.
+  let code: string;
+  let clash: { code: string } | null;
+  do {
+    code = generateCode();
+    clash = await prisma.inviteLink.findUnique({ where: { code }, select: { code: true } });
+  } while (clash);
+
+  const created = await prisma.inviteLink.create({
+    data: { code, inviteeEmail: email },
+    select: INVITE_SELECT,
+  });
+  return mapInvite(created);
+}
+
+/** Mark an invite redeemed by `userId` (called on a successful matching signup). */
+export async function markInviteRedeemed(id: string, userId: string): Promise<void> {
+  await prisma.inviteLink.updateMany({
+    where: { id, redeemedAt: null },
+    data: { redeemedAt: new Date(), redeemedById: userId, isActive: false },
+  });
+}
+
+/** All personalized invites (admin view), newest first. */
+export async function listInvites(): Promise<InviteLinkView[]> {
+  const invites = await prisma.inviteLink.findMany({
+    select: INVITE_SELECT,
+    orderBy: { createdAt: "desc" },
+  });
+  return invites.map(mapInvite);
+}
+
+/**
+ * Combined ACCESS gate for the /login and /signup pages: a code grants access if
+ * it is EITHER a valid active universal referral link OR an active, unredeemed
+ * personalized invite. Without this, an invite code would be bounced by the pages
+ * (which historically only knew about ReferralLink). Returns a plain boolean —
+ * the pages only need "may this visitor proceed?", not the link object. The hard
+ * invite email-match is enforced later, in the signup route.
+ */
+export async function hasAccessGate(code: string): Promise<boolean> {
+  const ref = await validateReferral(code);
+  if (ref) return true;
+  const invite = await getInviteByCode(code);
+  return !!(invite && invite.isActive && !invite.redeemedAt);
+}

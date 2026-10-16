@@ -10,7 +10,7 @@ interface CaptchaGridProps {
   token: string;
   seed: string;
   targetCount: number;
-  onVerified: (ok: boolean) => void;
+  onVerified?: (ok: boolean) => void;
 }
 
 /**
@@ -52,10 +52,10 @@ export default function CaptchaGrid({
       });
       const ok = res.status === 200;
       setStatus(ok ? "ok" : "bad");
-      onVerified(ok);
+      onVerified?.(ok);
     } catch {
       setStatus("bad");
-      onVerified(false);
+      onVerified?.(false);
     }
   };
 

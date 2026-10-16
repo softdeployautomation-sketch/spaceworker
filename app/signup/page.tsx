@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
-import { validateReferral } from "@/lib/referral";
+import { hasAccessGate } from "@/lib/referral";
 
 export const metadata: Metadata = { title: "Create account" };
 
@@ -31,15 +31,14 @@ export default async function SignupPage({
     ? searchParams.ref[0]
     : searchParams.ref;
 
-  let referred = await (async () => {
-    if (refCookie) return validateReferral(refCookie);
-    return null;
-  })();
+  // Access gate (Model C): a valid universal referral OR an active, unredeemed
+  // personalized invite lets the visitor reach the signup form. The hard invite
+  // email-match is enforced in the POST /api/auth/signup route, not here.
+  let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
 
-  if (!referred && refQuery) {
-    const link = await validateReferral(refQuery);
-    if (!link) redirect("/?error=referral_required");
-    referred = link;
+  if (!hasAccess && refQuery) {
+    hasAccess = await hasAccessGate(refQuery);
+    if (!hasAccess) redirect("/?error=referral_required");
     cookieStore.set(REFERRAL_COOKIE, refQuery, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
@@ -49,7 +48,7 @@ export default async function SignupPage({
     });
   }
 
-  if (!referred) redirect("/?error=referral_required");
+  if (!hasAccess) redirect("/?error=referral_required");
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-bg px-4">

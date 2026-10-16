@@ -11,7 +11,9 @@ export async function ReferralLinkCard({ userId }: { userId: string }) {
   let url: string | null = null;
   try {
     const link = await getUserReferralLink(userId);
-    url = `${env.publicLinkBaseUrl}/r/${link.code}`;
+    // appBaseUrl (the main app host), NOT publicLinkBaseUrl — invite links
+    // must resolve on spaceworker.top, not the vantra/install link host.
+    url = `${env.appBaseUrl}/r/${link.code}`;
   } catch (err) {
     // Never let the referral link break Settings — hide the card instead.
     console.error("[referral] could not load user link:", err);
