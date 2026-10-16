@@ -126,15 +126,24 @@ make this a phase 2, not a few extra lines** (checked 2026-10-16):
   explicitly in the handoff that this path is intentionally public — acceptable
   because the extension is not secret, but it is a decision, not an accident.
 
-**D6 work, once P6a/P6b exist:** (1) add CRX packing (with the persistent key) to
-the engine build so `engine-dist/` carries `clone-extension.crx` + the update
-manifest alongside the zip; (2) in the setup's registry step, additionally write
-the `ExtensionInstallForcelist` policy value (`1;<update-url>`) under HKLM
-`SOFTWARE\Policies\{Google\Chrome | Microsoft\Edge | BraveSoftware\Brave-Browser}`
-— the setup already runs elevated SYSTEM, so HKLM policy writes work; (3) the
-device picks the extension up on next browser launch (no reload-the-browser
-trick needed). Keep D1–D4 (native-host path) intact as the fallback for devices
-where policy is blocked.
+**D6 work, now that P6a/P6b are RESOLVED (see §5b):** (1) add CRX packing (with the
+persistent key) to the engine build so `engine-dist/` carries `clone-extension.crx`
++ the update manifest alongside the zip; (2) in the setup's registry step,
+additionally write the `ExtensionInstallForcelist` policy value (`1;<update-url>`)
+under HKLM `SOFTWARE\Policies\{Google\Chrome | Microsoft\Edge |
+BraveSoftware\Brave-Browser}` — the setup already runs elevated SYSTEM, so HKLM
+policy writes work; (3) the device picks the extension up on next browser launch
+(no reload-the-browser trick needed). Keep D1–D4 (native-host path) intact as the
+fallback for devices where policy is blocked.
+
+**Build-safety guardrail (CRITICAL — protects the stable ID):** the pack step must
+**fail loudly if the signing key is absent — never silently generate a fresh one.**
+A silent regenerate mints a NEW extension ID and every deployed forcelist stops
+matching, with no error anywhere. So: if the `.pem` is missing at pack time, abort
+the build with a clear "clone-extension signing key missing at <path> — restore it,
+do not regenerate" message. Also add the `.pem` to `.gitignore` and add a pre-commit
+guard that refuses to stage any `*.pem`/`*.crx` key material. The key is a secret,
+never committed, never written into the repo or CI logs.
 
 **Do not block D1–D5 on D6.** D1–D5 = native host registered + extension on disk
 + honest "load it" copy = shippable today. D6 = the zero-touch layer on top.
@@ -146,8 +155,9 @@ where policy is blocked.
 - **Do not** touch the relay install, token minting, or capability DB writes.
 - **Correct BinDir is `C:\ProgramData\TacticalRMM\CloneTool`** (TASK_213 fixed
   exactly this on the installer; do not reintroduce `Program Files`).
-- Chrome extension install **cannot** be fully automated without the force-install
-  policy; be honest in copy and handoff (see D5).
+- Chrome extension install **can** be fully automated via D6 force-install; until
+  D6 ships, D5's honest "load it" copy stands. Once D6 is live, remove D5's manual
+  step note so nothing stale lingers.
 
 ## 5. Verification (task agent, local)
 1. `npx tsc --noEmit` → 0 errors.
@@ -169,13 +179,27 @@ where policy is blocked.
    public path. Confirm the forcelist registry value exists under all three
    browser policy keys.
 
-## 5b. Two decisions the OWNER must make before D6 (not blockers for D1–D5)
-- **P6a — signing-key custody.** The `.pem` sets the extension ID forever. Where
-  does it live (repo secret? a vault? generated on the box and never committed)?
-  It must NOT be committed in plaintext to a public repo.
-- **P6b — public path is intentional.** The update manifest + CRX will be served
-  without auth so Chrome can auto-update. Confirm that's acceptable (the
-  extension isn't secret, but the URL becomes world-readable).
+## 5b. Owner decisions for D6 — **RESOLVED** (agent may proceed)
+- **P6a — signing-key custody → RESOLVED: VPS filesystem, root-only.** The `.pem`
+  lives at a fixed root-only path on the box (e.g.
+  `/root/secrets/clone-extension-signing.pem`, `chmod 600`, owned by root, never
+  in the web root, never committed). Packing the CRX reads it from there. Rationale
+  (owner's call: "VPS or a safe place like the DB"): keeping the key on the VPS
+  keeps it beside the public CRX it signs and out of the repo/CI entirely. If
+  packing is ever moved into CI, promote the key to a GitHub Actions **encrypted
+  secret** then — still never plaintext in the repo. **Generate the key ONCE**
+  (first D6 run); after that it is restored, never regenerated.
+  - DB alternative (accepted fallback): store the PEM bytes in a `Secret`/env-style
+    store on the box and materialize it to the root-only path at build time. Same
+    rule: never committed, never regenerated.
+- **P6b — public path → RESOLVED: intentionally public, dedicated URL.** The
+  Chrome-format update manifest + CRX are served from a dedicated public path on
+  `https://spaceworker.top/…` (e.g. `/clone-ext/update.json` + `/clone-ext/*.crx`),
+  reachable **anonymously** (no HMAC, no auth) so Chrome's auto-updater can fetch
+  it. This is deliberate: the extension is not secret, but the URL is
+  world-readable — that is the accepted trade-off for zero-touch, not an oversight.
+  Keep it a static/dedicated route; do NOT overload the HMAC-gated
+  `/api/clone-engine/*` route (which must stay device-bound + expiring).
 
 ## 6. Handoff
 Write `TASK_214_CLONE_EXTENSION_INSTALL_STEPS.md` following the established
