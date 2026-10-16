@@ -77,8 +77,37 @@ if ($TunnelHost -and $TunnelKey) {
     $args_ += " -tunnel $TunnelHost -tunnel-key $TunnelKey"
 }
 schtasks /Create /TN SpaceworkerRelay /TR "`"$exe`" $args_" /SC ONSTART /RU SYSTEM /F | Out-Null
+# TASK_213: tasks created via `schtasks /Create` carry the Task Scheduler
+# library defaults — DisallowStartIfOnBatteries + StopIfGoingOnBatteries +
+# StopOnIdleEnd — which silently stop the relay on laptops (observed live:
+# probe reads DOWN seconds after a healthy install, and again after sleep/wake,
+# while the task itself shows Running/LastResult 267009/0x41301). The relay
+# must only die when the OS itself kills it, never on power/idle policy.
+$t = Get-ScheduledTask -TaskName 'SpaceworkerRelay'
+$t.Settings.DisallowStartIfOnBatteries = $false
+$t.Settings.StopIfGoingOnBatteries = $false
+$t.Settings.StopOnIdleEnd = $false
+Set-ScheduledTask -InputObject $t | Out-Null
 schtasks /Run /TN SpaceworkerRelay | Out-Null
-Start-Sleep -Seconds 2
+# Wait for the relay to actually BIND the port before declaring success. The
+# relay is a windowsgui binary spawned by the ONSTART task, so there is a real
+# window between `schtasks /Run` and the listener coming up. The OLD fixed 2s
+# sleep let install return exit=0 before the port was open, and the very next
+# relay-probe then read "down" and aborted setup (TASK_206, seen live). Poll the
+# port until it accepts or a bounded deadline elapses; on timeout, THROW so the
+# exit code is truthful (a relay that never bound is NOT a success) —
+# $ErrorActionPreference='Stop' (line 29) makes the throw a non-zero exit.
+$bound = $false
+$deadline = (Get-Date).AddSeconds(30)
+while ((Get-Date) -lt $deadline) {
+    $c = New-Object Net.Sockets.TcpClient
+    try { $c.Connect('127.0.0.1', [int]$port); $bound = $true } catch { $bound = $false } finally { $c.Close() }
+    if ($bound) { break }
+    Start-Sleep -Milliseconds 1500
+}
+if (-not $bound) {
+    throw "relay did not bind port $port within 30s (task SpaceworkerRelay) - install failed"
+}
 netstat -ano | Select-String ":$port.*LISTENING" | Write-Host
 if ($TunnelHost -and $TunnelKey) {
     Write-Host "relay installed: $exe on $Addr, dial-out tunnel -> $TunnelHost (task SpaceworkerRelay)"

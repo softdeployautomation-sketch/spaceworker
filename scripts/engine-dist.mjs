@@ -40,6 +40,11 @@ const BINARIES = [
   { pkg: "./cmd/hack-browser-clone", name: "hack-browser-clone.exe", gui: false },
   { pkg: "./cmd/hack-browser-clone", name: "hack-browser-clone-svc.exe", gui: true },
   { pkg: "./cmd/relay", name: "hack-relay.exe", gui: true },
+  // TASK_213 follow-up: the native messaging host is a REAL build product of
+  // this repo (engine/cmd/native-host). It was once hand-copied onto the box,
+  // which is exactly how engine-dist went stale — it lives HERE instead, so
+  // every `node scripts/engine-dist.mjs` emits it and the manifest covers it.
+  { pkg: "./cmd/native-host", name: "clone-native-host.exe", gui: false },
 ];
 
 /** Plain files copied as-is (installers + the MT-1 capture skin + its libs). */
@@ -93,6 +98,18 @@ for (const script of SCRIPTS) {
   if (!fs.existsSync(script)) throw new Error(`missing script: ${script}`);
   fs.copyFileSync(script, path.join(out, path.basename(script)));
 }
+
+// The Chrome extension (engine/extension/) ships as ONE artifact — devices and
+// the owner's browser load it from here (TASK_119A live-capture). Built before
+// the manifest scan so its hash is part of the contract like everything else.
+// -X keeps zip entry extras out of the archive for more stable bytes.
+// Requires `zip` on PATH (present on macOS/Linux; the builder runs on dev/CI,
+// never on a device — the box only ever rsyncs the finished engine-dist).
+const extDir = path.join(engineSrc, "extension");
+if (!fs.existsSync(path.join(extDir, "manifest.json"))) {
+  throw new Error(`missing extension manifest: ${path.join(extDir, "manifest.json")}`);
+}
+execFileSync("zip", ["-q", "-r", "-X", path.join(out, "clone-extension.zip"), "."], { cwd: extDir });
 
 const files = fs
   .readdirSync(out)
