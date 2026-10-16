@@ -239,7 +239,7 @@ jobs:
         run: node scripts/engine-dist.mjs
 
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture engine-dist
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture engine-dist public
 
       - name: Set up SSH
         run: |

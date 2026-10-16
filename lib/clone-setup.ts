@@ -73,6 +73,12 @@ const ROLE_ARTIFACTS: Record<CloneSetupRole, string[]> = {
     "install-relay.ps1",
     "Invoke-BrowserClone.ps1",
     ...LIB_ARTIFACTS,
+    // TASK_214 D1 — the two pieces Path A deliberately did NOT install before
+    // (the old "Path B's frozen scope" separation). The native host binary is
+    // ~7 MB, so fetchChunks automatically gives it its own download chunk —
+    // no caller change. The zip is expanded on-device by the stage step (D2).
+    "clone-native-host.exe",
+    "clone-extension.zip",
   ],
   hosted: ["hack-browser-clone.exe", "hack-browser-clone-svc.exe", "install-hosted.ps1"],
 };
@@ -368,6 +374,25 @@ function buildStageScript(names: string[]): string {
     "  Write-Output ('STEP:stage:' + $n + ' OK')",
     "}",
     "if ($bad -gt 0) { Write-Output ('STEP:stage FAIL:aborted_' + $bad + '_item_s'); exit 1 }",
+    // TASK_214 D2 — expand the staged extension zip into
+    // <install>\clone-extension so manifest.json sits at that folder's root
+    // (the path Load unpacked / force-install point at). Runs only when the
+    // zip was actually staged (source role); the hosted stage never sees it.
+    // Fresh directory each run (Remove-Item then Expand-Archive) so a re-run
+    // can never leave a stale half-extension behind, and manifest.json is
+    // VERIFIED after extraction — a zip that "expanded" without its manifest
+    // is a loud FAIL, never an assumption.
+    "$zip = Join-Path $install 'clone-extension.zip'",
+    "if (Test-Path $zip) {",
+    "  $extDir = Join-Path $install 'clone-extension'",
+    "  Remove-Item -Recurse -Force $extDir -ErrorAction SilentlyContinue",
+    "  $err = $null",
+    "  try { Expand-Archive -Path $zip -DestinationPath $extDir -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }",
+    "  if ($err) { Write-Output ('STEP:extension-extract FAIL:' + ($err -replace '\\s+', ' ')); exit 1 }",
+    "  if (-not (Test-Path (Join-Path $extDir 'manifest.json'))) { Write-Output 'STEP:extension-extract FAIL:manifest_json_missing'; exit 1 }",
+    "  Remove-Item -Force $zip -ErrorAction SilentlyContinue",
+    "  Write-Output 'STEP:extension-extract OK'",
+    "}",
     "Write-Output 'STEP:stage DONE'",
   );
   return lines.join("\n");
@@ -462,10 +487,10 @@ function buildLiveCaptureTokenScript(opts: { token: string; deviceId: string; ba
  * `install-registry.ps1` (Path B, `michael/browser-clone/engine/scripts`)
  * writes under HKLM for Chrome/Edge/Brave — present in at least one of them
  * means the native messaging host `com.spaceworker.clone` is registered.
- * Path A cannot install the extension itself (that is Path B's frozen
- * scope), so this is a presence CHECK, never an assumption: a source device
- * that only ran this (Path A) setup has no native host yet and correctly
- * reads as absent.
+ * TASK_214: Path A NOW registers the host itself (buildExtensionInstallScript
+ * writes the same keys), so a successful setup flips this to OK — but it
+ * stays a presence CHECK, never an assumption: a setup whose extension-install
+ * step failed (best-effort posture) still honestly reads absent here.
  */
 function buildNativeHostPresenceScript(): string {
   const hostName = "com.spaceworker.clone";
@@ -485,6 +510,109 @@ function buildNativeHostPresenceScript(): string {
     "}",
     "if ($found) { Write-Output 'STEP:native-host-check OK' } else { Write-Output 'STEP:native-host-check FAIL:not_registered' }",
   ].join("\n");
+}
+
+/**
+ * TASK_214 D3/D4 — installs what Path A used to skip: the native messaging
+ * host registration (+ the D6 force-install policy, when configured).
+ *
+ * The registry block is LIFTED from Path B's frozen
+ * `michael/browser-clone/engine/scripts/install-registry.ps1:37-57` (same
+ * host name `com.spaceworker.clone`, same three HKLM roots that
+ * buildNativeHostPresenceScript checks) — but only that block: the whole
+ * script is NOT run (its default BinDir is the wrong `C:\Program Files\…`
+ * and it drags in a CloneRegistry key + an expire task that are out of
+ * scope per TASK_214 §4). Correct BinDir here is INSTALL_DIR =
+ * C:\ProgramData\TacticalRMM\CloneTool (TASK_213's fix).
+ *
+ * Runs elevated SYSTEM-side (`runAsUser: false`), matching the setup's
+ * other steps. A failure emits `STEP:extension-install FAIL:…` and exits 1
+ * — the CALLER decides the posture (best-effort, see runCloneSetup: the
+ * relay + capture capability are already installed and valuable, so a
+ * failed registration is reported loudly but never aborts the whole setup;
+ * the native-host presence check then honestly reads absent).
+ *
+ * D6 half: when the owner has deployed the public CRX + update manifest and
+ * set CLONE_EXT_FORCELIST_URL (server env), the script additionally writes
+ * the ExtensionInstallForcelist policy value `1;<update-url>` under the
+ * three HKLM browser-policy keys, so the extension force-installs on next
+ * browser launch. Unset → `SKIP:not_configured`, never a dangling policy
+ * pointing at an undeployed CRX.
+ */
+function buildExtensionInstallScript(opts: { forcelistUrl: string | null }): string {
+  const lines = [
+    "$ErrorActionPreference = 'Continue'",
+    `$install = ${psq(INSTALL_DIR)}`,
+    "$hostName = 'com.spaceworker.clone'",
+    "$hostExe = Join-Path $install 'clone-native-host.exe'",
+    "$manifest = Join-Path $install 'com.spaceworker.clone.json'",
+    "if (-not (Test-Path $hostExe)) { Write-Output 'STEP:extension-install FAIL:native_host_exe_missing'; exit 1 }",
+    "$manifestJson = @{",
+    "    name        = $hostName",
+    "    description = 'Spaceworker Browser Clone native messaging host'",
+    "    path        = $hostExe",
+    "    type        = 'stdio'",
+    "} | ConvertTo-Json",
+    "$err = $null",
+    "try { Set-Content -Path $manifest -Value $manifestJson -Encoding ASCII -Force -ErrorAction Stop } catch { $err = $_.Exception.Message }",
+    "if ($err) { Write-Output ('STEP:extension-install FAIL:manifest_' + ($err -replace '\\s+', ' ')); exit 1 }",
+    // HKLM covers every interactive user (same rationale as Path B: per-user
+    // installs would use HKCU; the setup runs as SYSTEM, so HKLM is right).
+    "$browsers = @{",
+    "    'Chrome' = 'HKLM:\\SOFTWARE\\Google\\Chrome\\NativeMessagingHosts'",
+    "    'Edge'   = 'HKLM:\\SOFTWARE\\Microsoft\\Edge\\NativeMessagingHosts'",
+    "    'Brave'  = 'HKLM:\\SOFTWARE\\BraveSoftware\\Brave-Browser\\NativeMessagingHosts'",
+    "}",
+    "$bad = 0",
+    "foreach ($browser in $browsers.GetEnumerator()) {",
+    "  $key = Join-Path $browser.Value $hostName",
+    "  $err = $null",
+    "  try {",
+    "    New-Item -Path $key -Force | Out-Null",
+    "    Set-ItemProperty -Path $key -Name '(Default)' -Value $manifest -ErrorAction Stop",
+    "  } catch { $err = $_.Exception.Message }",
+    "  if ($err) { Write-Output ('STEP:extension-install FAIL:' + $browser.Key + '_' + ($err -replace '\\s+', ' ')); $bad = $bad + 1 }",
+    "}",
+    "if ($bad -gt 0) { exit 1 }",
+    "Write-Output 'STEP:extension-install OK'",
+  ];
+  if (opts.forcelistUrl) {
+    const url = psq(opts.forcelistUrl);
+    lines.push(
+      // D6 — ExtensionInstallForcelist under the three HKLM policy roots.
+      // The forcelist entry format is `<extension id>;<update url>`; the id
+      // is only knowable from the packed CRX's persistent key, so read it
+      // from the update manifest itself (single source of truth — the .pem
+      // on the build box). A manifest without a genc entry is a loud FAIL,
+      // never a policy with a guessed id.
+      "$updateUrl = " + url,
+      "$bad = 0",
+      "try {",
+      "  $mf = Invoke-RestMethod -Uri $updateUrl -TimeoutSec 15 -ErrorAction Stop",
+      "  $extId = $mf.genc.PSObject.Properties.Name | Select-Object -First 1",
+      "  if (-not $extId) { throw 'genc entry missing in update manifest' }",
+      "} catch { Write-Output ('STEP:extension-forcelist FAIL:' + ($_.Exception.Message -replace '\\s+', ' ')); exit 1 }",
+      "$policies = @{",
+      "    'Chrome' = 'HKLM:\\SOFTWARE\\Policies\\Google\\Chrome'",
+      "    'Edge'   = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Edge'",
+      "    'Brave'  = 'HKLM:\\SOFTWARE\\Policies\\BraveSoftware\\Brave-Browser'",
+      "}",
+      "foreach ($policy in $policies.GetEnumerator()) {",
+      "  $key = Join-Path $policy.Value 'ExtensionInstallForcelist'",
+      "  $err = $null",
+      "  try {",
+      "    New-Item -Path $key -Force | Out-Null",
+      "    New-ItemProperty -Path $key -Name '1' -Value ($extId + ';' + $updateUrl) -PropertyType String -Force -ErrorAction Stop | Out-Null",
+      "  } catch { $err = $_.Exception.Message }",
+      "  if ($err) { Write-Output ('STEP:extension-forcelist FAIL:' + $policy.Key + '_' + ($err -replace '\\s+', ' ')); $bad = $bad + 1 }",
+      "}",
+      "if ($bad -gt 0) { exit 1 }",
+      "Write-Output 'STEP:extension-forcelist OK'",
+    );
+  } else {
+    lines.push("Write-Output 'STEP:extension-forcelist SKIP:not_configured'");
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -815,6 +943,45 @@ async function runCloneSetup(opts: {
         steps.push({ step: "live-capture-token", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` });
       }
 
+      // TASK_214 D3/D4 — register the native messaging host on the device
+      // (lifted from Path B's install-registry.ps1), plus the D6 force-install
+      // policy when CLONE_EXT_FORCELIST_URL is configured (unset → SKIP).
+      // Posture (documented choice, mirrors live-capture-token above): a
+      // failure FAILS this step loudly in the list but does NOT abort setup —
+      // the relay + capture capability are already installed and valuable,
+      // and the native-host presence check right below reports the absent
+      // host honestly, so nothing half-installed reads as ready.
+      try {
+        const forcelistRaw = (process.env.CLONE_EXT_FORCELIST_URL ?? "").trim();
+        const installed = await runCommandNow({
+          userId: opts.userId,
+          deviceId: device.id,
+          cmd: buildExtensionInstallScript({
+            forcelistUrl: forcelistRaw === "" ? null : forcelistRaw.replace(/\/$/, ""),
+          }),
+          shell: "powershell",
+          timeoutSeconds: 60,
+          runAsUser: false,
+        });
+        const parsed = parseSteps(installed.output);
+        if (parsed.length === 0) {
+          // ensureReported would early-return here (the shared steps array
+          // already holds earlier steps), so an output-less run must be
+          // recorded explicitly — a step that produced nothing is a FAILURE.
+          steps.push({
+            step: "extension-install",
+            ok: false,
+            detail: installed.output
+              ? `no_step_output: ${installed.output.replace(/\s+/g, " ").trim().slice(0, 300)}`
+              : "no_output_from_device: killed before it could report",
+          });
+        } else {
+          steps.push(...parsed);
+        }
+      } catch (e) {
+        steps.push({ step: "extension-install", ok: false, detail: `error: ${e instanceof Error ? e.message : "unknown"}` });
+      }
+
       // TASK_119A V2/A7: register the "live-capture" capability ONLY when
       // the extension + native host are actually present on the device —
       // never on mint/delivery success alone. See buildNativeHostPresenceScript.
@@ -837,7 +1004,8 @@ async function runCloneSetup(opts: {
           steps.push({
             step: "live-capture-capability",
             ok: false,
-            detail: "native host not detected — live mode stays unavailable until the extension is deployed",
+            detail:
+              "native host not detected — re-run setup; if extension-install itself failed, fix that step first (live mode stays unavailable until the host is registered)",
           });
         }
       } catch (e) {

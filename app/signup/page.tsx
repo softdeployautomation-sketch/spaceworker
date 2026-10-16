@@ -1,16 +1,54 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
+import { hasAccessGate } from "@/lib/referral";
 
 export const metadata: Metadata = { title: "Create account" };
 
-export default async function SignupPage() {
+const REFERRAL_COOKIE = "sw_ref";
+
+/**
+ * /signup is referral-gated: a visitor needs a valid `sw_ref` cookie (set when
+ * they click a referral link /r/:code, or supplied as ?ref=CODE) before the
+ * sign-up form is shown. Anyone else is bounced to the public homepage.
+ */
+export default async function SignupPage({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | string[] | undefined };
+}) {
   // Same gap as app/login/page.tsx — an already-logged-in visitor shouldn't
   // see a signup form.
   if (await getSession()) redirect("/dashboard");
+
+  const cookieStore = await cookies();
+  const refCookie = cookieStore.get(REFERRAL_COOKIE)?.value;
+  const refQuery = Array.isArray(searchParams.ref)
+    ? searchParams.ref[0]
+    : searchParams.ref;
+
+  // Access gate (Model C): a valid universal referral OR an active, unredeemed
+  // personalized invite lets the visitor reach the signup form. The hard invite
+  // email-match is enforced in the POST /api/auth/signup route, not here.
+  let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
+
+  if (!hasAccess && refQuery) {
+    hasAccess = await hasAccessGate(refQuery);
+    if (!hasAccess) redirect("/?error=referral_required");
+    cookieStore.set(REFERRAL_COOKIE, refQuery, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    });
+  }
+
+  if (!hasAccess) redirect("/?error=referral_required");
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-bg px-4">

@@ -327,9 +327,13 @@ test("GET /api/admin/users/[id]/presence: 403 without admin; 404 for an unknown 
 
 test("GET /api/admin/users/[id]/presence: newest-first rows over the 7-day window, ≤100", async () => {
   adminValue = { sub: "admin" };
+  // Seed events relative to REAL now: the route builds its 7-day window from
+  // Date.now(), so a fixed-clock seed (ago() → NOW) drifts outside the window as
+  // real time advances — this test began failing once real now passed NOW+7d.
+  const rAgo = (s: number) => new Date(Date.now() - s * 1000);
   store.events.push(
-    { userId: "u_found", state: "login", page: "/d", createdAt: ago(60) },
-    { userId: "u_found", state: "logout", page: "/d", createdAt: ago(30) },
+    { userId: "u_found", state: "login", page: "/d", createdAt: rAgo(60) },
+    { userId: "u_found", state: "logout", page: "/d", createdAt: rAgo(30) },
   );
   const mod = loadEventsRoute();
   const before = Date.now();

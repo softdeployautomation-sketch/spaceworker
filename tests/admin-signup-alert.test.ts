@@ -83,6 +83,25 @@ function freshRoute() {
       notifyAdmin: async (text: string) => void calls.telegramAlerts.push(text),
     },
     "@/lib/verify-code": { issueVerificationCode: async () => ({ code: "123456" }) },
+    // Hidden-login / invite-only additions to the signup route — fake them so the
+    // REAL @/lib/referral (which does `import "server-only"`) is never loaded here,
+    // and so the no-referral happy path is explicit (no sw_ref cookie). Only the
+    // import resolution matters for these tests: with no cookie the route
+    // short-circuits before calling any of them.
+    "next/headers": { cookies: async () => ({ get: () => undefined }) },
+    "@/lib/referral": {
+      validateReferral: async () => null,
+      attributeReferral: async () => undefined,
+      getUserReferralLink: async () => ({
+        id: "link_1",
+        code: "CODE1234",
+        ownerEmail: "owner@x.dev",
+        clicks: 0,
+        conversions: 0,
+      }),
+      getInviteByCode: async () => null,
+      markInviteRedeemed: async () => undefined,
+    },
   };
   const abs = require.resolve(`..${SIGNUP_ROUTE}`);
   delete require.cache[abs];

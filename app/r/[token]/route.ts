@@ -1,5 +1,11 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
+
 import { desktopOnlyInterstitialHtml, isMobileUserAgent, recordLinkClick, resolveLink } from "@/lib/hosting/links";
+import { getInviteByCode, getReferralLinkByCode, recordReferralClick } from "@/lib/referral";
+
+const REFERRAL_COOKIE = "sw_ref";
+const REFERRAL_COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
 // Task 30, item 3 — public link-redirect route: GET /r/<token>.
 //
@@ -16,11 +22,52 @@ import { desktopOnlyInterstitialHtml, isMobileUserAgent, recordLinkClick, resolv
 // link and a campaign's cloaked link behave identically. The lookup moved into
 // lib/hosting/links.ts (slug first, then token); campaign links have a NULL slug
 // so their behaviour is unchanged (P2 acceptance).
+//
+// Hidden Login (referral security): the same /r/:code path is also the public
+// entry point for a referral link shared by an existing user. If the token
+// matches an active ReferralLink, stamp the sw_ref cookie and send the visitor
+// to /login instead of a hosting redirect. Referral links take precedence —
+// they are short 8-char codes that would never collide with hosting tokens.
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ token: string }> }
 ) {
   const { token } = await params; // MUST await — async in Next.js 16
+
+  // 1. Referral link check (Hidden Login) — takes precedence.
+  const referralLink = await getReferralLinkByCode(token);
+  if (referralLink && referralLink.isActive) {
+    await recordReferralClick(token);
+    const cookieStore = await cookies();
+    cookieStore.set(REFERRAL_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: REFERRAL_COOKIE_MAX_AGE,
+    });
+    return NextResponse.redirect(new URL("/login", process.env.APP_BASE_URL ?? "/"));
+  }
+
+  // 1b. Personalized invite (Model C) — an admin-generated, email-bound invite
+  // also gates /login. Like a universal referral link it only stamps the sw_ref
+  // cookie here (we can't know who's browsing pre-auth); the hard email-match
+  // gate is enforced in the signup route. A redeemed/consumed invite no longer
+  // gates (markInviteRedeemed flips isActive off).
+  const invite = await getInviteByCode(token);
+  if (invite && invite.isActive && !invite.redeemedAt) {
+    const cookieStore = await cookies();
+    cookieStore.set(REFERRAL_COOKIE, token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: REFERRAL_COOKIE_MAX_AGE,
+    });
+    return NextResponse.redirect(new URL("/login", process.env.APP_BASE_URL ?? "/"));
+  }
+
+  // 2. Hosting link redirect (Task 30 / TASK_155 / TASK_175).
   const link = await resolveLink(token);
   if (!link) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });

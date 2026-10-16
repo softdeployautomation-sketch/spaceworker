@@ -17,6 +17,7 @@ import { PLAN_FREE, planLabelForTier } from "@/lib/plan-name";
 import { LicensesSection } from "./licenses-section";
 import { SendRegionSettings } from "@/components/send-region-settings";
 import { HostingCredentialsSettings } from "@/components/hosting-credentials-settings";
+import { ReferralLinkCard } from "@/components/referral-link-card";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -101,6 +102,10 @@ export default async function SettingsPage() {
         <h1 className="text-2xl font-bold text-fg">Settings</h1>
         <p className="mt-1 text-sm text-fg-muted">Your account and preferences.</p>
       </div>
+
+      {/* Invite-only / hidden-login (owner, 2026-10-16) — the user's personal
+          invite link. */}
+      <ReferralLinkCard userId={user.id} />
 
       {/* TASK_181 P3 (step 30) / TASK_184 B1+B2 / TASK_192 — Premium XDevice
           card. NO price on ANY build (web or wrapper): the button opens the

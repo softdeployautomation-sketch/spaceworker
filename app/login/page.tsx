@@ -1,20 +1,55 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { AuthForm } from "@/components/auth-form";
 import { getSession } from "@/lib/auth";
+import { hasAccessGate } from "@/lib/referral";
 
 export const metadata: Metadata = { title: "Sign in" };
 
-export default async function LoginPage() {
-  // This page never checked for an existing session — a visitor with a
-  // perfectly valid spaceworker_session cookie (e.g. opening a fresh tab and
-  // landing here via a bookmark or the nav's own "Login" link) always saw the
-  // login form again, which reads exactly like "it logged me out," even
-  // though the session itself was fine the whole time (confirmed live: a
-  // cookie-only request to /dashboard succeeds without issue). Same gap, same
-  // fix, mirrored in app/signup/page.tsx.
+const REFERRAL_COOKIE = "sw_ref";
+
+/**
+ * /login is referral-gated: a visitor needs a valid `sw_ref` cookie (set when
+ * they click a referral link /r/:code, or supplied as ?ref=CODE) before the
+ * sign-in form is shown. Anyone else is bounced to the public homepage.
+ */
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: { [key: string]: string | string[] | undefined };
+}) {
+  const cookieStore = await cookies();
+  const refCookie = cookieStore.get(REFERRAL_COOKIE)?.value;
+  const refQuery = Array.isArray(searchParams.ref)
+    ? searchParams.ref[0]
+    : searchParams.ref;
+
+  // Access gate: cookie takes precedence, otherwise a ?ref=CODE link stamps the
+  // cookie and proceeds. Accepts a valid universal referral OR an active,
+  // unredeemed personalized invite (Model C). The hard invite email-match is
+  // enforced later at signup, not here — this only decides "may they see the form".
+  let hasAccess = refCookie ? await hasAccessGate(refCookie) : false;
+
+  if (!hasAccess && refQuery) {
+    hasAccess = await hasAccessGate(refQuery);
+    if (!hasAccess) redirect("/?error=referral_required");
+    cookieStore.set(REFERRAL_COOKIE, refQuery, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: 60 * 60 * 24 * 30,
+    });
+  }
+
+  if (!hasAccess) {
+    // No valid referral/invite at all — cannot reach the login form.
+    redirect("/?error=referral_required");
+  }
+
   if (await getSession()) redirect("/dashboard");
 
   return (

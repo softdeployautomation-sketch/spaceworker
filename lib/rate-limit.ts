@@ -23,7 +23,8 @@ export type RateLimitKind =
   | "wallet-read"
   | "wallet-spend"
   | "overview-stats"
-  | "vantra-link";
+  | "vantra-link"
+  | "support_public";
 
 interface Rule {
   /** Number of events allowed within the window. */
@@ -89,6 +90,8 @@ const RULES: Record<RateLimitKind, Rule[]> = {
   // real pattern is a handful of clicks; 10/hr mirrors wallet-spend's
   // double-click posture while stopping a script from hammering provisioning.
   "vantra-link": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
+  // Public support form — unauthenticated, so keep the cap modest to stop spam.
+  "support_public": [{ limit: 10, windowMs: 60 * 60 * 1000 }],
 };
 
 export async function getClientIp(): Promise<string> {
