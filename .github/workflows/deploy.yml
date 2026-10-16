@@ -216,8 +216,30 @@ jobs:
           MESH_FRAME_ORIGINS: "https://mesh.spaceworker.top"
           MAILBOX_ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
 
+      # ---- device-engine bundle (engine-dist) ----
+      # TASK_214 durable fix: engine-dist was historically rsynced to the box by
+      # hand, so the clone artifacts (relay/native-host/extension) only refreshed
+      # when someone remembered to push them — the exact stale-artifact vector we
+      # keep getting burned by. Building it HERE and shipping it in the tar means
+      # every deploy refreshes the device artifacts deterministically from git.
+      #
+      # CONTRACT (do not break): scripts/engine-dist.mjs builds only KEY-FREE
+      # artifacts — the Go binaries + the extension ZIP + the manifest. It does
+      # NOT pack the CRX. The D6 force-install CRX needs the signing key
+      # (/root/secrets/clone-extension-signing.pem), which is deliberately NOT in
+      # CI, so CRX packing is a SEPARATE box-side step run after this deploy.
+      # If D6 ever adds CRX packing into engine-dist.mjs, it MUST skip gracefully
+      # when the key is absent so this CI build never needs the key.
+      - name: Set up Go (for device-engine bundle)
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Build device-engine bundle (engine-dist)
+        run: node scripts/engine-dist.mjs
+
       - name: Package build artifact
-        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture
+        run: tar czf /tmp/deploy.tar.gz .next node_modules package.json package-lock.json prisma browser-server worker deploy browser-capture engine-dist
 
       - name: Set up SSH
         run: |
@@ -277,9 +299,14 @@ jobs:
             # in a lazily-loaded chain. That made a fixed, working deploy
             # *look* unfixed while debugging, and is precisely the trap that
             # lets a resolved bug appear to persist in production. Only .next is
-            # removed: .env / static / engine-dist are NOT in the tar and must
-            # never be touched (see scripts/deploy-vps.sh's header for the
-            # 2026-09-24 incident where a --delete deploy wiped them).
+            # removed. .env / static are NOT in the tar and must never be touched
+            # (see scripts/deploy-vps.sh's header for the 2026-09-24 incident where
+            # a --delete deploy wiped them). NOTE (TASK_214): engine-dist IS now in
+            # the tar and IS refreshed in place by `tar xzf` (overwrite, never
+            # delete) — that is safe here because this path never uses --delete, and
+            # it is what keeps the device-engine artifacts from going stale. The
+            # box-side D6 CRX + public update files are NOT in the tar, so `tar xzf`
+            # leaves them untouched.
             rm -rf /opt/spaceworker/.next
             # 2026-10-16 — REMOVE prisma/migrations BEFORE EXTRACTING. Same
             # never-delete disease as .next above, but it bit harder: `tar xzf`
