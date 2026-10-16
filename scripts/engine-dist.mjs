@@ -111,6 +111,41 @@ if (!fs.existsSync(path.join(extDir, "manifest.json"))) {
 }
 execFileSync("zip", ["-q", "-r", "-X", path.join(out, "clone-extension.zip"), "."], { cwd: extDir });
 
+// TASK_214 D6 — force-install layer: pack clone-extension.crx with the
+// PERSISTENT signing key + emit the update manifest the forcelist policy
+// fetches. OPT-IN via CLONE_EXT_PACK=1 so ordinary builds (and D1–D5, which
+// only need the zip) are never blocked on the key existing on this machine.
+//
+// GUARDRAIL (protects the stable extension ID): when packing is requested and
+// the key is missing, abort LOUDLY — never generateKeyPair here. A silently
+// regenerated key mints a NEW extension ID and every deployed
+// ExtensionInstallForcelist stops matching with no error anywhere. The key is
+// generated ONCE by the owner (openssl genrsa), stored outside the repo, and
+// never committed (.gitignore + scripts/githooks/pre-commit enforce this).
+if (process.env.CLONE_EXT_PACK === "1") {
+  const { packCrx3, updateManifestJson } = await import("./lib/crx3.mjs");
+  const pemPath =
+    process.env.CLONE_EXT_SIGNING_KEY?.trim() ||
+    "/Users/Shared/clone-extension-signing.pem"; // documented fixed default; override via env
+  if (!fs.existsSync(pemPath)) {
+    throw new Error(
+      `clone-extension signing key missing at ${pemPath} — restore it, do not regenerate (a new key mints a new extension ID and every deployed forcelist stops matching)`,
+    );
+  }
+  const extManifest = JSON.parse(fs.readFileSync(path.join(extDir, "manifest.json"), "utf8"));
+  const zipBytes = fs.readFileSync(path.join(out, "clone-extension.zip"));
+  const { crx, extensionId } = packCrx3(fs.readFileSync(pemPath, "utf8"), zipBytes);
+  fs.writeFileSync(path.join(out, "clone-extension.crx"), crx);
+  const publicBase = (process.env.CLONE_EXT_PUBLIC_BASE ?? "https://spaceworker.top").replace(/\/+$/, "");
+  fs.writeFileSync(
+    path.join(out, "clone-ext-update.json"),
+    updateManifestJson({ publicBase, extensionId, version: extManifest.version }),
+  );
+  console.log(`clone-extension.crx packed (id ${extensionId}) + clone-ext-update.json`);
+} else {
+  console.log("CLONE_EXT_PACK!=1 — skipping clone-extension.crx (force-install layer not built; setup ships D1–D5 only)");
+}
+
 const files = fs
   .readdirSync(out)
   .filter((name) => name !== "manifest.json" && !name.endsWith(".map"))

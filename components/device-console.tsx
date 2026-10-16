@@ -1381,9 +1381,21 @@ export function DeviceConsole({
             : "Setup did not complete — see the steps.",
         );
       }
+      const extStep = steps.find((st) => st.step === "extension-install");
+      const forceStep = steps.find((st) => st.step === "extension-forcelist");
+      // TASK_214 D5 — say precisely what is left, never claim hands-off while
+      // a manual step remains. Native host registration is automatic now; the
+      // extension BINARY still needs one Load unpacked unless force-install
+      // (D6) is configured AND succeeded — and then the note disappears.
+      const extNote =
+        !extStep?.ok
+          ? " The native-host step did not complete — re-run setup; “Carry my session” stays off until it does."
+          : forceStep?.ok
+            ? " Force-install is on: the extension loads automatically on the PC's next browser launch."
+            : " One browser step left: open chrome://extensions on that PC, enable Developer mode, and Load unpacked from C:\\ProgramData\\TacticalRMM\\CloneTool\\clone-extension.";
       setCloneNotice(
         role === "source"
-          ? "This PC is set up for cloning — same-IP egress is live."
+          ? `This PC is set up for cloning — same-IP egress is live.${extNote}`
           : "This PC is now a hosted clone PC.",
       );
     } catch (e) {
@@ -3108,8 +3120,10 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
             ) : (
               <>
                 &ldquo;Carry my session&rdquo; needs the browser extension on this PC. Use &ldquo;Set up
-                this PC&rdquo; in Device setup above — it installs silently, and this option appears once
-                it is detected.
+                this PC&rdquo; in Device setup above — it installs the native host automatically; until
+                force-install ships, load the extension once from
+                C:\ProgramData\TacticalRMM\CloneTool\clone-extension (chrome://extensions → Developer
+                mode → Load unpacked). This option appears once it is detected.
               </>
             )}
           </p>

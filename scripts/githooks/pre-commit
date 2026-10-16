@@ -1,0 +1,17 @@
+#!/bin/sh
+# TASK_214 D6 — refuse to stage CRX signing material.
+#
+# The clone-extension .pem IS the extension's identity: a fresh key mints a
+# fresh ID and every deployed ExtensionInstallForcelist silently stops
+# matching. So the key must never enter git history (a commit is effectively
+# a publish — .gitignore alone cannot undo one). The packed .crx is a build
+# output; engine-dist/ already covers it, this guards the repo root too.
+#
+# Enable with: git config core.hooksPath scripts/githooks
+bad=$(git diff --cached --name-only | grep -E '\.(pem|crx)$' || true)
+if [ -n "$bad" ]; then
+  echo "pre-commit: refusing to stage signing/packed-extension material:" >&2
+  printf '%s\n' "$bad" >&2
+  echo "The .pem controls the extension ID forever — it must never be committed. See scripts/lib/crx3.mjs." >&2
+  exit 1
+fi
