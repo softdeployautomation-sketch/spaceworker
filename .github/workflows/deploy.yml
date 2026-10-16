@@ -281,6 +281,23 @@ jobs:
             # never be touched (see scripts/deploy-vps.sh's header for the
             # 2026-09-24 incident where a --delete deploy wiped them).
             rm -rf /opt/spaceworker/.next
+            # 2026-10-16 — REMOVE prisma/migrations BEFORE EXTRACTING. Same
+            # never-delete disease as .next above, but it bit harder: `tar xzf`
+            # overwrites/adds but never deletes, so a stale migration directory
+            # left on the box by an EARLIER hand-deploy (or an unmerged branch)
+            # survived into prisma/migrations. `prisma migrate deploy` counts every
+            # dir it finds there — so it tried to run that orphan (task205's
+            # desktopTitle/mobileTarget, already present out-of-band) and died on
+            # P3018 "column already exists", which stopped the whole deploy AFTER
+            # services were stopped but BEFORE the restart, leaving the site down.
+            # Removing the dir first makes git's shipped migrations the complete
+            # truth: no orphan file can ever reach migrate deploy again. Only
+            # prisma/migrations is removed — prisma/schema.prisma stays (it is NOT
+            # in the tar's migrations subtree, and must never be touched). The DB
+            # itself is unaffected: already-applied migrations live in
+            # _prisma_migrations, not on disk, so a fresh extract re-lists the same
+            # applied set and migrate deploy correctly reports "no pending".
+            rm -rf /opt/spaceworker/prisma/migrations
             tar xzf /tmp/spaceworker-ci-deploy.tar.gz -C /opt/spaceworker
             chown -R trmm:trmm /opt/spaceworker
             rm -f /tmp/spaceworker-ci-deploy.tar.gz

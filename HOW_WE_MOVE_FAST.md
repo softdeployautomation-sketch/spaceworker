@@ -209,6 +209,37 @@ Two safety nets now exist on the box automatically — no per-deploy action need
 > **To ship source changes:** rsync/tar the files, then let the workflow build and restart.
 > You still run `migrate deploy` yourself when you want the schema applied before the build
 > lands (it is additive and safe independently).
+>
+> **⚠️ 2026-10-16 — `prisma/migrations` ORPHANS can kill a deploy (P3018). Guard now in CI.**
+> `tar xzf` overwrites/adds but **never deletes**, so any stale migration directory left on the
+> box by an earlier hand-deploy or an **unmerged branch** survives into `prisma/migrations`.
+> `prisma migrate deploy` runs **every** dir it finds there — so it tried to run an orphan
+> (`task205`, from the never-merged TASK_205 branch, whose `desktopTitle`/`mobileTarget` columns
+> were already added out-of-band) and died on **P3018 "column already exists"**. That error stops
+> the workflow **after** services are stopped but **before** the restart → **the site is left down.**
+> The CI workflow now does `rm -rf /opt/spaceworker/prisma/migrations` before extracting (same
+> never-delete pattern as `.next`), so git's shipped migrations are the complete truth and no
+> orphan can ever reach `migrate deploy` again. The DB is unaffected — already-applied migrations
+> live in `_prisma_migrations`, not on disk. **If you ever hand-deploy a migration and it fails
+> with "already exists", the columns are usually already there: fix with
+> `sudo -u trmm npx prisma migrate resolve --applied <migration_name>` (NEVER `--rolled-back`,
+> which makes the next deploy re-run it and fail again) and delete the orphan dir.**
+>
+> **Anyone deploying from `main` OR any branch — know the deploy path before you touch it:**
+> - **The box never builds.** The only correct path is the GitHub Action `Build & Deploy`
+>   (`gh workflow run "Build & Deploy" -R softdeployautomation-sketch/spaceworker`). CI builds
+>   `.next` from clean git, tars `.next + node_modules + prisma + browser-server + worker + deploy
+>   + browser-capture`, and the box only extracts + `migrate deploy` + restarts. **Never**
+>   `npm run build` on the box — it fails on the partial tree and silently clobbers the live
+>   `.next`.
+> - **The tar ships NO `app/`, `lib/`, `components/`.** Box-level source orphans are invisible to
+>   a CI build (it compiles from git), so a 404 on some box-only file does NOT mean a CI deploy is
+>   broken. Don't chase box source drift when deploying via CI.
+> - **The only thing that can still bite is `prisma/migrations`.** See the guard note above.
+> - **A deploy that dies mid-way can leave services STOPPED** (they're stopped before extraction).
+>   If the site goes down during a deploy, check the workflow log for a `migrate deploy` failure
+>   first, then `systemctl start spaceworker spaceworker-browser extraction-worker` to recover
+>   while you fix the root cause.
 
 No local Postgres in this dev environment — `npx prisma migrate dev` won't work locally. Instead:
 
