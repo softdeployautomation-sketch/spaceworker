@@ -57,6 +57,9 @@ export async function GET() {
   ]);
 
   const linkByOwner = new Map(links.map((l) => [l.ownerId, l]));
+  // Came-via resolution: referredBy stores the referrer's CODE — resolve it to
+  // their email so the admin tree reads "michaele@example.com", not "PK4FRXB3".
+  const emailByCode = new Map(links.map((l) => [l.code, l.ownerEmail]));
   // Referred count per link — derived from the user rows themselves (each
   // attributed user names its referredByLinkId), so the tree and the counts
   // can never disagree.
@@ -80,6 +83,9 @@ export async function GET() {
         url: link ? referralUrl(link.code) : null,
         referredCount: link ? (referredCountByLink.get(link.id) ?? 0) : 0,
         referredBy: u.referredBy,
+        // Came-via as a readable email (fallback to the raw code stays in the
+        // panel for links whose owner row vanished).
+        referredByEmail: u.referredBy ? (emailByCode.get(u.referredBy) ?? null) : null,
       };
     }),
     // Model C: personalized invites (admin-generated, email-bound), separate from
@@ -93,7 +99,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
-  let body: { action?: string; userId?: string; email?: string; send?: boolean };
+  let body: {
+    action?: string;
+    userId?: string;
+    email?: string;
+    send?: boolean;
+    // Came-via: the user this invite should be attributed to on redemption.
+    referredByUserId?: string;
+  };
   try {
     body = await req.json();
   } catch {
@@ -107,7 +120,20 @@ export async function POST(req: Request) {
     if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
       return NextResponse.json({ error: "Enter a valid email address" }, { status: 400 });
     }
-    const invite = await createInvite(email);
+    // Came-via — validate the referrer is a real user BEFORE creating, so a
+    // stale dropdown value can't write a dangling id onto the invite.
+    let referredByUserId: string | null = null;
+    if (body.referredByUserId) {
+      const referrer = await prisma.user.findUnique({
+        where: { id: body.referredByUserId },
+        select: { id: true },
+      });
+      if (!referrer) {
+        return NextResponse.json({ error: "Came-via user not found" }, { status: 404 });
+      }
+      referredByUserId = referrer.id;
+    }
+    const invite = await createInvite(email, referredByUserId);
     if (body.send) {
       try {
         await sendInvite(invite.inviteeEmail, invite.code);

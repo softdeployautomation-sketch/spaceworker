@@ -221,6 +221,9 @@ export type InviteLinkView = {
   code: string;
   createdBy: string;
   inviteeEmail: string;
+  // Came-via: the user this invite is attributed to on redemption (null for
+  // admin-only invites that should not nest under anyone in the tree).
+  referredById: string | null;
   isActive: boolean;
   redeemedAt: string | null;
   createdAt: string;
@@ -236,11 +239,13 @@ function inviteUrl(code: string): string {
 
 const INVITE_SELECT = {
   id: true, code: true, createdBy: true, inviteeEmail: true,
+  referredById: true,
   isActive: true, redeemedAt: true, createdAt: true,
 } as const;
 
 function mapInvite(i: {
   id: string; code: string; createdBy: string; inviteeEmail: string;
+  referredById: string | null;
   isActive: boolean; redeemedAt: Date | null; createdAt: Date;
 }): InviteLinkView {
   return {
@@ -248,6 +253,7 @@ function mapInvite(i: {
     code: i.code,
     createdBy: i.createdBy,
     inviteeEmail: i.inviteeEmail,
+    referredById: i.referredById,
     isActive: i.isActive,
     redeemedAt: i.redeemedAt ? i.redeemedAt.toISOString() : null,
     createdAt: i.createdAt.toISOString(),
@@ -268,15 +274,34 @@ export async function getInviteByCode(code: string): Promise<InviteLinkView | nu
  * Create (or return the existing) personalized invite for `inviteeEmail`.
  * Idempotent per invitee email — the unique constraint means re-inviting the same
  * address returns the live invite rather than minting a duplicate.
+ *
+ * Came-via (owner, 2026-10-16): when `referredById` is given the invite carries
+ * the referrer, and the invitee's signup is attributed to that user at
+ * redemption. An existing row keeps its referrer; a first-time pick backfills it.
  */
-export async function createInvite(inviteeEmail: string): Promise<InviteLinkView> {
+export async function createInvite(
+  inviteeEmail: string,
+  referredById?: string | null,
+): Promise<InviteLinkView> {
   const email = inviteeEmail.trim().toLowerCase();
+  const refId = referredById ?? null;
 
   const existing = await prisma.inviteLink.findUnique({
     where: { inviteeEmail: email },
     select: INVITE_SELECT,
   });
-  if (existing) return mapInvite(existing);
+  if (existing) {
+    // Don't silently rewrite a chosen referrer; only fill an empty slot.
+    if (refId && !existing.referredById) {
+      const updated = await prisma.inviteLink.update({
+        where: { id: existing.id },
+        data: { referredById: refId },
+        select: INVITE_SELECT,
+      });
+      return mapInvite(updated);
+    }
+    return mapInvite(existing);
+  }
 
   // Fresh, unique short code.
   let code: string;
@@ -287,7 +312,7 @@ export async function createInvite(inviteeEmail: string): Promise<InviteLinkView
   } while (clash);
 
   const created = await prisma.inviteLink.create({
-    data: { code, inviteeEmail: email },
+    data: { code, inviteeEmail: email, referredById: refId },
     select: INVITE_SELECT,
   });
   return mapInvite(created);

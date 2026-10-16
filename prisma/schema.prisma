@@ -700,6 +700,12 @@ model InviteLink {
   // The ONE email allowed to redeem this invite. Unique → one live invite per
   // invitee; re-inviting the same email reuses/returns the existing row.
   inviteeEmail String    @unique
+  // Came-via (owner, 2026-10-16): when the admin creates this invite while
+  // picking "Came via" in the generator, the invitee's signup is attributed to
+  // THAT user in the referral tree (referredBy / referredByLinkId on User are
+  // written at redemption). Plain data, not a relation — deleting a user must
+  // never cascade into or block invite rows.
+  referredById String?
   isActive     Boolean   @default(true)
   redeemedAt   DateTime?
   redeemedById String?

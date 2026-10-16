@@ -276,14 +276,20 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
   if (wanted.has("access")) {
     const before = await timed(() => deps.db.deviceCount());
 
+    // Hidden-login / invite-only (owner, 2026-10-16): an ANON visitor has no
+    // session and no sw_ref cookie, so GET /login must bounce them to the joker
+    // gate (307 → /?error=referral_required). A 200 here would mean the login
+    // page is publicly reachable again — that is the REGRESSION this probe now
+    // guards against (it previously expected 200, which is why the health
+    // battery flagged "error" the moment the gate went live).
     await http(
       "anon-login",
       "access",
-      "Anonymous GET /login",
+      "Anonymous GET /login (invite-only bounce)",
       "/login",
       { method: "GET" },
-      (s) => s === 200,
-      (s) => `GET /login → ${s} (expect 200)`,
+      (s) => s === 307,
+      (s) => `GET /login → ${s} (expect 307 invite-only redirect to /?error=referral_required)`,
     );
 
     await http(

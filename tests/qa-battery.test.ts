@@ -71,7 +71,9 @@ function fakeDb(o: FakeDbOpts = {}): QaDb {
 }
 
 const HEALTHY_ROUTES: Record<string, FetchResult> = {
-  "/login": 200,
+  // Hidden-login (owner, 2026-10-16): an ANON visitor gets the invite-only
+  // bounce (307 → /?error=referral_required), never a rendered login page.
+  "/login": 307,
   "/api/devices": 401,
   "/api/admin/users": 401,
   "/api/internal/retention-sweep": 401,
@@ -180,9 +182,16 @@ describe("TASK_195 — platform probes", () => {
 });
 
 describe("TASK_195 — access probes (anon against own origin)", () => {
-  it("anon-login must see 200; a 500 fails the probe", async () => {
+  it("anon-login must see the invite-only 307; 200 (public login) or 500 FAILS", async () => {
     const bad = await runBattery(baseDeps({ fetchImpl: fakeFetch({ ...HEALTHY_ROUTES, "/login": 500 }) }), { groups: ["access"] });
     assert.equal(probe(bad, "anon-login").status, "fail");
+    // Hidden-login regression guard: a 200 means the login page is publicly
+    // reachable again — that must fail too, not pass as "healthy".
+    const leaked = await runBattery(baseDeps({ fetchImpl: fakeFetch({ ...HEALTHY_ROUTES, "/login": 200 }) }), { groups: ["access"] });
+    assert.equal(probe(leaked, "anon-login").status, "fail");
+    const ok = await runBattery(baseDeps(), { groups: ["access"] });
+    assert.equal(probe(ok, "anon-login").status, "pass");
+    assert.match(probe(ok, "anon-login").detail ?? "", /307/);
   });
 
   it("anon POST /api/devices must 401; a 2xx FAILS (gate regression)", async () => {

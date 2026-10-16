@@ -48,6 +48,16 @@ A whole session's worth of manual rsync+build+restart deploys on 2026-09-28
 never engaged the maintenance page even once, because this script existed and
 wasn't used — see its own header comment for the full incident history.
 
+### 🚦 Deploy coordination — ASK BEFORE DEPLOYING (2026-10-16, owner rule)
+
+**Never start a production deploy (either path) without asking the owner first,
+and wait for their go-ahead — they may need to broadcast to users first.**
+Users are on board; a surprise maintenance window cuts them off guard. The
+protocol: (1) state that the deploy is ready and what it contains, (2) **ask**,
+(3) only deploy after the owner confirms — they will broadcast/announce if the
+window is long. Emergency fixes (production broken right now) still get asked
+about, but the question can be as short as "deploying the fix now, ok?".
+
 ### ⚠️ READ THIS BEFORE DEPLOYING — from `main` OR any branch (2026-10-16)
 
 **The VPS is an rsync/tar target with NO git checkout — what is on the box is NOT

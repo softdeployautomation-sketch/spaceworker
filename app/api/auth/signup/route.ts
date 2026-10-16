@@ -118,10 +118,24 @@ export async function POST(request: Request) {
   } else if (invite) {
     // Model C: the invite row itself is the record — tracked in the admin
     // "Invites" panel by invitee email + redemption status. Consume it so it can't
-    // be reused, and give the new user their own universal link. No user-tree
-    // attribution: the admin is a separate JWT identity, not a user account, so
-    // invite signups are never nested under a user in the referral tree.
+    // be reused, and give the new user their own universal link.
+    //
+    // Came-via (owner, 2026-10-16): if the admin picked a referrer when creating
+    // this invite, attribute the signup to that user exactly like a universal
+    // referral link — same referredBy / referredByLinkId fields, same
+    // conversions increment — so the invitee appears under them in the tree.
     await markInviteRedeemed(invite.id, user.id).catch(() => undefined);
+    if (invite.referredById && invite.referredById !== user.id) {
+      const refLink = await getUserReferralLink(invite.referredById).catch(() => null);
+      if (refLink) {
+        await attributeReferral({
+          userId: user.id,
+          linkId: refLink.id,
+          referrerCode: refLink.code,
+          referrerEmail: refLink.ownerEmail,
+        }).catch(() => undefined);
+      }
+    }
     await getUserReferralLink(user.id).catch(() => undefined);
   }
 
