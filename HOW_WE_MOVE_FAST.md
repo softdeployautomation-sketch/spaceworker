@@ -48,6 +48,42 @@ A whole session's worth of manual rsync+build+restart deploys on 2026-09-28
 never engaged the maintenance page even once, because this script existed and
 wasn't used — see its own header comment for the full incident history.
 
+### ⚠️ READ THIS BEFORE DEPLOYING — from `main` OR any branch (2026-10-16)
+
+**The VPS is an rsync/tar target with NO git checkout — what is on the box is NOT
+necessarily what is in git.** Every regression this team has burned days on traces
+back to that one fact plus "additive-only" syncs that never delete. Before ANY
+deploy, hold these four rules in your head:
+
+1. **Git is the only source of truth, but the box does not prune.** `rsync` (no
+   `--prune`) and the CI workflow's `tar xzf` both **overwrite/add and never
+   delete**. Any file that ever landed on the box and is no longer in git **stays
+   there forever** unless something removes it. This is exactly how the
+   `prisma/migrations` orphan (`task205`) survived, got picked up by `migrate
+   deploy` on the next CI run, and broke a production deploy with
+   `column "desktopTitle" … already exists` (P3018). `deploy-vps.sh` now deletes
+   orphan migration dirs before extract; if you deploy by hand, you must too.
+2. **There are TWO deploy paths and they ship DIFFERENT things.** The GitHub
+   workflow (`Build & Deploy`) builds `.next` in clean CI and ships only the
+   runtime (`.next`, `node_modules`, `prisma`, `browser-server`, `worker`,
+   `deploy`, `browser-capture`) — it ships **no `app/`, `lib/`, `components/`
+   source**. `scripts/deploy-vps.sh` rsyncs whatever file list you hand it and
+   builds on the box. Know which one you are on: "the source file isn't on the
+   box" is expected under CI and a bug under rsync-with-source.
+3. **A schema change is NOT deployed by either path by default.** CI ships
+   `prisma/` but does not gate on migrate health, and `deploy-vps.sh` runs only
+   `prisma generate`, never `migrate deploy`. See §3, and §6b for the drift check
+   you must run after every `migrate deploy`. Never merge a migration that was
+   only tested by hand once against the live DB.
+4. **Anything you leave on the box that is not in git will bite the next deploy.**
+   Before you finish: remove one-off scripts, temp dirs, and files you staged
+   for debugging (`/root`, `/opt/spaceworker` root). The task agent should never
+   have to "find the stale file" again — if you put it there, you take it off.
+
+The standing rule this playbook keeps re-learning: **deploy from a clean tree,
+ship only what git has, and always remove what is no longer in git.**
+
+
 **Deploy the DIRECTORY TREES, not a `--files-from` list** (2026-09-28 — see the
 incident right below; the list recipe that used to live here was a silent
 file-dropper):

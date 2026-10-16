@@ -286,11 +286,46 @@ else
 fi
 
 # --- 4. Sync ------------------------------------------------------------
+# 2026-10-16 (owner report, second incident in one day): both today's deploys
+# aborted mid-tree because the operator's uplink dropped for a few seconds. rsync
+# is idempotent and incremental — re-running it just resumes and re-sends only the
+# delta — so a transient network failure here is SAFE to retry. Without this, the
+# whole deploy chain (maintenance on -> build -> restart) restarted from zero on
+# every blip, wasting minutes and requiring an operator to notice and re-trigger.
+# Bounded: RSYNC_RETRIES attempts per sync unit with a short backoff; a real
+# failure (auth, missing path) still aborts loudly after the budget, never loops.
+RSYNC_RETRIES="${RSYNC_RETRIES:-3}"
+
+# One sync unit = one rsync invocation. Retries ONLY on a non-zero exit (which for
+# rsync means transport/connection trouble, not "nothing to do" — that's exit 0).
+# Between attempts, re-check reachability so a dead link fails fast with the same
+# clear "network blip, do NOT recover the server" message as ensure_reachable.
+rsync_with_retry() {
+  local attempt=1 rc=0
+  while [ "$attempt" -le "$RSYNC_RETRIES" ]; do
+    ( cd "$LOCAL_ROOT" && rsync "$@" ) && return 0
+    rc=$?
+    echo "   rsync attempt $attempt/$RSYNC_RETRIES failed (rc=$rc)" >&2
+    if [ "$attempt" -lt "$RSYNC_RETRIES" ]; then
+      sleep $((attempt * 3))
+      if ! run_remote "echo __SW_REACHABLE__" 2>/dev/null | grep -q '__SW_REACHABLE__'; then
+        echo "   link is down; waiting before retry $((attempt + 1))…" >&2
+        sleep $((attempt * 5))
+      fi
+    fi
+    attempt=$((attempt + 1))
+  done
+  echo "REFUSED: rsync failed $RSYNC_RETRIES times (last rc=$rc). This is a" >&2
+  echo "transport/network problem, not a build or server failure. NOTHING was" >&2
+  echo "built or restarted. Fix the link and re-run the same command." >&2
+  return 1
+}
+
 echo "-- rsync"
-( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" "--files-from=$FLAT_LIST" -e "ssh -i $SSH_KEY -o BatchMode=yes" ./ "$VPS_HOST:$APP_DIR/" )
+rsync_with_retry "${RSYNC_BASE[@]}" "--files-from=$FLAT_LIST" -e "ssh -i $SSH_KEY -o BatchMode=yes" ./ "$VPS_HOST:$APP_DIR/" || exit 1
 for d in ${DIR_ENTRIES[@]+"${DIR_ENTRIES[@]}"}; do
   echo "-- rsync tree: $d/"
-  ( cd "$LOCAL_ROOT" && rsync "${RSYNC_BASE[@]}" -e "ssh -i $SSH_KEY -o BatchMode=yes" "$d/" "$VPS_HOST:$APP_DIR/$d/" )
+  rsync_with_retry "${RSYNC_BASE[@]}" -e "ssh -i $SSH_KEY -o BatchMode=yes" "$d/" "$VPS_HOST:$APP_DIR/$d/" || exit 1
 done
 
 # --- 5. Ownership (rsync lands files as the LOCAL uid, not the service user) --
