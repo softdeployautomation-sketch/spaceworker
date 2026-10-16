@@ -83,6 +83,11 @@ function resetWorld(): void {
 }
 
 const fakePrisma = {
+  // TASK_215 — the admin queue merges public-form messages; this suite keeps
+  // its ticket/broadcast-only world with an empty (and untraced) delegate.
+  publicMessage: {
+    findMany: async () => [],
+  },
   user: {
     // Applies the tier filter the SERVICE derived — so count assertions prove
     // the real where-clause, not a reimplementation of it.
@@ -233,8 +238,16 @@ function installRequireHook(): void {
     }
     // The SERVICE reaches prisma from its own file (house pattern, see
     // support-tickets.test.ts): real service code, fake store.
-    if (from.endsWith("/lib/support/tickets.ts") && request === "@/lib/prisma") {
-      return { prisma: fakePrisma };
+    // TASK_215 — the service also imports "@/lib/email" now (public-message
+    // replies); the real module's `import "server-only"` throws under plain
+    // node, so it is stubbed here too.
+    if (from.endsWith("/lib/support/tickets.ts")) {
+      if (request === "@/lib/prisma") {
+        return { prisma: fakePrisma };
+      }
+      if (request === "@/lib/email") {
+        return { sendEmail: async () => {} };
+      }
     }
     return originalLoad.call(this, request, parent, isMain);
   };

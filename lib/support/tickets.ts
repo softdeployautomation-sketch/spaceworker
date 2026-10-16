@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 
+import { sendEmail } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 
 import { describeCredentialIn } from "./redact";
@@ -69,6 +70,80 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 /** Who wrote a message. Pinned to this exact pair by a CHECK in the migration. */
 export const AUTHOR_USER = "user";
 export const AUTHOR_ADMIN = "admin";
+
+// ---------------------------------------------------------------------------
+// TASK_215 Bug 2 — PUBLIC SUPPORT MESSAGES surfacing in the admin queue
+//
+// The anonymous clown/captcha form writes `PublicMessage` rows that the admin
+// queue never showed (it reads `SupportTicket`). This block surfaces them at
+// the VIEW level with a synthetic `public:` id, for three hard reasons:
+//   * tickets require a userId and the form is account-free by design;
+//   * `PublicMessage.email` is NULLABLE, so even an email→user resolution is
+//     impossible for part of the traffic;
+//   * `SupportMessage.ticketId` is a hard FK — a reply cannot be persisted as
+//     a message row, so the reply is delivered by EMAIL to the captured
+//     address (the task's own parenthetical).
+// Hard rules forbid a schema change, so `isRead` — which nothing else reads or
+// writes — doubles as the queue's handled flag (see `toPublicTicketView`).
+// ---------------------------------------------------------------------------
+
+/**
+ * Synthetic prefix for admin-queue rows that are PublicMessage rows.
+ *
+ * A real ticket id is a cuid and can never contain `:`, so the prefix is
+ * unforgeable as a ticket id and lets every admin service function dispatch on
+ * it. User-facing paths are unaffected by construction: they filter
+ * `where: { id, userId }` against `SupportTicket`, where no such id exists.
+ */
+export const PUBLIC_MESSAGE_ID_PREFIX = "public:";
+
+/** Is this admin-queue id a public form message rather than a ticket? */
+export function isPublicMessageId(id: string): boolean {
+  return id.startsWith(PUBLIC_MESSAGE_ID_PREFIX);
+}
+
+/** Strip the prefix down to the PublicMessage row id. */
+function publicMessageRowId(id: string): string {
+  return id.slice(PUBLIC_MESSAGE_ID_PREFIX.length);
+}
+
+/**
+ * A PublicMessage as the admin queue must see it.
+ *
+ * Schema reality: there is no status/category/priority column and no migration
+ * is allowed, so the ONE state column (`isRead`) becomes the handled flag:
+ * false ⇒ "open", true ⇒ "resolved" — the exact two states the panel's
+ * Resolve/Reopen buttons speak. `resolvedAt` stays NULL on purpose: isRead
+ * carries no timestamp, and inventing one would corrupt any future "how long
+ * did support take" report. Opening a row does NOT touch isRead — Resolve is
+ * the explicit handled action, mirroring how admin replies don't reopen.
+ *
+ * The `Public: ` subject prefix is what tells the admin at a glance that this
+ * row came from the anonymous form and that its thread is a single message.
+ */
+function toPublicTicketView(row: {
+  id: string;
+  name: string | null;
+  message: string;
+  isRead: boolean;
+  createdAt: Date;
+}): SupportTicketView {
+  return {
+    id: PUBLIC_MESSAGE_ID_PREFIX + row.id,
+    subject: `Public: ${row.name?.trim() || "anonymous"}`,
+    status: row.isRead ? RESOLVED_STATUS : "open",
+    category: null,
+    priority: null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.createdAt.toISOString(),
+    resolvedAt: null, // no timestamp exists for when isRead flipped — see above
+    messageCount: 1,
+    lastMessageAt: row.createdAt.toISOString(),
+    // "admin replied & customer hasn't read" is underivable for publics; false
+    // is the honest value and the panel does not badge admin rows with it.
+    unread: false,
+  };
+}
 
 /** A plain-language name for the domain a ticket is about. Never copied from input. */
 export interface TicketDomainRef {
@@ -709,7 +784,26 @@ export async function listAdminTickets(
   // is NULL — Prisma's `not` semantics — while this check is exact-string.
   // A future admin view of sent broadcasts should query the constant directly.
   const filtered = rows.filter((r) => r.subject !== BROADCAST_ANNOUNCEMENT_SUBJECT);
-  return { ok: true, value: filtered.map(toTicketView) };
+
+  // TASK_215 Bug 2 — merge the anonymous-form messages into the same queue.
+  // Public rows carry no category/priority (no schema change is allowed), so
+  // an active filter on either excludes them entirely — the same semantics a
+  // ticket with a NULL column gets from the WHERE clause. The status filter
+  // applies to the DERIVED status (see toPublicTicketView). The read itself is
+  // skipped when a category/priority filter is active, not merely post-filtered.
+  const publicViews =
+    category || priority
+      ? []
+      : (
+          await prisma.publicMessage.findMany({ orderBy: { createdAt: "desc" } })
+        ).map(toPublicTicketView).filter((v) => !status || v.status === status);
+
+  // Both slices are createdAt-desc already; re-sorting the merge keeps the
+  // queue's newest-first contract honest across the two tables.
+  const merged = [...filtered.map(toTicketView), ...publicViews].sort((a, b) =>
+    b.createdAt.localeCompare(a.createdAt)
+  );
+  return { ok: true, value: merged };
 }
 
 /**
@@ -722,6 +816,8 @@ export async function listAdminTickets(
 export async function getAdminTicket(
   ticketId: string
 ): Promise<SupportResult<SupportTicketDetailView>> {
+  // TASK_215 — public form messages are a different table behind a prefix.
+  if (isPublicMessageId(ticketId)) return getPublicMessageDetail(publicMessageRowId(ticketId));
   const row = await prisma.supportTicket.findFirst({
     where: { id: ticketId },
     select: {
@@ -778,6 +874,8 @@ export async function addAdminMessage(
   adminId: string | null,
   invoiceId?: string | null
 ): Promise<SupportResult<SupportMessageView>> {
+  // TASK_215 — a public reply is delivered by email, never stored (hard FK).
+  if (isPublicMessageId(ticketId)) return replyToPublicMessage(ticketId, body, invoiceId);
   const validated = validateBody(body);
   if (!validated.ok) return validated;
 
@@ -987,6 +1085,8 @@ export async function updateAdminTicket(
   ticketId: string,
   patch: { status?: string | null; category?: string | null; priority?: string | null }
 ): Promise<SupportResult<SupportTicketView>> {
+  // TASK_215 — public messages answer only open/resolved (see the helper).
+  if (isPublicMessageId(ticketId)) return updatePublicMessageStatus(ticketId, patch);
   const existing = await prisma.supportTicket.findUnique({
     where: { id: ticketId },
     select: { id: true, status: true },
@@ -1020,6 +1120,180 @@ export async function updateAdminTicket(
     select: TICKET_LIST_SELECT,
   });
   return { ok: true, value: toTicketView(row) };
+}
+
+// ---------------------------------------------------------------------------
+// TASK_215 — PUBLIC MESSAGE helpers (dispatch targets for the four admin fns)
+// ---------------------------------------------------------------------------
+
+/**
+ * One public message as an admin detail view.
+ *
+ * The thread is a single `user` message — the form submission itself. There is
+ * no userId (the submitter has no account), which is precisely what hides the
+ * invoice composer; `userEmail` is the captured address, present only if they
+ * left one. Reading does NOT set isRead: Resolve stays the explicit handled
+ * action, mirroring how an admin reply does not reopen a ticket.
+ */
+async function getPublicMessageDetail(
+  rowId: string
+): Promise<SupportResult<SupportTicketDetailView>> {
+  const row = await prisma.publicMessage.findUnique({ where: { id: rowId } });
+  if (!row) return ticketNotFound();
+  return {
+    ok: true,
+    value: {
+      ...toPublicTicketView(row),
+      messages: [
+        {
+          id: PUBLIC_MESSAGE_ID_PREFIX + row.id,
+          authorRole: AUTHOR_USER,
+          body: row.message,
+          createdAt: row.createdAt.toISOString(),
+        },
+      ],
+      domain: null,
+      // Absent when they left no address — never a fake placeholder the admin
+      // might mistake for somewhere a reply could reach.
+      ...(row.email ? { userEmail: row.email } : {}),
+    },
+  };
+}
+
+/**
+ * Resolve/reopen a public message. The ONLY state the schema allows is
+ * isRead, so open/resolved are the only answerable statuses; anything else —
+ * including the category/priority fields the ticket PATCH schema accepts — is
+ * a 422 that says so instead of silently pretending it stuck.
+ */
+async function updatePublicMessageStatus(
+  ticketId: string,
+  patch: { status?: string | null; category?: string | null; priority?: string | null }
+): Promise<SupportResult<SupportTicketView>> {
+  const rowId = publicMessageRowId(ticketId);
+  const existing = await prisma.publicMessage.findUnique({ where: { id: rowId } });
+  if (!existing) return ticketNotFound();
+
+  if (patch.category !== undefined || patch.priority !== undefined) {
+    return {
+      ok: false,
+      status: 422,
+      code: "public_message_no_fields",
+      message: "Public messages have no category or priority — only open/resolved applies.",
+    };
+  }
+  if (patch.status === undefined) {
+    return { ok: false, status: 422, code: "nothing_to_update", message: "Nothing to change." };
+  }
+  const status = cleanOptional(patch.status);
+  if (status === null) {
+    return { ok: false, status: 422, code: "empty_status", message: "A message needs a status." };
+  }
+  if (status !== "open" && status !== RESOLVED_STATUS) {
+    return {
+      ok: false,
+      status: 422,
+      code: "public_message_unknown_status",
+      message: "Public messages can only be open or resolved.",
+    };
+  }
+  const row = await prisma.publicMessage.update({
+    where: { id: rowId },
+    data: { isRead: status === RESOLVED_STATUS },
+  });
+  return { ok: true, value: toPublicTicketView(row) };
+}
+
+/**
+ * Reply to a public message — by EMAIL, because the reply cannot be a row:
+ * `SupportMessage.ticketId` is a hard FK and there is no ticket behind a
+ * public message (and no migration is allowed to create one). The address
+ * comes from the row; when they left none there is nowhere to deliver, and
+ * the 422 says exactly that so the admin resolves it instead of retrying.
+ *
+ * The reply body goes through the SAME credential scan as every ticket body —
+ * an admin pasting a token into a reply is exactly the accident §2.1 exists
+ * for. A send failure is a 502 (nothing was delivered, so nothing pretends
+ * otherwise); the NotificationLog row written by sendEmail is the audit trail,
+ * which is also why there is no authorId to record.
+ */
+async function replyToPublicMessage(
+  ticketId: string,
+  body: string,
+  invoiceId?: string | null
+): Promise<SupportResult<SupportMessageView>> {
+  const rowId = publicMessageRowId(ticketId);
+  const row = await prisma.publicMessage.findUnique({ where: { id: rowId } });
+  if (!row) return ticketNotFound();
+
+  if (invoiceId && invoiceId.trim() !== "") {
+    return {
+      ok: false,
+      status: 422,
+      code: "public_message_invoice",
+      message: "Invoices attach to account tickets only, not public messages.",
+    };
+  }
+  const validated = validateBody(body);
+  if (!validated.ok) return validated;
+  if (!row.email) {
+    return {
+      ok: false,
+      status: 422,
+      code: "public_message_no_email",
+      message:
+        "This message arrived with no email address, so there is nowhere to reply — resolve it instead.",
+    };
+  }
+
+  try {
+    await sendEmail({
+      to: row.email,
+      subject: "Re: your SpaceWorker support message",
+      html: publicReplyEmailHtml(row.name, row.message, validated.value),
+      eventType: "public_message_reply",
+    });
+  } catch {
+    return {
+      ok: false,
+      status: 502,
+      code: "public_message_reply_failed",
+      message: "The reply email could not be sent, so nothing was delivered. Try again.",
+    };
+  }
+
+  // Deliberately NOT persisted (no row can be — hard FK). The queue thread
+  // keeps showing the submission; this return value is what the panel shows
+  // as "sent" for the current session only.
+  return {
+    ok: true,
+    value: {
+      id: PUBLIC_MESSAGE_ID_PREFIX + row.id,
+      authorRole: AUTHOR_ADMIN,
+      body: validated.value,
+      createdAt: new Date().toISOString(),
+      invoiceId: null,
+    },
+  };
+}
+
+/** The reply email: the admin's answer, with the original quoted under it. */
+function publicReplyEmailHtml(name: string | null, original: string, reply: string): string {
+  const esc = (s: string) =>
+    s
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  const quote = esc(original).replace(/\n/g, "<br>");
+  const answer = esc(reply).replace(/\n/g, "<br>");
+  return `<!doctype html><html><body style="font-family:sans-serif;line-height:1.5">
+<p>Hi ${esc(name?.trim() || "there")},</p>
+<p>${answer}</p>
+<hr style="border:none;border-top:1px solid #ddd;margin:16px 0">
+<p style="color:#666;font-size:13px">Your message:</p>
+<p style="color:#666;font-size:13px">${quote}</p>
+</body></html>`;
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { getAdminSession, requireAdminSession } from "@/lib/admin-auth";
-import { getAdminTicket, addAdminMessage } from "@/lib/support/tickets";
+import { getAdminTicket, addAdminMessage, isPublicMessageId } from "@/lib/support/tickets";
 import { notifyUserTicketReply } from "@/lib/support-notify";
 
 // TASK_159 Phase 1 — POST /api/admin/support/tickets/<id>/messages   (admin reply)
@@ -55,7 +55,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // email, and two emails for one action is noise. Fetch + notify are wrapped
   // together in a try/catch with no await on the notify itself, so neither a
   // lookup hiccup nor a thrown notify can change this 201.
-  if (!parsed.invoiceId) {
+  // TASK_215 — a public-form message has no account behind it: the dashboard
+  // notify email would be a wrong CTA (there is no dashboard to open) and the
+  // reply path already emailed the submitter directly. Skip it for `public:`
+  // ids; invoice-carrying replies keep their existing skip.
+  if (!parsed.invoiceId && !isPublicMessageId(id)) {
     try {
       const detail = await getAdminTicket(id);
       if (detail.ok && detail.value.userEmail) {

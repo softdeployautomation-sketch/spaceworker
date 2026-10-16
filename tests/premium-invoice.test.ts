@@ -369,6 +369,10 @@ function adminInvoiceDeps(): Overrides {
         invoiceNotifyCalls.push(input);
       },
     },
+    // TASK_215 — this route imports lib/support/tickets (postInvoiceNoticeToUser),
+    // which now imports "@/lib/email" for public-message replies; the real email
+    // module imports server-only and throws under plain node. Never called here.
+    "@/lib/email": { sendEmail: async () => {} },
   };
 }
 

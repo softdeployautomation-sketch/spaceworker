@@ -343,6 +343,13 @@ const fakePrisma = {
       };
     },
   },
+  /**
+   * TASK_215 — the admin list now merges public-form messages; this suite
+   * keeps its ticket-only world with an empty (and untraced) delegate.
+   */
+  publicMessage: {
+    findMany: async () => [],
+  },
   /** The array form only — which is the only form the service uses. */
   $transaction: async (ops: Array<Promise<unknown>>) => Promise.all(ops),
 };
@@ -423,8 +430,16 @@ loader._load = function patched(request, parent, isMain) {
   // The SERVICE is reached through the routes, but it imports "@/lib/prisma" too —
   // and its parent is lib/support/tickets.ts, not a route. Patched separately so the
   // real service runs against the fake store rather than opening a connection.
-  if (from.endsWith("/lib/support/tickets.ts") && request === "@/lib/prisma") {
-    return { prisma: fakePrisma };
+  // TASK_215: the service ALSO imports "@/lib/email" now (public-message replies go
+  // to the captured address); the real module imports server-only, which throws
+  // under plain node, so it is stubbed here too.
+  if (from.endsWith("/lib/support/tickets.ts")) {
+    if (request === "@/lib/prisma") {
+      return { prisma: fakePrisma };
+    }
+    if (request === "@/lib/email") {
+      return { sendEmail: async () => {} };
+    }
   }
   return originalLoad.call(this, request, parent, isMain);
 };
