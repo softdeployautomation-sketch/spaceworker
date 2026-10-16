@@ -15,6 +15,7 @@ import WalletGrantPanel from "@/components/admin/wallet-grant-panel";
 import { UserInvoiceCell } from "@/components/admin/user-invoice-cell";
 import { CyberLabAccessCell } from "@/components/admin/cyberlab-access-cell";
 import { CyberLabGuide } from "@/components/admin/cyberlab-guide";
+import { ReferralsPanel } from "@/components/admin/referrals-panel";
 
 type AdminUser = {
   id: string;
@@ -103,11 +104,14 @@ type ReviewPayment = {
   attempts: Array<{ success: boolean; note: string | null; checkedAt: string }>;
 };
 
-type Tab = "overview" | "users" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
+type Tab = "overview" | "users" | "referrals" | "payments" | "wallets" | "notifications" | "sessions" | "support" | "queue" | "infrastructure" | "cyberlab" | "services" | "templates" | "ai" | "licenses" | "mailboxes" | "campaigns" | "automations" | "routes" | "health";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "users", label: "Users" },
+  // Invite-only / hidden-login (owner, 2026-10-16) — per-user invite links,
+  // the who-came-through-whom tree, copy + email actions, bulk send.
+  { id: "referrals", label: "Referrals" },
   { id: "payments", label: "Payments" },
   { id: "wallets", label: "Wallets" },
   { id: "notifications", label: "Notifications" },
@@ -260,6 +264,7 @@ export default function AdminPanel({ initialUsers }: { initialUsers: AdminUser[]
             Users tab therefore has no "view devices" jump either; both the tab
             component and its jump now live behind that private route only. */}
         {tab === "users" && <UsersTab initialUsers={initialUsers} />}
+        {tab === "referrals" && <ReferralsPanel />}
         {tab === "payments" && <PaymentsTab />}
         {tab === "wallets" && <WalletsTab users={initialUsers} />}
         {tab === "notifications" && <NotificationsTab />}

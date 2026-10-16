@@ -214,6 +214,18 @@ model User {
   // (Premium Plus / Premium XDevice). Restrict on delete: an invoice is payment
   // evidence, it must not vanish with the account row.
   premiumInvoices          PremiumInvoice[]
+
+  // Referral security (Hidden Login) — a user is onboarded via a referral link
+  // shared by an existing user. `referredBy` stores the referrer's code/email
+  // (denormalized for easy lookup); `referredByLinkId` points at the
+  // ReferralLink that was used. Every user also owns exactly one ReferralLink
+  // (found via ReferralLink.userId) which they can share to invite others —
+  // an admin-generated link is likewise owned by that admin's user row, so the
+  // tree in admin attributes the branch to whoever generated the link.
+  referralLink             ReferralLink? @relation("ReferralOwner")
+  referredBy               String?
+  referredByLinkId         String?
+  referredByLink           ReferralLink? @relation("ReferredBy", fields: [referredByLinkId], references: [id])
 }
 
 model VerificationCode {
@@ -649,22 +661,13 @@ model AdminSetting {
   cyberlabEgressRequireOwnershipProof   Boolean @default(false)
   cyberlabEgressScopeGuard              Boolean @default(false)
   cyberlabEgressAllowList               String  @default("")
-
-  // Referral security (Hidden Login) — a user is onboarded via a referral link
-  // shared by an existing user. `referredBy` stores the referrer's code/email
-  // (denormalized for easy lookup); `referredByLinkId` points at the
-  // ReferralLink that was used. Every user also owns exactly one ReferralLink
-  // (found via ReferralLink.userId) which they can share to invite others.
-  referredBy          String?
-  referredByLinkId    String?
-  referredByLink      ReferralLink? @relation("ReferredBy", fields: [referredByLinkId], references: [id])
 }
 
 model ReferralLink {
   id          String   @id @default(cuid())
   code        String   @unique
   userId      String   @unique
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User     @relation("ReferralOwner", fields: [userId], references: [id], onDelete: Cascade)
   createdAt   DateTime @default(now())
   clicks      Int      @default(0)
   conversions Int      @default(0)
