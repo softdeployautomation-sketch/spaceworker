@@ -34,7 +34,16 @@ export default async function FullScreenConsolePage({
   const key = typeof tab === "string" ? tab.trim().toLowerCase() : "";
   const initialTab = TAB_ALIASES[key] ?? "control";
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-6">
+    // TASK_212 D5 — full-screen fills the viewport in EITHER orientation:
+    // `h-[100dvh]` tracks the on-screen keyboard / address bar as it shows and
+    // hides, and the max() padding keeps the window clear of notches and the
+    // home indicator now that viewportFit: "cover" (app/layout.tsx) lets
+    // content run under them. DeviceConsole's outer wrapper is flex-1/min-h-0
+    // inside this, so no component needs a viewport calc of its own any more
+    // (the old `h-[calc(100vh-3rem)]` lived in ControlTab). Desktop keeps
+    // byte-identical margins: max() falls back to py-6/px-4 when the insets
+    // are 0.
+    <main className="mx-auto flex h-[100dvh] w-full max-w-6xl flex-col pb-[max(1.5rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pt-[max(1.5rem,env(safe-area-inset-top))]">
       <DeviceConsole deviceId={deviceId} fullScreen initialTab={initialTab} />
     </main>
   );

@@ -96,6 +96,93 @@ export function noMods(mods: Mods): boolean {
   return !mods.ctrl && !mods.alt && !mods.shift;
 }
 
+// ---------------------------------------------------------------------------
+// TASK_212 D2 — the on-screen MOUSE controller (pure half).
+//
+// Owner: "you didn't add a mouse controller for the mobile". TASK_208 gave
+// touch→mouse translation directly on the stream (tap/long-press/two-finger),
+// but there is no way to precisely move the remote cursor, right-click on
+// demand, double-click, or hold-drag — the classic VNC/TeamViewer mouse pad.
+// This is that pad's logic: a virtual cursor in surface-local pixels plus the
+// exact event-spec sequences each button emits into the frame via the
+// `__swMouse` bridge (injected alongside `__swKey`). React-free and DOM-free
+// so tests can pin every branch; the component in
+// components/remote-viewer-controls.tsx is a thin renderer over it.
+// ---------------------------------------------------------------------------
+
+/** A virtual cursor position in surface-local pixel space. */
+export interface PadCursor {
+  x: number;
+  y: number;
+}
+
+/** Surface dimensions the cursor is clamped inside. */
+export interface PadBounds {
+  width: number;
+  height: number;
+}
+
+/**
+ * How fast pad drags move the remote cursor, relative to the finger.
+ * >1 because a phone trackpad is much smaller than the remote desktop — 1:1
+ * makes the far corners unreachable without awkward repeated strokes.
+ */
+export const PAD_SPEED = 1.5;
+
+/** One instruction the parent sends into the frame; `__swMouse` turns it into real DOM events. */
+export type PadSpec =
+  | { kind: "move"; dx: number; dy: number }
+  | { kind: "down"; button: 0 | 2 }
+  | { kind: "up"; button: 0 | 2 }
+  | { kind: "wheel"; dy: number };
+
+/** Clamp a cursor into the surface box (never negative, never past the edge, finite). */
+export function clampCursor(c: PadCursor, bounds: PadBounds): PadCursor {
+  const w = Number.isFinite(bounds.width) && bounds.width > 0 ? bounds.width : 0;
+  const h = Number.isFinite(bounds.height) && bounds.height > 0 ? bounds.height : 0;
+  return {
+    x: Math.min(Math.max(Number.isFinite(c.x) ? c.x : 0, 0), w),
+    y: Math.min(Math.max(Number.isFinite(c.y) ? c.y : 0, 0), h),
+  };
+}
+
+/** Relative pad drag → a scaled, clamped move spec list. */
+export function padMoveSpecs(dx: number, dy: number): PadSpec[] {
+  const sx = (Number.isFinite(dx) ? dx : 0) * PAD_SPEED;
+  const sy = (Number.isFinite(dy) ? dy : 0) * PAD_SPEED;
+  if (sx === 0 && sy === 0) return [];
+  return [{ kind: "move", dx: sx, dy: sy }];
+}
+
+/** Left/right click = down then up on the same button, at the current cursor. */
+export function padClickSpecs(button: 0 | 2): PadSpec[] {
+  return [
+    { kind: "down", button },
+    { kind: "up", button },
+  ];
+}
+
+/** Double-click = two left clicks back to back (the frame debounces nothing; browsers expect this shape). */
+export function padDoubleClickSpecs(): PadSpec[] {
+  return [...padClickSpecs(0), ...padClickSpecs(0)];
+}
+
+/**
+ * Drag toggle: press = left button down, release = left button up. While
+ * engaged, pad moves keep the button held, so sliding drags windows/marquees
+ * exactly like a real mouse button being held while moving.
+ */
+export function padDragSpecs(pressed: boolean): PadSpec[] {
+  return [{ kind: pressed ? "down" : "up", button: 0 }];
+}
+
+/** Scroll buttons: a wheel notch up (negative dy) or down (positive dy). */
+export function padScrollSpecs(direction: -1 | 1): PadSpec[] {
+  const dy = direction * 120; // one conventional wheel notch in deltaMode=0 pixels
+  return [{ kind: "wheel", dy }];
+}
+
+
 
 /**
  * The JavaScript injected into the same-origin iframe. A self-contained IIFE:
@@ -227,6 +314,39 @@ export function buildTouchInjectionScript(): string {
           shiftKey: !!(mods && mods.shift), metaKey: !!(mods && mods.meta)
         });
         target.dispatchEvent(ev);
+      } catch (err) { /* best-effort */ }
+    };
+
+    // TASK_212 D2 — mouse bridge. The parent's on-screen pad calls
+    // window.__swMouse(spec) with {kind:"move"|"down"|"up"|"wheel", ...}.
+    // The virtual cursor lives HERE (realm-local, clamped to the surface), so
+    // the parent never needs surface geometry — it only sends relative deltas
+    // and button commands. Same defensive posture as __swKey.
+    var swCur = null; // {x, y} in surface-local px; created lazily at centre
+    function swEnsureCur(el) {
+      var r = el.getBoundingClientRect();
+      if (!swCur) swCur = { x: (r.width || 0) / 2, y: (r.height || 0) / 2 };
+      var w = r.width || 0, h = r.height || 0;
+      swCur.x = Math.min(Math.max(isFinite(swCur.x) ? swCur.x : 0, 0), w);
+      swCur.y = Math.min(Math.max(isFinite(swCur.y) ? swCur.y : 0, 0), h);
+      return swCur;
+    }
+    window.__swMouse = function (spec) {
+      try {
+        if (!spec || typeof spec !== "object") return;
+        var el = surface();
+        var cur = swEnsureCur(el);
+        if (spec.kind === "move") {
+          var r = el.getBoundingClientRect();
+          cur.x = Math.min(Math.max(cur.x + (spec.dx || 0), 0), r.width || 0);
+          cur.y = Math.min(Math.max(cur.y + (spec.dy || 0), 0), r.height || 0);
+          fire(el, "mousemove", cur.x, cur.y, 0);
+        } else if (spec.kind === "down" || spec.kind === "up") {
+          var b = spec.button === 2 ? 2 : 0;
+          fire(el, spec.kind === "down" ? "mousedown" : "mouseup", cur.x, cur.y, b);
+        } else if (spec.kind === "wheel") {
+          wheel(el, 0, spec.dy || 0);
+        }
       } catch (err) { /* best-effort */ }
     };
 

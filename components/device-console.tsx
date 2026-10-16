@@ -1590,7 +1590,13 @@ export function DeviceConsole({
   const lastClone = clones.length > 0 ? clones[0] : null;
 
   return (
-    <div className="space-y-4">
+    // TASK_212 D4a/D5 — in full-screen this is a bounded flex column filling
+    // the page's 100dvh (app/console/[deviceId]/page.tsx), so the compact tab
+    // strip, the window card and the screen divide the viewport exactly, in
+    // either orientation. Embedded mode keeps its original `space-y-4`.
+    <div
+      className={fullScreen ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"}
+    >
       {!fullScreen && (
         <Link
           href="/dashboard/devices"
@@ -1603,7 +1609,15 @@ export function DeviceConsole({
       {error && <p className="text-sm text-red-500">{error}</p>}
 
       {/* --------------------- the ScreenConnect-style session window */}
-      <div className="overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-lg">
+      {/* TASK_212 D4a — in full-screen the card becomes a flex column so its
+          strip + body divide the page's fixed height (min-h-0/flex-1 all the
+          way down to the iframe). Embedded stays a block card. */}
+      <div
+        className={cn(
+          "overflow-hidden rounded-xl border border-border bg-bg-elevated shadow-lg",
+          fullScreen && "flex min-h-0 flex-1 flex-col",
+        )}
+      >
         {/* title bar: dots · session name · live status lamp.
             TASK_103 NEW-2 — full-screen shows ONLY the toolbox line + the
             screen, so this chrome is hidden there (owner: "just the one line
@@ -1660,12 +1674,19 @@ export function DeviceConsole({
           </span>
         </div>
 
-        {/* tab strip — TASK_103 NEW-2: hidden in full-screen, where there is
-            exactly ONE view (the screen), so a strip would only be a way out. */}
+        {/* tab strip — TASK_103 NEW-2 hid this in full-screen ("exactly ONE
+            view (the screen), so a strip would only be a way out"). TASK_212
+            D4a brings it back as ONE compact line, because the owner now wants
+            the SpaceWorker tool tabs in the new tab ("doesn't come with the
+            spaceworker tools"). The chrome-free intent is kept: still no title
+            bar, still a single icon+label row (scrolls sideways in landscape
+            so it never steals height), and Remote remains the default tab —
+            the first paint is the same full-viewport screen as before, one slim
+            strip taller. */}
         <div
           className={cn(
             "flex items-center gap-1 overflow-x-auto border-b border-border px-3 py-2",
-            fullScreen && "hidden",
+            fullScreen && "shrink-0 px-2 py-1",
           )}
         >
           {TABS.map(([key, label, Icon]) => (
@@ -1673,7 +1694,10 @@ export function DeviceConsole({
               key={key}
               onClick={() => setTab(key)}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors",
+                "flex items-center gap-1.5 whitespace-nowrap rounded-md transition-colors",
+                // TASK_212 D4a — compact in full-screen (one slim row);
+                // the embedded strip keeps its original size untouched.
+                fullScreen ? "px-2 py-1 text-xs" : "px-3 py-1.5 text-sm",
                 tab === key
                   ? "bg-black/10 font-medium text-fg dark:bg-white/10"
                   : "text-fg-muted hover:bg-black/5 hover:text-fg dark:hover:bg-white/5",
@@ -1692,9 +1716,21 @@ export function DeviceConsole({
         </div>
 
         {/* tab body — full-screen drops the padding so the screen itself can
-            claim the full viewport height (TASK_103 NEW-1). */}
-        <div className={cn("space-y-4 p-4", fullScreen && "space-y-0 p-0")}>
-          {!fullScreen && tab === "summary" && (
+            claim the full viewport height (TASK_103 NEW-1). TASK_212 D4a: in
+            full-screen this is now a bounded flex column — the control view
+            FILLS what the strip + toolbox leave (no viewport calc buried in
+            ControlTab), and any other tab picked from the compact strip keeps
+            the normal padding and scrolls inside the viewport. */}
+        <div
+          className={cn(
+            "space-y-4 p-4",
+            fullScreen &&
+              (tab === "control"
+                ? "flex min-h-0 flex-1 flex-col space-y-0 p-0"
+                : "flex min-h-0 flex-1 flex-col overflow-y-auto"),
+          )}
+        >
+          {tab === "summary" && (
             <SummaryTab
               device={device}
               loaded={loaded}
@@ -1711,21 +1747,26 @@ export function DeviceConsole({
               goToMonitoring={() => setTab("monitoring")}
             />
           )}
-          {/* TASK_103 NEW-3 — ALWAYS mounted, never behind a
-              `tab === "control" && …`, and hidden with CSS when another tab is
-              showing. Tearing it down is what spent the MeshCentral login token
-              and broke the session on a tab round trip.
-              Visible on Control in embedded mode; in full-screen it is the only
-              view that renders at all (NEW-2), whatever `tab` says. */}
-          {/* TASK_181 22b — LOCKED: the upgrade card takes control's slot (both
-              tabbed and full-screen, where ControlTab is the only view). The
+          {/* TASK_103 NEW-3 — ALWAYS mounted, hidden with CSS when another tab
+              is showing. Tearing it down is what spent the MeshCentral login
+              token and broke the session on a tab round trip. Visible on
+              Control in embedded mode; TASK_212 D4a lets the compact strip
+              switch tabs in full-screen too — always through this same `hidden`
+              mechanism, so the frame (and its token) survives every round trip
+              exactly as embedded mode always has. */}
+          {/* TASK_181 22b — LOCKED: the upgrade card takes control's slot. The
               ControlTab itself is not mounted while locked — a free user never
               minted a mesh session, so there is no token to preserve. */}
           {toolsLocked &&
-            (fullScreen || tab === "control") &&
+            tab === "control" &&
             (fullScreen ? <ToolLockCard fullScreen /> : <ToolLockCard />)}
           {!toolsLocked && (
-            <div className={fullScreen || tab === "control" ? undefined : "hidden"}>
+            <div
+              className={cn(
+                tab !== "control" && "hidden",
+                tab === "control" && fullScreen && "flex min-h-0 flex-1 flex-col",
+              )}
+            >
               <ControlTab
                 deviceId={deviceId}
                 fullScreen={fullScreen}
@@ -1748,7 +1789,7 @@ export function DeviceConsole({
               />
             </div>
           )}
-          {!fullScreen && tab === "command" &&
+          {tab === "command" &&
             (toolsLocked ? (
               <ToolLockCard />
             ) : (
@@ -1777,7 +1818,7 @@ export function DeviceConsole({
             />
             )
           )}
-          {!fullScreen && tab === "clone" &&
+          {tab === "clone" &&
             (toolsLocked ? (
               <ToolLockCard />
             ) : (
@@ -1811,7 +1852,7 @@ export function DeviceConsole({
             />
             )
           )}
-          {!fullScreen && tab === "activity" && <ActivityTab activity={activity} />}
+          {tab === "activity" && <ActivityTab activity={activity} />}
 
           {/* TASK_152 M2 — screen monitoring is its own tab. It is ALWAYS
               mounted while the tabbed console is shown and only HIDDEN with CSS,
@@ -1825,8 +1866,8 @@ export function DeviceConsole({
               `no-store` — so the risk here is a needless refetch, not a spent
               URL. `onState` publishes the loaded view up for Summary's one-line
               pointer. */}
-          {!fullScreen && toolsLocked && tab === "monitoring" && <ToolLockCard />}
-          {!fullScreen && !toolsLocked && (
+          {toolsLocked && tab === "monitoring" && <ToolLockCard />}
+          {!toolsLocked && (
             <div className={tab === "monitoring" ? undefined : "hidden"}>
               <ScreenMonitoringCard deviceId={deviceId} onState={setScreenMon} />
               {/* TASK_152 M5 — the alert configuration for this account lives
@@ -3359,6 +3400,14 @@ function ControlTab({
   // never taken away — only moved behind one tap on phones.
   const isMobileViewport = useIsMobileViewport();
   const [embedInPage, setEmbedInPage] = useState(false);
+  // TASK_212 D4b — one-time hint pointing at MeshCentral's OWN Input checkbox.
+  // The MC iframe is cross-origin (its host is mesh.spaceworker.top, a
+  // different origin than the app) and MC documents no parent→iframe
+  // postMessage API, so we can neither render nor drive that checkbox for it —
+  // the honest repo-side surface is a pointer to where MC puts it. Mobile
+  // full-screen only (that's the surface the owner reported), dismissible,
+  // never blocking the screen.
+  const [inputHintDismissed, setInputHintDismissed] = useState(false);
 
   // Overlay style chooser (owner decision 2026-09-24) — two built-in styles plus
   // "use my own image". The image is read client-side into base64 and is never
@@ -3615,11 +3664,14 @@ function ControlTab({
           className={cn(
             "relative overflow-hidden rounded-lg border border-border",
             // TASK_103 NEW-1 — full-screen: the screen claims the viewport
-            // instead of a fixed 480px, and resizes with the window. 3rem is the
-            // page's own py-6 (app/console/[deviceId]/page.tsx), which this
-            // component cannot change; flex-col lets the iframe take what is
-            // left after the toolbox line.
-            fullScreen && "flex h-[calc(100vh-3rem)] flex-col",
+            // instead of a fixed 480px, and resizes with the window.
+            // TASK_212 D4a/D5 — the fixed `h-[calc(100vh-3rem)]` moved UP to
+            // the page (app/console/[deviceId]/page.tsx: h-[100dvh] +
+            // safe-area max() padding, so both orientations stay exact) and the
+            // console's outer wrapper/card became flex columns; this container
+            // now just fills whatever the compact strip + toolbox line leave
+            // over, and flex-col lets the iframe take the rest.
+            fullScreen && "flex min-h-0 flex-1 flex-col",
           )}
         >
           <div className="relative z-10 flex flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
@@ -3923,7 +3975,35 @@ function ControlTab({
               </span>
             )}
           </div>
-          {isMobileViewport && !embedInPage ? (
+          {isMobileViewport && fullScreen && !inputHintDismissed && (
+            <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border bg-black/20 px-3 py-1.5 text-xs text-fg-muted">
+              <p className="min-w-0">
+                Mouse &amp; keyboard control is MeshCentral&apos;s own{" "}
+                <span className="font-medium text-fg">Input</span> checkbox, in
+                the toolbar at the top of the screen — check it to control the
+                desktop, uncheck it for view-only.
+              </p>
+              <button
+                type="button"
+                onClick={() => setInputHintDismissed(true)}
+                aria-label="Dismiss input hint"
+                className="shrink-0 rounded p-0.5 text-base leading-none text-fg-muted transition-colors hover:text-fg"
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {/* TASK_207 — mobile launcher card. TASK_212 D4a/D4b: full-screen
+              (/console/<id> the new tab) BYPASSES it — the card exists to spare
+              users the cramped 70dvh dashboard embed, and full-screen is
+              exactly the roomy surface it recommends. Its button opened the RAW
+              MeshCentral URL with no SpaceWorker tools (the owner's report), so
+              in full-screen the embed renders directly at min-h-0 flex-1
+              instead: the toolbox line stays above it, and MC's own toolbar —
+              including its Input checkbox (D4b hint above) — gets the whole
+              remaining screen. The `isMobileViewport && !embedInPage` prefix is
+              preserved verbatim for tests/console-mesh-scope.test.ts. */}
+          {isMobileViewport && !embedInPage && !fullScreen ? (
             // TASK_207 — mobile: open the viewer FULLSCREEN in a new tab
             // instead of the cramped 70dvh embed. The mint is scope=device
             // (lib/device-tools.ts), so that tab shows ONLY this device — the
