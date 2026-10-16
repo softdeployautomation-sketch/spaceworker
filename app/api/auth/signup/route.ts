@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { z } from "zod";
 
 import { hashPassword } from "@/lib/auth";
+import { attributeReferral, getUserReferralLink, validateReferral } from "@/lib/referral";
 import { db } from "@/lib/db";
+import { prisma } from "@/lib/prisma";
 import { sendEmail, tier1UpgradeEmailHtml, verificationEmailHtml } from "@/lib/email";
 import { env } from "@/lib/env";
 import { allowAndRecord, getClientIp } from "@/lib/rate-limit";
@@ -63,6 +66,13 @@ export async function POST(request: Request) {
 
   const passwordHash = await hashPassword(parsed.password);
 
+  // Resolve the referral that brought this visitor in (stamped on /login or
+  // /signup via ?ref=CODE or the /r/:code redirect → sw_ref cookie).
+  const cookieStore = await cookies();
+  const refCookie = cookieStore.get("sw_ref")?.value;
+  const referredLink =
+    refCookie ? await validateReferral(refCookie) : null;
+
   const user = await db.user.create({
     // Tier 1 trial — new signups get the trial tier immediately (email
     // verification is unchanged as the gate to reach the dashboard; it only
@@ -70,6 +80,19 @@ export async function POST(request: Request) {
     // than relying solely on the schema default of 1 for clarity.
     data: { email, passwordHash, emailVerified: false, acceptedTermsAt: new Date(), tier: 1 },
   });
+
+  // Referral attribution: record who referred this user (if any) and give the
+  // new user their own shareable link so they can invite others in turn.
+  if (referredLink) {
+    await attributeReferral({
+      userId: user.id,
+      linkId: referredLink.id,
+      referrerCode: referredLink.code,
+      referrerEmail: referredLink.ownerEmail,
+    });
+    await getUserReferralLink(user.id).catch(() => undefined);
+  }
+
   void notifyAdmin(`New SpaceWorker signup: ${email}`);
   // TASK_202 B — the same signup alert by email (Telegram fires above via
   // notifyAdmin; email was missing entirely). Best-effort with the signup

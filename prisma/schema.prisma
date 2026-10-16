@@ -649,6 +649,51 @@ model AdminSetting {
   cyberlabEgressRequireOwnershipProof   Boolean @default(false)
   cyberlabEgressScopeGuard              Boolean @default(false)
   cyberlabEgressAllowList               String  @default("")
+
+  // Referral security (Hidden Login) — a user is onboarded via a referral link
+  // shared by an existing user. `referredBy` stores the referrer's code/email
+  // (denormalized for easy lookup); `referredByLinkId` points at the
+  // ReferralLink that was used. Every user also owns exactly one ReferralLink
+  // (found via ReferralLink.userId) which they can share to invite others.
+  referredBy          String?
+  referredByLinkId    String?
+  referredByLink      ReferralLink? @relation("ReferredBy", fields: [referredByLinkId], references: [id])
+}
+
+model ReferralLink {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+  clicks      Int      @default(0)
+  conversions Int      @default(0)
+  isActive    Boolean  @default(true)
+  // Users who were referred through this link.
+  referredUsers User[]  @relation("ReferredBy")
+  @@index([userId])
+  @@index([code])
+}
+
+model PublicMessage {
+  id        String   @id @default(cuid())
+  name      String?
+  email     String?
+  message   String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+  @@index([createdAt])
+}
+
+model CaptchaChallenge {
+  id         String   @id @default(cuid())
+  token      String   @unique
+  answerHash String
+  used       Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  @@index([token])
+  @@index([expiresAt])
 }
 
 model Mailbox {

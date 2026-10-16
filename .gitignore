@@ -32,3 +32,9 @@ browser-profiles/
 browser-sessions-tmp/
 # TASK_156 C2a — evidence bundles written by `npm run lab:dry-run` (owner-local).
 .cyberlab-runs/
+# TASK_214 D6 — the clone-extension CRX signing key IS the extension ID:
+# whoever holds it controls the ID forever. Secret, generated once by the
+# owner, NEVER committed (scripts/githooks/pre-commit also refuses to stage
+# these). The packed .crx is a build output like the rest of engine-dist.
+*.pem
+*.crx
