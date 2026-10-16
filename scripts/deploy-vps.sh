@@ -327,12 +327,38 @@ if [ "$DO_BUILD" -eq 1 ]; then
 
   echo "-- keeping the current build for rollback (.next.prev)"
   run_remote "cd '$APP_DIR' && rm -rf .next.prev && cp -a .next .next.prev" || true
+  # TASK_210 S2: the rollback path above CONSUMES .next.prev, so a second failure
+  # inside recovery previously left ZERO net safety (2026-10-15 TASK_209: the
+  # safety copy was eaten by the rollback). Keep an independent copy named by the
+  # build it preserves, rotated to the last 3 by mtime. Rollback never touches
+  # /root/.next.*-safety — that is the point.
+  CUR_BID="$(run_remote "cat '$APP_DIR/.next/BUILD_ID' 2>/dev/null" | tr -d '\r' || true)"
+  CUR_BID="$(printf '%s' "$CUR_BID" | tr -cd 'A-Za-z0-9._-')"
+  if [ -n "$CUR_BID" ]; then
+    echo "-- safety copy (.next -> /root/.next.${CUR_BID}-safety; keep last 3)"
+    run_remote "cp -a '$APP_DIR/.next' '/root/.next.${CUR_BID}-safety'" || true
+    run_remote "ls -dt /root/.next.*-safety 2>/dev/null | tail -n +4 | xargs -r rm -rf" || true
+  else
+    echo "   (no current BUILD_ID — safety copy skipped)"
+  fi
 
-  echo "-- build (as $SERVICE_USER)"
-  BUILD_OUT="$(run_remote "cd '$APP_DIR' && sudo -u '$SERVICE_USER' npm run build 2>&1 | tail -n 25" || true)"
+  echo "-- build (as $SERVICE_USER) — full log: /root/last-build.log"
+  # TASK_210 S1: preserve the COMPLETE build output server-side BEFORE the local
+  # tail. 2026-10-15 (TASK_209): the deploy log was destroyed by shell mangling
+  # and this step only captured `tail -25`, so the actual build error was gone
+  # and diagnosis was impossible. rm-first = overwritten every run, never
+  # appended across runs.
+  run_remote "rm -f /root/last-build.log"
+  BUILD_OUT="$(run_remote "cd '$APP_DIR' && sudo -u '$SERVICE_USER' npm run build 2>&1 | tee /root/last-build.log | tail -n 25" || true)"
   echo "$BUILD_OUT"
 
   if ! run_remote "test -s '$APP_DIR/.next/BUILD_ID'"; then
+    # TASK_210 S1 guard: a failed build must leave a fresh, non-empty full log.
+    if run_remote "test -s /root/last-build.log && find /root/last-build.log -mmin -2 2>/dev/null | grep -q ."; then
+      echo "   full build log preserved: /root/last-build.log"
+    else
+      echo "   !! /root/last-build.log missing or stale — full build output was NOT preserved" >&2
+    fi
     echo "-- BUILD FAILED (no BUILD_ID) — rolling back to the previous build" >&2
     run_remote "cd '$APP_DIR' && rm -rf .next && mv .next.prev .next" || true
     if [ "$DO_RESTART" -eq 1 ]; then
