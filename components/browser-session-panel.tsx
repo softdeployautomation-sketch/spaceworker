@@ -3,6 +3,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Globe } from "lucide-react";
 import { useConfirm } from "@/components/confirm-provider";
+import { popoutHrefFor } from "@/lib/browser-popout";
+// TASK_212 D2+D3 — the touch installer (cursor fix + injected bridges) and the
+// shared mouse/keyboard controller moved to components/remote-viewer-controls
+// so the pop-out tab reuses them without importing this whole panel.
+import {
+  RemoteViewerControls,
+  installTouchControls,
+} from "@/components/remote-viewer-controls";
 
 type Session = {
   id: string;
@@ -35,27 +43,6 @@ const STATUS_LABEL: Record<string, string> = {
   stopped: "Stopped",
   failed: "Failed",
 };
-
-// Neko renders the remote OS's cursor baked directly into the video stream,
-// but its own client doesn't hide the LOCAL cursor while hovering over that
-// video — so users see two: the real remote one in the pixels, plus the
-// host browser's own arrow on top. Confirmed no cursor-hiding logic exists in
-// Neko's shipped client JS/CSS (checked directly). The iframe is same-origin
-// (served through our own domain via the /browser/<id>/ proxy), so we can
-// reach into its document and fix this ourselves rather than waiting on
-// upstream — best-effort, wrapped in try/catch in case a future Neko version
-// changes its DOM shape or this ever isn't same-origin for some reason.
-function hideRemoteCursorDoubling(e: React.SyntheticEvent<HTMLIFrameElement>) {
-  try {
-    const doc = e.currentTarget.contentDocument;
-    if (!doc) return;
-    const style = doc.createElement("style");
-    style.textContent = "* { cursor: none !important; }";
-    doc.head.appendChild(style);
-  } catch {
-    /* cross-origin or blocked for some other reason — leave the default cursor */
-  }
-}
 
 function statusTone(status: string): string {
   if (status === "running")
@@ -130,6 +117,13 @@ export default function BrowserSessionPanel({
       return next;
     });
   }
+
+  // TASK_208 S2 / TASK_212 D2 — per-session iframe refs so the shared
+  // controls (components/remote-viewer-controls) can reach each Neko frame's
+  // injected __swKey/__swMouse bridges. The touch-device detection, modifier
+  // state and key forwarding all live in that shared component now (also used
+  // by the pop-out tab) — this panel only supplies the frame handle.
+  const frameRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
 
   // First-time users have no profile yet — rather than sending them to a
   // separate Browser Profiles tab before they can do anything, silently
@@ -744,7 +738,17 @@ export default function BrowserSessionPanel({
                               <button
                                 type="button"
                                 onClick={() => {
-                                  window.open(s.connectUrl!, "_blank", "noopener,noreferrer");
+                                  // TASK_212 D3 — open OUR wrapper tab (which
+                                  // re-mints the connectUrl server-side after
+                                  // auth/ownership checks and renders the mouse
+                                  // + keyboard controls around the stream)
+                                  // instead of the bare Neko URL, which carried
+                                  // no SpaceWorker chrome at all.
+                                  window.open(
+                                    popoutHrefFor(s.id),
+                                    "_blank",
+                                    "noopener,noreferrer"
+                                  );
                                   // Stop the embedded connection now that a separate tab
                                   // owns it — otherwise both stay live and fight over the
                                   // same remote desktop.
@@ -778,16 +782,29 @@ export default function BrowserSessionPanel({
                               </button>
                             </div>
                           ) : (
+                            <>
                             <div className="relative mt-2 aspect-video w-full overflow-hidden rounded-lg border border-zinc-200 bg-black dark:border-zinc-800">
                               <iframe
+                                ref={(el) => {
+                                  frameRefs.current[s.id] = el;
+                                }}
                                 src={s.connectUrl}
                                 title="Private browser session"
                                 allow="clipboard-read; clipboard-write; autoplay; fullscreen"
                                 className="h-full w-full border-0"
-                                onLoad={hideRemoteCursorDoubling}
+                                onLoad={installTouchControls}
                               />
                               {!readyIds.has(s.id) && (
-                                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
+                                // TASK_212 D1 — pointer-events-none: this overlay
+                                // used to eat the mouse for the whole 6s grace
+                                // window (opaque, inset-0, default pointer-events)
+                                // — the owner's "first screen doesn't let the
+                                // user use the mouse". The iframe below is already
+                                // loaded and interactive (see the readyIds comment
+                                // above), so the overlay is visual only: clicks
+                                // and moves pass straight through to the remote
+                                // desktop while it shows.
+                                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black">
                                   <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-white" />
                                   <p className="text-sm text-zinc-400">
                                     Connecting your browser…
@@ -795,6 +812,15 @@ export default function BrowserSessionPanel({
                                 </div>
                               )}
                             </div>
+                            {/* TASK_208 S2 / TASK_212 D2 — the shared
+                                mouse+keyboard controller (touch devices only,
+                                collapsed by default). Lives in
+                                components/remote-viewer-controls so the
+                                pop-out tab carries the exact same controls. */}
+                            <RemoteViewerControls
+                              getFrame={() => frameRefs.current[s.id] ?? null}
+                            />
+                            </>
                           )}
                         </>
                       )}
