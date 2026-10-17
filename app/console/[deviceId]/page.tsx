@@ -5,6 +5,10 @@ import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Device console — SpaceWorker OS" };
 
+// TASK_216 D1 — session-gated server page (a baked gate bounces/blanks users
+// the same way it baked /cyberlab's 307 — see that page's comment).
+export const dynamic = "force-dynamic";
+
 // TASK_103 BUG-A — the chrome-free full-screen console. Top-level route
 // (OUTSIDE app/dashboard/*, so the <Shell> menubar + dock never render):
 // just the session window + its toolbox line. `?tab=` selects the initial

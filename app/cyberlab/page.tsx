@@ -6,6 +6,17 @@ import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Cyber Lab — Operation Console — SpaceWorker OS" };
 
+// TASK_216 D1 — session-gated server page: NEVER statically prerender. During
+// `next build` this component executed with an empty cookie store, so
+// getSession() returned null and the redirect() below fired AT BUILD TIME —
+// Next baked a static 307 → / into the prerender artifact (cyberlab.{html,rsc,
+// meta} carried `x-nextjs-prerender: 1`) and served it to EVERY request,
+// including authed users. Owner incident 2026-10-16: clicking "Open the
+// Operation Console ↗" bounced to the marketing /home page while logged in.
+// force-dynamic makes the gate evaluate per request, like it always should
+// have. See tests/task-216-force-dynamic.test.ts for the class-wide pin.
+export const dynamic = "force-dynamic";
+
 // TASK_156B UI-1 — /cyberlab is a TOP-LEVEL route OUTSIDE app/dashboard/*, so the
 // <Shell> menubar + dock never render: entering it feels like a different place.
 //

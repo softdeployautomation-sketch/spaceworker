@@ -9,6 +9,10 @@ import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Licenses — SpaceWorker OS" };
 
+// TASK_216 D1 — session-scope-gated + redirect: force per-request rendering so
+// the gate can never bake into the build artifact (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 // Task 42, item 6 — the post-purchase license page. This is where the EXE term
 // (a real 6-month expiry) is first disclosed on a screen, alongside the honest
 // "download coming soon" status. Deliberately NOT linked before a purchase.

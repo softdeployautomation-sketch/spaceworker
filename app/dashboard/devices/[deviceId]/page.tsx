@@ -5,6 +5,11 @@ import { getSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Device console — SpaceWorker OS" };
 
+// TASK_216 D1 — session-gated + conditional redirect (?full=1): force
+// per-request rendering so the gate can never bake into the build artifact
+// (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 // Task 95 — the per-device console (ScreenConnect-style session window).
 // Auth is checked here; the console client fetches its own live data.
 // TASK_103 BUG-A — `?tab=summary|remote|command|clone|activity|monitoring`

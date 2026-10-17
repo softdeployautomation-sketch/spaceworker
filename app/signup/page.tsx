@@ -9,6 +9,11 @@ import { hasAccessGate } from "@/lib/referral";
 
 export const metadata: Metadata = { title: "Create account" };
 
+// TASK_216 D1 — cookie/searchParams-gated + redirect: force per-request
+// rendering so the gate can never bake into the build artifact (see
+// app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 const REFERRAL_COOKIE = "sw_ref";
 
 /**

@@ -10,6 +10,10 @@ import { prisma } from "@/lib/prisma";
 
 export const metadata: Metadata = { title: "Private browser — SpaceWorker OS" };
 
+// TASK_216 D1 — session-gated + redirect: force per-request rendering so the
+// gate can never bake into the build artifact (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 // Mirrors connectUrlFor's own base (lib/browser-session-serialize.ts) so the
 // guard below checks the SAME value the URL was minted from — deliberately not
 // lib/env's hard required() so importing this module can never throw at build.

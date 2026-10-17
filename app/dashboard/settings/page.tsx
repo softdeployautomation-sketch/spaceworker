@@ -21,6 +21,10 @@ import { ReferralLinkCard } from "@/components/referral-link-card";
 
 export const metadata: Metadata = { title: "Settings" };
 
+// TASK_216 D1 — user-gated server page (a baked gate bounces/blanks users the
+// same way it baked /cyberlab's 307 — see that page's comment).
+export const dynamic = "force-dynamic";
+
 export default async function SettingsPage() {
   // TASK_183 — resolved FIRST: the local-exe early-return below must not fire
   // for the devices wrapper. The wrapper has NO local licensing (owner: "each

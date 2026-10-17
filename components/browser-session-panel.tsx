@@ -812,11 +812,13 @@ export default function BrowserSessionPanel({
                                 </div>
                               )}
                             </div>
-                            {/* TASK_208 S2 / TASK_212 D2 — the shared
-                                mouse+keyboard controller (touch devices only,
-                                collapsed by default). Lives in
-                                components/remote-viewer-controls so the
-                                pop-out tab carries the exact same controls. */}
+                            {/* TASK_208 S2 / TASK_212 D2 / TASK_216 — the
+                                shared mouse+keyboard controller, ALWAYS
+                                rendered (collapsed by default — the old
+                                touchUi gate unmounted it on desktop, TASK_216
+                                D3). Lives in components/remote-viewer-controls
+                                so the pop-out tab carries the exact same
+                                controls. */}
                             <RemoteViewerControls
                               getFrame={() => frameRefs.current[s.id] ?? null}
                             />

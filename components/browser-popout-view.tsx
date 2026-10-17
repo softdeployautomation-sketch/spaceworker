@@ -33,10 +33,12 @@ export function BrowserPopoutView({ connectUrl }: { connectUrl: string }) {
         className="min-h-0 w-full flex-1 border-0 bg-black"
         onLoad={installTouchControls}
       />
-      {/* Controls sit BELOW the stream (never covering it) and are hidden on
-          desktop — the component itself renders null unless touchUi. The
-          wrapper is dark to match the stream; the component keeps its own
-          light/dark surface so it looks native on both themes. */}
+      {/* Controls sit BELOW the stream (never covering it) and are ALWAYS
+          rendered, collapsed by default — TASK_216 removed the old touchUi
+          gate that unmounted them on desktop (the pop-out tab used to have
+          ZERO controls with a mouse). The wrapper is dark to match the
+          stream; the component keeps its own light/dark surface so it looks
+          native on both themes. */}
       <div className="shrink-0 p-2">
         <RemoteViewerControls getFrame={getFrame} />
       </div>

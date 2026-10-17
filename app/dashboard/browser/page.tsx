@@ -14,6 +14,10 @@ const TABS = [
   { value: "profiles", label: "Browser Profiles" },
 ] as const;
 
+// TASK_216 D1 — session-gated + redirect: force per-request rendering so the
+// gate can never bake into the build artifact (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 export default async function BrowserPage({
   searchParams,
 }: {

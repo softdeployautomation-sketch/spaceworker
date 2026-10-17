@@ -74,6 +74,8 @@ const HEALTHY_ROUTES: Record<string, FetchResult> = {
   // Hidden-login (owner, 2026-10-16): an ANON visitor gets the invite-only
   // bounce (307 → /?error=referral_required), never a rendered login page.
   "/login": 307,
+  // TASK_216 D1 — anon /cyberlab must bounce to the joker gate (307 → /).
+  "/cyberlab": 307,
   "/api/devices": 401,
   "/api/admin/users": 401,
   "/api/internal/retention-sweep": 401,
@@ -192,6 +194,19 @@ describe("TASK_195 — access probes (anon against own origin)", () => {
     const ok = await runBattery(baseDeps(), { groups: ["access"] });
     assert.equal(probe(ok, "anon-login").status, "pass");
     assert.match(probe(ok, "anon-login").detail ?? "", /307/);
+  });
+
+  it("anon-cyberlab must see the joker-gate 307; a rendered 200 or 500 FAILS (TASK_216)", async () => {
+    // The 2026-10-16 bake served a (static) 307 to everyone; the regression
+    // this probe owns is the OPPOSITE failure: the gate vanishing and the
+    // console rendering for an anon visitor.
+    const rendered = await runBattery(baseDeps({ fetchImpl: fakeFetch({ ...HEALTHY_ROUTES, "/cyberlab": 200 }) }), { groups: ["access"] });
+    assert.equal(probe(rendered, "anon-cyberlab").status, "fail");
+    const broken = await runBattery(baseDeps({ fetchImpl: fakeFetch({ ...HEALTHY_ROUTES, "/cyberlab": 500 }) }), { groups: ["access"] });
+    assert.equal(probe(broken, "anon-cyberlab").status, "fail");
+    const ok = await runBattery(baseDeps(), { groups: ["access"] });
+    assert.equal(probe(ok, "anon-cyberlab").status, "pass");
+    assert.match(probe(ok, "anon-cyberlab").detail ?? "", /307/);
   });
 
   it("anon POST /api/devices must 401; a 2xx FAILS (gate regression)", async () => {

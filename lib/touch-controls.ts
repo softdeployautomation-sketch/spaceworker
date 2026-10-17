@@ -199,8 +199,14 @@ export function padScrollSpecs(direction: -1 | 1): PadSpec[] {
 export function buildTouchInjectionScript(): string {
   return `(() => {
   try {
+    // Idempotency guard. TASK_216: the flag used to be SET here, before any of
+    // the work below — so a single mid-script throw (outer catch swallows it)
+    // left the realm permanently "installed" with a dead/half-defined bridge
+    // and every retry skipped (owner: embedded controls never worked). Now the
+    // flag is only assigned AFTER everything installed successfully, so a
+    // failed install stays retryable; the parent re-injects via
+    // ensureTouchControls (components/remote-viewer-controls.tsx).
     if (window.__swTouchInstalled) return;
-    window.__swTouchInstalled = true;
 
     var SLOP = ${TAP_SLOP_PX};
     var LONG_MS = ${LONG_PRESS_MS};
@@ -358,6 +364,10 @@ export function buildTouchInjectionScript(): string {
       if (++tries > 40) clearInterval(iv);
     }, 250);
     install(document.body);
+    // TASK_216 — success marker LAST: everything above defines the bridges and
+    // binds the listeners, so reaching this line is the only proof the install
+    // actually completed. (See the guard comment at the top of this script.)
+    window.__swTouchInstalled = true;
   } catch (err) { /* never break the embed */ }
 })();`;
 }

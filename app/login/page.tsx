@@ -16,7 +16,12 @@ const REFERRAL_COOKIE = "sw_ref";
  * they click a referral link /r/:code, or supplied as ?ref=CODE) before the
  * sign-in form is shown. Anyone else is bounced to the public homepage.
  */
+// TASK_216 D1 — cookie-gated + redirect: force per-request rendering so the
+// gate can never bake into the build artifact (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 export default async function LoginPage({
+
   searchParams,
 }: {
   searchParams: { [key: string]: string | string[] | undefined };

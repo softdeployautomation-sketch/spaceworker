@@ -50,6 +50,10 @@ const NAV = [
 // and sees marketing after login. Every unauthenticated visitor lands on the
 // public joker + puzzle page at `/`. The content below is the original
 // Task 42 / TASK_100 marketing page, moved here verbatim from the old `/` route.
+// TASK_216 D1 — session-gated + redirect: force per-request rendering so the
+// gate can never bake into the build artifact (see app/cyberlab/page.tsx).
+export const dynamic = "force-dynamic";
+
 export default async function HomePage() {
   const session = await getSession();
   if (!session) redirect("/");

@@ -292,6 +292,22 @@ export async function runBattery(deps: QaDeps, opts: QaOptions = {}): Promise<Qa
       (s) => `GET /login → ${s} (expect 307 invite-only redirect to /?error=referral_required)`,
     );
 
+    // TASK_216 D1 — /cyberlab is session-gated: an ANON visitor must get the
+    // joker-gate bounce (307 → /), never a rendered 200. This probe pins the
+    // anon side of the 2026-10-16 incident where the build baked a STATIC 307
+    // (x-nextjs-prerender: 1) that also bounced AUTHED users — the authed side
+    // is owner-acceptance manual; the force-dynamic that keeps the gate
+    // per-request is source-pinned in tests/task-216-force-dynamic.test.ts.
+    await http(
+      "anon-cyberlab",
+      "access",
+      "Anonymous GET /cyberlab (joker-gate bounce)",
+      "/cyberlab",
+      { method: "GET" },
+      (s) => s === 307,
+      (s) => `GET /cyberlab → ${s} (expect 307 joker-gate redirect to /)`,
+    );
+
     await http(
       "anon-device-register",
       "access",

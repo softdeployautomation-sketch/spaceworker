@@ -10,11 +10,14 @@
 // origin) Neko iframe exclusively through the injected `__swMouse`/`__swKey`
 // bridges in lib/touch-controls.ts — never touching the frame's DOM directly,
 // so a Neko upgrade that changes its internals degrades to "controls do
-// nothing" instead of breaking the stream. Touch-only (pointer:coarse),
-// collapsed by default so it never permanently covers the stream, and
-// safe-area aware for notched phones in both orientations.
+// nothing" instead of breaking the stream. Always rendered, collapsed by
+// default (TASK_216: the old `pointer: coarse` gate UNMOUNTED the whole
+// controller whenever the primary pointer flipped to a mouse — the owner's
+// "the mouse toggle disappears when the mouse approaches it" — and left plain
+// desktop pop-out tabs with zero controls), and safe-area aware for notched
+// phones in both orientations.
 
-import { useCallback, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import {
   buildTouchInjectionScript,
@@ -43,9 +46,9 @@ import {
 // reach into its document and fix this ourselves rather than waiting on
 // upstream — best-effort, wrapped in try/catch in case a future Neko version
 // changes its DOM shape or this ever isn't same-origin for some reason.
-function hideRemoteCursorDoubling(e: React.SyntheticEvent<HTMLIFrameElement>) {
+function hideRemoteCursorDoubling(frame: HTMLIFrameElement) {
   try {
-    const doc = e.currentTarget.contentDocument;
+    const doc = frame.contentDocument;
     if (!doc) return;
     const style = doc.createElement("style");
     style.textContent = "* { cursor: none !important; }";
@@ -55,18 +58,27 @@ function hideRemoteCursorDoubling(e: React.SyntheticEvent<HTMLIFrameElement>) {
   }
 }
 
-// TASK_208 S2 / TASK_212 D2 — run on every iframe load: the original cursor
-// fix, plus the touch → mouse / keyboard bridge (lib/touch-controls.ts).
-// Idempotent via the injected script's own `__swTouchInstalled` guard AND a
-// DOM marker id, so an iframe that reloads internally (Neko reconnects do
-// this) never double-binds. Entirely best-effort — if Neko's DOM changes,
-// users fall back to the old touch behaviour, never a broken embed.
-export function installTouchControls(e: React.SyntheticEvent<HTMLIFrameElement>) {
-  hideRemoteCursorDoubling(e);
+// TASK_208 S2 / TASK_212 D2 / TASK_216 — the ONE installer for the pop-out tab
+// and the panel (no fork). Idempotent, with a HEAL path (TASK_216): the old
+// check was `getElementById("sw-touch-controls")` alone, but the injected
+// script sets its realm-side `__swTouchInstalled` flag ONLY on success now —
+// so a script element whose install threw mid-way means "partial install" and
+// must be removed and re-injected from scratch, not treated as done. (Before
+// TASK_216 that half-install was permanent: element present → every retry
+// skipped → dead bridge — the owner's "embedded never worked since 212".)
+// Called on every iframe load AND lazily by the pad/key senders when they
+// find the bridge missing.
+export function ensureTouchControls(frame: HTMLIFrameElement | null): void {
+  if (!frame) return;
   try {
-    const doc = e.currentTarget.contentDocument;
+    const doc = frame.contentDocument;
     if (!doc) return; // cross-origin — can't inject (shouldn't happen: /browser/ proxy is same-origin)
-    if (doc.getElementById("sw-touch-controls")) return; // already installed
+    const win = doc.defaultView as
+      | (Window & { __swTouchInstalled?: boolean })
+      | null;
+    const existing = doc.getElementById("sw-touch-controls");
+    if (existing && win?.__swTouchInstalled) return; // fully installed — idempotent
+    if (existing) existing.remove(); // partial install — retry clean
     const script = doc.createElement("script");
     script.id = "sw-touch-controls";
     script.textContent = buildTouchInjectionScript();
@@ -76,36 +88,11 @@ export function installTouchControls(e: React.SyntheticEvent<HTMLIFrameElement>)
   }
 }
 
-// Touch-device detection — TASK_208 S2, kept here (shared) so the pop-out tab
-// and the panel share ONE implementation instead of forking.
-// useSyncExternalStore keeps it hydration-safe: server
-// snapshot false → SSR markup matches the client's first render, and the
-// controls simply appear after hydration on touch devices.
-function subscribeTouchUi(onStoreChange: () => void): () => void {
-  window.addEventListener("resize", onStoreChange);
-  return () => window.removeEventListener("resize", onStoreChange);
-}
-function getTouchUiSnapshot(): boolean {
-  try {
-    return (
-      window.matchMedia?.("(pointer: coarse)").matches === true ||
-      "ontouchstart" in window
-    );
-  } catch {
-    return false; // matchMedia unavailable — treat as desktop (controls stay hidden)
-  }
-}
-function getTouchUiServerSnapshot(): boolean {
-  return false;
-}
-
-/** Hydration-safe "is this a touch device" — re-evaluates on viewport resize (rotation). */
-export function useTouchUi(): boolean {
-  return useSyncExternalStore(
-    subscribeTouchUi,
-    getTouchUiSnapshot,
-    getTouchUiServerSnapshot
-  );
+// Thin onLoad adapter over ensureTouchControls — kept under its TASK_208 name
+// because both call sites (panel + pop-out) wire it as onLoad={installTouchControls}.
+export function installTouchControls(e: React.SyntheticEvent<HTMLIFrameElement>) {
+  hideRemoteCursorDoubling(e.currentTarget);
+  ensureTouchControls(e.currentTarget);
 }
 
 type SwWindow = Window & {
@@ -119,7 +106,6 @@ export function RemoteViewerControls({
   /** Resolve the live Neko iframe (same-origin). Called per interaction; null = frame gone. */
   getFrame: () => HTMLIFrameElement | null;
 }) {
-  const touchUi = useTouchUi();
   const [mods, setMods] = useState({ ctrl: false, alt: false, shift: false });
   // Pad UI state: collapsed by default (never permanently covering the
   // stream), and drag mode is a sticky toggle like the modifiers.
@@ -127,12 +113,21 @@ export function RemoteViewerControls({
   const [dragArmed, setDragArmed] = useState(false);
 
   // Send a batch of pad specs into the frame's injected __swMouse bridge.
+  // TASK_216: if the bridge is missing (script never ran, or its install threw
+  // mid-way and the success flag stayed unset), HEAL by re-running the
+  // installer before giving up — a tap must not be silently dropped.
   // try/catch per batch — if the frame navigated mid-batch this must never
   // throw (precedent: sendKey in TASK_208).
   const sendSpecs = useCallback(
     (specs: PadSpec[]) => {
+      if (specs.length === 0) return;
       try {
-        const win = getFrame()?.contentWindow as SwWindow | null;
+        const frame = getFrame();
+        let win = frame?.contentWindow as SwWindow | null;
+        if (!win?.__swMouse) {
+          ensureTouchControls(frame); // heal a missing/partial bridge, then retry once
+          win = frame?.contentWindow as SwWindow | null;
+        }
         if (!win?.__swMouse) return;
         for (const spec of specs) win.__swMouse(spec);
       } catch {
@@ -142,11 +137,17 @@ export function RemoteViewerControls({
     [getFrame]
   );
 
-  // Forward a key into the Neko iframe via the injected __swKey bridge.
+  // Forward a key into the Neko iframe via the injected __swKey bridge — with
+  // the same TASK_216 heal-on-missing path as sendSpecs.
   const sendKey = useCallback(
     (key: string, down: boolean) => {
       try {
-        const win = getFrame()?.contentWindow as SwWindow | null;
+        const frame = getFrame();
+        let win = frame?.contentWindow as SwWindow | null;
+        if (!win?.__swKey) {
+          ensureTouchControls(frame);
+          win = frame?.contentWindow as SwWindow | null;
+        }
         win?.__swKey?.(key, down, mods);
       } catch {
         /* frame gone / cross-origin — ignore */
@@ -169,6 +170,14 @@ export function RemoteViewerControls({
   const onPadDown = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
       e.preventDefault();
+      // TASK_216: capture the pointer so the stroke survives the finger/pen
+      // leaving the pad mid-drag — without this, a release outside the pad
+      // never reaches onPadUp and the remote button stays stuck DOWN.
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* unsupported/failed capture — degrade to the old uncaptured stroke */
+      }
       stroke.current = { x: e.clientX, y: e.clientY, moved: false, down: true };
       if (dragArmed) sendSpecs(padDragSpecs(true));
     },
@@ -189,17 +198,25 @@ export function RemoteViewerControls({
     },
     [sendSpecs]
   );
-  const onPadUp = useCallback(() => {
-    if (!stroke.current.down) return;
-    stroke.current.down = false;
-    if (dragArmed) {
-      sendSpecs(padDragSpecs(false));
-    } else if (!stroke.current.moved) {
-      sendSpecs(padClickSpecs(0)); // stationary tap = left click
-    }
-  }, [dragArmed, sendSpecs]);
-
-  if (!touchUi) return null;
+  const onPadUp = useCallback(
+    (e?: React.PointerEvent<HTMLDivElement>) => {
+      if (!stroke.current.down) return;
+      if (e) {
+        try {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+          /* already released (e.g. pointercancel) — nothing to undo */
+        }
+      }
+      stroke.current.down = false;
+      if (dragArmed) {
+        sendSpecs(padDragSpecs(false));
+      } else if (!stroke.current.moved) {
+        sendSpecs(padClickSpecs(0)); // stationary tap = left click
+      }
+    },
+    [dragArmed, sendSpecs]
+  );
 
   const btn =
     "rounded border border-zinc-300 px-2.5 py-1.5 text-xs font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800";
@@ -213,7 +230,7 @@ export function RemoteViewerControls({
         type="button"
         onClick={() => setPadOpen((v) => !v)}
         aria-expanded={padOpen}
-        className="flex w-full items-center justify-between rounded px-1 py-1 text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
+        className="flex w-full touch-manipulation select-none items-center justify-between rounded px-1 py-1 text-xs font-medium text-zinc-600 transition-colors hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
       >
         <span>🖱 Mouse &amp; keyboard</span>
         <span aria-hidden>{padOpen ? "▾" : "▴"}</span>
