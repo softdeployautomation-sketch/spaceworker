@@ -3975,3 +3975,50 @@ model UserPresenceEvent {
 
   @@index([userId, createdAt])
 }
+
+// TASK_217 — the LAN/WiFi audit lab's persistence. One row per audit run on a
+// device; findings hang off it. Follows the lab-table pattern (bare string
+// IDs, no Prisma relations) so the migration is add-table-only and cannot
+// break unrelated tables. `rawJson` keeps the NORMALIZED probe output for
+// transparency — never the raw stdout, and never key material (judge.ts
+// scrubs; probes.ts never emits it).
+model SecurityAudit {
+  id            String   @id @default(cuid())
+  userId        String
+  deviceId      String
+  // Links the LabConsent row that authorized this run (bare id, lab pattern).
+  consentId     String?
+  // Worst verdict roll-up: PASS | LEAK | INFO.
+  verdict       String   @default("INFO")
+  worstSeverity String   @default("none")
+  leakCount     Int      @default(0)
+  passCount     Int      @default(0)
+  infoCount     Int      @default(0)
+  // Normalized probe results (JSON array of RawProbeResult) — post-scrub.
+  rawJson       Json?
+  // Set when the probe pack's markers were absent (device offline / old agent).
+  noData        Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@index([deviceId, createdAt])
+}
+
+// One verdict card per probe finding (judge.ts VerdictCard). `verdict` is
+// PASS | LEAK | INFO; `severity` none|low|medium|high. Evidence and
+// remediation are plain-language and already scrubbed of secrets.
+model AuditFinding {
+  id          String   @id @default(cuid())
+  auditId     String
+  probe       String
+  title       String
+  verdict     String
+  severity    String   @default("none")
+  evidence    String
+  remediation String
+  createdAt   DateTime @default(now())
+
+  @@index([auditId])
+  @@index([verdict])
+}
+

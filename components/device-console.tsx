@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import Link from "next/link";
 import {
   Activity,
+  AlertTriangle,
   AppWindow,
   ArrowLeft,
   ChevronDown,
@@ -1827,6 +1828,7 @@ export function DeviceConsole({
               agentLabel={agentLabel}
               setAgentLabel={setAgentLabelEdit}
               runAgentVisibility={runAgentVisibility}
+              deviceId={deviceId}
             />
             )
           )}
@@ -4220,6 +4222,7 @@ function CommandTab({
   agentLabel,
   setAgentLabel,
   runAgentVisibility,
+  deviceId,
 }: {
   queue: QueuedRow[];
   cmd: string;
@@ -4242,6 +4245,7 @@ function CommandTab({
   agentLabel: string;
   setAgentLabel: (v: string) => void;
   runAgentVisibility: (mode: "hide" | "reveal") => Promise<void>;
+  deviceId: string;
 }) {
   // Queued-PIN digit length (4/6/8). The schedule itself is the SAME picker
   // as the command queue above — one schedule selection per tab.
@@ -4518,9 +4522,178 @@ function CommandTab({
           ))
         )}
       </div>
+
+      <NetworkAuditCard deviceId={deviceId} isOnline={isOnline} />
     </div>
   );
 }
+// ---- Network audit (TASK_217) ------------------------------------------------
+// The judging layer made visible: one click runs the server-assembled probe
+// pack (P1–P6) on this device and renders the verdict cards LEAK-first with
+// plain-language remediation. The client never builds or ships the script —
+// it only sends deviceId; the server assembles, executes, judges and persists.
+interface AuditCard {
+  probe: string;
+  title: string;
+  verdict: "PASS" | "LEAK" | "INFO";
+  severity: "none" | "low" | "medium" | "high";
+  evidence: string;
+  remediation: string;
+}
+interface AuditRun {
+  auditId: string;
+  verdict: string;
+  worstSeverity: string;
+  leakCount: number;
+  passCount: number;
+  infoCount: number;
+  noData: boolean;
+  cards: AuditCard[];
+}
+
+function NetworkAuditCard({ deviceId, isOnline }: { deviceId: string; isOnline: boolean }) {
+  const [consented, setConsented] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<AuditRun | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/security-audit/consent", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { consented: false }))
+      .then((d) => {
+        if (alive) setConsented(!!d.consented);
+      })
+      .catch(() => {
+        if (alive) setConsented(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const run = useCallback(async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      if (!consented) {
+        const c = await fetch("/api/security-audit/consent", { method: "POST" });
+        if (!c.ok) {
+          const d = await c.json().catch(() => ({}));
+          throw new Error(typeof d.error === "string" ? d.error : "consent_failed");
+        }
+        setConsented(true);
+      }
+      const res = await fetch("/api/security-audit/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const code = typeof data.error === "string" ? data.error : "audit_failed";
+        throw new Error(
+          code === "lan_audit_consent_required"
+            ? "Accept the audit terms first."
+            : code === "device_unreachable"
+              ? "Device didn't answer — is the agent online?"
+              : code === "xdevice_required"
+                ? "Device tools need the XDevice tier."
+                : "Audit failed.",
+        );
+      }
+      setResult(data as AuditRun);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "Audit failed");
+    } finally {
+      setBusy(false);
+    }
+  }, [consented, deviceId]);
+
+  return (
+    <div className="rounded-lg border border-border bg-bg p-3">
+      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
+        <ShieldCheck className="h-3.5 w-3.5" /> Network audit
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">
+        Runs six read-only probes (WiFi link, stored key, gateway/ARP, broadcast reach,
+        poisoning/relay surface, listening sockets) on THIS device&apos;s network and judges each
+        PASS / LEAK / INFO. Out of scope by design: deauth, handshake/PMKID capture, flooding,
+        spraying, or probing neighbours.
+      </p>
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          onClick={run}
+          disabled={busy || !isOnline}
+          className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          {busy ? "Running audit…" : consented ? "Run network audit" : "Accept terms & run audit"}
+        </button>
+        {!isOnline && <span className="text-xs text-fg-muted">Device must be online.</span>}
+      </div>
+      {err && <p className="mt-2 text-xs text-red-500">{err}</p>}
+      {result && (
+        <div className="mt-3 space-y-2">
+          {result.noData ? (
+            <p className="rounded-lg border border-border bg-bg-elevated px-3 py-2 text-xs text-fg-muted">
+              The device returned no audit data (agent offline, or an older agent without the probe
+              pack). Nothing was judged — this is not a clean bill of health.
+            </p>
+          ) : (
+            <>
+              <p className="text-xs text-fg-muted">
+                {result.leakCount} leak{result.leakCount === 1 ? "" : "s"} · {result.passCount} pass ·{" "}
+                {result.infoCount} info
+              </p>
+              {result.cards.map((c, i) => (
+                <AuditCardView key={`${c.probe}-${i}`} card={c} />
+              ))}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuditCardView({ card: c }: { card: AuditCard }) {
+  return (
+    <div
+      className={cn(
+        "rounded-lg border px-3 py-2",
+        c.verdict === "LEAK"
+          ? "border-red-500/40 bg-red-500/5"
+          : c.verdict === "PASS"
+            ? "border-emerald-500/40 bg-emerald-500/5"
+            : "border-border bg-bg-elevated",
+      )}
+    >
+      <p className="flex items-center gap-1.5 text-sm font-medium text-fg">
+        {c.verdict === "LEAK" && <AlertTriangle className="h-3.5 w-3.5 text-red-500" />}
+        {c.title}
+        <span
+          className={cn(
+            "ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium uppercase",
+            c.verdict === "LEAK"
+              ? "bg-red-500/15 text-red-500"
+              : c.verdict === "PASS"
+                ? "bg-emerald-500/15 text-emerald-500"
+                : "bg-black/10 text-fg-muted dark:bg-white/10",
+          )}
+        >
+          {c.verdict}
+        </span>
+      </p>
+      <p className="mt-1 text-xs text-fg-muted">{c.evidence}</p>
+      <p className="mt-1 text-xs text-fg">
+        <span className="font-medium">Fix: </span>
+        {c.remediation}
+      </p>
+    </div>
+  );
+}
+
 // ---- Activity ---------------------------------------------------------------
 function ActivityTab({ activity }: { activity: ActivityRow[] }) {
   if (activity.length === 0) {
