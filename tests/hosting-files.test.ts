@@ -195,10 +195,13 @@ test("checkUpload: size, count, storage and bandwidth caps each return their own
   assert.ok(!bwVerdict.ok && bwVerdict.code === "quota_bandwidth");
 });
 
-test("scanUpload: scripts and browser-active content are blocked; executables are a GATED class", () => {
-  for (const name of ["shell.php", "app.js", "index.html", "logo.svg", "run.sh", "x.jar"]) {
+test("scanUpload: every extension is accepted (2026-10-14 owner decision); executables stay GATED", () => {
+  // Formerly-refused script/browser-active types now pass — abuse is handled
+  // in Admin, and /hf/<token> serves with `attachment` + `nosniff`.
+  for (const name of ["shell.php", "app.js", "index.html", "logo.svg", "run.sh", "x.jar", "payload.vbs", "setup.bat"]) {
     const v = scanUpload(name);
-    assert.ok(!v.ok, `${name} should be blocked`);
+    assert.ok(v.ok, `${name} should be accepted now`);
+    assert.ok(v.ok && v.gated === false, `${name} must not be gated`);
   }
   const exe = scanUpload("SpaceWorker Setup.exe");
   assert.ok(exe.ok && exe.gated === true && exe.extension === "exe");
@@ -485,10 +488,11 @@ test("createHostedFile: a quota breach is a typed 400 with a human message — n
   }
 });
 
-test("createHostedFile: a blocked extension is refused with the reason, no bytes written", async () => {
+test("createHostedFile: script extensions are hosted too (2026-10-14 owner decision — abuse handled in Admin)", async () => {
   const res = await upload("webshell.php");
-  assert.ok(!res.ok && res.code === "blocked_extension" && res.status === 400);
-  assert.equal(assets.length, 0);
+  assert.ok(res.ok, JSON.stringify(res));
+  if (res.ok) assert.equal(res.value.dispositionFilename, "webshell.php");
+  assert.equal(assets.length, 1);
 });
 
 test("createHostedFile: an executable is refused until it is explicitly acknowledged (gated class)", async () => {

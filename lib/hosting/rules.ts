@@ -227,15 +227,16 @@ export function checkUpload(
 }
 
 // ---------------------------------------------------------------------------
-// Upload safety scan (PLAN §11.1). We host executables on purpose, so the policy
-// is: NEVER host active web content or OS-runnable scripts; ALLOW executables as
-// a GATED class (the caller can require an explicit acknowledgement); allow
-// everything else by extension.
+// Upload safety scan (PLAN §11.1, revised 2026-10-14 by owner decision).
+// Policy now: host EVERY extension as a download — scripts included (CyberLab
+// needs to publish scripts). Abuse is managed from Admin (which already sees
+// every upload), not by extension. Executables remain a GATED class (explicit
+// acknowledgement). The serve route forces `Content-Disposition: attachment`
+// + `nosniff`, so nothing here can render or execute inline in a browser.
 // ---------------------------------------------------------------------------
 
-// Denied outright: server-side script/webshell extensions and browser-active
-// content that would render/execute if a link were ever opened inline rather than
-// downloaded. Hosting a *page* is the Pages engine's job (P3), not this one.
+// Retained as a documented reference of script-like extensions (admin reviewers
+// may consult it); it no longer gates uploads — see scanUpload below.
 export const BLOCKED_EXTENSIONS = new Set<string>([
   // server-side script / webshell
   "php", "php3", "php4", "php5", "phtml", "pht",
@@ -268,14 +269,9 @@ export function extensionOf(filename: string): string {
 
 export function scanUpload(filename: string): ScanVerdict {
   const extension = extensionOf(filename);
-  if (BLOCKED_EXTENSIONS.has(extension)) {
-    return {
-      ok: false,
-      code: "blocked_extension",
-      // Deliberately plain: say what happened, not which list matched.
-      message: `Files of type “.${extension}” can’t be hosted as downloads. Rename it or host it as a page instead.`,
-    };
-  }
+  // 2026-10-14 owner decision: no extension is refused for file hosting (the
+  // earlier BLOCKED_EXTENSIONS gate is retired — see the header comment). The
+  // verdict type still carries `blocked_extension` for the SITE scan below.
   return { ok: true, gated: GATED_EXTENSIONS.has(extension), extension };
 }
 
@@ -311,7 +307,6 @@ export function scanSiteFile(filename: string): ScanVerdict {
 // ---------------------------------------------------------------------------
 export function sanitizeDispositionFilename(input: string): string {
   const stripped = input
-    // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .replace(/[\\/]/g, "_")
     .replace(/["]/g, "'")

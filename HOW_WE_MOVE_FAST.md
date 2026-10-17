@@ -93,6 +93,27 @@ deploy, hold these four rules in your head:
 The standing rule this playbook keeps re-learning: **deploy from a clean tree,
 ship only what git has, and always remove what is no longer in git.**
 
+### 🔒 Merged-to-main is the definition of "deployed" (2026-10-20, T219 — the `.vbs` double regression)
+
+**The box runs whatever `main` says — nothing else.** A fix deployed to the box
+from a branch working tree (direct `deploy-vps.sh`, tar, whatever) is
+**INSTANTLY REVERTED by the next CI deploy from `main`**, no matter how long it
+worked beforehand. This bit the team twice with TASK_209: the `.vbs`-allow fix
+was deployed from `agent/task-209-vbs-allow-restore`, the branch was never
+merged, CI-from-main silently reinstated the old blocklist gate, and users hit
+the same refusal again weeks later. Two rules, both mandatory:
+
+1. **A fix is not real until its branch is merged into `main`.** If you deploy
+   from a branch tree for speed, `git merge` that branch to `main` **in the same
+   session** — before closing the task.
+2. **Post-deploy ancestry check** (10 seconds, run it every time):
+   `git merge-base --is-ancestor <branch> main && echo OK` — if it prints
+   nothing, the fix WILL revert on the next deploy. Treat "it works on the box
+   right now" as proof of NOTHING about future deploys.
+
+Before writing any hotfix, also check for **orphaned fix branches** that may
+already contain your answer: `git branch --no-merged main`.
+
 
 **Deploy the DIRECTORY TREES, not a `--files-from` list** (2026-09-28 — see the
 incident right below; the list recipe that used to live here was a silent
