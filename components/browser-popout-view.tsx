@@ -12,7 +12,7 @@
 // works in BOTH landscape and portrait on a phone — the iframe fills whatever
 // remains above the controls, and the controls wrap instead of overflowing.
 
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 
 import {
   RemoteViewerControls,
@@ -22,6 +22,20 @@ import {
 export function BrowserPopoutView({ connectUrl }: { connectUrl: string }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const getFrame = useCallback(() => frameRef.current, []);
+
+  // TASK_218 D1 (H5) — the owner's "the 🖱 Mouse & keyboard card no longer
+  // appears" was a STALE TAB, not a code regression: this view mounts the
+  // controller unconditionally (TASK_216 comment below). A tab restored from
+  // the back/forward cache keeps its pre-deploy DOM until a hard reload, and
+  // its WebRTC connection died while frozen anyway — so refresh it once
+  // instead of showing a dead stream with controls that can't work.
+  useEffect(() => {
+    const onPageShow = (e: PageTransitionEvent) => {
+      if (e.persisted) window.location.reload();
+    };
+    window.addEventListener("pageshow", onPageShow);
+    return () => window.removeEventListener("pageshow", onPageShow);
+  }, []);
 
   return (
     <div className="flex h-[100dvh] flex-col bg-black pb-[max(0rem,env(safe-area-inset-bottom))] pl-[max(0rem,env(safe-area-inset-left))] pr-[max(0rem,env(safe-area-inset-right))] pt-[max(0rem,env(safe-area-inset-top))]">

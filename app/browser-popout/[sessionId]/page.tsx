@@ -57,7 +57,9 @@ export default async function BrowserPopoutPage({
     return (
       <main className="flex h-[100dvh] flex-col items-center justify-center gap-4 bg-black px-6 text-center">
         <p className="text-sm text-zinc-400">
-          This private browser session has ended.
+          This private browser session has ended &mdash; the stream and the
+          mouse &amp; keyboard controls are only available while it runs.
+          Close this tab and start a new session from the dashboard.
         </p>
         <a
           href="/dashboard/browser"

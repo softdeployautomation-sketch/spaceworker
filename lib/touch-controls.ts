@@ -221,7 +221,13 @@ export function buildTouchInjectionScript(): string {
         var a = (n.clientWidth || 0) * (n.clientHeight || 0);
         if (a > bestArea) { bestArea = a; best = n; }
       }
-      return best || document.body;
+      // TASK_218 H1 — prefer the largest LAID-OUT surface, but never fall all
+      // the way back to body while a media element exists: on mobile the video
+      // mounts late / remounts (renegotiation, orientation, tab resume) and can
+      // have a zero-area box — and a mouse event dispatched at body never
+      // traverses the video subtree, so Neko's own listeners on the <video>
+      // would never see the tap (the owner's "taps don't reach neko").
+      return best || nodes[0] || document.body;
     }
 
     function fire(el, type, x, y, button) {
@@ -255,8 +261,38 @@ export function buildTouchInjectionScript(): string {
     var start = null, moved = false, longTimer = null, firedLong = false;
     var twoFinger = false, lastMidY = null;
 
+    // TASK_218 H3 — the same TouchEvent is observed by every node we bind
+    // (document, body, the surface) as it travels the tree; handle it exactly
+    // ONCE, at the outermost point that sees it first.
+    function seen(e) {
+      if (e.__swTouchSeen) return true;
+      e.__swTouchSeen = true;
+      return false;
+    }
+
+    // TASK_218 — touches on Neko's OWN chrome (menu buttons, links, inputs,
+    // ARIA controls) stay native: translating them would aim the click at the
+    // remote desktop instead of the menu, and preventDefault() would swallow
+    // the tap. The remote desktop is pixels inside <video> — never a button —
+    // so this can't skip a stream tap.
+    function isNekoControl(t) {
+      var n = t;
+      while (n && n !== document.body) {
+        var tag = n.tagName;
+        if (tag === "BUTTON" || tag === "A" || tag === "INPUT" ||
+            tag === "SELECT" || tag === "TEXTAREA") return true;
+        var role = n.getAttribute ? n.getAttribute("role") : null;
+        if (role === "button" || role === "link" || role === "menuitem" ||
+            role === "menu") return true;
+        n = n.parentNode;
+      }
+      return false;
+    }
+
     function onStart(e) {
+      if (seen(e)) return;
       var el = surface();
+      if (isNekoControl(e.target)) return;
       if (e.touches.length >= 2) {
         twoFinger = true; firedLong = false; if (longTimer) clearTimeout(longTimer);
         lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -274,6 +310,7 @@ export function buildTouchInjectionScript(): string {
     }
 
     function onMove(e) {
+      if (seen(e)) return;
       if (!start) return;
       if (twoFinger && e.touches.length >= 2) {
         var midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -288,6 +325,7 @@ export function buildTouchInjectionScript(): string {
     }
 
     function onEnd(e) {
+      if (seen(e)) return;
       if (twoFinger) { if (e.touches.length < 2) { twoFinger = false; lastMidY = null; } return; }
       if (!start) return;
       var el = start.el, p = start.p;
@@ -301,7 +339,12 @@ export function buildTouchInjectionScript(): string {
     function install(el) {
       if (!el || el.__swTouchBound) return;
       el.__swTouchBound = true;
-      var opts = { passive: false };
+      // TASK_218 H3 — CAPTURE phase: Neko binds its own touch handlers on the
+      // stream/container and stops propagation there, so bubble-phase
+      // listeners bound higher up (document.body) never fired on mobile — the
+      // translation never ran and every tap died as a raw Neko touch. Capture
+      // runs before any descendant handler can stop the event.
+      var opts = { passive: false, capture: true };
       el.addEventListener("touchstart", onStart, opts);
       el.addEventListener("touchmove", onMove, opts);
       el.addEventListener("touchend", onEnd, opts);
@@ -356,14 +399,22 @@ export function buildTouchInjectionScript(): string {
       } catch (err) { /* best-effort */ }
     };
 
-    // Neko mounts its surface after the WebRTC handshake, so poll briefly.
-    var tries = 0;
-    var iv = setInterval(function () {
+    // TASK_218 — bind at the document ROOT first: it exists the moment this
+    // script runs (no waiting for <body> or the video to mount), and in
+    // capture phase it sees every touch before anything in the subtree can
+    // stopPropagation it. body + surface bindings stay as belt-and-braces
+    // (deduped by seen()).
+    install(document);
+    install(document.body);
+    // Neko (re)mounts its <video> after the WebRTC handshake — routinely later
+    // than 10s on mobile, and again on rotation/tab-resume — so the watcher
+    // keeps re-binding the live surface instead of giving up (the old
+    // 40-try / 10s poll stopped while the stream was still handshaking, which
+    // is exactly the mobile case). The check is a cheap flag lookup.
+    setInterval(function () {
       var el = surface();
       if (el && el !== document.body) { install(el); }
-      if (++tries > 40) clearInterval(iv);
-    }, 250);
-    install(document.body);
+    }, 1000);
     // TASK_216 — success marker LAST: everything above defines the bridges and
     // binds the listeners, so reaching this line is the only proof the install
     // actually completed. (See the guard comment at the top of this script.)
