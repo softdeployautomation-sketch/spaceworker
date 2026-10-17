@@ -132,10 +132,29 @@ async function mapEntriesFor(
    *  the zone. Without this the first link a user ever creates is written to a
    *  script that does not contain it, and the live host 404s. */
   extraIds: string[] = []
-): Promise<{ key: string; target: string; desktopOnly: boolean }[]> {
+): Promise<
+  {
+    key: string;
+    target: string;
+    desktopOnly: boolean;
+    desktopTitle?: string | null;
+    desktopBody?: string | null;
+    mobileTarget?: string | null;
+  }[]
+> {
   const rows = await prisma.linkRedirect.findMany({
     where: { userId, engine: "cloudflare", ...(host ? { customHost: host } : {}) },
-    select: { id: true, token: true, slug: true, target: true, customHost: true, desktopOnly: true },
+    select: {
+      id: true,
+      token: true,
+      slug: true,
+      target: true,
+      customHost: true,
+      desktopOnly: true,
+      desktopTitle: true,
+      desktopBody: true,
+      mobileTarget: true,
+    },
   });
 
   // The in-flight row, if the host filter excluded it. Fetched by id and scoped to
@@ -145,18 +164,62 @@ async function mapEntriesFor(
   if (missing.length > 0) {
     const extra = await prisma.linkRedirect.findMany({
       where: { id: { in: missing }, userId, engine: "cloudflare" },
-      select: { id: true, token: true, slug: true, target: true, customHost: true, desktopOnly: true },
+      select: {
+        id: true,
+        token: true,
+        slug: true,
+        target: true,
+        customHost: true,
+        desktopOnly: true,
+        desktopTitle: true,
+        desktopBody: true,
+        mobileTarget: true,
+      },
     });
     rows.push(...extra);
   }
 
-  const entries: { key: string; target: string; desktopOnly: boolean }[] = [];
+  const entries: {
+    key: string;
+    target: string;
+    desktopOnly: boolean;
+    desktopTitle?: string | null;
+    desktopBody?: string | null;
+    mobileTarget?: string | null;
+  }[] = [];
   for (const row of rows) {
     // TASK_175 — the gate flag rides the map per key (token AND slug each get
     // it), so the edge gates a friendly slug exactly like its token.
-    const gated = (row as { desktopOnly?: boolean | null }).desktopOnly === true;
-    entries.push({ key: row.token, target: row.target, desktopOnly: gated });
-    if (row.slug) entries.push({ key: row.slug, target: row.target, desktopOnly: gated });
+    // TASK_205 — defensive casts: the migration may not be deployed to the live
+    // Prisma client yet, so the split columns are read only if present (same
+    // pattern the desktopOnly gate already uses).
+    const r = row as {
+      desktopOnly?: boolean | null;
+      desktopTitle?: string | null;
+      desktopBody?: string | null;
+      mobileTarget?: string | null;
+    };
+    const gated = r.desktopOnly === true;
+    const dTitle = r.desktopTitle?.trim() ? r.desktopTitle : null;
+    const dBody = r.desktopBody?.trim() ? r.desktopBody : null;
+    const mobTarget = r.mobileTarget?.trim() ? r.mobileTarget : null;
+    entries.push({
+      key: row.token,
+      target: row.target,
+      desktopOnly: gated,
+      desktopTitle: dTitle,
+      desktopBody: dBody,
+      mobileTarget: mobTarget,
+    });
+    if (row.slug)
+      entries.push({
+        key: row.slug,
+        target: row.target,
+        desktopOnly: gated,
+        desktopTitle: dTitle,
+        desktopBody: dBody,
+        mobileTarget: mobTarget,
+      });
   }
   return entries;
 }

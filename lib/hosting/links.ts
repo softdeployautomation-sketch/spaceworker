@@ -45,6 +45,16 @@ export interface HostedLinkView {
    *  of /r/<key> see the "open on your PC" interstitial; desktop passes
    *  through. False/absent = today's redirect. */
   desktopOnly: boolean;
+  /** TASK_205 Part A — owner-editable interstitial copy (premium-only). NULL =
+   *  use the built-in default; a non-empty string replaces it. HTML-escaped at
+   *  render on BOTH the local /r path and the edge Worker. */
+  desktopTitle: string | null;
+  desktopBody: string | null;
+  /** TASK_205 Part B — optional per-platform split destination (premium-only).
+   *  When set, a mobile/tablet opener 302-redirects here while desktop openers
+   *  go to `target`. NULL = single-target (today's behaviour). Validated
+   *  http(s) only. When set, the split WINS over the desktopOnly interstitial. */
+  mobileTarget: string | null;
 }
 
 type LinkRedirectRow = {
@@ -60,6 +70,12 @@ type LinkRedirectRow = {
   deployStatus: string;
   deployError: string | null;
   desktopOnly?: boolean | null;
+  // TASK_205 — all three optional so an OLD Prisma client (pre-migration) still
+  // compiles and reads the columns it knows; the resolver treats absence as the
+  // default (NULL copy → built-in wording, NULL mobileTarget → single-target).
+  desktopTitle?: string | null;
+  desktopBody?: string | null;
+  mobileTarget?: string | null;
 };
 
 export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
@@ -84,6 +100,13 @@ export function toHostedLinkView(row: LinkRedirectRow): HostedLinkView {
     deployError: row.deployError ?? null,
     // TASK_175 — NULL reads back as off, so every pre-flag row behaves as today.
     desktopOnly: row.desktopOnly === true,
+    // TASK_205 — NULL/empty copy reads back as NULL (use the built-in default);
+    // a trimmed non-empty string is the owner's custom wording. Empty string is
+    // normalised to NULL here so the interstitial never renders a blank modal.
+    desktopTitle: row.desktopTitle?.trim() ? row.desktopTitle.trim() : null,
+    desktopBody: row.desktopBody?.trim() ? row.desktopBody.trim() : null,
+    // TASK_205 Part B — the split destination, or NULL for single-target.
+    mobileTarget: row.mobileTarget?.trim() ? row.mobileTarget.trim() : null,
   };
 }
 
@@ -115,6 +138,14 @@ export interface CreateHostedLinkInput {
    *  persisted ONLY when the minter is premium — anyone else's `true` is
    *  silently dropped (same posture as an invalid slug: dropped, never a 400). */
   desktopOnly?: boolean;
+  /** TASK_205 Part A — owner-editable interstitial copy. Persisted only for a
+   *  premium minter (same rule as desktopOnly); NULL/empty = built-in default. */
+  desktopTitle?: string | null;
+  desktopBody?: string | null;
+  /** TASK_205 Part B — optional mobile destination for the split. Persisted only
+   *  for a premium minter; must be a valid http(s) URL (else dropped). NULL =
+   *  single-target. */
+  mobileTarget?: string | null;
 }
 
 /**
@@ -241,11 +272,32 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
 
   // TASK_175 — premium-only at mint: a non-premium minter's `desktopOnly: true`
   // is silently DROPPED (never a 400), so a forged body mints a normal link.
-  // Read AFTER the entitlement-heavy path above so the common mint pays one
-  // extra user lookup only when the flag is actually requested.
+  // TASK_205 — the SAME premium rule gates the editable wording AND the split
+  // destination (all three ride the desktop-only perk). Read AFTER the
+  // entitlement-heavy path above, and only when at least one of them is
+  // requested, so the common mint pays no extra user lookup.
   let desktopOnly: boolean | undefined;
-  if (input.desktopOnly === true) {
-    desktopOnly = (await canUseDesktopOnlyGate(input.userId)) ? true : undefined;
+  let desktopTitle: string | null | undefined;
+  let desktopBody: string | null | undefined;
+  let mobileTarget: string | null | undefined;
+  const wantsGateFeatures =
+    input.desktopOnly === true ||
+    (input.desktopTitle?.trim() ?? "") !== "" ||
+    (input.desktopBody?.trim() ?? "") !== "" ||
+    (input.mobileTarget?.trim() ?? "") !== "";
+  if (wantsGateFeatures) {
+    const premium = await canUseDesktopOnlyGate(input.userId);
+    if (premium) {
+      if (input.desktopOnly === true) desktopOnly = true;
+      desktopTitle = input.desktopTitle?.trim() ? input.desktopTitle.trim() : null;
+      desktopBody = input.desktopBody?.trim() ? input.desktopBody.trim() : null;
+      // The split destination must be http(s) only — a `javascript:`/`data:`
+      // value is dropped, never persisted, so no opener can be XSS-redirected.
+      const mt = input.mobileTarget?.trim();
+      mobileTarget = mt && isValidLinkTarget(mt) ? mt : null;
+    }
+    // Non-premium: every field stays undefined → the columns stay NULL (a normal
+    // link), exactly like the desktopOnly drop.
   }
 
   // TASK_169 — auto tokens are SHORT (7 base64url chars, ≈42 bits: 64^7 ≈ 4.4e12
@@ -282,6 +334,12 @@ export async function createHostedLink(input: CreateHostedLinkInput): Promise<Ho
           // TASK_175 — spread only when a premium minter asked: undefined leaves
           // the column NULL (gate off) and keeps old Prisma clients working.
           ...(desktopOnly === true ? { desktopOnly: true } : {}),
+          // TASK_205 — spread only the fields a premium minter actually set; an
+          // undefined value leaves the column NULL (built-in default wording /
+          // single-target) and keeps old Prisma clients compiling.
+          ...(desktopTitle !== undefined ? { desktopTitle } : {}),
+          ...(desktopBody !== undefined ? { desktopBody } : {}),
+          ...(mobileTarget !== undefined ? { mobileTarget } : {}),
         },
       });
       row = created as LinkRedirectRow;
@@ -339,6 +397,15 @@ export interface UpdateHostedLinkInput {
   /** TASK_175 — same premium-only rule as create. `true` sets the gate (premium
    *  only), `false` clears it (any owner), `undefined` leaves it untouched. */
   desktopOnly?: boolean;
+  /** TASK_205 Part A — editable interstitial copy. Setting any non-empty value is
+   *  premium-only (dropped for a non-premium owner); passing null/"" clears it
+   *  back to the built-in default for any owner. `undefined` leaves it untouched. */
+  desktopTitle?: string | null;
+  desktopBody?: string | null;
+  /** TASK_205 Part B — split destination. Setting a valid http(s) URL is
+   *  premium-only (dropped for a non-premium owner; an invalid URL is dropped
+   *  for everyone); null/"" clears it back to single-target for any owner. */
+  mobileTarget?: string | null;
 }
 
 /** Re-label / re-target / re-slug a link. Never touches token or clickCount. */
@@ -427,6 +494,37 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
     }
   }
 
+  // TASK_205 Part A — editable interstitial copy. SETTING a non-empty value is
+  // premium-only (same perk as the gate: dropped for a non-premium owner); an
+  // empty/null value CLEARS back to the built-in default for any owner. Read the
+  // premium check once if any of the three copy/split fields is being set.
+  const settingWording =
+    (input.desktopTitle?.trim() ?? "") !== "" || (input.desktopBody?.trim() ?? "") !== "";
+  const settingMobile = (input.mobileTarget?.trim() ?? "") !== "";
+  if (input.desktopTitle !== undefined || input.desktopBody !== undefined || input.mobileTarget !== undefined) {
+    const maySet = settingWording || settingMobile ? await canUseDesktopOnlyGate(input.userId) : true;
+    // Clearing (empty/null) is allowed for any owner — it only ever removes a perk.
+    if (input.desktopTitle !== undefined) {
+      const t = input.desktopTitle?.trim() ? input.desktopTitle.trim() : null;
+      if (t === null || maySet) data.desktopTitle = t;
+    }
+    if (input.desktopBody !== undefined) {
+      const b = input.desktopBody?.trim() ? input.desktopBody.trim() : null;
+      if (b === null || maySet) data.desktopBody = b;
+    }
+    if (input.mobileTarget !== undefined) {
+      const mt = input.mobileTarget?.trim();
+      if (!mt) {
+        // Clearing back to single-target is any-owner.
+        data.mobileTarget = null;
+      } else if (isValidLinkTarget(mt) && maySet) {
+        // Set only when valid AND premium; an invalid URL is dropped for everyone
+        // (never persisted, never a 400) so no opener is XSS-redirected.
+        data.mobileTarget = mt;
+      }
+    }
+  }
+
   if (Object.keys(data).length === 0) return { ok: true, value: toHostedLinkView(row) };
 
   try {
@@ -442,7 +540,12 @@ export async function updateHostedLink(input: UpdateHostedLinkInput): Promise<Ho
       data.customHost !== undefined ||
       // TASK_175 — the gate flag lives in the Worker's DESKTOP set, so flipping
       // it re-uploads the map exactly like a re-target.
-      data.desktopOnly !== undefined;
+      data.desktopOnly !== undefined ||
+      // TASK_205 — the split destination AND the custom interstitial copy both
+      // live in the generated Worker script, so changing either re-uploads it.
+      data.mobileTarget !== undefined ||
+      data.desktopTitle !== undefined ||
+      data.desktopBody !== undefined;
     if (mapChanged && nowCloudflare) {
       // TASK_155 P6c — leaving the host or the account re-publishes on the new one,
       // but the OLD route keeps serving the old target until it is removed. Because
@@ -561,6 +664,13 @@ export interface ResolvedLink {
   /** TASK_175 — Desktop-only gate. True = a mobile/tablet opener sees the
    *  interstitial instead of the redirect. Absent/false = today's 302. */
   desktopOnly: boolean;
+  /** TASK_205 Part A — owner-editable interstitial copy; NULL = built-in default. */
+  desktopTitle: string | null;
+  desktopBody: string | null;
+  /** TASK_205 Part B — split destination for mobile/tablet openers; NULL =
+   *  single-target (every opener goes to `target`). When set, the split WINS
+   *  over the desktopOnly interstitial. */
+  mobileTarget: string | null;
 }
 
 /**
@@ -577,16 +687,31 @@ export interface ResolvedLink {
  * flag's presence IS the authority (a premium-minter's link keeps gating even
  * if their term later lapses), which also keeps the anonymous open path free
  * of a user lookup.
+ *
+ * TASK_205 — the owner's custom interstitial copy AND the split mobile
+ * destination ride along the same way (presence-authoritative, no tier check at
+ * open). An empty string reads back as NULL so the interstitial never renders a
+ * blank modal and a stale split never points at an empty destination.
  */
 export async function resolveLink(key: string): Promise<ResolvedLink | null> {
   const link =
     (await prisma.linkRedirect.findFirst({ where: { slug: key } })) ??
     (await prisma.linkRedirect.findUnique({ where: { token: key } }));
   if (!link) return null;
+  const r = link as {
+    target: string;
+    desktopOnly?: boolean | null;
+    desktopTitle?: string | null;
+    desktopBody?: string | null;
+    mobileTarget?: string | null;
+  };
   return {
     id: link.id,
-    target: link.target,
-    desktopOnly: (link as { desktopOnly?: boolean | null }).desktopOnly === true,
+    target: r.target,
+    desktopOnly: r.desktopOnly === true,
+    desktopTitle: r.desktopTitle?.trim() ? r.desktopTitle.trim() : null,
+    desktopBody: r.desktopBody?.trim() ? r.desktopBody.trim() : null,
+    mobileTarget: r.mobileTarget?.trim() ? r.mobileTarget.trim() : null,
   };
 }
 
@@ -612,6 +737,26 @@ export function isMobileUserAgent(ua: string | null | undefined): boolean {
 }
 
 /**
+ * TASK_205 — the built-in interstitial copy, exported so the LOCAL /r path and
+ * the EDGE Worker string can be asserted against ONE source of truth (the Worker
+ * duplicates the literals because it is stringified dependency-free; the test
+ * pins them equal). Owner wording overrides these; NULL/empty → these defaults.
+ *
+ * TASK_205 — "file" replaces the old "link" in the body (owner ask 2026-10-14).
+ */
+export const DESKTOP_INTERSTITIAL_DEFAULT_TITLE = "Open this on your PC";
+export const DESKTOP_INTERSTITIAL_DEFAULT_BODY =
+  "This file opens best on a desktop computer. Please open it on your PC to continue.";
+
+/** Minimal HTML text-node escape — the owner's wording is untrusted input that
+ *  lands inside an HTML body, so it MUST be escaped the same way `continueUrl`
+ *  is. Without this a custom title/body would be a stored-XSS vector on the
+ *  world-readable interstitial. */
+function escHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
  * TASK_175 — the interstitial served to a mobile/tablet opener of a gated
  * link: a small white modal ("open this on your PC") instead of the file, with
  * a "Continue anyway" escape (?desktop=1) for a desktop opener the server
@@ -623,7 +768,11 @@ export function isMobileUserAgent(ua: string | null | undefined): boolean {
  * target itself, so the bypass still flows through the choke point (and the
  * click still counts).
  */
-export function desktopOnlyInterstitialHtml(continueUrl: string): string {
+export function desktopOnlyInterstitialHtml(continueUrl: string, title?: string | null, body?: string | null): string {
+  const titleText = title?.trim() ? title.trim() : DESKTOP_INTERSTITIAL_DEFAULT_TITLE;
+  const bodyText = body?.trim() ? body.trim() : DESKTOP_INTERSTITIAL_DEFAULT_BODY;
+  const escTitle = escHtml(titleText);
+  const escBody = escHtml(bodyText);
   const esc = continueUrl.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\"/g, "&quot;");
   // The same URL is embedded a second time inside the inline <script> (the
   // client-confirm auto-continue). JSON.stringify alone is NOT enough there: a
@@ -634,15 +783,15 @@ export function desktopOnlyInterstitialHtml(continueUrl: string): string {
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<meta name="robots" content="noindex">` +
-    `<title>Open this on your PC</title>` +
+    `<title>${escTitle}</title>` +
     `<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f4f5;font-family:system-ui,-apple-system,sans-serif}` +
     `.card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:28px 26px;max-width:380px;margin:16px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)}` +
     `h1{font-size:18px;margin:0 0 8px;color:#18181b}p{font-size:14px;color:#52525b;line-height:1.5;margin:0 0 18px}` +
     `a.btn{display:inline-block;background:#18181b;color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;text-decoration:none}` +
     `.note{margin-top:12px;font-size:12px;color:#a1a1aa}</style></head><body>` +
     `<div class="card" role="dialog" aria-modal="true" aria-labelledby="t175-title">` +
-    `<h1 id="t175-title">Open this on your PC</h1>` +
-    `<p>This link opens best on a desktop computer. Please open it on your PC to continue.</p>` +
+    `<h1 id="t175-title">${escTitle}</h1>` +
+    `<p>${escBody}</p>` +
     `<a class="btn" id="t175-continue" href="${esc}">Continue anyway</a>` +
     `<div class="note">On a desktop? Tap Continue anyway.</div>` +
     `</div><script>(function(){try{` +

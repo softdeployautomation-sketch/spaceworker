@@ -22,6 +22,13 @@ const patchSchema = z
     // TASK_175 — Desktop-only gate. `true` sets it (premium-only, silently
     // dropped for anyone else), `false` clears it for any owner.
     desktopOnly: z.boolean().optional(),
+    // TASK_205 — editable interstitial copy + platform-split mobile target.
+    // Empty string or null CLEARS back to default for any owner; a non-empty
+    // value is set premium-only (server drops it for non-premium). The mobile
+    // value is URL-validated server-side, so we don't constrain it here.
+    desktopTitle: z.string().max(200).nullable().optional(),
+    desktopBody: z.string().max(500).nullable().optional(),
+    mobileTarget: z.string().max(2048).nullable().optional(),
   })
   .refine((v) => Object.keys(v).length > 0, "Nothing to update");
 
@@ -52,6 +59,11 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     customHost: parsed.customHost,
     credentialId: parsed.credentialId,
     desktopOnly: parsed.desktopOnly,
+    // TASK_205 — pass the editable wording + split target straight through; the
+    // server owns the premium-drop and URL-validation rules.
+    desktopTitle: parsed.desktopTitle,
+    desktopBody: parsed.desktopBody,
+    mobileTarget: parsed.mobileTarget,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

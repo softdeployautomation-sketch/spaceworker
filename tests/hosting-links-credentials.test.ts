@@ -275,7 +275,9 @@ test("createHostedLink: mints a user-owned link that resolves by slug on the sha
   assert.equal(links[0].userId, USER);
   // ...and the slug key resolves it.
   const found = await linksMod.resolveLink("my-offer");
-  assert.deepEqual(found, { id: res.value.id, target: "https://example.com/offer", desktopOnly: false });
+  // 2026-10-15 port of task205 (e2f7c48): resolveLink now also carries the
+  // platform-split fields (null when unset) — assert the full shape.
+  assert.deepEqual(found, { id: res.value.id, target: "https://example.com/offer", desktopOnly: false, desktopTitle: null, desktopBody: null, mobileTarget: null });
 });
 
 test("createHostedLink: a javascript: target is refused (the XSS guard on a world-readable route)", async () => {
@@ -513,7 +515,8 @@ test("TASK_169: slug-first resolve still holds, and old 24-char tokens still res
     target: "https://old-token.test", label: null, clickCount: 0, createdAt: new Date(),
   });
   const old = await linksMod.resolveLink("ciLSBh6Wgwb_g7562FolUwT-");
-  assert.deepEqual(old, { id: "link-old", target: "https://old-token.test", desktopOnly: false });
+  // Same full-shape expectation after the task205 port (split fields present, null).
+  assert.deepEqual(old, { id: "link-old", target: "https://old-token.test", desktopOnly: false, desktopTitle: null, desktopBody: null, mobileTarget: null });
   const created = await linksMod.createHostedLink({ userId: OTHER, target: "https://slugged.test", slug: "my-offer" });
   assert.ok(created.ok);
   const bySlug = await linksMod.resolveLink("my-offer");

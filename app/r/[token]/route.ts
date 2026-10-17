@@ -73,6 +73,20 @@ export async function GET(
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
 
+  // TASK_205 Part B — per-platform split, decided AFTER resolving so
+  // expired/revoked semantics never change. When the row has a mobileTarget, a
+  // mobile/tablet opener 302-redirects THERE while a desktop opener continues to
+  // `target` below. The split WINS over the desktopOnly interstitial: a mobile
+  // opener always has a real destination to go to. NULL mobileTarget = today's
+  // single-target behaviour for every opener. Validated http(s) at mint/update,
+  // so this can never be a javascript:/data: vector.
+  const url = new URL(req.url);
+  const bypassed = url.searchParams.get("desktop") === "1";
+  if (link.mobileTarget && !bypassed && isMobileUserAgent(req.headers.get("user-agent"))) {
+    void recordLinkClick(link.id);
+    return NextResponse.redirect(link.mobileTarget, 302);
+  }
+
   // TASK_175 — Desktop-only gate, decided AFTER resolving so expired/revoked
   // semantics never change (a missing link still 404s above). Flag off, or an
   // explicit ?desktop=1 bypass (the interstitial's "Continue anyway"), or a
@@ -80,12 +94,13 @@ export async function GET(
   // "open on your PC" interstitial, no redirect. The interstitial view counts
   // the click (the user DID open the link); the bypass counts again on the
   // follow-up 302 like any second open.
-  const url = new URL(req.url);
-  const bypassed = url.searchParams.get("desktop") === "1";
+  //
+  // TASK_205 Part A — the interstitial renders the owner's custom title/body
+  // when set (NULL → the built-in default), HTML-escaped inside the helper.
   if (link.desktopOnly && !bypassed && isMobileUserAgent(req.headers.get("user-agent"))) {
     void recordLinkClick(link.id);
     const continueUrl = `/r/${encodeURIComponent(token)}?desktop=1`;
-    return new NextResponse(desktopOnlyInterstitialHtml(continueUrl), {
+    return new NextResponse(desktopOnlyInterstitialHtml(continueUrl, link.desktopTitle, link.desktopBody), {
       status: 200,
       headers: { "Content-Type": "text/html; charset=utf-8", "X-Robots-Tag": "noindex", "Cache-Control": "no-store" },
     });

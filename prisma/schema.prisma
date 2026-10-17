@@ -1698,6 +1698,19 @@ model LinkRedirect {
   // (today's behavior). Set only for premium minters (lib/hosting/links.ts
   // drops it for anyone else); the resolver treats presence as authority.
   desktopOnly Boolean?
+  // TASK_205 — owner-editable Desktop-only interstitial copy (premium-only, same
+  // gate as desktopOnly). NULL = use the built-in default wording; a non-empty
+  // value replaces the title/body the interstitial shows to a mobile opener.
+  // HTML-escaped at render on BOTH the local /r path and the edge Worker.
+  desktopTitle String?
+  desktopBody  String?
+  // TASK_205 — optional per-platform split: when set, a mobile/tablet opener of
+  // /r/<key> 302-redirects to THIS mobile destination while desktop openers go to
+  // `target` above. NULL = single-target (today's behaviour for every existing
+  // row). Validated http(s) only (isValidLinkTarget) — never a javascript:/data:
+  // vector. When set, split WINS over the desktopOnly interstitial (a mobile
+  // opener always has a real destination).
+  mobileTarget String?
 
   @@index([campaignId])
   @@index([userId])

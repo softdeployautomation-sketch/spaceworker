@@ -767,6 +767,14 @@ export interface WorkerMapEntry {
   /** TASK_175 — Desktop-only gate for this key. True = a mobile/tablet opener
    *  sees the "open on your PC" interstitial instead of the redirect. */
   desktopOnly?: boolean;
+  /** TASK_205 Part A — owner-editable interstitial copy for this key. NULL/absent
+   *  = built-in default; a non-empty string replaces it. HTML-escaped at render. */
+  desktopTitle?: string | null;
+  desktopBody?: string | null;
+  /** TASK_205 Part B — split destination: a mobile/tablet opener 302-redirects
+   *  here while desktop openers go to `target`. NULL/absent = single-target.
+   *  When set, the split WINS over the desktopOnly interstitial. */
+  mobileTarget?: string | null;
 }
 
 /**
@@ -780,7 +788,8 @@ export interface WorkerMapEntry {
  * server-only modules into the edge source.
  */
 export const WORKER_DESKTOP_GATE_SNIPPET = `function t175IsMobile(ua){if(!ua)return false;var s=String(ua).toLowerCase();if(/mobi|mobile|android|iphone|ipod|phone|blackberry|bb10|mini|windows phone|iemobile|opera mobi|opera mini|fennec/.test(s))return true;if(/ipad|tablet/.test(s))return true;if(s.indexOf("macintosh")>=0&&s.indexOf("mobile")>=0)return true;return false;}
-function t175Gate(key,url,ua){var q=url.searchParams.get("desktop");if(q==="1")return null;if(!t175IsMobile(ua))return null;var cont=url.pathname+(url.pathname.indexOf("?")>=0?"&":"?")+"desktop=1";var esc=cont.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");var contJson=JSON.stringify(cont);return new Response("<!doctype html><html lang=\\"en\\"><head><meta charset=\\"utf-8\\"><meta name=\\"viewport\\" content=\\"width=device-width,initial-scale=1\\"><meta name=\\"robots\\" content=\\"noindex\\"><title>Open this on your PC</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f4f5;font-family:system-ui,-apple-system,sans-serif}.card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:28px 26px;max-width:380px;margin:16px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)}h1{font-size:18px;margin:0 0 8px;color:#18181b}p{font-size:14px;color:#52525b;line-height:1.5;margin:0 0 18px}a.btn{display:inline-block;background:#18181b;color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;text-decoration:none}.note{margin-top:12px;font-size:12px;color:#a1a1aa}</style></head><body><div class=\\"card\\" role=\\"dialog\\" aria-modal=\\"true\\"><h1>Open this on your PC</h1><p>This link opens best on a desktop computer. Please open it on your PC to continue.</p><a class=\\"btn\\" href=\\""+esc+"\\">Continue anyway</a><div class=\\"note\\">On a desktop? Tap Continue anyway.</div></div><script>(function(){try{var touch=(navigator.maxTouchPoints||0)>0||\\"ontouchstart\\" in window;var uaDataMobile=!!(navigator.userAgentData&&navigator.userAgentData.mobile);var ua=navigator.userAgent||\\"\\";var mobile=/mobi|mobile|android|iphone|ipod|phone/i.test(ua)&&!/macintosh/i.test(ua);if(!touch&&!uaDataMobile&&!mobile){window.location.replace("+contJson+");}}catch(e){}})();<\\/script></body></html>",{status:200,headers:{"Content-Type":"text/html; charset=utf-8","X-Robots-Tag":"noindex","Cache-Control":"no-store"}});}`;
+function t175Esc(s){return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}
+function t175Gate(key,url,ua,copy){var tD=(copy&&copy[0])?String(copy[0]):"Open this on your PC";var bD=(copy&&copy[1])?String(copy[1]):"This file opens best on a desktop computer. Please open it on your PC to continue.";var tEsc=t175Esc(tD),bEsc=t175Esc(bD);var q=url.searchParams.get("desktop");if(q==="1")return null;if(!t175IsMobile(ua))return null;var cont=url.pathname+(url.pathname.indexOf("?")>=0?"&":"?")+"desktop=1";var esc=cont.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");var contJson=JSON.stringify(cont);return new Response("<!doctype html><html lang=\\"en\\"><head><meta charset=\\"utf-8\\"><meta name=\\"viewport\\" content=\\"width=device-width,initial-scale=1\\"><meta name=\\"robots\\" content=\\"noindex\\"><title>"+tEsc+"</title><style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#f4f4f5;font-family:system-ui,-apple-system,sans-serif}.card{background:#fff;border:1px solid #e4e4e7;border-radius:12px;padding:28px 26px;max-width:380px;margin:16px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.08)}h1{font-size:18px;margin:0 0 8px;color:#18181b}p{font-size:14px;color:#52525b;line-height:1.5;margin:0 0 18px}a.btn{display:inline-block;background:#18181b;color:#fff;border-radius:8px;padding:10px 18px;font-size:14px;text-decoration:none}.note{margin-top:12px;font-size:12px;color:#a1a1aa}</style></head><body><div class=\\"card\\" role=\\"dialog\\" aria-modal=\\"true\\"><h1>"+tEsc+"</h1><p>"+bEsc+"</p><a class=\\"btn\\" href=\\""+esc+"\\">Continue anyway</a><div class=\\"note\\">On a desktop? Tap Continue anyway.</div></div><script>(function(){try{var touch=(navigator.maxTouchPoints||0)>0||\\"ontouchstart\\" in window;var uaDataMobile=!!(navigator.userAgentData&&navigator.userAgentData.mobile);var ua=navigator.userAgent||\\"\\";var mobile=/mobi|mobile|android|iphone|ipod|phone/i.test(ua)&&!/macintosh/i.test(ua);if(!touch&&!uaDataMobile&&!mobile){window.location.replace("+contJson+");}}catch(e){}})();<\\/script></body></html>",{status:200,headers:{"Content-Type":"text/html; charset=utf-8","X-Robots-Tag":"noindex","Cache-Control":"no-store"}});}`;
 
 /**
  * Generate the redirect Worker for one user (§19.12.3).
@@ -799,17 +808,30 @@ function t175Gate(key,url,ua){var q=url.searchParams.get("desktop");if(q==="1")r
 export function buildWorkerMapSource(entries: WorkerMapEntry[]): string {
   const map: Record<string, string> = {};
   const desktop: string[] = [];
+  const mobile: Record<string, string> = {};
+  const copy: Record<string, [string, string]> = {};
   for (const entry of entries) {
     if (!entry.key || !entry.target) continue;
     map[entry.key] = entry.target;
     // TASK_175 — gated keys join the parallel set; ungated keys stay out, so an
     // old script (no DESKTOP set) and a new one agree on "off" for them.
     if (entry.desktopOnly === true && !desktop.includes(entry.key)) desktop.push(entry.key);
+    // TASK_205 — platform-split: a key with a mobile destination routes mobile
+    // openers to it (split WINS over the interstitial). Parallel map, never mixed
+    // into MAP, so a split flag can never leak a destination to the wrong path.
+    if (entry.mobileTarget && !(entry.key in mobile)) mobile[entry.key] = entry.mobileTarget;
+    // TASK_205 — editable desktop-only copy: parallel [title,body] map; the gate
+    // falls back to defaults for any key absent here.
+    const dt = entry.desktopTitle?.trim();
+    const db = entry.desktopBody?.trim();
+    if ((dt || db) && !(entry.key in copy)) copy[entry.key] = [dt ?? "", db ?? ""];
   }
   return (
     "// Generated by SpaceWorker — links engine. Do not edit by hand.\n" +
     `const MAP = ${JSON.stringify(map)};\n` +
     `const DESKTOP = new Set(${JSON.stringify(desktop)});\n` +
+    `const MOBILE = ${JSON.stringify(mobile)};\n` +
+    `const COPY = ${JSON.stringify(copy)};\n` +
     `${WORKER_DESKTOP_GATE_SNIPPET}\n` +
     "export default {\n" +
     "  async fetch(request) {\n" +
@@ -817,8 +839,12 @@ export function buildWorkerMapSource(entries: WorkerMapEntry[]): string {
     '    const key = url.pathname.replace(/^\\/+/, "").split("/")[0];\n' +
     "    const target = key ? MAP[key] : undefined;\n" +
     '    if (!target) return new Response("Not found", { status: 404 });\n' +
+    '    const ua = request.headers.get("user-agent");\n' +
+    "    if (key && MOBILE[key] && t175IsMobile(ua)) {\n" +
+    "      return Response.redirect(MOBILE[key], 302);\n" +
+    "    }\n" +
     "    if (key && DESKTOP.has(key)) {\n" +
-    '      const gated = t175Gate(key, url, request.headers.get("user-agent"));\n' +
+    '      const gated = t175Gate(key, url, ua, COPY[key]);\n' +
     "      if (gated) return gated;\n" +
     "    }\n" +
     "    return Response.redirect(target, 302);\n" +

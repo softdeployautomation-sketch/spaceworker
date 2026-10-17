@@ -31,6 +31,12 @@ const postSchema = z.object({
   // lib/hosting/links.ts silently drops `true` for non-premium minters, so a
   // forged body from a free account mints a normal link.
   desktopOnly: z.boolean().optional(),
+  // TASK_205 — editable interstitial copy + platform-split mobile target. Same
+  // trust model as desktopOnly: accepted from anyone, dropped for non-premium in
+  // lib/hosting/links.ts; the mobile value is URL-validated there.
+  desktopTitle: z.string().max(200).nullable().optional(),
+  desktopBody: z.string().max(500).nullable().optional(),
+  mobileTarget: z.string().max(2048).nullable().optional(),
 });
 
 export async function POST(request: Request) {
@@ -62,6 +68,11 @@ export async function POST(request: Request) {
     customHost: parsed.customHost,
     credentialId: parsed.credentialId,
     desktopOnly: parsed.desktopOnly,
+    // TASK_205 — wording + split target pass through; server owns premium-drop
+    // and URL validation.
+    desktopTitle: parsed.desktopTitle,
+    desktopBody: parsed.desktopBody,
+    mobileTarget: parsed.mobileTarget,
   });
   if (!result.ok) {
     return NextResponse.json({ error: result.message, code: result.code }, { status: result.status });

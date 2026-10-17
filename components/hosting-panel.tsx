@@ -82,6 +82,11 @@ interface HostedLink {
   /** TASK_175 — Desktop-only gate. True = mobile/tablet openers see the "open
    *  on your PC" interstitial; desktop passes through. Absent = gate off. */
   desktopOnly?: boolean;
+  /** TASK_205 — editable interstitial copy (NULL = built-in default) + optional
+   *  platform-split mobile destination (NULL = same as `target`). All premium. */
+  desktopTitle?: string | null;
+  desktopBody?: string | null;
+  mobileTarget?: string | null;
 }
 
 /** TASK_155 P2 — a BYO Cloudflare credential (account id + encrypted token). */
@@ -165,6 +170,82 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+/**
+ * TASK_205 — inline editor for one link's editable interstitial wording +
+ * optional platform-split mobile destination. Self-contained draft state; the
+ * parent owns persistence via onSave. Fields seed from the link; an empty box
+ * means "keep default / no split" (saved as NULL). `desktopTarget` powers the
+ * live "Desktop opens → … · Mobile opens → …" preview.
+ */
+function RoutingEditor({
+  link,
+  busy,
+  onSave,
+  onCancel,
+}: {
+  link: HostedLink;
+  busy: boolean;
+  onSave: (patch: { desktopTitle: string; desktopBody: string; mobileTarget: string }) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(link.desktopTitle ?? "");
+  const [body, setBody] = useState(link.desktopBody ?? "");
+  const [mobile, setMobile] = useState(link.mobileTarget ?? "");
+  return (
+    <div className="mt-2 flex flex-col gap-2 rounded border border-zinc-200 p-3 text-xs dark:border-zinc-800">
+      <div className="flex flex-col gap-1">
+        <label className="font-medium text-zinc-600 dark:text-zinc-300">
+          Desktop-only interstitial title
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Open this on your PC"
+            className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+        <label className="font-medium text-zinc-600 dark:text-zinc-300">
+          Desktop-only interstitial message
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={2}
+            placeholder="This file opens best on a desktop computer. Please open it on your PC to continue."
+            className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-1 border-t border-zinc-100 pt-2 dark:border-zinc-800">
+        <label className="font-medium text-zinc-600 dark:text-zinc-300">
+          Split by device — mobile destination (optional)
+          <input
+            type="text"
+            value={mobile}
+            onChange={(e) => setMobile(e.target.value)}
+            placeholder="https://… (http/https). Leave empty to use the desktop target for everyone."
+            className="mt-1 w-full rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+          />
+        </label>
+        <span className="text-zinc-400">
+          Desktop opens → {link.target} · Mobile opens → {mobile.trim() || "same as desktop"}
+        </span>
+      </div>
+      <div className="flex items-center gap-3">
+        <button
+          onClick={() => onSave({ desktopTitle: title, desktopBody: body, mobileTarget: mobile })}
+          disabled={busy}
+          className="rounded bg-zinc-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"
+        >
+          Save
+        </button>
+        <button onClick={onCancel} disabled={busy} className="text-xs text-zinc-500 hover:underline">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function HostingPanel() {
   const [status, setStatus] = useState<HostingStatus | null>(null);
   const [files, setFiles] = useState<HostedFile[]>([]);
@@ -186,7 +267,18 @@ export function HostingPanel() {
     // TASK_175 — Desktop-only gate checkbox (premium-only: rendered only when
     // status.desktopOnlyAllowed). Sent as `desktopOnly` on create.
     desktopOnly: false,
+    // TASK_205 — editable interstitial wording + optional platform-split mobile
+    // destination. Empty string = "use built-in default" / "no split". Only
+    // rendered + sent for premium users (status.desktopOnlyAllowed).
+    desktopTitle: "",
+    desktopBody: "",
+    mobileTarget: "",
   });
+  // TASK_205 — which per-link row has its wording/split editor open (null = none).
+  const [editingRoutingFor, setEditingRoutingFor] = useState<string | null>(null);
+  // TASK_205 — create-form: which inline editor (wording | split) is expanded.
+  const [showWording, setShowWording] = useState(false);
+  const [showSplit, setShowSplit] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   // TASK_155 P3 — the Sites surface (folder → preview → publish + engine picker).
   const [sites, setSites] = useState<HostingSite[]>([]);
@@ -666,6 +758,11 @@ export function HostingPanel() {
             // TASK_175 — only ever true when the premium checkbox rendered; the
             // server drops it for non-premium minters anyway.
             desktopOnly: linkForm.desktopOnly === true,
+            // TASK_205 — send only when filled; empty → omitted → NULL (server
+            // keeps default wording / no split). Server validates the mobile URL.
+            ...(linkForm.desktopTitle.trim() ? { desktopTitle: linkForm.desktopTitle.trim() } : {}),
+            ...(linkForm.desktopBody.trim() ? { desktopBody: linkForm.desktopBody.trim() } : {}),
+            ...(linkForm.mobileTarget.trim() ? { mobileTarget: linkForm.mobileTarget.trim() } : {}),
           }),
         });
         const data = (await res.json()) as { error?: string; link?: HostedLink };
@@ -681,7 +778,12 @@ export function HostingPanel() {
           credentialId: "",
           customHost: "",
           desktopOnly: false,
+          desktopTitle: "",
+          desktopBody: "",
+          mobileTarget: "",
         });
+        setShowWording(false);
+        setShowSplit(false);
         // A Worker link can be saved and still not be live — say so plainly
         // instead of claiming success (the /r/ fallback works either way).
         const made = data.link;
@@ -769,6 +871,55 @@ export function HostingPanel() {
         await loadLinks();
       } catch {
         setError("Couldn’t update that link — try again.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadLinks]
+  );
+
+  // TASK_205 — save editable interstitial wording + platform-split mobile target
+  // for one link. Premium-only to SET (server drops non-premium sets); any owner
+  // may CLEAR by sending "" (→ null). One PATCH carries all three; empty fields
+  // are sent as "" so a cleared box removes the value (null), matching the
+  // desktop-only toggle's premium-drop-then-clear rule.
+  const onSaveRouting = useCallback(
+    async (link: HostedLink, patch: { desktopTitle: string; desktopBody: string; mobileTarget: string }) => {
+      setBusy(true);
+      setError("");
+      setNotice("");
+      try {
+        const res = await fetch(`/api/hosting/links/${link.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            desktopTitle: patch.desktopTitle,
+            desktopBody: patch.desktopBody,
+            mobileTarget: patch.mobileTarget,
+          }),
+        });
+        const data = (await res.json()) as { error?: string; link?: HostedLink };
+        if (!res.ok) {
+          setError(data.error ?? "Couldn’t save that.");
+          return;
+        }
+        // Server may have dropped a non-premium set (returns nulls) — say so.
+        const got = data.link;
+        if (
+          (patch.desktopTitle.trim() || patch.desktopBody.trim() || patch.mobileTarget.trim()) &&
+          got &&
+          !got.desktopTitle &&
+          !got.desktopBody &&
+          !got.mobileTarget
+        ) {
+          setNotice("Editing redirect wording needs the premium plan — the link stays as-is.");
+        } else {
+          setNotice("Saved.");
+        }
+        setEditingRoutingFor(null);
+        await loadLinks();
+      } catch {
+        setError("Couldn’t save that — try again.");
       } finally {
         setBusy(false);
       }
@@ -1476,6 +1627,69 @@ export function HostingPanel() {
               <span className="text-zinc-400">— mobile openers see “open on your PC”</span>
             </label>
           )}
+          {/* TASK_205 — editable interstitial wording + platform split. Two buttons
+              BESIDE the desktop-only select, premium-only. Toggling opens a small
+              inline editor; both are optional and independent (defaults when empty). */}
+          {status.desktopOnlyAllowed === true && (
+            <div className="flex flex-col gap-2 rounded border border-zinc-200 p-2 text-xs dark:border-zinc-800">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = showWording ? "" : "wording";
+                    setShowWording(next === "wording");
+                    setShowSplit(false);
+                  }}
+                  className="font-medium text-zinc-700 hover:underline dark:text-zinc-200"
+                >
+                  {showWording ? "Hide" : "Edit"} wording
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSplit((v) => !v);
+                    setShowWording(false);
+                  }}
+                  className="font-medium text-zinc-700 hover:underline dark:text-zinc-200"
+                >
+                  {showSplit ? "Hide" : "Split by device"}
+                </button>
+                <span className="text-zinc-400">(optional — leave empty to keep defaults)</span>
+              </div>
+              {showWording && (
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    value={linkForm.desktopTitle}
+                    onChange={(e) => setLinkForm((s) => ({ ...s, desktopTitle: e.target.value }))}
+                    placeholder="Interstitial title (default: “Open this on your PC”)"
+                    className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                  <textarea
+                    value={linkForm.desktopBody}
+                    onChange={(e) => setLinkForm((s) => ({ ...s, desktopBody: e.target.value }))}
+                    placeholder="Interstitial message (default: “This file opens best on a desktop computer. Please open it on your PC to continue.”)"
+                    rows={2}
+                    className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                </div>
+              )}
+              {showSplit && (
+                <div className="flex flex-col gap-1">
+                  <input
+                    type="text"
+                    value={linkForm.mobileTarget}
+                    onChange={(e) => setLinkForm((s) => ({ ...s, mobileTarget: e.target.value }))}
+                    placeholder="Mobile destination URL (http/https) — desktop uses the main target above"
+                    className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-700 dark:bg-zinc-900"
+                  />
+                  <span className="text-zinc-400">
+                    Desktop opens → {linkForm.target || "—"} · Mobile opens → {linkForm.mobileTarget || "same as desktop"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
         </form>
         {linkForm.engine === "cloudflare" && (
           <p className="text-xs text-zinc-500">
@@ -1557,6 +1771,23 @@ export function HostingPanel() {
                       desktop-only
                     </span>
                   )}
+                  {/* TASK_205 — open this link's inline wording/split editor (premium
+                      only to edit; the button renders only for premium users). */}
+                  {status.desktopOnlyAllowed === true && (
+                    <button
+                      onClick={() =>
+                        setEditingRoutingFor((cur) => (cur === link.id ? null : link.id))
+                      }
+                      className="text-xs text-zinc-500 hover:underline"
+                    >
+                      {editingRoutingFor === link.id ? "Close routing" : "Routing"}
+                    </button>
+                  )}
+                  {link.mobileTarget && (
+                    <span className="rounded bg-sky-100 px-1.5 py-0.5 text-xs text-sky-800 dark:bg-sky-950 dark:text-sky-200">
+                      split
+                    </span>
+                  )}
                   <button onClick={() => void onEditLink(link)} className="text-xs text-zinc-600 hover:underline dark:text-zinc-300">
                     Edit
                   </button>
@@ -1578,6 +1809,14 @@ export function HostingPanel() {
               )}
               {onEdge && link.deployError && (
                 <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{link.deployError}</p>
+              )}
+              {editingRoutingFor === link.id && (
+                <RoutingEditor
+                  link={link}
+                  busy={busy}
+                  onSave={(patch) => void onSaveRouting(link, patch)}
+                  onCancel={() => setEditingRoutingFor(null)}
+                />
               )}
             </div>
           );

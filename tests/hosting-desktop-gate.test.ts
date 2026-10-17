@@ -326,3 +326,232 @@ test("TASK_175: worker map with no flags gates nothing", () => {
   assert.ok(src.includes("new Set([])"), "empty DESKTOP set — gate off for every key");
 });
 
+
+// ============================================================================
+// TASK_205 — editable interstitial wording ("link"→"file") + platform-split
+// destinations. Same premium-drop trust model as TASK_175. Local /r and the
+// edge Worker must agree; the test pins both.
+// ============================================================================
+
+test("TASK_205: premium minter's custom title/body persist; body says 'file'", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    desktopOnly: true,
+    desktopTitle: "Get the app",
+    desktopBody: "Open this file on a PC.",
+  });
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.value.desktopTitle, "Get the app");
+    assert.equal(res.value.desktopBody, "Open this file on a PC.");
+  }
+});
+
+test("TASK_205: free minter's custom wording is silently dropped (defaults kept)", async () => {
+  fakeUser = { tier: 1, premiumExpiresAt: null };
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://example.com/",
+    desktopOnly: true,
+    desktopTitle: "Nope",
+    desktopBody: "Nope",
+  });
+  assert.equal(res.ok, true, "never a 400 — dropped like the gate");
+  if (res.ok) {
+    assert.equal(res.value.desktopTitle, null);
+    assert.equal(res.value.desktopBody, null);
+  }
+});
+
+test("TASK_205: interstitial renders custom title/body and HTML-escapes them", () => {
+  const { desktopOnlyInterstitialHtml } = links;
+  const html = desktopOnlyInterstitialHtml(
+    "/r/abc?desktop=1",
+    'Bobby"><script>alert(1)</script>',
+    "<img src=x onerror=alert(1)>"
+  );
+  assert.ok(!html.includes("<script>alert"), "custom title must not inject raw script");
+  assert.ok(!html.includes("<img src=x"), "custom body must not inject raw HTML");
+  assert.ok(html.includes("&lt;") || html.includes("&quot;"), "title entity-escaped");
+});
+
+test("TASK_205: interstitial default body uses 'file', not 'link'", () => {
+  const { desktopOnlyInterstitialHtml } = links;
+  const html = desktopOnlyInterstitialHtml("/r/abc?desktop=1");
+  assert.ok(html.includes("This file opens best"), "default copy says 'file'");
+  assert.ok(!html.includes("This link opens best"), "old 'link' wording is gone");
+});
+
+test("TASK_205: empty-string custom copy falls back to the default wording", () => {
+  const { desktopOnlyInterstitialHtml } = links;
+  const html = desktopOnlyInterstitialHtml("/r/abc?desktop=1", "", "   ");
+  assert.ok(html.includes("Open this on your PC"), "empty title → default title");
+  assert.ok(html.includes("This file opens best"), "whitespace body → default body");
+});
+
+test("TASK_205: update sets wording for premium, clears for any owner", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  await links.createHostedLink({ userId: "user_1", target: "https://example.com/", desktopOnly: true });
+  const set = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    desktopTitle: "Hi",
+    desktopBody: "Open on PC",
+  });
+  assert.equal(set.ok, true);
+  if (set.ok) {
+    assert.equal(set.value.desktopTitle, "Hi");
+    assert.equal(set.value.desktopBody, "Open on PC");
+  }
+  const clear = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    desktopTitle: "",
+    desktopBody: "",
+  });
+  assert.equal(clear.ok, true, "clearing is allowed for any owner");
+  if (clear.ok) {
+    assert.equal(clear.value.desktopTitle, null);
+    assert.equal(clear.value.desktopBody, null);
+  }
+});
+
+
+test("TASK_205: free owner update wording is dropped but clear still works", async () => {
+  fakeUser = { tier: 1, premiumExpiresAt: null };
+  await links.createHostedLink({ userId: "user_1", target: "https://example.com/" });
+  const set = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    desktopTitle: "Nope",
+  });
+  assert.equal(set.ok, true);
+  if (set.ok) assert.equal(set.value.desktopTitle, null, "free owner set is dropped");
+});
+
+// PLATFORM SPLIT — mint + resolve
+
+test("TASK_205: premium split mint persists mobileTarget and resolves it", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://desktop.example/",
+    mobileTarget: "https://mobile.example/",
+  });
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value.mobileTarget, "https://mobile.example/");
+  const resolved = await links.resolveLink(linkRows[0].token);
+  assert.ok(resolved);
+  assert.equal(resolved!.target, "https://desktop.example/");
+  assert.equal(resolved!.mobileTarget, "https://mobile.example/");
+});
+
+test("TASK_205: no mobileTarget = single-target for everyone (NULL)", async () => {
+  fakeUser = { tier: 1, premiumExpiresAt: null };
+  await links.createHostedLink({ userId: "user_1", target: "https://only.example/" });
+  const resolved = await links.resolveLink(linkRows[0].token);
+  assert.ok(resolved);
+  assert.equal(resolved!.mobileTarget, null);
+});
+
+test("TASK_205: free minter's split is silently dropped", async () => {
+  fakeUser = { tier: 1, premiumExpiresAt: null };
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://desktop.example/",
+    mobileTarget: "https://mobile.example/",
+  });
+  assert.equal(res.ok, true, "never a 400");
+  if (res.ok) assert.equal(res.value.mobileTarget, null, "free owner split dropped");
+});
+
+test("TASK_205: invalid mobile URL (javascript:) is dropped, never persisted", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  const res = await links.createHostedLink({
+    userId: "user_1",
+    target: "https://desktop.example/",
+    mobileTarget: "javascript:alert(1)",
+  });
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value.mobileTarget, null, "non-http(s) mobile target dropped");
+});
+
+test("TASK_205: update sets split for premium, clears for any owner", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  await links.createHostedLink({ userId: "user_1", target: "https://desktop.example/" });
+  const set = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    mobileTarget: "https://m.example/",
+  });
+  assert.equal(set.ok, true);
+  if (set.ok) assert.equal(set.value.mobileTarget, "https://m.example/");
+  const clear = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    mobileTarget: "",
+  });
+  assert.equal(clear.ok, true);
+  if (clear.ok) assert.equal(clear.value.mobileTarget, null);
+});
+
+test("TASK_205: update invalid split (data:) is dropped (not persisted, not a 400)", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  await links.createHostedLink({ userId: "user_1", target: "https://desktop.example/" });
+  const res = await links.updateHostedLink({
+    userId: "user_1",
+    id: linkRows[0].id,
+    mobileTarget: "data:text/html,<script>alert(1)</script>",
+  });
+  assert.equal(res.ok, true);
+  if (res.ok) assert.equal(res.value.mobileTarget, null);
+});
+
+test("TASK_205: split + desktopOnly coexist on the row; resolver carries both", async () => {
+  fakeUser = { tier: 5, premiumExpiresAt: null };
+  await links.createHostedLink({
+    userId: "user_1",
+    target: "https://desktop.example/",
+    desktopOnly: true,
+    mobileTarget: "https://mobile.example/",
+  });
+  const resolved = await links.resolveLink(linkRows[0].token);
+  assert.ok(resolved);
+  assert.equal(resolved!.desktopOnly, true);
+  assert.equal(resolved!.mobileTarget, "https://mobile.example/");
+});
+
+// EDGE WORKER — MOBILE + COPY maps + split branch before gate
+
+test("TASK_205: worker map emits MOBILE + COPY and split-branch before the gate", () => {
+  const src = workers.buildWorkerMapSource([
+    {
+      key: "split-tok",
+      target: "https://desktop.example/",
+      desktopOnly: true,
+      desktopTitle: "PC only",
+      desktopBody: "Open the file here",
+      mobileTarget: "https://mobile.example/",
+    },
+    { key: "plain-tok", target: "https://plain.example/" },
+  ]);
+  assert.ok(src.includes("const MOBILE"), "parallel mobile map exists");
+  assert.ok(src.includes("https://mobile.example/"), "mobile destination present");
+  assert.ok(src.includes("const COPY"), "parallel copy map exists");
+  assert.ok(src.includes("PC only"), "custom title present in copy map");
+  assert.ok(src.includes("t175IsMobile(ua)"), "split branch checks mobile UA");
+  const splitIdx = src.indexOf("MOBILE[key] && t175IsMobile(ua)");
+  const gateIdx = src.indexOf("DESKTOP.has(key)");
+  assert.ok(splitIdx !== -1 && gateIdx !== -1, "both branches present");
+  assert.ok(splitIdx < gateIdx, "split branch precedes the desktop gate");
+  assert.ok(src.includes("This file opens best"), "edge default copy says 'file'");
+  assert.ok(src.includes("COPY[key]"), "gate reads custom copy from the map");
+});
+
+test("TASK_205: worker map with no split emits empty MOBILE and no mobile redirect", () => {
+  const src = workers.buildWorkerMapSource([{ key: "tok1", target: "https://a.example/" }]);
+  assert.ok(src.includes("const MOBILE = {}"), "empty mobile map — no split");
+});
+
