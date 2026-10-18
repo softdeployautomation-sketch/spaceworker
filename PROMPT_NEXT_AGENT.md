@@ -1,5 +1,28 @@
 # PROMPT — NEXT SENIOR AGENT (owner-set queue: **domains → wallet → tickets → marketing → Cyber Lab**)
 
+> ## ★★★ CURRENT STATE BANNER (2026-10-19) — READ THIS FIRST; it supersedes the 2026-10-03 order below
+>
+> The world moved. CI-from-`main` is now the only deploy path (see
+> `PROMPT_SENIOR_VERIFICATION_AGENT.md` §1 for the exact jobs/trigger mechanics), the app is
+> **invite-only** (joker gate + referral links + personalized invites — F8 closes the API bypass),
+> and the regression class that bit us all week ("fixed on a branch, reverted by the next CI
+> deploy") is documented + guarded in the playbook. **Current queue, in owner-set priority:**
+>
+> | # | Task | Doc | State |
+> |---|---|---|---|
+> | 1 | **TASK_223 multi-domain** (admin registers platform CF domains incl. `mainstreetmint.top` + `.sbs`, platform domains selectable, bind uploaded site to apex) | `TASK_223_PLATFORM_DOMAINS_MULTI.md` | Scoped, build after 222 ships |
+> | 2 | **Security F2–F5** (sshd password/root login, `.env` perms, open SOCKS :1090/:1091, ufw) | `TASK_219_SECURITY_AUDIT_STEPS.md` | Open, owner decisions pending |
+> | 3 | **TASK_214 D6 zero-touch extension** (CRX pack with the VPS-held key + public update path) | `TASK_214_CLONE_EXTENSION_INSTALL.md` | D1–D5 shipped; D6 = box-side |
+> | 4 | B1 tiny-screen hunt / exit-nodes | `TASK_221_…_STEPS.md` §3 | Needs a device online / owner yes-no |
+>
+> Working trees: primary `/Users/mikeolab/spaceworker`, `main` lives in `/Users/mikeolab/sw-vbsfix`.
+> Task-agent pattern: they build uncommitted on `agent/task-NNN-*` branches; the senior lane
+> reviews, gates, commits-with-attribution, merges, ships after the owner's 🚦 GO.
+>
+> Everything below this banner is the **historical 2026-10-03 queue** — kept for grounding
+> (Phases 4a/4c domains, wallet W1–W6, tickets, Cyber Lab C2+); treat it as backlog context,
+> not current order. Several items in it are DONE (verify before rebuilding anything).
+>
 > ## ★ OWNER-SET BUILD ORDER (2026-10-03) — this supersedes the older item order in §3/§5
 >
 > The owner explicitly set this sequence. **Follow it; do not start Cyber Lab early**, even though
