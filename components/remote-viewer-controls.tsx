@@ -33,30 +33,14 @@ import {
 } from "@/lib/touch-controls";
 
 // ---------------------------------------------------------------------------
-// Neko cursor-doubling fix + touch-control injection (TASK_208 S2, moved here
-// verbatim from browser-session-panel.tsx in TASK_212 D3 so the pop-out tab
-// and the panel share ONE installer — no fork).
-//
-// Neko renders the remote OS's cursor baked directly into the video stream,
-// but its own client doesn't hide the LOCAL cursor while hovering over that
-// video — so users see two: the real remote one in the pixels, plus the
-// host browser's own arrow on top. Confirmed no cursor-hiding logic exists in
-// Neko's shipped client JS/CSS (checked directly). The iframe is same-origin
-// (served through our own domain via the /browser/<id>/ proxy), so we can
-// reach into its document and fix this ourselves rather than waiting on
-// upstream — best-effort, wrapped in try/catch in case a future Neko version
-// changes its DOM shape or this ever isn't same-origin for some reason.
-function hideRemoteCursorDoubling(frame: HTMLIFrameElement) {
-  try {
-    const doc = frame.contentDocument;
-    if (!doc) return;
-    const style = doc.createElement("style");
-    style.textContent = "* { cursor: none !important; }";
-    doc.head.appendChild(style);
-  } catch {
-    /* cross-origin or blocked for some other reason — leave the default cursor */
-  }
-}
+// REVERTED (TASK_221, owner decision 2026-10-18): this slot used to hold
+// `hideRemoteCursorDoubling`, added in TASK_208 S2 (moved here verbatim by
+// TASK_212 D3) — it injected `* { cursor: none !important; }` into the Neko
+// iframe to suppress the host cursor over the stream's baked-in remote cursor.
+// Owner verdict: not useful — it ERASED the local cursor the instant it
+// entered the stream ("shows over the controls card, disappears on the
+// screen"), breaking desktop mouse use that had worked fine before 208.
+// The doubled remote/local cursor is the acceptable trade-off. Do not re-add.
 
 // TASK_208 S2 / TASK_212 D2 / TASK_216 — the ONE installer for the pop-out tab
 // and the panel (no fork). Idempotent, with a HEAL path (TASK_216): the old
@@ -91,7 +75,7 @@ export function ensureTouchControls(frame: HTMLIFrameElement | null): void {
 // Thin onLoad adapter over ensureTouchControls — kept under its TASK_208 name
 // because both call sites (panel + pop-out) wire it as onLoad={installTouchControls}.
 export function installTouchControls(e: React.SyntheticEvent<HTMLIFrameElement>) {
-  hideRemoteCursorDoubling(e.currentTarget);
+  // hideRemoteCursorDoubling call REMOVED (TASK_221 revert — see block comment above).
   ensureTouchControls(e.currentTarget);
 }
 
