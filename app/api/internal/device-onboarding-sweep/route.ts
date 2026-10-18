@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { requireInternalBearer } from "@/lib/internal-auth";
 import { isDeviceOnline } from "@/lib/devices";
-import { runCommandNow, setPowerPolicy } from "@/lib/device-tools";
+import { runCommandNow } from "@/lib/device-tools";
 import { syncDevices } from "@/lib/vantra-link";
 import {
   DEFAULT_AGENT_LABEL,
@@ -12,70 +12,51 @@ import {
 } from "@/lib/agent-visibility";
 import {
   ONBOARDING_MAX_ATTEMPTS,
-  ONBOARDING_MOVE_MINUTES,
   nextOnboardingAction,
 } from "@/lib/device-onboarding";
 
-// TASK_128 — device onboarding quarantine sweep.
+// TASK_228 — onboarding sweep: the HIDE ONLY (owner redesign 2026-10-19).
 //
 // POST /api/internal/device-onboarding-sweep, gated by INTERNAL_BEARER_TOKEN,
-// hit by deploy/device-onboarding-sweep.timer every 5 minutes (the stage
-// thresholds are 5-minute-quantised by design, mirroring Vantra's own poller).
+// hit by deploy/device-onboarding-sweep.timer every 60 seconds (box config —
+// the owner wants the hide on the first or second minute; the rule's 60s
+// threshold + a 60s tick means it typically fires at 60–120s).
 //
-// One shared clock per device: hide@5 · stay-on@10 · move@15 (Vantra's) ·
-// released by 20. The MOVE itself is Vantra's (lib/device-auto-move.ts) and is
-// never fired from here; this sweep only runs the two EXISTING SpaceWorker
-// tools (runCommandNow + buildHideAgentScript / setPowerPolicy) and mirrors the
-// release once the device is observed private.
+// The quarantine is GONE. The old clock (hide@5 · stay-on@10 · Vantra's
+// move@15 · release@20) was killing devices: the auto-move's two-step script
+// rewrote the agent's BaseURL and force-restarted `tacticalrmm`, stranding
+// any box that was offline mid-move — "a lot of devices have gone missing
+// after getting on" (owner, 2026-10-19). Now:
+//   - devices STAY PUBLIC indefinitely (the user moves them by hand from the
+//     device list; Vantra's auto-move flag is off for sw- orgs);
+//   - the sweep's only job is running the cosmetic hide (buildHideAgentScript:
+//     DisplayName + Description + uninstall-entry visibility — never a service
+//     stop/restart) and releasing the row once it lands;
+//   - OFFLINE never burns an attempt and never sets lastError. Freshness gate:
+//     the device must have checked in within the device-online window
+//     (isDeviceOnline) before we even try, and a `vantra_503 … currently
+//     offline` transport error at execution time is treated the same way —
+//     skip, release the claim, retry next tick. This kills the old failure
+//     loop where 503s burned ONBOARDING_MAX_ATTEMPTS and rows died red while
+//     the box sat online (the exact burn bug from the 2026-10-19 triage);
+//   - `failed` is reserved for GENUINE attempted-and-failed hides: the script
+//     reports FAIL, or a transport error that is not the offline 503.
 //
-// GRACE, not a deadline (owner rule: "it's not necessarily for it to be exactly
-// 20 mins — if anyone exceeds, we just want to put a little wait in each
-// process"). The 20-minute window is the PLAN:
-//   - a device still public at 20 is NOT released and NOT failed; its row stays
-//     live and keeps being retried (the UI words this `overrun`);
-//   - there is NO time ceiling. The clock can no longer fail a device, because
-//     elapsed time includes the hours a box spent switched OFF, which is not a
-//     failure of the process (owner decision 2026-09-27). A device previously
-//     offline for 35+ minutes used to be marked `failed` the moment it came back
-//     — a false alarm on a healthy device, and the opposite of "any failed
-//     attempt due to offline should retry";
-//   - past ONBOARDING_STUCK_MINUTES the UI instead escalates to a LOUD amber
-//     warning that names the device, the elapsed time and the reason, so a stuck
-//     device is visible WITHOUT being marked failed. `failed` is reserved for
-//     ONBOARDING_MAX_ATTEMPTS genuinely attempted-and-failed stages, which keeps
-//     a red badge meaning something;
-//   - a free/trial device with no destination is released cleanly at the plan
-//     and is never treated as a failure — nothing is hidden for a move that
-//     can never happen.
+// Exactly-once: the same crash-safe `updateMany` claim keyed on `hideDoneAt`
+// (null) before the work runs, copied from device-auto-move.ts:98-102. A row
+// left `hiding` with `hideDoneAt` null by a dead request is re-adopted on the
+// next sweep; `hideDoneAt`, not `claimAt`, is the exactly-once gate.
 //
-// OFFLINE retries, and never burns an attempt: a due stage whose box is not
-// reachable is skipped and retried on every later cycle. Only an ATTEMPTED
-// stage that actually failed counts toward ONBOARDING_MAX_ATTEMPTS.
-//
-// Exactly-once: a crash-safe `updateMany` claim keyed on the stage's own
-// `*DoneAt` (null) before the work runs, copied from device-auto-move.ts:98-102.
-// A row left in hiding/staying_on with its `*DoneAt` null by a dead request is
-// re-adopted unconditionally on the next sweep — there is NO staleness timer;
-// the `*DoneAt` timestamp, not `claimAt`, is the exactly-once gate. The session
-// routes are deliberately not called: runCommandNow/setPowerPolicy take a
-// `userId` precisely so this works without an approval rail.
+// AUTOMATION, not a dashboard side-effect: DeviceOnboarding rows are written
+// only by syncDevices() (no timer of its own), so this route re-syncs every
+// linked user BEFORE acting on rows — a freshly seen device gets its row and
+// its hide without the owner ever opening the dashboard. Best-effort per user:
+// one broken link never aborts the sweep.
 export async function POST(req: Request) {
   if (!requireInternalBearer(req)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // AUTOMATION, not a dashboard side-effect (owner rule: "we want all
-  // automated"). `DeviceOnboarding` rows are written ONLY by `syncDevices()`,
-  // which has no timer of its own (lib/clone.ts:506 says exactly that) — it runs
-  // when a human opens the device list. Without this step the hide@5/stay-on@10
-  // stages would only ever run for users who happened to visit their dashboard,
-  // so a freshly installed public device could be moved by Vantra at 15 minutes
-  // having never been hidden or kept awake: the exact failure this task exists
-  // to prevent. Re-sync every linked user first, then act on the rows.
-  //
-  // Best-effort per user: one broken/revoked link must never abort the sweep or
-  // stop the other users' devices being quarantined (each failure is recorded in
-  // `syncErrors`, never thrown). Revoked links are skipped — they have no org.
   const links = await prisma.vantraLink.findMany({
     where: { status: { not: "revoked" } },
     select: { userId: true },
@@ -100,7 +81,10 @@ export async function POST(req: Request) {
 
   const now = Date.now();
   let checked = 0;
-  let acted = 0;
+  let hid = 0;
+  let released = 0;
+  let failed = 0;
+  let skippedOffline = 0;
 
   for (const row of rows) {
     checked++;
@@ -108,137 +92,120 @@ export async function POST(req: Request) {
     const action = nextOnboardingAction(
       {
         status: row.status,
-        tier: device.tier,
         timerStartedAt: row.timerStartedAt,
         hideDoneAt: row.hideDoneAt,
-        stayOnDoneAt: row.stayOnDoneAt,
-        destinationOrgId: row.destinationOrgId,
       },
       now,
     );
-    if (action === "terminal") continue;
+    if (!action) continue;
 
+    // Freshness gate BEFORE the claim: a device that has not checked in
+    // recently cannot receive a command, and trying would produce exactly the
+    // offline-503 noise this task exists to kill. Never burns, never writes.
+    if (!isDeviceOnline(device.lastSeenAt)) {
+      skippedOffline++;
+      continue;
+    }
+
+    // Claim (crash-safe exactly-once on hideDoneAt) + live status guard so a
+    // row released/failed by a concurrent tick is never re-adopted.
+    const claim = await prisma.deviceOnboarding.updateMany({
+      where: { id: row.id, hideDoneAt: null, status: { notIn: ["released", "failed"] } },
+      data: { status: "hiding", claimAt: new Date() },
+    });
+    if (claim.count === 0) continue;
+
+    // The hide runs with the sweep's own service identity (no approval rail) —
+    // same posture the quarantine used, minus every stage but the hide.
+    const label = isValidAgentLabel(row.hideLabel) ? row.hideLabel : DEFAULT_AGENT_LABEL;
     try {
-      if (action === "hide" || action === "stay_on") {
-        // §6 — the box being asleep is NEVER an error and must not burn an
-        // attempt: skip and retry next cycle (the strip names it "waiting").
-        if (!isDeviceOnline(device.lastSeenAt)) continue;
-      }
-
-      if (action === "hide") {
-        const claimed = await prisma.deviceOnboarding.updateMany({
-          where: { id: row.id, hideDoneAt: null },
-          data: { status: "hiding", claimAt: new Date(), attempts: { increment: 1 } },
+      const result = await runCommandNow({
+        userId: device.userId,
+        deviceId: device.id,
+        cmd: buildHideAgentScript(label),
+        shell: "powershell",
+        timeoutSeconds: 90,
+        runAsUser: false,
+      });
+      const output = result.output ?? "";
+      if (/FAIL:/.test(output)) {
+        // GENUINE failure: the script ran and reported a failed step.
+        const detail = `hide_script_fail:${output.slice(0, 200)}`;
+        const upd = await prisma.deviceOnboarding.update({
+          where: { id: row.id },
+          data: { attempts: { increment: 1 }, lastError: detail },
         });
-        if (claimed.count !== 1) continue; // already done by another sweep
-        const label = isValidAgentLabel(row.hideLabel) ? row.hideLabel : DEFAULT_AGENT_LABEL;
-        try {
-          const result = await runCommandNow({
-            userId: device.userId,
-            deviceId: device.id,
-            cmd: buildHideAgentScript(label),
-            shell: "powershell",
-            timeoutSeconds: 90,
-            runAsUser: false,
-          });
-          const output = result.output ?? "";
-          if (output.includes("FAIL:")) {
-            acted++;
-            await failStage(row, output.slice(0, 500));
-          } else {
-            await prisma.deviceOnboarding.update({
-              where: { id: row.id },
-              data: {
-                hideDoneAt: new Date(),
-                hideOutput: output.slice(0, 2000),
-                status: "pending",
-                claimAt: null,
-                lastError: null,
-              },
-            });
-            acted++;
-          }
-        } catch (err) {
-          acted++;
-          await failStage(row, errorDetail(err));
-        }
-      } else if (action === "stay_on") {
-        const claimed = await prisma.deviceOnboarding.updateMany({
-          where: { id: row.id, stayOnDoneAt: null },
-          data: { status: "staying_on", claimAt: new Date(), attempts: { increment: 1 } },
-        });
-        if (claimed.count !== 1) continue;
-        try {
-          await setPowerPolicy({ userId: device.userId, deviceId: device.id, mode: "indefinite" });
+        if (upd.attempts >= ONBOARDING_MAX_ATTEMPTS) {
           await prisma.deviceOnboarding.update({
             where: { id: row.id },
-            data: { stayOnDoneAt: new Date(), status: "pending", claimAt: null, lastError: null },
+            data: { status: "failed" },
           });
-          acted++;
-        } catch (err) {
-          acted++;
-          await failStage(row, errorDetail(err));
+          failed++;
         }
-      } else if (action === "release") {
+        continue;
+      }
+      await prisma.deviceOnboarding.update({
+        where: { id: row.id },
+        data: {
+          status: "released",
+          hideDoneAt: new Date(),
+          hideOutput: output.slice(0, 500),
+          releasedAt: new Date(),
+          lastError: null,
+        },
+      });
+      hid++;
+      released++;
+    } catch (err) {
+      if (isVantraOfflineError(err)) {
+        // Transport says the box is offline (vantra_503 … currently offline).
+        // NOT a failure: release the claim AND restore `pending` (nothing is
+        // in flight — the badge must not sit on "Hiding agent…" all night),
+        // write no error, retry next tick.
+        skippedOffline++;
+        await prisma.deviceOnboarding.updateMany({
+          where: { id: row.id, hideDoneAt: null },
+          data: { claimAt: null, status: "pending" },
+        });
+        continue;
+      }
+      // GENUINE transport failure (auth, TRMM 5xx, script dispatch error …).
+      // The STEP: prefix matches the old sweep's diagnostic format so the
+      // failure class stays greppable in the UI/DB.
+      const detail = ("STEP:transport_error: " + errorDetail(err)).slice(0, 300);
+      const upd = await prisma.deviceOnboarding.update({
+        where: { id: row.id },
+        data: { attempts: { increment: 1 }, lastError: detail },
+      });
+      if (upd.attempts >= ONBOARDING_MAX_ATTEMPTS) {
         await prisma.deviceOnboarding.update({
           where: { id: row.id },
-          data: {
-            releasedAt: new Date(),
-            status: "released",
-            claimAt: null,
-            ...(device.tier === "private" ? { movedAt: new Date() } : {}),
-          },
+          data: { status: "failed" },
         });
-        acted++;
-      } else if (
-        action === "wait" &&
-        now - row.timerStartedAt.getTime() >= ONBOARDING_MOVE_MINUTES * 60_000
-      ) {
-        // 15–20 min: the move is in flight on Vantra's own clock. Non-terminal —
-        // recorded once purely so the row shows "move in flight".
-        const moved = await prisma.deviceOnboarding.updateMany({
-          where: { id: row.id, status: "pending" },
-          data: { status: "moving" },
-        });
-        if (moved.count === 1) acted++;
+        failed++;
       }
-    } catch (err) {
-      console.error(`[device-onboarding-sweep] device ${device.id} failed:`, err);
     }
   }
 
-  console.log(`[device-onboarding-sweep] checked ${checked}, acted ${acted}`);
-  // `synced`/`syncErrors` are reported so the timer's journal says out loud
-  // whether the automation half ran — a sweep that silently synced nobody is
-  // how this gap hid in the first place.
-  return NextResponse.json({ ok: true, synced, syncErrors, checked, acted });
+  return NextResponse.json({
+    ok: true,
+    synced,
+    syncErrors,
+    checked,
+    hid,
+    released,
+    failed,
+    skippedOffline,
+  });
+}
+
+/** A transport error that just means "the box is asleep/offline" — never a burn. */
+function isVantraOfflineError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  return /vantra_503|currently offline/i.test(message);
 }
 
 function errorDetail(err: unknown): string {
-  return err instanceof Error ? err.message : String(err ?? "stage_failed");
+  return (err instanceof Error ? err.message : String(err ?? "unknown")).slice(0, 200);
 }
 
-/**
- * A stage attempt failed: retry next cycle, or go terminal once
- * ONBOARDING_MAX_ATTEMPTS is reached (mirrors recordAutoMoveAttempt). A
- * failed hide/stay-on never blocks the move — that is Vantra's and fires on
- * its own clock regardless.
- */
-async function failStage(
-  row: { id: string; attempts: number },
-  detail: string,
-): Promise<void> {
-  const attempts = row.attempts + 1;
-  const terminal = attempts >= ONBOARDING_MAX_ATTEMPTS;
-  await prisma.deviceOnboarding.update({
-    where: { id: row.id },
-    data: {
-      status: terminal ? "failed" : "pending",
-      claimAt: null,
-      lastError: detail.slice(0, 500),
-    },
-  });
-  if (terminal) {
-    console.error(`[device-onboarding-sweep] ${row.id} failed after ${attempts} attempts: ${detail}`);
-  }
-}

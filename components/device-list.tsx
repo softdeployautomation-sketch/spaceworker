@@ -12,7 +12,6 @@ import {
   Search,
   ShieldCheck,
   Trash2,
-  TriangleAlert,
 } from "lucide-react";
 
 import { useConfirm } from "@/components/confirm-provider";
@@ -22,14 +21,7 @@ import { useSetAgentPageContext } from "@/lib/agent-page-context";
 import { cn } from "@/lib/cn";
 import { downloadTextFile } from "@/lib/download-text";
 import { idleChipLabel, idleReadProvenanceFrom, type IdleReadProvenance } from "@/lib/device-idle";
-import {
-  ONBOARDING_ACCESSIBLE_NOTE,
-  formatOnboardingElapsed,
-  onboardingClockText,
-  onboardingRowLabel,
-  onboardingView,
-  orderOnboardingQueue,
-} from "@/lib/device-onboarding";
+import { onboardingRowLabel } from "@/lib/device-onboarding";
 import {
   formatDownloadCount,
   formatInstallLinkCountdown,
@@ -66,6 +58,7 @@ type DeviceRow = {
     destinationOrgId: string | null;
     lastError: string | null;
     isOnline: boolean;
+    attempts: number;
   } | null;
 };
 
@@ -195,6 +188,7 @@ export function DeviceList() {
   // TASK_128 §15 — which row's Delete is in flight (per-row spinner, so a slow
   // removal never freezes the whole list).
   const [removingId, setRemovingId] = useState("");
+  const [movingId, setMovingId] = useState("");
   // TASK_224 — which history row's Delete is in flight (per-row busy state,
   // mirroring removingId above: a slow delete never freezes the other rows).
   const [deletingId, setDeletingId] = useState("");
@@ -693,6 +687,35 @@ export function DeviceList() {
     }
   }
 
+  // TASK_228 — "Move to private": the owner's explicit click replaces the
+  // retired silent auto-move. The confirm names the one-time consequence (the
+  // agent restarts on the machine to point at the private agent); on success
+  // the whole list reloads so the device reappears under its new tier.
+  async function moveDeviceRow(d: DeviceRow) {
+    const confirmed = await confirm({
+      title: `Move ${d.name} to private?`,
+      description:
+        "The agent on the machine restarts once to point at your private agent. The device leaves the public list and appears under your private agent.",
+      confirmLabel: "Move to private",
+    });
+    if (!confirmed) return;
+
+    setMovingId(d.id);
+    setError("");
+    try {
+      const res = await fetch(`/api/devices/${d.id}/move-to-private`, { method: "POST" });
+      const data: { error?: unknown } = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't move the device");
+      }
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't move the device");
+    } finally {
+      setMovingId("");
+    }
+  }
+
   // TASK_224 — delete ONE row of the "All links" history. The current link's
   // row has no button (owner decision) and the server refuses it anyway
   // (409 current_link) — this handler only ever fires for history rows.
@@ -812,81 +835,13 @@ export function DeviceList() {
     if (filter === "offline") rows = rows.filter((d) => d.status !== "online" && d.status !== "asleep");
     const q = query.trim().toLowerCase();
     if (q) rows = rows.filter((d) => `${d.name} ${d.osName ?? ""}`.toLowerCase().includes(q));
-    return rows;
-  }, [devices, filter, query]);
-
-  // TASK_128 — the onboarding QUEUE, ordered by `orderOnboardingQueue` in
-  // lib/device-onboarding.ts (pure and unit-tested, so the component cannot
-  // invent its own order):
-  //   - queue[0] = the EARLIEST candidate, from its very first sweep. The owner
-  //     asked to SEE public devices getting quarantined and moved, so step 1
-  //     shows too ("Quarantined · waiting for the first check-in") — the t=0..5
-  //     window is no longer badge-only;
-  //   - the REST render beneath it inside a bounded scroller — the owner:
-  //     "make a scroll in case the public pending devices are a lot so they
-  //     don't fill up the screen." The strip itself therefore never grows past
-  //     a few lines no matter how many devices are queued;
-  //   - no candidates -> the strip renders NOTHING (no empty shell).
-  const onboardingStrip = useMemo(() => {
-    const queue = orderOnboardingQueue(
-      devices.map((d) => ({
-        device: d,
-        onboarding: d.onboarding
-          ? {
-              status: d.onboarding.status,
-              tier: d.tier,
-              timerStartedAt: d.onboarding.timerStartedAt,
-              hideDoneAt: d.onboarding.hideDoneAt,
-              stayOnDoneAt: d.onboarding.stayOnDoneAt,
-              releasedAt: d.onboarding.releasedAt,
-              destinationOrgId: d.onboarding.destinationOrgId,
-              isOnline: d.onboarding.isOnline,
-              lastError: d.onboarding.lastError,
-            }
-          : null,
-      })),
-      nowMs,
+    // TASK_228 (owner: "make public device appear on top as public device") —
+    // a stable partition: every PUBLIC device first, private below, each group
+    // keeping its server order (Array#sort is stable in every engine we ship).
+    return [...rows].sort(
+      (a, b) => Number(a.tier === "private") - Number(b.tier === "private"),
     );
-    if (queue.length === 0) return null;
-    return { active: queue[0], rest: queue.slice(1) };
-  }, [devices, nowMs]);
-
-  // TASK_128 — devices whose window ended WITHOUT moving. Rendered as a
-  // page-level alert so a failure can never be missed ("any device doesn't
-  // fail silently"). The device itself is left Public and fully usable.
-  const onboardingFailures = useMemo(
-    () => devices.filter((d) => d.onboarding?.status === "failed"),
-    [devices],
-  );
-
-  // TASK_128 (owner decision 2026-09-27) — devices past ONBOARDING_STUCK_MINUTES
-  // that are STILL public and STILL retrying. Deliberately NOT failures: the
-  // owner asked for these to be warned about "loudly (amber, with the elapsed
-  // time and the reason) so a stuck device is still visible without being marked
-  // failed". Derived through the same `onboardingView` the strip uses, so the
-  // alert and the strip can never disagree about who is stuck or for how long.
-  const onboardingStuck = useMemo(
-    () =>
-      devices.flatMap((d) => {
-        if (!d.onboarding) return [];
-        const view = onboardingView(
-          {
-            status: d.onboarding.status,
-            tier: d.tier,
-            timerStartedAt: d.onboarding.timerStartedAt,
-            hideDoneAt: d.onboarding.hideDoneAt,
-            stayOnDoneAt: d.onboarding.stayOnDoneAt,
-            releasedAt: d.onboarding.releasedAt,
-            destinationOrgId: d.onboarding.destinationOrgId,
-            isOnline: d.onboarding.isOnline,
-            lastError: d.onboarding.lastError,
-          },
-          nowMs,
-        );
-        return view.stuck ? [{ device: d, view }] : [];
-      }),
-    [devices, nowMs],
-  );
+  }, [devices, filter, query]);
 
   // Task 106 (bit C1) — the row's ONLY status + last-seen / idle rendering.
   // Owner 2026-09-23: this used to be duplicated by a dedicated "Last seen"
@@ -1000,7 +955,7 @@ export function DeviceList() {
                   </div>
                   <span className="text-xs text-fg-muted">
                     {link.privateAllowed
-                      ? "Public link is safe to share — devices silently move to your private agent."
+                      ? "Public link is safe to share — new devices stay public until you move them to private."
                       : "Public link only — the private agent unlocks with premium."}
                   </span>
                 </div>
@@ -1048,7 +1003,7 @@ export function DeviceList() {
                       <p className="text-sm text-fg-muted">
                         1 · Generate the link &nbsp;·&nbsp; 2 · Open it on the target machine
                         &nbsp;·&nbsp; 3 · It appears here
-                        {wrapper ? "" : ", then silently moves to your private agent"}.
+                        {wrapper ? "" : ", then stay public until you move them to private"}.
                       </p>
                     )}
                     {/* TASK_121 (OOB-13) — name the artifact the way Vantra's own
@@ -1597,139 +1552,9 @@ export function DeviceList() {
 
       {error && <p className="text-sm text-red-500">{error}</p>}
 
-      {/* TASK_128 — "one process at a time. And the coming one." ONE slim strip
-          above the grid showing only the active onboarding device, plus a muted
-          line for the next in line. Every string comes from onboardingView() so
-          the UI cannot drift from the state machine; nothing renders when no
-          device is onboarding. */}
-      {onboardingStrip && (
-        <div
-          className={cn(
-            "rounded-xl border px-4 py-3",
-            // Loud, but amber rather than red: a stuck device is WAITING, not
-            // broken (owner decision 2026-09-27). Red stays reserved for a
-            // genuine repeated failure, so the colour keeps its meaning.
-            onboardingStrip.active.view.stuck
-              ? "border-amber-500/40 bg-amber-500/5"
-              : "border-border bg-bg-elevated",
-          )}
-        >
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
-            {onboardingStrip.active.view.stuck ? (
-              <TriangleAlert className="h-4 w-4 shrink-0 text-amber-500" aria-hidden />
-            ) : (
-              <ShieldCheck className="h-4 w-4 shrink-0 text-brand-500" aria-hidden />
-            )}
-            <span className="font-medium">Securing new device</span>
-            <span className="text-fg-muted">·</span>
-            <span className="font-mono">{onboardingStrip.active.device.name}</span>
-            <span className="text-fg-muted">·</span>
-            <span className="text-fg-muted">{onboardingStrip.active.view.step} of 4</span>
-            <span className="text-fg-muted">·</span>
-            <span>{onboardingStrip.active.view.title.toLowerCase()}</span>
-            {onboardingStrip.active.view.next && (
-              <>
-                <span className="text-fg-muted">·</span>
-                <span className="text-fg-muted">next: {onboardingStrip.active.view.next}</span>
-              </>
-            )}
-            <span className="text-fg-muted">·</span>
-            <span
-              className={onboardingStrip.active.view.stuck ? "text-amber-500" : "text-fg-muted"}
-            >
-              {onboardingClockText(onboardingStrip.active.view)}
-            </span>
-          </p>
-          <p className="mt-1 text-xs text-fg-muted">{onboardingStrip.active.view.detail}</p>
-          {/* The owner asked for the warning to carry "the elapsed time and the
-              reason" — the elapsed time is in the clock above, and this is the
-              reason (a real lastError, or honestly "we can't reach it"). */}
-          {onboardingStrip.active.view.stuckReason && (
-            <p className="mt-1 text-xs text-amber-500">
-              {onboardingStrip.active.view.stuckReason}
-            </p>
-          )}
-          {/* TASK_128 §15 — the COMING ones, in a bounded scroller. The owner:
-              "make a scroll in case the public pending devices are a lot so they
-              don't fill up the screen." So the strip is always a few lines tall,
-              no matter how many devices are queued behind the active one, and
-              every line uses the SAME clock string as the active device
-              (`onboardingClockText`) so no two rows can disagree. */}
-          {onboardingStrip.rest.length > 0 && (
-            <div className="mt-2 border-t border-border pt-2">
-              <p className="text-xs font-medium text-fg-muted">
-                {onboardingStrip.rest.length === 1
-                  ? "1 more in line"
-                  : `${onboardingStrip.rest.length} more in line`}
-              </p>
-              <div className="mt-1 max-h-24 space-y-1 overflow-y-auto pr-1">
-                {onboardingStrip.rest.map((item) => (
-                  <p
-                    key={item.device.id}
-                    className="flex items-center justify-between gap-3 text-xs text-fg-muted"
-                  >
-                    <span className="truncate font-mono">{item.device.name}</span>
-                    <span className="shrink-0">
-                      {item.view.title.toLowerCase()} · {onboardingClockText(item.view)}
-                    </span>
-                  </p>
-                ))}
-              </div>
-            </div>
-          )}
-          <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
-        </div>
-      )}
-
-      {/* TASK_128 — a device that never moved is NEVER silent (owner rule). The
-          device is left on its public agent and stays fully usable; this line
-          says so, names it, and keeps the red badge on its row below. */}
-      {onboardingFailures.length > 0 && (
-        <p className="rounded-xl border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm text-red-500">
-          <span className="font-medium">
-            {onboardingFailures.length === 1
-              ? `${onboardingFailures[0].name} couldn't finish setup`
-              : `${onboardingFailures.length} devices couldn't finish setup (${onboardingFailures
-                  .map((d) => d.name)
-                  .join(", ")})`}
-          </span>{" "}
-          — still on your public agent and fully usable. Open the device to try again.
-        </p>
-      )}
-
-      {/* TASK_128 (owner decision 2026-09-27) — "much longer than usual" is never
-          silent either, but it is explicitly NOT a failure: the row stays live,
-          keeps retrying every 5 minutes, and the device is left fully usable.
-          Amber, named, with the elapsed time and the reason the owner asked for.
-          With SEVERAL stuck devices we deliberately do not quote one device's
-          `stuckReason` for all of them — that would attribute the wrong cause. */}
-      {onboardingStuck.length > 0 && (
-        <p className="rounded-xl border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-sm text-amber-500">
-          {onboardingStuck.length === 1 ? (
-            <>
-              <span className="font-medium">
-                {onboardingStuck[0].device.name} is taking much longer than usual (
-                {formatOnboardingElapsed(onboardingStuck[0].view.elapsedMs)})
-              </span>{" "}
-              — {onboardingStuck[0].view.stuckReason}. Nothing is lost and the device stays
-              fully usable.
-            </>
-          ) : (
-            <>
-              <span className="font-medium">
-                {onboardingStuck.length} devices are taking much longer than usual —{" "}
-                {onboardingStuck
-                  .map((s) => `${s.device.name} ${formatOnboardingElapsed(s.view.elapsedMs)}`)
-                  .join(", ")}
-              </span>{" "}
-              — they keep retrying every 5 minutes. Nothing is lost and the devices stay fully
-              usable.
-            </>
-          )}
-        </p>
-      )}
-
-
+      {/* TASK_228 — the onboarding strip + failure/stuck banners are GONE with
+          the quarantine; the row badge above the grid is the only onboarding
+          surface now (hide clock / red "Hide failed"). */}
       {/* ScreenConnect-style toolbar: tabs + filter + refresh */}
       <div className="rounded-xl border border-border bg-bg-elevated">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
@@ -1840,18 +1665,40 @@ export function DeviceList() {
                         Public
                       </span>
                     )}
-                    {d.onboarding && onboardingRowLabel(d.onboarding, nowMs) && (
-                      <span
-                        className={cn(
-                          "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium",
-                          d.onboarding.status === "failed"
-                            ? "border-red-500/40 text-red-500"
-                            : "border-amber-500/40 text-amber-500",
-                        )}
-                      >
-                        {onboardingRowLabel(d.onboarding, nowMs)}
-                      </span>
-                    )}
+                    {/* TASK_228 — the badge is now the ONLY onboarding surface
+                         (the strip + banners went with the quarantine). The
+                         label helper converts the ISO strings internally, so
+                         this component never parses dates during render. */}
+                    {d.onboarding &&
+                      (() => {
+                        const label = onboardingRowLabel(
+                          {
+                            status: d.onboarding.status,
+                            timerStartedAt: new Date(d.onboarding.timerStartedAt),
+                            hideDoneAt: d.onboarding.hideDoneAt
+                              ? new Date(d.onboarding.hideDoneAt)
+                              : null,
+                            releasedAt: d.onboarding.releasedAt
+                              ? new Date(d.onboarding.releasedAt)
+                              : null,
+                            attempts: d.onboarding.attempts ?? 0,
+                          },
+                          nowMs,
+                        );
+                        if (!label) return null;
+                        return (
+                          <span
+                            className={cn(
+                              "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium",
+                              label.tone === "failed"
+                                ? "border-red-500/40 text-red-500"
+                                : "border-amber-500/40 text-amber-500",
+                            )}
+                          >
+                            {label.text}
+                          </span>
+                        );
+                      })()}
                   </span>
                   <span className="hidden text-sm text-fg-muted md:block">{osLabel(d)}</span>
                   <span className="flex items-center gap-2 text-sm">
@@ -1872,6 +1719,22 @@ export function DeviceList() {
                     )}
                   </span>
                   </Link>
+                  {/* TASK_228 — manual "Move to private" (owner): the ONLY path
+                      off the public tier now that the auto-move is retired.
+                      Public rows only; outside the row <Link> like Remove, at
+                      right-10 so it never overlaps the Remove button (right-2). */}
+                  {d.tier !== "private" && (
+                    <button
+                      type="button"
+                      onClick={() => void moveDeviceRow(d)}
+                      disabled={movingId === d.id}
+                      title={`Move ${d.name} to private`}
+                      aria-label={`Move ${d.name} to private`}
+                      className="absolute right-10 top-1/2 z-10 -translate-y-1/2 rounded-md border border-transparent p-1.5 text-fg-muted opacity-100 transition-all hover:border-brand-500/40 hover:text-brand-500 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/40 disabled:opacity-50 md:opacity-0 md:group-hover:opacity-100"
+                    >
+                      <ShieldCheck className="h-4 w-4" />
+                    </button>
+                  )}
                   {/* TASK_128 §15 — remove the device, on BOTH tiers (the confirm
                       dialog adds the extra Private warning). Visible on touch and
                       on desktop it fades in on row hover / keyboard focus, so it
