@@ -8,6 +8,9 @@ import { Modal } from "@/components/modal";
 // queued item's EXACT resolvedSubject/resolvedBodyHtml with its own variables is
 // safe to do right here client-side.
 import { renderMerge } from "@/lib/render-merge";
+// TASK_226 — pure stall-visibility helpers (status → plain-language copy, so
+// the mapping is unit-tested rather than inlined in JSX).
+import { stallExplanation as explainStall } from "@/lib/campaign-stall";
 
 type QueueItem = {
   id: string;
@@ -77,6 +80,25 @@ type LiveStats = {
   counts: { recipients: number; sent: number; queued: number; failed: number };
   byMailbox: Record<string, { sent: number; failed: number }>;
 };
+
+// TASK_226 — the lightweight stall-visibility payload from
+// GET /api/campaigns/[id]/stall-info: fresh queue counts (incl. the retry
+// backlog), last successful send, soonest scheduled retry, grouped failure
+// reasons, and each sending mailbox's path (host + region — the exact field
+// behind the 2026-10-18 stall). Contains NO recipient addresses (pinned by
+// tests/campaign-stall.test.ts).
+type StallInfo = {
+  counts: { total: number; queued: number; retryScheduled: number; sent: number; failed: number };
+  lastSentAt: string | null;
+  nextRetryAt: string | null;
+  failureGroups: { error: string; category: string | null; count: number; retryable: boolean }[];
+  mailboxes: { label: string; host: string; sendRegion: string | null; regionText: string }[];
+};
+
+// Statuses where the queue is (or should be) doing something on a schedule —
+// exactly when the stall-visibility poll has anything to say. done/stopped/
+// draft skip it entirely (nothing moves, nothing to explain).
+const STALL_STATUSES = new Set(["sending", "paused_deliverability", "paused_manual", "pending_test_confirm"]);
 
 // TASK_150 T4 — what GET /api/campaigns/[id]/mailboxes?remove=<id> returns: how
 // many still-queued items the removal would move, and onto which remaining
@@ -220,6 +242,11 @@ export default function CampaignDetailPage() {
   // the modal falls back to its loaded campaign.items snapshot.
   const [liveFeed, setLiveFeed] = useState<RecentSend[]>([]);
   const [liveStats, setLiveStats] = useState<LiveStats | null>(null);
+  // TASK_226 — the stall-visibility payload; null until first fetch. Kept in
+  // "raw" form (never cleared from an effect — see the poll below) and only
+  // surfaced while the campaign is in a status where anything is expected to
+  // move; done/stopped/draft simply never render it.
+  const [liveStallInfo, setLiveStallInfo] = useState<StallInfo | null>(null);
   const [testBusy, setTestBusy] = useState(false);
   const [testResult, setTestResult] = useState<{
     outcome: string;
@@ -419,6 +446,41 @@ export default function CampaignDetailPage() {
     // `reloadItems` is likewise stable ([id] only) and is what settles the
     // queue rows when sending finishes — see its note above.
   }, [id, campaign?.status, patchCampaign, reloadItems]);
+
+  // TASK_226 — the stall-visibility poll. While the campaign is in a status
+  // where the queue should be doing something on a schedule (sending / any
+  // pause / awaiting test confirm), re-pull the lightweight stall payload so
+  // the banner shows live counts, the retry backlog, and the newest failure
+  // reasons without a manual reload. Deliberately a SLOWER cadence than the
+  // 4s sending poll (15s) — this data feeds a "why is nothing moving" glance,
+  // not a live feed, and it keeps running through pauses (unlike the sending
+  // poll, which stops the moment status leaves "sending" — that's exactly the
+  // moment this one matters most). The payload is RENDER-gated by status (see
+  // the derived `stallInfo` near the JSX) rather than cleared here, so the
+  // effect body never touches setState synchronously.
+  useEffect(() => {
+    const status = campaign?.status;
+    if (!id || !status || !STALL_STATUSES.has(status)) return;
+    let cancelled = false;
+    async function pull() {
+      try {
+        const res = await fetch(`/api/campaigns/${id}/stall-info`);
+        if (!res.ok) return;
+        const data = (await res.json().catch(() => ({}))) as StallInfo;
+        // Keep the last-good payload on malformed responses rather than
+        // flashing the banner away mid-incident.
+        if (!cancelled && data && data.counts) setLiveStallInfo(data);
+      } catch {
+        // Transient network error — keep the last-good payload.
+      }
+    }
+    void pull();
+    const timer = setInterval(pull, 15000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [id, campaign?.status]);
 
   // Prepend a freshly-created DeliverabilityCheck (test-send / draft test-send)
   // so the top test-send box's "latest check" line redraws without a refetch.
@@ -1046,6 +1108,172 @@ export default function CampaignDetailPage() {
   // the owner reads change.
   const manualBoundary = campaign.status === "paused_deliverability" && !!campaign.testRecipientOverride;
 
+  // TASK_226 — the stall-visibility block: WHY nothing (or everything) is
+  // moving, in plain language, plus the operational truth behind it. Rendered
+  // twice — under the status header (always) and at the top of the "Sending
+  // activity" modal (where a user already looking for send truth lands).
+  // READ-ONLY: it explains states and renders the stall-info payload; every
+  // action it mentions (resume, confirm) lives in the existing controls.
+  const stallCopy = explainStall(campaign.status, {
+    manualBoundary,
+    testOverrideActive: !!campaign.testRecipientOverride,
+  });
+  // TASK_226 — surface the last polled payload only while the campaign is in a
+  // status where the queue is expected to move; done/stopped/draft never show
+  // stale counts (this replaces clearing the state from the poll effect, which
+  // the react-hooks/set-state-in-effect rule rightly forbids).
+  const stallInfo = STALL_STATUSES.has(campaign.status) ? liveStallInfo : null;
+  const stallVisibilitySection = (stallCopy || stallInfo) && (
+    <div className="mt-4 space-y-3">
+      {stallCopy && (
+        <div
+          className={`rounded-xl border p-4 ${
+            stallCopy.tone === "danger"
+              ? "border-red-300 bg-red-50 dark:border-red-900/60 dark:bg-red-950/20"
+              : stallCopy.tone === "warning"
+                ? "border-amber-300 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/20"
+                : stallCopy.tone === "quiet"
+                  ? "border-zinc-300 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/50"
+                  : "border-violet-200 bg-violet-50 dark:border-violet-900/50 dark:bg-violet-950/20"
+          }`}
+        >
+          <h2
+            className={`text-sm font-semibold ${
+              stallCopy.tone === "danger"
+                ? "text-red-700 dark:text-red-300"
+                : stallCopy.tone === "warning"
+                  ? "text-amber-800 dark:text-amber-300"
+                  : stallCopy.tone === "quiet"
+                    ? "text-zinc-700 dark:text-zinc-300"
+                    : "text-violet-800 dark:text-violet-300"
+            }`}
+          >
+            {stallCopy.title}
+          </h2>
+          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-300">{stallCopy.message}</p>
+          {/* TASK_226 §3.4 — the test-override hint as its own line for the
+              statuses whose main copy doesn't already fold it in (the sending
+              copy does). Makes "stalled" read as "checkpoint" wherever the
+              user actually looks. */}
+          {campaign.testRecipientOverride && campaign.status !== "sending" && (
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              Test recipient in use (<span className="font-medium">{campaign.testRecipientOverride}</span>) —
+              while it&apos;s active, sends pause every 50 recipients for your confirmation.
+            </p>
+          )}
+        </div>
+      )}
+      {stallInfo && (
+        <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+          {/* Last drain activity strip — when mail last actually moved, and
+              what the queue holds right now. The retry backlog is called out
+              separately from plain "queued" because "100 waiting to retry" is
+              the difference between a healthy backoff and a frozen campaign. */}
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+            Queue activity
+          </h3>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-zinc-600 dark:text-zinc-300">
+            <span>
+              Last sent:{" "}
+              {stallInfo.lastSentAt ? (
+                <span className="font-medium">{new Date(stallInfo.lastSentAt).toLocaleString()}</span>
+              ) : (
+                <span className="text-zinc-400 dark:text-zinc-500">nothing sent yet</span>
+              )}
+            </span>
+            <span className="text-emerald-600 dark:text-emerald-400">{stallInfo.counts.sent} sent</span>
+            <span>
+              {stallInfo.counts.queued} queued
+              {stallInfo.counts.retryScheduled > 0 && (
+                <span className="text-amber-600 dark:text-amber-400">
+                  {" "}
+                  ({stallInfo.counts.retryScheduled} awaiting retry)
+                </span>
+              )}
+            </span>
+            <span className={stallInfo.counts.failed > 0 ? "text-red-600 dark:text-red-400" : ""}>
+              {stallInfo.counts.failed} failed
+            </span>
+            <span>
+              Next retry:{" "}
+              {stallInfo.nextRetryAt ? (
+                <span className="font-medium">{new Date(stallInfo.nextRetryAt).toLocaleString()}</span>
+              ) : (
+                <span className="text-zinc-400 dark:text-zinc-500">—</span>
+              )}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            The sending queue is checked automatically about every 60 seconds (up to 50 messages per check) —
+            &quot;nothing new for a moment&quot; is normal between checks.
+          </p>
+
+          {/* Failure summary — grouped error counts with an honest retry
+              verdict per group, so "100 × Greeting never received" reads as a
+              known, retrying condition instead of a mystery. */}
+          {stallInfo.failureGroups.length > 0 && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/20">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-red-700 dark:text-red-400">
+                Recent failures
+              </h4>
+              <ul className="mt-1.5 space-y-1">
+                {stallInfo.failureGroups.map((g) => (
+                  <li key={g.error} className="text-sm text-zinc-700 dark:text-zinc-200">
+                    <span className="font-medium">{g.count} ×</span> {g.error}{" "}
+                    <span
+                      className={
+                        g.retryable
+                          ? "text-xs text-amber-700 dark:text-amber-400"
+                          : "text-xs text-red-700 dark:text-red-400"
+                      }
+                    >
+                      {g.retryable ? "— will retry automatically" : "— will not retry"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Sending path — mailbox label + SMTP host + the region the SMTP
+              connection egresses from. This is the exact field (sendRegion)
+              behind the 2026-10-18 stall: 100 failures because the US exit
+              node's egress IP never got an SMTP greeting, invisible anywhere
+              in the UI before this strip. */}
+          {stallInfo.mailboxes.length > 0 && (
+            <div className="mt-3">
+              <h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+                Sending path
+              </h4>
+              <ul className="mt-1 divide-y divide-zinc-100 dark:divide-zinc-800">
+                {stallInfo.mailboxes.map((m) => (
+                  <li
+                    key={`${m.host}:${m.label}`}
+                    className="flex flex-wrap items-center justify-between gap-2 py-1.5 text-sm"
+                  >
+                    <span className="min-w-0 truncate">
+                      <span className="font-medium">{m.label || m.host}</span>{" "}
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">({m.host})</span>
+                    </span>
+                    <span
+                      className={
+                        m.sendRegion
+                          ? "shrink-0 text-xs font-medium text-amber-700 dark:text-amber-400"
+                          : "shrink-0 text-xs text-zinc-500 dark:text-zinc-400"
+                      }
+                    >
+                      {m.regionText}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   // 2026-09-28 — the test-setup panel's shortlist, normalised once. The column
   // is a non-null String[] with a [] default, but a campaign row that predates
   // the 20261017000000 migration (or a response from an older cached client)
@@ -1637,6 +1865,11 @@ export default function CampaignDetailPage() {
           </button>
         )}
       </div>
+
+      {/* TASK_226 — stall visibility: why sending is/isn't moving + live queue
+          truth (banner + activity card defined above; hidden for statuses
+          where nothing is expected to move). */}
+      {stallVisibilitySection}
 
       {/* TASK_150 T4 — Sending mailboxes. Queue items are pinned to a mailbox at
           creation time, so removing one from a live campaign has to move its
@@ -2369,6 +2602,10 @@ export default function CampaignDetailPage() {
                 a failed send's error message renders inline) could otherwise
                 push the modal, and its close button, off-screen. */}
             <div className="max-h-[70vh] overflow-y-auto pr-1">
+            {/* TASK_226 — same stall-visibility block as under the header, so
+                a user who opened this modal hunting for "what's happening"
+                gets the status explanation + queue truth without closing it. */}
+            {stallVisibilitySection}
             <div className="flex flex-wrap gap-3">
               {kpi("Recipients", recipients, "text-zinc-900 dark:text-zinc-100")}
               {kpi("Sent", sentCount, "text-emerald-600 dark:text-emerald-400")}
