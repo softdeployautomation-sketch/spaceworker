@@ -613,31 +613,98 @@ type RevisionRow = {
   state: string;
   storagePath: string;
   previewToken: string;
+  // View fields — the TASK_225 publish tests drive the REAL toRevisionView over
+  // these fake rows, so a row must carry everything the view reads (createdAt
+  // included: toRevisionView calls .toISOString() on it).
+  fileCount: number;
+  bytes: number;
+  cfUrl: string | null;
+  rejection: string | null;
   expiresAt: Date | null;
   publishedAt: Date | null;
+  createdAt: Date;
 };
 
 let sites: SiteRow[] = [];
 let revisions: RevisionRow[] = [];
 let adminRow: { hostingEnabled: boolean };
+// TASK_225 — the fakes below are also RECORDERS: every hostingSite mutation and
+// every Cloudflare-facing call is captured so the tests can assert what the
+// code actually DID (persist-before-deploy, reuse-vs-remint), not merely that
+// it returned ok. A fake that lets a test pass for the wrong reason is worse
+// than no fake (house rule, task doc §4).
+let siteUpdates: Array<{ where: Record<string, unknown>; data: Record<string, unknown> }> = [];
+let cfSeen: Array<{ name: string; sitePersistedAtCall: boolean }> = [];
+let deploySeen: Array<{ name: string; branch: string }> = [];
+
+function matchRow(row: Record<string, unknown>, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([k, v]) => row[k] === v);
+}
 
 const fakePrisma = {
+  // resolveCapsForUser (files.ts:92) calls prisma.user.findUnique with
+  // select { tier, premiumExpiresAt } — the fake returns exactly those.
+  user: {
+    findUnique: async () => ({ tier: 9, premiumExpiresAt: null }),
+  },
   hostingSite: {
     findFirst: async ({ where }: { where: Record<string, unknown> }) =>
-      sites.find((s) =>
-        Object.entries(where).every(([k, v]) => (s as unknown as Record<string, unknown>)[k] === v)
-      ) ?? null,
+      sites.find((s) => matchRow(s as unknown as Record<string, unknown>, where)) ?? null,
+    count: async ({ where }: { where: Record<string, unknown> }) =>
+      sites.filter((s) => matchRow(s as unknown as Record<string, unknown>, where)).length,
+    create: async ({ data }: { data: Record<string, unknown> }) => {
+      const row = {
+        id: "site_" + randomUUID(),
+        credentialId: null,
+        cfProject: null,
+        liveToken: null,
+        status: "draft",
+        previewUrl: null,
+        liveUrl: null,
+        createdAt: new Date(),
+        ...data,
+      } as unknown as SiteRow;
+      sites.push(row);
+      return row;
+    },
+    update: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      siteUpdates.push({ where, data });
+      const row = sites.find((s) => matchRow(s as unknown as Record<string, unknown>, where));
+      if (!row) throw new Error(`fake hostingSite.update: no row for ${JSON.stringify(where)}`);
+      Object.assign(row as unknown as Record<string, unknown>, data);
+      return row;
+    },
   },
   hostingRevision: {
     findFirst: async ({ where, orderBy }: { where: Record<string, unknown>; orderBy?: Record<string, string> }) => {
-      let hits = revisions.filter((r) =>
-        Object.entries(where).every(([k, v]) => (r as unknown as Record<string, unknown>)[k] === v)
-      );
+      let hits = revisions.filter((r) => matchRow(r as unknown as Record<string, unknown>, where));
       if (orderBy?.publishedAt === "desc") {
         hits = hits.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
       }
       return hits[0] ?? null;
     },
+    // prunePublishedRevisions (end of every publish) reads findMany.
+    findMany: async ({ where, orderBy }: { where: Record<string, unknown>; orderBy?: Record<string, string> }) => {
+      let hits = revisions.filter((r) => matchRow(r as unknown as Record<string, unknown>, where));
+      if (orderBy?.publishedAt === "desc") {
+        hits = hits.sort((a, b) => (b.publishedAt?.getTime() ?? 0) - (a.publishedAt?.getTime() ?? 0));
+      }
+      return hits;
+    },
+    update: async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
+      const row = revisions.find((r) => matchRow(r as unknown as Record<string, unknown>, where));
+      if (!row) throw new Error(`fake hostingRevision.update: no row for ${JSON.stringify(where)}`);
+      Object.assign(row as unknown as Record<string, unknown>, data);
+      return row;
+    },
+  },
+  // acquireHeavyJob: the running-lock count → 0 (unlocked), create → a job id.
+  // deploysInLastDay: count → 0 (under the per-day quota).
+  // finishHeavyJob: update is .catch((){})-guarded in prod; the fake resolves.
+  hostingJob: {
+    count: async () => 0,
+    create: async ({ data }: { data: Record<string, unknown> }) => ({ id: "job_" + randomUUID(), ...data }),
+    update: async () => ({}),
   },
 };
 
@@ -656,6 +723,37 @@ function installRequireHook(): void {
             u.tier >= 5 && (u.premiumExpiresAt === null || u.premiumExpiresAt.getTime() > Date.now()),
         };
       }
+      // TASK_225 — the publish path (publishRevision → deployRevision) needs the
+      // platform roster and the Cloudflare client. These intercept only requires
+      // FROM /lib/hosting/ files (sites.ts): the test file's own direct
+      // `require("../lib/hosting/cloudflare")` above bypasses the hook, so the
+      // pre-existing tests still drive the REAL CF client.
+      if (request === "./platform-accounts") {
+        return {
+          healthyPlatformAccountCount: async () => 1,
+          resolvePlatformCredential: async () => ({
+            ok: true,
+            value: { accountId: "acct_test", token: "tok_test", platformAccountId: "plat_test" },
+          }),
+        };
+      }
+      if (request === "./cloudflare") {
+        return {
+          ensureProject: async (_cred: unknown, name: string) => {
+            // ORDER PROOF for the lazy heal: had the minted name already been
+            // PERSISTED to the row at the moment Cloudflare first saw it?
+            cfSeen.push({ name, sitePersistedAtCall: siteUpdates.some((u) => "cfProject" in u.data) });
+            return { ok: true, value: { subdomain: `${name}-c3t` } };
+          },
+          deployTree: async (_cred: unknown, name: string, _files: unknown, branch: string) => {
+            deploySeen.push({ name, branch });
+            return { ok: true, value: { url: `https://hash.${name}.pages.dev`, deploymentId: "dep_test" } };
+          },
+          pagesProjectUrl: (subdomain: string) => `https://${subdomain}.pages.dev`,
+          verifyCredential: async () => ({ ok: true }),
+          warmUpUrl: async () => {},
+        };
+      }
     }
     return original.call(this, request, parent, isMain);
   };
@@ -666,12 +764,15 @@ installRequireHook();
 /* eslint-disable @typescript-eslint/no-require-imports */
 const sitesMod = require("../lib/hosting/sites") as typeof import("../lib/hosting/sites");
 /* eslint-enable @typescript-eslint/no-require-imports */
-const { resolveSiteServe, slugifyProject } = sitesMod;
+const { resolveSiteServe, slugifyProject, uniqueCfProject, createSite, publishRevision } = sitesMod;
 
 beforeEach(() => {
   sites = [];
   revisions = [];
   adminRow = { hostingEnabled: true };
+  siteUpdates = [];
+  cfSeen = [];
+  deploySeen = [];
 });
 
 function seedLocalSite(overrides: Partial<SiteRow> = {}, revision: Partial<RevisionRow> = {}) {
@@ -700,8 +801,15 @@ function seedLocalSite(overrides: Partial<SiteRow> = {}, revision: Partial<Revis
     state: "previewed",
     storagePath,
     previewToken: "pv_" + siteId,
+    // View fields (TASK_225): the publish path maps the fake-updated row through
+    // the real toRevisionView, which reads these.
+    fileCount: 1,
+    bytes: 42,
+    cfUrl: null,
+    rejection: null,
     expiresAt: new Date(Date.now() + 60 * 60 * 1000),
     publishedAt: null,
+    createdAt: new Date(),
     ...revision,
   });
   return { siteId, revisionId, storagePath };
@@ -765,6 +873,127 @@ test("resolveSiteServe: the live tree resolves via the site's liveToken to the l
 test("slugifyProject: a Cloudflare project name is a lowercase slug, never empty", () => {
   assert.equal(slugifyProject("My Cool Site!"), "my-cool-site");
   assert.equal(slugifyProject("   "), "site");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_225 — Cloudflare project-name uniqueness.
+//
+// The bug: `cfProject` was the bare label slug, and Cloudflare Pages project
+// names are GLOBALLY unique. Two sites labelled the same minted the SAME
+// project name: the second site's create 400s, or — once a deploy ran — one
+// user's site was written into ANOTHER user's project (the owner's report:
+// user B overwrites user A). The fix: every cloudflare site now MINTS
+// `<head>-<7 hex>` at create (uniqueCfProject), and a legacy NULL-cfProject
+// row heals to a minted name at deploy time — persisted to the row BEFORE any
+// Cloudflare call sees it.
+//
+// These drive the REAL createSite/publishRevision through the fake prisma and
+// the intercepted CF client (the house pattern above). The fakes RECORD their
+// calls, so the assertions pin behaviour (what was persisted, what Cloudflare
+// was asked for), not just return values.
+// ---------------------------------------------------------------------------
+
+const CF_NAME_SHAPE = /^[a-z0-9][a-z0-9-]*[a-z0-9]$/;
+
+test("TASK_225: the same label mints two DISTINCT project names (user B must never overwrite user A)", () => {
+  const a = uniqueCfProject("Portfolio");
+  const b = uniqueCfProject("Portfolio");
+  assert.notEqual(
+    a,
+    b,
+    `two sites labelled "Portfolio" collided — both minted ${a}; user B's deploy would write into user A's project`
+  );
+  for (const n of [a, b]) assert.ok(n.startsWith("portfolio-"), `${n} must still derive from the label`);
+});
+
+test("TASK_225: every mint is a valid Cloudflare Pages name — charset, length, no double or trailing hyphen", () => {
+  for (const label of ["Portfolio", "My Cool Site!", "a".repeat(200), "   ", "!!!", "Ünïcode Çafé 2026", "MiXeD CASE 42"]) {
+    const n = uniqueCfProject(label);
+    assert.match(n, CF_NAME_SHAPE, `${JSON.stringify(label)} minted ${n}`);
+    assert.ok(n.length <= 48, `${n} is ${n.length} chars — must stay under the CF limit (48: under both the documented 58 and our proven 50)`);
+    assert.ok(!n.includes("--"), `${n} must not contain a double hyphen`);
+    assert.ok(!n.endsWith("-"), `${n} must not end in a hyphen`);
+  }
+});
+
+test("TASK_225: edge labels still mint valid unique names; a 200-char label is clamped, never over the limit", () => {
+  // slugifyProject collapses blank/junk labels to "site" — the mint must still
+  // be unique and shape-valid (not "site-…" collisions, not an empty head).
+  const blank = uniqueCfProject("   ");
+  const junk = uniqueCfProject("!!!");
+  assert.match(blank, CF_NAME_SHAPE);
+  assert.match(junk, CF_NAME_SHAPE);
+  assert.notEqual(blank, junk);
+  const long = uniqueCfProject("A".repeat(200));
+  assert.ok(long.length <= 48, `${long.length}-char mint must be clamped`);
+  // The head-slice can land ON a hyphen — 39 a's + "-b" slugs to a 41-char
+  // base whose 40-char slice ends exactly on the hyphen, which would mint
+  // `<head>--<suffix>`. The mint trims it.
+  const trap = uniqueCfProject("a".repeat(39) + "-b");
+  assert.ok(!trap.includes("--"), `${trap} must not mint a double hyphen`);
+  assert.match(trap, CF_NAME_SHAPE);
+});
+
+test("TASK_225: two users creating the SAME label get two different project names (platform-roster isolation)", async () => {
+  const one = await createSite({ userId: "user_a", name: "Portfolio", engine: "cloudflare", credentialId: null });
+  const two = await createSite({ userId: "user_b", name: "Portfolio", engine: "cloudflare", credentialId: null });
+  assert.ok(one.ok && two.ok, JSON.stringify([one, two]));
+  assert.equal(sites.length, 2);
+  // The minted names live on the ROWS (HostingSiteView doesn't expose cfProject).
+  const [rowA, rowB] = sites;
+  assert.ok(rowA.cfProject && rowB.cfProject, "both rows must carry a cfProject");
+  assert.notEqual(
+    rowA.cfProject,
+    rowB.cfProject,
+    `user A (${rowA.cfProject}) and user B (${rowB.cfProject}) minted the same project name`
+  );
+});
+
+test("TASK_225: a local-engine site still stores cfProject: null (the free engine is untouched)", async () => {
+  const res = await createSite({ userId: "user_1", name: "My Cool Site", engine: "local", credentialId: null });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(sites[0].engine, "local");
+  assert.equal(sites[0].cfProject, null, "the local engine has no Cloudflare project");
+  // The local SERVE paths are pinned by the five resolveSiteServe tests above — unchanged.
+});
+
+test("TASK_225: a deploy REUSES the stored cfProject exactly — never re-mints, never re-slugifies", async () => {
+  const { siteId, revisionId, storagePath } = seedLocalSite(
+    { engine: "cloudflare", cfProject: "keep-me-123", credentialId: null },
+    { state: "previewed" }
+  );
+  await fs.mkdir(storagePath, { recursive: true });
+  await fs.writeFile(path.join(storagePath, "index.html"), "<h1>hi</h1>");
+  const res = await publishRevision({ userId: "user_1", siteId, revisionId });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(cfSeen.length, 1, "exactly one ensureProject call");
+  assert.equal(cfSeen[0].name, "keep-me-123", "deploy must use the STORED project name verbatim");
+  assert.equal(sites[0].cfProject, "keep-me-123", "the stored name must not be rewritten");
+  assert.ok(
+    !siteUpdates.some((u) => "cfProject" in u.data),
+    "no cfProject update may be persisted for a row that already has one"
+  );
+  assert.equal(deploySeen[0].branch, "main", "a publish deploys branch main");
+});
+
+test("TASK_225: a legacy row with cfProject: null heals to a UNIQUE name PERSISTED before Cloudflare sees it", async () => {
+  const { siteId, revisionId, storagePath } = seedLocalSite(
+    { engine: "cloudflare", cfProject: null, credentialId: null },
+    { state: "previewed" }
+  );
+  await fs.mkdir(storagePath, { recursive: true });
+  await fs.writeFile(path.join(storagePath, "index.html"), "<h1>hi</h1>");
+  const res = await publishRevision({ userId: "user_1", siteId, revisionId });
+  assert.ok(res.ok, JSON.stringify(res));
+  assert.equal(cfSeen.length, 1);
+  const minted = cfSeen[0].name;
+  assert.match(minted, CF_NAME_SHAPE, `heal minted an invalid name: ${minted}`);
+  assert.notEqual(minted, "demo", "the heal must NOT re-derive the bare label slug (the pre-TASK_225 collision bug)");
+  assert.equal(sites[0].cfProject, minted, "the minted name must be persisted to the row");
+  assert.ok(cfSeen[0].sitePersistedAtCall, "the name must be PERSISTED before any Cloudflare call sees it (persist-before-deploy)");
+  // The live url still follows the subdomain Cloudflare GRANTED (TASK_158 W1) —
+  // with unique names, each site's url is naturally its own.
+  assert.equal(res.ok && res.value.previewUrl, `https://${minted}-c3t.pages.dev`);
 });
 
 // ---------------------------------------------------------------------------
