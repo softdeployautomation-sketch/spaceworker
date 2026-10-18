@@ -240,6 +240,7 @@ export default async function SettingsPage() {
               telegramChatEnabled: user.telegramChatEnabled,
               notifyDeviceOffline: user.notifyDeviceOffline,
               notifyDeviceOnline: user.notifyDeviceOnline,
+              notifyDeviceAdded: user.notifyDeviceAdded,
               agentWidgetEnabled: user.agentWidgetEnabled,
               digestEnabled: user.digestEnabled,
               deviceTelemetryEnabled: user.deviceTelemetryEnabled,
