@@ -237,8 +237,18 @@ func TestMeshEnvelopeRoundTrip(t *testing.T) {
 		t.Fatal("envelope accepted under the wrong key")
 	}
 	// A tampered body must fail envelope authentication (§10 MITM check).
+	// The Body is AES-GCM ciphertext under a fresh random nonce, so its first
+	// base64 char is random per run (1/64 already "B"): flipping it to "B"
+	// unconditionally would be a no-op ~1.6% of runs and make this check cry
+	// wolf on a perfectly-verified envelope (CI flake, 2026-10-18). Pick a
+	// first char guaranteed different; the first StdEncoding char is always
+	// significant bits, so the ciphertext always really changes.
 	bad := *env
-	bad.Body = "B" + bad.Body[1:]
+	head := "B"
+	if strings.HasPrefix(bad.Body, "B") {
+		head = "C"
+	}
+	bad.Body = head + bad.Body[1:]
 	if _, err := transport.DecodeMesh(&bad, key); err == nil {
 		t.Fatal("tampered envelope accepted")
 	}
