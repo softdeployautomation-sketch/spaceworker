@@ -14,6 +14,7 @@ interface NotificationPrefs {
   telegramChatEnabled: boolean;
   notifyDeviceOffline: boolean;
   notifyDeviceOnline: boolean;
+  notifyDeviceAdded: boolean;
   agentWidgetEnabled: boolean;
   digestEnabled: boolean;
   deviceTelemetryEnabled: boolean;
@@ -176,6 +177,13 @@ export function NotificationsSettings({ prefs: initial }: Props) {
         checked={prefs.notifyDeviceOnline}
         disabled={busy !== null || !prefs.deviceTelemetryEnabled}
         onToggle={(v) => void patch({ notifyDeviceOnline: v }, "Device online preference saved")}
+      />
+      <Toggle
+        label="New device added"
+        description="Notify me the first time a new device registers to this account (checked once per device)."
+        checked={prefs.notifyDeviceAdded}
+        disabled={busy !== null || !prefs.deviceTelemetryEnabled}
+        onToggle={(v) => void patch({ notifyDeviceAdded: v }, "New device preference saved")}
       />
       <Toggle
         label="Agent actions"

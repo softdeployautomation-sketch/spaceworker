@@ -32,6 +32,8 @@ const schema = z
     agentActionsEnabled: z.boolean().optional(),
     notifyDeviceOffline: z.boolean().optional(),
     notifyDeviceOnline: z.boolean().optional(),
+    // TASK_227 — first-heartbeat "new device added" notification pref.
+    notifyDeviceAdded: z.boolean().optional(),
     agentWidgetEnabled: z.boolean().optional(),
     unlink: z.boolean().optional(),
     regenerate: z.boolean().optional(),
@@ -48,6 +50,7 @@ const schema = z
       v.agentActionsEnabled !== undefined ||
       v.notifyDeviceOffline !== undefined ||
       v.notifyDeviceOnline !== undefined ||
+      v.notifyDeviceAdded !== undefined ||
       v.agentWidgetEnabled !== undefined ||
       v.unlink === true ||
       v.regenerate === true,
@@ -93,6 +96,9 @@ export async function PATCH(request: Request) {
   }
   if (parsed.notifyDeviceOffline !== undefined) data.notifyDeviceOffline = parsed.notifyDeviceOffline;
   if (parsed.notifyDeviceOnline !== undefined) data.notifyDeviceOnline = parsed.notifyDeviceOnline;
+  // TASK_227 — only ever silences the one-time first-registration ping; the
+  // master deviceTelemetryEnabled switch is a separate field handled above.
+  if (parsed.notifyDeviceAdded !== undefined) data.notifyDeviceAdded = parsed.notifyDeviceAdded;
   if (parsed.agentWidgetEnabled !== undefined) data.agentWidgetEnabled = parsed.agentWidgetEnabled;
 
   if (parsed.unlink === true) {
@@ -128,6 +134,7 @@ export async function PATCH(request: Request) {
       agentActionsEnabled: true,
       notifyDeviceOffline: true,
       notifyDeviceOnline: true,
+      notifyDeviceAdded: true,
       agentWidgetEnabled: true,
       telegramChatId: true,
       telegramLinkToken: true,
@@ -160,6 +167,7 @@ export async function PATCH(request: Request) {
       agentActionsEnabled: updated.agentActionsEnabled,
       notifyDeviceOffline: updated.notifyDeviceOffline,
       notifyDeviceOnline: updated.notifyDeviceOnline,
+      notifyDeviceAdded: updated.notifyDeviceAdded,
       agentWidgetEnabled: updated.agentWidgetEnabled,
       linked,
       connectUrl,

@@ -3,6 +3,7 @@ import "server-only";
 import { Prisma } from "@prisma/client";
 
 import { db } from "./db";
+import { notifyUser } from "./notify";
 
 // JSON columns accept InputJsonValue; null must be Prisma.DbNull.
 function toJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
@@ -121,7 +122,7 @@ export interface HeartbeatInput {
 export async function recordHeartbeat(userId: string, input: HeartbeatInput): Promise<{ deviceId: string; created: boolean }> {
   const owner = await db.user.findUnique({
     where: { id: userId },
-    select: { id: true, deviceTelemetryEnabled: true },
+    select: { id: true, deviceTelemetryEnabled: true, notifyDeviceAdded: true },
   });
   if (!owner) throw new Error("owner_not_found");
   if (!owner.deviceTelemetryEnabled) throw new Error("telemetry_disabled");
@@ -165,6 +166,25 @@ export async function recordHeartbeat(userId: string, input: HeartbeatInput): Pr
       telemetry: input.telemetry !== undefined ? toJson(input.telemetry) : undefined,
     },
   });
+  // TASK_227 — first sight of this Vantra agent id = a NEW device registered to
+  // the account. Mirrors the device-status sweep's notifyUser call shape
+  // (try/catch, best-effort): the device + heartbeat rows are already written,
+  // so a channel hiccup must never fail the heartbeat itself. Master switch
+  // already threw above — this is the finer-grained per-user pref only.
+  if (!existing && owner.notifyDeviceAdded) {
+    try {
+      const os = [device.osName, device.osVersion].filter(Boolean).join(" ");
+      await notifyUser(userId, {
+        eventType: "device_added",
+        subject: `New device added: ${device.name}`,
+        emailHtml: `<p><strong>${device.name}</strong> is now registered to your account${os ? ` (${os})` : ""}.</p>`,
+        telegramText: `🆕 New device added: ${device.name}.`,
+        agentText: `🆕 New device added: ${device.name}.`,
+      });
+    } catch (err) {
+      console.error(`[devices] device_added notify failed for device ${device.id}:`, err);
+    }
+  }
   return { deviceId: device.id, created: !existing };
 }
 
