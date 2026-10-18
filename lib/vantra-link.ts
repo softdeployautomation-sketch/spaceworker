@@ -920,6 +920,58 @@ export async function mintPublicVbsLink(
   return { link: publicUrl, fileName, expiresAt };
 }
 
+/**
+ * TASK_224 — remove ONE of a user's public mint-history rows.
+ *
+ * Owner rule (2026-10-19): the CURRENT link is PROTECTED. The row whose
+ * `tokenHash` equals the live `VantraLink.installTokenHash` pointer cannot be
+ * deleted — an expired current link stays until a new mint replaces it. The
+ * UI hides the button on that row, but the gate lives HERE (server-side), so
+ * a hand-crafted DELETE can never take the panel's current link out from
+ * under it.
+ *
+ * Everything else — older history, expired or still live — is removable.
+ * Deletion is LOCAL-ONLY (no `vantraFetch`, no pointer change, no `VantraLink`
+ * write): the token stops resolving through BOTH resolver paths because the
+ * row each one looks up is gone, and the legacy pointer path can only ever
+ * match the CURRENT token — which the 409 above guarantees was never a
+ * deleted row. There is deliberately no `expiresAt` branch anywhere: an
+ * expired row deletes exactly like a live one.
+ *
+ * Audit: `vantra_install_link_deleted` with `detail: { orgId }` only — the
+ * wrapper URL IS the raw token (`/link/vantra/<token>`), so it never enters
+ * the audit row (same rule as the mint).
+ */
+export async function deleteInstallLink(
+  userId: string,
+  id: string,
+): Promise<{ ok: true; id: string; link: VantraLinkView | null }> {
+  // Scoped to the caller: somebody else's row reads as "not found", never
+  // "forbidden" — no existence oracle.
+  const target = await db.vantraInstallLink.findFirst({ where: { id, userId } });
+  if (!target) throw new Error("not_found");
+
+  const owner = await db.vantraLink.findUnique({
+    where: { userId },
+    select: { installTokenHash: true, orgId: true },
+  });
+  // The current-link protection (owner rule): same token ⇒ same link.
+  if (owner?.installTokenHash && owner.installTokenHash === target.tokenHash) {
+    throw new Error("current_link");
+  }
+
+  await db.vantraInstallLink.delete({ where: { id: target.id } });
+  await recordAgentActionAudit({
+    userId,
+    action: "vantra_install_link_deleted",
+    status: "executed",
+    detail: { orgId: owner?.orgId ?? null },
+  });
+  // The refreshed view (same shape the POST returns) so the client can
+  // replace its state in one round-trip if it prefers that to a local filter.
+  return { ok: true, id: target.id, link: await getVantraLinkView(userId) };
+}
+
 export interface VbsLinkArtifact {
   fileName: string;
   content: string;

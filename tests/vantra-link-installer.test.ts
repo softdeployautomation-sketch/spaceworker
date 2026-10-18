@@ -249,6 +249,30 @@ const fakeDb = {
       const ordered = [...mintRows].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
       return ordered.map((m) => project(m as unknown as Record<string, unknown>, select));
     },
+    // TASK_224 — deleteInstallLink's own lookups: a caller-scoped findFirst
+    // (id + userId — the route's ownership gate) and a REAL delete. Both must
+    // actually work: a stub that silently misses makes the route 404/500, and
+    // a test "passing" because it bailed early is green for the wrong reason
+    // (HOW_WE_MOVE_FAST L1272 lesson).
+    findFirst: async ({ where, select }: DbArgs) => {
+      const w = (where ?? {}) as { id?: unknown; userId?: unknown };
+      const target = mintRows.find(
+        (m) =>
+          (w.id === undefined || m.id === w.id) &&
+          (w.userId === undefined || m.userId === w.userId),
+      );
+      if (!target) return null;
+      return project(target as unknown as Record<string, unknown>, select);
+    },
+    delete: async ({ where }: DbArgs) => {
+      const id = (where as Record<string, unknown> | undefined)?.id;
+      const idx = mintRows.findIndex((m) => m.id === id);
+      // P2025-parity: deleting a missing record must be LOUD, never a silent
+      // no-op that reads as success.
+      if (idx === -1) throw new Error("record_not_found");
+      const [removed] = mintRows.splice(idx, 1);
+      return { ...removed };
+    },
     create: async ({ data }: DbArgs) => {
       if (mintCreateError) throw mintCreateError;
       const patch = { ...(data as Record<string, unknown>) };
@@ -426,6 +450,18 @@ function installRequireHook(): void {
         };
       }
     }
+    // TASK_224 — the DELETE route under test with the REAL deleteInstallLink
+    // (ownership 404 + current-link 409 + audit all live in the lib; the route
+    // is only session + status mapping).
+    if (from.endsWith("/app/api/assistant/vantra/install-link/[id]/route.ts")) {
+      if (request === "next/server") {
+        return { NextResponse: FakeNextResponse };
+      }
+      if (request === "@/lib/session") return { getSession: async () => sessionValue };
+      if (request === "@/lib/vantra-link") {
+        return { deleteInstallLink: realDeleteInstallLink };
+      }
+    }
     // TASK_179 — the wrapper resolver (GET) under test with the REAL
     // resolvers from the module under test: the attachment-bytes contract,
     // the filename disposition, and zip/exe staying a byte-identical 302.
@@ -496,6 +532,14 @@ const {
   mintPublicVbsLink: realMintPublicVbsLink,
   resolveVbsInstallToken,
   MAX_LINK_PDF_BYTES: realMaxLinkPdfBytes,
+  // TASK_224 — the delete path, same principle: the route stub below hands it
+  // over as the REAL implementation (fake db + audit recorder already in
+  // effect), so every 404/409/audit assertion below is about the lib's OWN
+  // ownership rules, not a copy.
+  deleteInstallLink: realDeleteInstallLink,
+  // The list builder — what the panel renders — so the delete tests can assert
+  // the exact remaining rows after one is gone.
+  listInstallLinks,
 } = require("../lib/vantra-link") as typeof import("../lib/vantra-link");
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -1859,6 +1903,129 @@ test("step 22d: a purchased devices grant (reason 'grant') still reaches the pri
   );
   assert.equal(urls.filter((u) => u.includes("/install-link")).length, 1, "minted against it");
   assert.equal(row.privateOrgId, "org-fresh", "the companion lands on the row");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_224 — DELETE /api/assistant/vantra/install-link/<id>: history rows only.
+//
+// Owner rule (2026-10-19): the CURRENT link's row is PROTECTED — the UI hides
+// its button and the lib 409s the call. Everything older (expired or still
+// live) is removable; a deleted token must resolve NOWHERE afterwards,
+// through either resolver path (no zombie via the legacy pointer).
+// ---------------------------------------------------------------------------
+
+/* eslint-disable @typescript-eslint/no-require-imports */
+const deleteRouteModule = require("../app/api/assistant/vantra/install-link/[id]/route") as {
+  DELETE: (
+    req: Request,
+    ctx: { params: Promise<{ id: string }> },
+  ) => Promise<{ status: number; body: unknown }>;
+};
+/* eslint-enable @typescript-eslint/no-require-imports */
+
+function del(id: string): Promise<{ status: number; body: unknown }> {
+  return deleteRouteModule.DELETE(
+    new Request(`https://spaceworker.test/api/assistant/vantra/install-link/${id}`, {
+      method: "DELETE",
+    }),
+    { params: Promise.resolve({ id }) },
+  );
+}
+
+test("TASK_224: deleting a history row removes it, and only it", async () => {
+  await mintInstallLink(USER_ID, "public");
+  await mintInstallLink(USER_ID, "public", {});
+  assert.equal(mintRows.length, 2);
+  // mintRows[0] is mint #1 — the OLDER row: the pointer moved to mint #2 on
+  // the second mint, so row 1 of the list (newest first) is the current one
+  // and this is the removable second entry.
+  const older = mintRows[0];
+  const res = await del(older.id);
+  assert.equal(res.status, 200);
+  assert.equal(mintRows.length, 1, "the fake delegate must really delete — never a bail-early green");
+  const list = await listInstallLinks(USER_ID);
+  assert.equal(list.length, 1, "the panel's list drops to one row");
+  assert.equal(list[0].installUrl, mintRows[0].publicUrl, "and the survivor is the current row");
+});
+
+test("TASK_224: the CURRENT link's row is protected — 409 current_link, row and resolution intact", async () => {
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  const res = await del(mintRows[0].id);
+  assert.equal(res.status, 409);
+  assert.equal((res.body as { error?: string }).error, "current_link");
+  assert.equal(mintRows.length, 1, "the row must survive");
+  assert.equal(await resolveInstallToken(token), RAW_URL, "the current link STILL resolves (owner rule)");
+});
+
+test("TASK_224: another user's row reads as 404 — no existence oracle, rows intact", async () => {
+  await mintInstallLink(USER_ID, "public");
+  await mintInstallLink(USER_ID, "public", {});
+  const victim = mintRows[0];
+  sessionValue = { userId: "user-other" };
+  const res = await del(victim.id);
+  assert.equal(res.status, 404, "never 403 — that would confirm the row exists");
+  assert.equal(mintRows.length, 2, "the owner's rows are untouched");
+});
+
+test("TASK_224: no session ⇒ 401 and nothing is deleted", async () => {
+  await mintInstallLink(USER_ID, "public");
+  sessionValue = null;
+  const res = await del(mintRows[0].id);
+  assert.equal(res.status, 401);
+  assert.equal(mintRows.length, 1);
+});
+
+test("TASK_224: a deleted history token resolves NOWHERE — both resolver paths 404 (no zombie)", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await mintInstallLink(USER_ID, "public"); // current pointer (zip)
+  const vbs = await realMintPublicVbsLink(USER_ID, "carrier.vbs");
+  const token = vbs.link.split("/link/vantra/").at(-1) ?? "";
+  assert.match(token, /^[a-f0-9]{48}$/);
+  // Precondition: while the row exists, the vbs path serves it — so the nulls
+  // below are the DELETE's doing, never a stub that never worked.
+  assert.ok(await resolveVbsInstallToken(token), "precondition: the live vbs row resolves");
+  const vbsRow = mintRows.find((m) => m.installerKind === "vbs");
+  assert.ok(vbsRow, "the vbs mint wrote its history row");
+  const res = await del(vbsRow.id);
+  assert.equal(res.status, 200);
+  assert.equal(await resolveVbsInstallToken(token), null, "vbs path: the row is gone");
+  // The zip/exe path looks the token up in the history table FIRST (gone), and
+  // the legacy pointer can only ever carry the CURRENT token (zip #1's hash) —
+  // so a deleted token can never match it.
+  assert.equal(await resolveInstallToken(token), null, "zip path: deleted rows never resurrect via the pointer");
+});
+
+test("TASK_224: an expired history row deletes like a live one — and an expired CURRENT row is still protected", async () => {
+  await mintInstallLink(USER_ID, "public");
+  await mintInstallLink(USER_ID, "public", {});
+  mintRows[0].expiresAt = new Date(Date.now() - 1000); // expired + non-current
+  const res = await del(mintRows[0].id);
+  assert.equal(res.status, 200, "no expiresAt branch anywhere in the handler");
+  assert.equal(mintRows.length, 1);
+  // The mirror case: expiry must NOT open a back door to the current row —
+  // an expired current link stays until a new mint replaces it.
+  mintRows[0].expiresAt = new Date(Date.now() - 1000);
+  const protectedRes = await del(mintRows[0].id);
+  assert.equal(protectedRes.status, 409, "expired CURRENT ⇒ still protected");
+  assert.equal(mintRows.length, 1);
+});
+
+test("TASK_224: the delete audit carries the action and NEVER the URL or token", async () => {
+  await mintInstallLink(USER_ID, "public");
+  await mintInstallLink(USER_ID, "public", {});
+  const victim = mintRows[0];
+  const token = victim.publicUrl.split("/link/vantra/").at(-1) ?? "";
+  const before = audits.length;
+  const res = await del(victim.id);
+  assert.equal(res.status, 200);
+  const created = audits.slice(before).filter((a) => a.action === "vantra_install_link_deleted");
+  assert.equal(created.length, 1, "exactly one delete audit row");
+  assert.equal(created[0].status, "executed");
+  assert.deepEqual(created[0].detail, { orgId: ORG_ID }, "same detail shape as the mint");
+  const dump = JSON.stringify(created[0]);
+  assert.doesNotMatch(dump, /link\/vantra\//, "the wrapper URL IS the token — it must never reach the audit");
+  assert.ok(!dump.includes(token), "nor the raw token, in any field");
 });
 
 

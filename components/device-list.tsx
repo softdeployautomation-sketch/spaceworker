@@ -195,6 +195,9 @@ export function DeviceList() {
   // TASK_128 §15 — which row's Delete is in flight (per-row spinner, so a slow
   // removal never freezes the whole list).
   const [removingId, setRemovingId] = useState("");
+  // TASK_224 — which history row's Delete is in flight (per-row busy state,
+  // mirroring removingId above: a slow delete never freezes the other rows).
+  const [deletingId, setDeletingId] = useState("");
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
@@ -687,6 +690,49 @@ export function DeviceList() {
       setError(e instanceof Error ? e.message : "Couldn't remove the device");
     } finally {
       setRemovingId("");
+    }
+  }
+
+  // TASK_224 — delete ONE row of the "All links" history. The current link's
+  // row has no button (owner decision) and the server refuses it anyway
+  // (409 current_link) — this handler only ever fires for history rows.
+  // Expiry is deliberately NOT a branch: an expired row deletes exactly like
+  // a live one; the difference shows only in the confirm copy (nothing
+  // breaks when the link is already dead).
+  async function deleteInstallLinkRow(item: InstallLinkHistoryItem) {
+    const expiresMs = new Date(item.installTokenExpiresAt).getTime();
+    const expired = !Number.isFinite(expiresMs) || expiresMs <= nowMs;
+    const confirmed = await confirm({
+      title: "Delete this link?",
+      description: expired
+        ? "This link has already expired — deleting it only removes it from your list. Nothing stops working."
+        : "Anyone using this link will no longer be able to download the installer. This can't be undone.",
+      confirmLabel: "Delete link",
+      confirmVariant: "danger",
+    });
+    if (!confirmed) return;
+
+    setDeletingId(item.id);
+    setError("");
+    try {
+      const res = await fetch(`/api/assistant/vantra/install-link/${item.id}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't delete the link");
+      }
+      // Drop the row immediately (same instant-removal pattern as
+      // removeDeviceRow above); the next link load agrees. 409 current_link
+      // can't reach here from the UI (no button on that row) — and if it
+      // ever did, the throw above keeps the row on screen.
+      setLink((prev) =>
+        prev ? { ...prev, installLinks: prev.installLinks.filter((x) => x.id !== item.id) } : prev,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't delete the link");
+    } finally {
+      setDeletingId("");
     }
   }
 
@@ -1277,6 +1323,21 @@ export function DeviceList() {
                                 >
                                   {copied === `install-link-${item.id}` ? "Copied ✓" : "Copy"}
                                 </button>
+                                {/* TASK_224 — history rows are removable; the
+                                    CURRENT link's row is not (button hidden
+                                    entirely, not disabled — owner decision,
+                                    and the server 409s anyway, so the hide is
+                                    not the gate). Per-row busy: only the
+                                    clicked row says "Deleting…". */}
+                                {item.installUrl !== link.installUrl && (
+                                  <button
+                                    onClick={() => deleteInstallLinkRow(item)}
+                                    disabled={deletingId === item.id}
+                                    className="rounded-md border border-border px-2 py-1 text-xs font-medium text-fg transition-colors hover:border-red-500/40 hover:text-red-600 disabled:opacity-50"
+                                  >
+                                    {deletingId === item.id ? "Deleting…" : "Delete"}
+                                  </button>
+                                )}
                               </li>
                             );
                           })}
