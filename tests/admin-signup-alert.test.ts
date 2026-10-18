@@ -32,7 +32,28 @@ const fakeNextResponse = {
   }),
 };
 
-const state = { adminEmail: "boss@example.com", emailThrows: false };
+const state: {
+  adminEmail: string;
+  emailThrows: boolean;
+  /** The sw_ref cookie the request carries (undefined = no access token at all). */
+  refCookie?: string;
+  /** What validateReferral(refCookie) resolves to — a universal referral link. */
+  referralLink: { id: string; code: string; ownerEmail: string } | null;
+  /** What getInviteByCode(refCookie) resolves to — a personalized Model C invite. */
+  invite: {
+    id: string;
+    inviteeEmail: string;
+    isActive: boolean;
+    redeemedAt: string | null;
+    referredById: string | null;
+  } | null;
+} = {
+  adminEmail: "boss@example.com",
+  emailThrows: false,
+  refCookie: "REF12345",
+  referralLink: null,
+  invite: null,
+};
 const calls = {
   emails: [] as Array<Record<string, unknown>>,
   telegramAlerts: [] as string[],
@@ -84,13 +105,21 @@ function freshRoute() {
     },
     "@/lib/verify-code": { issueVerificationCode: async () => ({ code: "123456" }) },
     // Hidden-login / invite-only additions to the signup route — fake them so the
-    // REAL @/lib/referral (which does `import "server-only"`) is never loaded here,
-    // and so the no-referral happy path is explicit (no sw_ref cookie). Only the
-    // import resolution matters for these tests: with no cookie the route
-    // short-circuits before calling any of them.
-    "next/headers": { cookies: async () => ({ get: () => undefined }) },
+    // REAL @/lib/referral (which does `import "server-only"`) is never loaded here.
+    // F8: the route resolves the sw_ref cookie to EITHER a valid universal referral
+    // link OR a valid personalized invite, and refuses with 403 when it resolves to
+    // neither. The cookies() + referral fakes below read `state`, so each test can
+    // present a valid link, a valid invite, an unusable code, or no code at all.
+    "next/headers": {
+      cookies: async () => ({
+        get: (name: string) =>
+          name === "sw_ref" && state.refCookie
+            ? { name: "sw_ref", value: state.refCookie }
+            : undefined,
+      }),
+    },
     "@/lib/referral": {
-      validateReferral: async () => null,
+      validateReferral: async () => state.referralLink,
       attributeReferral: async () => undefined,
       getUserReferralLink: async () => ({
         id: "link_1",
@@ -99,7 +128,7 @@ function freshRoute() {
         clicks: 0,
         conversions: 0,
       }),
-      getInviteByCode: async () => null,
+      getInviteByCode: async () => state.invite,
       markInviteRedeemed: async () => undefined,
     },
   };
@@ -134,6 +163,12 @@ beforeEach(() => {
   calls.emails.length = 0;
   calls.telegramAlerts.length = 0;
   calls.created.length = 0;
+  // F8 access token: default to a resolvable universal referral link on sw_ref,
+  // so every pre-existing happy-path test still reaches the 201 branch. The gate
+  // tests below override these to present no code / an invite instead.
+  state.refCookie = "REF12345";
+  state.referralLink = { id: "link_1", code: "REF12345", ownerEmail: "owner@x.dev" };
+  state.invite = null;
 });
 
 test("TASK_202 B: a valid signup emails the ADMIN (env.adminEmail) with the signup eventType", async () => {
@@ -174,4 +209,74 @@ test("TASK_202 B: Resend failing never fails the signup — account created, 201
   const res = await route.POST(signupReq());
   assert.equal(res.status, 201, "an alert channel must never break the flow it reports on");
   assert.equal(calls.created.length, 1, "the account exists");
+});
+
+// ---------------------------------------------------------------------------
+// F8 (TASK_221) — the invite-only gate, enforced at the API like the pages
+// ---------------------------------------------------------------------------
+
+test("F8: a signup with NO sw_ref code and NO invite is refused with 403 — the API matches the invite-only /signup gate", async () => {
+  state.refCookie = undefined; // no ?ref= cookie, no invite token
+  const route = freshRoute();
+  const res = await route.POST(signupReq());
+  assert.equal(res.status, 403, "a no-ref signup must not mint an account");
+  assert.equal(calls.created.length, 0, "no account is created");
+  assert.equal(calls.emails.length, 0, "no email is sent on a refused signup");
+  assert.equal(calls.telegramAlerts.length, 0, "no admin alert on a refused signup");
+  const body = res.body as { error?: string };
+  assert.ok(typeof body.error === "string" && body.error.length > 0, "a human-readable reason is returned");
+});
+
+test("F8: a valid universal referral link (sw_ref → ReferralLink) still signs up — 201", async () => {
+  // beforeEach already models a resolvable universal link on the cookie.
+  assert.ok(state.refCookie && state.referralLink, "a universal link is the default access token");
+  const route = freshRoute();
+  const res = await route.POST(signupReq());
+  assert.equal(res.status, 201, "a universal referral link grants access");
+  assert.equal(calls.created.length, 1, "the account exists");
+});
+
+test("F8 / Model C: a valid personalized invite (matching email) signs up — 201", async () => {
+  state.referralLink = null; // this code resolves to an invite, not a universal link
+  state.invite = {
+    id: "inv_1",
+    inviteeEmail: "newuser@x.dev", // matches the signup email
+    isActive: true,
+    redeemedAt: null,
+    referredById: null,
+  };
+  const route = freshRoute();
+  const res = await route.POST(signupReq());
+  assert.equal(res.status, 201, "the invited email may redeem its invite");
+  assert.equal(calls.created.length, 1, "the account exists");
+});
+
+test("F8 / Model C: an invite for a DIFFERENT email is refused — 403 (email-match gate intact)", async () => {
+  state.referralLink = null;
+  state.invite = {
+    id: "inv_2",
+    inviteeEmail: "someone-else@x.dev",
+    isActive: true,
+    redeemedAt: null,
+    referredById: null,
+  };
+  const route = freshRoute();
+  const res = await route.POST(signupReq()); // signs up as newuser@x.dev
+  assert.equal(res.status, 403, "only the exact invited email may redeem");
+  assert.equal(calls.created.length, 0, "no account is created");
+});
+
+test("F8 / Model C: an already-used (inactive/redeemed) invite is refused — 403", async () => {
+  state.referralLink = null;
+  state.invite = {
+    id: "inv_3",
+    inviteeEmail: "newuser@x.dev",
+    isActive: false, // redeemed / revoked
+    redeemedAt: "2026-10-17T00:00:00.000Z",
+    referredById: null,
+  };
+  const route = freshRoute();
+  const res = await route.POST(signupReq());
+  assert.equal(res.status, 403, "a consumed invite cannot create another account");
+  assert.equal(calls.created.length, 0, "no account is created");
 });

@@ -635,6 +635,68 @@ test("TASK_168 Bug B: raising the dial above the old 24 actually summarises more
   assert.equal(frames.filter((f) => f.summaryError !== null).length, 0);
 });
 
+test("B3: budget exhaustion RE-QUEUES frames — daily_call_budget rows stay pending and the next day re-picks the OLDEST first (never dropping the day)", async () => {
+  // The owner's fear (TASK_221 §B3): a frame marked daily_call_budget could
+  // vanish from the pending queue forever if listPendingSummaryFrames only
+  // matched `summaryError IS NULL`. This pins the opposite, in three steps:
+  //   1. day 1 exhausts the budget and defers the tail of the backlog;
+  //   2. the deferred rows STAY in the pending queue (re-picked, not dropped);
+  //   3. day 2 (budget reset) re-picks the OLDER deferred frames first (FIFO)
+  //      and summarises them, clearing the stale error.
+  addUser();
+  addDevice("d1");
+
+  // --- Day 1: a backlog that overruns the 24-frame budget. ---
+  clock = new Date(new Date(TODAY_NOON_UTC).getTime() - 24 * 60 * 60 * 1000);
+  for (let i = 0; i < 30; i++) await makeFrame("d1");
+  const day1 = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+  assert.equal(day1.summarised, 24, "the budget summarises exactly 24 on day 1");
+  const deferredIds = frames
+    .filter((f) => f.summaryError === "daily_call_budget")
+    .map((f) => f.id);
+  assert.equal(deferredIds.length, 6, "the budget defers the tail of the backlog");
+
+  // --- 1+2: budget exhaustion does NOT drop them — the queue still returns them.
+  //     This is the exact regression B3 guards: a queue that only matched
+  //     `summaryError IS NULL` would strand these rows forever. ---
+  const queuedIds = new Set(
+    (await listPendingSummaryFrames(clock, 14)).map((f) => f.id),
+  );
+  for (const id of deferredIds) {
+    assert.ok(queuedIds.has(id), "a daily_call_budget frame stays in the pending queue");
+  }
+
+  // --- Roll the day: age day 1's summarisedAt stamps so today's count resets. ---
+  const yesterday = new Date(new Date(TODAY_NOON_UTC).getTime() - 24 * 60 * 60 * 1000);
+  for (const f of frames) if (f.summarisedAt !== null) f.summarisedAt = yesterday;
+  clock = new Date(TODAY_NOON_UTC);
+
+  // Day 2 arrives AFTER the backlog (newer createdAt), with a fresh budget.
+  for (let i = 0; i < 3; i++) await makeFrame("d1");
+
+  // --- 3: the OLDER deferred frames are re-picked before the newer ones (FIFO). ---
+  const firstSix = (await listPendingSummaryFrames(clock, 14))
+    .slice(0, 6)
+    .map((f) => f.id);
+  for (const id of deferredIds) {
+    assert.ok(firstSix.includes(id), "older budget-deferred frames are re-picked first");
+  }
+
+  const day2 = await runSummaryPass(okSummarise(62), { now: clock }, stubOcr());
+  assert.equal(
+    day2.summarised,
+    9,
+    "6 older deferred + 3 newer frames all summarise within the reset budget",
+  );
+  for (const id of deferredIds) {
+    const row = frames.find((f) => f.id === id);
+    assert.ok(row, "the frame still exists — never deleted to make counts look right");
+    assert.equal(row.summary !== null, true, "an older budget-deferred frame is summarised, not dropped");
+    assert.equal(row.summaryError, null, "the stale daily_call_budget error clears on success");
+  }
+  assert.equal(frames.length, 33, "30 day-1 + 3 day-2 frames, none deleted or duplicated");
+});
+
 // ---------------------------------------------------------------------------
 // The cap-exhaustion path and failure independence
 // ---------------------------------------------------------------------------

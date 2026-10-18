@@ -97,6 +97,20 @@ export async function POST(request: Request) {
     }
   }
 
+  // F8 (TASK_221) — the invite-only gate at /signup + /login must be enforced by
+  // the API too. A signup arrives with an access token on the sw_ref cookie: a
+  // valid universal referral link (referredLink) OR a live personalized invite
+  // (invite, which has already passed the Model C 403 checks above). When the
+  // cookie is absent — or present but resolves to neither — refuse with 403 so
+  // hitting this route directly cannot mint an account the pages would bounce.
+  // A valid invite that failed the checks above already returned its own 403.
+  if (!referredLink && !invite) {
+    return NextResponse.json(
+      { error: "An invite or referral link is required to create an account." },
+      { status: 403 },
+    );
+  }
+
   const user = await db.user.create({
     // Tier 1 trial — new signups get the trial tier immediately (email
     // verification is unchanged as the gate to reach the dashboard; it only
