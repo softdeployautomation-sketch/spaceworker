@@ -994,6 +994,33 @@ export async function getDevicePowerView(opts: {
   return { policy, wake };
 }
 
+// ---------------------------------------------------------------------------
+// TASK_228 — manual "Move to private" (owner redesign 2026-10-19).
+//
+// The silent auto-move is retired for sw- orgs; this is the one human-driven
+// path: the per-device button in the device list calls
+// POST /api/devices/[deviceId]/move-to-private, which lands here, which lands
+// on Vantra's internal /move route (tenant-guarded, resolves the user's
+// `sw-<uid>-p` companion and runs the same two-step the poller used to run).
+// Ownership flows through the same requireOwnedDevice gate as every tool —
+// never from request params.
+// ---------------------------------------------------------------------------
+
+export type MoveToPrivateResult =
+  | { ok: true; moved: true }
+  | { ok: false; reason: string };
+
+export async function moveAgentToPrivateOrg(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<MoveToPrivateResult> {
+  const device = await requireOwnedDevice(opts);
+  return vantraFetch<MoveToPrivateResult>(
+    `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/move`,
+    { method: "POST" },
+  );
+}
+
 export async function runCommandNow(opts: {
   userId: string;
   deviceId: string;

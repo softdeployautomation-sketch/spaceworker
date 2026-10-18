@@ -3,33 +3,23 @@ import assert from "node:assert/strict";
 import Module from "node:module";
 
 import {
-  ONBOARDING_ACCESSIBLE_NOTE,
-  ONBOARDING_GRACE_MINUTES,
   ONBOARDING_MAX_ATTEMPTS,
-  ONBOARDING_STUCK_MINUTES,
-  ONBOARDING_WINDOW_MINUTES,
-  formatOnboardingCountdown,
-  formatOnboardingElapsed,
-  formatOnboardingEta,
-  isOnboardingTerminal,
   nextOnboardingAction,
-  onboardingClockText,
   onboardingRowLabel,
-  onboardingView,
-  orderOnboardingQueue,
 } from "../lib/device-onboarding";
-import { DEFAULT_AGENT_LABEL, buildHideAgentScript } from "../lib/agent-visibility";
 
-// TASK_128 — device onboarding quarantine.
+// TASK_228 — hide-only onboarding (quarantine retired 2026-10-19).
 //
-// WHY THIS FILE EXISTS: the acceptance is a 20-minute window whose stages fire
-// on a 5-minute sweep against a real device (hide@5, stay-on@10, move@15 on
-// Vantra's clock, released@20). Everything below instead exercises the REAL
-// rule module (lib/device-onboarding.ts) and the REAL sweep route
-// (app/api/internal/device-onboarding-sweep/route.ts) through the house require
-// hook, swapping only their own dependencies for recording fakes — never a copy
-// of the logic and never a mocked module under test. Nothing here touches a real
-// database, Vantra, or a device.
+// WHY THIS FILE EXISTS: the owner's redesign has exactly two behaviours that
+// must never regress: (1) the hide fires ~60s after a new device appears and
+// NEVER touches the agent process; (2) an offline device — including the
+// vantra_503 transport error — burns NO attempt and sets NO lastError (the old
+// sweep burned attempts on 503s and rows died red while the box was fine).
+// Everything below exercises the REAL rule module (lib/device-onboarding.ts)
+// and the REAL sweep route (app/api/internal/device-onboarding-sweep/route.ts)
+// through the house require hook, swapping only their dependencies for
+// recording fakes — never a copy of the logic. Nothing touches a real database,
+// Vantra, or a device.
 
 // ---------------------------------------------------------------------------
 // The in-memory store + recording fakes
@@ -47,27 +37,19 @@ interface OnboardingRow {
   id: string;
   deviceId: string;
   userId: string;
-  vantraAgentId: string;
-  sourceOrgId: string;
-  destinationOrgId: string | null;
-  timerStartedAt: Date;
   hideLabel: string | null;
+  timerStartedAt: Date;
   hideDoneAt: Date | null;
   hideOutput: string | null;
-  stayOnDoneAt: Date | null;
-  movedAt: Date | null;
   releasedAt: Date | null;
   status: string;
   attempts: number;
   lastError: string | null;
   claimAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
 }
 
 const devices = new Map<string, DeviceRow>();
 let rows: OnboardingRow[] = [];
-let idSeq = 0;
 
 /** Structural matcher covering exactly the where-clauses the sweep uses. */
 function matches(row: Record<string, unknown>, where: Record<string, unknown> | undefined): boolean {
@@ -97,33 +79,28 @@ function applyData(row: Record<string, unknown>, data: Record<string, unknown>):
   }
 }
 
-function nextId(prefix: string): string {
-  idSeq += 1;
-  return `${prefix}_${idSeq}`;
-}
-
-/** Set ONLY when the sweep records "move in flight" — proves "once". */
-let movingWrites = 0;
-/** A row id whose `update` throws — proves one device cannot abort the sweep. */
-let failUpdateId: string | null = null;
-
-const fakePrisma = {
+const fakeDb = {
   deviceOnboarding: {
     async findMany(args: { where?: Record<string, unknown>; include?: unknown }) {
       return rows
         .filter((r) => matches(r as unknown as Record<string, unknown>, args.where))
         .map((r) => ({ ...r, device: { ...devices.get(r.deviceId) } }));
     },
-    async updateMany(args: { where?: Record<string, unknown>; data: Record<string, unknown> }) {
+    async updateMany(args: { where: Record<string, unknown>; data: Record<string, unknown> }) {
+      // Test hook: simulate the claim race — findMany saw the row, but by the
+      // time updateMany runs another sweep pass already claimed it (count 0).
+      if (claimCountOverride !== null) {
+        const c = claimCountOverride;
+        claimCountOverride = null;
+        return { count: c };
+      }
       const hit = rows.filter((r) => matches(r as unknown as Record<string, unknown>, args.where));
       for (const row of hit) {
-        if (args.data.status === "moving") movingWrites++;
         applyData(row as unknown as Record<string, unknown>, args.data);
       }
       return { count: hit.length };
     },
     async update(args: { where: { id: string }; data: Record<string, unknown> }) {
-      if (failUpdateId && args.where.id === failUpdateId) throw new Error("db down");
       const row = rows.find((r) => r.id === args.where.id);
       if (!row) throw new Error("onboarding not found");
       applyData(row as unknown as Record<string, unknown>, args.data);
@@ -137,42 +114,11 @@ const fakePrisma = {
   },
 };
 
-// TASK_128 — the sweep must re-sync each linked user itself (DeviceOnboarding
-// rows have no other writer). These record what the sweep asked for.
 let vantraLinks: Array<{ userId: string; status: string }> = [];
 let syncCalls: string[] = [];
 /** A userId whose sync throws — proves one broken link cannot abort the sweep. */
 let failSyncUser: string | null = null;
 
-const fakeSyncDevices = async (userId: string) => {
-  syncCalls.push(userId);
-  if (failSyncUser && userId === failSyncUser) throw new Error("no_link");
-  return { devices: [] as unknown[] };
-};
-
-let hideCalls: Array<Record<string, unknown>> = [];
-let stayOnCalls: Array<Record<string, unknown>> = [];
-let hideBehavior: "ok" | "fail_output" | "throw" = "ok";
-let stayOnBehavior: "ok" | "throw" = "ok";
-let bearerOk = true;
-
-const fakeRunCommandNow = async (opts: Record<string, unknown>) => {
-  hideCalls.push(opts);
-  if (hideBehavior === "throw") throw new Error("agent_unreachable");
-  if (hideBehavior === "fail_output") {
-    return { output: "STEP:agent_service FAIL:agent_service_missing", ranAt: new Date() };
-  }
-  return {
-    output: "STEP:agent_service OK:tacticalrmm\nSTEP:rename:tacticalrmm OK\nVERIFY:service:tacticalrmm",
-    ranAt: new Date(),
-  };
-};
-
-const fakeSetPowerPolicy = async (opts: Record<string, unknown>) => {
-  stayOnCalls.push(opts);
-  if (stayOnBehavior === "throw") throw new Error("keep_awake_apply_failed");
-  return { mode: "indefinite", until: null };
-};
 
 type Loader = {
   _load: (request: string, parent: NodeModule | undefined, isMain: boolean) => unknown;
@@ -186,998 +132,392 @@ function installRequireHook(): void {
   loader._load = function patched(request, parent, isMain) {
     if (request === "server-only") return {};
     const from = (parent?.filename ?? "").replace(/\\/g, "/");
+    if (request === "next/server" && from.endsWith(`/${ROUTE}`)) {
+      return {
+        NextResponse: {
+          json: (body: unknown, init?: { status?: number }) => ({
+            status: init?.status ?? 200,
+            body,
+            json: async () => body,
+          }),
+        },
+      };
+    }
+    // The sweep route AND lib/devices (for isDeviceOnline) both import the real
+    // prisma singleton; give every in-repo parent the fake store so nothing can
+    // ever reach a real database from a test.
+    if (request === "@/lib/prisma" && from.includes("/sw-t228/")) {
+      return { prisma: fakeDb };
+    }
     if (from.endsWith(`/${ROUTE}`)) {
-      if (request === "next/server") {
-        return {
-          NextResponse: {
-            json: (body: unknown, init?: { status?: number }) => ({
-              status: init?.status ?? 200,
-              body,
-              json: async () => body,
-            }),
-          },
-        };
-      }
-      if (request === "@/lib/prisma") return { prisma: fakePrisma };
-      if (request === "@/lib/internal-auth") return { requireInternalBearer: () => bearerOk };
-      if (request === "@/lib/devices") {
-        return {
-          isDeviceOnline: (d: Date | null) => !!d && Date.now() - d.getTime() < 10 * 60_000,
-        };
+      if (request === "@/lib/internal-auth") {
+        return { requireInternalBearer: () => bearerOk };
       }
       if (request === "@/lib/device-tools") {
-        return { runCommandNow: fakeRunCommandNow, setPowerPolicy: fakeSetPowerPolicy };
+        return { runCommandNow: fakeRunCommandNow };
       }
       if (request === "@/lib/vantra-link") {
         return { syncDevices: fakeSyncDevices };
       }
-      // The rule module and the script builders are REAL — the route's own
-      // decisions are what these tests are about.
-      if (request === "@/lib/device-onboarding") return realOnboarding;
-      if (request === "@/lib/agent-visibility") return realAgentVisibility;
     }
-    return original.call(this, request, parent, isMain);
-  };
+    return original(request, parent, isMain);
+  } as Loader["_load"];
 }
 
-/* eslint-disable @typescript-eslint/no-require-imports */
-const realOnboarding = require("../lib/device-onboarding") as typeof import("../lib/device-onboarding");
-const realAgentVisibility = require("../lib/agent-visibility") as typeof import("../lib/agent-visibility");
 installRequireHook();
-const routeModule = require("../app/api/internal/device-onboarding-sweep/route") as {
-  POST: (req: Request) => Promise<{ status: number; body: SweepBody }>;
-};
-/* eslint-enable @typescript-eslint/no-require-imports */
 
-type SweepBody = {
-  ok?: boolean;
-  synced?: number;
-  syncErrors?: string[];
-  checked: number;
-  acted: number;
-};
+type PostFn = (req: Request) => Promise<{ status: number; body: Record<string, unknown> }>;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const BASE = new Date("2026-09-27T12:00:00.000Z");
-const T0 = BASE.getTime();
-const at = (minutes: number, seconds = 0): number => T0 + (minutes * 60 + seconds) * 1000;
-const minutesAgo = (m: number): Date => new Date(Date.now() - m * 60_000);
-
-/** A device for the store; `online` sets lastSeenAt relative to the real now. */
-function addDevice(id: string, opts: { tier?: string; online?: boolean } = {}): DeviceRow {
-  const device: DeviceRow = {
-    id,
-    userId: "user_1",
-    name: `Device ${id}`,
-    tier: opts.tier ?? "public",
-    lastSeenAt: opts.online === false ? minutesAgo(30) : new Date(),
-  };
-  devices.set(id, device);
-  return device;
+function loadRoute(): PostFn {
+  // Fresh module instance per test — the route is stateless anyway, but this
+  // keeps future module-level state from leaking between tests.
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const resolved = require.resolve("../app/api/internal/device-onboarding-sweep/route.ts");
+  delete require.cache[resolved];
+  const mod = require("../app/api/internal/device-onboarding-sweep/route.ts") as { POST: PostFn };
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  return mod.POST;
 }
 
-/** An onboarding row; defaults to t=6 min ago (hide due, not done). */
-function addOnboarding(deviceId: string, over: Partial<OnboardingRow> = {}): OnboardingRow {
-  const started = over.timerStartedAt ?? minutesAgo(6);
-  const row: OnboardingRow = {
-    id: nextId("onb"),
-    deviceId,
-    userId: "user_1",
-    vantraAgentId: `agent_${deviceId}`,
-    sourceOrgId: "org_public",
-    destinationOrgId: "org_private",
-    timerStartedAt: started,
-    hideLabel: DEFAULT_AGENT_LABEL,
-    hideDoneAt: null,
+const T0 = Date.parse("2026-10-19T12:00:00Z");
+
+function seedDevice(opts: { id: string; userId: string; lastSeenAt: Date | null }): void {
+  devices.set(opts.id, {
+    id: opts.id,
+    userId: opts.userId,
+    name: `box-${opts.id}`,
+    tier: "public",
+    lastSeenAt: opts.lastSeenAt,
+  });
+}
+
+function seedRow(opts: {
+  id: string;
+  deviceId: string;
+  userId: string;
+  timerStartedAt: Date;
+  status?: string;
+  hideDoneAt?: Date | null;
+  attempts?: number;
+  lastError?: string | null;
+}): void {
+  rows.push({
+    id: opts.id,
+    deviceId: opts.deviceId,
+    userId: opts.userId,
+    hideLabel: `box-${opts.deviceId}`,
+    timerStartedAt: opts.timerStartedAt,
+    hideDoneAt: opts.hideDoneAt ?? null,
     hideOutput: null,
-    stayOnDoneAt: null,
-    movedAt: null,
     releasedAt: null,
-    status: "pending",
-    attempts: 0,
-    lastError: null,
+    status: opts.status ?? "pending",
+    attempts: opts.attempts ?? 0,
+    lastError: opts.lastError ?? null,
     claimAt: null,
-    createdAt: started,
-    updatedAt: started,
-    ...over,
-  };
-  rows.push(row);
-  return row;
+  });
 }
 
-function post(): Promise<{ status: number; body: SweepBody }> {
-  return routeModule.POST(new Request("https://spaceworker.test/api/internal/device-onboarding-sweep", { method: "POST" }));
+function getRow(id: string): OnboardingRow {
+  const row = rows.find((r) => r.id === id);
+  assert.ok(row, `row ${id} exists`);
+  return row;
 }
 
 beforeEach(() => {
   devices.clear();
   rows = [];
-  hideCalls = [];
-  stayOnCalls = [];
-  hideBehavior = "ok";
-  stayOnBehavior = "ok";
-  bearerOk = true;
-  movingWrites = 0;
-  failUpdateId = null;
   vantraLinks = [];
   syncCalls = [];
   failSyncUser = null;
+  hideCalls = [];
+  hideBehavior = "ok";
+  bearerOk = true;
+  claimCountOverride = null;
 });
 
-// ---------------------------------------------------------------------------
-// nextOnboardingAction — the pure rule (thresholds, order, terminal)
-// ---------------------------------------------------------------------------
-
-const baseInput = (over: Partial<Parameters<typeof nextOnboardingAction>[0]> = {}) => ({
-  status: "pending",
-  tier: "public",
-  timerStartedAt: BASE,
-  hideDoneAt: null,
-  stayOnDoneAt: null,
-  ...over,
-});
-
-test("hide fires at exactly 5 minutes, not a second earlier", () => {
-  assert.equal(nextOnboardingAction(baseInput(), at(5, -1)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(), at(5)), "hide");
-});
-
-test("stay_on fires at exactly 10 minutes once hide is done, not a second earlier", () => {
-  const done = { hideDoneAt: new Date(T0 + 5 * 60_000) };
-  assert.equal(nextOnboardingAction(baseInput(done), at(10, -1)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(10)), "stay_on");
-});
-
-test("grace is real: the 20-minute plan is not a deadline, and the 35-minute mark is a WARNING, not a fail", () => {
-  assert.equal(ONBOARDING_WINDOW_MINUTES, 20);
-  assert.ok(ONBOARDING_GRACE_MINUTES > 0);
-  assert.equal(ONBOARDING_STUCK_MINUTES, 35);
-  assert.ok(ONBOARDING_STUCK_MINUTES > ONBOARDING_WINDOW_MINUTES);
-});
-
-test("the clock can NEVER fail a device: past the plan, and past the 35-minute mark, it still waits", () => {
-  const done = {
-    hideDoneAt: new Date(T0 + 5 * 60_000),
-    stayOnDoneAt: new Date(T0 + 10 * 60_000),
-  };
-  // Past the plan, still public: "a little wait" — never a release, never a failure.
-  assert.equal(nextOnboardingAction(baseInput(done), at(20, -1)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(20)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(34, 59)), "wait");
-  // Owner decision 2026-09-27: the 35-minute mark used to `fail` here. It no
-  // longer does ANYTHING terminal — elapsed time includes the hours a box spent
-  // switched off, which is not a failure of the process. It waits, and the UI
-  // escalates to a loud amber warning instead.
-  assert.equal(nextOnboardingAction(baseInput(done), at(35)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(35, 1)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(600)), "wait");
-});
-
-test("a move that lands late still releases — the ceiling never beats a real move", () => {
-  assert.equal(nextOnboardingAction(baseInput({ tier: "private" }), at(40)), "release");
-});
-
-test("an unreachable stage keeps retrying past the ceiling — offline is never a failure", () => {
-  // The box was offline the whole time, so hide never ran. The action stays
-  // `hide` however long that takes: the stage is still DUE, and the caller
-  // skips it without burning an attempt, so it retries on every cycle.
-  assert.equal(nextOnboardingAction(baseInput(), at(40)), "hide");
-  assert.equal(nextOnboardingAction(baseInput(), at(600)), "hide");
-});
-
-test("no destination: the stages still run, then it releases at the plan and can NEVER fail", () => {
-  const none = { destinationOrgId: null };
-  assert.equal(nextOnboardingAction(baseInput(none), at(6)), "hide"); // stages still run
-  const done = {
-    ...none,
-    hideDoneAt: new Date(T0 + 5 * 60_000),
-    stayOnDoneAt: new Date(T0 + 10 * 60_000),
-  };
-  assert.equal(nextOnboardingAction(baseInput(done), at(19, 59)), "wait");
-  assert.equal(nextOnboardingAction(baseInput(done), at(20)), "release");
-  assert.equal(nextOnboardingAction(baseInput(done), at(90)), "release"); // never `fail`
-});
-
-test("order is hide -> stay_on -> wait, and stay_on cannot fire before hide is done", () => {
-  // 12 min in with hide still not done: the decision is STILL hide, never stay_on.
-  assert.equal(nextOnboardingAction(baseInput(), at(12)), "hide");
-  const hideDone = { hideDoneAt: new Date(T0 + 6 * 60_000) };
-  assert.equal(nextOnboardingAction(baseInput(hideDone), at(6)), "wait"); // 5..10 gap
-  assert.equal(nextOnboardingAction(baseInput(hideDone), at(11)), "stay_on");
-  const bothDone = { ...hideDone, stayOnDoneAt: new Date(T0 + 11 * 60_000) };
-  assert.equal(nextOnboardingAction(baseInput(bothDone), at(16)), "wait"); // 15..20 = moving, not an action
-  assert.equal(nextOnboardingAction(baseInput(bothDone), at(20)), "wait"); // past the plan: a little wait
-  assert.equal(nextOnboardingAction(baseInput(bothDone), at(35)), "wait"); // past the warning mark: STILL waits
-});
-
-test("tier private releases early, whatever the clock", () => {
-  assert.equal(nextOnboardingAction(baseInput({ tier: "private" }), at(0)), "release");
-  assert.equal(nextOnboardingAction(baseInput({ tier: "private" }), at(25)), "release");
-});
-
-test("a released or failed row always returns terminal — the never-fires-twice guarantee", () => {
-  for (const status of ["released", "failed"]) {
-    assert.equal(nextOnboardingAction(baseInput({ status }), at(25)), "terminal");
-    assert.equal(nextOnboardingAction(baseInput({ status, tier: "private" }), at(25)), "terminal");
-  }
-});
-
-test("a stage with its *DoneAt set never re-fires (the crash-safe claim)", () => {
-  const hideDone = { hideDoneAt: new Date(T0 + 5 * 60_000) };
-  assert.notEqual(nextOnboardingAction(baseInput(hideDone), at(6)), "hide");
-  const bothDone = { ...hideDone, stayOnDoneAt: new Date(T0 + 10 * 60_000) };
-  assert.notEqual(nextOnboardingAction(baseInput(bothDone), at(11)), "stay_on");
-});
-
-test("a DEAD claim (hiding / staying_on with *DoneAt null) is re-adopted next sweep", () => {
-  // The in-flight status is not a gate; the missing *DoneAt is.
-  assert.equal(nextOnboardingAction(baseInput({ status: "hiding" }), at(6)), "hide");
-  assert.equal(
-    nextOnboardingAction(
-      baseInput({ status: "staying_on", hideDoneAt: new Date(T0 + 5 * 60_000) }),
-      at(12),
-    ),
-    "stay_on",
-  );
-});
-
-
-// ---------------------------------------------------------------------------
-// onboardingView — the exact copy (a copy regression must fail this test)
-// ---------------------------------------------------------------------------
-
-const viewInput = (over: Partial<Parameters<typeof onboardingView>[0]> = {}) => ({
-  status: "pending",
-  tier: "public",
-  timerStartedAt: BASE,
-  hideDoneAt: null,
-  stayOnDoneAt: null,
-  destinationOrgId: "org_private",
-  isOnline: true,
-  ...over,
-});
-
-test("step 1 copy is exactly the spec's", () => {
-  const v = onboardingView(viewInput(), at(2));
-  assert.deepEqual(
-    { step: v.step, title: v.title, detail: v.detail, next: v.next },
-    { step: 1, title: "Quarantined", detail: "waiting for the first check-in", next: "hide" },
-  );
-});
-
-test("step 2 copy is exactly the spec's", () => {
-  const v = onboardingView(viewInput(), at(6));
-  assert.deepEqual(
-    { step: v.step, title: v.title, detail: v.detail, next: v.next },
-    {
-      step: 2,
-      title: "Hiding the agent",
-      detail: "so it can't be stopped from the machine",
-      next: "stay on",
-    },
-  );
-});
-
-test("step 3 copy is exactly the spec's", () => {
-  const v = onboardingView(viewInput({ hideDoneAt: new Date(T0 + 5 * 60_000) }), at(12));
-  assert.deepEqual(
-    { step: v.step, title: v.title, detail: v.detail, next: v.next },
-    { step: 3, title: "Staying awake", detail: "keeping it reachable for the move", next: "move" },
-  );
-});
-
-test("step 4 copy is exactly the spec's", () => {
-  const v = onboardingView(
-    viewInput({ hideDoneAt: new Date(T0 + 5 * 60_000), stayOnDoneAt: new Date(T0 + 10 * 60_000) }),
-    at(16),
-  );
-  assert.deepEqual(
-    { step: v.step, title: v.title, detail: v.detail, next: v.next },
-    { step: 4, title: "Moving to your private agent", detail: "almost done", next: null },
-  );
-});
-
-test("no private destination: step 4 says so, and the plan still ends it cleanly", () => {
-  const v = onboardingView(viewInput({ destinationOrgId: null }), at(16));
-  assert.equal(v.detail, "stays on your public agent — no private agent on this plan");
-  assert.equal(
-    nextOnboardingAction(
-      {
-        status: "pending",
-        tier: "public",
-        timerStartedAt: BASE,
-        hideDoneAt: new Date(T0 + 5 * 60_000),
-        stayOnDoneAt: new Date(T0 + 10 * 60_000),
-        destinationOrgId: null,
-      },
-      at(20),
-    ),
-    "release",
-  );
-  // The same row WITH a destination would still be waiting — the difference is
-  // the destination, not the clock.
-  assert.equal(
-    nextOnboardingAction(
-      {
-        status: "pending",
-        tier: "public",
-        timerStartedAt: BASE,
-        hideDoneAt: new Date(T0 + 5 * 60_000),
-        stayOnDoneAt: new Date(T0 + 10 * 60_000),
-        destinationOrgId: "org_private",
-      },
-      at(20),
-    ),
-    "wait",
-  );
-});
-
-test("waitingForDevice is true only when a due stage's device is not online", () => {
-  assert.equal(onboardingView(viewInput({ isOnline: false }), at(6)).waitingForDevice, true);
-  assert.equal(onboardingView(viewInput({ isOnline: true }), at(6)).waitingForDevice, false);
-  // Nothing is due at step 1, so it is never "waiting".
-  assert.equal(onboardingView(viewInput({ isOnline: false }), at(2)).waitingForDevice, false);
-  // Hide done, stay-on due, box offline.
-  const v = onboardingView(
-    viewInput({ hideDoneAt: new Date(T0 + 5 * 60_000), isOnline: false }),
-    at(12),
-  );
-  assert.equal(v.waitingForDevice, true);
-});
-
-test("the countdown text never promises an exact minute", () => {
-  assert.equal(formatOnboardingCountdown(6 * 60_000), "~6 min left");
-  assert.equal(formatOnboardingCountdown(30_000), "in a few minutes");
-  assert.equal(formatOnboardingCountdown(0), "any moment now");
-  assert.equal(formatOnboardingEta(2 * 60_000), "~2 min");
-});
-
-test("isOnboardingTerminal only covers released/failed", () => {
-  assert.equal(isOnboardingTerminal("released"), true);
-  assert.equal(isOnboardingTerminal("failed"), true);
-  for (const s of ["pending", "hiding", "staying_on", "moving"]) {
-    assert.equal(isOnboardingTerminal(s), false);
-  }
-});
-
-test("overrun is a little wait, not a failure: the row stays live and says so", () => {
-  const done = {
-    hideDoneAt: new Date(T0 + 5 * 60_000),
-    stayOnDoneAt: new Date(T0 + 10 * 60_000),
-  };
-  const v = onboardingView(viewInput(done), at(25));
-  assert.equal(v.overrun, true);
-  assert.equal(v.failed, false, "overrun is NOT a failure");
-  assert.equal(v.detail, "taking a little longer than usual — still working, nothing is lost");
-  assert.equal(onboardingClockText(v), "taking a little longer than usual");
-  // Still inside the plan: not overrun, and it counts the next stage down.
-  assert.equal(onboardingView(viewInput(done), at(12)).overrun, false);
-});
-
-// ---------------------------------------------------------------------------
-// The 35-minute mark is a WARNING, not a failure (owner decision 2026-09-27)
-// ---------------------------------------------------------------------------
-
-const bothStagesDone = {
-  hideDoneAt: new Date(T0 + 5 * 60_000),
-  stayOnDoneAt: new Date(T0 + 10 * 60_000),
-};
-
-test("stuck is a WARNING state past 35 minutes — never a failure", () => {
-  assert.equal(onboardingView(viewInput(bothStagesDone), at(25)).stuck, false, "25 min: only overrun");
-  assert.equal(onboardingView(viewInput(bothStagesDone), at(34, 59)).stuck, false, "a second before");
-  const v = onboardingView(viewInput(bothStagesDone), at(35));
-  assert.equal(v.stuck, true);
-  assert.equal(
-    v.failed,
-    false,
-    "the clock must NEVER fail a device — that is the whole point of this change",
-  );
-  assert.equal(v.overrun, true, "stuck still counts as overrun, it is the louder tier of it");
-  // And the decision function agrees: no action, so nothing terminal is written.
-  assert.equal(nextOnboardingAction(baseInput(bothStagesDone), at(35)), "wait");
-});
-
-test("stuck is never reported for a terminal or private row", () => {
-  for (const over of [
-    { status: "failed" },
-    { status: "released" },
-    { tier: "private" },
-  ]) {
-    const v = onboardingView(viewInput({ ...bothStagesDone, ...over }), at(90));
-    assert.equal(v.stuck, false, JSON.stringify(over));
-  }
-});
-
-test("stuckReason carries the real reason: lastError first, then honesty about reachability", () => {
-  // 1. A genuine stage failure's own message wins.
-  assert.equal(
-    onboardingView(
-      viewInput({ ...bothStagesDone, lastError: "agent_unreachable", isOnline: true }),
-      at(40),
-    ).stuckReason,
-    "agent_unreachable",
-  );
-  // 2. No error, device offline — say we cannot reach it, do not invent a failure.
-  assert.equal(
-    onboardingView(viewInput({ ...bothStagesDone, lastError: null, isOnline: false }), at(40))
-      .stuckReason,
-    "we can't reach it yet — it retries every 5 minutes",
-  );
-  // 3. No error, device online — the move simply has not landed.
-  assert.equal(
-    onboardingView(viewInput({ ...bothStagesDone, lastError: null, isOnline: true }), at(40))
-      .stuckReason,
-    "the move to your private agent hasn't landed yet",
-  );
-  // Whitespace-only lastError is treated as absent, not printed as blank.
-  assert.equal(
-    onboardingView(viewInput({ ...bothStagesDone, lastError: "   ", isOnline: true }), at(40))
-      .stuckReason,
-    "the move to your private agent hasn't landed yet",
-  );
-  // And there is no reason at all unless it is actually stuck.
-  assert.equal(onboardingView(viewInput({ ...bothStagesDone, lastError: "x" }), at(30)).stuckReason, null);
-});
-
-test("the stuck clock carries the elapsed time, and the copy says it is not a failure", () => {
-  const v = onboardingView(viewInput(bothStagesDone), at(47));
-  assert.equal(onboardingClockText(v), "taking much longer than usual — 47 min so far");
-  assert.equal(
-    v.detail,
-    "much longer than usual — nothing is lost",
-  );
-  // A very long wait must not read as a tiny number.
-  assert.equal(
-    onboardingClockText(onboardingView(viewInput(bothStagesDone), at(3 * 60 + 5))),
-    "taking much longer than usual — 3h 05m so far",
-  );
-  assert.equal(
-    onboardingClockText(onboardingView(viewInput(bothStagesDone), at(2 * 60))),
-    "taking much longer than usual — 2h so far",
-  );
-});
-
-test("formatOnboardingElapsed rounds down to whole minutes and never reports 0", () => {
-  assert.equal(formatOnboardingElapsed(0), "1 min");
-  assert.equal(formatOnboardingElapsed(59_000), "1 min");
-  assert.equal(formatOnboardingElapsed(60_000), "1 min");
-  assert.equal(formatOnboardingElapsed(47 * 60_000), "47 min");
-  assert.equal(formatOnboardingElapsed(59 * 60_000 + 59_000), "59 min");
-  assert.equal(formatOnboardingElapsed(60 * 60_000), "1h");
-  assert.equal(formatOnboardingElapsed(125 * 60_000), "2h 05m");
-});
-
-test("a stuck device keeps an amber row label, never the red failure one", () => {
-  assert.equal(
-    onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(34, 59)),
-    "Quarantine · taking longer",
-  );
-  assert.equal(
-    onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(35)),
-    "Quarantine · stuck",
-  );
-  // The RED label is still reserved for a genuine repeated failure.
-  assert.equal(onboardingRowLabel({ status: "failed", timerStartedAt: BASE }, at(35)), "Setup failed");
-});
-
-test("a failed row is worded as a failure and never as still-going", () => {
-  const v = onboardingView(viewInput({ status: "failed" }), at(40));
-  assert.equal(v.failed, true);
-  assert.equal(v.overrun, false, "a terminal row is never 'overrunning'");
-  assert.equal(v.title, "Setup didn't finish");
-  assert.equal(v.detail, "still on your public agent — you can keep using it");
-  assert.equal(onboardingClockText(v), "stopped");
-});
-
-test("the strip shows the NEXT stage's ETA, not the end of the plan", () => {
-  assert.equal(onboardingView(viewInput(), at(2)).nextStageInMs, 3 * 60_000); // hide at 5
-  assert.equal(
-    onboardingView(viewInput({ hideDoneAt: new Date(T0 + 5 * 60_000) }), at(7)).nextStageInMs,
-    3 * 60_000, // stay-on at 10
-  );
-  assert.equal(
-    onboardingView(
-      viewInput({
-        hideDoneAt: new Date(T0 + 5 * 60_000),
-        stayOnDoneAt: new Date(T0 + 10 * 60_000),
-      }),
-      at(12),
-    ).nextStageInMs,
-    3 * 60_000, // move at 15
-  );
-  // Nothing left ahead → null, so the strip falls back to the window/overrun wording.
-  assert.equal(
-    onboardingView(
-      viewInput({
-        hideDoneAt: new Date(T0 + 5 * 60_000),
-        stayOnDoneAt: new Date(T0 + 10 * 60_000),
-      }),
-      at(16),
-    ).nextStageInMs,
-    null,
-  );
-});
-
-test("a device may be quarantined from its very first sweep — step 1 is visible", () => {
-  const v = onboardingView(viewInput(), at(1));
-  assert.equal(v.step, 1);
-  assert.equal(v.overrun, false);
-  assert.equal(v.failed, false);
-  assert.equal(onboardingClockText(v), "~4 min");
-});
-
-test("the row label never hides a failure", () => {
-  assert.equal(onboardingRowLabel({ status: "pending", timerStartedAt: BASE }, at(10)), "Quarantine · 10:00");
-  assert.equal(
-    onboardingRowLabel({ status: "moving", timerStartedAt: BASE }, at(25)),
-    "Quarantine · taking longer",
-  );
-  assert.equal(onboardingRowLabel({ status: "released", timerStartedAt: BASE }, at(25)), null);
-  assert.equal(onboardingRowLabel({ status: "failed", timerStartedAt: BASE }, at(25)), "Setup failed");
-});
-
-test("quarantine never takes the device away — the promise is a frozen string", () => {
-  assert.equal(ONBOARDING_ACCESSIBLE_NOTE, "You can keep using this device while it's being set up.");
-});
-
-
-// ---------------------------------------------------------------------------
-// The sweep route — claims, retries, offline skip, release
-// ---------------------------------------------------------------------------
-
-test("401 when the bearer is wrong, and nothing runs", async () => {
-  bearerOk = false;
-  const res = await post();
-  assert.equal(res.status, 401);
-  assert.equal(hideCalls.length, 0);
-});
-
-test("offline at a due threshold: skip, retry next cycle, NO attempt burned", async () => {
-  addDevice("d1", { online: false });
-  addOnboarding("d1");
-  const res = await post();
-  assert.equal(res.body.checked, 1);
-  assert.equal(hideCalls.length, 0, "never runs the hide on a sleeping box");
-  assert.equal(rows[0].attempts, 0, "an asleep box is not a failed attempt");
-  assert.equal(rows[0].status, "pending");
-});
-
-test("hide: the exact existing transport is called, then hideDoneAt is set", async () => {
-  addDevice("d1");
-  addOnboarding("d1");
-  const res = await post();
-  assert.equal(hideCalls.length, 1);
-  assert.deepEqual(hideCalls[0], {
-    userId: "user_1",
-    deviceId: "d1",
-    cmd: buildHideAgentScript(DEFAULT_AGENT_LABEL),
-    shell: "powershell",
-    timeoutSeconds: 90,
-    runAsUser: false,
+function authedReq(): Request {
+  return new Request("http://test", {
+    method: "POST",
+    headers: { authorization: "Bearer test-token" },
   });
-  assert.ok(rows[0].hideDoneAt);
-  assert.equal(rows[0].status, "pending");
-  assert.equal(rows[0].claimAt, null);
-  assert.match(String(rows[0].hideOutput), /STEP:agent_service OK/);
-  assert.equal(res.body.acted, 1);
-});
-
-test("hide never fires twice once hideDoneAt is set — the *DoneAt is the claim", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { hideDoneAt: new Date() });
-  await post();
-  assert.equal(hideCalls.length, 0);
-});
-
-test("a DEAD hide claim (status hiding, hideDoneAt null) is re-adopted and re-run", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { status: "hiding", claimAt: minutesAgo(4) });
-  await post();
-  assert.equal(hideCalls.length, 1, "a dead claim is re-claimed, not skipped");
-  assert.ok(rows[0].hideDoneAt);
-});
-
-test("a hide script that reports FAIL: retries, then goes terminal at the cap", async () => {
-  addDevice("d1");
-  addOnboarding("d1");
-  hideBehavior = "fail_output";
-  await post();
-  assert.equal(rows[0].status, "pending");
-  assert.equal(rows[0].attempts, 1);
-  assert.equal(rows[0].hideDoneAt, null);
-  assert.match(String(rows[0].lastError), /FAIL:/);
-
-  rows[0].attempts = ONBOARDING_MAX_ATTEMPTS - 1;
-  await post();
-  assert.equal(rows[0].attempts, ONBOARDING_MAX_ATTEMPTS);
-  assert.equal(rows[0].status, "failed");
-});
-
-test("a thrown hide error (agent unreachable) is capped at 6 too", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { attempts: ONBOARDING_MAX_ATTEMPTS - 1 });
-  hideBehavior = "throw";
-  await post();
-  assert.equal(rows[0].status, "failed");
-  assert.equal(rows[0].lastError, "agent_unreachable");
-});
-
-test("stay_on cannot fire before hide is done", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { timerStartedAt: minutesAgo(12) });
-  await post();
-  assert.equal(hideCalls.length, 1);
-  assert.equal(stayOnCalls.length, 0, "hide must land first");
-});
-
-test("stay_on applies the EXISTING indefinite keep-awake after hide", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { timerStartedAt: minutesAgo(12), hideDoneAt: minutesAgo(7) });
-  const res = await post();
-  assert.equal(hideCalls.length, 0);
-  assert.equal(stayOnCalls.length, 1);
-  assert.deepEqual(stayOnCalls[0], { userId: "user_1", deviceId: "d1", mode: "indefinite" });
-  assert.ok(rows[0].stayOnDoneAt);
-  assert.equal(rows[0].status, "pending");
-  assert.equal(res.body.acted, 1);
-});
-
-test("a keep-awake failure retries and is capped at 6 -> failed", async () => {
-  addDevice("d1");
-  addOnboarding("d1", {
-    timerStartedAt: minutesAgo(12),
-    hideDoneAt: minutesAgo(7),
-    attempts: ONBOARDING_MAX_ATTEMPTS - 1,
-  });
-  stayOnBehavior = "throw";
-  await post();
-  assert.equal(rows[0].status, "failed");
-  assert.equal(rows[0].lastError, "keep_awake_apply_failed");
-});
-
-
-test("the window records `moving` once at 15 min, then WAITS past the plan instead of releasing", async () => {
-  addDevice("d1");
-  addOnboarding("d1", {
-    timerStartedAt: minutesAgo(16),
-    hideDoneAt: minutesAgo(11),
-    stayOnDoneAt: minutesAgo(6),
-  });
-  await post();
-  assert.equal(rows[0].status, "moving");
-  await post();
-  assert.equal(movingWrites, 1, "recorded once, not on every sweep");
-
-  // Past the plan at 21 minutes with the device still public: NOT released, NOT
-  // failed — the owner's "little wait". The row stays live and keeps its clock.
-  rows[0].timerStartedAt = minutesAgo(21);
-  const res = await post();
-  assert.equal(rows[0].status, "moving");
-  assert.equal(rows[0].releasedAt, null, "the plan is not a release");
-  assert.equal(res.body.acted, 0, "nothing to do but wait");
-
-  // Owner decision 2026-09-27: past the 35-minute mark the sweep must STILL not
-  // fail it. A device that was merely switched off is not a failed device — it
-  // keeps its row, keeps retrying, and the UI escalates to an amber warning
-  // (`view.stuck`) carrying the elapsed time and the reason.
-  rows[0].timerStartedAt = minutesAgo(36);
-  const late = await post();
-  assert.equal(rows[0].status, "moving", "the clock NEVER fails a device");
-  assert.equal(rows[0].releasedAt, null, "and it never releases either");
-  assert.equal(rows[0].lastError, null, "nothing failed, so nothing is recorded as an error");
-  assert.equal(late.body.acted, 0);
-
-  // The live case that motivated this: `Sc` was observed offline for 142
-  // minutes. Hours of not being reachable must still be a wait, not a failure.
-  rows[0].timerStartedAt = minutesAgo(142);
-  await post();
-  assert.equal(rows[0].status, "moving");
-  assert.equal(rows[0].attempts, 0, "offline never burns an attempt, however long");
-
-  // And the row still reads honestly: amber "stuck", never red "failed".
-  const view = onboardingView(
-    {
-      status: rows[0].status,
-      tier: devices.get("d1")!.tier,
-      timerStartedAt: rows[0].timerStartedAt,
-      hideDoneAt: rows[0].hideDoneAt,
-      stayOnDoneAt: rows[0].stayOnDoneAt,
-      destinationOrgId: rows[0].destinationOrgId,
-      isOnline: true,
-      lastError: rows[0].lastError,
-    },
-    Date.now(),
-  );
-  assert.equal(view.stuck, true, "the UI is loud about it");
-  assert.equal(view.failed, false, "but it is NOT a failure");
-  assert.match(onboardingClockText(view), /taking much longer than usual — 2h 22m so far/);
-});
-
-test("a late-landing move still releases, however long it took", async () => {
-  addDevice("d1", { tier: "private" });
-  addOnboarding("d1", {
-    timerStartedAt: minutesAgo(40),
-    hideDoneAt: minutesAgo(35),
-    stayOnDoneAt: minutesAgo(30),
-  });
-  await post();
-  assert.equal(rows[0].status, "released");
-  assert.ok(rows[0].movedAt, "observed private ⇒ the move really landed");
-});
-
-test("an offline device retries on every cycle: no attempt burned, no silent failure", async () => {
-  addDevice("d1", { online: false });
-  addOnboarding("d1", { timerStartedAt: minutesAgo(40) });
-  const res = await post();
-  assert.equal(hideCalls.length, 0, "nothing was attempted");
-  assert.equal(rows[0].attempts, 0, "offline never burns an attempt");
-  assert.equal(rows[0].status, "pending");
-  assert.equal(res.body.acted, 0);
-
-  // Still retrying — not failed — well past the plan AND the 35-minute warning
-  // mark, because the stage is still DUE and the box simply is not reachable yet.
-  await post();
-  assert.equal(rows[0].status, "pending");
-  assert.equal(rows[0].attempts, 0);
-  assert.equal(rows[0].lastError, null);
-
-  // The box comes back: the very next sweep runs the stage it owed.
-  devices.get("d1")!.lastSeenAt = new Date();
-  await post();
-  assert.ok(rows[0].hideDoneAt, "the owed stage finally ran");
-});
-
-test("a device pending in public keeps its Public tier and stays ours to use", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { timerStartedAt: minutesAgo(6) });
-  await post();
-  // The sweep only runs the stage; it never moves the device or takes it away.
-  assert.equal(devices.get("d1")!.tier, "public");
-  assert.ok(rows[0].hideDoneAt);
-  assert.equal(rows[0].status, "pending", "hide done, waiting for stay-on");
-  assert.equal(rows[0].releasedAt, null);
-});
-
-test("tier private releases immediately and records movedAt", async () => {
-  addDevice("d1", { tier: "private" });
-  addOnboarding("d1", { timerStartedAt: minutesAgo(2) });
-  await post();
-  assert.equal(rows[0].status, "released");
-  assert.ok(rows[0].movedAt);
-});
-
-test("no private destination: releases cleanly at the plan and is never a failure", async () => {
-  addDevice("d1");
-  addOnboarding("d1", {
-    destinationOrgId: null,
-    timerStartedAt: minutesAgo(21),
-    hideDoneAt: minutesAgo(16),
-    stayOnDoneAt: minutesAgo(11),
-  });
-  await post();
-  assert.equal(rows[0].status, "released");
-  assert.equal(rows[0].movedAt, null);
-  assert.equal(devices.get("d1")!.tier, "public");
-
-  // Even far past the warning mark a free/trial device is NEVER `failed`: nothing
-  // was ever going to move, so there is nothing to fail at.
-  const second = addOnboarding("d1b", {
-    destinationOrgId: null,
-    timerStartedAt: minutesAgo(90),
-    hideDoneAt: minutesAgo(85),
-    stayOnDoneAt: minutesAgo(80),
-  });
-  addDevice("d1b");
-  await post();
-  assert.equal(second.status, "released");
-});
-
-test("a terminal row is never loaded or acted on", async () => {
-  addDevice("d1");
-  addOnboarding("d1", { status: "released", releasedAt: new Date() });
-  const res = await post();
-  assert.equal(res.body.checked, 0);
-  assert.equal(hideCalls.length, 0);
-  assert.equal(stayOnCalls.length, 0);
-});
-
-test("one device's failure never aborts the sweep for the rest", async () => {
-  addDevice("bad");
-  addDevice("good");
-  const bad = addOnboarding("bad");
-  addOnboarding("good");
-  failUpdateId = bad.id;
-  const res = await post();
-  assert.equal(res.status, 200);
-  assert.equal(res.body.checked, 2);
-  const good = rows.find((r) => r.deviceId === "good")!;
-  assert.ok(good.hideDoneAt, "the second device was still processed");
-});
-
-// ---------------------------------------------------------------------------
-// Automation — the sweep re-syncs linked users itself, so the quarantine
-// stages no longer depend on someone opening the dashboard
-// ---------------------------------------------------------------------------
-
-test("the sweep syncs every linked user before acting, and reports it", async () => {
-  vantraLinks = [
-    { userId: "user_1", status: "active" },
-    { userId: "user_2", status: "pending_install" },
-  ];
-  const res = await post();
-  assert.equal(res.status, 200);
-  assert.equal(res.body.synced, 2);
-  assert.deepEqual(syncCalls, ["user_1", "user_2"]);
-  assert.deepEqual(res.body.syncErrors, []);
-});
-
-test("a user with no devices is still synced — new devices appear on their own", async () => {
-  // The whole point: nobody has to open the dashboard for a freshly installed
-  // public device to start being quarantined.
-  vantraLinks = [{ userId: "user_1", status: "active" }];
-  const res = await post();
-  assert.deepEqual(syncCalls, ["user_1"]);
-  assert.equal(res.body.checked, 0);
-});
-
-test("a broken/revoked link never aborts the sweep for other users", async () => {
-  vantraLinks = [
-    { userId: "broken", status: "active" },
-    { userId: "user_1", status: "active" },
-  ];
-  failSyncUser = "broken";
-  const res = await post();
-  assert.equal(res.status, 200);
-  assert.equal(res.body.synced, 1, "the healthy link was still synced");
-  assert.equal(res.body.syncErrors?.length, 1);
-  assert.match(res.body.syncErrors?.[0] ?? "", /^broken:/);
-});
-
-test("revoked links are never synced", async () => {
-  vantraLinks = [{ userId: "gone", status: "revoked" }];
-  const res = await post();
-  assert.deepEqual(syncCalls, []);
-  assert.equal(res.body.synced, 0);
-});
-
-test("sync runs even when there is nothing due, so rows get created in time", async () => {
-  // Devices install and sit public for minutes before hide is due; if the sync
-  // were skipped on an idle sweep, its clock would only start on the next
-  // sweep that already had work — i.e. never.
-  vantraLinks = [{ userId: "user_1", status: "active" }];
-  addDevice("d1");
-  addOnboarding("d1", { timerStartedAt: minutesAgo(1) });
-  const res = await post();
-  assert.deepEqual(syncCalls, ["user_1"]);
-  assert.equal(res.body.acted, 0, "nothing was due yet");
-});
-
-
-// ---------------------------------------------------------------------------
-// TASK_128 §15 — the onboarding QUEUE (the strip's scrollable "more in line")
-// ---------------------------------------------------------------------------
-
-// The caller's row shape (the component attaches its own device object) plus a
-// valid OnboardingViewInput. Defaults are a healthy mid-window public device.
-function queued(
-  over: Partial<{
-    status: string;
-    tier: string;
-    timerStartedAt: string | Date;
-    hideDoneAt: string | Date | null;
-    stayOnDoneAt: string | Date | null;
-    releasedAt: string | Date | null;
-    destinationOrgId: string | null;
-    isOnline: boolean;
-  }> = {},
-) {
-  return {
-    status: "pending",
-    tier: "public",
-    timerStartedAt: minutesAgo(1),
-    hideDoneAt: null,
-    stayOnDoneAt: null,
-    releasedAt: null,
-    destinationOrgId: "org_private",
-    isOnline: true,
-    ...over,
-  };
 }
 
-test("queue: earliest timerStartedAt first — the head IS the active device", () => {
-  const now = Date.now();
-  const queue = orderOnboardingQueue(
-    [
-      { device: { id: "b" }, onboarding: queued({ timerStartedAt: minutesAgo(8) }) },
-      { device: { id: "a" }, onboarding: queued({ timerStartedAt: minutesAgo(18) }) },
-      { device: { id: "c" }, onboarding: queued({ timerStartedAt: minutesAgo(2) }) },
-    ],
-    now,
+const fakeSyncDevices = async (userId: string) => {
+  syncCalls.push(userId);
+  if (failSyncUser && userId === failSyncUser) throw new Error("no_link");
+  return { devices: [] as unknown[] };
+};
+
+let hideCalls: Array<Record<string, unknown>> = [];
+let hideBehavior: "ok" | "fail_output" | "throw" | "throw_503" = "ok";
+let bearerOk = true;
+/** When non-null, the next updateMany (the claim) returns this count untouched. */
+let claimCountOverride: number | null = null;
+
+const fakeRunCommandNow = async (opts: Record<string, unknown>) => {
+  hideCalls.push(opts);
+  if (hideBehavior === "throw") throw new Error("trmm_500_dispatch_failed");
+  if (hideBehavior === "throw_503") {
+    throw new Error("vantra_503: {\"error\":\"This device is currently offline.\"}");
+  }
+  if (hideBehavior === "fail_output") {
+    return { output: "STEP:agent_service FAIL:agent_service_missing", shell: "powershell" };
+  }
+  return {
+    output: "STEP:agent_service OK:tacticalrmm\nSTEP:rename:tacticalrmm OK\nVERIFY:service:tacticalrmm",
+    shell: "powershell",
+  };
+};
+
+// ---------------------------------------------------------------------------
+// The rule (lib/device-onboarding.ts) — pure, no DB
+// ---------------------------------------------------------------------------
+
+test("quiet first minute: nothing before +60s, hide due at +60s", () => {
+  assert.equal(
+    nextOnboardingAction(
+      { status: "pending", hideDoneAt: null, attempts: 0, timerStartedAt: new Date(T0) },
+      T0 + 59_000,
+    ),
+    null,
+    "59s after the device appeared: total silence — nothing renders, nothing runs",
   );
   assert.deepEqual(
-    queue.map((q) => q.device.id),
-    ["a", "b", "c"],
-    "the longest-waiting device is the one the sweep works on next",
+    nextOnboardingAction(
+      { status: "pending", hideDoneAt: null, attempts: 0, timerStartedAt: new Date(T0) },
+      T0 + 60_000,
+    ),
+    { action: "hide" },
+    "the hide is due exactly at +60s",
   );
 });
 
-test("queue: released and failed rows are excluded (a failure is not a queue entry)", () => {
-  const now = Date.now();
-  const queue = orderOnboardingQueue(
-    [
-      { device: { id: "live" }, onboarding: queued() },
-      { device: { id: "done" }, onboarding: queued({ status: "released" }) },
-      { device: { id: "bad" }, onboarding: queued({ status: "failed" }) },
-    ],
-    now,
+test("terminal/dead rows never act again", () => {
+  for (const row of [
+    { status: "released", hideDoneAt: new Date(T0), attempts: 0 },
+    { status: "failed", hideDoneAt: null, attempts: 0 },
+    { status: "failed", hideDoneAt: null, attempts: ONBOARDING_MAX_ATTEMPTS },
+    { status: "pending", hideDoneAt: new Date(T0), attempts: 0 },
+  ]) {
+    assert.equal(
+      nextOnboardingAction(
+        { ...row, timerStartedAt: new Date(T0) } as Parameters<typeof nextOnboardingAction>[0],
+        T0 + 60 * 60_000,
+      ),
+      null,
+      `row ${JSON.stringify(row)} must stay dead an hour later`,
+    );
+  }
+});
+
+test("onboardingRowLabel — released gone, failed red, due amber", () => {
+  assert.equal(
+    onboardingRowLabel(
+      { status: "released", hideDoneAt: new Date(T0), attempts: 0, timerStartedAt: new Date(T0) },
+      T0 + 60_000,
+    ),
+    null,
+    "released row renders NOTHING — the badge disappears",
   );
-  assert.deepEqual(queue.map((q) => q.device.id), ["live"]);
-});
-
-test("queue: a device with no onboarding row is never a queue entry", () => {
-  const now = Date.now();
-  const queue = orderOnboardingQueue(
-    [
-      { device: { id: "bare" }, onboarding: null },
-      { device: { id: "live" }, onboarding: queued() },
-    ],
-    now,
+  const failed = onboardingRowLabel(
+    { status: "failed", hideDoneAt: null, attempts: ONBOARDING_MAX_ATTEMPTS, timerStartedAt: new Date(T0) },
+    T0 + 60_000,
   );
-  assert.deepEqual(queue.map((q) => q.device.id), ["live"]);
-});
-
-test("queue: keeps the caller's own device object (the strip reads its name)", () => {
-  const now = Date.now();
-  const device = { id: "d1", name: "Sc-mini", tier: "public" };
-  const queue = orderOnboardingQueue([{ device, onboarding: queued() }], now);
-  assert.equal(queue[0].device, device, "same reference, so no re-shaping happens here");
-  assert.equal(queue[0].device.name, "Sc-mini");
-});
-
-test("queue: many pending public devices all stay in the queue (the scroller's source)", () => {
-  const now = Date.now();
-  const rows = Array.from({ length: 7 }, (_, i) => ({
-    device: { id: `d${i}` },
-    onboarding: queued({ timerStartedAt: minutesAgo(i + 1) }),
-  }));
-  const queue = orderOnboardingQueue(rows, now);
-  // The owner: "make a scroll in case the public pending devices are a lot".
-  // Nothing is dropped to keep the strip short — the strip bounds itself by
-  // rendering the head plus a scroller, not by hiding rows.
-  assert.equal(queue.length, 7);
-  assert.equal(queue[0].device.id, "d6", "the newest device is NOT first");
-  assert.equal(queue[6].device.id, "d0");
-});
-
-test("queue: a row already observed on the private tier reads step 4, not step 1", () => {
-  const now = Date.now();
-  const queue = orderOnboardingQueue(
-    [
-      {
-        device: { id: "moved" },
-        onboarding: queued({ tier: "private", timerStartedAt: minutesAgo(9) }),
-      },
-    ],
-    now,
+  assert.equal(failed?.tone, "failed");
+  assert.equal(failed?.text, "Hide failed");
+  assert.equal(
+    onboardingRowLabel(
+      { status: "pending", hideDoneAt: null, attempts: 0, timerStartedAt: new Date(T0) },
+      T0 + 59_000,
+    ),
+    null,
+    "first minute: no badge at all",
   );
-  assert.equal(queue[0].view.step, 4, "the move landed — the row must not claim it is hiding");
-});
-
-test("queue: an unparseable timerStartedAt sorts LAST instead of breaking the order", () => {
-  const now = Date.now();
-  const queue = orderOnboardingQueue(
-    [
-      { device: { id: "broken" }, onboarding: queued({ timerStartedAt: "not-a-date" }) },
-      { device: { id: "live" }, onboarding: queued({ timerStartedAt: minutesAgo(3) }) },
-    ],
-    now,
+  assert.equal(
+    onboardingRowLabel(
+      { status: "pending", hideDoneAt: null, attempts: 0, timerStartedAt: new Date(T0) },
+      T0 + 60_000,
+    )?.text,
+    "Hiding agent…",
   );
-  // `Invalid.getTime()` is NaN, which would make the comparator return NaN and
-  // leave the order engine-defined. The head must still be the real device.
-  assert.deepEqual(queue.map((q) => q.device.id), ["live", "broken"]);
+  assert.equal(
+    onboardingRowLabel(
+      { status: "pending", hideDoneAt: null, attempts: 2, timerStartedAt: new Date(T0) },
+      T0 + 60_000,
+    )?.text,
+    "Hiding agent · retry 2",
+    "genuine failures only — an offline wait never shows a retry number",
+  );
 });
 
+// ---------------------------------------------------------------------------
+// The sweep (app/api/internal/device-onboarding-sweep/route.ts)
+// ---------------------------------------------------------------------------
+
+test("401 without the internal bearer", async () => {
+  bearerOk = false;
+  const POST = loadRoute();
+  const res = await POST(new Request("http://test", { method: "POST" }));
+  assert.equal(res.status, 401);
+});
+
+test("syncs every linked user first; one broken link cannot abort the sweep", async () => {
+  seedDevice({ id: "dev-ok", userId: "u-ok", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-ok", userId: "u-ok", timerStartedAt: new Date(Date.now() - 61_000) });
+  seedDevice({ id: "dev-bad", userId: "u-bad", lastSeenAt: new Date() });
+  seedRow({ id: "r2", deviceId: "dev-bad", userId: "u-bad", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-ok", status: "active" }, { userId: "u-bad", status: "active" }];
+  failSyncUser = "u-bad";
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal(res.status, 200);
+  assert.deepEqual([...syncCalls].sort(), ["u-bad", "u-ok"], "both syncs ATTEMPTED, bad one included");
+  assert.equal((res.body as { synced: number }).synced, 1);
+  const errs = (res.body as { syncErrors: string[] }).syncErrors;
+  assert.equal(errs.length, 1, "exactly one error recorded");
+  assert.ok(String(errs[0]).startsWith("u-bad:"), String(errs[0]));
+  assert.equal(
+    (res.body as { hid: number }).hid,
+    2,
+    "a broken sync link does not cancel that user's hide either — only device freshness does",
+  );
+  assert.equal(getRow("r1").status, "released");
+  assert.equal(getRow("r2").status, "released");
+});
+
+test("fresh + due + online → hide runs (hideLabel name, powershell, runAsUser:false) and the row releases", async () => {
+  seedDevice({ id: "dev-7", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-7", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal(res.status, 200);
+  assert.equal((res.body as { hid: number }).hid, 1);
+  assert.equal(hideCalls.length, 1);
+  const call = hideCalls[0]!;
+  assert.equal(call.userId, "u-1");
+  assert.equal(call.deviceId, "dev-7");
+  assert.equal(call.shell, "powershell");
+  assert.equal(call.runAsUser, false, "system-level — the agent service is being renamed");
+  assert.equal(call.timeoutSeconds, 90);
+  assert.ok(
+    String(call.cmd).includes("box-dev-7"),
+    "the hide targets the DEVICE NAME from hideLabel (the vantra_404 regression)",
+  );
+  const row = getRow("r1");
+  assert.equal(row.status, "released");
+  assert.ok(row.hideDoneAt, "hideDoneAt stamped");
+  assert.ok(row.releasedAt, "releasedAt stamped");
+  assert.equal(row.lastError, null);
+});
+
+test("OFFLINE device → NO hide call, NO attempt burn, NO lastError", async () => {
+  seedDevice({ id: "dev-8", userId: "u-1", lastSeenAt: new Date(Date.now() - 10 * 60_000) });
+  seedRow({ id: "r1", deviceId: "dev-8", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal(res.status, 200);
+  assert.equal(hideCalls.length, 0, "never dispatch to a box dark for 10 minutes");
+  const row = getRow("r1");
+  assert.equal(row.attempts, 0, "offline is NOT a failure — no burn");
+  assert.equal(row.lastError, null, "no error surface for a quiet wait");
+  assert.equal(row.status, "pending");
+  assert.equal((res.body as { skippedOffline: number }).skippedOffline, 1);
+});
+
+test("vantra_503 (agent offline at dispatch) → claim released, NO burn, row stays pending", async () => {
+  seedDevice({ id: "dev-9", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-9", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+  hideBehavior = "throw_503";
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal(res.status, 200);
+  assert.equal(hideCalls.length, 1, "the attempt WAS made (freshness gate had passed)");
+  const row = getRow("r1");
+  assert.equal(row.attempts, 0, "THE 503 BUG REGRESSION: a transport 'offline' burns nothing");
+  assert.equal(row.lastError, null, "no red error from a device that is merely off");
+  assert.equal(row.status, "pending", "retry next sweep");
+  assert.equal(row.claimAt, null, "claim released for the next pass");
+});
+
+test("genuine transport error (non-503) → attempts++ with STEP:transport_error", async () => {
+  seedDevice({ id: "dev-a", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-a", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+  hideBehavior = "throw";
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal(res.status, 200);
+  const row = getRow("r1");
+  assert.equal(row.attempts, 1, "a real failure burns exactly one attempt");
+  assert.ok(String(row.lastError).includes("STEP:transport_error"), String(row.lastError));
+  assert.ok(String(row.lastError).includes("trmm_500_dispatch_failed"), "the real error text survives");
+});
+
+test("hide script FAIL output → attempts++ with hide_script_fail:", async () => {
+  seedDevice({ id: "dev-b", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-b", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+  hideBehavior = "fail_output";
+
+  const POST = loadRoute();
+  await POST(authedReq());
+  const row = getRow("r1");
+  assert.equal(row.attempts, 1);
+  assert.ok(String(row.lastError).includes("hide_script_fail:"), String(row.lastError));
+  assert.ok(String(row.lastError).includes("FAIL:agent_service_missing"), "the failing step is named");
+});
+
+test("attempts reaching the max → status failed (the red 'Hide failed' badge)", async () => {
+  seedDevice({ id: "dev-c", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({
+    id: "r1", deviceId: "dev-c", userId: "u-1",
+    timerStartedAt: new Date(Date.now() - 61_000),
+    attempts: ONBOARDING_MAX_ATTEMPTS - 1,
+  });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+  hideBehavior = "throw";
+
+  const POST = loadRoute();
+  await POST(authedReq());
+  const row = getRow("r1");
+  assert.equal(row.attempts, ONBOARDING_MAX_ATTEMPTS);
+  assert.equal(row.status, "failed", "terminal — no more dispatches, ever");
+  assert.equal(nextOnboardingAction(row, Date.now()), null, "rule agrees the row is dead");
+});
+
+test("a released row is never re-run (claim exactly-once)", async () => {
+  seedDevice({ id: "dev-d", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({
+    id: "r1", deviceId: "dev-d", userId: "u-1",
+    timerStartedAt: new Date(Date.now() - 5 * 60_000),
+    status: "released",
+    hideDoneAt: new Date(Date.now() - 4 * 60_000),
+  });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal((res.body as { hid: number }).hid, 0);
+  assert.equal(hideCalls.length, 0, "released rows are invisible to the sweep");
+});
+
+test("claim race: another sweep pass claimed the row first → nothing runs", async () => {
+  seedDevice({ id: "dev-e", userId: "u-1", lastSeenAt: new Date() });
+  seedRow({ id: "r1", deviceId: "dev-e", userId: "u-1", timerStartedAt: new Date(Date.now() - 61_000) });
+  vantraLinks = [{ userId: "u-1", status: "active" }];
+  claimCountOverride = 0; // findMany saw it; updateMany lost the race
+
+  const POST = loadRoute();
+  const res = await POST(authedReq());
+  assert.equal((res.body as { hid: number }).hid, 0);
+  assert.equal(hideCalls.length, 0, "loser of the race dispatches nothing");
+  assert.equal(getRow("r1").claimAt, null, "row not even claimed by us");
+});

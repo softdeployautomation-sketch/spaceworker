@@ -56,13 +56,6 @@ import {
   buildRevealAgentScript,
   isValidAgentLabel,
 } from "@/lib/agent-visibility";
-import {
-  ONBOARDING_ACCESSIBLE_NOTE,
-  formatOnboardingElapsed,
-  isOnboardingTerminal,
-  onboardingClockText,
-  onboardingView,
-} from "@/lib/device-onboarding";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -2104,15 +2097,6 @@ function SummaryTab({
           Open screen monitoring →
         </button>
       </div>
-      {/* TASK_128 — the onboarding quarantine, worded from the SAME 4 step
-          labels as the Devices strip (no new tooling, no second stop: the
-          technician's "till it will say stop" stays the existing Keep awake →
-          Stop). Renders nothing for a device that released cleanly, and DOES
-          render for a `failed` one — a device that never moved must never look
-          like it silently succeeded (owner rule). */}
-      {device.onboarding &&
-        (!isOnboardingTerminal(device.onboarding.status) ||
-          device.onboarding.status === "failed") && <OnboardingCard device={device} />}
       {/* Task 111 — compact clone card (always visible on Summary). The Open
           button is live-session-only; Manage switches to the Browser clone tab. */}
       <div className="rounded-lg border border-border bg-bg px-3 py-2 sm:col-span-2">
@@ -2137,98 +2121,6 @@ function SummaryTab({
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/**
- * TASK_128 — the console's Summary card for an onboarding device.
- *
- * Reuse only: the four step labels come from `onboardingView` (the same source
- * the Devices strip uses), `Public`/`Private` is the row badge, and nothing here
- * acts on the device — the hide/stay-on stages are the sweep's, and the
- * technician's stop stays the existing Keep-awake Stop.
- */
-function OnboardingCard({ device }: { device: DeviceView }) {
-  const row = device.onboarding;
-  // TASK_128 — the countdown needs a clock, and reading one during render is
-  // impure (`react-hooks/purity`). Same 1-minute tick as the Devices strip; it
-  // re-renders only this card, and always derives from the server's
-  // timerStartedAt so a reload never "jumps the clock back".
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-  if (!row) return null;
-  const view = onboardingView(
-    {
-      status: row.status,
-      tier: device.tier,
-      timerStartedAt: row.timerStartedAt,
-      hideDoneAt: row.hideDoneAt,
-      stayOnDoneAt: row.stayOnDoneAt,
-      movedAt: row.movedAt,
-      releasedAt: row.releasedAt,
-      destinationOrgId: row.destinationOrgId,
-      isOnline: device.status === "online" || device.status === "asleep",
-      lastError: row.lastError,
-    },
-    nowMs,
-  );
-  return (
-    <div
-      className={cn(
-        "rounded-lg border bg-bg px-3 py-2 sm:col-span-2",
-        // Red = a genuine failure; amber = still waiting, not broken (owner
-        // decision 2026-09-27). Keeping them distinct is what lets the owner
-        // trust the red.
-        view.failed
-          ? "border-red-500/40"
-          : view.stuck
-            ? "border-amber-500/40"
-            : "border-border",
-      )}
-    >
-      <p className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-fg-muted">
-        <ShieldCheck className="h-3.5 w-3.5" /> Onboarding
-      </p>
-      <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg">
-        <span>{view.step} of 4</span>
-        <span className="text-fg-muted">·</span>
-        <span className={view.failed ? "text-red-500" : undefined}>
-          {view.title.toLowerCase()}
-        </span>
-        <span className="text-fg-muted">·</span>
-        <span className="text-fg-muted">{onboardingClockText(view)}</span>
-        {/* Owner 2026-09-27 — same rule as the Devices row badge: only PUBLIC
-            is ever named. A private device gets no tier text ("not Public"
-            already says private), so the separator is dropped with it rather
-            than left dangling. */}
-        {device.tier !== "private" && (
-          <>
-            <span className="text-fg-muted">·</span>
-            <span className="text-fg-muted">Public</span>
-          </>
-        )}
-      </p>
-      <p className="mt-1 text-xs text-fg-muted">{view.detail}</p>
-      {/* The owner's promise: quarantine never takes the device away. */}
-      <p className="mt-1 text-xs text-fg-muted">{ONBOARDING_ACCESSIBLE_NOTE}</p>
-      {/* Owner decision 2026-09-27 — "much longer than usual" is loud but NOT a
-          failure: amber, with the elapsed time and the reason. */}
-      {view.stuck && view.stuckReason && (
-        <p className="mt-1 text-xs text-amber-500">
-          Taking much longer than usual — {formatOnboardingElapsed(view.elapsedMs)} so far.{" "}
-          {view.stuckReason}
-        </p>
-      )}
-      {/* §6 — a move that never landed leaves the device Public and the reason
-          here, so the process never reads as silently successful. Suppressed
-          while stuck because the line above already carries the same reason. */}
-      {row.lastError && !view.stuck && (
-        <p className="mt-1 text-xs text-amber-500">Last error: {row.lastError}</p>
-      )}
     </div>
   );
 }
