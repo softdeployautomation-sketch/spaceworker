@@ -77,7 +77,17 @@ export function toSiteView(row: SiteRow): HostingSiteView {
   };
 }
 
-/** A Cloudflare project name must be a lowercase slug — derive it from the label. */
+/**
+ * A Cloudflare project name must be a lowercase slug — derive it from the label.
+ *
+ * TASK_225: this is LABEL-ONLY derivation and NOT a mint. Cloudflare Pages
+ * project names are globally unique, so two sites sharing a label would collide
+ * (the second site's create 400s at Cloudflare, and a later deploy to that name
+ * would overwrite the OTHER site's project). Never store this bare slug as
+ * `cfProject` — mint via `uniqueCfProject` below. (The schema.prisma comment
+ * that still says "cfProject is the slugified name" cannot be corrected here —
+ * schema edits are out of TASK_225's scope, §6.)
+ */
 export function slugifyProject(name: string): string {
   const base = name
     .toLowerCase()
@@ -85,6 +95,34 @@ export function slugifyProject(name: string): string {
     .replace(/^-+|-+$/g, "")
     .slice(0, 50);
   return base || "site";
+}
+
+/**
+ * TASK_225 — mint a CLOUDFLARE-UNIQUE Pages project name from the label.
+ *
+ * `<head ≤40 chars>-<7 lowercase hex chars>` = ≤ 48 chars. Cloudflare's own
+ * numeric limit was not confirmable at the docs today, but 48 sits under BOTH
+ * the documented 58 assumption AND our proven bound (slugifyProject's 50-char
+ * names shipped against real Cloudflare in TASK_155). Charset is valid by
+ * construction: slugifyProject emits lowercase `[a-z0-9-]`, the suffix is
+ * lowercase hex, and the head is trailing-hyphen-trimmed so the join can never
+ * produce a double hyphen.
+ *
+ * Why a random suffix instead of check-then-create: a "does this slug already
+ * exist in our DB?" loop is racy (two concurrent creates pass the check
+ * together) and still cannot see names that exist ONLY in Cloudflare (a BYO
+ * user's own pre-existing project). Random-suffix is atomic, race-free and
+ * collision-free by construction. Residual hazard — a BYO user happening to own
+ * an external project named exactly `my-portfolio-1a2b3c4` — is vanishingly
+ * unlikely and pre-existing in kind; noted here, deliberately not engineered
+ * around.
+ */
+export function uniqueCfProject(name: string): string {
+  const head = slugifyProject(name).slice(0, 40).replace(/-+$/, "");
+  const bytes = new Uint8Array(4);
+  globalThis.crypto.getRandomValues(bytes);
+  const suffix = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 7);
+  return `${head}-${suffix}`;
 }
 
 function siteDir(userId: string, siteId: string): string {
@@ -243,7 +281,12 @@ export async function createSite(input: CreateSiteInput): Promise<HostingResult<
   }
 
   const previewToken = newHostingToken();
-  const cfProject = engine === "cloudflare" ? slugifyProject(name) : null;
+  // TASK_225 — the Cloudflare project name is MINTED unique, never the bare
+  // label slug: Pages project names are globally unique, so two sites sharing a
+  // label would collide (the second create 400s at Cloudflare; a later deploy
+  // would write into the first site's project). The local engine has no CF
+  // project — it stays NULL and is served from our own disk, unchanged.
+  const cfProject = engine === "cloudflare" ? uniqueCfProject(name) : null;
 
   const row = await prisma.hostingSite.create({
     data: {
@@ -702,7 +745,18 @@ async function deployRevision(
   // CLOUDFLARE — the four-call Direct-Upload deploy.
   const credRes = await resolveDeployCredential(site.userId, site.credentialId);
   if (!credRes.ok) return credRes;
-  const project = site.cfProject ?? slugifyProject(site.name);
+  // TASK_225 — never re-derive the bare label slug here. A legacy row with a
+  // NULL cfProject would mint a NON-unique name (two sites labelled the same
+  // would collide on Cloudflare, and one deploy could overwrite the other's
+  // project). MINT a unique name and PERSIST it to the row before any CF call,
+  // so every deploy from here on reuses one stable, unique name. (§5 owner
+  // flag: this moves a legacy NULL row's liveUrl to its own new Pages project
+  // once — correct, but user-visible.)
+  let project = site.cfProject;
+  if (!project) {
+    project = uniqueCfProject(site.name);
+    await prisma.hostingSite.update({ where: { id: site.id }, data: { cfProject: project } });
+  }
   const ensured = await ensureProject(credRes.value, project);
   if (!ensured.ok) {
     return { ok: false, status: 502, code: "cf_project", message: ensured.error ?? "Cloudflare rejected the project." };
