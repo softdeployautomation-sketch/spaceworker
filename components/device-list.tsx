@@ -36,6 +36,10 @@ type DeviceRow = {
   id: string;
   name: string;
   deviceKind: string;
+  // TASK_230 P4b — the stable identity (already serialized by toDeviceView;
+  // declared here so the client can apply the `node//` mesh-only discriminator
+  // for capability gating). null only for a legacy row never linked to Vantra.
+  vantraAgentId: string | null;
   status: string;
   osName: string | null;
   osVersion: string | null;

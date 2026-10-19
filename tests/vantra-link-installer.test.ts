@@ -1431,6 +1431,37 @@ test("TASK_230: online + no lastSeen IS stamped now (the one honest fallback)", 
   assert.ok(stamp >= t0 && stamp <= t1, "online + no lastSeen stamps now, within the test window");
 });
 
+test("TASK_230 P4b-2: a mesh-only (node//) device syncs as tier=public", async () => {
+  // The whole public-on-top chain keys on tier. Mesh-only rows are surfaced by
+  // Vantra ONLY under the public org list, so this proves the end state that
+  // drives the sort partition + Public pill in the UI.
+  devicesResponse = {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: "node//$GXOrIYlMeshOnlyId==",
+        name: "Mesh-mini",
+        online: true,
+        status: "online",
+        osName: "windows",
+        operatingSystem: "Windows 11",
+        lastSeen: new Date().toISOString(),
+        meshOnly: true,
+        autoMove: null,
+      },
+    ],
+  };
+
+  const res = await syncDevices(USER_ID);
+
+  assert.equal(res.devices.length, 1);
+  const row = deviceRows.get("node//$GXOrIYlMeshOnlyId==")!;
+  assert.equal(row.tier, "public", "mesh rows ride the public org's tier");
+  assert.equal(row.status, "online");
+  assert.equal(typeof (row.lastSeenAt as Date).getTime, "function");
+});
+
 // ---------------------------------------------------------------------------
 // TASK_171 — public install-link history: all mints, expiry, downloads.
 // ---------------------------------------------------------------------------
