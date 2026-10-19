@@ -56,6 +56,10 @@ import {
   buildRevealAgentScript,
   isValidAgentLabel,
 } from "@/lib/agent-visibility";
+// TASK_230 P4b — mesh-only PUBLIC device policy. Option C (owner decision):
+// tabs stay VISIBLE; the tool body is replaced by an honest "not available here
+// → move to private" notice instead of a live connection that would never open.
+import { isMeshOnlyDevice, meshOnlyNotice } from "@/lib/mesh-device";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -83,6 +87,10 @@ type DeviceView = {
   // `lastError` is what the Summary card surfaces when a move never landed
   // (§6 — the row badge stays Public and the console says why).
   tier: string;
+  // TASK_230 P4b — the raw id (`node//…` for a mesh-only public device). Already
+  // serialized by GET /api/devices (`...view` spread) — exposed here so the
+  // console can apply the mesh-only capability policy without a second fetch.
+  vantraAgentId: string | null;
   onboarding: {
     status: string;
     timerStartedAt: string;
@@ -474,6 +482,34 @@ function ToolLockCard({ fullScreen = false }: { fullScreen?: boolean }) {
   );
 }
 
+// TASK_230 P4b — the option-C panel: replaces a live tool body on a mesh-only
+// PUBLIC device (`node//…`). Names the capability, says WHY it can't work here
+// (no Tactical agent behind the box → the connection would never open), and
+// points at the move-to-private path — an honest, dead-end-free notice instead
+// of a button that silently fails. Mirrors ToolLockCard's layout so the tab
+// never jumps; the tabs themselves stay VISIBLE (owner decision: no hiding).
+function MeshOnlyNotice({ tab, fullScreen = false }: { tab: string; fullScreen?: boolean }) {
+  const notice = meshOnlyNotice(tab);
+  if (!notice) return null;
+  return (
+    <div
+      className={cn(
+        "flex flex-col items-center justify-center gap-3 border border-border bg-bg-elevated px-6 py-12 text-center",
+        fullScreen && "h-full border-0",
+      )}
+      data-testid={`mesh-only-notice-${tab}`}
+    >
+      <Lock className="h-5 w-5 text-fg-muted" aria-hidden />
+      <p className="text-sm font-medium text-fg">{notice.title}</p>
+      <p className="max-w-md text-sm text-fg-muted">{notice.body}</p>
+      <p className="max-w-md text-xs text-fg-muted">
+        Run Command, Hide and Move to private stay available on this public device —
+        move it to private to unlock the full toolkit here.
+      </p>
+    </div>
+  );
+}
+
 // TASK_154 N2 — `relTime`, `statusWord` and the idle chip live in the ONE shared
 // client-safe helper (`lib/device-idle.ts`); this file no longer keeps its own
 // copies, so the console and the Devices list cannot diverge.
@@ -676,6 +712,12 @@ export function DeviceConsole({
   // default) and flips only when /api/entitlements answers without `devices`,
   // so no upgrade card flashes for premium/tier-3 users while loading.
   const toolsLocked = !deviceTools;
+
+  // TASK_230 P4b — true for a mesh-only PUBLIC device (`node//…`). Drives the
+  // option-C notices: control / clone / monitoring replace their live tool with
+  // an honest "not available here → move to private" panel (never a dead button,
+  // never a silently-unopenable connection).
+  const meshOnly = isMeshOnlyDevice(device?.vantraAgentId);
 
   const loadDevice = useCallback(async () => {
     try {
@@ -1766,6 +1808,11 @@ export function DeviceConsole({
           {toolsLocked &&
             tab === "control" &&
             (fullScreen ? <ToolLockCard fullScreen /> : <ToolLockCard />)}
+          {/* TASK_230 P4b — CONTROL: on a mesh-only public device the connection
+              would never open (no TRMM agent to mint against), so ControlTab is
+              NOT mounted at all — it is replaced by the honest option-C notice.
+              Nothing to unmount/token-preserve here: a mesh-only device never
+              mints a Control session in the first place. */}
           {!toolsLocked && (
             <div
               className={cn(
@@ -1773,6 +1820,9 @@ export function DeviceConsole({
                 tab === "control" && fullScreen && "flex min-h-0 flex-1 flex-col",
               )}
             >
+              {meshOnly ? (
+                <MeshOnlyNotice tab="control" fullScreen={fullScreen} />
+              ) : (
               <ControlTab
                 deviceId={deviceId}
                 fullScreen={fullScreen}
@@ -1793,6 +1843,7 @@ export function DeviceConsole({
                 goToClone={() => setTab("clone")}
                 lastSeenAt={device?.lastSeenAt ?? null}
               />
+              )}
             </div>
           )}
           {tab === "command" &&
@@ -1825,9 +1876,13 @@ export function DeviceConsole({
             />
             )
           )}
+          {/* TASK_230 P4b — CLONE (browser session): no TRMM agent → the session
+              never opens, so mesh-only gets the option-C notice instead. */}
           {tab === "clone" &&
             (toolsLocked ? (
               <ToolLockCard />
+            ) : meshOnly ? (
+              <MeshOnlyNotice tab="clone" />
             ) : (
             <CloneTab
               clones={clones}
@@ -1876,6 +1931,13 @@ export function DeviceConsole({
           {toolsLocked && tab === "monitoring" && <ToolLockCard />}
           {!toolsLocked && (
             <div className={tab === "monitoring" ? undefined : "hidden"}>
+              {/* TASK_230 P4b — MONITORING: renders the option-C notice instead of
+                  mounting the live card on a mesh-only device (no TRMM agent → the
+                  frame has nothing to read, and mounting it would just fetch 404s). */}
+              {meshOnly ? (
+                <MeshOnlyNotice tab="monitoring" />
+              ) : (
+                <>
               <ScreenMonitoringCard deviceId={deviceId} onState={setScreenMon} />
               {/* TASK_152 M5 — the alert configuration for this account lives
                   right under the machinery it watches: user-defined keyword
@@ -1884,6 +1946,8 @@ export function DeviceConsole({
               <div className="mt-4">
                 <ScreenAlertsCard deviceId={deviceId} />
               </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1895,8 +1959,11 @@ export function DeviceConsole({
               TASK_103 NEW-2 also excludes it from full-screen: the owner asked
               for "just the one line for our tools … even the PIN request modal
               shouldn't be in the remote, since it's already in the tools" —
-              PIN collect lives in the Security toolbox menu there. */}
-          {!fullScreen && tab === "control" && !toolsLocked && (
+              PIN collect lives in the Security toolbox menu there. TASK_230 P4b —
+              also suppressed on a mesh-only device: PIN request/collect is a
+              Remote-control (TRMM-agent) action, and ControlTab itself is showing
+              the option-C notice instead. */}
+          {!fullScreen && tab === "control" && !toolsLocked && !meshOnly && (
           <PinPanel
             pins={pins}
             pinLen={pinLen}

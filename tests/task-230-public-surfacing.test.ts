@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isMeshOnlyDevice, MESH_ONLY_ID_PREFIX } from "../lib/mesh-device";
+import { isMeshOnlyDevice, MESH_ONLY_ID_PREFIX, meshOnlyNotice, isMeshOnlyNoticeTab, MESH_ONLY_NOTICE_TABS } from "../lib/mesh-device";
 
 const ROOT = process.cwd();
 const read = (p: string) => readFileSync(join(ROOT, p), "utf8");
@@ -24,6 +24,7 @@ const codeOnly = (src: string) =>
 
 const listSrc = read("components/device-list.tsx");
 const syncSrc = codeOnly(read("lib/vantra-link.ts"));
+const consoleSrc = codeOnly(read("components/device-console.tsx"));
 
 // --- the discriminator (PURE — direct import) --------------------------------
 
@@ -95,4 +96,66 @@ test("P4b-2: sync assigns tier from the ORG the row came from (mesh = public org
 
 test("P4b-2: mesh-only field is typed optional on the sync payload (older Vantra safe)", () => {
   assert.match(syncSrc, /meshOnly\?: boolean/);
+});
+
+// --- capability policy: option-C notices (lib/mesh-device.ts) ------------------
+// Owner decision (2026-10-19, option C): tabs stay VISIBLE; control / clone /
+// monitoring replace their live tool with an honest "not available here → move
+// to private" notice instead of a connection that would never open.
+
+test("P4b-3: control/clone/monitoring are the notice tabs; summary/command/activity stay live", () => {
+  assert.deepEqual(
+    [...MESH_ONLY_NOTICE_TABS].sort(),
+    ["clone", "control", "monitoring"],
+  );
+  assert.equal(isMeshOnlyNoticeTab("control"), true);
+  assert.equal(isMeshOnlyNoticeTab("clone"), true);
+  assert.equal(isMeshOnlyNoticeTab("monitoring"), true);
+  assert.equal(isMeshOnlyNoticeTab("summary"), false);
+  assert.equal(isMeshOnlyNoticeTab("command"), false);
+  assert.equal(isMeshOnlyNoticeTab("activity"), false);
+});
+
+test("P4b-3: each notice tab names its capability and points at move-to-private", () => {
+  const nouns: Record<string, string> = {
+    control: "Remote control",
+    clone: "Browser session",
+    monitoring: "Screen monitoring",
+  };
+  for (const [tab, noun] of Object.entries(nouns)) {
+    const n = meshOnlyNotice(tab);
+    assert.ok(n, `${tab} must produce a notice`);
+    assert.match(n.title, new RegExp(noun), `${tab} title names the capability`);
+    assert.match(n.body, /move it to private/i, `${tab} body gives the path forward`);
+    assert.match(n.body, /no\s+Tactical agent/i, `${tab} body explains WHY`);
+  }
+});
+
+test("P4b-3: live tabs (summary/command/activity) produce NO notice", () => {
+  for (const tab of ["summary", "command", "activity", "", "bogus"]) {
+    assert.equal(meshOnlyNotice(tab), null, `${tab} must be null`);
+  }
+});
+
+// --- capability policy wired into the console (device-console.tsx) ------------
+
+test("P4b-3: console derives meshOnly from the row id (node// discriminator)", () => {
+  assert.match(consoleSrc, /const meshOnly = isMeshOnlyDevice\(device\?\.vantraAgentId\)/);
+  // The id reaches the client through the already-serialized /api/devices row.
+  assert.match(consoleSrc, /vantraAgentId: string \| null;/);
+});
+
+test("P4b-3: control/clone/monitoring each render MeshOnlyNotice instead of the live tool", () => {
+  // One notice branch per gated tab…
+  assert.match(consoleSrc, /<MeshOnlyNotice tab="control"/);
+  assert.match(consoleSrc, /<MeshOnlyNotice tab="clone"/);
+  assert.match(consoleSrc, /<MeshOnlyNotice tab="monitoring"/);
+  // …and ControlTab / CloneTab / ScreenMonitoringCard only mount in the else
+  // arm (never on a mesh-only device).
+  assert.match(consoleSrc, /\{meshOnly \? \(\s*<MeshOnlyNotice tab="control"/);
+  assert.match(consoleSrc, /\) : meshOnly \? \(\s*<MeshOnlyNotice tab="clone"/);
+});
+
+test("P4b-3: PIN panel is suppressed on a mesh-only device (needs a TRMM agent)", () => {
+  assert.match(consoleSrc, /tab === "control" && !toolsLocked && !meshOnly && \(/);
 });
