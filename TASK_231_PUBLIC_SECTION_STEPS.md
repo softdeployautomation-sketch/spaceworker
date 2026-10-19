@@ -110,3 +110,32 @@ line, single-quoted URI (raw meshid may hold `$`/`@`), no `"` anywhere, no line-
 - [x] LIVE: owner's EXISTING link `d1a8d52d…` 502 → **200 + 60,611 B VBS carrier** with
       retry (`Start-Sleep -Seconds 2`) + raw meshid `1Xu0kf…` inside · 0 occurrences of
       interpolating_double_quote · journals clean both services
+
+## TASK_233 — HOTFIX: every mesh command 404'd "Device not found." (runCommandNow → /runmesh)
+
+Root cause (two stacked defects, each live-proven on the box, neither guesswork):
+1. **`node.meshid` never exists on the wire.** MeshCentral's `nodes` control-channel
+   response is `{<meshId>: [node…]}` — the group is ONLY the map key. Live-proven:
+   wire node field keys = `mtype,_id,icon,name,rname,domain,agent,host,firstconnect,ip,
+   osdesc,av,wsc,defender,users,lusers,upnusers,idletime,lastbootuptime,conn,pwr,agct`
+   (no `meshid`). The assert's `!node.meshid` threw `mesh_node_has_no_group` → route
+   404 on EVERY call — this predates and outweighs (2).
+2. A TASK_233 hotfix briefly stripped the `node//` prefix — also wrong: byte-proven
+   MeshCentral node `_id` (`node//7Qmu$P8ql…`) and SW `vantraAgentId` are identical.
+   Reverted (commit 967fabb); (1) fixed in e108045 via `listMeshNodesGrouped()`
+   (map-key lookup, same shape `listMeshNodesForGroup` already works with).
+
+Evidence chain:
+- Pre-fix live repro: `POST /runmesh` (real route, real node id) → `404 {"error":"Device not found."}`
+- Assert replica script on box: node FOUND, `node.meshid = undefined` → pinpointed (1)
+- Gates: runmesh 12/12 · **full suite 121/121** · tsc 0 · eslint 0
+- Deploys: `967fabb` (raced dispatch 39336441100 built old sha — caught, re-dispatched),
+  `e108045` dispatch `39339003041` **completed success** · BUILD_ID `ynn1L9bysMdBRncYg0dvS`
+- **Post-fix live proof: `POST /runmesh` → `503 {"error":"This device is currently offline."}`**
+  — assert passes, MeshCentral accepted the canonical `node//…` nodeid, answered
+  "Agent not connected" → correct offline answer (device is off), never-burn 503 shape, 0 err journals.
+- Burned onboarding row `cmvfrtgux00cskpetd1o6vxn6` reset: `failed/10 → pending/0` so the
+  60s sweep re-runs the hide cleanly once the VM is on (offline burns nothing).
+- Pins added: anti-strip (`.slice(6)` forbidden in meshcentral-api), `mesh_node_has_no_group`
+  stays dead, map-key lookup shape.
+- SW repo: **untouched** — SW already passes the canonical id; all defects were Vantra-side.
