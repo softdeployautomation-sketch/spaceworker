@@ -4,7 +4,7 @@
 # that is exactly how four sibling units silently 401'd on 2026-09-24.
 # PORT 3500 — matches spaceworker.service (same convention as automations-sweep.service).
 [Unit]
-Description=SpaceWorker device onboarding quarantine sweep (hide@5 / stay-on@10 / release@20)
+Description=SpaceWorker device onboarding hide-only sweep (hide ~60s; offline/503 burns nothing)
 
 [Service]
 Type=oneshot

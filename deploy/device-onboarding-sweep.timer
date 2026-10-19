@@ -1,15 +1,17 @@
 # Install: sudo cp device-onboarding-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now device-onboarding-sweep.timer
 [Unit]
-Description=Run the SpaceWorker device onboarding quarantine sweep every 5 minutes
+Description=Run the SpaceWorker device onboarding hide-only sweep every 60 seconds
 
-# The stage thresholds (hide@5 / stay-on@10 / release@20) are 5-minute-quantised
-# BY DESIGN — every stage fires on the first sweep at/after its minute mark,
-# mirroring Vantra's own 5-minute telegram-device-check poller that fires the
-# actual move. A shorter cadence would not make a stage land sooner than the
-# move's own poller allows.
+# TASK_228 (quarantine retired 2026-10-19): the OLD 5-minute cadence existed
+# ONLY to quantise quarantine stage thresholds (hide@5 / stay-on@10 /
+# release@20) against Vantra's 5-minute move poller — both retired. The owner
+# requires the hide to land in the FIRST minute after a device appears, so the
+# cadence is 60s. A 5-minute timer here silently added up to 5 minutes of pure
+# scheduling delay on top of the +60s hide gate (observed clobbered by this
+# unit itself after deploys until fixed in-repo — keep this at 1min).
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
+OnUnitActiveSec=1min
 Unit=device-onboarding-sweep.service
 
 [Install]
