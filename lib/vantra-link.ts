@@ -714,7 +714,14 @@ async function fetchPublicOrgPsCommand(
 
   const minted = await vantraFetch<{ ok: boolean; command?: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
-    { method: "POST", body: JSON.stringify({ as: "powershell" }) },
+    // TASK_231 (owner: "public is a separate engine — no auto for now; the
+    // user moves a device to private by hand"). The public PS/VBS carrier is
+    // therefore the TASK_230 A.1 MESH-STANDALONE installer: `mesh: true` rides
+    // alongside the old TASK_128 flag. Vantra's mesh branch takes precedence
+    // when it sees the key (and find-or-creates the per-user public mesh group
+    // the device then surfaces under); an older Vantra ignores the unknown key
+    // and answers the same TASK_128 PS — deploy-order safe either way.
+    { method: "POST", body: JSON.stringify({ as: "powershell", mesh: true }) },
   );
   // Deploy-order guard: an older Vantra answers the public shape (a
   // `downloadUrl`, no `command`) because it does not know the flag yet. Saying

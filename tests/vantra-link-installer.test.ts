@@ -1759,9 +1759,10 @@ test("TASK_179 public-vbs-link: 200 → wrapper URL + 72h TTL; payload stores na
   assert.ok(!("pdfBase64" in payload), "no PDF attached ⇒ no payload key");
   assert.ok(!("installerUrl" in created), "D5: the artifact URL is never stored");
   assert.ok(!JSON.stringify(created).includes("--api"), "the install command never lands in the row");
-  // D5 pre-verify: exactly ONE fresh org call (the `as:"powershell"` mint).
+  // D5 pre-verify: exactly ONE fresh org call (the TASK_231 mesh-standalone
+  // public mint — `mesh:true` rides with the legacy `as:"powershell"` flag).
   assert.equal(fetches.length, 1, "mint pre-verifies the org command once");
-  assert.deepEqual(JSON.parse(String(fetches[0].body)), { as: "powershell" });
+  assert.deepEqual(JSON.parse(String(fetches[0].body)), { as: "powershell", mesh: true });
   // D7 — its own audit action, distinct from the file mint's.
   const audit = audits.find((a) => a.action === "vantra_public_vbs_link_minted");
   assert.ok(audit, "link mints are audited");
@@ -1836,7 +1837,7 @@ test("TASK_179 resolve: fresh command → carrier with PDF-before-install, 97× 
   // The org command was minted AGAIN at open (D5 — never served from a
   // stored credential): exactly one more fetch than the mint used.
   assert.equal(fetches.length, 2, "open regenerates the command");
-  assert.deepEqual(JSON.parse(String(fetches[1].body)), { as: "powershell" });
+  assert.deepEqual(JSON.parse(String(fetches[1].body)), { as: "powershell", mesh: true });
   const embedded = rejoinVbs(art.content);
   const pdfAt = embedded.indexOf("try{[IO.File]::WriteAllBytes($env:TEMP + '\\onboard.pdf'");
   const magicAt = embedded.indexOf("FromBase64String([IO.File]::ReadAllText('@B64@'))");

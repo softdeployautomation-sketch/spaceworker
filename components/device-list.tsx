@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
@@ -1626,7 +1626,7 @@ export function DeviceList() {
           </p>
         ) : (
           <div>
-            {visible.map((d) => {
+            {visible.map((d, idx) => {
               const online = d.status === "online" || d.status === "asleep";
               const dot =
                 d.status === "online"
@@ -1635,13 +1635,35 @@ export function DeviceList() {
                     ? "bg-amber-400"
                     : "bg-zinc-400";
               return (
-                // TASK_128 §15 — the Delete button must NOT nest inside the row's
-                // Link (a <button> inside an <a> is invalid markup and would also
-                // navigate on click). So it is a SIBLING, absolutely positioned
-                // over the row's trailing edge, and the Link carries right padding
-                // so no cell runs underneath it. The row's bottom border moves up
-                // to this wrapper because `last:` now applies here, not the Link.
-                <div key={d.id} className="group relative border-b border-border last:border-b-0">
+                // TASK_231 (owner: "public devices on top as a SEPARATE engine,
+                // immediately under Add-a-device; the user moves one to private
+                // by hand"). The stable TASK_228 sort already partitions
+                // public-first, so the boundary check below puts a section
+                // header on the first public row and another on the first
+                // private row — one rows container, so the filter/search strip
+                // above still applies to both sections. TASK_181 wrapper build
+                // renders neither header (no public/private vocabulary there).
+                <Fragment key={d.id}>
+                  {!wrapper && d.tier !== "private" && idx === 0 && (
+                    <div className="flex items-baseline gap-2 border-b border-border bg-black/[0.03] px-4 py-2 dark:bg-white/[0.03]">
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+                        Public devices
+                      </span>
+                      <span className="text-[10px] text-fg-muted">
+                        standalone engine · move to private anytime
+                      </span>
+                    </div>
+                  )}
+                  {!wrapper &&
+                    d.tier === "private" &&
+                    visible[idx - 1]?.tier !== "private" && (
+                      <div className="flex items-baseline gap-2 border-b border-border bg-black/[0.03] px-4 py-2 dark:bg-white/[0.03]">
+                        <span className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">
+                          Private devices
+                        </span>
+                      </div>
+                    )}
+                <div className="group relative border-b border-border last:border-b-0">
                   <Link
                     href={`/dashboard/devices/${d.id}`}
                     className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 pr-14 transition-colors hover:bg-black/5 md:grid-cols-[minmax(0,1fr)_140px_200px_36px] dark:hover:bg-white/5"
@@ -1755,6 +1777,7 @@ export function DeviceList() {
                     <Trash2 className="h-4 w-4" />
                   </button>
                 </div>
+                </Fragment>
               );
             })}
           </div>

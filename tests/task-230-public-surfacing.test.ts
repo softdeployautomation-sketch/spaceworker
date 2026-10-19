@@ -66,10 +66,14 @@ test("P4b-2: mesh rows carry vantraAgentId on the client row type (gating key)",
 // --- the Public label (device-list.tsx) --------------------------------------
 
 test("P4b-2: Public pill renders for every non-private row (mesh rows included)", () => {
-  const pill = /!wrapper && d\.tier !== "private"/;
-  assert.match(listSrc, pill);
-  // …and the pill actually says Public right next to that condition.
-  const idx = listSrc.search(pill);
+  // TASK_231: the same `!wrapper && tier !== "private"` condition now ALSO
+  // guards the PUBLIC DEVICES section header (owner: public = separate engine
+  // on top), so the LAST occurrence in source is the row pill's guard — the
+  // pill still has to say "Public" within 400 chars of it.
+  const pill = /!wrapper && d\.tier !== "private"/g;
+  const all = [...listSrc.matchAll(pill)];
+  assert.ok(all.length >= 1, "the non-private condition exists");
+  const idx = all[all.length - 1].index ?? -1;
   assert.ok(idx >= 0);
   assert.match(listSrc.slice(idx, idx + 400), />\s*Public\s*</);
 });
