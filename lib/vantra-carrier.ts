@@ -208,7 +208,7 @@ export function normalizePowerShellCommand(raw: string): string {
  * TASK_231 — is this a MeshCentral standalone-agent install command (the
  * PUBLIC mesh-only installer from TASK_230 A.1)? Anchors taken from Vantra's
  * `buildMeshAgentInstallCommand`: the command downloads `meshagent64.exe` /
- * `meshagent32.exe` from `/meshagents?id=<type>&meshid=<hex>` and runs the
+ * `meshagent32.exe` from `/meshagents?id=<type>&meshid=<rawId>` and runs the
  * agent's native silent `-install`.
  *
  * Mesh agent installs are inherently GUI-less (the service agent registers
