@@ -143,14 +143,40 @@ The task agent delivers code **uncommitted on a branch**; you verify, attribute,
 5. **Live proof**: BUILD_ID changed, services active, the exact functional probe for the fix
    (e.g. F8 = POST signup with no `sw_ref` → 403). Report the table, never vibes.
 
-## 9. Standing queue (as of 2026-10-19)
-1. **TASK_222 (F8 + B3)** — merged (`d4a6754`), CI run `39101006061` dispatched; live proof
-   needed: signup with no ref → **403**.
-2. **TASK_223 multi-domain** — scoped (`TASK_223_PLATFORM_DOMAINS_MULTI.md`); owner adds
-   `mainstreetmint.sbs` to the platform CF account; build after 222 ships.
-3. **Security audit (TASK_219)** — F1 closed (dump server killed); **F2–F5 open** (sshd
-   password/root login, .env perms, open SOCKS :1090/:1091, ufw off) awaiting owner decisions.
-4. **Owner-acceptance pending**: B1 tiny-screen hunt (needs a device online; mesh templates
-   were proven innocent), exit-node disable (script staged, owner yes/no).
-5. **Suite floor**: 1663/1662 pass/0 fail/1 skip (2026-10-19, after 222); tsc 0.
-6. Clone extension zero-touch (TASK_214 D6): CRX pack + public update path = box-side, mine.
+## 9. Standing queue (as of 2026-10-19, post-TASK_230)
+**Shipped & live this session** (all owner-GO'd, evidence in each `TASK_*_STEPS.md`):
+224 install-link delete · 225 CF unique project names · 226 campaign stall visibility ·
+227 new-device notification (+ additive migration, applied by deploy) ·
+228 onboarding redesign (SW + Vantra move route; quarantine/auto-move retired) ·
+**230 public standalone mesh** (SW + Vantra: mesh-only installer, hide via runmesh
+transport, move = install→verify→remove, public-on-top + capability notices,
+instance-aware mint with SAFE DEFAULT = instance A; verification fix `2330088`
+portable prisma-fake guard; sweep timer fixed IN-REPO `e744c02` → 1min —
+**deploy.yml ships every unit from `deploy/`, so box-only unit edits get
+re-clobbered every deploy: change `deploy/` + box together**).
+Section B (box) also live: MeshCentral-B (:3403) serving mesh.broks.beauty, TRMM
+on instance A (B3.1 — `MESH_SITE=mesh.instaweb.top`, USE_EXTERNAL_MESH absent),
+both apexes parked-standalone 200, private `.env` instaweb scrub (MESH_WSS_URL
+still instaweb by design — pairs with the held MESH_PRIVATE_HOST flip).
+**Box state**: SW BUILD_ID `k9gDnSGtv3jRj6zG9kZ5w` (main `e186f6d`) ·
+Vantra BUILD_ID `sf8aPEV_1s3BYmvoD9I7Y` (main `d113a1f`).
+**Open:**
+1. **TASK_223 multi-domain** — scoped; owner adds `mainstreetmint.sbs` to the platform CF
+   account, then build.
+2. **Security F2–F5** — awaiting owner decisions (sshd password/root login, .env perms,
+   open SOCKS :1090/:1091, ufw off).
+3. **Owner calls**: CF `new-test` duplicate backfill (one site's URL moves once); Sblast1
+   campaign resume (parked at paused_deliverability, retries eligible); `.env` RESEND
+   placeholder realign (breaks plain local `npm run build` only; CI unaffected).
+4. **Owner-acceptance**: B1 tiny-screen hunt (needs a device online); exit-node disable.
+5. **TASK_230 live e2e (owner test)**: public install → Public pill → hide via runmesh →
+   move-to-private (button or PS snippet) — §8 test plan, needs a real device.
+6. **Mesh node migration (owner decision)**: all 26 nodes still live in instance A;
+   setting `MESH_PRIVATE_HOST=mesh.broks.beauty` + `MESH_WSS_URL` box-side flips the
+   mint — ONLY after nodes move to B. Currently unset (=A), verified post-deploy.
+7. **Vantra hygiene**: its working tree still sits on `agent/task-207-mesh-scoped-mint`
+   (+ a stray TASK_25 doc edit + untracked `move/` dir) — rebase onto new main
+   (`49de4c6`) when it ships; `agent/task-228-vantra-move` + `agent/task-230-…` merged.
+8. **Suite floor**: SW 1680 tests / 1679 pass / 0 fail / 1 skip · Vantra 119/119 ·
+   tsc 0 both repos (224+225+226+227+228+230+231+232 merged; 231 hotfix = carrier
+   mesh pass-through, 232 = RAW meshid + 3x download retry, both deployed 2026-10-19).
