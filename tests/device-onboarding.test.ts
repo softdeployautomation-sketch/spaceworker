@@ -146,7 +146,13 @@ function installRequireHook(): void {
     // The sweep route AND lib/devices (for isDeviceOnline) both import the real
     // prisma singleton; give every in-repo parent the fake store so nothing can
     // ever reach a real database from a test.
-    if (request === "@/lib/prisma" && from.includes("/sw-t228/")) {
+    // TASK_230 senior-verification fix: this guard originally hardcoded the
+    // `/sw-t228/` worktree name (an artifact of where it was authored), so the
+    // fakes silently disengaged everywhere else — primary checkout, any other
+    // worktree, CI runner — and the route ran against the REAL Prisma client
+    // (200-with-zeroes, 7 tests failing). Match the comment's stated intent:
+    // any in-repo parent = anything that isn't inside node_modules.
+    if (request === "@/lib/prisma" && !from.includes("/node_modules/")) {
       return { prisma: fakeDb };
     }
     if (from.endsWith(`/${ROUTE}`)) {
