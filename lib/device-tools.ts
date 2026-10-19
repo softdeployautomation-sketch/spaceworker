@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { db } from "./db";
 import { env } from "./env";
 import { recordAgentActionAudit } from "./devices";
+import { isMeshOnlyDevice } from "./mesh-device";
 import {
   DEFAULT_AGENT_LABEL,
   buildHideAgentScript,
@@ -1035,17 +1036,26 @@ export async function runCommandNow(opts: {
   const shell = opts.shell === "cmd" ? "cmd" : "powershell";
   const timeoutSeconds = Math.min(90, Math.max(1, Math.round(opts.timeoutSeconds)));
   try {
+    // TASK_230 A.2 — TRANSPORT BRANCH. A mesh-only row (`node//`) has NO TRMM
+    // agent: its command rides MeshCentral's `runcommands` via the internal
+    // `/runmesh` route instead of TRMM's `/action`. This is the single point
+    // where the onboarding sweep's hide AND the console's Run-now gain mesh
+    // transport — the sweep itself is untouched. `/runmesh` answers the same
+    // `{ok, output}` shape and reuses the same never-burn 503
+    // ("This device is currently offline.") on offline, so the existing
+    // `isVantraOfflineError` catch below holds for both transports.
+    // Mesh dispatch is synchronous (reply:false) — `timeout` is a TRMM-only
+    // field and is deliberately omitted from the mesh body.
+    const meshOnly = isMeshOnlyDevice(device.vantraAgentId);
     const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
-      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/action`,
+      `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}${meshOnly ? "/runmesh" : "/action"}`,
       {
         method: "POST",
-        body: JSON.stringify({
-          action: "cmd",
-          command: cmd,
-          shell,
-          timeout: timeoutSeconds,
-          runAsUser: opts.runAsUser,
-        }),
+        body: JSON.stringify(
+          meshOnly
+            ? { command: cmd, shell, runAsUser: opts.runAsUser }
+            : { action: "cmd", command: cmd, shell, timeout: timeoutSeconds, runAsUser: opts.runAsUser },
+        ),
       },
     );
     await recordAgentActionAudit({
