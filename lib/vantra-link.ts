@@ -1338,8 +1338,13 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           orgTier?: string;
           devices: Array<{
             vantraAgentId: string; name: string; online: boolean; status: string;
-            osName: string | null; operatingSystem: string | null; lastSeen: string;
+            osName: string | null; operatingSystem: string | null;
+            // TASK_230 P4b-1 — OPTIONAL: Vantra omits `lastSeen` for offline
+            // agents (TRMM rows when last_seen is empty; mesh-only rows whenever
+            // conn !== 1). The offline branch below must never invent a stamp.
+            lastSeen?: string | null;
             autoMove?: { status: string; timerStartedAt: string } | null;
+            meshOnly?: boolean;
           }>;
         }>(`/api/internal/sw/devices?orgId=${encodeURIComponent(orgId)}`).catch(() => null),
       ),

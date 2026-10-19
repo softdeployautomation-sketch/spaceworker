@@ -308,10 +308,20 @@ const fakeDb = {
   // own decisions (which row it creates, and what it does when a racing sync
   // wins the UNIQUE(deviceId) insert first).
   device: {
-    upsert: async ({ where, create }: DbArgs) => {
+    upsert: async ({ where, update, create }: DbArgs) => {
       const key = String(where?.vantraAgentId ?? "");
       const existing = deviceRows.get(key);
-      if (existing) return { ...existing };
+      if (existing) {
+        // TASK_230 P4b-1 — Prisma upsert semantics: fields whose value is
+        // `undefined` in the update payload are NOT written (they mean "keep
+        // the current value"). syncDevices relies on exactly that for
+        // `lastSeenAt: undefined` on offline devices — the old check-in must
+        // survive the sync instead of being restamped with "now".
+        for (const [field, value] of Object.entries(update ?? {})) {
+          if (value !== undefined) existing[field] = value;
+        }
+        return { ...existing };
+      }
       const saved = { id: `dev-${key}`, ...(create ?? {}) };
       deviceRows.set(key, saved);
       return { ...saved };
@@ -1329,6 +1339,96 @@ test("a private-org sighting releases the row instead of leaving it counting", a
 
   const released = onboardingUpdates.at(-1);
   assert.equal(released?.status, "released", "observed private ⇒ the row is released");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_230 P4b-1 — offline must NEVER get a fresh "seen now" stamp. The rule
+// lives in syncDevices' `lastSeenAt = d.lastSeen ? … : d.online ? now :
+// undefined` (2026-09-28 fix: the old `: now` fallback gave dead machines a
+// false "last seen 0s ago" and kept the 10-minute freshness window alive).
+// Vantra omits `lastSeen` for offline agents — both TRMM rows (empty
+// last_seen) and the TASK_230 mesh-only rows (conn !== 1) — so the omitted
+// case IS the offline case in practice.
+// ---------------------------------------------------------------------------
+
+/** One OFFLINE device exactly as Vantra answers when it has no lastSeen. */
+function offlineNoLastSeenPayload(id: string) {
+  return {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: id,
+        name: "Off-box",
+        online: false,
+        status: "offline",
+        osName: "windows",
+        operatingSystem: "Windows 11",
+        // lastSeen deliberately absent.
+      },
+    ],
+  };
+}
+
+test("TASK_230: offline + no lastSeen on the UPDATE path leaves the old check-in untouched", async () => {
+  const oldCheckIn = new Date("2026-09-01T02:03:04.000Z");
+  deviceRows.set("agent_off", {
+    id: "dev-agent_off",
+    vantraAgentId: "agent_off",
+    name: "Off-box",
+    status: "online",
+    lastSeenAt: oldCheckIn,
+  });
+  devicesResponse = offlineNoLastSeenPayload("agent_off");
+
+  const t0 = Date.now();
+  const res = await syncDevices(USER_ID);
+  const t1 = Date.now();
+
+  assert.equal(res.devices.length, 1);
+  const row = deviceRows.get("agent_off")!;
+  assert.equal(row.status, "offline", "status still flips to offline");
+  const stamp = (row.lastSeenAt as Date).getTime();
+  assert.equal(stamp, oldCheckIn.getTime(),
+    "lastSeenAt must NOT be restamped — the real last-known check-in survives");
+  assert.ok(stamp < t0 && stamp < t1, "and it is provably older than this test run");
+});
+
+test("TASK_230: offline + no lastSeen on the CREATE path stores null, never now", async () => {
+  devicesResponse = offlineNoLastSeenPayload("agent_first_sight_offline");
+
+  await syncDevices(USER_ID);
+
+  const row = deviceRows.get("agent_first_sight_offline")!;
+  assert.equal(row.lastSeenAt, null,
+    "a first-sight OFFLINE device gets null (unknown), never a fresh stamp");
+  assert.ok(row.lastSeenAt === null || row.lastSeenAt === undefined,
+    "no Date at all — not now, not anything invented");
+});
+
+test("TASK_230: online + no lastSeen IS stamped now (the one honest fallback)", async () => {
+  devicesResponse = {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: "agent_live_no_seen",
+        name: "Live-box",
+        online: true,
+        status: "online",
+        osName: "windows",
+        operatingSystem: "Windows 11",
+        // lastSeen absent, but the agent is ONLINE — "now" is the truth here.
+      },
+    ],
+  };
+
+  const t0 = Date.now();
+  await syncDevices(USER_ID);
+  const t1 = Date.now();
+
+  const stamp = (deviceRows.get("agent_live_no_seen")!.lastSeenAt as Date).getTime();
+  assert.ok(stamp >= t0 && stamp <= t1, "online + no lastSeen stamps now, within the test window");
 });
 
 // ---------------------------------------------------------------------------
