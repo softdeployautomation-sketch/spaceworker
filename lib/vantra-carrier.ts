@@ -204,8 +204,29 @@ export function normalizePowerShellCommand(raw: string): string {
  * match — where to insert would be a guess) — the mint fails closed instead
  * of silently shipping a notifying install.
  */
+/**
+ * TASK_231 — is this a MeshCentral standalone-agent install command (the
+ * PUBLIC mesh-only installer from TASK_230 A.1)? Anchors taken from Vantra's
+ * `buildMeshAgentInstallCommand`: the command downloads `meshagent64.exe` /
+ * `meshagent32.exe` from `/meshagents?id=<type>&meshid=<hex>` and runs the
+ * agent's native silent `-install`.
+ *
+ * Mesh agent installs are inherently GUI-less (the service agent registers
+ * itself silently — no confirmation dialog, no success toast), so the TASK_178
+ * `--silent` stage below does not apply: there is nothing to silence.
+ */
+export function isMeshAgentInstallCommand(cmd: string): boolean {
+  return /meshagents?\?id=/i.test(cmd) || /meshagent(?:32|64)?\.exe/i.test(cmd);
+}
+
 export function ensureSilentEnroll(powershellCommand: string): string {
   const cmd = powershellCommand;
+  // TASK_231 — mesh-only public install: already silent by construction and
+  // has no Tactical `-m install` argv; pass through unchanged. (The mesh
+  // branch MUST run before the fail-closed checks: a mesh command contains no
+  // `-m install`, so every later branch would reject it — that was the
+  // `enroll_not_found` / `link_resolution_failed` incident of 2026-10-19.)
+  if (isMeshAgentInstallCommand(cmd)) return cmd;
   // Word-bounded `--silent` already present (value or quoted) → no-op.
   if (/(?:^|[\s'"])--silent(?:[\s'"]|$)/.test(cmd)) return cmd;
 

