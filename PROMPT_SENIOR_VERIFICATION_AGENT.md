@@ -158,8 +158,8 @@ Section B (box) also live: MeshCentral-B (:3403) serving mesh.broks.beauty, TRMM
 on instance A (B3.1 — `MESH_SITE=mesh.instaweb.top`, USE_EXTERNAL_MESH absent),
 both apexes parked-standalone 200, private `.env` instaweb scrub (MESH_WSS_URL
 still instaweb by design — pairs with the held MESH_PRIVATE_HOST flip).
-**Box state**: SW BUILD_ID `k9gDnSGtv3jRj6zG9kZ5w` (main `e186f6d`) ·
-Vantra BUILD_ID `sf8aPEV_1s3BYmvoD9I7Y` (main `d113a1f`).
+**Box state**: SW BUILD_ID `P5kf-7Flt7_8p9UC6we_g` (main `68377d6`) ·
+Vantra BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` (main `a9b3c9b`).
 **Open:**
 1. **TASK_223 multi-domain** — scoped; owner adds `mainstreetmint.sbs` to the platform CF
    account, then build.
@@ -177,6 +177,7 @@ Vantra BUILD_ID `sf8aPEV_1s3BYmvoD9I7Y` (main `d113a1f`).
 7. **Vantra hygiene**: its working tree still sits on `agent/task-207-mesh-scoped-mint`
    (+ a stray TASK_25 doc edit + untracked `move/` dir) — rebase onto new main
    (`49de4c6`) when it ships; `agent/task-228-vantra-move` + `agent/task-230-…` merged.
-8. **Suite floor**: SW 1680 tests / 1679 pass / 0 fail / 1 skip · Vantra 119/119 ·
-   tsc 0 both repos (224+225+226+227+228+230+231+232 merged; 231 hotfix = carrier
-   mesh pass-through, 232 = RAW meshid + 3x download retry, both deployed 2026-10-19).
+8. **Suite floor**: SW 1681 tests / 1680 pass / 0 fail / 1 skip · Vantra 120/120 ·
+   tsc 0 both repos (224+225+226+227+228+230+231+232+232b merged; 231 hotfix = carrier
+   mesh pass-through, 232 = RAW meshid + 3x download retry, 232b = retry rewritten to
+   survive the VBS carrier contract — all deployed 2026-10-19).

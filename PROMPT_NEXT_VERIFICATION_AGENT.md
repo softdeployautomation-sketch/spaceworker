@@ -8,11 +8,11 @@ with every step checked + evidence; missing = FAIL), the **playbook** `HOW_WE_MO
 never edit `.env`; REJECT any commit/doc containing live secrets; money/invoice commits stay
 separate from UI.
 
-**Baseline when you run** (record yours at start): `main` = `e186f6d` or newer · SW suite floor
-**1680 tests / 1679 pass / 0 fail / 1 skipped** (`npm test`) · `tsc` 0 ·
-box BUILD_ID `k9gDnSGtv3jRj6zG9kZ5w` or newer (check `.next/BUILD_ID`, not a claim).
-Vantra box: BUILD_ID `sf8aPEV_1s3BYmvoD9I7Y` or newer, its `main` `d113a1f` or newer;
-its floor **119 tests / 119 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, vantra tree).
+**Baseline when you run** (record yours at start): `main` = `68377d6` or newer · SW suite floor
+**1681 tests / 1680 pass / 0 fail / 1 skipped** (`npm test`) · `tsc` 0 ·
+box BUILD_ID `P5kf-7Flt7_8p9UC6we_g` or newer (check `.next/BUILD_ID`, not a claim).
+Vantra box: BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` or newer, its `main` `a9b3c9b` or newer;
+its floor **120 tests / 120 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, vantra tree).
 
 ## Regression pins that must stay true (each was a shipped fix — verify by probe, not memory)
 1. **Invite-only**: anon `GET /` → 200 joker; `/login`, `/signup`, `/home`, `/cyberlab`,
@@ -56,6 +56,12 @@ its floor **119 tests / 119 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, v
     so LENGTH proves nothing; check for `@`/`$`/lowercase or compare directly). A 64-char
     UPPERCASE-ONLY hex value = the T232 bug = every install download 404s silently. Probe:
     mint `{"as":"powershell","mesh":true}` → extract URL → `curl` must answer **200 + MZ**.
+13. **The mesh command must pass the VBS carrier contract (T232b)**: no `"` anywhere in
+    `buildMeshAgentInstallCommand` output, no line starting with `}`/`catch`/`else`/`finally`,
+    the retry loop on ONE PowerShell line, URI single-quoted (raw meshid may hold `$`/`@`).
+    Probe: `curl -s <share-link>` → **200 + VBS bytes** with `Start-Sleep -Seconds 2` and
+    the raw meshid inside; a raw `interpolating_double_quote` string anywhere in the
+    console = the normalizer threw = this pin is broken.
 
 ## Method
 - Read the diff yourself (`git show <commit>`), then run your own gates — never trust reported

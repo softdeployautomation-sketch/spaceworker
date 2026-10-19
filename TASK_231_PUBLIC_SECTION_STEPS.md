@@ -88,3 +88,25 @@ updated, hex path deleted; owner-requested **3x download retry** (2s apart, loud
 - [x] LIVE: mint `mesh:true` → ok/flow=mesh_standalone → meshid **byte-identical to DB group
       suffix** `41@Zqzq…N@r` → curl **200, 3,489,752 B, MZ** · per-user groups present ·
       services active · journals empty (both services, -p err since restart)
+
+## TASK_232b — HOTFIX: retry broke the VBS carrier (interpolating_double_quote / link_resolution_failed)
+**Reported by owner (2026-10-19, screenshots):** console showed raw red `interpolating_double_quote`
+texts (Download .vbs + share-link surfaces), and the share link
+`/link/vantra/d1a8d52d…` answered **502 {"error":"link_resolution_failed"}**.
+**Root cause:** TASK_232's retry was a MULTI-LINE for/try/catch with a double-quoted
+`throw "…$($_.Exception.Message)"` and line-leading `}`. The VBS mint path
+(normalizePowerShellCommand → ensureSilentEnroll → renderCarrierVbs) FORBIDS both
+(interpolating_double_quote / line_structure) — the first mesh-command draft (quoted
+URI) never passed it either; the mesh .vbs path had never been exercised until the
+owner used it. D5 regeneration on every /link/vantra/<token> re-ran normalize → 502.
+**Fix (retry KEPT exactly: 3x, 2s apart, loud final error):** retry as ONE PowerShell
+line, single-quoted URI (raw meshid may hold `$`/`@`), no `"` anywhere, no line-leading
+`}`. The proven TASK_179 VBS renderer (UAC re-arm retry at the VBS layer) untouched.
+- [x] Vantra 120/120 · SW 1681/1680/0/1 · tsc 0 both · new pins: carrier-contract
+      (vantra) + normalize→passthrough→render chunk-rejoin end-to-end (SW)
+- [x] commits: Vantra `a9b3c9b` · SW `68377d6` (test-only)
+- [x] deploys: Vantra run 39324725176 success → BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` ·
+      SW run 39324726316 success → BUILD_ID `P5kf-7Flt7_8p9UC6we_g` · both services active
+- [x] LIVE: owner's EXISTING link `d1a8d52d…` 502 → **200 + 60,611 B VBS carrier** with
+      retry (`Start-Sleep -Seconds 2`) + raw meshid `1Xu0kf…` inside · 0 occurrences of
+      interpolating_double_quote · journals clean both services
