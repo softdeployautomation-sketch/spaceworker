@@ -139,3 +139,11 @@ Evidence chain:
 - Pins added: anti-strip (`.slice(6)` forbidden in meshcentral-api), `mesh_node_has_no_group`
   stays dead, map-key lookup shape.
 - SW repo: **untouched** — SW already passes the canonical id; all defects were Vantra-side.
+
+## TASK_212 D4a — remote-desktop tiny strip fix — DEPLOYED & VERIFIED (2026-10-20)
+- Root cause: ControlTab root was a plain block (space-y-4) → flex chain broken one link above the iframe → iframe collapsed to UA default 150px → MeshCentral scaled desktop to that band (its own expand fills only the IFRAME viewport, equally tiny).
+- Fix commit 64be3fd (components/device-console.tsx fullScreen flex column + shrink-0 chrome; embedded unchanged) + 2 chain regression tests (task-212-controls.test.ts).
+- Gates (mine): tsc 0 · eslint 0 · suite 1682 pass / 0 fail / 1 skip · browser repro of the exact class chain against real prod CSS: 150px (before) → 738px @1440×900 / 682px @390×844 (after).
+- CI: dispatch run 39364174515 build=success deploy=success (push run 39364139086 built, deploy skipped — as designed).
+- Box battery: BUILD_ID nVmyYUktIT3u_6IPLFJ4x/…-era → GDoWALVDMgZeBbv1s8X4h · spaceworker+vantra+meshcentral+meshcentral-b active · err journals empty · spaceworker.top 200 · fix marker present in compiled chunks (23argerv3c0f2.js, 1j42g0hks8s2z.js) · sweep timer still 60s hide-only, active.
+- Deploy path: GitHub Actions only (playbook primary). Owner GO recorded in chat: 'follow the playbook rules and deploy.. they must not be any regression'.
