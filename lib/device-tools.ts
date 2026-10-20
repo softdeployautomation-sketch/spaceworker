@@ -1021,7 +1021,7 @@ export type MoveToPrivateResult =
       destinationOrgId?: string;
       destinationOrgName?: string;
       steps?: string[];
-      install?: { command: string; singleLine?: string };
+      install?: { command: string; singleLine?: string; moved?: boolean };
     }
   | { ok: false; reason: string };
 
@@ -1032,6 +1032,33 @@ export async function moveAgentToPrivateOrg(opts: {
   const device = await requireOwnedDevice(opts);
   return vantraFetch<MoveToPrivateResult>(
     `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/move`,
+    { method: "POST" },
+  );
+}
+
+// TASK_236 — step 2 (VERIFY) of install→verify→remove, as the USER sees it.
+//
+// The question this answers is narrow and read-only: "has the device shown up
+// under the PRIVATE companion org yet?" Vantra answers it by matching the
+// old public record's hostname against the private client's own agent list —
+// server-side, tenant-guarded, touching no device state.
+//
+// Why it matters: the public row must NOT be deleted until this flips true.
+// So the UI must be able to ASK, and must show a truthful "not yet" instead
+// of pretending the move finished. There is deliberately NO removal call in
+// this path — the public row is deleted by the user, themselves, after they
+// have seen the private device in the console.
+export type MoveVerifyResult =
+  | { ok: true; verified: boolean; reason?: string; privateAgentId?: string; hostname?: string }
+  | { ok: false; reason: string };
+
+export async function verifyMoveToPrivate(opts: {
+  userId: string;
+  deviceId: string;
+}): Promise<MoveVerifyResult> {
+  const device = await requireOwnedDevice(opts);
+  return vantraFetch<MoveVerifyResult>(
+    `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}/move/verify`,
     { method: "POST" },
   );
 }

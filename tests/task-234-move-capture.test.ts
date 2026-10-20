@@ -51,7 +51,9 @@ test("every interactive output-reading caller opts in", () => {
 // --- B1: Move-to-private carries the install plan ---------------------------
 
 test("MoveToPrivateResult mirrors Vantra's real response (install survives)", () => {
-  assert.ok(deviceToolsSrc.includes("install?: { command: string; singleLine?: string }"));
+  // TASK_236 — `moved?: boolean` rides along so the UI can say "already
+  // installed; nothing to do" when the idempotency guard fires.
+  assert.ok(deviceToolsSrc.includes("install?: { command: string; singleLine?: string; moved?: boolean }"));
   assert.ok(deviceToolsSrc.includes("destinationOrgName?: string"));
   // The retired fiction must stay dead:
   assert.ok(!deviceToolsSrc.includes("moved: true"));
@@ -69,7 +71,15 @@ test("move-to-private route hands install.command to the client", () => {
 test("device-list: Move success sets the instruction panel (masked until reveal)", () => {
   // TASK_235 — the panel shows/copies the relay-safe one-liner FIRST (multiline
   // `command` kept as the old-server fallback in state).
-  assert.ok(listSrc.includes("setMoveInstruction({ deviceName: d.name, command, singleLine })"));
+  // TASK_236 — the setMoveInstruction call grew the verify state (device id +
+  // "not checked yet"), so the pin matches the call's FIELDS, not one line.
+  assert.ok(listSrc.includes("setMoveInstruction({"));
+  assert.ok(listSrc.includes("deviceName: d.name,"));
+  assert.ok(listSrc.includes("command,"));
+  assert.ok(listSrc.includes("singleLine,"));
+  assert.ok(listSrc.includes("moved: data.install?.moved === true,"));
+  assert.ok(listSrc.includes("deviceId: d.id,"));
+  assert.ok(listSrc.includes('verifyState: "not_checked",'));
   assert.ok(listSrc.includes("moveRevealed ? moveInstruction.singleLine : maskCommand("));
   assert.ok(listSrc.includes('copyText("move-install", moveInstruction.singleLine)'));
   assert.ok(

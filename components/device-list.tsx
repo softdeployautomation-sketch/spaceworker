@@ -202,6 +202,15 @@ export function DeviceList() {
     deviceName: string;
     command: string;
     singleLine: string;
+    moved: boolean;
+    // TASK_236 — the device id the plan belongs to (the verify call needs it)
+    // and the verification state: "not_checked" (we haven't asked yet),
+    // "checking", "verified" (private copy is live — the user may now delete
+    // the public row THEMSELVES), or "not_verified" (private copy not seen yet
+    // — the public row stays exactly where it is).
+    deviceId: string;
+    verifyState: "not_checked" | "checking" | "verified" | "not_verified";
+    verifyMessage: string;
   } | null>(null);
   const [moveRevealed, setMoveRevealed] = useState(false);
   // TASK_224 — which history row's Delete is in flight (per-row busy state,
@@ -724,7 +733,7 @@ export function DeviceList() {
     setError("");
     try {
       const res = await fetch(`/api/devices/${d.id}/move-to-private`, { method: "POST" });
-      const data: { error?: unknown; install?: { command?: string; singleLine?: string } } = await res
+      const data: { error?: unknown; install?: { command?: string; singleLine?: string; moved?: boolean } } = await res
         .json()
         .catch(() => ({}));
       if (!res.ok) {
@@ -741,7 +750,16 @@ export function DeviceList() {
       if (command) {
         // TASK_234 B1 — show the command (masked until revealed, copy only
         // after reveal — the same posture as the public PS command above).
-        setMoveInstruction({ deviceName: d.name, command, singleLine });
+        // TASK_236 — carry the device id + a fresh "not checked yet" state.
+        setMoveInstruction({
+          deviceName: d.name,
+          command,
+          singleLine,
+          moved: data.install?.moved === true,
+          deviceId: d.id,
+          verifyState: "not_checked",
+          verifyMessage: "",
+        });
         setMoveRevealed(false);
       } else {
         // Old-server shape (no plan) — nothing to show, don't pretend.
@@ -751,6 +769,55 @@ export function DeviceList() {
       setError(e instanceof Error ? e.message : "Couldn't move the device");
     } finally {
       setMovingId("");
+    }
+  }
+
+  // TASK_236 — step 2 (VERIFY), user-triggered and read-only.
+  //
+  // Asks the server whether the device has re-appeared under the PRIVATE
+  // companion org yet. This NEVER deletes anything: it only reports state, so
+  // the public row can stay online until the user has seen the private copy
+  // for themselves. The wording in the panel is deliberately "not yet" rather
+  // than "failed" — the private agent may simply not have checked in yet.
+  async function checkMoveVerification() {
+    if (!moveInstruction || moveInstruction.verifyState === "checking") return;
+    const { deviceId, deviceName } = moveInstruction;
+    setMoveInstruction((s) =>
+      s ? { ...s, verifyState: "checking", verifyMessage: "" } : s,
+    );
+    try {
+      const res = await fetch(`/api/devices/${deviceId}/move-to-private/verify`, {
+        method: "POST",
+      });
+      const data: { error?: unknown; verified?: boolean; hostname?: string } = await res
+        .json()
+        .catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(typeof data.error === "string" ? data.error : "Couldn't check");
+      }
+      const verified = data.verified === true;
+      setMoveInstruction((s) =>
+        s
+          ? {
+              ...s,
+              verifyState: verified ? "verified" : "not_verified",
+              verifyMessage: verified
+                ? `Private copy verified${data.hostname ? ` (${data.hostname})` : ""}. You can now delete the public row yourself — nothing was deleted for you.`
+                : "Private copy not seen yet. The public agent is untouched and still online — wait a minute and check again.",
+            }
+          : s,
+      );
+    } catch (e) {
+      setMoveInstruction((s) =>
+        s
+          ? {
+              ...s,
+              verifyState: "not_verified",
+              verifyMessage: `Couldn't check ${deviceName} right now. The public agent is untouched.`,
+            }
+          : s,
+      );
+      setError(e instanceof Error ? e.message : "Couldn't check");
     }
   }
 
@@ -1602,15 +1669,23 @@ export function DeviceList() {
       {moveInstruction && (
         <div className="space-y-2 rounded-lg border border-brand-500/40 bg-bg px-3 py-3">
           <p className="text-xs font-medium text-fg">
-            Move {moveInstruction.deviceName} to private — run this on the machine{" "}
+            Move {moveInstruction.deviceName} to private{moveInstruction.moved ? " (safe move — public agent stays online)" : ""} — run this on the machine{" "}
             <span className="font-normal text-fg-muted">
               (elevated PowerShell, one line — paste it whole). The private copy appears under Private after
-              the next sync; delete the public row when you&apos;ve verified it.
+              the next sync. Your public agent keeps running the whole time — nothing is deleted for you.
             </span>
           </p>
           <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
             {moveRevealed ? moveInstruction.singleLine : maskCommand(moveInstruction.singleLine)}
           </pre>
+          {moveInstruction.verifyState !== "not_checked" && (
+            <p
+              className={`text-xs ${moveInstruction.verifyState === "verified" ? "text-fg" : "text-fg-muted"}`}
+              role="status"
+            >
+              {moveInstruction.verifyMessage}
+            </p>
+          )}
           <div className="flex flex-wrap items-center gap-2">
             <button
               onClick={() => setMoveRevealed((v) => !v)}
@@ -1625,6 +1700,18 @@ export function DeviceList() {
               className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
             >
               {copied === "move-install" ? "Copied ✓" : "Copy command"}
+            </button>
+            <button
+              onClick={() => void checkMoveVerification()}
+              disabled={moveInstruction.verifyState === "checking"}
+              title="Ask the server whether the private copy has checked in yet (read-only)"
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            >
+              {moveInstruction.verifyState === "checking"
+                ? "Checking…"
+                : moveInstruction.verifyState === "verified"
+                  ? "Check again"
+                  : "Check private copy"}
             </button>
             <button
               onClick={() => {
