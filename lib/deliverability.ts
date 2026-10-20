@@ -110,11 +110,14 @@ export async function runTestSend(opts: {
     // lib/test-merge-vars.ts) instead of the empty set this used to pass, which
     // rendered every token-only template as a gap ("Hi ,") in the test inbox.
     const mergeVars = opts.mergeVars ?? {};
+    // TASK_234 — name tokens fall back to the test destination's own address, so
+    // the test inbox shows the same email-derived greeting a real recipient gets.
+    const mergeOpts = { email: toAddress };
     const message = buildCampaignMessage({
       subject: isOverride
-        ? renderMerge(opts.variant.subject, mergeVars)
-        : `${renderMerge(opts.variant.subject, mergeVars)} [SW test ${token}]`,
-      bodyHtml: renderMerge(opts.variant.bodyHtml, mergeVars),
+        ? renderMerge(opts.variant.subject, mergeVars, mergeOpts)
+        : `${renderMerge(opts.variant.subject, mergeVars, mergeOpts)} [SW test ${token}]`,
+      bodyHtml: renderMerge(opts.variant.bodyHtml, mergeVars, mergeOpts),
       from,
       toEmail: toAddress,
       userId: opts.userId,
