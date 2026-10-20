@@ -6,26 +6,41 @@ Owner GO: 2026-10-20 ("yes go… just test and deploy… be fast"). Device I VM 
 - SpaceWorker: `agent/task-234-move-private-flow` (off main ea0f92a)
 - Vantra: `agent/task-234-mesh-cmd-output` (off main dd2af25)
 
-## A. Command output (mesh-only rows) — CODE DONE, UNCOMMITTED, NOT DEPLOYED
+## A. Command output (mesh-only rows) — TERMINAL RELAY, CODE DONE, NOT DEPLOYED
 
-Root cause (box-proven earlier): MeshCentral `runcommands` wire NEVER returns
-command output (ack = "OK"/"Agent not connected" only) → console showed
-`output:null` forever. Fix = agent POSTs captured output back to a one-shot sink.
+Root cause (box-proven, TWICE): MeshCentral v1.2.4's `runcommands` wire NEVER
+returns command output — meshuser.js acks 'OK' synchronously and meshagent.js
+has NO runcommands case (the agent's execution result is dropped server-side).
+The original sink wrap (agent POSTs output back) rode that dead dispatch:
+the wrapped command ran nothing retrievable, zero ingest POSTs ever arrived
+(nginx-log-proven). 
 
-- [x] Vantra `lib/mesh-cmd-output.ts` — 24-byte token sink: one-shot, TTL =
-      timeout+15s (clamp 5s..120s), 256 KB clip, cancel-on-dispatch-fail,
-      `wrapCmdForOutputCapture` (powershell: scriptblock + Out-String +
-      Invoke-RestMethod; cmd: temp file + curl.exe). Ingest base =
-      `VANTRA_INGEST_BASE_URL` || https://vantra.spaceworker.top (public — no
-      middleware.ts exists in vantra, route guards itself: token = the auth).
-- [x] Vantra `app/api/internal/mesh-cmd-output/[token]/route.ts` (1064 B).
-- [x] Vantra `runmesh` route — `captureOutput:true` → wrap, await sink
-      (honest `null` on timeout), `cancelCmdOutputSink` on dispatch fail;
-      NO captureOutput → byte-identical old body (**pin 10**: sweep unchanged).
+FIX (the protocol MeshCentral's own web console + `meshctrl shell` use):
+- [x] Vantra `lib/mesh-terminal-output.ts` — PURE: stripAnsi (CSI+OSC),
+      endsWithPrompt, extractTerminalOutput (echo/banner/prompt cut; the echo
+      head is cut at the LAST full occurrence because PSReadLine re-renders
+      the paste per frame). Fixtures = REAL wire bytes captured from Device I
+      (probe /tmp/wt4.log on the box, 2026-10-20).
+- [x] Vantra `lib/meshcentral-api.ts` → `runMeshTerminal()`: control.ashx →
+      authcookie → tunnel msg (usage:1, p=6 PS / p=1 cmd, node// VERBATIM —
+      pin 14) → relay ws → agent 'c'/'cr' → options JSON + TEXT "6"/"1" →
+      wait for first prompt (boot ~8-21s, cap 45s) → command as BINARY
+      Buffer(cmd+"\r") → collect until idle-after-prompt or budget → extract.
+      THREE wire traps encoded (each burned a probe cycle): handshake byte is
+      the TEXT "6" (Buffer([6])=0x06 never boots PS); post-handshake input
+      MUST be binary (text frames are swallowed silently — zero echo);
+      sending before the first prompt eats the command. Honest null; partial
+      output on drop/timeout; boot/hard-timeout → mesh_run_failed 502;
+      never-handshaked relay close → 503 never-burn.
+- [x] Vantra `runmesh` route — `captureOutput:true` → runMeshTerminal;
+      NO captureOutput → byte-identical old dispatch (**pin 10**: sweep
+      unchanged). The sink wrap is REMOVED from the route (mesh-cmd-output
+      module + ingest route remain deployed but unused — dead code, kept to
+      avoid a remove-deploy this cycle).
 - [x] SW `runCommandNow` `captureOutput?` flag → body adds
       `{captureOutput:true, timeoutSeconds}` ONLY when set; interactive callers
       set it: run-command route, device-tools 661/1949/2107, clone-setup,
-      security-audit. Sweep deliberately does NOT.
+      security-audit. Sweep deliberately does NOT. (SW unchanged this cycle.)
 
 ## B. Move-to-private → duplicate → delete public
 
@@ -75,17 +90,19 @@ different agents, both can run on one machine.
 - [x] **B4-SW check** — SW sends `node//` id through unchanged (pin 14), group never in the id; covered by green `tests/task-234-move-capture.test.ts`.
 
 ## C. Gates (own, re-run, never trust counts) — GREEN, RE-RUN CONFIRMED
-- [x] tsc 0 both repos (`/tmp/t234-vt-tsc2.log`, `/tmp/t234-sw-tsc3.log` = 0 lines)
-- [x] eslint changed files 0 both repos (VT-ESLINT-EXIT=0, SW-ESLINT-EXIT=0)
-- [x] suite ×2 both repos: Vantra **146/146/0/0** (runs `/tmp/t234-vt-suite4.log`
-      + rerun `/tmp/t234-vt-suite5.log`, both exit 0); SW **1689 pass / 0 fail /
-      1 skipped** (baseline skip; `/tmp/t234-sw-suite2.log` + rerun
-      `/tmp/t234-sw-suite3.log`, both exit 0). New tests: sink one-shot/TTL/
-      clip, wrapper shapes, runmesh capture branch + no-capture pin, move mesh
-      guard, action delete mesh branch + node// 404 guard, removedevices
-      VERBATIM id, uninstall fire-and-forget, B1 passthrough (route returns
-      install.command), captureOutput conditional-spread pin.
-- [x] secret-scan diff (fake fixture key only: `task234-test-key`).
+- [x] tsc 0 both repos (`/tmp/t234b-tsc2.log` = 0 lines Vantra;
+      `/tmp/t234-sw-tsc3.log` = 0 lines SW)
+- [x] eslint changed files 0 both repos (VT ESLINT=0 on
+      mesh-terminal-output/meshcentral-api/runmesh/both test files)
+- [x] suite ×2 Vantra **154/154/0/0** (`/tmp/t234b-suite2.log` + rerun, both
+      exit 0; first run `/tmp/t234b-suite1.log` caught 1 fixture bug —
+      banner-keep case — fixed + rerun per protocol). SW **1689 pass / 0 fail /
+      1 skipped** (baseline skip). New tests this cycle: terminal extraction
+      against the REAL captured wire session (Get-Date → "20 October 2026
+      13:59:43"), ANSI strip, prompt detection, echo-less output preserved,
+      pin-18 source pins (TEXT "6", BINARY input, prompt-gated send), runmesh
+      sink-never-returns pin.
+- [x] secret-scan diff (import line only; no literals).
 
 ## D. Deploy + post-deploy battery — owner GO given ("test and deploy")
 - [ ] Commit w/ attribution → merge main → push (both repos).
