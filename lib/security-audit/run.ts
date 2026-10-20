@@ -78,6 +78,7 @@ export async function runLanAudit(opts: {
       shell: "powershell",
       timeoutSeconds: 90,
       runAsUser: false,
+      captureOutput: true,
     }));
   } catch (err) {
     // requireOwnedDevice / Vantra failures land here (offline, not owned, …).

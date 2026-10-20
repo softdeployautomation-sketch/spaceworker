@@ -57,7 +57,21 @@ export async function POST(
     } catch {
       /* non-fatal */
     }
-    return NextResponse.json({ ok: true });
+    // TASK_234 B1 — hand the INSTALL PLAN through to the UI. Since TASK_230
+    // this route's whole job is minting the private install command the user
+    // runs on the machine (nothing moves server-side); returning a bare
+    // `{ok:true}` discarded `install.command` and left the console with
+    // nothing to show. The row's tier does NOT change here — it flips when
+    // the device reappears under the private org on the next sync AFTER the
+    // user runs the command.
+    return NextResponse.json({
+      ok: true,
+      flow: result.flow,
+      destinationOrgId: result.destinationOrgId,
+      destinationOrgName: result.destinationOrgName,
+      steps: result.steps,
+      install: result.install,
+    });
   } catch (err) {
     const code = err instanceof Error ? err.message : "move_failed";
     return NextResponse.json({ error: code.slice(0, 200) }, { status: 502 });

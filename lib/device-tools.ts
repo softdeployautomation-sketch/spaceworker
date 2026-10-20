@@ -658,6 +658,7 @@ export async function pingDevice(opts: {
     shell: "powershell",
     timeoutSeconds: 15,
     runAsUser: false,
+    captureOutput: true,
   });
   const latencyMs = Date.now() - started;
   if (typeof output !== "string" || !output.includes(marker)) {
@@ -1007,8 +1008,21 @@ export async function getDevicePowerView(opts: {
 // never from request params.
 // ---------------------------------------------------------------------------
 
+// TASK_234 B1 — Vantra's /move NEVER returned `moved:true` (that field was
+// fiction from the retired live-reconfigure flow). The real answer since
+// TASK_230 A.4 is the INSTALL PLAN: ok + flow + destination + the PowerShell
+// command the USER runs on the machine (that command IS the move — nothing is
+// pushed to the device). The UI needs `install.command` to show it; dropping
+// it here is why the owner saw no command and "nothing happened".
 export type MoveToPrivateResult =
-  | { ok: true; moved: true }
+  | {
+      ok: true;
+      flow?: string;
+      destinationOrgId?: string;
+      destinationOrgName?: string;
+      steps?: string[];
+      install?: { command: string };
+    }
   | { ok: false; reason: string };
 
 export async function moveAgentToPrivateOrg(opts: {
@@ -1029,6 +1043,15 @@ export async function runCommandNow(opts: {
   shell: string;
   timeoutSeconds: number;
   runAsUser: boolean;
+  /**
+   * TASK_234 — mesh-only rows: ask Vantra to capture real output (the agent
+   * POSTs it back through a one-shot sink; `timeoutSeconds` bounds the wait).
+   * Interactive callers set it; the onboarding sweep deliberately does NOT —
+   * its hide must keep returning `output:null` so its FAIL-verdict logic is
+   * byte-unchanged (TASK_230's clean-verdict design, pin 10). TRMM rows ignore
+   * this flag entirely — `/action` always returned output.
+   */
+  captureOutput?: boolean;
 }): Promise<RunNowResult> {
   const device = await requireOwnedDevice(opts);
   const cmd = opts.cmd.trim();
@@ -1045,7 +1068,11 @@ export async function runCommandNow(opts: {
     // ("This device is currently offline.") on offline, so the existing
     // `isVantraOfflineError` catch below holds for both transports.
     // Mesh dispatch is synchronous (reply:false) — `timeout` is a TRMM-only
-    // field and is deliberately omitted from the mesh body.
+    // field and is deliberately omitted from the mesh body. TASK_234 —
+    // INTERACTIVE callers opt into real output via `captureOutput` (Vantra
+    // wraps the command so the agent posts its output back; see
+    // mesh-cmd-output.ts). The sweep sends neither field → its body is
+    // byte-identical to TASK_230/233 (pin 10).
     const meshOnly = isMeshOnlyDevice(device.vantraAgentId);
     const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
       `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}${meshOnly ? "/runmesh" : "/action"}`,
@@ -1053,7 +1080,14 @@ export async function runCommandNow(opts: {
         method: "POST",
         body: JSON.stringify(
           meshOnly
-            ? { command: cmd, shell, runAsUser: opts.runAsUser }
+            ? {
+                command: cmd,
+                shell,
+                runAsUser: opts.runAsUser,
+                ...(opts.captureOutput
+                  ? { captureOutput: true, timeoutSeconds }
+                  : {}),
+              }
             : { action: "cmd", command: cmd, shell, timeout: timeoutSeconds, runAsUser: opts.runAsUser },
         ),
       },
@@ -1925,6 +1959,7 @@ export async function discoverApps(opts: {
     shell: "powershell",
     timeoutSeconds: DISCOVER_TIMEOUT_SECONDS,
     runAsUser: false,
+    captureOutput: true,
   });
   const apps = parseDiscoveredApps(output);
   await db.deviceCapability.upsert({
@@ -2082,6 +2117,7 @@ export async function launchApp(opts: {
       shell: "powershell",
       timeoutSeconds: LAUNCH_TIMEOUT_SECONDS,
       runAsUser: true,
+      captureOutput: true,
     });
     output = res.output;
   } catch (err) {

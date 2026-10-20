@@ -46,17 +46,17 @@ different agents, both can run on one machine.
 - [x] **B1** UI panel rendered after the header: masked `<pre>` +
       Reveal/Hide + copy gated on reveal (`copied === "move-install"`) +
       "Done — I ran it" → clears + `load()`. Same posture as public PS.
-- [ ] **B3** Vantra `/move` — mesh branch (NEXT): `node//` id →
+- [x] **B3** Vantra `/move` — mesh branch DONE: `node//` id →
       `assertMeshNodeInSwPublicGroup` → group `SpaceWorker Public · <uid>` →
       source org `sw-<uid>`, dest `sw-<uid>-p`, then the SAME install-plan
-      body (createManualInstaller). Currently 404s: `assertAgentInSwOrg` is
+      body (createManualInstaller). Was 404: `assertAgentInSwOrg` is
       TRMM-only (getAgentDetail throws TRMM 404 for `node//`).
-      Helper to add in meshcentral-api: node→group lookup already exists
-      inside `assertMeshNodeInSwPublicGroup` — refactor to also return the
+      Helper ADDED in meshcentral-api: node→group lookup inside
+      inside `assertMeshNodeInSwPublicGroup` refactored to also return the
       group name so the route can parse `<uid>` (grep confirmed:
       `swUserIdFromOrgName` + `SW_ORG_PREFIX` in spaceworker-service.ts; group
       builder `SpaceWorker Public · ${uid}` in mesh-standalone-install.ts:47).
-- [ ] **B4** Vantra `/action delete` — mesh branch (NEXT): `node//` → public
+- [x] **B4** Vantra `/action delete` — mesh branch DONE: `node//` → public
       group assert (404 else) → best-effort UNINSTALL dispatched via
       `runMeshCommand` (self-locating PowerShell: find service whose PathName
       matches meshagent / name `MeshCentralAgent`, run its exe `-uninstall` —
@@ -72,19 +72,23 @@ different agents, both can run on one machine.
       the node on next connect (it holds the meshid locally) → refuse delete
       on offline with the existing 503 "currently offline" shape (same
       never-lie posture as runmesh).
-- [ ] **B4-SW check** which SW call path drives delete for mesh rows
-      (`removeDevice`/`removeDeviceRow` → vantra `/action delete`?) — verify
-      SW sends `node//` id through unchanged (pin 14).
+- [x] **B4-SW check** — SW sends `node//` id through unchanged (pin 14), group never in the id; covered by green `tests/task-234-move-capture.test.ts`.
 
-## C. Gates (own, re-run, never trust counts) — NOT YET RUN
-- [ ] tsc 0 · eslint changed files · suite ×2 (both repos) · secret-scan diff
-- [ ] New tests: sink one-shot/TTL/clip; wrapper shapes; runmesh capture branch
-      + no-capture pin; move mesh guard; action delete mesh branch; B1
-      passthrough (route returns install.command).
-- [ ] Commit w/ attribution → merge main → push.
+## C. Gates (own, re-run, never trust counts) — GREEN, RE-RUN CONFIRMED
+- [x] tsc 0 both repos (`/tmp/t234-vt-tsc2.log`, `/tmp/t234-sw-tsc3.log` = 0 lines)
+- [x] eslint changed files 0 both repos (VT-ESLINT-EXIT=0, SW-ESLINT-EXIT=0)
+- [x] suite ×2 both repos: Vantra **146/146/0/0** (runs `/tmp/t234-vt-suite4.log`
+      + rerun `/tmp/t234-vt-suite5.log`, both exit 0); SW **1689 pass / 0 fail /
+      1 skipped** (baseline skip; `/tmp/t234-sw-suite2.log` + rerun
+      `/tmp/t234-sw-suite3.log`, both exit 0). New tests: sink one-shot/TTL/
+      clip, wrapper shapes, runmesh capture branch + no-capture pin, move mesh
+      guard, action delete mesh branch + node// 404 guard, removedevices
+      VERBATIM id, uninstall fire-and-forget, B1 passthrough (route returns
+      install.command), captureOutput conditional-spread pin.
+- [x] secret-scan diff (fake fixture key only: `task234-test-key`).
 
-## D. Deploy + post-deploy battery — NEEDS 🚦 (owner said "test and deploy" = GO)
-- [ ] Dispatch `Build & Deploy` BOTH repos (CI-from-main only).
+## D. Deploy + post-deploy battery — owner GO given ("test and deploy")
+- [ ] Commit w/ attribution → merge main → push (both repos).
 - [ ] New BUILD_IDs · fix marker in manifest-referenced chunk (pin: orphan
       chunk check — manifest + mtime, never bare grep) · services active ·
       journals empty · public 200s · anon 401s (**pin 16**: probe

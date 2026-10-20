@@ -60,6 +60,7 @@ export async function POST(
       shell,
       timeoutSeconds: timeout,
       runAsUser,
+      captureOutput: true,
     });
     return NextResponse.json({ ok: true, output: result.output, ranAt: result.ranAt });
   } catch (err) {

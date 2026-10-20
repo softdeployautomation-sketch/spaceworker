@@ -193,6 +193,12 @@ export function DeviceList() {
   // removal never freezes the whole list).
   const [removingId, setRemovingId] = useState("");
   const [movingId, setMovingId] = useState("");
+  // TASK_234 B1 — the private install command the Move click minted, shown
+  // until dismissed (masked until revealed, copy gated on reveal).
+  const [moveInstruction, setMoveInstruction] = useState<{ deviceName: string; command: string } | null>(
+    null,
+  );
+  const [moveRevealed, setMoveRevealed] = useState(false);
   // TASK_224 — which history row's Delete is in flight (per-row busy state,
   // mirroring removingId above: a slow delete never freezes the other rows).
   const [deletingId, setDeletingId] = useState("");
@@ -692,15 +698,20 @@ export function DeviceList() {
   }
 
   // TASK_228 — "Move to private": the owner's explicit click replaces the
-  // retired silent auto-move. The confirm names the one-time consequence (the
-  // agent restarts on the machine to point at the private agent); on success
-  // the whole list reloads so the device reappears under its new tier.
+  // retired silent auto-move. TASK_234 B2: the copy no longer claims the
+  // agent "restarts once to point at the private agent" (that was the RETIRED
+  // live-reconfigure path, §Decisions LOCKED #3 — never reconfig). The move is
+  // install→verify→remove: the server only MINTS the private install command;
+  // the device leaves public when the user runs it and the next sync sees the
+  // private copy (it then sits in BOTH lists until they delete the public row
+  // — the duplicate the owner wants, possible because public = MeshCentral
+  // agent and private = Tactical agent, two different agents).
   async function moveDeviceRow(d: DeviceRow) {
     const confirmed = await confirm({
       title: `Move ${d.name} to private?`,
       description:
-        "The agent on the machine restarts once to point at your private agent. The device leaves the public list and appears under your private agent.",
-      confirmLabel: "Move to private",
+        "We'll generate a one-time PowerShell command that installs the private agent on this machine. Nothing changes until you run it — the device appears under Private after the next sync, and you can delete the public copy then.",
+      confirmLabel: "Get install command",
     });
     if (!confirmed) return;
 
@@ -708,11 +719,22 @@ export function DeviceList() {
     setError("");
     try {
       const res = await fetch(`/api/devices/${d.id}/move-to-private`, { method: "POST" });
-      const data: { error?: unknown } = await res.json().catch(() => ({}));
+      const data: { error?: unknown; install?: { command?: string } } = await res
+        .json()
+        .catch(() => ({}));
       if (!res.ok) {
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't move the device");
       }
-      await load();
+      const command = typeof data.install?.command === "string" ? data.install.command : "";
+      if (command) {
+        // TASK_234 B1 — show the command (masked until revealed, copy only
+        // after reveal — the same posture as the public PS command above).
+        setMoveInstruction({ deviceName: d.name, command });
+        setMoveRevealed(false);
+      } else {
+        // Old-server shape (no plan) — nothing to show, don't pretend.
+        await load();
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't move the device");
     } finally {
@@ -1555,6 +1577,51 @@ export function DeviceList() {
       </div>
 
       {error && <p className="text-sm text-red-500">{error}</p>}
+
+      {/* TASK_234 B1 — the private install command minted by Move to private.
+          Same posture as the public PS command: masked until Reveal, copy
+          gated on reveal. Run it on the machine → private copy appears on the
+          next sync → delete the public row when verified. */}
+      {moveInstruction && (
+        <div className="space-y-2 rounded-lg border border-brand-500/40 bg-bg px-3 py-3">
+          <p className="text-xs font-medium text-fg">
+            Move {moveInstruction.deviceName} to private — run this on the machine{" "}
+            <span className="font-normal text-fg-muted">
+              (elevated PowerShell). The private copy appears under Private after the next sync;
+              delete the public row when you&apos;ve verified it.
+            </span>
+          </p>
+          <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
+            {moveRevealed ? moveInstruction.command : maskCommand(moveInstruction.command)}
+          </pre>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={() => setMoveRevealed((v) => !v)}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              {moveRevealed ? "Hide" : "Reveal"}
+            </button>
+            <button
+              onClick={() => void copyText("move-install", moveInstruction.command)}
+              disabled={!moveRevealed}
+              title={moveRevealed ? undefined : "Reveal first, then copy"}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"
+            >
+              {copied === "move-install" ? "Copied ✓" : "Copy command"}
+            </button>
+            <button
+              onClick={() => {
+                setMoveInstruction(null);
+                setMoveRevealed(false);
+                void load();
+              }}
+              className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 dark:hover:bg-white/5"
+            >
+              Done — I ran it
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* TASK_228 — the onboarding strip + failure/stuck banners are GONE with
           the quarantine; the row badge above the grid is the only onboarding

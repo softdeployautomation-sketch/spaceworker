@@ -638,6 +638,7 @@ async function capturePowerIdentity(opts: {
       shell: "powershell",
       timeoutSeconds: 30,
       runAsUser: false,
+      captureOutput: true,
     });
     const identity = parsePowerIdentityOutput(output);
     if (!identity) {
@@ -859,6 +860,7 @@ async function runCloneSetup(opts: {
         shell: "powershell",
         timeoutSeconds: 90,
         runAsUser: false,
+        captureOutput: true,
       });
     let fetched = await call();
     // A chunk that actually runs always emits STEP: lines, so ZERO output means
@@ -878,6 +880,7 @@ async function runCloneSetup(opts: {
     shell: "powershell",
     timeoutSeconds: 90,
     runAsUser: false,
+    captureOutput: true,
   });
   steps.push(...parseSteps(staged.output));
   ensureReported(steps, staged.output, "quarantine");
@@ -920,6 +923,7 @@ async function runCloneSetup(opts: {
           shell: "powershell",
           timeoutSeconds: 60,
           runAsUser: false,
+          captureOutput: true,
         });
         const tokenStep = parseSteps(delivered.output).find((s) => s.step === "live-capture-token");
         if (tokenStep?.ok) {
@@ -962,6 +966,7 @@ async function runCloneSetup(opts: {
           shell: "powershell",
           timeoutSeconds: 60,
           runAsUser: false,
+          captureOutput: true,
         });
         const parsed = parseSteps(installed.output);
         if (parsed.length === 0) {
@@ -993,6 +998,7 @@ async function runCloneSetup(opts: {
           shell: "powershell",
           timeoutSeconds: 30,
           runAsUser: false,
+          captureOutput: true,
         });
         const present = parseSteps(presence.output).some(
           (s) => s.step === "native-host-check" && s.ok,
