@@ -13,6 +13,9 @@ separate from UI.
 box BUILD_ID `GDoWALVDMgZeBbv1s8X4h` or newer (check `.next/BUILD_ID`, not a claim).
 Vantra box: BUILD_ID `ynn1L9bysMdBRncYg0dvS` or newer, its `main` `e108045` or newer;
 its floor **121 tests / 121 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, vantra tree).
+Pending-owner branch: `agent/task-207-mesh-scoped-mint` = `dd2af25` (rebased onto e108045,
+suite 131/131, tsc 0) — NOT merged, NOT deployed; if a deploy suddenly carries TASK_207
+scoped-mint code, that's the owner's GO being executed.
 
 ## Regression pins that must stay true (each was a shipped fix — verify by probe, not memory)
 1. **Invite-only**: anon `GET /` → 200 joker; `/login`, `/signup`, `/home`, `/cyberlab`,
@@ -75,6 +78,25 @@ its floor **121 tests / 121 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, v
     the embedded fallback must remain `space-y-4`. A block root here = the iframe
     collapses to the 150px UA default = the "tiny screen" bug. Owner confirms the
     live panel + screen monitor visually.
+16. **Vantra's internal API is probed on `vantra.spaceworker.top`** (SW's
+    `VANTRA_INTERNAL_URL` default). `vantra.instaweb.top/api/…` answers a bare
+    **nginx 404 HTML page** for every path — that is a WRONG-HOST artifact, not a
+    missing route; don't report it as a regression. Correct anon probes:
+    `POST vantra.spaceworker.top/api/internal/sw/devices/x/runmesh` → **401** ·
+    `GET …/mesh-urls` → **401** · SW `POST /api/auth/signup` with a valid body and
+    no `sw_ref` → **403** (an empty `{}` body → **400** from zod BEFORE the F8
+    gate — that is not an F8 failure; send a real email/password/acceptedTerms
+    body when probing pin 2).
+17. **Orphan `.next` chunks can lie (found 2026-10-20)**: `/opt/vantra/.next` (and
+    any box `.next`) may contain STALE chunk files from earlier/box-side builds —
+    the box currently holds an orphan chunk containing `[TASK_207] scoped console
+    mint FAILED` that no manifest references, while live Vantra (main `e108045`)
+    has NO scope=device handling at all. When proving a fix marker in compiled
+    output: (a) find which chunk the ROUTE's `route.js` actually imports
+    (`grep -o 'chunk…js' server/app/<the route>/route.js`), (b) check the marker
+    in THAT chunk, (c) confirm the chunk's mtime is ≥ `.next/BUILD_ID`'s mtime,
+    and (d) check `route.js.nft.json`. Never conclude "the fix is deployed" from
+    a bare `grep -rl <marker> .next/` hit.
 
 ## Method
 - Read the diff yourself (`git show <commit>`), then run your own gates — never trust reported

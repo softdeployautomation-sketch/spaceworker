@@ -195,9 +195,28 @@ Vantra BUILD_ID `ynn1L9bysMdBRncYg0dvS` (main `e108045`).
    mint — ONLY after nodes move to B (migrate WITH a live session: install B agent →
    verify → remove A agent; Wilk never loses access mid-way). Currently unset (=A),
    verified post-deploy.
-7. **Vantra hygiene**: its working tree still sits on `agent/task-207-mesh-scoped-mint`
-   (+ a stray TASK_25 doc edit + untracked `move/` dir) — rebase onto current main
-   (`e108045`); branches `agent/task-228-vantra-move` + `agent/task-230-…` merged.
-8. **Suite floor**: SW 1682 tests / 1681 pass / 0 fail / 1 skip · Vantra 121/121 ·
-   tsc 0 both repos (224→233 + 212 D4a merged; last deploys SW `39364174515`,
-   Vantra `39339003041`, both success).
+7. **Vantra hygiene — DONE 2026-10-20 (solo lane)**: worktree dirt discarded after
+   backups (`/tmp/vantra-dirt-backup/`: TASK_25 truncation = stray, restored; the
+   `orgs/route.ts` edit was byte-identical to main's TASK_228 content; untracked
+   `move/` = superseded pre-230 mover). `agent/task-207-mesh-scoped-mint` REBASED
+   onto `e108045` → `dd2af25` (one conflict in the mesh-urls route, resolved by
+   keeping BOTH main's TASK_230 instance-aware mint AND the TASK_207 scope=device
+   path; the minted share URL is never run through `applyMeshInstance`). Gates on
+   the rebased tree: tsc 0 · eslint 0 · **Vantra suite 131/131 ×2** (121 + the 10
+   new TASK_207 tests) · secret-scan clean. Pushed as a BRANCH (not merged, not
+   deployed). **Owner call: merge + Vantra deploy** = the missing server half of
+   TASK_207 — SW main already sends `?scope=device`, but deployed Vantra (e108045)
+   ignores the param and returns NO `scoped` field, so SW's `scoped === false`
+   check never fires: today the customer console silently receives broad group
+   URLs (the mobile device-tree leak is unmitigated in prod, with zero log lines).
+8. **Suite floor**: SW 1682 tests / 1681 pass / 0 fail / 1 skip · Vantra 121/121
+   on main (131/131 once `dd2af25` merges) · tsc 0 both repos (224→233 + 212 D4a
+   merged; last deploys SW `39364174515`, Vantra `39339003041`, both success).
+   **Box-truth notes (2026-10-20 probes)**: `/opt/vantra/.next` holds an ORPHAN
+   chunk from a 2026-10-15 box-side build (contains `[TASK_207]` code) that NO
+   manifest references — the deployed mesh-urls route.js references `0jt149t`
+   (zero `scoped` markers) = origin/main behavior. When grepping compiled chunks
+   for a fix marker, ALWAYS confirm the route.js manifest lists that chunk and
+   its mtime ≥ BUILD_ID's (NEXT-agent pin 17). Anon probes for Vantra's internal
+   API go to `vantra.spaceworker.top` — `vantra.instaweb.top` answers nginx 404
+   and looks like a missing route (pin 16).
