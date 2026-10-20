@@ -3549,13 +3549,37 @@ function ControlTab({
   }, [openMenu, launcherOpen]);
 
   return (
-    <div className="space-y-4">
+    // TASK_212 D4a (bug fix) — in full-screen this root must be a FLEX COLUMN.
+    // It is the last link in the chain that hands the leftover viewport height
+    // to the remote-desktop iframe:
+    //   page (h-[100dvh] flex flex-col)
+    //     → DeviceConsole root (flex min-h-0 flex-1 flex-col)
+    //       → session card (flex min-h-0 flex-1 flex-col)
+    //         → tab body (flex min-h-0 flex-1 flex-col)
+    //           → tab wrapper (flex min-h-0 flex-1 flex-col)
+    //             → THIS div (flex min-h-0 flex-1 flex-col)
+    //               → screen container (flex min-h-0 flex-1 flex-col)
+    //                 → iframe (min-h-0 flex-1)
+    // While this div was a plain block (`space-y-4`), every `flex-1` below it
+    // had no free space to divide: the screen container sized to its content
+    // and the iframe collapsed to the UA default 150px height. MeshCentral
+    // then scaled the remote desktop to fit that 150px band, so the desktop
+    // came out as a tiny strip in the middle of the page (and MC's own
+    // "expand" was equally tiny — it only fills the IFRAME's viewport).
+    // Embedded mode is untouched: it keeps the original `space-y-4` block.
+    // `gap-4` reproduces that spacing in the flex column (space-y-4 is a
+    // sibling margin; gap is the flex-column equivalent of the same rhythm).
+    <div
+      className={cn(
+        fullScreen ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4",
+      )}
+    >
       {/* Buttons row. Hidden once a session is LIVE in full-screen mode, where
           the owner asked for exactly two things: the screen and the toolbox
           line. Disconnect is not lost — it lives in the Session menu, which is
           part of that line. Before a session exists it must stay visible: the
           Connect button is the only way to start one here. */}
-      <div className={cn("flex flex-wrap items-center gap-2", fullScreen && mesh && "hidden")}>
+      <div className={cn("flex shrink-0 flex-wrap items-center gap-2", fullScreen && mesh && "hidden")}>
         {!mesh ? (
           <button
             onClick={connect}
@@ -3649,7 +3673,7 @@ function ControlTab({
             fullScreen && "flex min-h-0 flex-1 flex-col",
           )}
         >
-          <div className="relative z-10 flex flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
+          <div className="relative z-10 flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-black/40 px-2 py-1.5 backdrop-blur-sm">
             <ToolboxMenu
               label="Session"
               icon={<Monitor className="h-3.5 w-3.5" />}

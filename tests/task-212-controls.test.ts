@@ -271,3 +271,67 @@ test("D4b: the raw-MC launcher card is bypassed in full-screen (its prefix stays
   // tests/console-mesh-scope.test.ts:63 pins the same prefix — keep both green.
   assert.ok(src.includes("isMobileViewport && !embedInPage"), "TASK_207 prefix preserved");
 });
+
+// ---------------------------------------------------------------------------
+// D4a regression — the remote desktop rendered as a tiny strip in the middle
+// of the page.
+//
+// The full-screen flex chain that hands the viewport height to the iframe was
+// broken ONE LINK ABOVE the iframe: ControlTab's own root was a plain block
+// (`space-y-4`). A block does not divide free space, so every `flex-1` below
+// it had nothing to grow into, the screen container fell back to content
+// height and the iframe collapsed to the UA default 150px. MeshCentral scales
+// the remote desktop to fit its viewport, so it painted a ~150px band — which
+// is why MC's own "expand" button was equally tiny: it only ever fills the
+// IFRAME's viewport, never the browser window.
+//
+// The chain must be unbroken, from the page down to the iframe. Each element
+// is pinned below so a refactor cannot silently reintroduce a block in the
+// middle and shrink the desktop again.
+// ---------------------------------------------------------------------------
+
+test("D4a regression: ControlTab's root is a flex column in full-screen (not a block)", () => {
+  const src = read("components/device-console.tsx");
+  const fnStart = src.indexOf("function ControlTab(");
+  assert.ok(fnStart > -1, "ControlTab must exist");
+  // The component's return block: from its first `return (` to the end of the
+  // mesh branch that holds the iframe.
+  const retAt = src.indexOf("return (", fnStart);
+  assert.ok(retAt > -1, "ControlTab must return markup");
+  const body = src.slice(retAt, src.indexOf("function MeshOnlyNotice", retAt));
+  assert.match(
+    body,
+    /fullScreen \? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"/,
+    "ControlTab's root must become a flex column in full-screen — a block breaks the chain and collapses the iframe to 150px",
+  );
+  assert.ok(
+    !/<div className="space-y-4">\s*\{\/\* Buttons row/.test(body),
+    "ControlTab's root must not be an unconditional block wrapper",
+  );
+});
+
+test("D4a regression: the full-screen flex chain to the iframe is unbroken", () => {
+  const src = read("components/device-console.tsx");
+  // Every link that must be a flex column for `flex-1` to mean anything.
+  const chain = [
+    'fullScreen && "flex min-h-0 flex-1 flex-col"', // tab body + screen container
+    'fullScreen ? "flex min-h-0 flex-1 flex-col gap-4" : "space-y-4"', // ControlTab root
+  ];
+  for (const link of chain) {
+    assert.ok(src.includes(link), `the chain must keep: ${link}`);
+  }
+  // The iframe itself must be allowed to shrink and grow.
+  assert.ok(
+    src.includes('fullScreen ? "min-h-0 flex-1" : "h-[70dvh] sm:h-[480px]"'),
+    "the iframe must fill the leftover height in full-screen",
+  );
+  // The chrome above the screen must not be squeezed out of the flex column.
+  assert.ok(
+    src.includes('fullScreen && "shrink-0 px-2 py-1"'),
+    "the compact tab strip must keep its height (shrink-0)",
+  );
+  assert.ok(
+    src.includes("flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border bg-black/40"),
+    "the toolbox line must keep its height (shrink-0)",
+  );
+});
