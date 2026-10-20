@@ -27,31 +27,54 @@ command output (ack = "OK"/"Agent not connected" only) → console showed
       set it: run-command route, device-tools 661/1949/2107, clone-setup,
       security-audit. Sweep deliberately does NOT.
 
-## B. Move-to-private → duplicate → delete public — bugs FOUND, fixes NEXT
+## B. Move-to-private → duplicate → delete public
 
 Flow owner wants: click Move → get PS install command → run it on the box →
 **private copy appears (duplicate)** → verify safe → **delete public row**.
 Duplicate IS possible: public = MeshCentral agent, private = Tactical agent —
 different agents, both can run on one machine.
 
-Bugs (evidence in code):
-- [ ] **B1** SW `MoveToPrivateResult` says `{ok:true,moved:true}` but Vantra
-      returns `{ok:true, flow, install:{command}}` → SW route answers client
-      `{ok:true}` → **the install command is dropped on the floor**. Fix: type
-      + route passthrough + UI reveal/copy panel (mirror publicPs pattern,
-      `maskCommand`/`copyText`).
-- [ ] **B2** UI confirm copy still says "agent restarts once" (retired
-      live-reconfigure, §Decisions LOCKED #3). Replace with install-command copy.
-- [ ] **B3** Vantra `/move` guard = `assertAgentInSwOrg` (TRMM) → **404 for
-      `node//`** → Move button dead on every public mesh row. Fix: mesh branch —
-      group name `SpaceWorker Public · <uid>` → org `sw-<uid>`, then same
-      source/dest/install logic (createManualInstaller, private org `-p`).
-- [ ] **B4** Vantra `/action delete` guard = same TRMM assert (`grep 'node//'
-      /action → exit 1` = zero mesh handling) → **Remove button 404s on mesh
-      rows**. Fix: mesh branch — assert public group, best-effort uninstall via
-      runMeshCommand (`-uninstall` string exists in meshcentral tree; service
-      `MeshCentralAgent`), then `removedevices` wire (meshuser.js `nodeids[]`),
-      answer `{ok:true, output:null, deleted:true}` like TRMM path.
+- [x] **B1** SW `MoveToPrivateResult` rewritten: `{ok, flow, destinationOrgId,
+      destinationOrgName, steps, install:{command}}` matches Vantra's real
+      TASK_230 response (the old `{ok:true,moved:true}` was fiction — that's
+      why `install.command` was dropped at the type line).
+- [x] **B1** SW move-to-private route now passes the whole plan through
+      (`flow/destination*/steps/install`) instead of `{ok:true}`.
+- [x] **B2** UI: `moveDeviceRow` confirm copy fixed (no more "agent restarts
+      once" — retired live-reconfig); success with a command now sets
+      `moveInstruction` state instead of a silent `load()`.
+- [x] **B1** UI panel rendered after the header: masked `<pre>` +
+      Reveal/Hide + copy gated on reveal (`copied === "move-install"`) +
+      "Done — I ran it" → clears + `load()`. Same posture as public PS.
+- [ ] **B3** Vantra `/move` — mesh branch (NEXT): `node//` id →
+      `assertMeshNodeInSwPublicGroup` → group `SpaceWorker Public · <uid>` →
+      source org `sw-<uid>`, dest `sw-<uid>-p`, then the SAME install-plan
+      body (createManualInstaller). Currently 404s: `assertAgentInSwOrg` is
+      TRMM-only (getAgentDetail throws TRMM 404 for `node//`).
+      Helper to add in meshcentral-api: node→group lookup already exists
+      inside `assertMeshNodeInSwPublicGroup` — refactor to also return the
+      group name so the route can parse `<uid>` (grep confirmed:
+      `swUserIdFromOrgName` + `SW_ORG_PREFIX` in spaceworker-service.ts; group
+      builder `SpaceWorker Public · ${uid}` in mesh-standalone-install.ts:47).
+- [ ] **B4** Vantra `/action delete` — mesh branch (NEXT): `node//` → public
+      group assert (404 else) → best-effort UNINSTALL dispatched via
+      `runMeshCommand` (self-locating PowerShell: find service whose PathName
+      matches meshagent / name `MeshCentralAgent`, run its exe `-uninstall` —
+      symmetric with the proven `-install`; `-uninstall` string confirmed in
+      meshcentral tree) → remove the node record via meshuser wire
+      `removedevices {nodeids:[<node// verbatim>]}` (handler confirmed in
+      meshuser.js ~2856, `validateArray(command.nodeids)`) → answer
+      `{ok:true, output:null, deleted:true}` (same shape SW expects).
+      Uninstall is best-effort fire-and-forget (TRMM deleteAgent posture) —
+      node removal proceeds even if uninstall output is null/offline agent.
+      Offline: uninstall dispatch returns "Agent not connected" → proceed to
+      record removal anyway? DECISION: NO — offline agent would RE-REGISTER
+      the node on next connect (it holds the meshid locally) → refuse delete
+      on offline with the existing 503 "currently offline" shape (same
+      never-lie posture as runmesh).
+- [ ] **B4-SW check** which SW call path drives delete for mesh rows
+      (`removeDevice`/`removeDeviceRow` → vantra `/action delete`?) — verify
+      SW sends `node//` id through unchanged (pin 14).
 
 ## C. Gates (own, re-run, never trust counts) — NOT YET RUN
 - [ ] tsc 0 · eslint changed files · suite ×2 (both repos) · secret-scan diff
