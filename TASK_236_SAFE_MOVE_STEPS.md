@@ -14,7 +14,7 @@ the console while the private enrollment never appeared, leaving nothing to reco
 
 | Repo | Branch | Commit | Base |
 |---|---|---|---|
-| vantra | `agent/task-236-move-safe` | `5d5504c` | `f98abae` (origin/main) |
+| vantra | `agent/task-236-move-safe` | `a0bc137` (2 commits: `5d5504c` + `a0bc137`) | `f98abae` (origin/main) |
 | spaceworker (sw-vbsfix) | `agent/task-236-move-safe` | `fcde2e0` | `2fdd967` (origin/main) |
 
 Both branches are pushed. **Neither is merged or deployed** — per `PROMPT_TASK_AGENT.md` §3.2 the
@@ -163,15 +163,15 @@ edited during the task and then reverted to its committed shape; confirm with `g
   a cross-tenant collision cannot happen; a same-hostname pair inside one private org is
   possible but harmless in practice.
 - **Rollback:** both repos are one commit ahead of `origin/main` on their own branch —
-  `git revert 5d5504c` / `git revert fcde2e0` (or simply redeploy `origin/main`) restores the
-  previous behaviour. The public device is never modified by this code, so a rollback cannot
-  strand a machine.
+  `git revert a0bc137 5d5504c` (Vantra) / `git revert fcde2e0` (SpaceWorker), or simply
+  redeploy `origin/main`. The public device is never modified by this code, so a rollback
+  cannot strand a machine.
 
 ---
 
 ## HANDOFF → VERIFICATION AGENT
 
-- **repo + branch + commit:** vantra `agent/task-236-move-safe` @ `5d5504c`; spaceworker
+- **repo + branch + commit:** vantra `agent/task-236-move-safe` @ `a0bc137`; spaceworker
   `agent/task-236-move-safe` @ `fcde2e0`. Both pushed, neither merged.
 - **exact deploy file list:** see above (Vantra 4 files, SpaceWorker 3 files).
 - **migration/DB steps:** none.
