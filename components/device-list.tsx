@@ -195,9 +195,14 @@ export function DeviceList() {
   const [movingId, setMovingId] = useState("");
   // TASK_234 B1 — the private install command the Move click minted, shown
   // until dismissed (masked until revealed, copy gated on reveal).
-  const [moveInstruction, setMoveInstruction] = useState<{ deviceName: string; command: string } | null>(
-    null,
-  );
+  // TASK_235 — `singleLine` is the relay-safe sibling (one line, no `$var =`
+  // assignments) shown FIRST: it survives a paste into PowerShell AND the
+  // public device terminal untouched; `command` (multiline) kept as fallback.
+  const [moveInstruction, setMoveInstruction] = useState<{
+    deviceName: string;
+    command: string;
+    singleLine: string;
+  } | null>(null);
   const [moveRevealed, setMoveRevealed] = useState(false);
   // TASK_224 — which history row's Delete is in flight (per-row busy state,
   // mirroring removingId above: a slow delete never freezes the other rows).
@@ -719,17 +724,24 @@ export function DeviceList() {
     setError("");
     try {
       const res = await fetch(`/api/devices/${d.id}/move-to-private`, { method: "POST" });
-      const data: { error?: unknown; install?: { command?: string } } = await res
+      const data: { error?: unknown; install?: { command?: string; singleLine?: string } } = await res
         .json()
         .catch(() => ({}));
       if (!res.ok) {
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't move the device");
       }
       const command = typeof data.install?.command === "string" ? data.install.command : "";
+      // TASK_235 — prefer the relay-safe one-liner; fall back to the multiline
+      // original for old servers that don't mint it yet (both run the same
+      // private Tactical install — the one-liner just can't fragment).
+      const singleLine =
+        typeof data.install?.singleLine === "string" && data.install.singleLine
+          ? data.install.singleLine
+          : command;
       if (command) {
         // TASK_234 B1 — show the command (masked until revealed, copy only
         // after reveal — the same posture as the public PS command above).
-        setMoveInstruction({ deviceName: d.name, command });
+        setMoveInstruction({ deviceName: d.name, command, singleLine });
         setMoveRevealed(false);
       } else {
         // Old-server shape (no plan) — nothing to show, don't pretend.
@@ -1581,18 +1593,23 @@ export function DeviceList() {
       {/* TASK_234 B1 — the private install command minted by Move to private.
           Same posture as the public PS command: masked until Reveal, copy
           gated on reveal. Run it on the machine → private copy appears on the
-          next sync → delete the public row when verified. */}
+          next sync → delete the public row when verified.
+          TASK_235 — the one-liner (`singleLine`) shows and copies FIRST: one
+          `;`-joined statement with no `$var =` assignments, so it survives a
+          paste AND the public mesh terminal relay unfragmented (the multiline
+          original fragments over the relay — `$exe`/`$agent` null — and only
+          pastes reliably into a real PowerShell window). */}
       {moveInstruction && (
         <div className="space-y-2 rounded-lg border border-brand-500/40 bg-bg px-3 py-3">
           <p className="text-xs font-medium text-fg">
             Move {moveInstruction.deviceName} to private — run this on the machine{" "}
             <span className="font-normal text-fg-muted">
-              (elevated PowerShell). The private copy appears under Private after the next sync;
-              delete the public row when you&apos;ve verified it.
+              (elevated PowerShell, one line — paste it whole). The private copy appears under Private after
+              the next sync; delete the public row when you&apos;ve verified it.
             </span>
           </p>
           <pre className="max-h-40 overflow-auto rounded-lg border border-border bg-bg p-3 font-mono text-xs text-fg">
-            {moveRevealed ? moveInstruction.command : maskCommand(moveInstruction.command)}
+            {moveRevealed ? moveInstruction.singleLine : maskCommand(moveInstruction.singleLine)}
           </pre>
           <div className="flex flex-wrap items-center gap-2">
             <button
@@ -1602,7 +1619,7 @@ export function DeviceList() {
               {moveRevealed ? "Hide" : "Reveal"}
             </button>
             <button
-              onClick={() => void copyText("move-install", moveInstruction.command)}
+              onClick={() => void copyText("move-install", moveInstruction.singleLine)}
               disabled={!moveRevealed}
               title={moveRevealed ? undefined : "Reveal first, then copy"}
               className="rounded-lg border border-border px-3 py-1.5 text-xs font-medium text-fg transition-colors hover:bg-black/5 disabled:opacity-50 dark:hover:bg-white/5"

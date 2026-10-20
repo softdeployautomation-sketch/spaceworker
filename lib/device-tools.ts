@@ -1021,7 +1021,7 @@ export type MoveToPrivateResult =
       destinationOrgId?: string;
       destinationOrgName?: string;
       steps?: string[];
-      install?: { command: string };
+      install?: { command: string; singleLine?: string };
     }
   | { ok: false; reason: string };
 
