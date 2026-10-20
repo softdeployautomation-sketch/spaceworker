@@ -1,4 +1,4 @@
-# PROMPT — NEXT VERIFICATION AGENT (standing brief, 2026-10-19; supersedes the TASK_184 brief)
+# PROMPT — NEXT VERIFICATION AGENT (standing brief, 2026-10-20; supersedes the TASK_184 brief)
 
 You independently verify whatever the senior lane just shipped and close it out — or FAIL it
 loudly with repro steps. Sources of truth: the task's **`TASK_*_STEPS.md`** handoff (must exist
@@ -8,11 +8,11 @@ with every step checked + evidence; missing = FAIL), the **playbook** `HOW_WE_MO
 never edit `.env`; REJECT any commit/doc containing live secrets; money/invoice commits stay
 separate from UI.
 
-**Baseline when you run** (record yours at start): `main` = `68377d6` or newer · SW suite floor
-**1681 tests / 1680 pass / 0 fail / 1 skipped** (`npm test`) · `tsc` 0 ·
-box BUILD_ID `P5kf-7Flt7_8p9UC6we_g` or newer (check `.next/BUILD_ID`, not a claim).
-Vantra box: BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` or newer, its `main` `a9b3c9b` or newer;
-its floor **120 tests / 120 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, vantra tree).
+**Baseline when you run** (record yours at start): `main` = `652211b` or newer · SW suite floor
+**1682 tests / 1681 pass / 0 fail / 1 skipped** (`npm test`) · `tsc` 0 ·
+box BUILD_ID `GDoWALVDMgZeBbv1s8X4h` or newer (check `.next/BUILD_ID`, not a claim).
+Vantra box: BUILD_ID `ynn1L9bysMdBRncYg0dvS` or newer, its `main` `e108045` or newer;
+its floor **121 tests / 121 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, vantra tree).
 
 ## Regression pins that must stay true (each was a shipped fix — verify by probe, not memory)
 1. **Invite-only**: anon `GET /` → 200 joker; `/login`, `/signup`, `/home`, `/cyberlab`,
@@ -62,6 +62,19 @@ its floor **120 tests / 120 pass / 0 fail** (`npx tsx --test tests/*.test.ts`, v
     Probe: `curl -s <share-link>` → **200 + VBS bytes** with `Start-Sleep -Seconds 2` and
     the raw meshid inside; a raw `interpolating_double_quote` string anywhere in the
     console = the normalizer threw = this pin is broken.
+14. **Mesh assert reads the nodes-map KEY, and ids are never stripped (T233)**:
+    MeshCentral node docs have NO `meshid` field — membership is resolved from the
+    grouped map (`{<meshId>: [nodes]}`). `grep -n "slice(6)" lib/meshcentral-api.ts`
+    → **0 hits** (strip = the T233-precursor bug: Wire `_id` INCLUDES `node//`);
+    `node.meshid` references → **0**. Probe: anon `POST …/runmesh` → 401; with a
+    real id: online → command executes, offline → **503 "currently offline"**
+    (never 404 "Device not found").
+15. **Remote-desktop panel fills (T212 D4a)**: in the built chunk, ControlTab's
+    root className in fullScreen must contain `flex min-h-0 flex-1 flex-col`
+    (grep the compiled device-console chunks for `flexmin-h-0flex-1flex-col`);
+    the embedded fallback must remain `space-y-4`. A block root here = the iframe
+    collapses to the 150px UA default = the "tiny screen" bug. Owner confirms the
+    live panel + screen monitor visually.
 
 ## Method
 - Read the diff yourself (`git show <commit>`), then run your own gates — never trust reported

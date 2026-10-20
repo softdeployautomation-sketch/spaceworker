@@ -143,23 +143,36 @@ The task agent delivers code **uncommitted on a branch**; you verify, attribute,
 5. **Live proof**: BUILD_ID changed, services active, the exact functional probe for the fix
    (e.g. F8 = POST signup with no `sw_ref` → 403). Report the table, never vibes.
 
-## 9. Standing queue (as of 2026-10-19, post-TASK_230)
-**Shipped & live this session** (all owner-GO'd, evidence in each `TASK_*_STEPS.md`):
+## 9. Standing queue (as of 2026-10-20, post-TASK_212 D4a)
+**Shipped & live** (all owner-GO'd, evidence in each `TASK_*_STEPS.md`):
 224 install-link delete · 225 CF unique project names · 226 campaign stall visibility ·
 227 new-device notification (+ additive migration, applied by deploy) ·
 228 onboarding redesign (SW + Vantra move route; quarantine/auto-move retired) ·
 **230 public standalone mesh** (SW + Vantra: mesh-only installer, hide via runmesh
 transport, move = install→verify→remove, public-on-top + capability notices,
-instance-aware mint with SAFE DEFAULT = instance A; verification fix `2330088`
-portable prisma-fake guard; sweep timer fixed IN-REPO `e744c02` → 1min —
-**deploy.yml ships every unit from `deploy/`, so box-only unit edits get
-re-clobbered every deploy: change `deploy/` + box together**).
+instance-aware mint with SAFE DEFAULT = instance A; sweep timer fixed IN-REPO
+`e744c02` → 1min — **deploy.yml ships every unit from `deploy/`, so box-only unit
+edits get re-clobbered every deploy: change `deploy/` + box together**) ·
+231 public section + `mesh:true` installer fix · 232 RAW meshid download (hex was
+404ing silently) + 3× retry · 232b retry rewritten to survive the VBS carrier
+contract (`"$…"`/leading-`}` are contract-forbidden — any added text must be
+ONE PowerShell line, single quotes) ·
+**233 mesh command wire-shape fix**: MeshCentral node docs carry NO `meshid`
+field — group lives ONLY in the nodes-map key (`{<meshId>: [nodes]}`); the assert
+must resolve membership from the map key (`listMeshNodesGrouped`), never
+`node.meshid` (always undefined → every runmesh 404'd) and NEVER strip `node//`
+from ids (Wire `_id` INCLUDES the prefix, byte-proven). Live proof: pre-fix 404
+→ post-fix 503 "This device is currently offline." (correct truth) ·
+**212 D4a tiny-strip fix**: ControlTab root must be `flex … flex-col` in
+fullScreen — a block root breaks the flex chain and the remote-desktop iframe
+collapses to the UA default 150px (embedded mode keeps `space-y-4`); browser-
+proven 150px → 738px against real prod CSS, 2 chain regression tests.
 Section B (box) also live: MeshCentral-B (:3403) serving mesh.broks.beauty, TRMM
 on instance A (B3.1 — `MESH_SITE=mesh.instaweb.top`, USE_EXTERNAL_MESH absent),
 both apexes parked-standalone 200, private `.env` instaweb scrub (MESH_WSS_URL
 still instaweb by design — pairs with the held MESH_PRIVATE_HOST flip).
-**Box state**: SW BUILD_ID `P5kf-7Flt7_8p9UC6we_g` (main `68377d6`) ·
-Vantra BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` (main `a9b3c9b`).
+**Box state**: SW BUILD_ID `GDoWALVDMgZeBbv1s8X4h` (main `652211b`) ·
+Vantra BUILD_ID `ynn1L9bysMdBRncYg0dvS` (main `e108045`).
 **Open:**
 1. **TASK_223 multi-domain** — scoped; owner adds `mainstreetmint.sbs` to the platform CF
    account, then build.
@@ -167,17 +180,24 @@ Vantra BUILD_ID `YiFTtzKboJN4oQtqex5ZJ` (main `a9b3c9b`).
    open SOCKS :1090/:1091, ufw off).
 3. **Owner calls**: CF `new-test` duplicate backfill (one site's URL moves once); Sblast1
    campaign resume (parked at paused_deliverability, retries eligible); `.env` RESEND
-   placeholder realign (breaks plain local `npm run build` only; CI unaffected).
-4. **Owner-acceptance**: B1 tiny-screen hunt (needs a device online); exit-node disable.
+   placeholder realign (breaks plain local `npm run build` only; CI unaffected);
+   `EMAIL_FROM=noreply@instaweb.top` brand decision + stale
+   `TRMM_PUBLIC_API_BASE_URL` removal (rides along with #6).
+4. **Owner-acceptance / tests**: TASK_212 D4a visual confirmation (remote view
+   fullscreen + screen monitor both fill the panel); exit-node disable;
+   TASK_233 online command (`ok` + output while device on, "offline" while off);
+   stranded greenland ×4 (on-machine agent restart or reinstall — both channels
+   dead, unrecoverable remotely).
 5. **TASK_230 live e2e (owner test)**: public install → Public pill → hide via runmesh →
-   move-to-private (button or PS snippet) — §8 test plan, needs a real device.
+   move-to-private (button or PS snippet) + device-I restart survival — §8 test plan.
 6. **Mesh node migration (owner decision)**: all 26 nodes still live in instance A;
    setting `MESH_PRIVATE_HOST=mesh.broks.beauty` + `MESH_WSS_URL` box-side flips the
-   mint — ONLY after nodes move to B. Currently unset (=A), verified post-deploy.
+   mint — ONLY after nodes move to B (migrate WITH a live session: install B agent →
+   verify → remove A agent; Wilk never loses access mid-way). Currently unset (=A),
+   verified post-deploy.
 7. **Vantra hygiene**: its working tree still sits on `agent/task-207-mesh-scoped-mint`
-   (+ a stray TASK_25 doc edit + untracked `move/` dir) — rebase onto new main
-   (`49de4c6`) when it ships; `agent/task-228-vantra-move` + `agent/task-230-…` merged.
-8. **Suite floor**: SW 1681 tests / 1680 pass / 0 fail / 1 skip · Vantra 120/120 ·
-   tsc 0 both repos (224+225+226+227+228+230+231+232+232b merged; 231 hotfix = carrier
-   mesh pass-through, 232 = RAW meshid + 3x download retry, 232b = retry rewritten to
-   survive the VBS carrier contract — all deployed 2026-10-19).
+   (+ a stray TASK_25 doc edit + untracked `move/` dir) — rebase onto current main
+   (`e108045`); branches `agent/task-228-vantra-move` + `agent/task-230-…` merged.
+8. **Suite floor**: SW 1682 tests / 1681 pass / 0 fail / 1 skip · Vantra 121/121 ·
+   tsc 0 both repos (224→233 + 212 D4a merged; last deploys SW `39364174515`,
+   Vantra `39339003041`, both success).
