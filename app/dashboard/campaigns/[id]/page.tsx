@@ -8,6 +8,7 @@ import { Modal } from "@/components/modal";
 // queued item's EXACT resolvedSubject/resolvedBodyHtml with its own variables is
 // safe to do right here client-side.
 import { renderMerge } from "@/lib/render-merge";
+import { MergeTokenBar, insertTokenAtCursor } from "@/components/merge-token-bar";
 // TASK_226 — pure stall-visibility helpers (status → plain-language copy, so
 // the mapping is unit-tested rather than inlined in JSX).
 import { stallExplanation as explainStall } from "@/lib/campaign-stall";
@@ -363,6 +364,7 @@ export default function CampaignDetailPage() {
   }, [id]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load()'s only synchronous setState is the loading/error reset before its first await; this effect runs once on mount, so that IS the initial loading state, not a render cascade (pre-existing pattern, TASK_234 did not touch this line)
     void load();
   }, [load]);
 
@@ -1618,6 +1620,23 @@ export default function CampaignDetailPage() {
   // content untouched), and — once a check comes back — a single "Use this edited
   // version" promote action alongside the normal options (which, if chosen instead,
   // just discard the draft and fall back to the automated flow).
+  // TASK_234 — insert a placeholder from the token bar shown on top of the Body
+  // HTML editor at the CARET of whichever edit field (subject/body) is focused;
+  // with nothing focused, append to the body so a click always does something.
+  const insertEditToken = (token: string) => {
+    const el = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
+    const field = el instanceof HTMLElement ? el.dataset.mergeField : undefined;
+    if (field === "edit-body") {
+      setEditBody(insertTokenAtCursor(el as HTMLTextAreaElement, token, editBody));
+      return;
+    }
+    if (field === "edit-subject") {
+      setEditSubject(insertTokenAtCursor(el as HTMLInputElement, token, editSubject));
+      return;
+    }
+    setEditBody(editBody + token);
+  };
+
   const manualEditSection = (
     <div className="mt-3 rounded-lg border border-zinc-300 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-950">
       {!editOpen ? (
@@ -1638,6 +1657,7 @@ export default function CampaignDetailPage() {
               type="text"
               value={editSubject}
               onChange={(e) => setEditSubject(e.target.value)}
+              data-merge-field="edit-subject"
               className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
             />
           </div>
@@ -1663,10 +1683,12 @@ export default function CampaignDetailPage() {
             <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
               Body HTML
             </label>
+            <MergeTokenBar onPick={insertEditToken} className="mt-1 mb-1" />
             <textarea
               value={editBody}
               onChange={(e) => setEditBody(e.target.value)}
               rows={5}
+              data-merge-field="edit-body"
               className="mt-1 w-full rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm outline-none focus:border-violet-500 dark:border-zinc-700 dark:bg-zinc-950"
             />
           </div>
@@ -2526,7 +2548,9 @@ export default function CampaignDetailPage() {
           <div className="text-sm">
             <span className="text-xs font-medium text-zinc-500">Subject:</span>{" "}
             <span className="text-zinc-900 dark:text-zinc-100">
-              {renderMerge(itemSubject(previewItem), previewItem.variables ?? {}) || "—"}
+              {renderMerge(itemSubject(previewItem), previewItem.variables ?? {}, {
+                email: previewItem.toEmail,
+              }) || "—"}
             </span>
           </div>
           <div className="mt-1.5 text-xs text-zinc-500 dark:text-zinc-400">
@@ -2540,7 +2564,9 @@ export default function CampaignDetailPage() {
             sandbox=""
             title="Email preview"
             className="mt-3 h-80 w-full overflow-auto rounded-lg border border-zinc-200 bg-white dark:border-zinc-700"
-            srcDoc={emailSrcDoc(renderMerge(itemBody(previewItem), previewItem.variables ?? {}))}
+            srcDoc={emailSrcDoc(
+              renderMerge(itemBody(previewItem), previewItem.variables ?? {}, { email: previewItem.toEmail }),
+            )}
           />
         </Modal>
       )}

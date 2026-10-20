@@ -90,3 +90,60 @@ test("an empty or blank template is returned as-is", () => {
   assert.equal(renderMerge("", { firstname: "Ada" }), "");
   assert.equal(renderMerge("No placeholders here.", { firstname: "Ada" }), "No placeholders here.");
 });
+
+// TASK_234 — name derived from the EMAIL ADDRESS alone (no extractor/CSV name).
+// The whole point: `((name))`/`{{name}}` must resolve from the address when the
+// variables carry nothing, and must NEVER reach the recipient as a raw token.
+
+test("((name)) resolves from the recipient's email when no name variable exists", () => {
+  assert.equal(renderMerge("Hi ((name))!", {}, { email: "jane.smith@x.com" }), "Hi Jane!");
+  assert.equal(renderMerge("Hi {{name}}!", {}, { email: "john@x.com" }), "Hi John!");
+  // Hyphen / underscore / plus-tag / trailing digits — the GMass-style heuristics.
+  assert.equal(renderMerge("((name))", {}, { email: "mary-jane@x.com" }), "Mary");
+  assert.equal(renderMerge("((name))", {}, { email: "sam_wells@x.com" }), "Sam");
+  assert.equal(renderMerge("((name))", {}, { email: "jane+news@x.com" }), "Jane");
+  assert.equal(renderMerge("((name))", {}, { email: "alex99@x.com" }), "Alex");
+});
+
+test("a stored name column still wins over the email-derived name", () => {
+  // Variables first, email only as the fallback source — never a replacement.
+  assert.equal(renderMerge("Hi ((name))", { contactName: "Bo" }, { email: "jane@x.com" }), "Hi Bo");
+  assert.equal(renderMerge("Hi {{name}}", { name: "Boss" }, { email: "jane@x.com" }), "Hi Boss");
+  assert.equal(
+    renderMerge("Hi {{firstName}}", { firstname: "Ada" }, { email: "bo@x.com" }),
+    "Hi Ada",
+  );
+});
+
+test("role mailboxes (info@…) derive no name — default, else empty, never 'Info'", () => {
+  assert.equal(renderMerge("Hi {{name|there}}!", {}, { email: "info@x.com" }), "Hi there!");
+  assert.equal(renderMerge("Hi ((name))!", {}, { email: "sales@x.com" }), "Hi !");
+  assert.equal(renderMerge("Hi {{name}}!", {}, { email: "a@x.com" }), "Hi !");
+  assert.equal(renderMerge("Hi ((name))!", {}, { email: "plainuser" }), "Hi !");
+});
+
+test("((name)) is never delivered as a raw token, even with nothing to fill it", () => {
+  // The owner's core requirement: a placeholder must not show naked by mistake.
+  assert.equal(renderMerge("Hi ((name))", {}, {}), "Hi ");
+  assert.equal(renderMerge("Hi ((name|there))", {}, {}), "Hi there");
+});
+
+test("((…)) outside the known key set passes through untouched", () => {
+  // Guards existing bodies: literal double-paren text is never eaten.
+  assert.equal(renderMerge("see ((notes)) here", {}, {}), "see ((notes)) here");
+  assert.equal(renderMerge("(single parens) stay", {}, {}), "(single parens) stay");
+});
+
+test("the |default renders when nothing resolves, in both syntaxes", () => {
+  assert.equal(renderMerge("Hi {{nope|friend}}", {}, {}), "Hi friend");
+  assert.equal(renderMerge("Hi {{name|there}}", {}, {}), "Hi there");
+  assert.equal(renderMerge("Hi ((name|there))", {}, {}), "Hi there");
+  // An empty default still means "empty", not the raw token.
+  assert.equal(renderMerge("Hi {{name|}}", {}, { email: "info@x.com" }), "Hi ");
+});
+
+test("{{email}} renders the recipient's address passed at send time", () => {
+  assert.equal(renderMerge("<{{email}}>", {}, { email: "jane@x.com" }), "<jane@x.com>");
+  // Without it, unknown-key rules apply — empty, never raw.
+  assert.equal(renderMerge("<{{email}}>", {}, {}), "<>");
+});

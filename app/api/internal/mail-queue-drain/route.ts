@@ -216,6 +216,9 @@ export async function POST(req: Request) {
         // snapshot on the item itself (no variant pair); legacy campaigns fall back
         // to the item's variant, then the campaign's legacy single fields.
         const variables = (item.variables as Record<string, string> | null) ?? {};
+        // TASK_234 — name tokens fall back to THIS recipient's address when the
+        // variables carry no name, so personalization needs nothing but the email.
+        const mergeOpts = { email: item.toEmail };
         // Task 33 — during a pinned-override window, every send for this campaign
         // uses the pinned content/From instead of the item's rotation snapshot.
         // The pin is honored for exactly its `remaining` sends — once it hits 0
@@ -225,20 +228,20 @@ export async function POST(req: Request) {
         const pin = head && head.remaining > 0 ? head : null;
         const subject =
           pin
-            ? renderMerge(pin.subject, variables)
+            ? renderMerge(pin.subject, variables, mergeOpts)
             : item.resolvedSubject != null
-              ? renderMerge(item.resolvedSubject, variables)
+              ? renderMerge(item.resolvedSubject, variables, mergeOpts)
               : item.variant
-                ? renderMerge(item.variant.subject, variables)
-                : renderMerge(item.campaign.subject, variables);
+                ? renderMerge(item.variant.subject, variables, mergeOpts)
+                : renderMerge(item.campaign.subject, variables, mergeOpts);
         const html =
           pin
-            ? renderMerge(pin.bodyHtml, variables)
+            ? renderMerge(pin.bodyHtml, variables, mergeOpts)
             : item.resolvedBodyHtml != null
-              ? renderMerge(item.resolvedBodyHtml, variables)
+              ? renderMerge(item.resolvedBodyHtml, variables, mergeOpts)
               : item.variant
-                ? renderMerge(item.variant.bodyHtml, variables)
-                : renderMerge(item.campaign.bodyHtml, variables);
+                ? renderMerge(item.variant.bodyHtml, variables, mergeOpts)
+                : renderMerge(item.campaign.bodyHtml, variables, mergeOpts);
         const from =
           pin && pin.fromAddress
             ? pin.fromAddress

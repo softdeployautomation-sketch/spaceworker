@@ -10,6 +10,7 @@ import { useConfirm } from "@/components/confirm-provider";
 // show the user exactly what a recipient would receive (including the raw gap a
 // missing merge variable leaves) BEFORE they confirm the send.
 import { renderMerge } from "@/lib/render-merge";
+import { MergeTokenBar, insertTokenAtCursor } from "@/components/merge-token-bar";
 // TASK_151 (R1/R2) — the picker's include/exclude rule. Shared with the server
 // send path (POST /api/campaigns) so the client's filter and the server's guard
 // can never drift; see lib/lead-filter.ts.
@@ -307,6 +308,7 @@ function CampaignsPageInner() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- load()'s only synchronous setState is the loading/error reset before its first await; this effect runs once on mount, so that IS the initial loading state, not a render cascade (pre-existing pattern, TASK_234 did not touch this line)
     load();
   }, [load]);
 
@@ -317,6 +319,7 @@ function CampaignsPageInner() {
   useEffect(() => {
     if (!fromSearchJobId) return;
     openNew();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-shot adoption of the ?fromSearchJob query param on mount: clearing the previous count/error before the fetch resolves is the point (same pattern as app/dashboard/billing/page.tsx; pre-existing, TASK_234 did not touch this effect)
     setLeadCountError("");
     setLeadEmailCount(null); // clear any previous job's count immediately, not just on this fetch's resolution
     fetch(`/api/jobs/${fromSearchJobId}`)
@@ -609,6 +612,28 @@ function CampaignsPageInner() {
     setBodies(bodies.filter((_, i) => i !== index));
   }
 
+  // TASK_234 — insert a placeholder from the token bar (rendered on top of
+  // Bodies) at the CARET of the field being typed into. The focused element
+  // identifies itself with data-merge-field/data-merge-index; with no editor
+  // focused (e.g. the very first click), fall back to appending to the first
+  // body so the click always lands somewhere visible instead of doing nothing.
+  function insertMergeToken(token: string) {
+    const el = document.activeElement as HTMLTextAreaElement | HTMLInputElement | null;
+    const field = el instanceof HTMLElement ? el.dataset.mergeField : undefined;
+    const rawIndex = el instanceof HTMLElement ? el.dataset.mergeIndex : undefined;
+    const index = rawIndex != null && rawIndex !== "" ? Number(rawIndex) : -1;
+    if (field === "body" && index >= 0 && index < bodies.length) {
+      setBodyAt(index, insertTokenAtCursor(el as HTMLTextAreaElement, token, bodies[index]));
+      return;
+    }
+    if (field === "subject" && index >= 0 && index < subjects.length) {
+      setSubjectAt(index, insertTokenAtCursor(el as HTMLInputElement, token, subjects[index]));
+      return;
+    }
+    if (bodies.length > 0) setBodyAt(0, bodies[0] + token);
+    else if (subjects.length > 0) setSubjectAt(0, subjects[0] + token);
+  }
+
   // Loads a picked template's (or one of my own campaigns') subject/body
   // variants straight into the editable Subject lines / Bodies fields, so the
   // user sees real content immediately and can freely edit it before creating
@@ -658,6 +683,12 @@ function CampaignsPageInner() {
   // other state (CSV, ?fromSearchJob, or no lead picked yet) we render with an
   // EMPTY variable set, which is deliberately what surfaces the "Hi ," style gap
   // BEFORE the campaign exists rather than after a real send.
+  // TASK_234 — a synthetic sample address for the create-page preview: real sends
+  // fall back to EACH recipient's address for name tokens when no name column
+  // exists, so the preview must do the same with a sample one — otherwise it
+  // shows gaps a recipient would never see.
+  const SAMPLE_PREVIEW_EMAIL = "sample@example.com";
+
   function sampleRecipientVars(): Record<string, string> {
     if (recipientSource === "leads" && pickerData && selectedLeadIds.length > 0) {
       for (const id of selectedLeadIds) {
@@ -1063,6 +1094,8 @@ function CampaignsPageInner() {
                         type="text"
                         value={s}
                         onChange={(e) => setSubjectAt(i, e.target.value)}
+                        data-merge-field="subject"
+                        data-merge-index={i}
                         placeholder={`Subject line ${i + 1}`}
                         className="w-64 rounded-lg border border-zinc-300 bg-white px-3 py-1.5 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                       />
@@ -1151,7 +1184,8 @@ function CampaignsPageInner() {
               </details>
 
               <div className="flex flex-col gap-1 text-sm font-medium">
-                Bodies <span className="text-xs text-zinc-400">{'— merge fields: {{name}} always works, or an exact key like {{firstName}}, {{company}}, {{contactName}}. Case is ignored; each body rotates on its own index'}</span>
+                Bodies <span className="text-xs text-zinc-400">{'— merge fields: {{name}} or ((name)) always work (name column first, else derived from the recipient’s email); exact keys like {{firstName}}, {{company}}, {{contactName}} work too. Case is ignored; each body rotates on its own index'}</span>
+                <MergeTokenBar onPick={insertMergeToken} className="mt-1" />
                 <div className="mt-1 flex flex-col gap-2">
                   {bodies.map((b, i) => (
                     <div key={i} className="flex items-start gap-2">
@@ -1159,6 +1193,8 @@ function CampaignsPageInner() {
                         value={b}
                         onChange={(e) => setBodyAt(i, e.target.value)}
                         rows={3}
+                        data-merge-field="body"
+                        data-merge-index={i}
                         placeholder={`Body ${i + 1} — Hi {{firstName}}, thanks for the time with {{company}}.`}
                         className="resize-y flex-1 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm font-normal outline-none focus:border-zinc-500 dark:border-zinc-700 dark:bg-zinc-950"
                       />
@@ -1294,15 +1330,21 @@ function CampaignsPageInner() {
                     </div>
                     {showPreview && (() => {
                       const sampleVars = sampleRecipientVars();
-                      const previewSubject = content.subjects.length > 0 ? renderMerge(content.subjects[subjIndex], sampleVars) : "";
-                      const bodyRaw = content.bodies.length > 0 ? renderMerge(content.bodies[bodyIndex], sampleVars) : "";
+                      const previewSubject =
+                        content.subjects.length > 0
+                          ? renderMerge(content.subjects[subjIndex], sampleVars, { email: SAMPLE_PREVIEW_EMAIL })
+                          : "";
+                      const bodyRaw =
+                        content.bodies.length > 0
+                          ? renderMerge(content.bodies[bodyIndex], sampleVars, { email: SAMPLE_PREVIEW_EMAIL })
+                          : "";
                       const previewBody = cloakLinks
                         ? cloakPreviewLinks(bodyRaw, bodyLinks.map((l) => l.url), cloakedUrls)
                         : bodyRaw;
                       const sourceLabel =
                         recipientSource === "leads" && selectedLeadIds.length > 0
                           ? "the first selected lead's real fields"
-                          : "empty merge variables (shows raw gaps)";
+                          : "empty merge variables ({{name}} derived from the sample email)";
                       return (
                         <>
                           <div className="text-xs font-normal text-zinc-400">— rendered with {sourceLabel}</div>
