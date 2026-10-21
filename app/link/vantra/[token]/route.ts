@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { resolveInstallToken, resolveVbsInstallToken } from "@/lib/vantra-link";
+import { resolveEverwasInstallToken, resolveInstallToken, resolveVbsInstallToken } from "@/lib/vantra-link";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +14,10 @@ export const dynamic = "force-dynamic";
 // by serving the rendered carrier BYTES as an attachment (D6: the zip/exe
 // redirect below stays byte-identical — the vbs resolver answers only for
 // `installerKind: "vbs"` rows and returns null otherwise).
+//
+// Task_EVERWAS_PUBLIC_REPLACE — an `everwas` row answers by serving a silent
+// PowerShell install command as `.ps1` content (D6 parity: the ps1 resolver
+// answers only for Everwas rows and returns null otherwise).
 
 export async function GET(
   _req: Request,
@@ -39,6 +43,21 @@ export async function GET(
           "Content-Type": "application/octet-stream",
           "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(vbs.fileName)}`,
           "Content-Length": String(Buffer.byteLength(vbs.content)),
+          "X-Content-Type-Options": "nosniff",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+    // Task_EVERWAS_PUBLIC_REPLACE — serve silent PowerShell for Everwas links.
+    const everwas = await resolveEverwasInstallToken(token);
+    if (everwas) {
+      const asciiName = everwas.fileName.replace(/[^\x20-\x7e]/g, "_");
+      return new NextResponse(everwas.content, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(everwas.fileName)}`,
+          "Content-Length": String(Buffer.byteLength(everwas.content)),
           "X-Content-Type-Options": "nosniff",
           "Cache-Control": "no-store",
         },

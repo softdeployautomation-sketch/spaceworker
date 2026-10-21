@@ -604,7 +604,7 @@ export async function mintInstallLink(
   // block. `installer.names` stays the three artifact names, so the PDF bytes
   // are never written to the row below.
   const installer = installerRequest(names, pdf);
-  const minted = await vantraFetch<{ ok: boolean; provider?: string; token?: string; downloadUrl: string }>(
+  const minted = await vantraFetch<{ ok: boolean; provider?: string; token?: string; downloadUrl?: string; serverUrl?: string; expiresAt?: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
     { method: "POST", body: installer.body },
   );
@@ -619,6 +619,13 @@ export async function mintInstallLink(
   const tokenHash = sha256(token);
   const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
   const installUrl = `${publicUrl}/link/vantra/${token}`;
+  // Everwas public flow — generate a silent PowerShell install command and
+  // store it on the row so the wrapper link can serve it on open (same
+  // posture as privatePsCommand). Never serialised into a view model.
+  let everwasPsCommand: string | null = null;
+  if (minted.provider === "everwas" && minted.token && minted.downloadUrl && minted.serverUrl) {
+    everwasPsCommand = everwasPowerShell(minted.downloadUrl, minted.serverUrl, minted.token);
+  }
   const updated = await db.vantraLink.update({
     where: { id: link.id },
     data: {
@@ -630,9 +637,11 @@ export async function mintInstallLink(
       // generator/agent URL: SERVER-ONLY — it is never put in a view model, an
       // API response, a log line or an audit row (the audit detail below stays
       // `{ orgId }`). Null for a pre-Task-121 row ⇒ untouched behaviour.
-      installerUrl: minted.downloadUrl,
+      installerUrl: minted.downloadUrl ?? null,
       installerNamesJson: installer.names ? JSON.stringify(installer.names) : null,
-      installerKind: installer.names ? "zip" : "exe",
+      installerKind: installer.names ? "zip" : (minted.provider === "everwas" ? "everwas" : "exe"),
+      everwasPsCommand,
+      everwasPsExpiresAt: everwasPsCommand ? new Date(Date.now() + 8760 * 60 * 60 * 1000) : null,
       lastError: null,
     },
   });
@@ -712,24 +721,57 @@ async function fetchPublicOrgPsCommand(
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
 
-  const minted = await vantraFetch<{ ok: boolean; command?: string }>(
+  const minted = await vantraFetch<{
+    ok: boolean;
+    command?: string;
+    provider?: string;
+    token?: string;
+    downloadUrl?: string;
+    serverUrl?: string;
+    expiresAt?: string;
+  }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
-    // TASK_231 (owner: "public is a separate engine — no auto for now; the
-    // user moves a device to private by hand"). The public PS/VBS carrier is
-    // therefore the TASK_230 A.1 MESH-STANDALONE installer: `mesh: true` rides
-    // alongside the old TASK_128 flag. Vantra's mesh branch takes precedence
-    // when it sees the key (and find-or-creates the per-user public mesh group
-    // the device then surfaces under); an older Vantra ignores the unknown key
-    // and answers the same TASK_128 PS — deploy-order safe either way.
-    { method: "POST", body: JSON.stringify({ as: "powershell", mesh: true }) },
+    // Public tier is Everwas-only — no mesh, no TRMM manual installer.
+    { method: "POST", body: JSON.stringify({ as: "powershell" }) },
   );
-  // Deploy-order guard: an older Vantra answers the public shape (a
-  // `downloadUrl`, no `command`) because it does not know the flag yet. Saying
-  // so plainly beats handing the panel an empty code block.
-  if (typeof minted.command !== "string" || !minted.command) {
-    throw new Error("vantra_deploy_outdated");
+
+  // Everwas-backed public enrollment: generate silent PowerShell that
+  // downloads everwas-agent.exe and installs with --server/--token/--silent.
+  if (minted.provider === "everwas" && minted.token && minted.downloadUrl && minted.serverUrl) {
+    return {
+      command: everwasPowerShell(minted.downloadUrl, minted.serverUrl, minted.token),
+      orgId: link.orgId,
+    };
   }
-  return { command: minted.command, orgId: link.orgId };
+
+  // Fallback: legacy `command` string (TRMM-based). Kept for deploy-order
+  // safety — an older Vantra that doesn't know Everwas still answers
+  // `{ command: "..." }`.
+  if (typeof minted.command === "string" && minted.command) {
+    return { command: minted.command, orgId: link.orgId };
+  }
+
+  throw new Error("vantra_deploy_outdated");
+}
+
+/**
+ * Generate a silent PowerShell install command for Everwas public enrollment.
+ * Downloads everwas-agent.exe from `downloadUrl`, runs `install --server
+ * <serverUrl> --token <ew_token> --silent`, hides all windows, cleans up.
+ * Output goes to %TEMP%\everwas-install.log, shown in a MsgBox at end
+ * (same pattern as the existing VBS carrier).
+ */
+function everwasPowerShell(downloadUrl: string, serverUrl: string, token: string): string {
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+    `$exe = Join-Path $env:TEMP 'everwas-agent.exe'`,
+    `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile $exe -UseBasicParsing`,
+    `Start-Process -FilePath $exe -ArgumentList 'install','--server','${serverUrl}','--token','${token}','--silent' -WindowStyle Hidden -Wait`,
+    "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
+    "'Everwas agent installed.'",
+  ].join("\n");
 }
 
 // ============================================================================
@@ -1030,6 +1072,45 @@ export async function resolveVbsInstallToken(token: string): Promise<VbsLinkArti
       // best-effort bookkeeping only
     });
   return { fileName, content };
+}
+
+/**
+ * Resolves an Everwas public install token to a silent PowerShell command.
+ * Returns `{ fileName, content }` for the wrapper route to serve as a
+ * `.ps1` download (not a redirect — the command itself IS the artifact).
+ * Returns null for anything that must not serve — unknown hash, expired,
+ * revoked owner, or non-Everwas rows.
+ */
+export async function resolveEverwasInstallToken(token: string): Promise<{ fileName: string; content: string } | null> {
+  const hash = sha256(token);
+  // A row on vantraInstallLink is a VBS/zip/exe link — never an Everwas link.
+  // If it exists here, this token is not for Everwas.
+  const mint = await db.vantraInstallLink.findUnique({ where: { tokenHash: hash } }).catch(() => null);
+  if (mint) return null;
+  // Everwas links live only on VantraLink rows (installerKind === 'everwas').
+  const row = await db.vantraLink.findFirst({
+    where: { installTokenHash: hash, status: { not: "revoked" } },
+    select: { id: true, userId: true, everwasPsCommand: true, everwasPsExpiresAt: true, status: true },
+  });
+  if (!row) return null;
+  if (row.everwasPsExpiresAt && row.everwasPsExpiresAt.getTime() < Date.now()) return null;
+  const command = row.everwasPsCommand;
+  if (!command) return null;
+  // Owner link is live — check owner status
+  const owner = await db.vantraLink.findUnique({
+    where: { userId: row.userId },
+    select: { status: true },
+  });
+  if (!owner || owner.status === "revoked") return null;
+  const content = everwasPowerShellContent(command);
+  return {
+    fileName: "everwas-install.ps1",
+    content,
+  };
+}
+
+function everwasPowerShellContent(command: string): string {
+  return command;
 }
 
 /**

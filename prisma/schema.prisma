@@ -2387,9 +2387,14 @@ model VantraLink {
   // re-mint (a row minted before this change, or one whose stored URL was
   // cleared) reuses their names instead of resetting them to the defaults.
   installerNamesJson    String?
-  // "zip" | "exe" — "zip" ⇒ the public link serves the launcher ZIP; NULL ⇒ a
-  // pre-Task-121 row, which keeps behaving exactly like before.
+  // "zip" | "exe" | "everwas" — "everwas" ⇒ the public link serves a
+  // PowerShell command that downloads everwas-agent.exe and installs with an
+  // `ew_` enrollment token; `everwasPsCommand` holds the generated command.
   installerKind         String?
+  // Everwas public PowerShell install command (generated at mint, served on
+  // open — same posture as privatePsCommand, never logged/audited/raw in views).
+  everwasPsCommand      String?
+  everwasPsExpiresAt    DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
