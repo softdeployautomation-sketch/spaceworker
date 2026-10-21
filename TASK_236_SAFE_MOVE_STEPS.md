@@ -303,6 +303,29 @@ in your private devices, then delete the public row yourself."*
 - SW: `npx tsc --noEmit` → **0**; `npx tsx --test tests/*.test.ts` → **0**;
   `npx eslint` on the 4 shipped files → **0**.
 
+## Post-deploy re-check (blocked by a LOCAL network outage — not a box fault)
+
+A final "15 minutes later" state re-check could not be run: from ~03:40 local the
+workstation's internet egress died. Evidence that this is **local, not the box**:
+`curl https://github.com` → 000, `dig` → "no servers could be reached",
+`ping 1.1.1.1` → 100% loss, and plain HTTP to the box IP returned
+`Server: Ericsson Web Redirect` / `Location: http://ng-airtel.zerod.ng/…` —
+a Nigerian mobile ISP transparent proxy intercepting traffic on this network.
+TCP to 22/443 still connects (`nc` succeeds) but payloads time out, so SSH
+cannot complete its banner exchange from here.
+
+**This does not affect the deploy result.** The full §5 battery above was
+executed and passed **before** the outage, and both CI deploy jobs reported
+`success` on the merged commits. The re-check was a belt-and-braces extra, not a
+required row. The box was last observed healthy: all four services `active`,
+`NRestarts=0`, both new BUILD_IDs live, all four public endpoints 200, and
+zero post-deploy errors in either journal.
+
+**Follow-up for the next session:** re-run `/tmp/t236-final-remote.sh` (it is
+already written and syntax-checked) when the network is back, to confirm the
+services are still `active` with the same BUILD_IDs. Nothing else is pending.
+
+
 ## Incidents
 - **None.** The two scary journal lines were both explained as normal deploy
   mechanics (SIGTERM 143 on stop; a 17s Vantra restart window). No rollback needed.
