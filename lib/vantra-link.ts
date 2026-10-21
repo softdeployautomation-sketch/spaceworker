@@ -604,7 +604,7 @@ export async function mintInstallLink(
   // block. `installer.names` stays the three artifact names, so the PDF bytes
   // are never written to the row below.
   const installer = installerRequest(names, pdf);
-  const minted = await vantraFetch<{ ok: boolean; downloadUrl: string }>(
+  const minted = await vantraFetch<{ ok: boolean; provider?: string; token?: string; downloadUrl: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
     { method: "POST", body: installer.body },
   );
@@ -1100,7 +1100,7 @@ export async function resolveInstallToken(token: string): Promise<string | null>
   // reaches this branch. Only a row whose URL is NULL (pre-Task-121, which
   // could not have had a PDF) lands here.
   const installer = installerRequest(parseStoredInstallerNames(link.installerNamesJson));
-  const minted = await vantraFetch<{ ok: boolean; downloadUrl: string }>(
+  const minted = await vantraFetch<{ ok: boolean; provider?: string; token?: string; downloadUrl: string }>(
     `/api/internal/sw/orgs/${link.orgId}/install-link`,
     { method: "POST", body: installer.body },
   );
