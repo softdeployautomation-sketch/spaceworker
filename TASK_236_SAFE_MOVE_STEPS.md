@@ -325,6 +325,41 @@ zero post-deploy errors in either journal.
 already written and syntax-checked) when the network is back, to confirm the
 services are still `active` with the same BUILD_IDs. Nothing else is pending.
 
+### RESOLVED — the network came back and the re-check PASSED
+
+The workstation's egress recovered at ~04:0x. The re-check ran clean:
+
+```
+=== services ===        vantra active · spaceworker active ·
+                        spaceworker-browser active · extraction-worker active
+=== BUILD_IDs ===       vantra      ILii0-sQ58h1xHZ2_DENb   (unchanged)
+                        spaceworker DYki66BfVsDiG-RbAxdh6   (unchanged)
+=== restarts ===        vantra Result=success NRestarts=0
+                        spaceworker Result=success NRestarts=0
+=== public endpoints === spaceworker.top 200 · vantra.spaceworker.top 200
+                        localhost:3500 200 · localhost:3300 200
+=== TASK_236 features in the live build ===
+  vantra  movement variant   : chunks/lib_trmm_ts_1ynnzha._.js        (mtime 02:49)
+  vantra  mesh verify branch : chunks/[root-of-the-server]__0ayg_om._.js
+  sw      Check private copy : chunks/ssr/components_device-list_tsx_1_ogxr4._.js (mtime 02:56)
+```
+
+Both TASK_236 chunks carry the **deploy-window mtime** (02:49 / 02:56 = the
+CI build), so they are the live build's chunks, not stale orphans (NEXT-agent
+pin 17). A live `/move/verify` against a real public mesh device returned
+**HTTP 200** with a truthful body (`{"ok":false,"reason":"no_private_org"}` for
+that particular device, whose owner has no private companion org yet — the
+`{"ok":true,"verified":false}` shape was confirmed on the device that does).
+
+The only journal noise in the window was `Failed to find Server Action
+"0000000000000000000000000000000000000000"` at **03:35:16-19** — a burst of
+stale open browser tabs POSTing a Server Action id from the *previous* build
+(the id is literally 40 zeros — a garbage/unknown action). Next.js's own
+message says so: "This request might be from an older or newer deployment."
+**0 occurrences in the 3 minutes after** it, and it is unrelated to TASK_236
+(no TASK_236 code path issues a Server Action). Not a defect in this deploy.
+
+
 
 ## Incidents
 - **None.** The two scary journal lines were both explained as normal deploy
