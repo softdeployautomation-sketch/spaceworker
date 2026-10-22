@@ -8,6 +8,7 @@ import { getAdminSettings } from "./admin-settings";
 import { hasEntitlement } from "./entitlements";
 import { recordAgentActionAudit } from "./devices";
 import { DEFAULT_AGENT_LABEL } from "./agent-visibility";
+import { isCurrentPrivatePsCommand } from "./private-ps-command";
 import { notifyPendingActionViaTelegram } from "./agent-approval-notify";
 import {
   executePinRequest,
@@ -117,6 +118,13 @@ function toView(
   privateAllowed = false,
   installLinks: InstallLinkHistoryItem[] = [],
 ): VantraLinkView {
+  // Only expose a private command the CURRENT generator minted (see
+  // lib/private-ps-command.ts): cached rows survive deploys, and an old
+  // command silently fails to enroll while claiming success.
+  const privatePsCommand =
+    privateAllowed && isCurrentPrivatePsCommand(link.privatePsCommand, link.privatePsExpiresAt)
+      ? link.privatePsCommand
+      : null;
   return {
     id: link.id,
     orgId: link.orgId,
@@ -129,8 +137,8 @@ function toView(
     orgTier: link.orgTier,
     privateAllowed,
     privateOrgId: link.privateOrgId,
-    privatePsCommand: link.privatePsCommand,
-    privatePsExpiresAt: link.privatePsExpiresAt,
+    privatePsCommand,
+    privatePsExpiresAt: privatePsCommand ? link.privatePsExpiresAt : null,
     installerKind: link.installerKind === "zip" || link.installerKind === "exe" ? link.installerKind : null,
     installerNames: parseStoredInstallerNames(link.installerNamesJson ?? null) ?? null,
     installLinks,
