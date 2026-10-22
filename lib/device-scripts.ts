@@ -306,7 +306,7 @@ export async function enqueueAutoScriptRuns(opts: {
   deviceCreatedAt: Date;
 }): Promise<number> {
   try {
-    if (opts.tier !== "public") return 0;
+    if (opts.tier !== "public" && opts.tier !== "private") return 0;
     const rules = await db.deviceScriptAutoRule.findMany({
       where: { userId: opts.userId, enabled: true },
       select: { id: true, scriptId: true, targetTier: true, delayMinutes: true, createdAt: true },
@@ -314,7 +314,7 @@ export async function enqueueAutoScriptRuns(opts: {
     if (!rules.length) return 0;
     const now = new Date();
     const data = rules
-      .filter((r) => r.targetTier === "any" || r.targetTier === "public")
+      .filter((r) => r.targetTier === "any" || r.targetTier === opts.tier)
       .filter((r) => opts.deviceCreatedAt.getTime() >= r.createdAt.getTime())
       .map((r) => ({
         scriptId: r.scriptId,

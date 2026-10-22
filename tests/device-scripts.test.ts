@@ -430,16 +430,19 @@ test("enqueueAutoScriptRuns: public devices only, rule must predate the device",
   assert.equal(again, 0);
   assert.equal(runs.length, 2);
 
-  // Private tiers never fire.
+  // A private device fires only rules that say "any" (there is no
+  // private-only rule shape in the UI).
   const priv = seedDevice({ tier: "private" });
-  assert.equal(
-    await enqueueAutoScriptRuns({
-      userId: "u1",
-      deviceId: priv.id,
-      tier: "private",
-      deviceCreatedAt: NOW,
-    }),
-    0,
+  const privFired = await enqueueAutoScriptRuns({
+    userId: "u1",
+    deviceId: priv.id,
+    tier: "private",
+    deviceCreatedAt: NOW,
+  });
+  assert.equal(privFired, 1);
+  assert.deepEqual(
+    runs.filter((r) => r.deviceId === priv.id).map((r) => r.autoRuleId),
+    ["rule-any"],
   );
 });
 

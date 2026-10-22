@@ -314,7 +314,7 @@ export function ScriptsPanel() {
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-[22rem,1fr]">
+      <div className="grid gap-4 lg:grid-cols-[22rem_1fr]">
         {/* ------------------------------------------------ script list */}
         <div className="space-y-2">
           {scripts.length === 0 && (

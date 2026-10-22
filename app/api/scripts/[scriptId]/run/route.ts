@@ -36,8 +36,14 @@ export async function POST(
   const deviceIds = Array.isArray(body.deviceIds)
     ? body.deviceIds.filter((id): id is string => typeof id === "string" && !!id)
     : [];
-  if (!deviceIds.length || deviceIds.length > MAX_RUN_DEVICES) {
+  if (!deviceIds.length) {
     return NextResponse.json({ error: "no_devices" }, { status: 400 });
+  }
+  if (deviceIds.length > MAX_RUN_DEVICES) {
+    return NextResponse.json(
+      { error: "too_many_devices", max: MAX_RUN_DEVICES },
+      { status: 400 },
+    );
   }
 
   let scheduledFor: Date | null = null;
