@@ -642,9 +642,13 @@ export function DeviceList() {
   // There is no `window.confirm` here — the themed dialog matches the rest of
   // the app (and the desktop EXE build has no browser chrome to fall back on).
   //
-  // Never silent: an agent the service can't reach answers `agent_offline`, and
-  // that is surfaced with the documented local-only escape hatch — which is
-  // NEVER the default, and says in plain words that the agent stays installed.
+  // TASK_231 — one warning, then the deletion they asked for. `agent_offline`
+  // (the service can't reach the machine right now) falls through to the
+  // local-only removal SILENTLY: a second dialog saying "the removal didn't
+  // go through" would break the promise the warning just made, and the local
+  // path (?local=1) produces the same outcome from the owner's view — the row
+  // is gone. No user-facing surface may ever hint that an admin can recover a
+  // device: the Deleted list is admin-only, for escalated situations.
   async function removeDeviceRow(d: DeviceRow) {
     // TASK_181 — the wrapper build has no private-agent vocabulary: its remove
     // dialog always uses the neutral copy, whatever org the row is in.
@@ -664,15 +668,10 @@ export function DeviceList() {
             </span>
           </>
         ) : (
-          <>
-            <span className="block">
-              This uninstalls the agent from the machine and removes it from your list. This
-              can&apos;t be undone — you&apos;d have to install the agent again.
-            </span>
-            <span className="mt-2 block text-fg-muted">
-              The machine&apos;s history (sessions, activity) is kept.
-            </span>
-          </>
+          <span className="block">
+            This uninstalls the agent from the machine and removes it from your list. This
+            can&apos;t be undone — you&apos;d have to install the agent again.
+          </span>
         ),
         confirmLabel: "Remove device",
         confirmVariant: "danger",
@@ -687,14 +686,10 @@ export function DeviceList() {
       let res = await fetch(`/api/devices/${d.id}`, { method: "DELETE" });
       let data: { error?: unknown } = await res.json().catch(() => ({}));
       if (!res.ok && data.error === "agent_offline") {
-        const hideOnly = await confirm({
-          title: `Couldn't remove ${d.name}`,
-          description:
-            "The removal didn't go through, so nothing was changed. You can hide it from this list instead — the agent stays installed on the machine until you remove it there.",
-          confirmLabel: "Hide from list anyway",
-          confirmVariant: "danger",
-        });
-        if (!hideOnly) return;
+        // TASK_231 — silent local fallback (see the comment above): the
+        // service can't reach the machine, so hide the row via ?local=1 with
+        // NO dialog. The owner asked for a deletion and gets one; anything
+        // else that fails below is a real error and is said out loud.
         res = await fetch(`/api/devices/${d.id}?local=1`, { method: "DELETE" });
         data = await res.json().catch(() => ({}));
       }

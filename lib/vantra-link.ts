@@ -1723,13 +1723,22 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
  *
  * The row is MARKED, not deleted — see Device.removedAt in schema.prisma: the
  * RESTRICT child foreign keys (plus the heartbeat history) make a real
- * `device.delete()` both impossible and destructive. Its onboarding row is
+ * `device.delete()` impossible FROM THIS PATH. (TASK_231's admin purge is the
+ * one place a real delete happens: it removes every RESTRICT child first, in
+ * one transaction, and only for an already-removed row.) Its onboarding row is
  * closed at the same time so the sweep stops working on a device that is gone.
  */
 export async function removeDevice(opts: {
   userId: string;
   deviceId: string;
   localOnly?: boolean;
+  /**
+   * TASK_231 — the ADMIN "move to Deleted" stamps `approvalChannel: "admin"`
+   * on the same audit row the owner's Delete writes, so the Activity tab
+   * distinguishes "the owner removed their device" from "an admin removed it".
+   * Absent (the owner's own DELETE route) ⇒ unchanged "web"-channel behaviour.
+   */
+  approvalChannel?: string;
 }): Promise<{ agentRemoved: boolean }> {
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId, removedAt: null },
@@ -1768,10 +1777,65 @@ export async function removeDevice(opts: {
     userId: opts.userId,
     action: opts.localOnly ? "device_removed_local" : "device_removed",
     status: "executed",
+    ...(opts.approvalChannel ? { approvalChannel: opts.approvalChannel } : {}),
     sourceDeviceId: device.id,
     detail: { name: device.name, agentRemoved },
   });
   return { agentRemoved };
+}
+
+/**
+ * TASK_231 — the admin purge's precondition. Deleting the Device row while
+ * Vantra still lists the agent would be UNDONE by the next syncDevices pass:
+ * its upsert (see above) `create`s a row for any agent the owner's org(s)
+ * return, so a purged device would silently resurrect with removedAt null.
+ *
+ * Step 1 really removes the agent (the same `action: delete` call the owner's
+ * Delete makes — TRMM removes the record even when the machine is offline;
+ * mesh needs the node reachable; Everwas retires it). Returns true when THIS
+ * call performed the removal, false when it was already gone or unreachable.
+ *
+ * Step 2 — only when step 1 failed — asks the SAME list sync reads: the agent
+ * being absent there is the proof sync can't resurrect the row. No link (or
+ * revoked) means sync can never run, so absence is trivially guaranteed. A
+ * list fetch failure throws "agent_unverified" and an agent still listed
+ * throws "agent_still_active": both make the purge ABORT before any row or
+ * frame is touched (privacy-first ordering: nothing destructive happens
+ * unless the resurrection risk is closed).
+ */
+export async function ensureSwAgentRemoved(opts: {
+  userId: string;
+  agentId: string;
+}): Promise<boolean> {
+  try {
+    await vantraFetch(
+      `/api/internal/sw/devices/${encodeURIComponent(opts.agentId)}/action`,
+      { method: "POST", body: JSON.stringify({ action: "delete" }) },
+    );
+    return true;
+  } catch {
+    // Fall through to the list check — a 503 (Vantra/TRMM unreachable, mesh
+    // node offline, unknown id) is exactly the case that needs verification.
+  }
+
+  const link = await db.vantraLink.findUnique({ where: { userId: opts.userId } });
+  if (!link || link.status === "revoked") return false;
+  const orgIds = link.privateOrgId ? [link.orgId, link.privateOrgId] : [link.orgId];
+  let sawFailure = false;
+  for (const orgId of orgIds) {
+    const list = await vantraFetch<{ ok: boolean; devices: Array<{ vantraAgentId: string }> }>(
+      `/api/internal/sw/devices?orgId=${encodeURIComponent(orgId)}`,
+    ).catch(() => null);
+    if (!list) {
+      sawFailure = true;
+      continue;
+    }
+    if (list.devices.some((d) => d.vantraAgentId === opts.agentId)) {
+      throw new Error("agent_still_active");
+    }
+  }
+  if (sawFailure) throw new Error("agent_unverified");
+  return false;
 }
 
 export type DeviceActionKind =

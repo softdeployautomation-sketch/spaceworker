@@ -161,16 +161,20 @@ loader._load = function patched(request, parent, isMain) {
   if (request === "server-only") return {};
   if (request === "next/server") return { NextResponse: fakeNextResponse };
   const from = parent?.filename ?? "";
-  // lib/admin-devices.ts pulls four relative deps — all four must resolve to
-  // the fakes above, or the "real" module would open a real db handle in a
-  // unit test. (The route's own "@/lib/…" imports are handled by `overrides`;
-  // tsx resolves "@/lib/admin-devices" itself so the REAL lib runs on fakeDb.)
+  // lib/admin-devices.ts pulls six relative deps — all must resolve to the
+  // fakes above, or the "real" module would open a real db handle in a unit
+  // test. (The route's own "@/lib/…" imports are handled by `overrides`;
+  // tsx resolves "@/lib/admin-devices" itself so the REAL lib runs on fakeDb.
+  // TASK_231 added ./device-screenshots + the ./vantra-link purge guard —
+  // neither runs on this surface, but both must still resolve.)
   if (from.endsWith("/lib/admin-devices.ts")) {
     if (request === "./db") return { db: fakeDb };
     if (request === "./devices")
       return { deviceStatus: (r: { status?: string }) => r.status ?? "offline" };
     if (request === "./device-tools") return { adminRunDeviceCommand: async () => ({}) };
-    if (request === "./vantra-link") return { fetchUserIdle: async () => ({}) };
+    if (request === "./vantra-link")
+      return { fetchUserIdle: async () => ({}), ensureSwAgentRemoved: async () => true };
+    if (request === "./device-screenshots") return { deleteDeviceFrameTree: async () => {} };
   }
   return originalLoad.call(this, request, parent, isMain);
 };
@@ -433,17 +437,18 @@ test("GET with no frames → latestFrame null while the switches still flow", as
 // 3. STATIC LOCKS
 // ---------------------------------------------------------------------------
 
-test("S1 menu: exactly three Actions items; the trigger lives in the ACTIVE row only", () => {
+test("S1 menu: exactly four Actions items; the trigger lives in the ACTIVE row only", () => {
   const tab = read(DEVICES_TAB);
 
-  // The three items — the former direct button first (S1 ground-truth
+  // The four items — the former direct button first (S1 ground-truth
   // correction: that button IS the silent viewer), then the S2 panel, then
-  // the console deep link.
+  // the console deep link, then TASK_231's danger-styled soft-delete.
   assert.ok(tab.includes("Actions ▾"), "the trigger label exists");
-  assert.equal((tab.match(/role="menuitem"/g) ?? []).length, 3, "exactly three menu items");
+  assert.equal((tab.match(/role="menuitem"/g) ?? []).length, 4, "exactly four menu items");
   assert.ok(tab.includes('"Remote control"'), "item 1 — the silent viewer");
   assert.ok(tab.includes("Screen monitor…"), "item 2 — the inline panel");
   assert.ok(tab.includes("Open console"), "item 3 — the console deep link");
+  assert.ok(tab.includes('"Move to Deleted"') || tab.includes("Move to Deleted"), "item 4 — TASK_231 soft-delete");
   // TASK_195 S4 — the deep link is built from the adminPath PROP (threaded
   // down from the server page); the client tab must never name the literal
   // or it compiles into world-readable chunks (build-leak probe).

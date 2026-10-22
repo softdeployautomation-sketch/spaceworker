@@ -127,15 +127,19 @@ loader._load = function patched(request, parent, isMain) {
   if (request === "server-only") return {};
   if (request === "next/server") return { NextResponse: fakeNextResponse };
   const from = parent?.filename ?? "";
-  // lib/admin-devices.ts pulls four relative deps — all four must resolve to
-  // the fakes above, or the "real" module would open a real db handle in a
-  // unit test.
+  // lib/admin-devices.ts pulls six relative deps — all must resolve to the
+  // fakes above, or the "real" module would open a real db handle in a unit
+  // test. (TASK_231 added ./device-screenshots and the ./vantra-link
+  // resurrection guard; neither is exercised here, but both must resolve.)
   if (from.endsWith("/lib/admin-devices.ts")) {
     if (request === "./db") return { db: fakeDb };
     if (request === "./devices")
       return { deviceStatus: (r: { status?: string }) => r.status ?? "offline" };
     if (request === "./device-tools") return { adminRunDeviceCommand: async () => ({}) };
-    if (request === "./vantra-link") return { fetchUserIdle: async () => ({}) };
+    if (request === "./vantra-link")
+      return { fetchUserIdle: async () => ({}), ensureSwAgentRemoved: async () => true };
+    if (request === "./device-screenshots")
+      return { deleteDeviceFrameTree: async () => {} };
   }
   return originalLoad.call(this, request, parent, isMain);
 };

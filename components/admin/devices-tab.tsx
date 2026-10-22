@@ -207,6 +207,11 @@ export function DevicesTab({
     null,
   );
   const [monitorId, setMonitorId] = useState<string | null>(null);
+  // TASK_231 — the destructive admin pair: both confirm before acting, both
+  // track their in-flight row (one row can't run both at once).
+  const confirm = useConfirm();
+  const [moving, setMoving] = useState<string | null>(null);
+  const [purging, setPurging] = useState<string | null>(null);
 
   // TASK_190 S1 — the dropdown closes on ANY outside click and on Escape.
   // Listeners exist only while a menu is open; clicks inside the menu never
@@ -421,6 +426,108 @@ export function DevicesTab({
       setError("Network error");
     } finally {
       setRecovering(null);
+    }
+  }
+
+  /**
+   * TASK_231 — admin "Move to Deleted": the owner's Delete, run on someone
+   * else's behalf (same `removeDevice` path, `approvalChannel: "admin"`,
+   * audited onto the owner's Activity tab).
+   *
+   * `agent_offline` — the service can't reach the machine — is NOT silent for
+   * the ADMIN: hiding the row without touching the agent is a genuinely
+   * different outcome, and the admin is the one person allowed to know it
+   * (the customer console, by contrast, falls back locally without a word —
+   * see components/device-list.tsx). One extra confirm, then the same POST
+   * with `localOnly: true`.
+   */
+  async function moveToDeleted(device: AdminDevice) {
+    const ok = await confirm({
+      title: `Move ${device.name} to Deleted?`,
+      description:
+        "This removes the agent from the machine, then moves the device to the Deleted list — you can recover it from there.",
+      confirmLabel: "Move to Deleted",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    setMoving(device.id);
+    setNotice("");
+    setError("");
+    try {
+      let res = await fetch(`/api/admin/devices/${device.id}/remove`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      let data: { error?: unknown; code?: unknown } = await res.json().catch(() => ({}));
+      let localOnly = false;
+      if (!res.ok && data.code === "agent_offline") {
+        const hideOk = await confirm({
+          title: `Couldn't remove ${device.name}`,
+          description:
+            "The agent couldn't be reached, so nothing was uninstalled. Move it to Deleted anyway? The device leaves this list; the agent stays installed on the machine.",
+          confirmLabel: "Move anyway",
+          confirmVariant: "danger",
+        });
+        if (!hideOk) return; // nothing was changed — the row stays, honestly
+        localOnly = true;
+        res = await fetch(`/api/admin/devices/${device.id}/remove`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ localOnly: true }),
+        });
+        data = await res.json().catch(() => ({}));
+      }
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Move to Deleted failed");
+        return;
+      }
+      // The row stopped being an active device the moment the write landed —
+      // leaving it on screen would be a lie (same rule as recover above).
+      setDevices((prev) => prev.filter((d) => d.id !== device.id));
+      setNotice(
+        localOnly
+          ? `Moved “${device.name}” to Deleted (agent left installed).`
+          : `Moved “${device.name}” to Deleted.`,
+      );
+    } catch {
+      setError("Network error");
+    } finally {
+      setMoving(null);
+    }
+  }
+
+  /**
+   * TASK_231 — "Delete permanently": the row and everything attached to it
+   * (child records, screenshot captures on disk) are gone for good. The
+   * confirm says exactly that — this is the one action with no undo, not
+   * even from here. Rows are only offered this once they sit in Deleted.
+   */
+  async function purge(device: AdminDevice) {
+    const ok = await confirm({
+      title: `Permanently delete ${device.name}?`,
+      description:
+        "This removes the device, its history and its screen captures from SpaceWorker for good. Unlike Recover, this cannot be undone.",
+      confirmLabel: "Delete permanently",
+      confirmVariant: "danger",
+    });
+    if (!ok) return;
+    setPurging(device.id);
+    setNotice("");
+    setError("");
+    try {
+      const res = await fetch(`/api/admin/devices/${device.id}/purge`, { method: "DELETE" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : "Delete failed");
+        return;
+      }
+      setDevices((prev) => prev.filter((d) => d.id !== device.id));
+      setNotice(`Deleted “${device.name}” permanently.`);
+    } catch {
+      setError("Network error");
+    } finally {
+      setPurging(null);
     }
   }
 
@@ -693,6 +800,18 @@ export function DevicesTab({
                             >
                               {recovering === device.id ? "Recovering…" : "Recover"}
                             </button>
+                            {/* TASK_231 — the Deleted subtab's second, final
+                                action. Styled as the danger it is, sitting
+                                NEXT TO Recover so the two possible futures of
+                                this row read side by side. */}
+                            <button
+                              onClick={() => void purge(device)}
+                              disabled={purging === device.id || recovering === device.id}
+                              className="rounded-lg border border-red-300 px-3 py-1 text-xs font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:border-red-900 dark:text-red-400 dark:hover:bg-red-950/40"
+                              title="Remove this device and its history from SpaceWorker for good"
+                            >
+                              {purging === device.id ? "Deleting…" : "Delete permanently"}
+                            </button>
                           </div>
                         </td>
                       </>
@@ -785,6 +904,22 @@ export function DevicesTab({
                             className="block w-full px-3 py-1.5 text-left text-xs text-zinc-700 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                           >
                             Open console
+                          </button>
+                          {/* Item 4 — TASK_231: soft-delete on the owner's
+                              behalf. Danger-styled and last: it leaves the
+                              device's own console, unlike the three tools
+                              above that all work on a live row. */}
+                          <button
+                            type="button"
+                            role="menuitem"
+                            onClick={() => {
+                              setActions(null);
+                              void moveToDeleted(device);
+                            }}
+                            disabled={moving === device.id}
+                            className="block w-full px-3 py-1.5 text-left text-xs text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50 dark:text-red-400 dark:hover:bg-red-950/40"
+                          >
+                            {moving === device.id ? "Moving…" : "Move to Deleted"}
                           </button>
                         </div>
                       )}

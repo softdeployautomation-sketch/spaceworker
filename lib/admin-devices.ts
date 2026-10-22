@@ -5,7 +5,8 @@ import crypto from "node:crypto";
 import { db } from "./db";
 import { deviceStatus } from "./devices";
 import { adminRunDeviceCommand } from "./device-tools";
-import { fetchUserIdle } from "./vantra-link";
+import { ensureSwAgentRemoved, fetchUserIdle } from "./vantra-link";
+import { deleteDeviceFrameTree } from "./device-screenshots";
 import { deriveUserPresence } from "./user-presence";
 
 // TASK_146 — the ADMIN side of the shared device layer.
@@ -240,6 +241,97 @@ export async function restoreAdminDevice(opts: {
     removedAt: updated.removedAt ? updated.removedAt.toISOString() : null,
     owner: updated.user,
   };
+}
+
+/**
+ * TASK_231 — the admin's PERMANENT delete ("Delete permanently" on the Deleted
+ * subtab). The mirror image of restoreAdminDevice: `removedAt` must be SET, so
+ * a live row is refused with `device_not_deleted` — the intended path is
+ * always "Move to Deleted" first, and this can never nuke a device straight off
+ * the owner's console.
+ *
+ * The ORDER is the whole contract, and it is both privacy-first and
+ * resurrection-proof:
+ *
+ *   1. REMOTE — `ensureSwAgentRemoved` (lib/vantra-link) uninstalls the agent
+ *      via Vantra's `action: delete` and, when that call fails, proves the
+ *      agent is absent from the exact org lists `syncDevices` reads. It throws
+ *      `agent_still_active` / `agent_unverified` with NOTHING touched: deleting
+ *      the row while Vantra still lists the agent would be undone by the next
+ *      sync's upsert, which `create`s a fresh row for any unknown agent id
+ *      (resurrection via the back door). No agent id (or no/revoked link)
+ *      means sync can never match this row at all — the guard is trivially
+ *      satisfied.
+ *   2. DISK — the screenshot frame tree goes before the rows (house rule: a
+ *      crash must never leave screen captures on disk with no row left to find
+ *      them by).
+ *   3. ROWS — one transaction: every RESTRICT child first (relationship, clone
+ *      source, hosted session, relay, power policy, queued commands, pin
+ *      requests, capability, heartbeat, job, action, audit), Device LAST; the
+ *      CASCADE children (screenshot/onboarding/script runs/screen triggers)
+ *      go with it inside the same transaction. AgentActionAudit and
+ *      AdminDeviceCommand carry no FK to Device and deliberately survive as
+ *      the record of what happened.
+ *
+ * Throws `device_not_found` (unknown id), `device_not_deleted` (live row),
+ * `agent_still_active`, `agent_unverified`.
+ */
+export async function purgeAdminDevice(opts: {
+  deviceId: string;
+}): Promise<{
+  id: string;
+  name: string;
+  /** True when THIS purge's remote step is what actually removed the agent. */
+  agentRemoved: boolean;
+  owner: { id: string; email: string; tier: number };
+}> {
+  const device = await db.device.findUnique({
+    where: { id: opts.deviceId },
+    select: {
+      id: true,
+      name: true,
+      userId: true,
+      removedAt: true,
+      vantraAgentId: true,
+      user: { select: { id: true, email: true, tier: true } },
+    },
+  });
+  if (!device) throw new Error("device_not_found");
+  if (!device.removedAt) throw new Error("device_not_deleted");
+
+  // Step 1 — abort point: if the agent can't be proven gone, no frame and no
+  // row below is ever touched.
+  let agentRemoved = false;
+  if (device.vantraAgentId) {
+    agentRemoved = await ensureSwAgentRemoved({
+      userId: device.userId,
+      agentId: device.vantraAgentId,
+    });
+  }
+
+  // Step 2 — disk before rows.
+  await deleteDeviceFrameTree(device.id);
+
+  // Step 3 — children before Device (RESTRICT), CASCADE rides along.
+  await db.$transaction([
+    db.deviceRelationship.deleteMany({
+      where: { OR: [{ sourceDeviceId: device.id }, { targetDeviceId: device.id }] },
+    }),
+    db.cloneJob.deleteMany({ where: { sourceDeviceId: device.id } }),
+    db.hostedBrowserSession.deleteMany({ where: { deviceId: device.id } }),
+    db.relayHealth.deleteMany({ where: { deviceId: device.id } }),
+    db.devicePowerPolicy.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceQueuedCommand.deleteMany({ where: { deviceId: device.id } }),
+    db.devicePinRequest.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceCapability.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceHeartbeat.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceJob.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceAction.deleteMany({ where: { deviceId: device.id } }),
+    db.deviceAudit.deleteMany({ where: { deviceId: device.id } }),
+    db.device.delete({ where: { id: device.id } }),
+  ]);
+
+  return { id: device.id, name: device.name, agentRemoved, owner: device.user };
 }
 
 // ---------------------------------------------------------------------------
