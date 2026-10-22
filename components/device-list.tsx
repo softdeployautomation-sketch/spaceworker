@@ -4,6 +4,8 @@ import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   Activity,
+  ChevronDown,
+  FileCode2,
   Moon,
   Monitor,
   Plus,
@@ -123,6 +125,8 @@ export function DeviceList() {
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
+  // 2026-10-22 — caret menu under "Add a device" (Scripts entry).
+  const [addMenu, setAddMenu] = useState(false);
   // Tier model: the Add-a-device panel exposes the user's TWO install paths.
   // "public" = the shareable one-time link; "private" = a PowerShell install
   // command against the private agent domain (premium/admin-granted only —
@@ -988,15 +992,68 @@ export function DeviceList() {
           free/trial (public-only) or private-only account. The public path
           shows ONLY the wrapper link path — never the agent host/domain. */}
       <div className="rounded-xl border border-border bg-bg-elevated">
-        <button
-          onClick={() => setAdding((v) => !v)}
-          className="flex w-full items-center justify-between px-4 py-3 text-left"
-        >
-          <span className="flex items-center gap-2 text-sm font-medium text-fg">
-            <Plus className="h-4 w-4" /> Add a device
-          </span>
-          <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
-        </button>
+        <div className="flex items-center">
+          <button
+            onClick={() => setAdding((v) => !v)}
+            className="flex flex-1 items-center justify-between px-4 py-3 text-left"
+          >
+            <span className="flex items-center gap-2 text-sm font-medium text-fg">
+              <Plus className="h-4 w-4" /> Add a device
+            </span>
+            <span className="text-xs text-fg-muted">{adding ? "hide" : "show"}</span>
+          </button>
+          {/* 2026-10-22 — the owner's "dropdown under Add a device": the add
+              panel stays the default action, and the caret opens the two other
+              things you can do from here (saved scripts, auto-run rules). */}
+          <div className="relative border-l border-border">
+            <button
+              onClick={() => setAddMenu((v) => !v)}
+              aria-label="More device actions"
+              aria-expanded={addMenu}
+              className="flex h-full items-center px-3 py-3 text-fg-muted transition-colors hover:text-fg"
+            >
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {addMenu && (
+              <>
+                <button
+                  className="fixed inset-0 z-10 cursor-default"
+                  aria-hidden="true"
+                  tabIndex={-1}
+                  onClick={() => setAddMenu(false)}
+                />
+                <div className="absolute right-2 top-full z-20 mt-1 w-64 overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-lg">
+                  <button
+                    onClick={() => {
+                      setAddMenu(false);
+                      setAdding(true);
+                    }}
+                    className="flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-bg-subtle"
+                  >
+                    <Plus className="mt-0.5 h-4 w-4 text-fg-muted" />
+                    <span>
+                      <span className="block text-sm font-medium text-fg">Add a device</span>
+                      <span className="block text-xs text-fg-muted">Install the agent</span>
+                    </span>
+                  </button>
+                  <Link
+                    href="/dashboard/scripts"
+                    onClick={() => setAddMenu(false)}
+                    className="flex w-full items-start gap-2 border-t border-border px-3 py-2.5 text-left transition-colors hover:bg-bg-subtle"
+                  >
+                    <FileCode2 className="mt-0.5 h-4 w-4 text-fg-muted" />
+                    <span>
+                      <span className="block text-sm font-medium text-fg">Scripts</span>
+                      <span className="block text-xs text-fg-muted">
+                        Run now, schedule, or after enrollment
+                      </span>
+                    </span>
+                  </Link>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
         {adding && (
           <div className="border-t border-border px-4 py-4">
             {link === null ? (

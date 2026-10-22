@@ -1,0 +1,15 @@
+# Install: sudo cp script-run-sweep.timer /etc/systemd/system/ && sudo systemctl enable --now script-run-sweep.timer
+[Unit]
+Description=Run the SpaceWorker device-script sweep every 60 seconds
+
+# 60s matches the owner's "10 minutes after enrollment" expectation: the delay
+# is exact to the minute rather than to a 5-minute polling grid. Scheduled runs
+# are also created with a future `scheduledFor`, so this tick only decides how
+# late a due run can start.
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=script-run-sweep.service
+
+[Install]
+WantedBy=timers.target

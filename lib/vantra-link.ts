@@ -1628,6 +1628,22 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           }
         }
       }
+
+      // 2026-10-22 — saved-script auto-run. A rule is "run this script N minutes
+      // after a PUBLIC device enrolls"; the delay is enforced by the run row's
+      // `scheduledFor` (the 60s script sweep fires it), and the
+      // (autoRuleId, deviceId) unique key makes repeated syncs idempotent.
+      // Dynamic import avoids a static vantra-link -> device-scripts ->
+      // device-tools -> vantra-link module cycle.
+      if (entry.tier === "public") {
+        const { enqueueAutoScriptRuns } = await import("./device-scripts");
+        await enqueueAutoScriptRuns({
+          userId,
+          deviceId: saved.id,
+          tier: entry.tier,
+          deviceCreatedAt: saved.createdAt,
+        });
+      }
     }
     // 2026-10-22 — ONE row per machine. When the same host is now served by
     // an Everwas agent, the `node//` standalone-mesh row from the previous

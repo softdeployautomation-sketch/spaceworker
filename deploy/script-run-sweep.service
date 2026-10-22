@@ -1,0 +1,16 @@
+# Install: sudo cp script-run-sweep.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# The bearer token is READ FROM THE APP'S .env AT RUNTIME (EnvironmentFile +
+# systemd ${...} expansion) — never substitute %INTERNAL_BEARER_TOKEN% by hand
+# (that is how sibling units silently 401'd on 2026-09-24).
+# PORT 3500 — matches spaceworker.service.
+[Unit]
+Description=SpaceWorker device-script sweep (scheduled + auto-enroll runs due now)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/opt/spaceworker/.env
+ExecStart=/usr/bin/curl -s -X POST \
+  -H "Authorization: Bearer ${INTERNAL_BEARER_TOKEN}" \
+  http://localhost:3500/api/internal/script-run-sweep
+# Up to 6 runs x ~90s each at concurrency 3; leave generous headroom.
+TimeoutStartSec=900

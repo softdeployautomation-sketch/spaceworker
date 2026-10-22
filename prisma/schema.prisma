@@ -8,10 +8,10 @@ datasource db {
 }
 
 model User {
-  id                       String                 @id @default(cuid())
-  email                    String                 @unique
-  passwordHash             String
-  emailVerified            Boolean                @default(false)
+  id                                String                     @id @default(cuid())
+  email                             String                     @unique
+  passwordHash                      String
+  emailVerified                     Boolean                    @default(false)
   // Tier 1 trial (Task: Tier 1 trial for all free users). Tier numbers:
   //   0 = legacy / nothing (inline EXE-buyer license_only accounts — see
   //       findOrCreateUser in app/api/billing/submit/route.ts, which MUST pin 0)
@@ -21,7 +21,7 @@ model User {
   // 2/3/4 are deliberately reserved/unused headroom for future paid plans.
   // IMPORTANT: every "has Pro" branch must test `>= 5`, never `>= 1`, or a trial
   // user would silently get a paid feature and a paying customer would lose one.
-  tier                     Int                    @default(1)
+  tier                              Int                        @default(1)
   // Task 55 — time-limited premium. In SpaceWorker, tier is per-User (unlike
   // Vantra's per-Organization). NULLABLE semantics differ from Vantra by design:
   //   - NULL on an EXISTING tier:5 user (created BEFORE this field existed) =
@@ -31,43 +31,43 @@ model User {
   //   - NULL on a tier < 5 user = "not premium / free", meaningless.
   //   - non-NULL = a real premium term; every NEW grant / web-sub charge sets
   //     this. When it passes, the lazy check-on-read flips tier back to 1.
-  premiumExpiresAt         DateTime?
+  premiumExpiresAt                  DateTime?
   // Admin override, independent of tier — an admin can revoke a premium user's
   // access to SpaceWorker's own exit nodes (regional SMTP/browser/extraction
   // routing) without touching their premium status otherwise, e.g. for abuse.
   // Every node-access gate checks isPremiumTier(tier) && !nodeAccessRestricted.
-  nodeAccessRestricted     Boolean                @default(false)
+  nodeAccessRestricted              Boolean                    @default(false)
   // Premium — the user's saved default region for lead-extraction jobs (US/CA/UK,
   // mirrors Mailbox.sendRegion's exact pattern). null = direct, the default.
   // Read at job-creation time (app/api/jobs/route.ts) and baked into that job's
   // own params.proxyRegion, gated by canUseExitNodes() same as every other
   // node-access surface — never trusted from client input since there isn't any
   // here, it's purely derived from this saved preference.
-  extractProxyRegion       String?
+  extractProxyRegion                String?
   // Task 39 — per-channel notification prefs (lib/notify.ts fan-out). notifyEmail
   // / notifyAgent default ON so a user who never opens Settings keeps today's
   // behavior; notifyTelegram defaults OFF (it's a no-op until the user links
   // their chat anyway). telegramChatId is set only via the bot-linking webhook;
   // telegramLinkToken is a short-lived random token backing the Connect deep link,
   // cleared on a successful link.
-  notifyEmail              Boolean                @default(true)
-  notifyTelegram           Boolean                @default(false)
-  notifyAgent              Boolean                @default(true)
+  notifyEmail                       Boolean                    @default(true)
+  notifyTelegram                    Boolean                    @default(false)
+  notifyAgent                       Boolean                    @default(true)
   // Task 94 — a SEPARATE toggle from notifyTelegram: that one is "send me
   // event notifications there", this one is "let me approve/reject agent
   // proposals from Telegram". Default off until linked (same reasoning as
   // notifyTelegram) — a user who's never touched Settings sees no behavior
   // change; the deep-link push only ever fires when both this AND a linked
   // telegramChatId are true.
-  telegramApprovalsEnabled Boolean                @default(false)
+  telegramApprovalsEnabled          Boolean                    @default(false)
   // A THIRD, separate Telegram toggle: "let me talk to the agent from
   // Telegram, not just tap approve/reject buttons on its pushes". Default
   // off (opt-in) — same reasoning as the other two: a linked-but-silent
   // Telegram chat must never start eating free-text messages as agent
   // input unless the user explicitly turns this on.
-  telegramChatEnabled      Boolean                @default(false)
-  telegramChatId           String?
-  telegramLinkToken        String?
+  telegramChatEnabled               Boolean                    @default(false)
+  telegramChatId                    String?
+  telegramLinkToken                 String?
   // Master per-user kill switch: "let the agent PROPOSE actions at all"
   // (job/campaign pending actions in lib/agent.ts, device action proposals
   // in lib/vantra-link.ts). Default on — this is an opt-out, not a new
@@ -76,40 +76,40 @@ model User {
   // short-circuit in runAgentTurn) and does NOT touch manual device tools
   // (Wake/Reboot/Run now/PIN/maintenance overlay execute directly and never
   // go through AgentPendingAction or createDeviceActionProposal at all).
-  agentActionsEnabled      Boolean                @default(true)
+  agentActionsEnabled               Boolean                    @default(true)
   // Real evidence of ToS/AUP agreement at signup — null means a pre-existing
   // account created before this field existed, not that they never agreed.
-  acceptedTermsAt          DateTime?
+  acceptedTermsAt                   DateTime?
   // Task 40 — per-user daily AI cost cap, in hundredths of a cent. Default $2/day
   // (20000), a modest slice of the shared $50/day Channelry pool. Deliberately a
   // per-user, admin-adjustable value (not a global constant) so an admin can "add
   // more" to a power user live, per the ask. Enforced in runAgentTurn against a
   // SUM over today's AiUsageLog rows (append-only, race-safe — see AiUsageLog).
-  aiDailyCapHundredthsCent Int                    @default(20000)
+  aiDailyCapHundredthsCent          Int                        @default(20000)
   // Task 92 — assistant foundation. digestEnabled gates the nightly assistant
   // digest (digest-sweep skips users who turn it off); deviceTelemetryEnabled
   // is the master WEB toggle for device telemetry ingest (heartbeat upsert
   // refuses when false — no tray in SpaceWorker, per plan decision M-scope).
-  digestEnabled            Boolean                @default(true)
-  deviceTelemetryEnabled   Boolean                @default(true)
+  digestEnabled                     Boolean                    @default(true)
+  deviceTelemetryEnabled            Boolean                    @default(true)
   // 2026-09-26 — ported from Vantra's proven device-status-check pattern
   // (app/api/internal/telegram-device-check/route.ts there). Independent
   // toggles, both default true (unlike the opt-in Telegram-specific ones
   // above) — this is a safety-relevant notification most users want by
   // default, same reasoning as Vantra's.
-  notifyDeviceOffline      Boolean                @default(true)
-  notifyDeviceOnline       Boolean                @default(true)
+  notifyDeviceOffline               Boolean                    @default(true)
+  notifyDeviceOnline                Boolean                    @default(true)
   // TASK_227 — "new device added" ping on the FIRST heartbeat of a new Vantra
   // agent id (recordHeartbeat create branch). Master switch stays
   // deviceTelemetryEnabled — telemetry_disabled still throws before any of this
   // matters; this pref only silences the one-time notification. Default true,
   // same safety-relevant reasoning as the offline/online pair above.
-  notifyDeviceAdded        Boolean                @default(true)
+  notifyDeviceAdded                 Boolean                    @default(true)
   // 2026-09-27 — the floating agent widget's own mute switch (distinct from
   // agentActionsEnabled, which only gates PROPOSALS). Off hides the widget
   // entirely; on by default since it's a pure UI convenience, not a new
   // capability with any side effect of its own.
-  agentWidgetEnabled       Boolean                @default(true)
+  agentWidgetEnabled                Boolean                    @default(true)
   // TASK_152 M5 — screen-monitoring notifications. BOTH master switches default
   // FALSE: a notification feature that switches itself on is how trust is lost,
   // so screen alerts only ever speak after the owner turns them on for their
@@ -122,9 +122,9 @@ model User {
   //                                       devices" digest.
   //   screenDigestIntervalMinutes       = that cadence (default 120 = 2 hours,
   //                                       which is the owner's own example).
-  screenTriggerNotificationsEnabled Boolean @default(false)
-  screenDigestEnabled               Boolean @default(false)
-  screenDigestIntervalMinutes       Int     @default(120)
+  screenTriggerNotificationsEnabled Boolean                    @default(false)
+  screenDigestEnabled               Boolean                    @default(false)
+  screenDigestIntervalMinutes       Int                        @default(120)
   // TASK_190 S5 — owner presence (web). The STATE is derived, never stored:
   //   online  = now - lastSeenAt <= 90s    idle = <= 5min    offline = older
   // `lastSeenAt` is refreshed by the dashboard heartbeat (/api/presence);
@@ -133,10 +133,10 @@ model User {
   // Transition-only history (login/online/idle/offline/logout) lives in
   // UserPresenceEvent — these three columns exist purely so the admin lists can
   // compute the chip in O(1) without touching the event table.
-  lastSeenAt                 DateTime?
-  lastActiveAt               DateTime?
-  lastSeenPage               String?
-  createdAt                DateTime               @default(now())
+  lastSeenAt                        DateTime?
+  lastActiveAt                      DateTime?
+  lastSeenPage                      String?
+  createdAt                         DateTime                   @default(now())
   // TASK_158 W1 — the wallet. `balanceCents` is a CACHED TOTAL, never the record of
   // truth: the truth is the sum of `WalletLedgerEntry.amountCents`, and the whole
   // point of the ledger is that a mistake in this column is a bug to fix rather than
@@ -145,81 +145,81 @@ model User {
   // disagree. It is Int (not BigInt) deliberately: 21_474_836 dollars in cents,
   // which no customer will reach, and Prisma Int maps to a JS number, so BigInt
   // would leak `bigint` arithmetic into every caller for no benefit.
-  balanceCents             Int                    @default(0)
+  balanceCents                      Int                        @default(0)
   // How far below zero this user may go, in cents. 0 = prepaid only (the current
   // behaviour: a user with no balance cannot buy anything). A positive value is the
   // owner's postpaid line. It can NEVER be negative — a negative limit would mean
   // "you must stay in credit", which is not a postpaid limit, and it is refused both
   // here and by a CHECK constraint in the migration, because a soft check that can
   // be written around is worse than a hard error.
-  postpaidLimitCents       Int                    @default(0)
-  verifications            VerificationCode[]
-  rateLimits               RateLimitEvent[]
-  mailboxes                Mailbox[]
-  emailCampaigns           EmailCampaign[]
-  suppressions             Suppression[]
-  payments                 Payment[]
-  browserProfiles          BrowserProfile[]
-  browserSessions          BrowserSession[]
-  notificationLogs         NotificationLog[]
-  userPresenceEvents       UserPresenceEvent[]
-  searchJobs               SearchJob[]
-  leads                    Lead[]
-  campaignAutomations      CampaignAutomation[]
-  seedMailboxes            SeedMailbox[]
-  agentThreads             AgentThread[]
-  agentPendingActions      AgentPendingAction[]
-  aiUsageLogs              AiUsageLog[]
-  toolUsageLogs            ToolUsageLog[]
-  exeLicenses              ExeLicense[]
-  exeLicenseTransfers      ExeLicenseTransfer[]
+  postpaidLimitCents                Int                        @default(0)
+  verifications                     VerificationCode[]
+  rateLimits                        RateLimitEvent[]
+  mailboxes                         Mailbox[]
+  emailCampaigns                    EmailCampaign[]
+  suppressions                      Suppression[]
+  payments                          Payment[]
+  browserProfiles                   BrowserProfile[]
+  browserSessions                   BrowserSession[]
+  notificationLogs                  NotificationLog[]
+  userPresenceEvents                UserPresenceEvent[]
+  searchJobs                        SearchJob[]
+  leads                             Lead[]
+  campaignAutomations               CampaignAutomation[]
+  seedMailboxes                     SeedMailbox[]
+  agentThreads                      AgentThread[]
+  agentPendingActions               AgentPendingAction[]
+  aiUsageLogs                       AiUsageLog[]
+  toolUsageLogs                     ToolUsageLog[]
+  exeLicenses                       ExeLicense[]
+  exeLicenseTransfers               ExeLicenseTransfer[]
   // Task 92 — assistant foundation device layer + entitlements.
-  devices                  Device[]
-  deviceJobs               DeviceJob[]
-  deviceActions            DeviceAction[]
-  deviceRelationships      DeviceRelationship[]
-  activityRollups          ActivityRollup[]
-  userEntitlements         UserEntitlement[]
-  agentActionAudits        AgentActionAudit[]
-  vantraLink               VantraLink?
+  devices                           Device[]
+  deviceJobs                        DeviceJob[]
+  deviceActions                     DeviceAction[]
+  deviceRelationships               DeviceRelationship[]
+  activityRollups                   ActivityRollup[]
+  userEntitlements                  UserEntitlement[]
+  agentActionAudits                 AgentActionAudit[]
+  vantraLink                        VantraLink?
   // TASK_171 — every public install-link mint gets its own row (the VantraLink
   // row keeps pointing at the CURRENT link only), so re-minting never destroys
   // history. Read via listInstallLinks (revoked users get nothing).
-  vantraInstallLinks       VantraInstallLink[]
+  vantraInstallLinks                VantraInstallLink[]
   // Task 95 — Devices v2 tool parity.
-  deviceQueuedCommands     DeviceQueuedCommand[]
-  devicePinRequests        DevicePinRequest[]
+  deviceQueuedCommands              DeviceQueuedCommand[]
+  devicePinRequests                 DevicePinRequest[]
   // Task 97 — Browser Clone lifecycle records + relay registry + hosted sessions.
-  cloneJobs                CloneJob[]
-  relays                   RelayHealth[]
-  hostedBrowserSessions    HostedBrowserSession[]
+  cloneJobs                         CloneJob[]
+  relays                            RelayHealth[]
+  hostedBrowserSessions             HostedBrowserSession[]
   // TASK_105 — the resource governor's durable wait list.
-  governorQueueEntries     GovernorQueueEntry[]
+  governorQueueEntries              GovernorQueueEntry[]
   // TASK_127 — Phase 1 device screenshot monitoring (frames + opt-in).
-  deviceScreenshots        DeviceScreenshot[]
+  deviceScreenshots                 DeviceScreenshot[]
   // TASK_128 — the visible public→private onboarding quarantine (one row/device).
-  deviceOnboardings        DeviceOnboarding[]
+  deviceOnboardings                 DeviceOnboarding[]
   // TASK_139 — self-serve DKIM for mail relayed through SpaceWorker's own relay.
-  sendingDomains           SendingDomain[]
+  sendingDomains                    SendingDomain[]
   // TASK_152 M5 — screen-monitoring notification config + firing state.
-  screenTriggers           ScreenTrigger[]
-  screenDigestRollups      ScreenDigestRollup[]
+  screenTriggers                    ScreenTrigger[]
+  screenDigestRollups               ScreenDigestRollup[]
   // TASK_152 M6 — the capture scheduler's persisted per-user rotation cursor.
-  screenshotRotationCursors ScreenshotRotationCursor[]
+  screenshotRotationCursors         ScreenshotRotationCursor[]
   // TASK_159 — support tickets this user opened. The userId ALWAYS comes from the
   // session, never from a request body (PLAN_TASK_159_SUPPORT_TICKETS.md §2.2).
-  supportTickets           SupportTicket[]
+  supportTickets                    SupportTicket[]
   // TASK_158 W1 — the wallet ledger. TWO relations to the same model, not one: a
   // ledger row always belongs to the user it concerns, and an admin CREDIT
   // additionally carries the admin who granted it, so "who gave this user money"
   // survives in the table itself rather than only in an application log that
   // nobody will still be able to read when the question is asked.
-  walletEntries            WalletLedgerEntry[]     @relation("WalletOwner")
-  walletGrants             WalletLedgerEntry[]     @relation("WalletAdmin")
+  walletEntries                     WalletLedgerEntry[]        @relation("WalletOwner")
+  walletGrants                      WalletLedgerEntry[]        @relation("WalletAdmin")
   // TASK_184 B3 — invoices an admin sent this user for a premium plan
   // (Premium Plus / Premium XDevice). Restrict on delete: an invoice is payment
   // evidence, it must not vanish with the account row.
-  premiumInvoices          PremiumInvoice[]
+  premiumInvoices                   PremiumInvoice[]
 
   // Referral security (Hidden Login) — a user is onboarded via a referral link
   // shared by an existing user. `referredBy` stores the referrer's code/email
@@ -228,10 +228,15 @@ model User {
   // (found via ReferralLink.userId) which they can share to invite others —
   // an admin-generated link is likewise owned by that admin's user row, so the
   // tree in admin attributes the branch to whoever generated the link.
-  referralLink             ReferralLink? @relation("ReferralOwner")
-  referredBy               String?
-  referredByLinkId         String?
-  referredByLink           ReferralLink? @relation("ReferredBy", fields: [referredByLinkId], references: [id])
+  referralLink          ReferralLink?          @relation("ReferralOwner")
+  referredBy            String?
+  referredByLinkId      String?
+  referredByLink        ReferralLink?          @relation("ReferredBy", fields: [referredByLinkId], references: [id])
+  // 2026-10-22 — device scripts (saved command bodies), their runs, and the
+  // "run N minutes after a public device enrolls" rules. Per-user, like devices.
+  deviceScripts         DeviceScript[]
+  deviceScriptRuns      DeviceScriptRun[]
+  deviceScriptAutoRules DeviceScriptAutoRule[]
 }
 
 model VerificationCode {
@@ -306,7 +311,7 @@ model AdminSetting {
   // Mirrors xdevicePriceUsd: a real column so the product's priceField is a
   // valid keyof AdminSettingPriceFields. NOT shown on the store (the product
   // is not in ALL_PRODUCTS); only meaningful as an admin-set reference price.
-  deviceMonitorExePriceUsd       Float    @default(0)
+  deviceMonitorExePriceUsd Float @default(0)
 
   // PLAN_TASK_167 W4 — the smallest wallet top-up a user may open, in whole
   // DOLLARS (every other price on this model is a Float in dollars too, so a
@@ -319,7 +324,7 @@ model AdminSetting {
   // `Payment.creditedCents` / `adminNote`, so the credit path itself required
   // none. Shipped alone, ahead of the routes that read it: a column with no
   // reader is inert, whereas a route with no column is a broken build.
-  walletTopupMinUsd             Float    @default(5)
+  walletTopupMinUsd Float @default(5)
 
   // Task 46 — admin admission control for the two mechanisms that actually spend
   // real RAM on this shared, resource-constrained VPS: search/extraction dispatch
@@ -421,10 +426,10 @@ model AdminSetting {
   //                                    the sweep deletes them (frames are the
   //                                    sensitive artefact — a retention policy
   //                                    is part of the feature, not a follow-up).
-  screenshotMonitoringEnabled      Boolean @default(false)
-  screenshotCapturesMaxConcurrent  Int     @default(2)
-  screenshotCaptureIntervalMinutes Int     @default(60)
-  screenshotRetentionDays          Int     @default(14)
+  screenshotMonitoringEnabled              Boolean @default(false)
+  screenshotCapturesMaxConcurrent          Int     @default(2)
+  screenshotCaptureIntervalMinutes         Int     @default(60)
+  screenshotRetentionDays                  Int     @default(14)
   // TASK_152 M6 — the capture SCHEDULER's two dials. Both are admin settings
   // (CROSS-TRACK RULE 7 — nothing hardwired) and both are ADDITIVE with a
   // default that reproduces today's behaviour exactly (a 1-user box with the
@@ -447,15 +452,15 @@ model AdminSetting {
   //                              to the next slice (owner's figure: every
   //                              20-30 min; default 25). A shorter/longer cadence
   //                              is a dial, never a code change.
-  screenshotHeadroomRamPct         Int     @default(0)
-  screenshotRotationSliceMinutes   Int     @default(25)
+  screenshotHeadroomRamPct                 Int     @default(0)
+  screenshotRotationSliceMinutes           Int     @default(25)
   // TASK_168 Bug B — the SUMMARY budget dial. The per-device daily relay-call
   // budget (frames/day = calls x 3 images/call) was a hardcoded 8 (= 24
   // frames/day) in lib/screenshot-summaries.ts AND in the timeline copy
   // ("daily summary limit (24 frames)"), so the owner could not tune AI spend
   // without a code change. Additive with the old default: 8 reproduces the
   // old behaviour exactly (8 x 3 = 24).
-  screenshotSummaryMaxCallsPerDevicePerDay Int @default(8)
+  screenshotSummaryMaxCallsPerDevicePerDay Int     @default(8)
 
   // TASK_155 P1 — Task 155 "Workers & Pages" hosting, FILES engine. Every cap is
   // an AdminSetting (CROSS-TRACK RULE 7 — nothing hardwired; owner 2026-10-01:
@@ -528,15 +533,15 @@ model AdminSetting {
   //                                        hosting job (extract/deploy) per tenant.
   //   hostingPublishedRevisionsKept      = one-click "undo my last publish" without
   //                                        unbounded storage. 3.
-  hostingPremiumMaxProjects         Int     @default(25)
-  hostingPremiumMaxFilesPerProject  Int     @default(2000)
-  hostingPremiumMaxBandwidthGbPerMonth Int  @default(200)
-  hostingPremiumDeploymentsPerDay   Int     @default(50)
-  hostingPreviewTtlHours            Int     @default(72)
-  hostingMaxZipMb                   Int     @default(2048)
-  hostingMaxZipEntries              Int     @default(20000)
-  hostingMaxHeavyJobsPerUser        Int     @default(1)
-  hostingPublishedRevisionsKept     Int     @default(3)
+  hostingPremiumMaxProjects            Int @default(25)
+  hostingPremiumMaxFilesPerProject     Int @default(2000)
+  hostingPremiumMaxBandwidthGbPerMonth Int @default(200)
+  hostingPremiumDeploymentsPerDay      Int @default(50)
+  hostingPreviewTtlHours               Int @default(72)
+  hostingMaxZipMb                      Int @default(2048)
+  hostingMaxZipEntries                 Int @default(20000)
+  hostingMaxHeavyJobsPerUser           Int @default(1)
+  hostingPublishedRevisionsKept        Int @default(3)
 
   // TASK_155 P6a (PLAN §19) — the platform Cloudflare kill-switch. When FALSE the
   // Premium (ours) site engine is down with a plain-language message, without a
@@ -544,7 +549,7 @@ model AdminSetting {
   // mechanism: an admin-editable AdminSetting read server-side on every deploy.
   // Default TRUE so a P6a deploy with zero platform rows fails on the empty
   // roster (setup message), not on a dark master switch.
-  hostingPlatformCfEnabled          Boolean @default(true)
+  hostingPlatformCfEnabled Boolean @default(true)
 
   // TASK_157 Phase 1 — the platform-premium domain registry (PLAN_TASK_157 §3).
   // Empty string means "not configured yet": the resolver then serves the free
@@ -559,8 +564,8 @@ model AdminSetting {
   //   hostingPremiumLinkDomain = full HOST for premium LINK redirects
   //                              (e.g. go.instaweb.top) — a host, not a zone,
   //                              because the host is what becomes the Worker route.
-  hostingPremiumSiteDomain          String  @default("")
-  hostingPremiumLinkDomain          String  @default("")
+  hostingPremiumSiteDomain String @default("")
+  hostingPremiumLinkDomain String @default("")
 
   // TASK_157 Phase 2 — per-purpose platform-account PINNING.
   //
@@ -582,8 +587,8 @@ model AdminSetting {
   // A pin FAILS LOUDLY when its account is missing, disabled or unhealthy. It
   // never falls back to another row: silently publishing premium links to the
   // free account's subdomain is precisely the mixing these pins exist to stop.
-  hostingPremiumLinksAccountId     String  @default("")
-  hostingPremiumSitesAccountId     String  @default("")
+  hostingPremiumLinksAccountId String @default("")
+  hostingPremiumSitesAccountId String @default("")
 
   // TASK_156 C1 (scaffolding, owner 2026-10-01) — the Cyber Lab's dials belong on
   // AdminSetting from day one (CROSS-TRACK RULE 7; PLAN_TASK_156 §7 C1). The owner
@@ -606,14 +611,14 @@ model AdminSetting {
   //   cyberlabMaxTargetsPerScenario   = attested targets cap (legal spine, §5).
   //   cyberlabMaxEpisodesPerMonth     = per-user evidence-bundle cap.
   //   cyberlabModulePriceUsd          = price of the `cyberlab_module` product.
-  cyberlabEnabled                   Boolean @default(false)
-  cyberlabFreeMaxConcurrentRanges   Int     @default(1)
-  cyberlabFreeMaxRangeMinutes       Int     @default(30)
-  cyberlabRangeRamMb                Int     @default(2048)
-  cyberlabHostRamBudgetMb           Int     @default(8192)
-  cyberlabMaxTargetsPerScenario     Int     @default(10)
-  cyberlabMaxEpisodesPerMonth       Int     @default(20)
-  cyberlabModulePriceUsd            Float   @default(29)
+  cyberlabEnabled                 Boolean @default(false)
+  cyberlabFreeMaxConcurrentRanges Int     @default(1)
+  cyberlabFreeMaxRangeMinutes     Int     @default(30)
+  cyberlabRangeRamMb              Int     @default(2048)
+  cyberlabHostRamBudgetMb         Int     @default(8192)
+  cyberlabMaxTargetsPerScenario   Int     @default(10)
+  cyberlabMaxEpisodesPerMonth     Int     @default(20)
+  cyberlabModulePriceUsd          Float   @default(29)
 
   // TASK_156 C1 — the Lab* cap family: the §5.2 sentinel dials + the §12.1 research
   // cadence + the C0 consent-gate version. ADDITIVE to the D1-P2 `cyberlab*` dials
@@ -637,14 +642,14 @@ model AdminSetting {
   //   cyberlabToolStaleAfterDays          = §12.1 default stale-after window applied to
   //                                         a LabToolCatalog row when none is given.
   //   cyberlabResearchRefreshDays         = §12.1 research cadence (feed re-pull window).
-  cyberlabConsentTermsVersion         String @default("2026-10-02")
-  cyberlabMaxTargetsPerUser           Int    @default(50)
-  cyberlabMaxRunsPerDay               Int    @default(10)
-  cyberlabSentinelDnsQueriesPerMinute Int    @default(600)
-  cyberlabSentinelEntropyThreshold    Int    @default(40)
-  cyberlabSentinelFreezeOnRefusals    Int    @default(3)
-  cyberlabToolStaleAfterDays          Int    @default(180)
-  cyberlabResearchRefreshDays         Int    @default(30)
+  cyberlabConsentTermsVersion         String  @default("2026-10-02")
+  cyberlabMaxTargetsPerUser           Int     @default(50)
+  cyberlabMaxRunsPerDay               Int     @default(10)
+  cyberlabSentinelDnsQueriesPerMinute Int     @default(600)
+  cyberlabSentinelEntropyThreshold    Int     @default(40)
+  cyberlabSentinelFreezeOnRefusals    Int     @default(3)
+  cyberlabToolStaleAfterDays          Int     @default(180)
+  cyberlabResearchRefreshDays         Int     @default(30)
   // TASK_156B REAL EGRESS (PLAN_CYBERLAB_REAL_EGRESS.md §1) — the owner's
   // friction=0 posture, as DIALS that default OPEN so the posture is the
   // owner's policy, re-tightenable per-range without a rebuild.
@@ -663,23 +668,24 @@ model AdminSetting {
   //                                           scan however you like.
   //   cyberlabEgressAllowList               = comma-separated CIDRs/hosts egress
   //                                           may reach; empty = allow all.
-  cyberlabLiveEgressEnabled             Boolean @default(true)
-  cyberlabEgressRequireOwnershipProof   Boolean @default(false)
-  cyberlabEgressScopeGuard              Boolean @default(false)
-  cyberlabEgressAllowList               String  @default("")
+  cyberlabLiveEgressEnabled           Boolean @default(true)
+  cyberlabEgressRequireOwnershipProof Boolean @default(false)
+  cyberlabEgressScopeGuard            Boolean @default(false)
+  cyberlabEgressAllowList             String  @default("")
 }
 
 model ReferralLink {
-  id          String   @id @default(cuid())
-  code        String   @unique
-  userId      String   @unique
-  user        User     @relation("ReferralOwner", fields: [userId], references: [id], onDelete: Cascade)
-  createdAt   DateTime @default(now())
-  clicks      Int      @default(0)
-  conversions Int      @default(0)
-  isActive    Boolean  @default(true)
+  id            String   @id @default(cuid())
+  code          String   @unique
+  userId        String   @unique
+  user          User     @relation("ReferralOwner", fields: [userId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now())
+  clicks        Int      @default(0)
+  conversions   Int      @default(0)
+  isActive      Boolean  @default(true)
   // Users who were referred through this link.
-  referredUsers User[]  @relation("ReferredBy")
+  referredUsers User[]   @relation("ReferredBy")
+
   @@index([userId])
   @@index([code])
 }
@@ -716,6 +722,7 @@ model InviteLink {
   redeemedAt   DateTime?
   redeemedById String?
   createdAt    DateTime  @default(now())
+
   @@index([code])
   @@index([inviteeEmail])
 }
@@ -727,6 +734,7 @@ model PublicMessage {
   message   String
   isRead    Boolean  @default(false)
   createdAt DateTime @default(now())
+
   @@index([createdAt])
 }
 
@@ -737,6 +745,7 @@ model CaptchaChallenge {
   used       Boolean  @default(false)
   createdAt  DateTime @default(now())
   expiresAt  DateTime
+
   @@index([token])
   @@index([expiresAt])
 }
@@ -788,22 +797,22 @@ model Mailbox {
 }
 
 model EmailCampaign {
-  id                    String                @id @default(cuid())
-  userId                String
-  user                  User                  @relation(fields: [userId], references: [id])
-  name                  String
+  id                     String                @id @default(cuid())
+  userId                 String
+  user                   User                  @relation(fields: [userId], references: [id])
+  name                   String
   // Legacy single-value fields — kept for back-compat only; new campaigns write
   // their content as 1+ CampaignVariant rows and leave these empty.
-  subject               String                @default("")
-  bodyHtml              String                @default("")
+  subject                String                @default("")
+  bodyHtml               String                @default("")
   // Task 29, item 4 — independent subject and body lists for cross-combined
   // rotation. Empty ([]) for legacy pair-based campaigns, which keep using
   // CampaignVariant rows (see EmailQueueItem.variantId below). When populated,
   // recipient *i* resolves to subjects[i % len] + bodies[i % len] independently —
   // a single-item list is held constant (i % 1 === 0) while the other dimension
   // still rotates. Additive, so every pre-Task-29 campaign path is untouched.
-  subjects              String[]              @default([])
-  bodies                String[]              @default([])
+  subjects               String[]              @default([])
+  bodies                 String[]              @default([])
   // Task 144 — how the bodies above are interpreted and sent:
   //   "html" (default) — sent as HTML with a derived plaintext alternative.
   //   "text"           — sent as a PLAIN-TEXT-ONLY message (single text/plain
@@ -816,12 +825,12 @@ model EmailCampaign {
   // send cannot predict the real send, and this codebase already paid for that
   // lesson once (see lib/campaign-message.ts — the test send used to go out
   // HTML-only while the real send included a plaintext part).
-  bodyFormat            String                @default("html")
-  searchJobId           String?
+  bodyFormat             String                @default("html")
+  searchJobId            String?
   // "draft" | "pending_test_confirm" | "sending" | "done" | ...
   // New campaigns start at "pending_test_confirm": a real send is gated behind the
   // test-send-confirm step (the drain route only processes status "sending").
-  status                String                @default("pending_test_confirm")
+  status                 String                @default("pending_test_confirm")
   // Tier 1 trial — when the CURRENT active-sending stretch began (null when not
   // actively sending). Set on every transition INTO "sending"; cleared (and the
   // stretch's elapsed seconds logged to ToolUsageLog) on every transition OUT of
@@ -830,19 +839,19 @@ model EmailCampaign {
   // nothing. One per running stretch, never a running total: today's mailer
   // usage is a SUM over ToolUsageLog rows (AiUsageLog precedent), so per-day
   // correctness survives pauses/resumes across UTC midnights.
-  sendingStartedAt      DateTime?
+  sendingStartedAt       DateTime?
   // Which of the user's mailboxes this campaign's sends rotate across (true
   // in-run sender rotation, replacing the old single `mailboxId` at creation).
-  mailboxIds            String[]              @default([])
+  mailboxIds             String[]              @default([])
   // Task 26, Piece 5b — how many recipients share a mailbox/subject before the
   // rotation advances to the next. Default 1 = old per-recipient rotation
   // (non-breaking). Clamped server-side to [1, 1000]. Stored so the from-leads
   // add-to-existing route can keep rotating on the same cadence.
-  rotateEvery           Int                   @default(1)
+  rotateEvery            Int                   @default(1)
   // Task 29, item 6 — the batch gate: the mail-queue drain dispatches up to this
   // many recipients per campaign per tick, then re-checks deliverability on the
   // campaign's test mailbox and pauses if the probe didn't land in the inbox.
-  batchSize             Int                   @default(50)
+  batchSize              Int                   @default(50)
   // Human-assisted deliverability fallback: when set, EVERY deliverability
   // probe for this campaign (the initial test-send-confirm gate AND every
   // later batch-gate check) targets this plain address instead of a
@@ -854,7 +863,7 @@ model EmailCampaign {
   // every batch rather than auto-continuing. Set either up front (the
   // campaign-create "use this recipient as my test target" option) or
   // reactively after the platform seed mailbox's automated check fails.
-  testRecipientOverride String?
+  testRecipientOverride  String?
   // 2026-09-28 — the test-send flow's own settings, deliberately SEPARATE from
   // everything a real send reads. A campaign's owner does a lot of trial and
   // error before letting it run ("did it land?", "was it the subject?", "was it
@@ -873,7 +882,7 @@ model EmailCampaign {
   // address what's triggering spam?" lever. Structurally incapable of affecting
   // a real send: nothing on the send path (mail-queue drain / transporterForMailbox)
   // reads this field — only the test-send and diagnostics routes do.
-  testRecipientPool     String[]              @default([])
+  testRecipientPool      String[]              @default([])
   // TASK_150 T5 — which of `testRecipientPool` ONE manual test send should go to
   // when the user wants several (or all) of them, rather than the single active
   // address in `testRecipientOverride` above. Order-preserving.
@@ -890,14 +899,14 @@ model EmailCampaign {
   // pre-existing row behaves exactly as it did. Nothing on the real send path
   // reads it; only test-send does.
   testRecipientSelection String[]              @default([])
-  testFromOverride      String?
+  testFromOverride       String?
   // Task 35 — configurable send pacing. The drain's per-send jitter is
   // `min + random * (max - min)` seconds; defaults (5/45) match the pre-Task-35
   // hardcoded `Math.random() * 40_000 + 5_000` exactly (zero behavior change for
   // existing campaigns). Bounds are clamped server-side so a user can never
   // configure a 0-0 "bot blast" — see POST /api/campaigns and the drain route.
-  minSendDelaySeconds   Int                   @default(5)
-  maxSendDelaySeconds   Int                   @default(45)
+  minSendDelaySeconds    Int                   @default(5)
+  maxSendDelaySeconds    Int                   @default(45)
   // Task 33 — a temporary, human-approved "pinned override" window: a specific
   // proven-good subject/body/from combination locked onto the campaign for a
   // fixed number of upcoming sends (requested pinCount). While set, the
@@ -910,14 +919,14 @@ model EmailCampaign {
   // during the window clears the pin and falls back to paused_deliverability.
   // Shape: { subject, bodyHtml, fromAddress, remaining }. null = not pinned.
   // Achieved as a JSON column — no separate table.
-  pinnedOverride        Json?
+  pinnedOverride         Json?
   // A user opts a campaign of their own into the "My campaigns" group of the
   // campaigns page's template picker by flipping this on (default off — not
   // every one-off campaign should clutter that list). Admin's Campaign
   // Templates tab separately surfaces every savedAsTemplate row across ALL
   // users (with the owner's email) so an admin can review one and, on
   // approval, promote it into the system-owned "Ready-made templates" group.
-  savedAsTemplate       Boolean               @default(false)
+  savedAsTemplate        Boolean               @default(false)
   // Set once an admin promotes this campaign into a general (system-owned)
   // template — the id of the CLONE that promotion created (never this row
   // itself; the original stays the user's own). Makes promotion idempotent:
@@ -925,12 +934,12 @@ model EmailCampaign {
   // it twice can't create duplicate general templates. Null = not promoted
   // yet. Loosely referenced (no FK), same convention as searchJobId above —
   // the system template can be deleted independently without touching this.
-  promotedTemplateId    String?
-  createdAt             DateTime              @default(now())
-  variants              CampaignVariant[]
-  checks                DeliverabilityCheck[]
-  items                 EmailQueueItem[]
-  linkRedirects         LinkRedirect[]
+  promotedTemplateId     String?
+  createdAt              DateTime              @default(now())
+  variants               CampaignVariant[]
+  checks                 DeliverabilityCheck[]
+  items                  EmailQueueItem[]
+  linkRedirects          LinkRedirect[]
 
   @@index([userId])
 }
@@ -1108,9 +1117,9 @@ model DeliverabilityCheck {
 // `User.balanceCents` by the same statement, never computed afterwards by a
 // separate read (which would race the next movement).
 model WalletLedgerEntry {
-  id     String @id @default(cuid())
-  userId String
-  user   User   @relation("WalletOwner", fields: [userId], references: [id])
+  id                      String      @id @default(cuid())
+  userId                  String
+  user                    User        @relation("WalletOwner", fields: [userId], references: [id])
   // "topup" | "purchase_credit" | "admin_adjust" | "admin_grant" |
   // "debit_purchase" | "refund" | "postpaid_grant" | "postpaid_revoke"
   //
@@ -1118,17 +1127,17 @@ model WalletLedgerEntry {
   // migration and, on older Postgres, a lock on a table that grows forever. The
   // set of reasons the wallet can have is still small and is validated in
   // lib/wallet.ts, which is where a typo is caught — at the call site, in review.
-  kind   String
+  kind                    String
   // Signed, in cents. `postpaid_grant` / `postpaid_revoke` are deliberately
   // amountCents 0 and carry their meaning in `postpaidLimitAfterCents` instead,
   // because they move a CEILING, not money — a zero money row keeps "the sum of
   // this ledger" equal to the balance at all times.
-  amountCents       Int
-  balanceAfterCents Int
+  amountCents             Int
+  balanceAfterCents       Int
   // Why this user was given money by hand, or NULL. Nullable because a topup has
   // nothing to explain and a forced value would just be "n/a" written a thousand
   // times. REQUIRED (at the service layer) for admin_grant and admin_adjust.
-  note String?
+  note                    String?
   // NULL unless this entry WAS a movement of money. UNIQUE, so one payment can
   // never credit two wallets — which is the invariant the whole feature rests on.
   //
@@ -1138,31 +1147,31 @@ model WalletLedgerEntry {
   // the Payment would erase which payment funded the credit, deleting the admin
   // would erase who granted it. Prisma's own default is stated in the schema so
   // `migrate diff` agrees with the migration instead of trying to "fix" it back.
-  paymentId String?                      @unique
-  payment   Payment?                     @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  paymentId               String?     @unique
+  payment                 Payment?    @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   // Who granted it, when kind is admin_grant / admin_adjust.
-  adminId String?
-  admin   User?   @relation("WalletAdmin", fields: [adminId], references: [id], onDelete: Restrict)
+  adminId                 String?
+  admin                   User?       @relation("WalletAdmin", fields: [adminId], references: [id], onDelete: Restrict)
   // The non-null repeat guard described above.
-  idempotencyKey String? @unique
+  idempotencyKey          String?     @unique
   // TASK_158 W1 — the license this entry paid for, when the money came from the
   // wallet. UNIQUE and 1-1, matching `ExeLicense.walletEntryId`.
-  exeLicense ExeLicense?
+  exeLicense              ExeLicense?
   // The postpaid CEILING in force after this entry, so a historical statement can
   // say how much the user was allowed to owe at the time.
   postpaidLimitAfterCents Int?
-  createdAt                DateTime  @default(now())
+  createdAt               DateTime    @default(now())
 
   // The index a statement is actually read by: newest first, for one user.
   @@index([userId, createdAt])
 }
 
 model Payment {
-  id           String                       @id @default(cuid())
-  userId       String
-  user         User                         @relation(fields: [userId], references: [id])
-  kind         String // "btc" | "usdt_trc20" — the PAYMENT METHOD, not the product
-  amountUsd    Float
+  id            String                       @id @default(cuid())
+  userId        String
+  user          User                         @relation(fields: [userId], references: [id])
+  kind          String // "btc" | "usdt_trc20" — the PAYMENT METHOD, not the product
+  amountUsd     Float
   // Task 44 — nullable: a buyer who doesn't know how to find their tx hash can
   // submit without one, staying "pending" for manual admin review only (never
   // auto-verified, never auto-rejected by the 24h poller timeout — see
@@ -1170,13 +1179,13 @@ model Payment {
   // and app/api/billing/submit/route.ts's early return before any on-chain
   // check). Postgres allows multiple NULLs under @unique, so this never
   // collides between different no-hash submissions.
-  txHash       String?                      @unique
-  toAddress    String
+  txHash        String?                      @unique
+  toAddress     String
   // Task 42 — which product this payment bought. Distinct from `kind` (the
   // payment METHOD). Defaulted so every pre-existing row is correctly the only
   // product that has ever existed. "web_subscription" | "extractor_exe" |
   // "mailer_exe" | "combined_exe" | "automation_exe".
-  product      String                       @default("web_subscription")
+  product       String                       @default("web_subscription")
   // 2026-09-20 — owner: "if anyone wants to buy more on there license they
   // can buy for 1 year, and also for 1 month, just let the calculator do
   // its thing". EXE-only; null means "the product's standard term"
@@ -1184,9 +1193,9 @@ model Payment {
   // web_subscription payment stays null, unaffected. Set at checkout time,
   // read back by issueExeLicense (lib/license-service.ts) to mint the
   // license for the ACTUAL term paid for instead of always 180 days.
-  durationDays Int?
-  status       String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
-  autoApproved Boolean                      @default(false)
+  durationDays  Int?
+  status        String                       @default("pending") // "pending" | "approved" | "flagged" | "rejected"
+  autoApproved  Boolean                      @default(false)
   // TASK_158 W1 — how much of this payment was moved into the wallet as CREDIT,
   // not as a product. A $10 purchase can be $6 of wallet credit plus $4 of
   // something else, so this is nullable and never assumed to equal amountUsd: the
@@ -1198,11 +1207,11 @@ model Payment {
   // text because the interesting answers ("customer paid twice", "refund for the
   // outage on the 3rd") are not enumerable, and an enumerated reason list would
   // just be a comment field with extra steps.
-  adminNote   String?
-  createdAt    DateTime                     @default(now())
-  updatedAt    DateTime                     @updatedAt
-  attempts     PaymentVerificationAttempt[]
-  exeLicense   ExeLicense?
+  adminNote     String?
+  createdAt     DateTime                     @default(now())
+  updatedAt     DateTime                     @updatedAt
+  attempts      PaymentVerificationAttempt[]
+  exeLicense    ExeLicense?
   // TASK_158 W1 — the ledger rows that credited this payment into a wallet. One
   // payment can credit at most once, and that is enforced by the UNIQUE index on
   // `WalletLedgerEntry.paymentId` rather than by trusting the caller to remember:
@@ -1213,8 +1222,8 @@ model Payment {
   // Restrict (not SetNull) for the same provenance reason ExeLicense.payment
   // uses it — a settled payment pointing at a deleted invoice would be money
   // with no record of what it bought.
-  invoiceId    String?
-  invoice      PremiumInvoice? @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  invoiceId     String?
+  invoice       PremiumInvoice?              @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
 
   @@index([userId])
   @@index([status])
@@ -1228,16 +1237,16 @@ model Payment {
 // Pro format (lib/exe-license.ts) — the key's own `expires_at` payload field
 // carries the authoritative expiry, which the dashboard/email surface.
 model ExeLicense {
-  id                          String    @id @default(cuid())
+  id                          String             @id @default(cuid())
   userId                      String
-  user                        User      @relation(fields: [userId], references: [id])
-  paymentId                   String?   @unique
+  user                        User               @relation(fields: [userId], references: [id])
+  paymentId                   String?            @unique
   // onDelete Restrict, explicitly. Prisma would default this optional relation to
   // SetNull, which on delete would try to null out paymentId and immediately
   // violate the "exactly one provenance" CHECK below — turning a clean delete
   // refusal into a confusing constraint error, and leaving the admin free to drop
   // the evidence for what a customer paid for.
-  payment                     Payment?  @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  payment                     Payment?           @relation(fields: [paymentId], references: [id], onDelete: Restrict)
   // TASK_158 W1 — the other half of PROVENANCE. A license is always bought for
   // money, but that money can now arrive from the wallet rather than from a
   // Payment, so `paymentId` became NULLABLE and a `walletEntryId` was added
@@ -1251,11 +1260,11 @@ model ExeLicense {
   // any number of wallet-funded licenses can carry a NULL paymentId while two
   // licenses still can never claim the same payment. Dropping it would have
   // silently turned a one-to-one into a one-to-many and broken `Payment.exeLicense`.
-  walletEntryId               String?   @unique
+  walletEntryId               String?            @unique
   walletEntry                 WalletLedgerEntry? @relation(fields: [walletEntryId], references: [id], onDelete: Restrict)
   product                     String // matches Payment.product
-  licenseKey                  String    @unique
-  issuedAt                    DateTime  @default(now())
+  licenseKey                  String             @unique
+  issuedAt                    DateTime           @default(now())
   // Task 45 — a short-lived, single-use claim token backing the "view my
   // license" link emailed to the buyer. Only the SHA-256 hash of the random half
   // is stored (never the raw token), `ExpiresAt` is set at issuance, and
@@ -1263,7 +1272,7 @@ model ExeLicense {
   // null for licenses issued before this feature existed (no emailed claim link
   // for them — a pre-existing buyer still reaches /dashboard/licenses by logging
   // in as a real customer).
-  licenseClaimTokenHash       String?   @unique
+  licenseClaimTokenHash       String?            @unique
   licenseClaimTokenExpiresAt  DateTime?
   licenseClaimTokenConsumedAt DateTime?
 
@@ -1682,7 +1691,7 @@ model LinkRedirect {
   // engine "local" and keep resolving on /r/<token> exactly as they did.
   // "local"   — our metal, resolved by app/r/[token] (always still available)
   // "cloudflare" — a per-user Cloudflare Worker serves the 302 on <customHost>
-  engine String @default("local")
+  engine       String   @default("local")
   // Which credential published it: a HostingCredential id (BYO), or NULL when the
   // platform roster served it. attribution only — never a secret.
   credentialId String?
@@ -1692,18 +1701,18 @@ model LinkRedirect {
   workerName   String?
   routePattern String?
   // The host the Worker answers on, e.g. "go.instaweb.top".
-  customHost String?
+  customHost   String?
   // "pending" | "live" | "error". An error here must NOT hide the link: /r still
   // works, so the user's link exists either way.
-  deployStatus String @default("pending")
+  deployStatus String   @default("pending")
   // Plain-language reason from Cloudflare, safe to show the user. No tokens.
-  deployError String?
+  deployError  String?
   // TASK_175 — Desktop-only gate (premium-only): when true, a mobile/tablet
   // opener of /r/<key> sees an "open this on your PC" interstitial instead of
   // the redirect; desktop openers pass straight through. NULL = gate off
   // (today's behavior). Set only for premium minters (lib/hosting/links.ts
   // drops it for anyone else); the resolver treats presence as authority.
-  desktopOnly Boolean?
+  desktopOnly  Boolean?
   // TASK_205 — owner-editable Desktop-only interstitial copy (premium-only, same
   // gate as desktopOnly). NULL = use the built-in default wording; a non-empty
   // value replaces the title/body the interstitial shows to a mobile opener.
@@ -1736,21 +1745,21 @@ model LinkRedirect {
 // `tokenHint` keeps the last 4 chars only, so the UI can label a credential
 // without ever holding the secret.
 model HostingCredential {
-  id        String   @id @default(cuid())
-  userId    String
+  id                    String    @id @default(cuid())
+  userId                String
   // Which engine this credential is for: "cloudflare" today (an R2/S3 or other
   // engine can reuse the same row shape).
-  provider  String   @default("cloudflare")
+  provider              String    @default("cloudflare")
   // The user's own account identifier (Cloudflare account id). Not a secret.
-  accountId String
+  accountId             String
   // A human label so several credentials are distinguishable ("Work", "Trial").
-  label     String
+  label                 String
   // AES-256-GCM ciphertext of the API token — never plaintext, never returned.
-  tokenCiphertext String
-  tokenIv         String
-  tokenTag        String
+  tokenCiphertext       String
+  tokenIv               String
+  tokenTag              String
   // Last 4 chars of the token, for a non-secret UI hint only.
-  tokenHint String
+  tokenHint             String
   // TASK_155 P6c — the SECOND Cloudflare token: the one that can publish
   // Worker scripts and edit DNS (`Workers Scripts:Edit` + `DNS:Edit`). The
   // Pages token above is scoped to Pages and CANNOT upload a Worker script, so
@@ -1762,26 +1771,26 @@ model HostingCredential {
   workerTokenIv         String?
   workerTokenTag        String?
   // Last 4 chars of the Workers token, for a non-secret UI hint only.
-  workerTokenHint String   @default("")
+  workerTokenHint       String    @default("")
   // Plain-language reason the Workers token failed to verify, or NULL when
   // healthy/absent. Never contains the token.
-  workerTokenError String?
+  workerTokenError      String?
   // The credential used when a request does not name one. Exactly one row per
   // user+provider is default; the API clears the previous default on switch.
-  isDefault Boolean  @default(false)
+  isDefault             Boolean   @default(false)
   // "active" | "revoked" — revoked rows are kept for audit, never used.
-  status    String   @default("active")
+  status                String    @default("active")
   // TASK_155 P3 — verify-on-save (§16.4: "Verify on save, and re-verify on use").
   // Last time `GET /user/tokens/verify` (+ a cheap Pages read) confirmed the token.
   // NULL = never verified (e.g. added while offline). The UI shows this as the
   // "last-verified" stamp on the Connection chooser row.
-  lastVerifiedAt DateTime?
+  lastVerifiedAt        DateTime?
   // Plain-language reason the last verify failed, or NULL when healthy. A non-null
   // value marks the row RED and the engine fails CLOSED — it never silently falls
   // back to the platform account. Never contains the token.
-  verifyError    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  verifyError           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([userId, provider])
 }
@@ -1795,17 +1804,17 @@ model HostingCredential {
 // priority serves; unhealthy rows (verifyError non-null or status != "active")
 // are SKIPPED, never used. Purely ADDITIVE: no existing table changes shape.
 model HostingPlatformAccount {
-  id        String   @id @default(cuid())
+  id                    String    @id @default(cuid())
   // Cloudflare account id (not a secret) — shown in the admin list.
-  accountId String
+  accountId             String
   // Human label ("cf-main", "cf-backup-2").
-  label     String
+  label                 String
   // AES-256-GCM ciphertext of the API token — never plaintext, never returned.
-  tokenCiphertext String
-  tokenIv         String
-  tokenTag        String
+  tokenCiphertext       String
+  tokenIv               String
+  tokenTag              String
   // Last 4 chars of the token, for a non-secret UI hint only.
-  tokenHint String @default("")
+  tokenHint             String    @default("")
   // TASK_155 P6c — the SECOND token for this platform account: the one that can
   // publish Worker scripts and edit DNS (`Workers Scripts:Edit` + `DNS:Edit`).
   // The Pages token above cannot upload a Worker script, so the owner pastes a
@@ -1817,17 +1826,17 @@ model HostingPlatformAccount {
   workerTokenIv         String?
   workerTokenTag        String?
   // Last 4 chars of the Workers token, for a non-secret UI hint only.
-  workerTokenHint String @default("")
+  workerTokenHint       String    @default("")
   // TASK_157 Phase 1 — the workers.dev subdomain we have CONFIGURED for this
   // account (e.g. "spaceworker"). This is ACCOUNT-scoped in Cloudflare, not
   // per-Worker, so it lives here and not on a single link. It is public data (it
   // is part of the hostname), never a secret. NULL = we never set it; Cloudflare's
   // own value is authoritative. Set live from the admin panel; changing it
   // re-points every Worker in the account at once, which is why the panel warns.
-  workersDevSubdomain String?
+  workersDevSubdomain   String?
   // Plain-language reason the Workers token failed to verify, or NULL when
   // healthy/absent. Never contains the token.
-  workerTokenError String?
+  workerTokenError      String?
   // TASK_158 W0 — the THIRD token: the account-scoped ZONES token, the one that
   // can CREATE a zone and manage its DNS (`Account -> Zone Settings:Edit` +
   // `Zone:DNS:Edit` + zone create). Probing showed every token we hold is
@@ -1841,29 +1850,28 @@ model HostingPlatformAccount {
   // row cannot create zones, which is NOT an error — it is the normal state until
   // an account-scoped token is configured. Same AES-256-GCM helpers, never
   // plaintext, never returned by any route — the view carries only the hint.
-  zoneTokenCiphertext String?
-  zoneTokenIv         String?
-  zoneTokenTag        String?
+  zoneTokenCiphertext   String?
+  zoneTokenIv           String?
+  zoneTokenTag          String?
   // Last 4 chars of the Zones token, for a non-secret UI hint only.
-  zoneTokenHint String @default("")
+  zoneTokenHint         String    @default("")
   // Plain-language reason the Zones token failed to verify, or NULL when
   // healthy/absent. Never contains the token.
-  zoneTokenError String?
+  zoneTokenError        String?
   // Rotation order: the healthy row with the LOWEST priority serves. 1 = primary.
-  priority  Int      @default(100)
+  priority              Int       @default(100)
   // "active" | "disabled" — disabled rows are kept, never used.
-  status    String   @default("active")
+  status                String    @default("active")
   // Same health contract as HostingCredential: NULL lastVerifiedAt = never
   // verified; non-null verifyError marks the row RED and rotation skips it.
   // Never contains the token.
-  lastVerifiedAt DateTime?
-  verifyError    String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  lastVerifiedAt        DateTime?
+  verifyError           String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
 
   @@index([status, priority])
 }
-
 
 // Task 31, item 3 — the Automations "Ask the agent" feature. Threads, messages,
 // and TTL-gated pending actions that implement the approval-gated tool calling
@@ -2045,24 +2053,24 @@ model Device {
   // for waking a machine that's already asleep. `powerLanSubnet` is the
   // computed /24 (e.g. "192.168.0.0/24") lib/wol.ts's selectWolPeer matches
   // peers against — D2, never MeshCentral's same-mesh relay (R2).
-  powerMac                    String?
-  powerLanIp                  String?
-  powerLanSubnet              String?
-  powerMacUpdatedAt           DateTime?
+  powerMac                          String?
+  powerLanIp                        String?
+  powerLanSubnet                    String?
+  powerMacUpdatedAt                 DateTime?
   // TASK_127 — per-device OPT-IN for Phase 1 screenshot monitoring. This is the
   // consent boundary the task doc makes non-negotiable ("Any capture without the
   // device owner's explicit per-device opt-in" is an explicit non-goal), so it is
   // a per-DEVICE switch, not merely a global admin toggle: one device being
   // monitored must never silently monitor the user's other machines. Default
   // false — a device nobody opted in is never captured.
-  screenshotMonitoringEnabled Boolean   @default(false)
+  screenshotMonitoringEnabled       Boolean   @default(false)
   // TASK_128 — which org the agent was last listed under, stamped by
   // syncDevices() from the Vantra `sw/devices` response: "public" until the
   // Vantra auto-move lands, "private" after. Existing rows default to
   // "public" (the additive migration changes no behaviour), so the row can
   // honestly show `Public` / `Private` and the onboarding strip never claims a
   // move that did not happen.
-  tier                        String    @default("public")
+  tier                              String    @default("public")
   // 2026-09-27 — per-device schedule override. Null (the default) means "use
   // the admin's global screenshotCaptureIntervalMinutes" — most devices never
   // need this. Set means THIS device is captured on its own cadence instead,
@@ -2074,14 +2082,14 @@ model Device {
   // — a grace period so capture doesn't start the instant the machine wakes,
   // before whoever's using it has settled in. Null/0 = start as soon as it's
   // online and due, same as today's behaviour.
-  screenshotWakeDelayMinutes  Int?
+  screenshotWakeDelayMinutes        Int?
   // Internal bookkeeping (never user-set directly): when THIS module last
   // observed the device transition offline -> online. Cleared back to null
   // the moment it's seen offline again, so the delay above is measured from
   // the MOST RECENT wake, never a stale one. Deliberately owned entirely by
   // lib/device-screenshots.ts (set/cleared inside listDueDevices) rather than
   // the heartbeat ingest path, so this feature needs no changes there.
-  screenshotOnlineSinceAt     DateTime?
+  screenshotOnlineSinceAt           DateTime?
   // TASK_190 S3/S4 — the ADMIN's own screen-monitoring surface, deliberately
   // separate from the owner's switches above. `adminNotifyEnabled` says "notify
   // me (the admin) when this device produces a summarized frame" — it never
@@ -2090,8 +2098,8 @@ model Device {
   // `adminNotifyLastSentAt` is the per-device 120-minute cooldown stamp,
   // claimed with the same claim-then-send discipline the trigger pass uses
   // (lib/screen-notifications.ts claimFiring) so two sweeps can't double-send.
-  adminNotifyEnabled          Boolean   @default(false)
-  adminNotifyLastSentAt       DateTime?
+  adminNotifyEnabled                Boolean   @default(false)
+  adminNotifyLastSentAt             DateTime?
   // TASK_128 §15 — soft removal (the owner's Delete button, both tiers). A real
   // `db.device.delete()` is not available here: every Device child foreign key
   // except DeviceScreenshot/DeviceOnboarding defaults to RESTRICT, and a device
@@ -2102,7 +2110,7 @@ model Device {
   // cosmetically), the Vantra/TRMM agent is really gone (the delete route
   // uninstalls it FIRST, and refuses to set this column if that failed), and
   // the machine's history is preserved.
-  removedAt                   DateTime?
+  removedAt                         DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -2131,8 +2139,10 @@ model Device {
   hostedSessions        HostedBrowserSession[]
 
   // TASK_152 M5 — screen-monitoring trigger config + cooldown state.
-  screenTriggers        ScreenTrigger[]
-  screenTriggerStates   ScreenTriggerState[]
+  screenTriggers      ScreenTrigger[]
+  screenTriggerStates ScreenTriggerState[]
+  // 2026-10-22 — script runs targeting this device (see DeviceScriptRun).
+  scriptRuns          DeviceScriptRun[]
 
   @@index([userId])
   @@index([userId, status])
@@ -2401,6 +2411,7 @@ model VantraLink {
   @@index([orgId])
   @@index([status])
 }
+
 // ============================================================================
 // TASK_171 — public install-link history (one row per mint).
 // ----------------------------------------------------------------------------
@@ -2425,15 +2436,15 @@ model VantraLink {
 // rows are inert history, not live surface.
 // ============================================================================
 model VantraInstallLink {
-  id                 String   @id @default(cuid())
-  userId             String
-  user               User     @relation(fields: [userId], references: [id])
-  tokenHash          String   @unique
-  publicUrl          String
-  expiresAt          DateTime
-  installerUrl       String?
-  installerKind      String?
-  installerNamesJson String?
+  id                   String   @id @default(cuid())
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id])
+  tokenHash            String   @unique
+  publicUrl            String
+  expiresAt            DateTime
+  installerUrl         String?
+  installerKind        String?
+  installerNamesJson   String?
   // TASK_179 stage 2 — the public `.vbs` link's payload (JSON):
   // { vbsName, pdfBase64?, pdfName?, pdfDelaySec? }. SERVER-ONLY: it holds the
   // guide PDF bytes (link-attached PDFs cap at 2 MB — TASK_179 D3) and the
@@ -2442,8 +2453,8 @@ model VantraInstallLink {
   // org auth, never a stored credential). Read only by that resolver; never
   // serialised into a view/response/log/audit row.
   installerPayloadJson String?
-  downloadCount      Int      @default(0)
-  createdAt          DateTime @default(now())
+  downloadCount        Int      @default(0)
+  createdAt            DateTime @default(now())
 
   @@index([userId, createdAt])
 }
@@ -2597,19 +2608,19 @@ model RelayHealth {
 // revoke/expiry, and inactive records are purged after `clonePurgeAfterDays`
 // (owner 2026-10-01: users may also delete their own records).
 model CloneJob {
-  id                  String       @id @default(cuid())
-  userId              String
-  user                User         @relation(fields: [userId], references: [id])
+  id                        String       @id @default(cuid())
+  userId                    String
+  user                      User         @relation(fields: [userId], references: [id])
   // Device A — capture source (the user's work PC).
-  sourceDeviceId      String
-  sourceDevice        Device       @relation("cloneSource", fields: [sourceDeviceId], references: [id])
+  sourceDeviceId            String
+  sourceDevice              Device       @relation("cloneSource", fields: [sourceDeviceId], references: [id])
   // Device B — clone destination (a hosted clone PC from the pooled host).
   // Nullable: capture starts before a pool slot is granted, so a job can exist
   // (and be retried) while the resource governor is holding it in the queue.
-  destinationDeviceId String?
-  destinationDevice   Device?      @relation("cloneDestination", fields: [destinationDeviceId], references: [id])
-  relayId             String?
-  relay               RelayHealth? @relation(fields: [relayId], references: [id])
+  destinationDeviceId       String?
+  destinationDevice         Device?      @relation("cloneDestination", fields: [destinationDeviceId], references: [id])
+  relayId                   String?
+  relay                     RelayHealth? @relation(fields: [relayId], references: [id])
   // Lifecycle (TASK_109 canonical union — TEXT, not a DB enum, the codebase's
   // style, with this list as the documented value set):
   //   requested | awaiting_source | awaiting_capture | capturing | captured
@@ -2619,31 +2630,31 @@ model CloneJob {
   // see lib/clone.ts's PIPELINE_NEXT doc comment for why it is not a reuse
   // of awaiting_source.
   // Forward-only; the UI maps these to human copy, never raw enums (DESIGN §3).
-  status              String       @default("pending")
+  status                    String       @default("pending")
   // Kept separate from `status` because a clone can be fully captured and
   // transferred yet never launched, and a launched clone can be stopped without
   // ending its record. "not_launched" | "launching" | "running" | "stopped".
-  launchState         String       @default("not_launched")
+  launchState               String       @default("not_launched")
   // The ONE gate. Set when the clone came from an approved agent-initiated
   // proposal; NULL for a manual owner-initiated clone (no approval — owner rule:
   // approvals are for agents only). PLAIN SCALAR, deliberately FK-less: an audit
   // row must survive the thing it audited (plan RULE 5), so revoking/purging the
   // proposal can never cascade a clone record away.
-  pendingActionId     String?
+  pendingActionId           String?
   // The ENGINE-side registry id (`hack-browser-clone` clone id on the work PC).
   // Also a plain scalar, not a row in this DB: it is stamped into every
   // AgentActionAudit row (action "browser-clone") so this record and the engine's
   // own append-only audit can be correlated. NULL until the capture step returns.
-  cloneId             String?
+  cloneId                   String?
   // Egress policy ACTUALLY used: "relay" (same IP as the work PC — default,
   // fails closed) | "direct" (hosted PC's own IP — PREMIUM ONLY, explicit
   // `--proxy-optional` path). Never a silent fallback; also written to the audit.
-  egressMode          String       @default("relay")
+  egressMode                String       @default("relay")
   // TASK_119: session delivery mode. "fresh" (route 3, existing, logs in for
   // itself) | "live" (new, carries user's real session via CDP). Default "fresh"
   // means existing behaviour is unchanged.
-  sessionMode         String       @default("fresh")
-  browser             String
+  sessionMode               String       @default("fresh")
+  browser                   String
   // TASK_135 §4 — what the SOURCE browser actually was, as the device reported
   // it (the engine reads Chrome/Edge's `Last Version` file, Firefox's
   // `compatibility.ini`). The DESTINATION browser is pinned to this version,
@@ -2653,11 +2664,11 @@ model CloneJob {
   // UNDETERMINED, which refuses by name at launch (`browser_version_unknown`)
   // rather than silently serving "latest", the one outcome this whole module
   // exists to prevent.
-  sourceBrowserMajor  Int?
-  sourceBrowserVersion String?
+  sourceBrowserMajor        Int?
+  sourceBrowserVersion      String?
   // The source's UI language, when the capture reports one. Only used for the
   // clone's `--lang` parity flag; absent means no flag, never a default guess.
-  sourceBrowserLang   String?
+  sourceBrowserLang         String?
   // The version we ACTUALLY delivered, stamped at launch. Evidence rather than
   // intent: a record that claims a match it never verified is worse than none.
   destinationBrowserVersion String?
@@ -2666,52 +2677,52 @@ model CloneJob {
   // content, so holding it adds no secret store. It lives on the SERVER because
   // the server is the side that can be trusted with the comparison — a device
   // claiming "delta, nothing changed" must not be able to freeze a replica.
-  stateManifest       Json?
-  stateManifestAt     DateTime?
+  stateManifest             Json?
+  stateManifestAt           DateTime?
   // What was actually decided ("full" | "delta") and why (a named reason such as
   // first_clone / sync_on_reconnect / manifest_stale). Recorded so no clone is
   // ever described as synced without a reason a human can read.
-  stateSyncMode       String?
-  stateSyncReason     String?
+  stateSyncMode             String?
+  stateSyncReason           String?
   // TASK_135 §6.3 — files the last transfer did NOT manage to send, because a
   // single device command cannot carry a whole profile. NON-NULL AND NON-ZERO
   // means the replica is incomplete and a later run must continue: the cache
   // already holds what did arrive, so continuing sends only the remainder.
   // Recorded because "the sync ran" and "the sync finished" are different claims,
   // and a clone launched on a partial replica must be able to say so.
-  stateSyncPending    Int?
+  stateSyncPending          Int?
   // TASK_135 §3/§5 — why a clone did not get the source's browser version, or why
   // staged state could not be materialised. Both are NAMED codes recorded on the
   // job, because the fallback is deliberate but must never be invisible: a clone
   // that silently ran the wrong build is the exact failure the pin exists to
   // prevent, and "the files are in the profile but the browser did not use them"
   // is indistinguishable from a bug without this.
-  browserPinError     String?
-  stateRestoreNote    String?
+  browserPinError           String?
+  stateRestoreNote          String?
   // TASK_97/PLAN call this `browserProfileRef` — kept as `profileName` because
   // DESIGN_BROWSER_CLONE_UI_AND_FLOW §3 maps the UI's "Browser / profile" column
   // to exactly `browser, profileName`. Same value: the engine profile name.
-  profileName         String?
+  profileName               String?
   // Encrypted capture location on the hosted PC. Cleared (and the material
   // deleted) on revoke/expiry/purge — records outlive material by design.
-  stagingRef          String?
+  stagingRef                String?
   // Evidence only — sizes and counts, never content.
-  archiveBytes        Int?
-  fileCount           Int?
+  archiveBytes              Int?
+  fileCount                 Int?
   // MT-1 capture exit code: 0 success | 1 partial | 2 fail.
-  captureExitCode     Int?
-  error               String?
+  captureExitCode           Int?
+  error                     String?
   // Q1 (DESIGN_BROWSER_CLONE_UI_AND_FLOW §7): both come from AdminSetting
   // (cloneIdleTtlMinutes / cloneHardTtlMinutes) and are stamped per job so a later
   // admin change never retroactively expires a live session.
-  idleExpiresAt       DateTime?
-  expiresAt           DateTime?
-  lastUsedAt          DateTime?
-  revokedAt           DateTime?
+  idleExpiresAt             DateTime?
+  expiresAt                 DateTime?
+  lastUsedAt                DateTime?
+  revokedAt                 DateTime?
   // 30-day inactive purge (owner 2026-10-01). Swept by the clone-sweep timer.
-  purgeAfter          DateTime?
-  createdAt           DateTime     @default(now())
-  updatedAt           DateTime     @updatedAt
+  purgeAfter                DateTime?
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
 
   session HostedBrowserSession?
 
@@ -2855,24 +2866,24 @@ model GovernorQueueEntry {
 //     captured  = a real frame is on disk at filePath
 //     failed    = no frame; failureReason says why (offline, no_session, timeout)
 model DeviceScreenshot {
-  id            String    @id @default(cuid())
-  deviceId      String
+  id                 String    @id @default(cuid())
+  deviceId           String
   // Operational capture state, not an audit record — cascades with its device
   // and user (same reasoning as GovernorQueueEntry: a frame of a deleted
   // account's screen has nothing to preserve, and the file is deleted with it).
-  device        Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
-  userId        String
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  device             Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  userId             String
+  user               User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   // "capturing" | "captured" | "failed"
-  status        String    @default("capturing")
+  status             String    @default("capturing")
   // Path RELATIVE to the screenshot root — never absolute (so the root can move
   // without rewriting rows), and never the bytes themselves.
-  filePath      String?
-  bytes         Int?
-  width         Int?
-  height        Int?
+  filePath           String?
+  bytes              Int?
+  width              Int?
+  height             Int?
   // Why a failed capture failed — a stable machine-ish reason string.
-  failureReason String?
+  failureReason      String?
   // ---------------------------------------------------------------------
   // TASK_152 M3 — the per-frame SUMMARY (the owner's "summary section").
   //
@@ -2893,11 +2904,11 @@ model DeviceScreenshot {
   // imagePurgedAt = set by retention when the RAW image was deleted but the
   //                 SUMMARY was kept (purgeExpiredFrames: text outlives pixels
   //                 — deliberate and documented, not an accident).
-  summary       String?
-  summaryError  String?
-  summaryModel  String?
-  summarisedAt  DateTime?
-  imagePurgedAt DateTime?
+  summary            String?
+  summaryError       String?
+  summaryModel       String?
+  summarisedAt       DateTime?
+  imagePurgedAt      DateTime?
   // ---------------------------------------------------------------------
   // TASK_157 — the FREE TEXT LAYER (OCR), which is now the PRIMARY source
   // for a summary rather than a fallback.
@@ -2915,14 +2926,14 @@ model DeviceScreenshot {
   //
   // ocrText is deliberately NULLABLE and additive: a frame captured before this
   // column existed simply has null here and is rendered as before.
-  ocrText       String?
+  ocrText            String?
   // Set when the frame's text was read. Separate from ocrText's own emptiness
   // so "OCR ran and found nothing on a black screen" (ocrText = "") is
   // distinguishable from "OCR has not run yet" (null).
-  ocrAt         DateTime?
+  ocrAt              DateTime?
   // 0-100 OCR engine confidence, kept for the UI to explain a poor read and
   // for triage (a frame below ~40 is usually a blank/locked screen).
-  ocrConfidence Int?
+  ocrConfidence      Int?
   // TASK_152 M5 — set the moment this frame's summary has been CHECKED against
   // the owner's triggers (whether or not one fired). This is what makes the
   // trigger pass a one-shot work queue instead of re-scanning every summary on
@@ -2932,12 +2943,12 @@ model DeviceScreenshot {
   triggerEvaluatedAt DateTime?
   // The UTC day this frame belongs to, stamped at insert so Phase 2's daily
   // summary is one indexed range read instead of a timezone computation per row.
-  summaryDate   DateTime
+  summaryDate        DateTime
   // When the frame was actually TAKEN (set on completion, not on insert — the
   // row is created before the browser launches so it can hold the slot).
-  capturedAt    DateTime?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  capturedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   // Read paths that actually exist (TASK_107 discipline — index what is queried):
   //   the governor's live count    -> status ("capturing")
@@ -3003,29 +3014,29 @@ model ScreenshotRotationCursor {
 // device. A trigger belongs to the USER (it is their notification) and is
 // deleted with the account.
 model ScreenTrigger {
-  id       String  @id @default(cuid())
-  userId   String
-  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   // null = all of this user's monitored devices; set = this device only.
-  deviceId String?
-  device   Device? @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  deviceId        String?
+  device          Device?  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   // The word/phrase to look for in a frame summary. Stored trimmed; matched
   // case-insensitively as a plain substring (never a regex — a user-supplied
   // regex is a cost/DoS foot-gun and buys nothing for this version).
-  keyword  String
+  keyword         String
   // Optional human label used in the notification ("Balance shown"). Falls back
   // to the keyword when absent.
-  label    String?
+  label           String?
   // The per-trigger off switch, independent of the account master switch.
-  enabled  Boolean @default(true)
+  enabled         Boolean  @default(true)
   // Minimum minutes between two firings of THIS trigger on the SAME device.
   // Without this, a "balance" that stays on screen would fire on every capture.
   // Default 120 (2 hours); bounded 1..1440 at the API edge.
-  cooldownMinutes Int @default(120)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  cooldownMinutes Int      @default(120)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  states   ScreenTriggerState[]
+  states ScreenTriggerState[]
 
   @@index([userId])
   @@index([userId, enabled])
@@ -3167,21 +3178,21 @@ model DeviceOnboarding {
 // One row per (user, domain): the keypair we sign with, the exact record the
 // customer must publish, and whether the published value actually matches it.
 model SendingDomain {
-  id               String   @id @default(cuid())
-  userId           String
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                  String    @id @default(cuid())
+  userId              String
+  user                User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   // Lowercased registrable name ("acme.com"). Unique per user rather than
   // globally: two tenants can legitimately each send as a domain they
   // separately control, and the relay's KeyTable is addressed by the full
   // "<selector>._domainkey.<domain>" key name anyway.
-  domain           String
-  selector         String   @default("sw")
+  domain              String
+  selector            String    @default("sw")
   // "v=DKIM1; k=rsa; p=..." — the exact value to publish at
   // <selector>._domainkey.<domain>. Stored so verification can prove the value
   // that IS published matches the key we actually sign with: a stale or
   // mismatched record fails DKIM identically to "nothing published", and this
   // is the only way to tell those two apart.
-  publicKeyTxt     String
+  publicKeyTxt        String
   // The signing key itself, encrypted exactly like a mailbox password
   // (lib/mailbox-crypto, MAILBOX_ENCRYPTION_KEY). Stored so the key can be
   // re-installed after a relay rebuild or a failed install: without it, losing
@@ -3192,17 +3203,17 @@ model SendingDomain {
   // "pending" | "verified" | "invalid". DNS state only — see installedOnRelay
   // for the relay side, deliberately tracked separately so a later DNS lapse
   // cannot hide a key that is still installed (and vice versa).
-  status           String   @default("pending")
+  status              String    @default("pending")
   // True once the private key is on disk for OpenDKIM and listed in
   // KeyTable/SigningTable. A domain can be installed but not yet verified
   // (normal while DNS propagates) — signing then simply doesn't authenticate.
-  installedOnRelay Boolean  @default(false)
-  lastCheckedAt    DateTime?
+  installedOnRelay    Boolean   @default(false)
+  lastCheckedAt       DateTime?
   // One line per record ("DKIM: found; SPF: missing <ip>; DMARC: not found") so
   // the panel can say WHY a domain is not verified yet instead of a bare ✗.
-  lastCheckDetail  String?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  lastCheckDetail     String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
 
   @@unique([userId, domain])
   // Verification and the relay writer both look a domain up by name.
@@ -3269,44 +3280,44 @@ model AdminDeviceCommand {
 // above — this table never needs a User back-relation and adding one would edit
 // the User model for no gain.
 model HostedAsset {
-  id        String  @id @default(cuid())
-  userId    String
+  id                  String    @id @default(cuid())
+  userId              String
   // "file" today; "page" | "redirect" reserved for P2/P3.
-  kind      String  @default("file")
+  kind                String    @default("file")
   // The user's label / original filename (informational, shown in the list).
-  name      String
+  name                String
   // Opaque, url-safe public lookup key for GET /hf/<token>. __no secret__ — like
   // LinkRedirect.token, an unknown/expired/private token must 404 cleanly.
-  token     String  @unique
+  token               String    @unique
   // Optional friendly slug for the P2 short-link promotion (user-owned redirects).
-  slug      String? @unique
+  slug                String?   @unique
   // Which storage engine holds the bytes: "local" (our metal) | "cloudflare"
   // (Pages) | "external" (pluggable). The bytes' LOCATION is `storagePath`
   // (provider-relative) or `externalId` (a remote key); never both required.
-  provider  String  @default("local")
-  storagePath  String?
-  externalId   String?
+  provider            String    @default("local")
+  storagePath         String?
+  externalId          String?
   // Content hash — the acceptance anchor: sha256(before) == sha256(after) a rename.
-  sha256    String
-  bytes     Int
-  mime      String
+  sha256              String
+  bytes               Int
+  mime                String
   // The filename sent in Content-Disposition. THIS is what "rename" changes.
   dispositionFilename String
   // "public" | "private" — private needs an authorised (session) download path.
-  visibility String  @default("public")
+  visibility          String    @default("public")
   // "active" | "deleted" — soft delete so a mis-delete is recoverable + auditable.
-  status     String  @default("active")
-  expiresAt  DateTime?
+  status              String    @default("active")
+  expiresAt           DateTime?
   // Cached public URL (derived from HOSTING_PUBLIC_BASE_URL at upload time so a
   // host change does not silently rewrite already-handed-out links).
-  url        String?
-  downloadCount Int    @default(0)
+  url                 String?
+  downloadCount       Int       @default(0)
   // Cumulative bytes served (bandwidth). BIGINT: a 50 GB/month cap exceeds Int32.
-  bytesServed   BigInt @default(0)
-  uploadIp      String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  deletedAt     DateTime?
+  bytesServed         BigInt    @default(0)
+  uploadIp            String?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+  deletedAt           DateTime?
 
   @@index([userId, status])
   @@index([status, expiresAt])
@@ -3337,33 +3348,33 @@ model HostingUsageMonthly {
 // token to this row. A site is DARK until a revision is published: `liveToken`
 // is NULL and the live URL 404s.
 model HostingSite {
-  id        String  @id @default(cuid())
-  userId    String
+  id           String   @id @default(cuid())
+  userId       String
   // The user's label for the site (informational).
-  name      String
+  name         String
   // "local" | "cloudflare" — the §16.2 per-item engine.
-  engine    String  @default("local")
+  engine       String   @default("local")
   // The BYO/platform credential used for a cloudflare site (NULL = platform
   // account). Immutable once the site has a published revision.
   credentialId String?
   // Opaque preview lookup key for GET /pv/<token>/… . Minted at creation so the
   // first deploy can preview immediately. Never a secret.
-  previewToken String @unique
+  previewToken String   @unique
   // Opaque LIVE lookup key for GET /hs/<token>/… . NULL until the first publish —
   // that is what makes a site "not live yet".
-  liveToken    String? @unique
+  liveToken    String?  @unique
   // "draft" | "previewed" | "published" | "failed" — a coarse site state; the
   // per-revision state machine lives on HostingRevision.
-  status    String  @default("draft")
+  status       String   @default("draft")
   // Cloudflare project name for a premium site (slugified from `name`), NULL for
   // a local site. Used by the Pages REST client.
-  cfProject String?
+  cfProject    String?
   // The live deployment URL (a *.pages.dev URL for premium, the /hs/<token> URL
   // for local) — cached so the UI can show it without recomputing.
-  liveUrl   String?
-  previewUrl String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  liveUrl      String?
+  previewUrl   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([userId, status])
 }
@@ -3380,42 +3391,42 @@ model HostingSite {
 // already uploaded. `storagePath` is the extracted staging tree on our metal
 // (provider-relative), used by the local engine to serve preview/live.
 model HostingRevision {
-  id        String  @id @default(cuid())
-  siteId    String
-  userId    String
+  id             String    @id @default(cuid())
+  siteId         String
+  userId         String
   // "uploaded" | "extracted" | "previewed" | "published" | "rejected" | "expired"
   // (the §16.1 state machine).
-  state     String  @default("uploaded")
+  state          String    @default("uploaded")
   // The original archive filename the user dropped (informational).
-  archiveName String?
+  archiveName    String?
   // Bytes of the uploaded archive.
-  archiveBytes Int    @default(0)
+  archiveBytes   Int       @default(0)
   // Extracted file count + total extracted bytes (what the quota counts).
-  fileCount Int    @default(0)
-  bytes     BigInt @default(0)
+  fileCount      Int       @default(0)
+  bytes          BigInt    @default(0)
   // Path→hash manifest (Json) — see the model comment.
-  manifest  Json?
+  manifest       Json?
   // Where the extracted tree lives on our metal (local engine).
-  storagePath String?
+  storagePath    String?
   // Cloudflare deployment id + its URL (premium engine).
   cfDeploymentId String?
-  cfUrl     String?
+  cfUrl          String?
   // The revision's own preview token (local engine serves /pv/<token>/…), so each
   // revision previews independently.
-  previewToken String @unique
+  previewToken   String    @unique
   // When it was published to live (NULL until published).
-  publishedAt DateTime?
+  publishedAt    DateTime?
   // When an unpublished preview expires (swept by a later job).
-  expiresAt DateTime?
+  expiresAt      DateTime?
   // §16.6 heavy-load metrics, recorded so the later resource-governor task can
   // see and shape the load. peakRssMb is best-effort (the shell-out's own report).
-  entries   Int    @default(0)
-  durationMs Int   @default(0)
-  peakRssMb Int    @default(0)
+  entries        Int       @default(0)
+  durationMs     Int       @default(0)
+  peakRssMb      Int       @default(0)
   // Why a revision was rejected (plain language), NULL when fine.
-  rejection String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  rejection      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   @@index([siteId, state])
   @@index([userId, createdAt])
@@ -3428,24 +3439,23 @@ model HostingRevision {
 // so the LATER resource-governor task has real numbers to shape (A8: build first,
 // update the governor later — this run does NOT touch lib/resource-governor.ts).
 model HostingJob {
-  id        String   @id @default(cuid())
-  userId    String
-  siteId    String?
+  id             String    @id @default(cuid())
+  userId         String
+  siteId         String?
   // "extract" | "deploy" | "upload".
-  kind      String
+  kind           String
   // "running" | "done" | "failed".
-  status    String   @default("running")
-  bytesProcessed BigInt @default(0)
-  entries   Int      @default(0)
-  durationMs Int     @default(0)
-  peakRssMb Int      @default(0)
-  error     String?
-  startedAt DateTime @default(now())
-  finishedAt DateTime?
+  status         String    @default("running")
+  bytesProcessed BigInt    @default(0)
+  entries        Int       @default(0)
+  durationMs     Int       @default(0)
+  peakRssMb      Int       @default(0)
+  error          String?
+  startedAt      DateTime  @default(now())
+  finishedAt     DateTime?
 
   @@index([userId, status])
 }
-
 
 // ===========================================================================
 // TASK_156 C1 — the Cyber Lab schema (PLAN_TASK_156 §6, extended by §12.1/§12.8).
@@ -3514,11 +3524,11 @@ model LabScenario {
 // §6 — one run instance of a scenario (the "range"): the pending→provisioning→active
 // →tearing_down→torn_down|failed state machine, with a hard TTL and a verified teardown.
 model LabRange {
-  id                 String   @id @default(cuid())
+  id                 String    @id @default(cuid())
   userId             String
   scenarioId         String
   // pending | provisioning | active | tearing_down | torn_down | failed.
-  state              String   @default("pending")
+  state              String    @default("pending")
   ttlExpiresAt       DateTime?
   // The LabConsent row in force when this run started (provenance for the audit).
   consentId          String?
@@ -3529,8 +3539,8 @@ model LabRange {
   // Set only when a teardown was VERIFIED (§8.5); a failed teardown raises an incident.
   teardownVerifiedAt DateTime?
   error              String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@index([userId, state])
   @@index([state, ttlExpiresAt])
@@ -3541,20 +3551,20 @@ model LabRange {
 // `kind` is "host" | "network" | "url" | "domain" | "email" — the last two are the
 // §12.2/§12.3 email + DNS classes the owner's addendum added.
 model LabTarget {
-  id            String   @id @default(cuid())
-  userId        String
-  rangeId       String?
-  kind          String
-  value         String
-  attestedAt    DateTime @default(now())
-  attestationId String?
+  id             String   @id @default(cuid())
+  userId         String
+  rangeId        String?
+  kind           String
+  value          String
+  attestedAt     DateTime @default(now())
+  attestationId  String?
   // TASK_156B C2b (PLAN §13.5) — which of the user's OWN Device rows this
   // attested address came from ("pick from your devices"). Nullable: targets
   // may also be typed by hand (a UTM guest, a web app they own). Validated at
   // attest time (owner match, not hosted, not removed) — never trusted from
   // the client. Pure traceability; nothing in pre-flight depends on it.
   sourceDeviceId String?
-  createdAt     DateTime @default(now())
+  createdAt      DateTime @default(now())
 
   @@unique([userId, kind, value])
   @@index([userId])
@@ -3586,16 +3596,16 @@ model LabEpisode {
 // §6 — one finding from an episode, with a self-relation so a RETEST can point at the
 // finding it re-tests (retest tracking without a second table).
 model LabFinding {
-  id          String    @id @default(cuid())
-  episodeId   String
-  userId      String
-  severity    String
-  title       String
-  detail      String?
+  id         String    @id @default(cuid())
+  episodeId  String
+  userId     String
+  severity   String
+  title      String
+  detail     String?
   // The finding this one re-tests (NULL = an original finding).
-  retestOf    String?
-  exportedAt  DateTime?
-  createdAt   DateTime  @default(now())
+  retestOf   String?
+  exportedAt DateTime?
+  createdAt  DateTime  @default(now())
 
   @@index([episodeId])
   @@index([retestOf])
@@ -3636,17 +3646,17 @@ model LabConsent {
 // §5.2 — the abuse sentinel's output: a refusal/anomaly becomes a report, the admin is
 // notified, and the account may auto-freeze. Append-only; the status is the review state.
 model LabAbuseReport {
-  id               String    @id @default(cuid())
-  userId           String
-  rangeId          String?
-  reason           String
-  evidenceJson     Json?
-  severity         String    @default("low")
+  id                String    @id @default(cuid())
+  userId            String
+  rangeId           String?
+  reason            String
+  evidenceJson      Json?
+  severity          String    @default("low")
   // open | frozen | cleared.
-  status           String    @default("open")
+  status            String    @default("open")
   reviewedByAdminId String?
-  createdAt        DateTime  @default(now())
-  reviewedAt       DateTime?
+  createdAt         DateTime  @default(now())
+  reviewedAt        DateTime?
 
   @@index([userId, status])
   @@index([status, createdAt])
@@ -3661,16 +3671,16 @@ model LabAbuseReport {
 // "all" — NOT a role gate. `legalBasis` is the plain-language reason we may run it
 // (every row carries one; email/DNS rows additionally carry an allow-list check).
 model LabToolCatalog {
-  id           String    @id @default(cuid())
+  id                 String    @id @default(cuid())
   // The upstream capability this row describes, e.g. "nmap", "nuclei", "caldera".
-  slug         String    @unique
-  name         String
+  slug               String    @unique
+  name               String
   // The lab class it serves: "email" | "dns" | "server" | "network".
-  klass        String
+  klass              String
   // "offensive" | "defensive" — the §5 matrix's Gate column reads off this.
-  kind         String
+  kind               String
   // ATT&CK technique id(s) this capability exercises (Json array of strings).
-  techniqueIds Json?
+  techniqueIds       Json?
   // The upstream version pinned at last review + when that version was released.
   upstreamVersion    String?
   upstreamReleasedAt DateTime?
@@ -3680,17 +3690,17 @@ model LabToolCatalog {
   // back to `now + AdminSetting.cyberlabToolStaleAfterDays` when a row is minted.
   staleAfter         DateTime?
   // CVE history (Json array) + SPDX-ish licence id.
-  cveHistory   Json?
-  licence      String?
+  cveHistory         Json?
+  licence            String?
   // Which real-world campaigns/APT reports used it in the last 12–18 months.
-  derivation   String?
+  derivation         String?
   // §12.9 — an AUDIENCE label, not a role gate.
-  audience     String    @default("staff")
+  audience           String    @default("staff")
   // Why we may run it (the §5 legal-basis note; not optional).
-  legalBasis   String
-  enabled      Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  legalBasis         String
+  enabled            Boolean   @default(true)
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@index([klass, kind])
   @@index([enabled, staleAfter])
@@ -3726,31 +3736,31 @@ model LabToolCatalog {
 // `apex` is always stored normalised lower-case by the registry before insert.
 // ---------------------------------------------------------------------------
 model UserDomain {
-  id          String   @id @default(cuid())
+  id           String   @id @default(cuid())
   // The registrable apex, lower-cased: "example.com". UNIQUE across the whole
   // platform — two users can never claim the same apex, which is what stops one
   // user from taking a domain that belongs to another (or to the platform).
-  apex        String   @unique
+  apex         String   @unique
   // A user-facing label, defaulting to the apex.
-  label       String   @default("")
+  label        String   @default("")
   // --- THE OWNERSHIP BOUNDARY. "user" = that user owns it; "platform" = ours.
-  ownerKind   String   @default("user")
+  ownerKind    String   @default("user")
   // Set ONLY when ownerKind = "user". NULL for a platform domain. Access checks
   // compare BOTH fields together: a domain is readable by user U iff
   // ownerKind = "user" AND ownerUserId = U. Never trust ownerKind alone.
-  ownerUserId String?
+  ownerUserId  String?
   // How the domain entered the system:
   //   "byo"        — the user pointed us at their own Cloudflare account
   //   "registrar"  — bought through the external merchant (planned)
   //   "manual"     — added by an admin on the user's behalf
-  source      String   @default("byo")
+  source       String   @default("byo")
   // The merchant's own identifier for this purchase (order/registration id), so a
   // later sync can match rows without guessing. NULL for BYO/manual.
-  externalRef String?
+  externalRef  String?
   // The Cloudflare zone id once we know it. NULL until Cloudflare reports one —
   // for a registrar domain that has not been pushed yet, and for "not yet added to
   // the user's Cloudflare account".
-  zoneId      String?
+  zoneId       String?
   // "pending" (registered/added, not yet usable) | "active" | "error".
   // A pending domain is listed but NOT selectable — publishing onto it would fail.
   //
@@ -3760,22 +3770,21 @@ model UserDomain {
   // database CHECK refuses any value outside this set, which is why the collapse has
   // to happen first — an unnormalised "initializing" would fail the write and the
   // domain would then never update again.
-  status      String   @default("pending")
+  status       String   @default("pending")
   // The two Cloudflare-assigned nameservers, JSON array. Shown to the user so they
   // can set them at their registrar. NULL until Cloudflare assigns them.
-  nameservers String?
+  nameservers  String?
   // The BYO credential this domain is reachable through, when source = "byo".
   // NULL for registrar domains (those use the platform's own account/merchant).
   credentialId String?
   // Plain-language status detail for the UI. Never contains a token.
-  note        String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   @@index([ownerKind, ownerUserId])
   @@index([ownerUserId, status])
 }
-
 
 // ---------------------------------------------------------------------------
 // TASK_159 — SUPPORT TICKETS. Scope: PLAN_TASK_159_SUPPORT_TICKETS.md.
@@ -3907,19 +3916,19 @@ model SupportMessage {
 // naming evolves, and tier is what the grant path actually consumes. Writers set
 // both SERVER-side from the plan constant; neither ever comes from a request body.
 model PremiumInvoice {
-  id         String    @id @default(cuid())
-  userId     String
+  id        String @id @default(cuid())
+  userId    String
   // Restrict, not Cascade: an invoice is payment evidence — deleting a user must
   // REFUSE rather than silently destroy the record of money owed/paid.
-  user       User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user      User   @relation(fields: [userId], references: [id], onDelete: Restrict)
   // "premium_plus" (tier 5 — every web module) | "premium_xdevice" (tier 3 —
   // devices only) | "cyberlab" (SENTINEL tier 6 — the standalone add-on: its
   // settlement grants the module entitlement, never a User.tier). Pinned with
   // a CHECK in the migration: an unknown plan would grant the wrong tier, so
   // unlike SupportTicket.status this one is CLOSED.
-  plan       String
-  tier       Int // 3 | 5 | 6 — derived from plan, stored for self-description
-  amountUsd  Float // admin-editable before send AND while open (validated > 0)
+  plan      String
+  tier      Int // 3 | 5 | 6 — derived from plan, stored for self-description
+  amountUsd Float // admin-editable before send AND while open (validated > 0)
   // TASK_187 S3 (MONEY) — admin-override term for THIS invoice, in days.
   // NULL = the standard term (PREMIUM_DAYS_PER_CHARGE), so every pre-TASK_187
   // row keeps its meaning without a backfill. Set only from the admin support
@@ -3927,28 +3936,28 @@ model PremiumInvoice {
   // settleLinkedInvoice at approval time, and NEVER selected into any
   // user-facing read — the customer sees plan + amount, never the term
   // (TASK_181 wording rule).
-  days       Int?
+  days      Int?
   // "open" (awaiting payment) | "paid" (admin settled it). String, not enum —
   // same house convention as SupportTicket.status; readers treat ONLY "paid"
   // as settled, anything else renders as awaiting payment.
-  status     String    @default("open")
+  status    String @default("open")
   // SNAPSHOT of the configured payout addresses ({btc, usdt_trc20, usdt_erc20})
   // taken when the invoice was sent — the user must be able to pay the invoice
   // they were shown even if the admin later rotates an address. Json because the
   // set of chains is a product decision, not a schema decision.
-  methods    Json
+  methods   Json
 
-  createdAt  DateTime  @default(now())
-  updatedAt  DateTime  @updatedAt
-  paidAt     DateTime? // set exactly once when status flips to "paid"
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  paidAt    DateTime? // set exactly once when status flips to "paid"
+  // TASK_184 B4 — payments that settle this invoice (0..n; the ref is optional
+  // on submit). Lives on Payment.invoiceId; back-relation kept for queries.
+  payments  Payment[]
 
   // The billing-page read: this user's invoices, newest first.
   @@index([userId, createdAt])
   // The "one open invoice per user" guard + admin queue views.
   @@index([userId, status])
-  // TASK_184 B4 — payments that settle this invoice (0..n; the ref is optional
-  // on submit). Lives on Payment.invoiceId; back-relation kept for queries.
-  payments    Payment[]
 }
 
 // ===========================================================================
@@ -4046,3 +4055,86 @@ model AuditFinding {
   @@index([verdict])
 }
 
+// ---------------------------------------------------------------------------
+// Device scripts (2026-10-22)
+//
+// A saved command body the user can run on one device, on many devices, at a
+// chosen time, or automatically a fixed delay after a PUBLIC device enrolls.
+// Execution always goes through the SAME transport the console's Run-now uses
+// (lib/device-tools.ts runCommandNow -> Vantra /action): Vantra decides whether
+// the row is a TRMM (private) or Everwas (public) agent, so one script works on
+// both tiers without the UI knowing the difference.
+// ---------------------------------------------------------------------------
+
+model DeviceScript {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String
+  description    String?
+  // "powershell" | "cmd" — validated at the API edge, not an enum: the wire
+  // values are shared with Vantra/Everwas and a DB enum would need a migration
+  // every time a shell is added.
+  shell          String    @default("powershell")
+  body           String
+  timeoutSeconds Int       @default(90)
+  archivedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  runs      DeviceScriptRun[]
+  autoRules DeviceScriptAutoRule[]
+
+  @@index([userId, archivedAt])
+}
+
+model DeviceScriptRun {
+  id           String                @id @default(cuid())
+  scriptId     String?
+  script       DeviceScript?         @relation(fields: [scriptId], references: [id], onDelete: SetNull)
+  userId       String
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  deviceId     String
+  device       Device                @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  // "manual" | "scheduled" | "auto_enroll"
+  trigger      String                @default("manual")
+  // Set for scheduled/auto runs. The sweep dispatches a queued run once this
+  // is in the past; manual "Run now" leaves it null and dispatches inline.
+  scheduledFor DateTime?
+  // "queued" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
+  status       String                @default("queued")
+  startedAt    DateTime?
+  finishedAt   DateTime?
+  exitCode     Int?
+  output       String?
+  error        String?
+  autoRuleId   String?
+  autoRule     DeviceScriptAutoRule? @relation(fields: [autoRuleId], references: [id], onDelete: SetNull)
+  createdAt    DateTime              @default(now())
+
+  // One auto fire per (rule, device): the unique key is what makes the
+  // enrollment trigger idempotent across concurrent syncs and re-syncs.
+  // Postgres allows many NULLs, so manual/scheduled runs are unaffected.
+  @@unique([autoRuleId, deviceId])
+  @@index([userId, createdAt])
+  @@index([status, scheduledFor])
+}
+
+model DeviceScriptAutoRule {
+  id           String       @id @default(cuid())
+  userId       String
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scriptId     String
+  script       DeviceScript @relation(fields: [scriptId], references: [id], onDelete: Cascade)
+  // "public" (the owner's ask: 10 minutes after a PUBLIC device enrolls) or
+  // "any" (both public and private companions).
+  targetTier   String       @default("public")
+  delayMinutes Int          @default(10)
+  enabled      Boolean      @default(true)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  runs DeviceScriptRun[]
+
+  @@index([userId, enabled])
+}

@@ -629,6 +629,10 @@ export async function cancelQueuedCommand(opts: {
 export interface RunNowResult {
   output: string | null;
   ranAt: Date;
+  // 2026-10-22 — additive: Vantra's Everwas `cmd` branch reports the agent's
+  // real exit code (TRMM /action does not), so a script run can be marked
+  // failed on a non-zero exit instead of "succeeded with output".
+  exitCode?: number | null;
 }
 
 export interface PingResult {
@@ -1101,7 +1105,11 @@ export async function runCommandNow(opts: {
     // mesh-cmd-output.ts). The sweep sends neither field → its body is
     // byte-identical to TASK_230/233 (pin 10).
     const meshOnly = isMeshOnlyDevice(device.vantraAgentId);
-    const { output } = await vantraFetch<{ ok: boolean; output: string | null }>(
+    const { output, exit_code } = await vantraFetch<{
+      ok: boolean;
+      output: string | null;
+      exit_code?: number | null;
+    }>(
       `/api/internal/sw/devices/${encodeURIComponent(device.vantraAgentId)}${meshOnly ? "/runmesh" : "/action"}`,
       {
         method: "POST",
@@ -1126,7 +1134,7 @@ export async function runCommandNow(opts: {
       sourceDeviceId: device.id,
       detail: { shell, timeoutSeconds, output: output?.slice(0, 2000) ?? null },
     });
-    return { output: output ?? null, ranAt: new Date() };
+    return { output: output ?? null, ranAt: new Date(), exitCode: exit_code ?? null };
   } catch (err) {
     await recordAgentActionAudit({
       userId: opts.userId,
