@@ -56,6 +56,10 @@ interface LinkRow {
   installerUrl: string | null;
   installerNamesJson: string | null;
   installerKind: string | null;
+  // TASK_EVERWAS_PUBLIC_REPLACE — the stored silent PowerShell command and
+  // its own (1-year) expiry, minted for Everwas public links only.
+  everwasPsCommand: string | null;
+  everwasPsExpiresAt: Date | null;
 }
 
 interface DbArgs {
@@ -94,8 +98,16 @@ let audits: AuditCall[];
 let fetches: FetchCall[];
 let findFirstWhere: Record<string, unknown>[];
 // `command` is set by the TASK_178 public-vbs tests (an older Vantra answers
-// without it — the deploy-order guard).
-let mintResponse: { ok: boolean; downloadUrl: string; command?: string };
+// without it — the deploy-order guard). The Everwas fields answer a
+// provider:"everwas" mint (the silent-PS generator's four inputs).
+let mintResponse: {
+  ok: boolean;
+  downloadUrl: string;
+  command?: string;
+  provider?: string;
+  token?: string;
+  serverUrl?: string;
+};
 // Route-level (the API boundary): mutable so each test sets its own scenario.
 let sessionValue: { userId: string } | null;
 interface RouteMintCall {
@@ -158,6 +170,8 @@ beforeEach(() => {
     installerUrl: null,
     installerNamesJson: null,
     installerKind: null,
+    everwasPsCommand: null,
+    everwasPsExpiresAt: null,
   };
   dbUpdates = [];
   audits = [];
@@ -478,7 +492,10 @@ function installRequireHook(): void {
     if (from.endsWith("/app/link/vantra/[token]/route.ts")) {
       if (request === "next/server") return { NextResponse: FakeNextResponse };
       if (request === "@/lib/vantra-link") {
-        return { resolveInstallToken, resolveVbsInstallToken };
+        // TASK_EVERWAS_PUBLIC_REPLACE — the route asks THREE resolvers in
+        // order (vbs → everwas → redirect); the stub must carry all three
+        // REAL ones or the missing member throws into the route's 502 catch.
+        return { resolveInstallToken, resolveVbsInstallToken, resolveEverwasInstallToken };
       }
     }
     return original.call(this, request, parent, isMain);
@@ -541,6 +558,10 @@ const {
   // handed to the route stubs below as the REAL implementations.
   mintPublicVbsLink: realMintPublicVbsLink,
   resolveVbsInstallToken,
+  // TASK_EVERWAS_PUBLIC_REPLACE — the Everwas open-time resolver, same
+  // principle: the wrapper-route stub below hands the REAL one over, so the
+  // GET tests below are about the route's OWN resolver ordering.
+  resolveEverwasInstallToken,
   MAX_LINK_PDF_BYTES: realMaxLinkPdfBytes,
   // TASK_224 — the delete path, same principle: the route stub below hands it
   // over as the REAL implementation (fake db + audit recorder already in
@@ -2158,6 +2179,222 @@ test("TASK_224: the delete audit carries the action and NEVER the URL or token",
   const dump = JSON.stringify(created[0]);
   assert.doesNotMatch(dump, /link\/vantra\//, "the wrapper URL IS the token — it must never reach the audit");
   assert.ok(!dump.includes(token), "nor the raw token, in any field");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_EVERWAS_PUBLIC_REPLACE — a PUBLIC Everwas link serves the silent
+// PowerShell install command (resolveEverwasInstallToken), never a 302 to
+// the raw agent .exe (resolveInstallToken). The defect: the history row was
+// minted with kind "exe", so the open fell through both earlier resolvers
+// and redirected to the .exe — no --server/--token, no enrollment.
+//
+// All values FAKE; the unit under test is the real lib/vantra-link.ts.
+// ---------------------------------------------------------------------------
+
+const EVERWAS_EXE_URL = "https://dl.spaceworker.test/everwas-agent.exe";
+const EVERWAS_SERVER = "https://ew.example.test";
+const EVERWAS_AGENT_TOKEN = "ew-org-token-abc123";
+
+/** Vantra's Everwas mint answer — provider + the generator's four inputs. */
+function answerEverwasMint(): void {
+  mintResponse = {
+    ok: true,
+    provider: "everwas",
+    token: EVERWAS_AGENT_TOKEN,
+    downloadUrl: EVERWAS_EXE_URL,
+    serverUrl: EVERWAS_SERVER,
+  };
+}
+
+/**
+ * A live Everwas link exactly as the FIXED mint leaves it (both rows kind
+ * "everwas"). The stored command deliberately STILL carries `--silent`: rows
+ * minted by the old generator are live for a year, so the serve-time strip
+ * has to reach them — this is that shape.
+ */
+function seedEverwasLink(): string {
+  const token = "b".repeat(48);
+  const command = [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+    `$exe = Join-Path $env:TEMP 'everwas-agent.exe'`,
+    `Invoke-WebRequest -Uri "${EVERWAS_EXE_URL}" -OutFile $exe -UseBasicParsing`,
+    `Start-Process -FilePath $exe -ArgumentList 'install','--server','${EVERWAS_SERVER}','--token','${EVERWAS_AGENT_TOKEN}','--silent' -WindowStyle Hidden -Wait`,
+    "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
+    "'Everwas agent installed.'",
+  ].join("\n");
+  const tokenHash = createHash("sha256").update(token).digest("hex");
+  row.installTokenHash = tokenHash;
+  row.installTokenExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000);
+  row.installerUrl = EVERWAS_EXE_URL;
+  row.installerKind = "everwas";
+  row.everwasPsCommand = command;
+  row.everwasPsExpiresAt = new Date(Date.now() + 8760 * 60 * 60 * 1000);
+  row.status = "ready";
+  mintRows.push({
+    id: `mint-${mintRows.length + 1}`,
+    userId: USER_ID,
+    tokenHash,
+    publicUrl: `https://spaceworker.test/link/vantra/${token}`,
+    expiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
+    installerUrl: EVERWAS_EXE_URL,
+    installerKind: "everwas",
+    installerNamesJson: null,
+    installerPayloadJson: null,
+    downloadCount: 0,
+    createdAt: new Date(),
+  });
+  return token;
+}
+
+test("TASK_EVERWAS mint: both rows persist kind 'everwas'; the command is stored; the view/audit never leak the .exe URL", async () => {
+  answerEverwasMint();
+  const view = await mintInstallLink(USER_ID, "public");
+  // (a) the current-link pointer row.
+  assert.equal(row.installerKind, "everwas");
+  assert.equal(row.installerUrl, EVERWAS_EXE_URL, "server-only, exactly as before");
+  assert.ok(row.everwasPsCommand, "the silent command is stored for serve time");
+  assert.ok(String(row.everwasPsCommand).includes("--server"), "with the enroll server");
+  assert.ok(String(row.everwasPsCommand).includes(`--token','${EVERWAS_AGENT_TOKEN}'`), "and the enroll token");
+  assert.ok(!String(row.everwasPsCommand).includes("--silent"), "the fatal flag never ships");
+  assert.ok(row.everwasPsExpiresAt instanceof Date, "the command's own 1-year TTL");
+  // (b) the history row must AGREE — kind "exe" here was the defect.
+  assert.equal(mintCreates.length, 1, "one mint ⇒ one history row");
+  assert.equal(mintCreates[0].installerKind, "everwas");
+  assert.equal(mintRows[0].installerKind, "everwas");
+  assert.equal(mintCreates[0].installerUrl, EVERWAS_EXE_URL, "the row remembers the artifact — still server-only");
+  // (c) nothing raw leaves the module.
+  assert.ok(!("installerUrl" in view), "installerUrl is not part of the view model");
+  const serialised = JSON.stringify(view);
+  assert.ok(!serialised.includes(EVERWAS_EXE_URL), "the .exe URL must never be serialised");
+  assert.ok(!serialised.includes("everwasPsCommand"), "nor the stored command");
+  assert.ok(!serialised.includes(EVERWAS_AGENT_TOKEN), "nor the enrollment token");
+  // The panel's kind union knows zip/exe/vbs — an Everwas row maps to null,
+  // never misread as "exe".
+  assert.equal(view.installLinks[0].installerKind, null);
+  const audit = audits.find((a) => a.action === "vantra_install_link_minted");
+  assert.ok(audit, "the mint audit row is untouched");
+  assert.deepEqual(audit.detail, { orgId: ORG_ID }, "audit detail stays { orgId }");
+});
+
+test("TASK_EVERWAS GET: a freshly minted Everwas token serves everwas-install.ps1 (200), never a 302 to the .exe", async () => {
+  answerEverwasMint();
+  await mintInstallLink(USER_ID, "public");
+  const res = await getLink(lastMintToken());
+  assert.equal(res.status, 200, "the command IS the artifact — served, not redirected");
+  const headers = res.headers ?? {};
+  assert.equal(headers["Content-Type"], "application/octet-stream");
+  assert.equal(
+    headers["Content-Disposition"],
+    `attachment; filename="everwas-install.ps1"; filename*=UTF-8''everwas-install.ps1`,
+    "ASCII fallback + RFC 5987 name",
+  );
+  assert.equal(headers["Cache-Control"], "no-store");
+  assert.equal(headers["X-Content-Type-Options"], "nosniff");
+  assert.equal(res.headers?.location, undefined, "NOT a 302");
+  const content = String(res.body);
+  assert.equal(headers["Content-Length"], String(Buffer.byteLength(content)));
+  assert.equal(content, (await resolveEverwasInstallToken(lastMintToken()))!.content, "same command, byte for byte");
+  assert.ok(
+    content.includes(`ArgumentList 'install','--server','${EVERWAS_SERVER}','--token','${EVERWAS_AGENT_TOKEN}'`),
+    "the enroll argv is what the agent needs",
+  );
+  assert.ok(!content.includes("--silent"), "the Everwas agent has no such flag");
+  assert.ok(content.includes(EVERWAS_EXE_URL), "the command downloads the agent itself — that is the artifact");
+});
+
+test("TASK_EVERWAS GET: an already-minted 'everwas' history row resolves at SERVE time (no re-mint, silent stripped)", async () => {
+  // The serve-time path: rows a previous process left behind — both carry
+  // kind "everwas", and the stored command still bakes the fatal --silent
+  // (pre-removal generator). The open must serve the REPAIRED command and
+  // never fall through to resolveInstallToken's .exe redirect.
+  const token = seedEverwasLink();
+  const callsBefore = fetches.length;
+  const served = await getLink(token);
+  assert.equal(served.status, 200);
+  const content = String(served.body);
+  assert.ok(content.includes(`--server','${EVERWAS_SERVER}'`), "the stored command is served");
+  assert.ok(!content.includes("--silent"), "the serve-time strip repairs old rows");
+  assert.equal(fetches.length, callsBefore, "serve time never calls Vantra — the command is already on the row");
+  assert.equal(mintRows[0].downloadCount, 0, "the Everwas path has no separate download to count");
+  // The invariant, at the resolver level too.
+  assert.equal(await resolveInstallToken(token), null, "resolveInstallToken never answers an everwas row");
+});
+
+test("TASK_EVERWAS expiry: past everwasPsExpiresAt the token resolves nowhere (null / 410)", async () => {
+  answerEverwasMint();
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  assert.ok(await resolveEverwasInstallToken(token), "precondition: the live link serves");
+  row.everwasPsExpiresAt = new Date(Date.now() - 1000);
+  assert.equal(await resolveEverwasInstallToken(token), null, "the command's own TTL wins");
+  // The history row's 72 h window is NOT the Everwas TTL: even a live
+  // history row must not resurrect an expired command via the .exe path.
+  assert.equal(await resolveInstallToken(token), null, "the .exe fallback stays closed");
+  assert.equal((await getLink(token)).status, 410);
+});
+
+test("TASK_EVERWAS revocation: a revoked owner's Everwas token resolves nowhere (410)", async () => {
+  answerEverwasMint();
+  await mintInstallLink(USER_ID, "public");
+  const token = lastMintToken();
+  assert.ok(await resolveEverwasInstallToken(token), "precondition: the live link serves");
+  row.status = "revoked";
+  assert.equal(await resolveEverwasInstallToken(token), null);
+  assert.equal(await resolveInstallToken(token), null, "revoke kills the .exe path too");
+  assert.equal((await getLink(token)).status, 410);
+});
+
+test("TASK_EVERWAS delete: a deleted Everwas history token resolves NOWHERE — both resolver paths 404 (no zombie)", async () => {
+  answerEverwasMint();
+  await mintInstallLink(USER_ID, "public");
+  const oldToken = lastMintToken();
+  await mintInstallLink(USER_ID, "public"); // pointer moves to the newest token
+  assert.notEqual(lastMintToken(), oldToken);
+  // The Everwas command lives ONLY on the pointer row (one stored column):
+  // once the pointer moves, the old token resolves nowhere — its history row
+  // carries kind "everwas" + the server-only .exe URL, and the .exe is NEVER
+  // the artifact. (Zip/vbs history rows keep serving old tokens because
+  // their artifact is re-mintable/re-generable from the row; the Everwas
+  // command is not persisted per-mint, so fail-closed 410 beats a broken
+  // redirect.)
+  assert.equal(await resolveEverwasInstallToken(oldToken), null, "no stale command is ever served");
+  assert.equal(await resolveInstallToken(oldToken), null, "and the .exe fallback stays closed");
+  const older = mintRows[0];
+  assert.equal(older.installerKind, "everwas");
+  const res = await del(older.id);
+  assert.equal(res.status, 200);
+  assert.equal(mintRows.length, 1, "the fake delegate must really delete");
+  // After the delete: still nowhere through either resolver (no zombie).
+  assert.equal(await resolveEverwasInstallToken(oldToken), null);
+  assert.equal(await resolveInstallToken(oldToken), null);
+  assert.equal((await getLink(oldToken)).status, 410);
+  // The current link is untouched by the delete.
+  assert.equal((await getLink(lastMintToken())).status, 200, "the survivor still serves");
+});
+
+test("TASK_EVERWAS regression: non-Everwas mints keep kind exe/zip and still 302 to their installerUrl", async () => {
+  // exe: a names-less non-Everwas mint must never store "everwas".
+  mintResponse = { ok: true, downloadUrl: RAW_EXE_URL };
+  await mintInstallLink(USER_ID, "public");
+  const exeToken = lastMintToken();
+  assert.equal(row.installerKind, "exe", "the pointer row is untouched off-Everwas");
+  assert.equal(mintRows[0].installerKind, "exe", "the history row is untouched off-Everwas");
+  assert.equal(row.everwasPsCommand, null, "no command is stored off-Everwas");
+  const exeRes = await getLink(exeToken);
+  assert.equal(exeRes.status, 302, "exe rows still redirect");
+  assert.equal(exeRes.headers?.location, RAW_EXE_URL);
+  // zip: the names branch keeps its kind and its byte-identical redirect
+  // (the vbs carrier + unknown/malformed 410s stay covered by the TASK_179
+  // GET tests above, which run through the same route).
+  mintResponse = { ok: true, downloadUrl: RAW_URL };
+  await mintInstallLink(USER_ID, "public", { zipName: "TaxReturn.zip" });
+  const zipToken = lastMintToken();
+  assert.equal(mintRows[1].installerKind, "zip");
+  const zipRes = await getLink(zipToken);
+  assert.equal(zipRes.status, 302, "zip rows still redirect");
+  assert.equal(zipRes.headers?.location, RAW_URL);
 });
 
 

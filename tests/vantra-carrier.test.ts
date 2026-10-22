@@ -12,6 +12,8 @@ import {
   renderVantraCarrierFromScript,
   normalizePowerShellCommand,
   ensureSilentEnroll,
+  isEverwasInstallCommand,
+  stripEverwasSilentFlag,
   PS_PREFIX,
   PS_FLAGS,
   RUN_PREFIX,
@@ -495,5 +497,109 @@ test("TASK_232b: the mesh command normalizes + renders through the VBS carrier e
   for (const line of vbs.split("\n")) {
     assert.ok(line.length <= 1023, `line over budget (${line.length})`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// TASK_EVERWAS_PUBLIC_REPLACE — the Everwas public install command.
+//
+// The bug this pins: the carrier shipped
+//
+//   Start-Process … -ArgumentList 'install','--server','…','--token','…','--silent'
+//
+// and the Everwas agent is a Go program whose `install` subcommand defines
+// only --server/--token/--path/--skip-service/--force. Go's `flag` package
+// treats an undefined flag as FATAL:
+//
+//   flag provided but not defined: -silent
+//   # exit 2 — nothing installed, nothing enrolled
+//
+// So the carrier's install step died on the flag and enrolled nothing, while
+// the carrier itself reported success.
+// ---------------------------------------------------------------------------
+
+/** The Everwas command exactly as the generator emits it AFTER the fix. */
+const EVERWAS_INSTALL_PS = [
+  "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+  "$exe = Join-Path $env:TEMP 'everwas-agent.exe'",
+  `Invoke-WebRequest -Uri "https://agent.example.test/everwas-agent.exe" -OutFile $exe -UseBasicParsing`,
+  `Start-Process -FilePath $exe -ArgumentList 'install','--server','https://rmm.example.test','--token','ew_testtoken' -WindowStyle Hidden -Wait`,
+  "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
+  "'Everwas agent installed.'",
+].join("\n");
+
+/** The same command as the OLD generator emitted it — with the fatal flag. */
+const EVERWAS_INSTALL_PS_WITH_SILENT = EVERWAS_INSTALL_PS.replace(
+  "'--token','ew_testtoken'",
+  "'--token','ew_testtoken','--silent'",
+);
+
+test("TASK_EVERWAS: the Everwas command carries NO --silent (the agent has no such flag)", () => {
+  assert.ok(
+    !EVERWAS_INSTALL_PS.includes("--silent"),
+    "the emitted command must not pass a flag the agent would reject fatally",
+  );
+  assert.ok(EVERWAS_INSTALL_PS.includes("'install','--server'"), "install subcommand is kept");
+  assert.ok(EVERWAS_INSTALL_PS.includes("'--token','ew_testtoken'"), "the token is kept");
+});
+
+test("TASK_EVERWAS: isEverwasInstallCommand recognises the Everwas shape", () => {
+  assert.ok(isEverwasInstallCommand(EVERWAS_INSTALL_PS));
+  assert.ok(isEverwasInstallCommand(EVERWAS_INSTALL_PS_WITH_SILENT));
+  assert.ok(!isEverwasInstallCommand(MESH_INSTALL_PS), "mesh is not everwas");
+  assert.ok(!isEverwasInstallCommand("Invoke-WebRequest -Uri 'https://x'"));
+});
+
+test("TASK_EVERWAS: the silence gate passes the Everwas command through byte-identical", () => {
+  // The Everwas argv has no `-m install`, so WITHOUT the pass-through branch
+  // the gate throws `enroll_not_found` and every Everwas mint 502s.
+  assert.equal(ensureSilentEnroll(EVERWAS_INSTALL_PS), EVERWAS_INSTALL_PS);
+  // The flattened form (what the mint chain actually hands it) too.
+  const flat = normalizePowerShellCommand(EVERWAS_INSTALL_PS);
+  assert.equal(ensureSilentEnroll(flat), flat);
+});
+
+test("TASK_EVERWAS: the old --silent-carrying command is also passed through (regression pin)", () => {
+  // Before the fix this command was only surviving the gate BECAUSE it
+  // carried the fatal flag (the idempotence no-op fired first). With the
+  // Everwas branch in place it passes through on its own merits, so dropping
+  // the flag cannot break the mint.
+  const flat = normalizePowerShellCommand(EVERWAS_INSTALL_PS_WITH_SILENT);
+  assert.equal(ensureSilentEnroll(flat), flat);
+});
+
+test("TASK_EVERWAS: stripEverwasSilentFlag removes the fatal argument", () => {
+  const stripped = stripEverwasSilentFlag(EVERWAS_INSTALL_PS_WITH_SILENT);
+  assert.ok(!stripped.includes("--silent"), "the fatal flag is gone");
+  assert.ok(stripped.includes("'--token','ew_testtoken'"), "the rest of the argv survives");
+  assert.ok(stripped.includes("'install','--server'"), "the subcommand survives");
+  // The result must still be a command the agent accepts: no dangling comma.
+  assert.ok(!/,(\s|-)/.test(stripped), "no dangling comma left behind");
+});
+
+test("TASK_EVERWAS: stripEverwasSilentFlag is a no-op on a clean command", () => {
+  assert.equal(stripEverwasSilentFlag(EVERWAS_INSTALL_PS), EVERWAS_INSTALL_PS);
+  assert.equal(stripEverwasSilentFlag("no flags here"), "no flags here");
+});
+
+test("TASK_EVERWAS: end-to-end — the carrier ships a command the agent accepts", () => {
+  const flat = normalizePowerShellCommand(EVERWAS_INSTALL_PS);
+  const gated = ensureSilentEnroll(flat);
+  assert.equal(gated, flat, "the gate is a pass-through");
+  assert.ok(!gated.includes("--silent"), "no flag the agent would reject");
+  const vbs = renderCarrierVbs(gated);
+  const chunks = [...vbs.matchAll(/ps = ps & "((?:[^"]|"")*)"/g)].map((m) =>
+    m[1].replace(/""/g, '"'),
+  );
+  assert.equal(chunks.join(""), flat, "VBS chunks must rejoin to the flat command");
+});
+
+test("TASK_EVERWAS: the repair reaches an ALREADY-MINTED row (serve time)", () => {
+  // Rows minted before the fix keep the old command for a year. The serve path
+  // strips the flag, so an old link is fixed without re-minting.
+  const stored = EVERWAS_INSTALL_PS_WITH_SILENT;
+  const served = stripEverwasSilentFlag(stored);
+  assert.ok(!served.includes("--silent"), "the stored command is repaired on serve");
 });
 

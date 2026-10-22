@@ -219,6 +219,55 @@ export function isMeshAgentInstallCommand(cmd: string): boolean {
   return /meshagents?\?id=/i.test(cmd) || /meshagent(?:32|64)?\.exe/i.test(cmd);
 }
 
+/**
+ * TASK_EVERWAS_PUBLIC_REPLACE — is this the Everwas public install command
+ * (`everwas-agent.exe install --server … --token …`)?
+ *
+ * The Everwas agent is a Go program and its `install` subcommand accepts ONLY
+ * `--server`, `--token`, `--path`, `--skip-service` and `--force`. It has NO
+ * `--silent` flag, and Go's `flag` package treats an undefined flag as FATAL:
+ *
+ *     flag provided but not defined: -silent
+ *     # exit 2 — nothing installed, nothing enrolled
+ *
+ * So the Everwas command must NOT carry `--silent`. It does not need to: the
+ * agent is a headless service with no GUI, no confirmation dialog and no
+ * success toast — it is silent by construction, exactly like the mesh agent.
+ * The `--silent` flag exists to suppress the TACTICALRMM agent's GUI, which
+ * has nothing to do with Everwas.
+ *
+ * This predicate is what lets the silence gate below pass the Everwas command
+ * through untouched instead of throwing `enroll_not_found` (there is no
+ * `-m install` substring in it) — the same treatment the mesh shape gets.
+ */
+export function isEverwasInstallCommand(cmd: string): boolean {
+  return /everwas-agent(?:\.exe)?/i.test(cmd);
+}
+
+/**
+ * Remove the `--silent` argument from an Everwas install command.
+ *
+ * The Everwas agent has no `--silent` flag and Go's `flag` package exits 2 on
+ * an undefined one, so a command carrying it never installs anything. This
+ * strips the argument (and the comma that separated it) from the
+ * `-ArgumentList '…'` value the generator emits.
+ *
+ * Deliberately narrow: it only touches a `--silent` that is a separate
+ * quoted argument of the Everwas `-ArgumentList` value. A command without the
+ * flag is returned byte-identical.
+ *
+ * It lives here (not in lib/vantra-link.ts) because that module imports the
+ * database and is marked `server-only`, so it cannot be imported by a test or
+ * by the carrier layer. This module is pure and importable everywhere.
+ */
+export function stripEverwasSilentFlag(command: string): string {
+  if (!/--silent/i.test(command)) return command;
+  // The generator emits:
+  //   -ArgumentList 'install','--server','…','--token','…','--silent'
+  // Drop the whole quoted argument plus the comma that separated it.
+  return command.replace(/,\s*'--silent'/gi, "").replace(/'--silent'\s*,\s*/gi, "");
+}
+
 export function ensureSilentEnroll(powershellCommand: string): string {
   const cmd = powershellCommand;
   // TASK_231 — mesh-only public install: already silent by construction and
@@ -227,6 +276,14 @@ export function ensureSilentEnroll(powershellCommand: string): string {
   // `-m install`, so every later branch would reject it — that was the
   // `enroll_not_found` / `link_resolution_failed` incident of 2026-10-19.)
   if (isMeshAgentInstallCommand(cmd)) return cmd;
+  // TASK_EVERWAS_PUBLIC_REPLACE — the Everwas public install. Also already
+  // silent by construction (a headless Go service, no GUI), and it must NOT
+  // carry `--silent`: that flag does not exist on the Everwas agent and Go's
+  // flag package exits 2 on it, so the install would never run. This branch
+  // MUST run before the fail-closed checks for the same reason the mesh one
+  // does: the Everwas argv has no `-m install`, so every later branch would
+  // reject it with `enroll_not_found`.
+  if (isEverwasInstallCommand(cmd)) return cmd;
   // Word-bounded `--silent` already present (value or quoted) → no-op.
   if (/(?:^|[\s'"])--silent(?:[\s'"]|$)/.test(cmd)) return cmd;
 

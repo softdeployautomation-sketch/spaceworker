@@ -17,7 +17,7 @@ import {
 } from "./device-tools";
 // TASK_178 stage 1 — the forked carrier (NEVER the openframe one): single-line
 // normaliser, the TASK_172 `--silent` guarantee, and the `.vbs` renderer.
-import { ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs } from "./vantra-carrier";
+import { ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs, stripEverwasSilentFlag } from "./vantra-carrier";
 
 // Task 93 — the Vantra plugin provisioning + device-action service.
 //
@@ -624,7 +624,12 @@ export async function mintInstallLink(
   // posture as privatePsCommand). Never serialised into a view model.
   let everwasPsCommand: string | null = null;
   if (minted.provider === "everwas" && minted.token && minted.downloadUrl && minted.serverUrl) {
-    everwasPsCommand = everwasPowerShell(minted.downloadUrl, minted.serverUrl, minted.token);
+    // The generator no longer emits `--silent` (the Everwas agent has no such
+    // flag and Go's flag package exits 2 on it). The strip is belt-and-braces
+    // for a stored command that somehow still carries it.
+    everwasPsCommand = stripEverwasSilentFlag(
+      everwasPowerShell(minted.downloadUrl, minted.serverUrl, minted.token),
+    );
   }
   const updated = await db.vantraLink.update({
     where: { id: link.id },
@@ -658,7 +663,13 @@ export async function mintInstallLink(
       publicUrl: installUrl,
       expiresAt,
       installerUrl: minted.downloadUrl,
-      installerKind: installer.names ? "zip" : "exe",
+      // TASK_EVERWAS_PUBLIC_REPLACE — the history row must agree with the
+      // pointer row above: an Everwas mint stores kind "everwas" (the
+      // artifact served for this token is the stored PowerShell command, not
+      // a 302 to `installerUrl`). Without this the history row said "exe" and
+      // resolveInstallToken redirected the open straight to the raw agent
+      // .exe — the defect that kept Everwas agents from ever enrolling.
+      installerKind: installer.names ? "zip" : (minted.provider === "everwas" ? "everwas" : "exe"),
       installerNamesJson: installer.names ? JSON.stringify(installer.names) : null,
     },
   }).catch(() => {
@@ -757,9 +768,22 @@ async function fetchPublicOrgPsCommand(
 /**
  * Generate a silent PowerShell install command for Everwas public enrollment.
  * Downloads everwas-agent.exe from `downloadUrl`, runs `install --server
- * <serverUrl> --token <ew_token> --silent`, hides all windows, cleans up.
+ * <serverUrl> --token <ew_token>`, hides all windows, cleans up.
  * Output goes to %TEMP%\everwas-install.log, shown in a MsgBox at end
  * (same pattern as the existing VBS carrier).
+ *
+ * TASK_EVERWAS_PUBLIC_REPLACE — NO `--silent` flag. The Everwas agent is a Go
+ * program whose `install` subcommand defines only `--server`, `--token`,
+ * `--path`, `--skip-service` and `--force`; Go's `flag` package treats an
+ * undefined flag as FATAL and exits 2:
+ *
+ *     flag provided but not defined: -silent
+ *
+ * so the previous `…,'--silent'` argument made the carrier's install step die
+ * before it enrolled anything (verified against the real agent binary).
+ * The flag was never needed here anyway: `--silent` suppresses the TACTICALRMM
+ * agent's GUI, and the Everwas agent is a headless service with no GUI — it
+ * is silent by construction.
  */
 function everwasPowerShell(downloadUrl: string, serverUrl: string, token: string): string {
   return [
@@ -768,7 +792,7 @@ function everwasPowerShell(downloadUrl: string, serverUrl: string, token: string
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
     `$exe = Join-Path $env:TEMP 'everwas-agent.exe'`,
     `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile $exe -UseBasicParsing`,
-    `Start-Process -FilePath $exe -ArgumentList 'install','--server','${serverUrl}','--token','${token}','--silent' -WindowStyle Hidden -Wait`,
+    `Start-Process -FilePath $exe -ArgumentList 'install','--server','${serverUrl}','--token','${token}' -WindowStyle Hidden -Wait`,
     "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
     "'Everwas agent installed.'",
   ].join("\n");
@@ -1083,11 +1107,16 @@ export async function resolveVbsInstallToken(token: string): Promise<VbsLinkArti
  */
 export async function resolveEverwasInstallToken(token: string): Promise<{ fileName: string; content: string } | null> {
   const hash = sha256(token);
-  // A row on vantraInstallLink is a VBS/zip/exe link — never an Everwas link.
-  // If it exists here, this token is not for Everwas.
+  // A history row of ANY OTHER kind (vbs/zip/exe) means this token was not
+  // minted for Everwas. But an `everwas` history row IS this token's own row
+  // (TASK_171 writes one for every mint, and Fix 1 now persists the right
+  // kind): continuing past it to the VantraLink lookup is what lets the
+  // stored command actually get served. Bailing on it was the defect — the
+  // row existed, so this resolver always returned null and the open fell
+  // through to resolveInstallToken's raw .exe redirect.
   const mint = await db.vantraInstallLink.findUnique({ where: { tokenHash: hash } }).catch(() => null);
-  if (mint) return null;
-  // Everwas links live only on VantraLink rows (installerKind === 'everwas').
+  if (mint && mint.installerKind !== "everwas") return null;
+  // Everwas commands live on VantraLink rows (installerKind === 'everwas').
   const row = await db.vantraLink.findFirst({
     where: { installTokenHash: hash, status: { not: "revoked" } },
     select: { id: true, userId: true, everwasPsCommand: true, everwasPsExpiresAt: true, status: true },
@@ -1102,13 +1131,26 @@ export async function resolveEverwasInstallToken(token: string): Promise<{ fileN
     select: { status: true },
   });
   if (!owner || owner.status === "revoked") return null;
-  const content = everwasPowerShellContent(command);
+  // TASK_EVERWAS_PUBLIC_REPLACE — repair rows minted BEFORE the `--silent`
+  // removal. The command is stored on the row (it carries the org's
+  // enrollment token), so a row minted by the old generator still bakes the
+  // fatal flag in. Those links are live for a year, so the fix has to reach
+  // them at SERVE time, not only at mint time. The repair is a pure string
+  // edit on the same shape the generator produces, and it is a no-op on a
+  // command that never had the flag.
+  const content = everwasPowerShellContent(stripEverwasSilentFlag(command));
   return {
     fileName: "everwas-install.ps1",
     content,
   };
 }
 
+/**
+ * The served `.ps1` body for an Everwas link.
+ *
+ * The command IS the artifact (there is no download to redirect to), so it is
+ * returned as-is once the fatal `--silent` argument has been stripped.
+ */
 function everwasPowerShellContent(command: string): string {
   return command;
 }
@@ -1131,6 +1173,14 @@ export async function resolveInstallToken(token: string): Promise<string | null>
   const hash = sha256(token);
   const mint = await db.vantraInstallLink.findUnique({ where: { tokenHash: hash } }).catch(() => null);
   if (mint) {
+    // TASK_EVERWAS_PUBLIC_REPLACE — an Everwas row's artifact is the STORED
+    // PowerShell command (served by resolveEverwasInstallToken on this same
+    // token surface), never a 302 to `installerUrl`: that URL is the raw
+    // agent .exe the command downloads internally, and redirecting to it
+    // hands the user an installer with no --server/--token — nothing
+    // enrolls. The wrapper route asks the Everwas resolver FIRST, so null
+    // here is the invariant: only zip/exe rows follow the redirect.
+    if (mint.installerKind === "everwas") return null;
     if (mint.expiresAt.getTime() < Date.now()) return null;
     const owner = await db.vantraLink.findUnique({ where: { userId: mint.userId }, select: { status: true } });
     if (!owner || owner.status === "revoked") return null;
