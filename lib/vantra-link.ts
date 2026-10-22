@@ -1453,6 +1453,25 @@ export async function fetchUserIdleReading(userId: string): Promise<BulkIdleRead
   };
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Which backend owns a synced row (2026-10-22). Vantra sends `engine`; an
+ * older Vantra does not, so the id shape answers the same question:
+ *   - mesh standalone ids are `node//<blob>` (and carry `meshOnly`)
+ *   - Everwas device ids are UUIDs
+ *   - TRMM agent ids are neither
+ * The answer decides whether the hide-on-enrollment flow may run at all —
+ * that flow dispatches a TRMM/mesh command, so against an Everwas device it
+ * can only 404 and paint a permanent "Hide failed" badge.
+ */
+function engineOf(d: { vantraAgentId: string; meshOnly?: boolean; engine?: string }): "trmm" | "mesh" | "everwas" {
+  if (d.engine === "everwas" || d.engine === "mesh" || d.engine === "trmm") return d.engine;
+  if (d.meshOnly || d.vantraAgentId.startsWith("node//")) return "mesh";
+  if (UUID_RE.test(d.vantraAgentId)) return "everwas";
+  return "trmm";
+}
+
 /**
  * Device sync: pulls the org's agent list from Vantra and upserts SpaceWorker
  * Device rows (identity = vantraAgentId, Task 92 layer). Also flips the link
@@ -1483,6 +1502,11 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
             lastSeen?: string | null;
             autoMove?: { status: string; timerStartedAt: string } | null;
             meshOnly?: boolean;
+            // 2026-10-22 — WHICH backend owns the row. Additive: an older
+            // Vantra omits it, so `engineOf()` below reconstructs the same
+            // answer from the id shape (mesh ids start with `node//`, an
+            // Everwas id is a UUID, anything else is a TRMM agent id).
+            engine?: "trmm" | "mesh" | "everwas";
           }>;
         }>(`/api/internal/sw/devices?orgId=${encodeURIComponent(orgId)}`).catch(() => null),
       ),
@@ -1502,8 +1526,13 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
     }
     const now = new Date();
     const devices = [...merged.values()];
+    // 2026-10-22 — hostnames now served by Everwas. Used after the loop to
+    // retire the stale standalone-mesh row for the same machine.
+    const everwasHostnames = new Set<string>();
     for (const entry of devices) {
       const d = entry.row;
+      const engine = engineOf(d);
+      if (engine === "everwas") everwasHostnames.add(d.name);
       // 2026-09-28 — never invent a "seen just now" timestamp for a device we
       // were just told is OFFLINE. Vantra omits `lastSeen` for some agents; the
       // old unconditional `: now` fallback then stamped those rows as freshly
@@ -1545,7 +1574,18 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       // Vantra's DeviceAutoMove row (never invented locally) so the countdown
       // the owner sees is the clock that will actually fire the move. It is
       // never overwritten on an existing row: only created once.
-      if (entry.tier === "private") {
+      if (engine === "everwas") {
+        // 2026-10-22 — the hide-on-enrollment flow is TRMM/mesh only: it
+        // dispatches a PowerShell hide script through Vantra's /action, which
+        // has no Everwas branch (404 "Device not found."). Creating a row here
+        // therefore can only end in `failed` — the red "Hide failed" badge the
+        // owner saw on a healthy public Everwas device. Release any row that
+        // already exists (that is the visible fix) and never create one.
+        await db.deviceOnboarding.updateMany({
+          where: { deviceId: saved.id, status: { notIn: ["released"] } },
+          data: { releasedAt: now, status: "released", claimAt: null, lastError: null },
+        });
+      } else if (entry.tier === "private") {
         // Observed in the private org → the move landed; release the row.
         await db.deviceOnboarding.updateMany({
           where: { deviceId: saved.id, status: { notIn: ["released", "failed"] } },
@@ -1588,6 +1628,23 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           }
         }
       }
+    }
+    // 2026-10-22 — ONE row per machine. When the same host is now served by
+    // an Everwas agent, the `node//` standalone-mesh row from the previous
+    // public install is dead: it is not actionable (its agent was replaced)
+    // and it made the list read "All (3)" for two real machines. Soft-remove
+    // it exactly like the Delete button does — `removedAt` filters it out of
+    // /api/devices and keeps the audit trail.
+    if (everwasHostnames.size > 0) {
+      await db.device.updateMany({
+        where: {
+          userId,
+          removedAt: null,
+          name: { in: [...everwasHostnames] },
+          vantraAgentId: { startsWith: "node//" },
+        },
+        data: { removedAt: now },
+      });
     }
     await db.vantraLink.update({
       where: { id: link.id },

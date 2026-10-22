@@ -83,11 +83,26 @@ export async function GET(request: Request) {
   const idle = await fetchUserIdleReading(session.userId);
   const includeRowProvenance = new URL(request.url).searchParams.get("idle") === "provenance";
 
+  // 2026-10-22 — ONE row per machine read-side guard. `syncDevices()` retires
+  // the old standalone-mesh (`node//`) row once Everwas serves the same
+  // hostname, but the list must not depend on a sync having run: a mesh row
+  // whose hostname is also served by a real (TRMM/Everwas) row is the dead
+  // duplicate from the replaced public flow — drop it here too. Scoped to
+  // `node//` so a legitimate TRMM + private-companion pair is untouched.
+  const isMeshNodeRow = (d: { vantraAgentId: string | null }) =>
+    (d.vantraAgentId ?? "").startsWith("node//");
+  const realHostnames = new Set(
+    devices.filter((d) => !isMeshNodeRow(d)).map((d) => d.name),
+  );
+  const visibleDevices = devices.filter(
+    (d) => !(isMeshNodeRow(d) && realHostnames.has(d.name)),
+  );
+
   return NextResponse.json({
     onlineWindowMs: DEVICE_ONLINE_WINDOW_MS,
     // Provenance for the whole bulk read (additive; existing consumers ignore it).
     idle: { asOf: idle.asOf, state: idle.state },
-    devices: devices.map((d) => {
+    devices: visibleDevices.map((d) => {
       const view = toDeviceView(d);
       // TASK_185 P1 — the STABLE identity wins: key the idle read by TRMM agent
       // id first (rename-proof — Device.name drifts when a user renames the
