@@ -3,6 +3,7 @@ import "server-only";
 import { db } from "./db";
 import { env } from "./env";
 import { runCommandNow } from "./device-tools";
+import { deviceStatus } from "./devices";
 import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
 import { ensureHostedDestination } from "./clone-destination";
@@ -668,11 +669,15 @@ async function requireOnlineOwnedDevice(opts: { userId: string; deviceId: string
 }> {
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId },
-    select: { id: true, name: true, vantraAgentId: true, status: true },
+    select: { id: true, name: true, vantraAgentId: true, status: true, lastSeenAt: true },
   });
   if (!device) throw new Error("device_not_owned");
   if (!device.vantraAgentId) throw new Error("device_not_linked");
-  if (device.status !== "online") throw new Error("device_offline");
+  // Use the same derived status the header and console use — raw `status` alone
+  // misses the "asleep" case: a device with status="asleep" but a fresh
+  // lastSeenAt IS reachable, and the console correctly shows it as "online".
+  // Checking the raw field made setup refuse it with a false "device offline".
+  if (deviceStatus(device) !== "online") throw new Error("device_offline");
   return { id: device.id, name: device.name, vantraAgentId: device.vantraAgentId, status: device.status };
 }
 
