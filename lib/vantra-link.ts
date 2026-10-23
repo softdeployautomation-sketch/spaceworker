@@ -1545,11 +1545,19 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       // were just told is OFFLINE. Vantra omits `lastSeen` for some agents; the
       // old unconditional `: now` fallback then stamped those rows as freshly
       // seen, which (a) fed the UI a false "last seen 0s ago" and (b) kept the
-      // 10-minute freshness window alive for a machine that had been off for
-      // hours. Stamping `now` is only ever honest when the agent is online.
+      // freshness window alive for a machine that had been off for hours.
+      // 2026-10-23 — also stop fabricating `now` for online agents that omit
+      // `lastSeen`. Stamping `now` on every 20-second sync poll means the
+      // freshness window (DEVICE_ONLINE_WINDOW_MS) never expires, so a machine
+      // TRMM is slow to declare offline stays "online" in the UI for the full
+      // TRMM detection delay PLUS our full window on top of that. TRMM provides
+      // `last_seen` on every heartbeat for connected agents; trusting only that
+      // timestamp means our 5-min window expires independently of TRMM's own
+      // verdict — catching offline devices within 5 min of the last real
+      // heartbeat, regardless of how long TRMM takes to flip `online: false`.
       // Leaving it undefined on the update path means "don't change" (Prisma),
       // i.e. keep the real last-known check-in.
-      const lastSeenAt = d.lastSeen ? new Date(d.lastSeen) : d.online ? now : undefined;
+      const lastSeenAt = d.lastSeen ? new Date(d.lastSeen) : undefined;
       const saved = await db.device.upsert({
         where: { vantraAgentId: d.vantraAgentId },
         update: {
