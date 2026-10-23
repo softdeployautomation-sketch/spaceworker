@@ -3,8 +3,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { deviceToolsDenied } from "@/lib/device-gate";
 import { prisma } from "@/lib/prisma";
-import { moveAgentToPrivateOrg } from "@/lib/device-tools";
-import { syncDevices } from "@/lib/vantra-link";
+import { moveAgentToPrivateOrg, runCommandNow } from "@/lib/device-tools";
 
 export const dynamic = "force-dynamic";
 
@@ -50,28 +49,25 @@ export async function POST(
       const status = result.reason === "no_private_org" ? 409 : 502;
       return NextResponse.json({ error: result.reason }, { status });
     }
-    // Best-effort refresh so the row flips to Private without waiting for the
-    // next sync; non-fatal — the next syncDevices agrees anyway.
-    try {
-      await syncDevices(session.userId);
-    } catch {
-      /* non-fatal */
-    }
-    // TASK_234 B1 — hand the INSTALL PLAN through to the UI. Since TASK_230
-    // this route's whole job is minting the private install command the user
-    // runs on the machine (nothing moves server-side); returning a bare
-    // `{ok:true}` discarded `install.command` and left the console with
-    // nothing to show. The row's tier does NOT change here — it flips when
-    // the device reappears under the private org on the next sync AFTER the
-    // user runs the command.
-    return NextResponse.json({
-      ok: true,
-      flow: result.flow,
-      destinationOrgId: result.destinationOrgId,
-      destinationOrgName: result.destinationOrgName,
-      steps: result.steps,
-      install: result.install,
+    // Fire-and-forget: dispatch the private install command to the device.
+    // The PowerShell installer runs on the device in the background (1–3 min);
+    // we return 200 immediately so the browser does not wait. Errors are
+    // swallowed: if the device was offline the install simply did not start;
+    // the owner will see the device remain in Public and can retry.
+    void runCommandNow({
+      userId: session.userId,
+      deviceId,
+      cmd: result.install?.singleLine ?? result.install?.command ?? "",
+      shell: "powershell",
+      timeoutSeconds: 30,
+      runAsUser: false,
+    }).catch((err) => {
+      console.error(
+        "[move-to-private] install dispatch error:",
+        err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+      );
     });
+    return NextResponse.json({ ok: true });
   } catch (err) {
     const code = err instanceof Error ? err.message : "move_failed";
     return NextResponse.json({ error: code.slice(0, 200) }, { status: 502 });

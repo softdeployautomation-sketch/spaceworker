@@ -19,7 +19,9 @@ function toJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbNull {
 
 // A heartbeat fresher than this means the device is reachable. Older flips
 // the derived status to "offline" on read (lazy, like premium reversion).
-export const DEVICE_ONLINE_WINDOW_MS = 10 * 60 * 1000;
+// 5 min: TRMM agents heartbeat every 30 s, so this allows ~10 missed beats
+// before we declare offline — fast enough to feel live without false-flips.
+export const DEVICE_ONLINE_WINDOW_MS = 5 * 60 * 1000;
 
 export function isDeviceOnline(lastSeenAt: Date | null): boolean {
   return !!lastSeenAt && Date.now() - lastSeenAt.getTime() < DEVICE_ONLINE_WINDOW_MS;

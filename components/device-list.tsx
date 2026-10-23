@@ -353,7 +353,7 @@ export function DeviceList() {
   // from the 20 s data poll on purpose: the time text must move even when the
   // list payload is unchanged.
   useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    const timer = setInterval(() => setNowMs(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -711,20 +711,15 @@ export function DeviceList() {
   }
 
   // TASK_228 — "Move to private": the owner's explicit click replaces the
-  // retired silent auto-move. TASK_234 B2: the copy no longer claims the
-  // agent "restarts once to point at the private agent" (that was the RETIRED
-  // live-reconfigure path, §Decisions LOCKED #3 — never reconfig). The move is
-  // install→verify→remove: the server only MINTS the private install command;
-  // the device leaves public when the user runs it and the next sync sees the
-  // private copy (it then sits in BOTH lists until they delete the public row
-  // — the duplicate the owner wants, possible because public = MeshCentral
-  // agent and private = Tactical agent, two different agents).
+  // retired silent auto-move. The private agent is dispatched silently to the
+  // device in the background — no manual command needed. The device flips to
+  // Private on the next sync after the agent installs and checks in (1–3 min).
   async function moveDeviceRow(d: DeviceRow) {
     const confirmed = await confirm({
       title: `Move ${d.name} to private?`,
       description:
-        "We'll generate a one-time PowerShell command that installs the private agent on this machine. Nothing changes until you run it — the device appears under Private after the next sync, and you can delete the public copy then.",
-      confirmLabel: "Get install command",
+        "The private agent will be installed silently on this device in the background (takes 1–3 minutes). Once enrolled it will appear under Private Devices.",
+      confirmLabel: "Install private agent",
     });
     if (!confirmed) return;
 
@@ -732,38 +727,13 @@ export function DeviceList() {
     setError("");
     try {
       const res = await fetch(`/api/devices/${d.id}/move-to-private`, { method: "POST" });
-      const data: { error?: unknown; install?: { command?: string; singleLine?: string; moved?: boolean } } = await res
-        .json()
-        .catch(() => ({}));
+      const data: { error?: unknown } = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(typeof data.error === "string" ? data.error : "Couldn't move the device");
       }
-      const command = typeof data.install?.command === "string" ? data.install.command : "";
-      // TASK_235 — prefer the relay-safe one-liner; fall back to the multiline
-      // original for old servers that don't mint it yet (both run the same
-      // private Tactical install — the one-liner just can't fragment).
-      const singleLine =
-        typeof data.install?.singleLine === "string" && data.install.singleLine
-          ? data.install.singleLine
-          : command;
-      if (command) {
-        // TASK_234 B1 — show the command (masked until revealed, copy only
-        // after reveal — the same posture as the public PS command above).
-        // TASK_236 — carry the device id + a fresh "not checked yet" state.
-        setMoveInstruction({
-          deviceName: d.name,
-          command,
-          singleLine,
-          moved: data.install?.moved === true,
-          deviceId: d.id,
-          verifyState: "not_checked",
-          verifyMessage: "",
-        });
-        setMoveRevealed(false);
-      } else {
-        // Old-server shape (no plan) — nothing to show, don't pretend.
-        await load();
-      }
+      // Install dispatched silently — reload so the row reflects any immediate
+      // tier change; the Private row appears on the next sync (1–3 min).
+      await load();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't move the device");
     } finally {
