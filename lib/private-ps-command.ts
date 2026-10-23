@@ -15,7 +15,7 @@
 //      --agent-type`).
 // Anything else reads as "no command yet", and the panel asks for a fresh one.
 // PURE (no db/env) so it is unit-tested directly.
-export const PRIVATE_PS_MARKER = "# vantra-install v2";
+export const PRIVATE_PS_MARKER = "# vantra-install v3";
 
 const REQUIRED_FLAGS = ["--client-id", "--site-id", "--agent-type"] as const;
 
