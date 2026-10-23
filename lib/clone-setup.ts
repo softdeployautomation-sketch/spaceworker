@@ -765,7 +765,7 @@ export async function cloneSetupStatus(opts: {
     hostAvailability({ userId: opts.userId, excludeDeviceId: opts.deviceId }),
     canCaptureLiveSession(opts.deviceId),
   ]);
-  const online = device.status === "online" && !!device.vantraAgentId;
+  const online = deviceStatus(device) === "online" && !!device.vantraAgentId;
   // Ready = the role's capability is registered. `source` additionally needs a
   // relay row (that is exactly what the TASK_109 gate refuses without).
   return {
