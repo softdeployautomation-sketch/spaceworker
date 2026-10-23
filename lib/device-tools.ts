@@ -1008,7 +1008,7 @@ export async function getDevicePowerView(opts: {
 // ---------------------------------------------------------------------------
 
 export type MoveToPrivateResult =
-  | { ok: true; moved: true }
+  | { ok: true; install: { command: string; singleLine: string } }
   | { ok: false; reason: string };
 
 export async function moveAgentToPrivateOrg(opts: {

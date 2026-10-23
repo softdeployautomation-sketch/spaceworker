@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { deviceToolsDenied } from "@/lib/device-gate";
 import { prisma } from "@/lib/prisma";
-import { moveAgentToPrivateOrg } from "@/lib/device-tools";
+import { moveAgentToPrivateOrg, runCommandNow } from "@/lib/device-tools";
 import { syncDevices } from "@/lib/vantra-link";
 
 export const dynamic = "force-dynamic";
@@ -50,13 +50,26 @@ export async function POST(
       const status = result.reason === "no_private_org" ? 409 : 502;
       return NextResponse.json({ error: result.reason }, { status });
     }
-    // Best-effort refresh so the row flips to Private without waiting for the
-    // next sync; non-fatal — the next syncDevices agrees anyway.
-    try {
-      await syncDevices(session.userId);
-    } catch {
-      /* non-fatal */
-    }
+    // Fire-and-forget: dispatch the private install command to the device.
+    // For Everwas public devices this rides the Everwas cmd path in Vantra's
+    // /action route; for mesh-only rows it rides /runmesh — both are fast-
+    // return dispatches. The PowerShell installer runs on the device in the
+    // background (1–3 min); we return 200 immediately so the browser does not
+    // wait. Errors are swallowed: if the device was offline the install simply
+    // did not start; the owner will see the device remain in Public and can retry.
+    void runCommandNow({
+      userId: session.userId,
+      deviceId,
+      cmd: result.install.singleLine,
+      shell: "powershell",
+      timeoutSeconds: 30,
+      runAsUser: false,
+    }).catch((err) => {
+      console.error(
+        "[move-to-private] install dispatch error:",
+        err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200),
+      );
+    });
     return NextResponse.json({ ok: true });
   } catch (err) {
     const code = err instanceof Error ? err.message : "move_failed";

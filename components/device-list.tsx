@@ -325,11 +325,11 @@ export function DeviceList() {
     };
   }, [refreshAll]);
 
-  // TASK_128 — 1-minute tick for the onboarding strip/badge countdown. Separate
-  // from the 20 s data poll on purpose: the time text must move even when the
-  // list payload is unchanged.
+  // TASK_128 — 10-second tick for time-ago labels and onboarding countdown.
+  // Separate from the 20 s data poll on purpose: the time text must move even
+  // when the list payload is unchanged.
   useEffect(() => {
-    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    const timer = setInterval(() => setNowMs(Date.now()), 10_000);
     return () => clearInterval(timer);
   }, []);
 
@@ -699,7 +699,7 @@ export function DeviceList() {
     const confirmed = await confirm({
       title: `Move ${d.name} to private?`,
       description:
-        "The agent on the machine restarts once to point at your private agent. The device leaves the public list and appears under your private agent.",
+        "The private agent will be installed silently on this device in the background (takes 1–2 minutes). Once enrolled it will appear under Private Devices.",
       confirmLabel: "Move to private",
     });
     if (!confirmed) return;
@@ -1229,7 +1229,7 @@ export function DeviceList() {
                     )}
                     {/* TASK_171 — every public mint this user ever made, newest
                         first: URL + copy, a live "expires in Xh Ym"/"expired"
-                        countdown (off the existing 1-minute `nowMs` tick — no
+                        countdown (off the existing 10-second `nowMs` tick — no
                         new fetch loop), and its download count. Old rows are
                         read-only (copy only, no re-mint); the current link's
                         Generate/Regenerate/"New link" actions above are
