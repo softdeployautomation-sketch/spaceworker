@@ -3,6 +3,7 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { SESSION_SAFE_SELECT } from "@/lib/browser-session-safe-select";
 import { serializeSession } from "@/lib/browser-session-serialize";
+import { buildExitIpAudit } from "@/lib/browser-session-exit-ip";
 import { browserRuntime, browserRuntimeAvailable } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
 import { getAdminSettings } from "@/lib/admin-settings";
@@ -10,8 +11,8 @@ import { canUseExitNodes } from "@/lib/premium";
 import { moduleToolsDenied } from "@/lib/module-gate";
 import {
   proxyServerValue as buildProxyArg,
-  checkIpThroughProxy,
-  checkDirectIp,
+  probeIpThroughProxy,
+  probeDirectIp,
   type ProxyScheme,
   type ProxySpec,
 } from "@/lib/browser-proxy";
@@ -210,8 +211,8 @@ export async function POST(req: Request) {
   // "us"/"ca"/etc. means TODAY). Fired concurrently with the container
   // launch below so it adds no serial latency; best-effort — a failed
   // check never blocks the session from starting.
-  const ipCheckPromise = (resolved.spec ? checkIpThroughProxy(resolved.spec) : checkDirectIp()).catch(
-    () => null,
+  const ipCheckPromise = (resolved.spec ? probeIpThroughProxy(resolved.spec) : probeDirectIp()).catch(
+    () => ({ ok: false as const, error: "unreachable" as const }),
   );
 
   // Hand the process launch to the standalone browser subsystem.
@@ -243,8 +244,11 @@ export async function POST(req: Request) {
     );
   }
 
-  const data = runtimeStart.data as { containerId?: string; nekoPassword?: string | null } | undefined;
-  const exitIpSnapshot = await ipCheckPromise;
+  const data = runtimeStart.data as
+    | { containerId?: string; nekoPassword?: string | null; proxyReachable?: boolean | null }
+    | undefined;
+  const ipCheck = await ipCheckPromise;
+  const audit = buildExitIpAudit(ipCheck, { proxyReachable: data?.proxyReachable ?? null });
 
   const running = await prisma.browserSession.update({
     where: { id: created.id },
@@ -253,7 +257,7 @@ export async function POST(req: Request) {
       containerId: data?.containerId ?? null,
       nekoPassword: data?.nekoPassword ?? null,
       startedAt: new Date(),
-      exitIpSnapshot,
+      ...audit,
     },
     select: SESSION_SAFE_SELECT,
   });
