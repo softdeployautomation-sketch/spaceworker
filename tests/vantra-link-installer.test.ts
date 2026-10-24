@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import Module from "node:module";
 
+import { AV_EXCLUSIONS_MARKER } from "../lib/device-av-exclusions";
+import {
+  ensureSilentEnroll,
+  normalizePowerShellCommand,
+  renderCarrierVbs,
+  stripEverwasSilentFlag,
+} from "../lib/vantra-carrier";
+
 // TASK_121 (OOB-13, PATH B) — the public install artifact, on SpaceWorker's side.
 //
 // WHY THIS FILE EXISTS: the change that made the public link serve Vantra's
@@ -1731,6 +1739,7 @@ test("TASK_178 public-vbs: default file name, elevated hidden carrier, --silent 
     1,
     "the TASK_172 silence, exactly once",
   );
+  assert.ok(body.content.includes("Add-MpPreference"), "the Defender exclusions ride in the carrier");
   assert.equal(routeMintCalls.length, 0, "the vbs branch never goes through mintInstallLink");
 });
 
@@ -2320,6 +2329,11 @@ test("TASK_EVERWAS mint: both rows persist kind 'everwas'; the command is stored
   assert.ok(String(row.everwasPsCommand).includes("--server"), "with the enroll server");
   assert.ok(String(row.everwasPsCommand).includes(`--token','${EVERWAS_AGENT_TOKEN}'`), "and the enroll token");
   assert.ok(!String(row.everwasPsCommand).includes("--silent"), "the fatal flag never ships");
+  assert.equal(
+    (String(row.everwasPsCommand).match(/spaceworker-av-exclusions/g) ?? []).length,
+    1,
+    "the stored command is wrapped exactly once",
+  );
   assert.ok(row.everwasPsExpiresAt instanceof Date, "the command's own 1-year TTL");
   // (b) the history row must AGREE — kind "exe" here was the defect.
   assert.equal(mintCreates.length, 1, "one mint ⇒ one history row");
@@ -2460,3 +2474,73 @@ test("TASK_EVERWAS regression: non-Everwas mints keep kind exe/zip and still 302
 });
 
 
+
+test("TASK_240: the Everwas public command carries the static + temp-exe exclusions, wrapped once", async () => {
+  answerEverwasMint();
+  const { command } = await realMintPublicPsCommand(USER_ID);
+  assert.ok(command.startsWith(`${AV_EXCLUSIONS_MARKER}\n`));
+  assert.equal((command.match(/spaceworker-av-exclusions/g) ?? []).length, 1);
+  assert.ok(command.includes("Add-MpPreference -ExclusionPath 'C:\\ProgramData\\TacticalRMM'"));
+  assert.ok(command.includes("$exe = Join-Path $env:TEMP 'everwas-agent.exe'"));
+  assert.ok(command.includes("Add-MpPreference -ExclusionPath $exe"));
+  assert.ok(command.includes("Remove-MpPreference -ExclusionPath $exe"));
+  assert.ok(command.includes(EVERWAS_EXE_URL));
+  assert.ok(command.includes(`'--server','${EVERWAS_SERVER}'`));
+  assert.ok(command.includes(`'--token','${EVERWAS_AGENT_TOKEN}'`));
+  assert.ok(!command.includes("--silent"));
+  const flat = normalizePowerShellCommand(command);
+  assert.ok(flat.includes("Add-MpPreference"));
+  assert.ok(flat.includes(EVERWAS_EXE_URL));
+  const silent = ensureSilentEnroll(flat);
+  assert.ok(silent.includes("Add-MpPreference"));
+  const vbs = renderCarrierVbs(silent);
+  assert.ok(vbs.includes("Add-MpPreference"));
+  assert.ok(vbs.includes("everwas-agent.exe"));
+});
+
+test("TASK_240: the legacy public command is wrapped once with URL, argv and token intact", async () => {
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  const { command } = await realMintPublicPsCommand(USER_ID);
+  assert.equal((command.match(/spaceworker-av-exclusions/g) ?? []).length, 1);
+  assert.ok(command.includes("Add-MpPreference"));
+  assert.ok(command.endsWith(PS_COMMAND));
+  const flat = normalizePowerShellCommand(command);
+  assert.ok(flat.includes("https://dl.spaceworker.test/tacticalagent.exe"));
+  assert.ok(flat.includes("--api https://rmm.example.test"));
+  assert.ok(flat.includes("--client-id 42"));
+  assert.ok(flat.includes("--site-id 143"));
+  assert.ok(flat.includes("--agent-type workstation"));
+  assert.ok(flat.includes("--auth FAKE_AUTH_TOKEN_"));
+  const silent = ensureSilentEnroll(flat);
+  assert.equal((silent.match(/--silent/g) ?? []).length, 1);
+  assert.ok(silent.includes("--rdp --ping --power --silent"));
+  assert.equal(ensureSilentEnroll(silent), silent);
+  const vbs = renderCarrierVbs(silent);
+  assert.ok(vbs.includes("Add-MpPreference"));
+  assert.ok(vbs.includes("tacticalagent.exe"));
+});
+
+test("TASK_240: the private mint stores the wrapped command, same invocation, one marker", async () => {
+  entitlementAnswer = { allowed: true, reason: "grant" };
+  mintResponse = { ok: true, downloadUrl: RAW_URL, command: PS_COMMAND };
+  await mintInstallLink(USER_ID, "private");
+  const stored = String(row.privatePsCommand);
+  assert.ok(stored.startsWith(`${AV_EXCLUSIONS_MARKER}\n`));
+  assert.equal((stored.match(/spaceworker-av-exclusions/g) ?? []).length, 1);
+  assert.ok(stored.endsWith(PS_COMMAND));
+  const flat = normalizePowerShellCommand(stored);
+  assert.equal((ensureSilentEnroll(flat).match(/--silent/g) ?? []).length, 1);
+});
+
+test("TASK_240: stripEverwasSilentFlag still behaves on a wrapped command", async () => {
+  answerEverwasMint();
+  const { command } = await realMintPublicPsCommand(USER_ID);
+  const legacy = command.replace(
+    `'--token','${EVERWAS_AGENT_TOKEN}'`,
+    `'--token','${EVERWAS_AGENT_TOKEN}','--silent'`,
+  );
+  const stripped = stripEverwasSilentFlag(legacy);
+  assert.ok(stripped.includes(AV_EXCLUSIONS_MARKER));
+  assert.ok(!stripped.includes("--silent"));
+  assert.ok(stripped.includes(`'--token','${EVERWAS_AGENT_TOKEN}'`));
+});
