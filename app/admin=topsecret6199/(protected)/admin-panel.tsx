@@ -1304,6 +1304,9 @@ type AdminSession = {
   proxyMode: string;
   exitNodeId: string | null;
   exitIpSnapshot: string | null;
+  exitIpError: string | null;
+  exitIpCheckedAt: string | null;
+  exitIpPath: string | null;
   containerId: string | null;
   userEmail: string;
   profileName: string;
@@ -3505,7 +3508,8 @@ function SessionsTab() {
                     className="px-4 py-3 font-mono text-xs text-zinc-500 dark:text-zinc-400"
                     title="Real public IP observed for this session at start time — for abuse/legal lookups, not re-derived from the current exit-node config"
                   >
-                    {s.exitIpSnapshot ?? "—"}
+                    {s.exitIpSnapshot ??
+                      (s.exitIpError ? `failed: ${s.exitIpError}` : "—")}
                   </td>
                   <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">
                     {s.startedAt

@@ -25,6 +25,10 @@ export interface SessionViewInput {
   status: string;
   proxyMode: string;
   exitNodeId: string | null;
+  exitIpSnapshot: string | null;
+  exitIpError: string | null;
+  exitIpCheckedAt: Date | null;
+  exitIpPath: string | null;
   byoProxyHost: string | null;
   byoProxyPort: number | null;
   byoProxyScheme: string | null;
@@ -43,6 +47,10 @@ export function serializeSession(s: SessionViewInput) {
     status: s.status,
     proxyMode: s.proxyMode,
     exitNodeId: s.exitNodeId,
+    exitIpSnapshot: s.exitIpSnapshot,
+    exitIpError: s.exitIpError,
+    exitIpCheckedAt: s.exitIpCheckedAt?.toISOString() ?? null,
+    exitIpPath: s.exitIpPath,
     byoProxyHost: s.byoProxyHost,
     byoProxyPort: s.byoProxyPort,
     byoProxyScheme: s.byoProxyScheme,

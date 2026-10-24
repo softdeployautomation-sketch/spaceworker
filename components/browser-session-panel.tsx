@@ -17,6 +17,12 @@ type Session = {
   status: string;
   proxyMode: string;
   exitNodeId: string | null;
+  // TASK_239 — the persisted verdict of the launch/switch IP check. Shown when
+  // the live on-demand check has not run yet, so "no IP" is never silence.
+  exitIpSnapshot: string | null;
+  exitIpError: string | null;
+  exitIpCheckedAt: string | null;
+  exitIpPath: string | null;
   byoUser: string | null;
   startedAt: string | null;
   createdAt: string;
@@ -711,16 +717,21 @@ export default function BrowserSessionPanel({
                         </div>
                       </div>
 
-                      {ip?.ip && (
+                      {(ip?.ip || (!ip && s.exitIpSnapshot && !s.exitIpError)) && (
                         <p className="mt-3 text-sm text-emerald-600 dark:text-emerald-400">
                           IP via{" "}
                           {s.proxyMode === "free" ? "exit node" : "BYO proxy"}:{" "}
-                          <span className="font-mono">{ip.ip}</span>
+                          <span className="font-mono">{ip?.ip ?? s.exitIpSnapshot}</span>
+                          {!ip && s.exitIpPath ? (
+                            <span className="ml-2 text-xs text-zinc-500 dark:text-zinc-400">
+                              ({s.exitIpPath} path)
+                            </span>
+                          ) : null}
                         </p>
                       )}
-                      {ip?.error && (
+                      {(ip?.error || (!ip && s.exitIpError)) && (
                         <p className="mt-3 text-sm text-red-600 dark:text-red-400">
-                          IP check failed: {ip.error}
+                          IP check failed: {ip?.error ?? s.exitIpError}
                         </p>
                       )}
 

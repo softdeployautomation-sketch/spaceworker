@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { specForSession } from "@/lib/browser-session-proxy";
-import { checkDirectIp, checkIpThroughProxy } from "@/lib/browser-proxy";
+import { probeDirectIp, probeIpThroughProxy } from "@/lib/browser-proxy";
 
 // GET /api/browser-sessions/[id]/ip — a live, real "what's my IP" check performed
 // THROUGH the session's own routing surface (same proxy/exit node the session's
@@ -44,18 +44,17 @@ export async function GET(
     }
   }
 
-  try {
-    const ip = isDirect ? await checkDirectIp() : await checkIpThroughProxy(spec!);
-    const location = isDirect
-      ? "Direct connection (server IP)"
-      : row.proxyMode === "free" && row.exitNodeId
-        ? row.exitNodeId.toUpperCase()
-        : "BYO proxy";
-    return NextResponse.json({ ok: true, ip, proxyMode: row.proxyMode, location });
-  } catch (e) {
-    return NextResponse.json(
-      { ok: false, error: e instanceof Error ? e.message : "IP check failed" },
-      { status: 502 }
-    );
+  // TASK_239 — typed verdict, so the panel can say WHICH failure it was
+  // ("timeout" / "unreachable" / "bad_response" / "empty") instead of a
+  // swallowed null. Read-only: launch/switch persist their own audit.
+  const result = isDirect ? await probeDirectIp() : await probeIpThroughProxy(spec!);
+  if (!result.ok) {
+    return NextResponse.json({ ok: false, error: result.error }, { status: 502 });
   }
+  const location = isDirect
+    ? "Direct connection (server IP)"
+    : row.proxyMode === "free" && row.exitNodeId
+      ? row.exitNodeId.toUpperCase()
+      : "BYO proxy";
+  return NextResponse.json({ ok: true, ip: result.ip, proxyMode: row.proxyMode, location });
 }

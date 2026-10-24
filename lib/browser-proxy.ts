@@ -66,44 +66,125 @@ export function curlProxyValue(spec: ProxySpec, { withAuth }: { withAuth: boolea
 }
 
 /**
- * A real, live "what's my IP" check performed THROUGH the given proxy — never a
- * cached value, so a broken exit-node route is visibly caught. Throws on failure.
- * The request path mirrors the session's own routing surface (same scheme/endpoint),
- * so the returned IP is the exit node's IP, not this VPS's real IP.
+ * TASK_239 — the exit-IP check now has a TYPED verdict instead of a thrown
+ * sentence. The launch route persists the failure code, so "no IP" can render
+ * as "IP check failed: timeout" rather than as nothing at all.
+ *
+ *   timeout      — curl hit --max-time / was killed (a stalling node)
+ *   unreachable  — connect/DNS/proxy refused or any other curl failure
+ *   bad_response — the endpoint answered, but not JSON
+ *   empty        — the endpoint answered JSON without a usable address
+ */
+export type IpCheckErrorCode = "timeout" | "unreachable" | "bad_response" | "empty";
+
+export type IpCheckResult =
+  | { ok: true; ip: string }
+  | { ok: false; error: IpCheckErrorCode };
+
+/** Raw outcome of one curl run — injected in tests so no socket is ever opened. */
+export interface CurlOutcome {
+  stdout: string;
+  stderr: string;
+  code: number;
+  timedOut: boolean;
+}
+
+export type CurlRunner = (args: string[]) => Promise<CurlOutcome>;
+
+const defaultCurlRunner: CurlRunner = async (args) => {
+  try {
+    const { stdout, stderr } = await execFileAsync("curl", args, { timeout: 20_000 });
+    return { stdout, stderr, code: 0, timedOut: false };
+  } catch (e) {
+    const err = e as {
+      stdout?: string;
+      stderr?: string;
+      code?: number;
+      killed?: boolean;
+      signal?: string;
+      message?: string;
+    };
+    return {
+      stdout: err.stdout ?? "",
+      stderr: err.stderr ?? "",
+      code: typeof err.code === "number" ? err.code : 1,
+      timedOut:
+        err.killed === true ||
+        err.signal === "SIGTERM" ||
+        err.code === 28 ||
+        /timed out/i.test(err.message ?? ""),
+    };
+  }
+};
+
+/** Pure classification — the taxonomy tests exercise exactly this. */
+export function classifyIpCheck(outcome: CurlOutcome): IpCheckResult {
+  // curl's own --max-time exit code is 28; the execFile timeout also kills.
+  if (outcome.timedOut || outcome.code === 28) return { ok: false, error: "timeout" };
+  if (outcome.code !== 0) return { ok: false, error: "unreachable" };
+  const body = outcome.stdout.trim();
+  if (body.length === 0) return { ok: false, error: "empty" };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { ok: false, error: "bad_response" };
+  }
+  const ip = (parsed as { ip?: unknown } | null)?.ip;
+  if (typeof ip !== "string" || ip.trim().length === 0) return { ok: false, error: "empty" };
+  return { ok: true, ip: ip.trim() };
+}
+
+export function ipCheckMessage(error: IpCheckErrorCode, prefix: string): string {
+  switch (error) {
+    case "timeout":
+      return `${prefix} unreachable: timed out`;
+    case "unreachable":
+      return `${prefix} unreachable`;
+    case "bad_response":
+      return "IP check returned a non-JSON response";
+    case "empty":
+      return "IP check returned no address";
+  }
+}
+
+function ipifyArgs(proxyArgs: string[]): string[] {
+  return [
+    "-s",
+    "--max-time", "15",
+    "--connect-timeout", "10",
+    ...proxyArgs,
+    "https://api.ipify.org?format=json",
+  ];
+}
+
+/** Typed "what's my IP" through the given proxy. Never throws on a failed check. */
+export async function probeIpThroughProxy(
+  spec: ProxySpec,
+  runner: CurlRunner = defaultCurlRunner,
+): Promise<IpCheckResult> {
+  const value = curlProxyValue(spec, { withAuth: true });
+  return classifyIpCheck(await runner(ipifyArgs(["--proxy", value])));
+}
+
+/** Typed direct (no-proxy) check — the server's own real IP. */
+export async function probeDirectIp(runner: CurlRunner = defaultCurlRunner): Promise<IpCheckResult> {
+  return classifyIpCheck(await runner(ipifyArgs([])));
+}
+
+/**
+ * Throwing wrappers, kept for callers whose fail-closed logic already reads the
+ * message (hosted clone relay proof, BYO test). New callers should use the
+ * typed `probe*` functions so the failure code can be persisted.
  */
 export async function checkIpThroughProxy(spec: ProxySpec): Promise<string> {
-  const value = curlProxyValue(spec, { withAuth: true });
-  return runIpifyCurl(["--proxy", value], "Proxy unreachable");
+  const result = await probeIpThroughProxy(spec);
+  if (!result.ok) throw new Error(ipCheckMessage(result.error, "Proxy"));
+  return result.ip;
 }
 
-/** Direct (no-proxy) IP check — for a session with no exit node/BYO proxy
- *  configured, showing the server's own real IP rather than throwing. */
 export async function checkDirectIp(): Promise<string> {
-  return runIpifyCurl([], "Direct connection unreachable");
-}
-
-async function runIpifyCurl(proxyArgs: string[], errorPrefix: string): Promise<string> {
-  let out: string;
-  try {
-    const { stdout } = await execFileAsync("curl", [
-      "-s",
-      "--max-time", "15",
-      "--connect-timeout", "10",
-      ...proxyArgs,
-      "https://api.ipify.org?format=json",
-    ]);
-    out = stdout;
-  } catch (e) {
-    throw new Error(`${errorPrefix}: ${e instanceof Error ? e.message : "unknown"}`);
-  }
-  let ip: unknown;
-  try {
-    ip = (JSON.parse(out.trim()) as { ip?: unknown }).ip;
-  } catch {
-    throw new Error("IP check returned a non-JSON response");
-  }
-  if (typeof ip !== "string" || ip.length === 0) {
-    throw new Error("IP check returned no address");
-  }
-  return ip;
+  const result = await probeDirectIp();
+  if (!result.ok) throw new Error(ipCheckMessage(result.error, "Direct connection"));
+  return result.ip;
 }

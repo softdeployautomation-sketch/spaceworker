@@ -3,7 +3,8 @@ import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/session";
 import { browserRuntime } from "@/lib/browser-runtime";
 import { getExitNode } from "@/lib/exit-nodes";
-import { proxyServerValue as buildProxyArg } from "@/lib/browser-proxy";
+import { proxyServerValue as buildProxyArg, probeIpThroughProxy } from "@/lib/browser-proxy";
+import { buildExitIpAudit } from "@/lib/browser-session-exit-ip";
 import { canUseExitNodes } from "@/lib/premium";
 import { moduleToolsDenied } from "@/lib/module-gate";
 
@@ -83,6 +84,14 @@ export async function POST(
     );
   }
 
+  // TASK_239 — the restart only proves a container came up; measure the new
+  // route through the node we just switched to, and persist the typed verdict.
+  // A failed check does NOT roll the switch back (the restart succeeded), but
+  // the session now carries a visible reason instead of an empty snapshot.
+  const ipCheck = await probeIpThroughProxy({ scheme: node.scheme, host: node.host, port: node.port });
+  const runtimeData = runtimeResult.data as { proxyReachable?: boolean | null } | undefined;
+  const audit = buildExitIpAudit(ipCheck, { proxyReachable: runtimeData?.proxyReachable ?? null });
+
   await prisma.browserSession.update({
     where: { id: row.id },
     data: {
@@ -92,8 +101,14 @@ export async function POST(
       byoProxyScheme: null,
       byoProxyUsername: null,
       byoProxyAuth: null,
+      ...audit,
     },
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({
+    ok: true,
+    ip: audit.exitIpSnapshot,
+    error: audit.exitIpError,
+    path: audit.exitIpPath,
+  });
 }

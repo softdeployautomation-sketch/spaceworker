@@ -172,6 +172,12 @@ interface Session {
   lang: string | null;
   /** The host-loopback port the container's CDP forwarder is published on. */
   cdpHostPort: number | null;
+  /**
+   * TASK_239 — did the CONTAINER prove it can reach the proxy it was pointed
+   * at? null = no proxy (direct session). A host-side curl says nothing about
+   * this path: the container dials the bridge gateway, not loopback.
+   */
+  proxyReachable: boolean | null;
   pid: number | null;
   containerName: string | null;
   port: number | null;
@@ -490,6 +496,43 @@ function parsePinnedRequest(value: unknown): {
   return { request: { fullVersion, downloadUrl } };
 }
 
+/**
+ * TASK_239 — prove the container's OWN route to the proxy, not the host's.
+ * The session's Chromium dials `proxyServerValue` from inside the container;
+ * a `/dev/tcp` probe there is the only honest test of that path. Bounded to
+ * 3s and never throws; a failure is recorded, not fatal (the app decides).
+ */
+async function probeContainerProxy(
+  containerName: string,
+  proxyServerValue: string,
+): Promise<boolean | null> {
+  if (!proxyServerValue) return null;
+  let host: string;
+  let port: string;
+  try {
+    const url = new URL(proxyServerValue);
+    host = url.hostname;
+    port = url.port;
+  } catch {
+    return null;
+  }
+  // BYO hosts are user-supplied and this string runs inside the container's
+  // shell: allow only hostname/IP characters and a numeric port.
+  if (!host || !/^[A-Za-z0-9._:\[\]-]+$/.test(host) || !/^\d{1,5}$/.test(port)) return null;
+  try {
+    await docker(
+      "exec",
+      containerName,
+      "/bin/sh",
+      "-c",
+      `timeout 3 bash -c "</dev/tcp/${host}/${port}"`,
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function startInternal(session: Session): Promise<string> {
   await cleanupProfileDir(session.profileDir);
   const entry = registry.get(session.sessionId);
@@ -559,6 +602,7 @@ async function startInternal(session: Session): Promise<string> {
       if (!(await waitPortReady(session.port, 20_000))) {
         throw new Error("Neko's stream server never became reachable on its mapped port");
       }
+      session.proxyReachable = await probeContainerProxy(session.containerName!, session.proxyServerValue);
       session.status = "running";
       registry.set(session.sessionId, session);
       return id;
@@ -926,6 +970,7 @@ const server = createServer(async (req, res) => {
           userAgent: userAgent || null,
           lang: lang || null,
           cdpHostPort: null,
+          proxyReachable: null,
           pid: null,
           containerName: null,
           port: null,
@@ -946,6 +991,9 @@ const server = createServer(async (req, res) => {
           // published on, for lib/clone-hosted-launch.ts to inject through.
           // null for every session that did not ask for CDP.
           cdpPort: finalSession?.cdpHostPort ?? null,
+          // TASK_239 — null = direct session; false = the container could not
+          // reach the configured proxy (the app persists it as an error).
+          proxyReachable: finalSession?.proxyReachable ?? null,
           // TASK_135 §3 — what was ACTUALLY delivered, so the app can stamp
           // evidence on the job instead of echoing its own intent back at itself.
           pinnedBrowserVersion: finalSession?.pinnedBrowserVersion ?? null,
@@ -982,6 +1030,7 @@ const server = createServer(async (req, res) => {
           // keeps a caller that holds the old value from injecting into a port
           // that is now someone else's session (or nothing at all).
           cdpPort: registry.get(sessionId)?.cdpHostPort ?? null,
+          proxyReachable: registry.get(sessionId)?.proxyReachable ?? null,
         });
         return;
       }

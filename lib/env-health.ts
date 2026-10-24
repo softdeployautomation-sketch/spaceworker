@@ -20,6 +20,10 @@ import "server-only";
 //
 // Deliberately NOT in lib/env.ts: that module is imported everywhere and must
 // stay a pure accessor (its `required()` throws at import time).
+//
+// TASK_239 — this module only answers "is the node CONFIGURED". Live
+// reachability is a network probe and lives in lib/exit-node-health.ts
+// (admin: GET /api/admin/exit-node-health), so boot stays offline.
 
 interface FeatureEnv {
   /** Owner-visible capability that stops working without the keys. */

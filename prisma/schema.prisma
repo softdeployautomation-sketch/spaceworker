@@ -1420,6 +1420,18 @@ model BrowserSession {
   // answer "what IP was this session really seen as" after a later config
   // change. Null if the live check failed — never blocks session launch.
   exitIpSnapshot   String?
+  // TASK_239 — why the live exit-IP check failed, as a stable code
+  // ("timeout" | "unreachable" | "bad_response" | "empty" |
+  // "container_unreachable"), and when it last ran. Persisted instead of being
+  // swallowed at launch: "no IP" must read as a visible, typed failure, not as
+  // silence. Best-effort — never blocks the launch.
+  exitIpError      String?
+  exitIpCheckedAt  DateTime?
+  // TASK_239 — which path was actually measured: "container" only when the
+  // browser-server proved the container can reach the proxy (docker exec
+  // /dev/tcp probe), otherwise "host" (this app's own curl through the same
+  // proxy). A host-only probe must never be presented as the container's route.
+  exitIpPath       String?
   // Snapshot of the proxy actually routing this session — written at start time
   // so an edit to a profile's BYO settings never silently changes a live route.
   byoProxyHost     String?
