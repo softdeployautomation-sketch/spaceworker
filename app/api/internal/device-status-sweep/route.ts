@@ -47,6 +47,7 @@ export async function POST(req: Request) {
       userId: true,
       status: true,
       lastSeenAt: true,
+      onlineConfirmedAt: true,
       lastNotifiedOnline: true,
       user: { select: { notifyDeviceOffline: true, notifyDeviceOnline: true } },
     },

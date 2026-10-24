@@ -2035,6 +2035,13 @@ model Device {
   // Free-form hardware summary snapshot (cpu/ram/disk) from the agent.
   hardwareSummary      Json?
   lastSeenAt           DateTime?
+  // TASK_238 — when syncDevices() last saw Vantra report this device ONLINE.
+  // Deliberately separate from lastSeenAt: Vantra omits `lastSeen` for some
+  // online agents, and fabricating a heartbeat was wrong (29a4483). This is a
+  // freshness anchor for the VERDICT only; deviceStatus() accepts either a
+  // fresh heartbeat or a fresh verdict, so an online machine with a stale or
+  // missing lastSeenAt is not reported offline. Null for offline rows.
+  onlineConfirmedAt    DateTime?
   // 2026-09-26 — the device-status sweep's own memory of what it last saw for
   // THIS device, distinct from `status` (which is a broader derived label
   // including "asleep"/"unknown"). Null means "never swept yet" so a brand

@@ -61,7 +61,7 @@ test("a stored offline verdict is honoured immediately, even with a fresh lastSe
 
 test("an online verdict still has to prove freshness, so a vanished device ages out", () => {
   assert.equal(devices.deviceStatus({ status: "online", lastSeenAt: ago(10 / 60) }), "online");
-  assert.equal(devices.deviceStatus({ status: "online", lastSeenAt: ago(9) }), "online");
+  assert.equal(devices.deviceStatus({ status: "online", lastSeenAt: ago(4) }), "online");
   // No verdict refresh (Vantra unreachable / list never opened) -> the window
   // itself has to turn it off, or a crashed box would stay green forever.
   assert.equal(devices.deviceStatus({ status: "online", lastSeenAt: ago(20) }), "offline");
@@ -83,9 +83,9 @@ test("an unknown status falls back to the age window, never a bare 'online'", ()
 test("isDeviceOnline is the single age rule every freshness check shares", () => {
   assert.equal(devices.isDeviceOnline(null), false);
   assert.equal(devices.isDeviceOnline(ago(0)), true);
-  assert.equal(devices.isDeviceOnline(ago(9)), true);
-  // The window is exclusive at exactly 10 minutes, matching the old behaviour.
-  assert.equal(devices.isDeviceOnline(ago(10)), false);
+  assert.equal(devices.isDeviceOnline(ago(4)), true);
+  // The window is exclusive at exactly 5 minutes (TASK_238 keeps it there).
+  assert.equal(devices.isDeviceOnline(ago(5)), false);
   assert.equal(devices.isDeviceOnline(ago(60)), false);
 });
 
