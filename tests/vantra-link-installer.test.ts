@@ -1364,12 +1364,15 @@ test("a private-org sighting releases the row instead of leaving it counting", a
 
 // ---------------------------------------------------------------------------
 // TASK_230 P4b-1 — offline must NEVER get a fresh "seen now" stamp. The rule
-// lives in syncDevices' `lastSeenAt = d.lastSeen ? … : d.online ? now :
+// lives in syncDevices' `lastSeenAt = d.lastSeen ? new Date(d.lastSeen) :
 // undefined` (2026-09-28 fix: the old `: now` fallback gave dead machines a
-// false "last seen 0s ago" and kept the 10-minute freshness window alive).
+// false "last seen 0s ago" and kept the freshness window alive).
 // Vantra omits `lastSeen` for offline agents — both TRMM rows (empty
 // last_seen) and the TASK_230 mesh-only rows (conn !== 1) — so the omitted
 // case IS the offline case in practice.
+//
+// TASK_238 — an ONLINE device with no `lastSeen` is no longer given a fake
+// heartbeat either. Its liveness is anchored by `onlineConfirmedAt` instead.
 // ---------------------------------------------------------------------------
 
 /** One OFFLINE device exactly as Vantra answers when it has no lastSeen. */
@@ -1427,7 +1430,9 @@ test("TASK_230: offline + no lastSeen on the CREATE path stores null, never now"
     "no Date at all — not now, not anything invented");
 });
 
-test("TASK_230: online + no lastSeen IS stamped now (the one honest fallback)", async () => {
+test("TASK_238: online + no lastSeen stamps the VERDICT, never a fake heartbeat", async () => {
+  // THE FALSE-OFFLINE CASE: Vantra says online but omits lastSeen. 29a4483 was
+  // right to stop inventing `lastSeenAt`; the freshness anchor is separate.
   devicesResponse = {
     ok: true,
     orgTier: "public",
@@ -1439,7 +1444,7 @@ test("TASK_230: online + no lastSeen IS stamped now (the one honest fallback)", 
         status: "online",
         osName: "windows",
         operatingSystem: "Windows 11",
-        // lastSeen absent, but the agent is ONLINE — "now" is the truth here.
+        // lastSeen absent, but the agent is ONLINE.
       },
     ],
   };
@@ -1448,8 +1453,65 @@ test("TASK_230: online + no lastSeen IS stamped now (the one honest fallback)", 
   await syncDevices(USER_ID);
   const t1 = Date.now();
 
-  const stamp = (deviceRows.get("agent_live_no_seen")!.lastSeenAt as Date).getTime();
-  assert.ok(stamp >= t0 && stamp <= t1, "online + no lastSeen stamps now, within the test window");
+  const row = deviceRows.get("agent_live_no_seen")!;
+  assert.equal(row.lastSeenAt, null, "no fabricated heartbeat (29a4483)");
+  const stamp = (row.onlineConfirmedAt as Date).getTime();
+  assert.ok(stamp >= t0 && stamp <= t1, "the online verdict is stamped within the test window");
+});
+
+test("TASK_238: an offline sighting clears the verdict but keeps the real check-in", async () => {
+  const oldCheckIn = new Date("2026-10-01T02:03:04.000Z");
+  deviceRows.set("agent_flip", {
+    id: "dev-agent_flip",
+    vantraAgentId: "agent_flip",
+    name: "Flip-box",
+    status: "online",
+    lastSeenAt: oldCheckIn,
+    onlineConfirmedAt: new Date(),
+  });
+  devicesResponse = offlineNoLastSeenPayload("agent_flip");
+
+  await syncDevices(USER_ID);
+
+  const row = deviceRows.get("agent_flip")!;
+  assert.equal(row.onlineConfirmedAt, null, "the stale online verdict is cleared");
+  assert.equal((row.lastSeenAt as Date).getTime(), oldCheckIn.getTime(),
+    "the last real check-in still survives");
+});
+
+test("TASK_238: a later online sync refreshes the verdict without restamping lastSeen", async () => {
+  const oldCheckIn = new Date("2026-10-01T02:03:04.000Z");
+  const oldVerdict = new Date(Date.now() - 5 * 60_000);
+  deviceRows.set("agent_refresh", {
+    id: "dev-agent_refresh",
+    vantraAgentId: "agent_refresh",
+    name: "Refresh-box",
+    status: "online",
+    lastSeenAt: oldCheckIn,
+    onlineConfirmedAt: oldVerdict,
+  });
+  devicesResponse = {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: "agent_refresh",
+        name: "Refresh-box",
+        online: true,
+        status: "online",
+        osName: "windows",
+        operatingSystem: "Windows 11",
+      },
+    ],
+  };
+
+  const t0 = Date.now();
+  await syncDevices(USER_ID);
+  const row = deviceRows.get("agent_refresh")!;
+
+  assert.ok((row.onlineConfirmedAt as Date).getTime() >= t0, "the verdict is refreshed");
+  assert.equal((row.lastSeenAt as Date).getTime(), oldCheckIn.getTime(),
+    "lastSeenAt is still the real heartbeat, not a sync clock");
 });
 
 test("TASK_230 P4b-2: a mesh-only (node//) device syncs as tier=public", async () => {

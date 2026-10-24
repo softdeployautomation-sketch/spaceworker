@@ -55,20 +55,21 @@ export async function refreshDeviceLiveness(userId: string): Promise<void> {
 /**
  * Can a clone step run on this device right now?
  *
- * Deliberately accepts EITHER signal:
- *   - `deviceStatus()` — the app-wide definition (heartbeat within 10 min);
- *   - the raw `status` column — Vantra's own `online` flag, as of the refresh
- *     that just ran (TRMM's `lastSeen` can lag its own online flag, so the
- *     heartbeat alone under-reports a live machine).
+ * TASK_238 — ONE definition, `deviceStatus()`. It already understands both
+ * freshness anchors (a real heartbeat and Vantra's recent online verdict), so
+ * the old raw-`status` OR-clause is gone: it made this gate accept a machine
+ * that `requireOnlineOwnedDevice()` then refused with `device_offline`, which
+ * is the contradiction this module exists to prevent.
  *
- * The asymmetry is intentional. A FALSE POSITIVE costs one clear
- * "device offline" from the capture/receive/launch RPC, which fails closed
- * anyway. A FALSE NEGATIVE shows the owner "no host available" with nothing to
- * click — the exact dead end this module exists to remove. `asleep` is not
- * accepted: it is an explicit state, not a freshness question.
+ * `asleep` is still not accepted: it is an explicit state, not a freshness
+ * question (and `deviceStatus()` maps a live heartbeat to "online" anyway).
  */
-function isUsable(device: { status: string; lastSeenAt: Date | null }): boolean {
-  return device.status === "online" || deviceStatus(device) === "online";
+function isUsable(device: {
+  status: string;
+  lastSeenAt: Date | null;
+  onlineConfirmedAt?: Date | null;
+}): boolean {
+  return deviceStatus(device) === "online";
 }
 
 
@@ -118,13 +119,13 @@ export async function hostAvailability(opts: {
         device: { userId: opts.userId, deviceKind: "workstation", vantraAgentId: { not: null } },
       },
       select: {
-        device: { select: { id: true, name: true, status: true, lastSeenAt: true, deviceKind: true } },
+        device: { select: { id: true, name: true, status: true, lastSeenAt: true, onlineConfirmedAt: true, deviceKind: true } },
       },
       take: 50,
     }),
     db.device.findMany({
       where: { userId: opts.userId, deviceKind: "hosted" },
-      select: { id: true, name: true, status: true, lastSeenAt: true, deviceKind: true },
+      select: { id: true, name: true, status: true, lastSeenAt: true, onlineConfirmedAt: true, deviceKind: true },
       take: 10,
     }),
   ]);

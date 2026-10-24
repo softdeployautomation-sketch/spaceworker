@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 
 import { db } from "./db";
+import { deviceStatus } from "./devices";
 import { env } from "./env";
 import { getAdminSettings } from "./admin-settings";
 import { createSessionToken, SESSION_COOKIE } from "./auth";
@@ -334,6 +335,11 @@ export const captureViaService: CaptureFn = async (device, framePath): Promise<C
     where: { id: device.id },
     select: { status: true, user: { select: { email: true, emailVerified: true } } },
   });
+  // TASK_238 — deliberately the RAW verdict here, not `deviceStatus()`: this is
+  // the SCHEDULED capture path, which has no guaranteed sync inside the 60s
+  // verdict window (the background sweep is 1 min). Freshness is the badge's
+  // and the manual path's concern; a capture RPC on a dead box fails closed on
+  // its own, so the authoritative online flag is the right admission test.
   if (!fresh || fresh.status !== "online") return { failureReason: "device_offline" };
 
   const token = await createSessionToken({
@@ -1093,11 +1099,19 @@ export async function captureDeviceNow(
 
   const device = await db.device.findUnique({
     where: { id: deviceId },
-    select: { id: true, userId: true, name: true, status: true, screenshotMonitoringEnabled: true },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      status: true,
+      lastSeenAt: true,
+      onlineConfirmedAt: true,
+      screenshotMonitoringEnabled: true,
+    },
   });
   if (!device) return { status: "refused", reason: "device_not_found" };
   if (!device.screenshotMonitoringEnabled) return { status: "refused", reason: "not_opted_in" };
-  if (device.status !== "online") return { status: "refused", reason: "device_offline" };
+  if (deviceStatus(device) !== "online") return { status: "refused", reason: "device_offline" };
 
   const alreadyCapturing = await db.deviceScreenshot.findFirst({
     where: { deviceId, status: "capturing" },

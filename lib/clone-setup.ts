@@ -669,7 +669,7 @@ async function requireOnlineOwnedDevice(opts: { userId: string; deviceId: string
 }> {
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId },
-    select: { id: true, name: true, vantraAgentId: true, status: true, lastSeenAt: true },
+    select: { id: true, name: true, vantraAgentId: true, status: true, lastSeenAt: true, onlineConfirmedAt: true },
   });
   if (!device) throw new Error("device_not_owned");
   if (!device.vantraAgentId) throw new Error("device_not_linked");
@@ -749,7 +749,7 @@ export async function cloneSetupStatus(opts: {
 
   const device = await db.device.findFirst({
     where: { id: opts.deviceId, userId: opts.userId },
-    select: { status: true, lastSeenAt: true, vantraAgentId: true },
+    select: { status: true, lastSeenAt: true, onlineConfirmedAt: true, vantraAgentId: true },
   });
   if (!device) throw new Error("device_not_owned");
   // TASK_118 B8-1: ensure the hosted destination row exists BEFORE reading

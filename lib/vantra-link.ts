@@ -1558,6 +1558,12 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       // Leaving it undefined on the update path means "don't change" (Prisma),
       // i.e. keep the real last-known check-in.
       const lastSeenAt = d.lastSeen ? new Date(d.lastSeen) : undefined;
+      // TASK_238 — the verdict's own freshness anchor. Vantra omits `lastSeen`
+      // for some online agents, so an online row with a stale/missing lastSeen
+      // used to read "offline". Stamping `lastSeenAt` here was the old wrong
+      // fix (it fabricates a heartbeat and keeps a stopped sync green); this
+      // column is honest and ages out on its own (VERDICT_FRESH_MS).
+      const onlineConfirmedAt = d.online ? now : null;
       const saved = await db.device.upsert({
         where: { vantraAgentId: d.vantraAgentId },
         update: {
@@ -1566,6 +1572,7 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           osName: d.osName,
           status: d.online ? "online" : "offline",
           lastSeenAt,
+          onlineConfirmedAt,
           tier: entry.tier,
         },
         create: {
@@ -1575,6 +1582,7 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
           osName: d.osName,
           status: d.online ? "online" : "offline",
           lastSeenAt: lastSeenAt ?? null,
+          onlineConfirmedAt,
           tier: entry.tier,
         },
       });
