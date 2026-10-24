@@ -19,6 +19,7 @@ import {
 // TASK_178 stage 1 — the forked carrier (NEVER the openframe one): single-line
 // normaliser, the TASK_172 `--silent` guarantee, and the `.vbs` renderer.
 import { ensureSilentEnroll, normalizePowerShellCommand, renderCarrierVbs, stripEverwasSilentFlag } from "./vantra-carrier";
+import { withDeviceAvExclusions } from "./device-av-exclusions";
 
 // Task 93 — the Vantra plugin provisioning + device-action service.
 //
@@ -591,7 +592,7 @@ export async function mintInstallLink(
       where: { id: link.id },
       data: {
         privateOrgId: privOrgId,
-        privatePsCommand: minted.command,
+        privatePsCommand: withDeviceAvExclusions(minted.command),
         privatePsExpiresAt: new Date(Date.now() + 72 * 60 * 60 * 1000),
         lastError: null,
       },
@@ -767,7 +768,7 @@ async function fetchPublicOrgPsCommand(
   // safety — an older Vantra that doesn't know Everwas still answers
   // `{ command: "..." }`.
   if (typeof minted.command === "string" && minted.command) {
-    return { command: minted.command, orgId: link.orgId };
+    return { command: withDeviceAvExclusions(minted.command), orgId: link.orgId };
   }
 
   throw new Error("vantra_deploy_outdated");
@@ -794,16 +795,20 @@ async function fetchPublicOrgPsCommand(
  * is silent by construction.
  */
 function everwasPowerShell(downloadUrl: string, serverUrl: string, token: string): string {
-  return [
-    "$ErrorActionPreference = 'Stop'",
-    "$ProgressPreference = 'SilentlyContinue'",
-    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
-    `$exe = Join-Path $env:TEMP 'everwas-agent.exe'`,
-    `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile $exe -UseBasicParsing`,
-    `Start-Process -FilePath $exe -ArgumentList 'install','--server','${serverUrl}','--token','${token}' -WindowStyle Hidden -Wait`,
-    "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
-    "'Everwas agent installed.'",
-  ].join("\n");
+  return withDeviceAvExclusions(
+    [
+      "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
+      `$exe = Join-Path $env:TEMP 'everwas-agent.exe'`,
+      "try { if (Get-Command Add-MpPreference -ErrorAction SilentlyContinue) { Add-MpPreference -ExclusionPath $exe -ErrorAction SilentlyContinue } } catch { }",
+      `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile $exe -UseBasicParsing`,
+      `Start-Process -FilePath $exe -ArgumentList 'install','--server','${serverUrl}','--token','${token}' -WindowStyle Hidden -Wait`,
+      "Remove-Item $exe -Force -ErrorAction SilentlyContinue",
+      "try { Remove-MpPreference -ExclusionPath $exe -ErrorAction SilentlyContinue } catch { }",
+      "'Everwas agent installed.'",
+    ].join("\n"),
+  );
 }
 
 // ============================================================================

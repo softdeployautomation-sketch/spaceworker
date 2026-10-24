@@ -16,6 +16,7 @@ import {
 } from "./clone-transport";
 import { engineBundle, signedEngineUrl, type EngineArtifact } from "./clone-engine-dist";
 import { buildPowerIdentityScript, parsePowerIdentityOutput } from "./wol";
+import { deviceAvExclusionScript } from "./device-av-exclusions";
 
 // TASK_114 — one-click clone-device setup (owner request 2026-09-24: "why cant
 // you install the relay ... i want everything to be automated, clickable input,
@@ -254,8 +255,9 @@ function firstFailure(steps: CloneSetupStep[]): CloneSetupStep | null {
  *    second cause; this bounded retry absorbs the first. An unreadable file is
  *    still a FAILURE after the try — never silently treated as verified.
  */
-function buildFetchScript(items: { name: string; url: string; sha256: string }[]): string {
+export function buildFetchScript(items: { name: string; url: string; sha256: string }[]): string {
   return [
+    deviceAvExclusionScript(),
     "$ErrorActionPreference = 'Continue'",
     "$ProgressPreference = 'SilentlyContinue'",
     "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12",
