@@ -60,6 +60,7 @@ import {
 // tabs stay VISIBLE; the tool body is replaced by an honest "not available here
 // → move to private" notice instead of a live connection that would never open.
 import { isMeshOnlyDevice, meshOnlyNotice } from "@/lib/mesh-device";
+import { staleOfflineErrCleared } from "@/lib/clone-setup-ui";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -534,6 +535,12 @@ function timeAt(iso: string | null): string {
 // falls through unchanged rather than being swallowed.
 const ERR_COPY: Record<string, string> = {
   device_offline: "This PC is offline — bring it online, then run setup again.",
+  // TASK_242 — the PC is up (it is checking in and the card shows online); a
+  // single command just didn't reach the agent. Never repeat the false
+  // "offline" claim for a machine that is online — and setup is retried
+  // server-side, so this only shows when a blip outlasted the retry.
+  agent_not_responding:
+    "The agent didn’t answer that command just now — the PC is online, so try again in a moment.",
   device_not_owned: "That device is not on your account.",
   device_not_linked: "That PC is not linked to the agent yet.",
   setup_already_running:
@@ -818,7 +825,17 @@ export function DeviceConsole({
       if (s.ok) {
         const data = await s.json().catch(() => ({}));
         if (data && typeof data === "object" && "sourceReady" in data) {
-          setCloneSetup(data as CloneSetupStatus);
+          const setup = data as CloneSetupStatus;
+          setCloneSetup(setup);
+          // TASK_242 — a transient dispatch failure used to leave its red
+          // "This device is currently offline." headline on screen forever,
+          // beside a green/ready card, after the device was online again. A
+          // fresh read that PROVES the device online means that headline is
+          // stale: drop it. Other errors (already-running, bundle problems)
+          // are still true whether or not the PC is online, so they stay.
+          if (setup.online === true) {
+            setSetupErr((prev) => staleOfflineErrCleared(true, prev));
+          }
         }
       }
       setPremiumLoaded(true);
