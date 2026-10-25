@@ -2054,6 +2054,14 @@ model Device {
   // fresh heartbeat or a fresh verdict, so an online machine with a stale or
   // missing lastSeenAt is not reported offline. Null for offline rows.
   onlineConfirmedAt    DateTime?
+  // TASK_241 — the exactly-once claim for the "new device added" notification.
+  // syncDevices() is what creates public Everwas and private devices (the
+  // heartbeat route only covers direct heartbeats), so TASK_227's ping never
+  // fired for them. Null = never claimed; stamped atomically before the send
+  // so the onboarding sweep and a dashboard sync racing cannot double-notify.
+  // Backfilled to createdAt for pre-existing rows so the deploy cannot storm
+  // notifications for devices the owner already knows about.
+  addedNotifiedAt      DateTime?
   // 2026-09-26 — the device-status sweep's own memory of what it last saw for
   // THIS device, distinct from `status` (which is a broader derived label
   // including "asleep"/"unknown"). Null means "never swept yet" so a brand

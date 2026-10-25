@@ -182,6 +182,10 @@ export async function recordHeartbeat(userId: string, input: HeartbeatInput): Pr
             input.hardwareSummary !== undefined ? toJson(input.hardwareSummary) : undefined,
           lastSeenAt: now,
           status: "online",
+          // TASK_241 — stamp the "new device" claim here too. This path
+          // notifies immediately below; without the stamp the next syncDevices
+          // would see a null claim and send a second ping for the same device.
+          addedNotifiedAt: now,
         },
       });
 

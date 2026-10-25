@@ -7,10 +7,12 @@ import Module from "node:module";
 // ---------------------------------------------------------------------------
 // TASK_227 — the GATE for the "new device added" notification.
 //
-// WHY THIS FILE EXISTS: recordHeartbeat is the ONLY place a device joins an
-// account (first sight of a Vantra agent id). Before this task the join was
-// silent — the owner learned about a new machine only by noticing a new row in
-// the device list. The contract pins here, layer by layer:
+// WHY THIS FILE EXISTS: recordHeartbeat is one of two places a device joins an
+// account (first sight of a Vantra agent id); syncDevices is the other (public
+// Everwas and private devices — TASK_241 covers that path, and both stamp the
+// shared exactly-once claim). Before this task the join was silent — the owner
+// learned about a new machine only by noticing a new row in the device list.
+// The contract pins here, layer by layer:
 //   1. LIB    — against a fake db the REAL lib/devices.ts runs: the FIRST
 //               heartbeat of a new vantraAgentId fires exactly ONE
 //               notifyUser(device_added) with the device name interpolated;
@@ -184,6 +186,10 @@ test("the FIRST heartbeat of a new vantraAgentId fires exactly one device_added 
   const res = await heartbeat("agent-A", "Mike's MacBook", { osName: "macOS", osVersion: "15" });
   assert.equal(res.created, true);
   assert.equal(hb.created.length, 1);
+  assert.ok(
+    hb.created[0]?.addedNotifiedAt instanceof Date,
+    "TASK_241: the create stamps the claim so a later sync cannot notify twice",
+  );
   assert.equal(notify.calls.length, 1);
   const [call] = notify.calls;
   assert.ok(call);
