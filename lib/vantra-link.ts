@@ -10,6 +10,7 @@ import { recordAgentActionAudit } from "./devices";
 import { DEFAULT_AGENT_LABEL } from "./agent-visibility";
 import { isCurrentPrivatePsCommand } from "./private-ps-command";
 import { notifyPendingActionViaTelegram } from "./agent-approval-notify";
+import { notifyUser } from "./notify";
 import {
   executePinRequest,
   startMaintenanceOverlayAction,
@@ -1493,6 +1494,13 @@ function engineOf(d: { vantraAgentId: string; meshOnly?: boolean; engine?: strin
 export async function syncDevices(userId: string): Promise<{ devices: SyncedDevice[] }> {
   const link = await db.vantraLink.findUnique({ where: { userId } });
   if (!link || link.status === "revoked") throw new Error("no_link");
+  // TASK_241 — the owner's "new device" preferences, read once per sync. The
+  // notification itself is best-effort; the claim below is what makes it
+  // exactly-once even when the onboarding sweep and a dashboard sync race.
+  const owner = await db.user.findUnique({
+    where: { id: userId },
+    select: { notifyDeviceAdded: true, deviceTelemetryEnabled: true },
+  });
   try {
     // Tier model: agents can live in the public org AND the private
     // companion (`sw-<uid>-p`) — a device added via the public link silently
@@ -1598,6 +1606,35 @@ export async function syncDevices(userId: string): Promise<{ devices: SyncedDevi
       // enrolls a NEW agent id, so it arrives as a genuinely new device with
       // its own 20-minute quarantine.
       if (saved.removedAt) continue;
+
+      // TASK_241 — first sight of a device is a "new device" event for the
+      // owner. syncDevices is the ONLY path that creates public Everwas and
+      // private devices (the heartbeat route covers direct heartbeats), which
+      // is why TASK_227's ping never fired for them. Claim the row atomically
+      // BEFORE the send: `addedNotifiedAt` null is the single winner, so a
+      // racing sweep cannot double-notify. The claim is stamped even when the
+      // pref is off (so enabling it later cannot replay old devices); a
+      // channel failure is logged, never allowed to fail the sync.
+      if (saved.addedNotifiedAt == null) {
+        const claimed = await db.device.updateMany({
+          where: { id: saved.id, addedNotifiedAt: null },
+          data: { addedNotifiedAt: now },
+        });
+        if (claimed.count === 1 && owner?.notifyDeviceAdded && owner.deviceTelemetryEnabled) {
+          try {
+            const os = saved.osName ? ` (${saved.osName})` : "";
+            await notifyUser(userId, {
+              eventType: "device_added",
+              subject: `New device added (${entry.tier}): ${saved.name}`,
+              emailHtml: `<p><strong>${saved.name}</strong> is now registered to your account${os} (${entry.tier}).</p>`,
+              telegramText: `🆕 New device added (${entry.tier}): ${saved.name}.`,
+              agentText: `🆕 New device added (${entry.tier}): ${saved.name}.`,
+            });
+          } catch (err) {
+            console.error(`[vantra-link] device_added notify failed for device ${saved.id}:`, err);
+          }
+        }
+      }
 
       // TASK_128 — the visible onboarding row. `timerStartedAt` is COPIED from
       // Vantra's DeviceAutoMove row (never invented locally) so the countdown

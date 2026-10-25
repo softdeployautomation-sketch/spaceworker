@@ -200,6 +200,10 @@ beforeEach(() => {
   onboardingUpdates = [];
   onboardingCreateError = null;
   devicesResponse = { ok: true, orgTier: "public", devices: [] };
+  notifyCalls.length = 0;
+  notifyThrows = false;
+  syncOwner.notifyDeviceAdded = true;
+  syncOwner.deviceTelemetryEnabled = true;
   mintRows = [];
   mintCreates = [];
   mintUpdates = [];
@@ -224,8 +228,16 @@ let onboardingUpdates: Array<Record<string, unknown>> = [];
 let onboardingCreateError: unknown = null;
 /** What a (stubbed) Vantra /sw/devices call answers with. */
 let devicesResponse: Record<string, unknown> = { ok: true, orgTier: "public", devices: [] };
+// TASK_241 — the sync path's notifyUser recorder and the owner prefs it reads.
+const notifyCalls: Array<{ userId: string; opts: Record<string, unknown> }> = [];
+let notifyThrows = false;
+const syncOwner = { notifyDeviceAdded: true, deviceTelemetryEnabled: true };
 
 const fakeDb = {
+  user: {
+    findUnique: async ({ where, select }: DbArgs) =>
+      where?.id === USER_ID ? project(syncOwner, select) : null,
+  },
   vantraLink: {
     findUnique: async ({ where, select }: DbArgs) => {
       const matches = where?.userId === row.userId || where?.id === row.id;
@@ -348,6 +360,18 @@ const fakeDb = {
       deviceRows.set(key, saved);
       return { ...saved };
     },
+    // TASK_241 — the exactly-once claim. Only an id-scoped, null-guarded
+    // update may win; the everwas cleanup's broad update is a no-op here.
+    updateMany: async ({ where, data }: DbArgs) => {
+      const w = where as Record<string, unknown> | undefined;
+      const id = w?.id;
+      if (typeof id !== "string") return { count: 0 };
+      const row = [...deviceRows.values()].find((r) => r.id === id);
+      if (!row) return { count: 0 };
+      if (w?.addedNotifiedAt === null && row.addedNotifiedAt != null) return { count: 0 };
+      Object.assign(row, data ?? {});
+      return { count: 1 };
+    },
   },
   deviceOnboarding: {
     findUnique: async ({ where }: DbArgs) => {
@@ -415,6 +439,14 @@ function installRequireHook(): void {
         return {
           recordAgentActionAudit: async (call: AuditCall) => {
             audits.push(call);
+          },
+        };
+      }
+      if (request === "./notify") {
+        return {
+          notifyUser: async (userId: string, opts: Record<string, unknown>) => {
+            if (notifyThrows) throw new Error("channel_down");
+            notifyCalls.push({ userId, opts });
           },
         };
       }
@@ -1368,6 +1400,114 @@ test("a private-org sighting releases the row instead of leaving it counting", a
 
   const released = onboardingUpdates.at(-1);
   assert.equal(released?.status, "released", "observed private ⇒ the row is released");
+});
+
+// ---------------------------------------------------------------------------
+// TASK_241 — a device ARRIVING must notify, not just one going offline.
+// syncDevices is the path that creates public Everwas and private devices; the
+// TASK_227 heartbeat hook never ran for them. The claim (`addedNotifiedAt`)
+// makes the ping exactly-once across the sweep/dashboard race.
+// ---------------------------------------------------------------------------
+
+/** One public Everwas device as Vantra answers it (the public integration). */
+function everwasDevicesPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    ok: true,
+    orgTier: "public",
+    devices: [
+      {
+        vantraAgentId: "ew-1",
+        name: "Public Box",
+        online: true,
+        status: "online",
+        osName: "windows",
+        lastSeen: new Date().toISOString(),
+        engine: "everwas",
+        ...overrides,
+      },
+    ],
+  };
+}
+
+test("TASK_241: a new public Everwas device sends exactly one device_added ping", async () => {
+  devicesResponse = everwasDevicesPayload();
+
+  await syncDevices(USER_ID);
+
+  assert.equal(notifyCalls.length, 1, "first sight of the public agent notifies once");
+  const opts = notifyCalls[0]!.opts;
+  assert.equal(opts.eventType, "device_added");
+  assert.equal(opts.subject, "New device added (public): Public Box");
+  assert.match(String(opts.emailHtml), /Public Box/);
+  assert.match(String(opts.emailHtml), /windows/);
+  assert.match(String(opts.telegramText), /Public Box/);
+  assert.match(String(opts.agentText), /Public Box/);
+  assert.ok(deviceRows.get("ew-1")?.addedNotifiedAt instanceof Date, "the claim is stamped");
+});
+
+test("TASK_241: a new private device notifies with the private tier label", async () => {
+  devicesResponse = {
+    ok: true,
+    orgTier: "private",
+    devices: [
+      {
+        vantraAgentId: "pv-1",
+        name: "Private Box",
+        online: true,
+        status: "online",
+        lastSeen: new Date().toISOString(),
+      },
+    ],
+  };
+
+  await syncDevices(USER_ID);
+
+  assert.equal(notifyCalls.length, 1);
+  assert.equal(notifyCalls[0]!.opts.subject, "New device added (private): Private Box");
+});
+
+test("TASK_241: the next sync of the same device is silent", async () => {
+  devicesResponse = everwasDevicesPayload();
+
+  await syncDevices(USER_ID);
+  await syncDevices(USER_ID);
+
+  assert.equal(notifyCalls.length, 1, "the claim survives the second sync");
+});
+
+test("TASK_241: an already-known device never re-notifies", async () => {
+  deviceRows.set("ew-1", {
+    id: "dev-ew-1",
+    vantraAgentId: "ew-1",
+    name: "Public Box",
+    removedAt: null,
+    addedNotifiedAt: new Date("2026-10-01T00:00:00.000Z"),
+  });
+  devicesResponse = everwasDevicesPayload();
+
+  await syncDevices(USER_ID);
+
+  assert.equal(notifyCalls.length, 0);
+});
+
+test("TASK_241: notifyDeviceAdded=false silences the ping but still stamps the claim", async () => {
+  syncOwner.notifyDeviceAdded = false;
+  devicesResponse = everwasDevicesPayload();
+
+  await syncDevices(USER_ID);
+
+  assert.equal(notifyCalls.length, 0);
+  assert.ok(deviceRows.get("ew-1")?.addedNotifiedAt instanceof Date, "stamped so enabling later cannot replay it");
+});
+
+test("TASK_241: a channel failure never fails the sync", async () => {
+  notifyThrows = true;
+  devicesResponse = everwasDevicesPayload();
+
+  const res = await syncDevices(USER_ID);
+
+  assert.equal(res.devices.length, 1, "the device still syncs");
+  assert.ok(deviceRows.get("ew-1"), "and the row is written");
 });
 
 // ---------------------------------------------------------------------------
