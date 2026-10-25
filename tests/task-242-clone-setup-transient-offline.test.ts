@@ -5,8 +5,10 @@ import Module from "node:module";
 // TASK_242 — a transient TRMM command-channel blip ("unable to contact the
 // agent" → Vantra 503 "This device is currently offline.") on a device that is
 // still ONLINE must not abort setup on the first try, and must never be
-// reported as the machine being offline. This drives the REAL module's retry
-// seam with a controllable transport.
+// reported as the machine being offline. When the channel stays down past the
+// retries the original error is rethrown and the caller records it on the step
+// and bails quietly — there is deliberately NO "agent didn't answer" copy.
+// This drives the REAL module's retry seam with a controllable transport.
 
 type Loader = {
   _load: (request: string, parent: NodeModule | undefined, isMain: boolean) => unknown;
@@ -20,7 +22,6 @@ const original = loader._load;
 type Reply = "ok" | "offline" | "boom";
 let replies: Reply[] = [];
 let callCount = 0;
-let deviceOnline = true;
 
 const offlineErr = () =>
   new Error('vantra_503: {"error":"This device is currently offline."}');
@@ -40,7 +41,7 @@ loader._load = function patched(request, parent, isMain) {
     if (request === "./db") return { db: {} };
     if (request === "./env") return { env: { appBaseUrl: "https://spaceworker.test" } };
     if (request === "./device-tools") return { runCommandNow: fakeRunCommandNow };
-    if (request === "./devices") return { deviceStatus: () => (deviceOnline ? "online" : "offline") };
+    if (request === "./devices") return { deviceStatus: () => "online" };
     if (request === "./clone") return { refreshRelayHealth: async () => ({ status: "up" }) };
     if (request === "./clone-hosts") {
       return { hostAvailability: async () => ({}), refreshDeviceLiveness: async () => {} };
@@ -78,54 +79,35 @@ const OPTS = {
   runAsUser: false,
 };
 
-function device(online: boolean) {
-  return {
-    status: online ? "online" : "offline",
-    lastSeenAt: online ? new Date() : new Date(Date.now() - 60 * 60_000),
-    onlineConfirmedAt: online ? new Date() : null,
-  };
-}
-
-function reset(nextReplies: Reply[], online: boolean) {
+function reset(nextReplies: Reply[]) {
   replies = nextReplies;
   callCount = 0;
-  deviceOnline = online;
 }
 
 test("TASK_242: a transient offline on the first dispatch is retried and succeeds", async () => {
-  reset(["offline", "ok"], true);
+  reset(["offline", "ok"]);
 
-  const res = await runNowWithTransientRetry(OPTS, device(true));
+  const res = await runNowWithTransientRetry(OPTS);
 
   assert.equal(res.output, "STEP:probe OK");
   assert.equal(callCount, 2, "exactly one retry");
 });
 
-test("TASK_242: a persistent failure on an ONLINE device reports agent_not_responding, not offline", async () => {
-  reset(["offline", "offline"], true);
+test("TASK_242: a persistent channel failure retries 3 times then rethrows the real error (never agent_not_responding)", async () => {
+  reset(["offline", "offline", "offline"]);
 
-  await assert.rejects(runNowWithTransientRetry(OPTS, device(true)), (err: Error) => {
-    assert.equal(err.message, "agent_not_responding");
-    assert.doesNotMatch(err.message, /offline/i);
-    return true;
-  });
-  assert.equal(callCount, 2);
-});
-
-test("TASK_242: a persistent failure on an OFFLINE device keeps the real offline error", async () => {
-  reset(["offline", "offline"], false);
-
-  await assert.rejects(runNowWithTransientRetry(OPTS, device(false)), (err: Error) => {
+  await assert.rejects(runNowWithTransientRetry(OPTS), (err: Error) => {
     assert.match(err.message, /vantra_503/);
+    assert.doesNotMatch(err.message, /agent_not_responding/);
     return true;
   });
-  assert.equal(callCount, 2);
+  assert.equal(callCount, 3, "three total attempts");
 });
 
 test("TASK_242: a non-transient error is not retried", async () => {
-  reset(["boom"], true);
+  reset(["boom"]);
 
-  await assert.rejects(runNowWithTransientRetry(OPTS, device(true)), /some_unrelated_failure/);
+  await assert.rejects(runNowWithTransientRetry(OPTS), /some_unrelated_failure/);
   assert.equal(callCount, 1, "no retry for an unrelated failure");
 });
 

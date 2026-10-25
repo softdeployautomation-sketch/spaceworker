@@ -32,19 +32,31 @@ Three defects in OUR code turned that blip into the permanent lie on screen:
 
 Not idleness, and not a genuinely offline device.
 
+## Architecture note (asked during review)
+
+The clone's **IP route does not depend on TRMM**. The source relay holds a
+persistent dial-out tunnel to `browser-server` (`GET /relay/control-status` →
+`{"up":true}` for the device); at launch the hosted Chromium's `--proxy-server`
+points at browser-server's per-session listener (docker bridge gateway), which
+forwards over that tunnel (`lib/clone-hosted-launch.ts:257`). Hosted/private
+launches never take the TRMM agent-RPC path (`lib/clone.ts:1316`). TRMM is only
+used for the **one-time setup** (install/start the relay, run setup commands) and
+health probes — and that setup command channel is the piece that blips.
+
 ## Changes
 
 1. **`lib/clone-setup.ts`**
-   - `runNowWithTransientRetry(opts, device)` — on a `vantra_503` /
-     `currently offline` / `unable to contact the agent` error, retry **once**
-     after 1.5 s (setup commands are idempotent: downloads overwrite, staging is
-     re-created). If it still fails while `deviceStatus(device) === "online"`,
-     throw `agent_not_responding` instead of repeating the offline claim; if the
-     device is genuinely offline, the real error is preserved.
+   - `runNowWithTransientRetry(opts)` — on a `vantra_503` / `currently offline` /
+     `unable to contact the agent` error, retry with 1 s then 2 s backoff (3
+     attempts total; setup commands are idempotent: downloads overwrite, staging is
+     re-created). If the channel is still down it **rethrows the original error** —
+     there is deliberately **no** "agent didn't answer" / `agent_not_responding`
+     copy.
    - Wired into the three calls that ABORT setup on throw: fetch, quarantine/stage,
-     and hosted install.
-   - `requireOnlineOwnedDevice` now returns `lastSeenAt` / `onlineConfirmedAt` so
-     the retry seam can judge truth with the same `deviceStatus` model.
+     and hosted install. Each wraps the call; a transient error that outlived the
+     retries pushes a neutral failed step (`did not complete — run setup again`)
+     and ends setup via `bail()` **without a red headline**; any non-transient
+     error still propagates.
    - `isTransientAgentUnreachable` exported for the test.
 2. **`lib/clone-setup-ui.ts`** (new, client-safe, pure)
    - `staleOfflineErrCleared(online, prev)` — drop an offline-flavoured headline
@@ -52,8 +64,6 @@ Not idleness, and not a genuinely offline device.
 3. **`components/device-console.tsx`**
    - On each clone-setup poll, if `online === true`, clear a stale offline
      `setupErr` (functional `setSetupErr`, no stale closure).
-   - `ERR_COPY.agent_not_responding`: "The agent didn’t answer that command just
-     now — the PC is online, so try again in a moment." (never says offline).
 
 ## Tests
 
@@ -61,19 +71,21 @@ Not idleness, and not a genuinely offline device.
   errors survive; offline headline stays when offline; predicate matches only
   offline claims.
 - `tests/task-242-clone-setup-transient-offline.test.ts` — drives the REAL module's
-  retry seam: transient offline retried once and succeeds; persistent failure on an
-  ONLINE device → `agent_not_responding` (no "offline"); persistent failure on an
-  OFFLINE device → real 503; unrelated error not retried; predicate scope.
+  retry seam: transient offline retried and succeeds (2 calls); persistent channel
+  failure retries 3 times then rethrows the real `vantra_503` (asserts **no**
+  `agent_not_responding`); unrelated error not retried; predicate scope.
 
 ## Verification (local, nothing sent to any live device)
 
 - `tsc --noEmit` → 0.
 - `eslint` (5 changed files) → 0 errors (one pre-existing unused-symbol warning in
   `lib/clone-setup.ts`).
-- Focused: 9/9 pass.
-- Full suite: **1807 tests / 1799 pass / 7 fail / 1 skipped**. Baseline
-  `705768b`: 1798 / 1790 / 7 / 1. Delta: +9 tests, +9 pass, same 7 known
-  failures (move-to-private ×5, TASK_179 ×2).
+- Focused: 8/8 pass.
+- Full suite: **1806 tests / 1798 pass / 7 fail / 1 skipped**. Baseline
+  `705768b`: 1798 / 1790 / 7 / 1. Same 7 known failures (move-to-private ×5,
+  TASK_179 ×2).
+- Live relay tunnel for the device confirmed `{"up":true}` (constant egress,
+  independent of TRMM).
 
 ## Deploy (only on explicit go)
 

@@ -17,10 +17,6 @@ test("TASK_242: an offline headline is dropped once the device reads online", ()
 test("TASK_242: a non-offline error survives an online read", () => {
   const running = "A setup is already running for this PC — wait for it to finish, then try again.";
   assert.equal(staleOfflineErrCleared(true, running), running);
-  // The truthful transient message is NOT an offline claim, so it stays (it is
-  // still the reason the last attempt failed; the next run clears it).
-  const agent = "The agent didn’t answer that command just now — the PC is online, so try again.";
-  assert.equal(staleOfflineErrCleared(true, agent), agent);
 });
 
 test("TASK_242: an offline headline stays while the device is offline", () => {
@@ -32,6 +28,6 @@ test("TASK_242: an offline headline stays while the device is offline", () => {
 
 test("TASK_242: isOfflineHeadline matches only offline claims", () => {
   assert.equal(isOfflineHeadline("This device is currently offline."), true);
-  assert.equal(isOfflineHeadline("agent_not_responding"), false);
+  assert.equal(isOfflineHeadline("device_not_owned"), false);
   assert.equal(isOfflineHeadline(""), false);
 });

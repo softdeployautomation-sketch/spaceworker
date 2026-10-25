@@ -535,12 +535,6 @@ function timeAt(iso: string | null): string {
 // falls through unchanged rather than being swallowed.
 const ERR_COPY: Record<string, string> = {
   device_offline: "This PC is offline — bring it online, then run setup again.",
-  // TASK_242 — the PC is up (it is checking in and the card shows online); a
-  // single command just didn't reach the agent. Never repeat the false
-  // "offline" claim for a machine that is online — and setup is retried
-  // server-side, so this only shows when a blip outlasted the retry.
-  agent_not_responding:
-    "The agent didn’t answer that command just now — the PC is online, so try again in a moment.",
   device_not_owned: "That device is not on your account.",
   device_not_linked: "That PC is not linked to the agent yet.",
   setup_already_running:
