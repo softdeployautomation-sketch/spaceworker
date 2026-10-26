@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireInternalBearer } from "@/lib/internal-auth";
 import { db } from "@/lib/db";
-import { expireClones, refreshRelayHealth } from "@/lib/clone";
+import { expireClones, refreshRelayHealth, enforceRelayFailClosed } from "@/lib/clone";
 import { sweepCloneStaging, sweepClonePurge } from "@/lib/clone-sweep";
 
 // Task 112 (bit B6) — clone expiry + staging teardown + 30-day purge sweep.
@@ -70,15 +70,23 @@ async function runSweep() {
   const staging = await sweepCloneStaging();
   const purge = await sweepClonePurge();
 
+  // TASK_243 — stop relay clones whose relay tunnel is provably down.
+  const failClosed = await enforceRelayFailClosed().catch(() => ({
+    scanned: 0,
+    stopped: 0,
+    errors: 0,
+  }));
+
   // Counts + clone ids only. Never staging paths, cookie counts per
   // profile, session URLs, tokens, or anything from inside a capture.
   console.log(
-    `[clone-sweep] expired ${expiredCount} (idle ${expired.expiredIdle}, hard ${expired.expiredHard}, errors ${expired.errors}), relays ${relaysChecked}, staging ${staging.stagingDeleted} (errors ${staging.errors}), purged ${purge.purged} (errors ${purge.errors})`
+    `[clone-sweep] expired ${expiredCount} (idle ${expired.expiredIdle}, hard ${expired.expiredHard}, errors ${expired.errors}), relays ${relaysChecked}, staging ${staging.stagingDeleted} (errors ${staging.errors}), purged ${purge.purged} (errors ${purge.errors}), relay-failclosed ${failClosed.stopped} (errors ${failClosed.errors})`
   );
   return {
     expired: expiredCount,
     relaysChecked,
     stagingDeleted: staging.stagingDeleted,
     purged: purge.purged,
+    relayFailClosed: failClosed.stopped,
   };
 }

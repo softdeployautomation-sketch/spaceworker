@@ -7,6 +7,7 @@ import { deviceStatus } from "./devices";
 import { refreshRelayHealth } from "./clone";
 import { hostAvailability, refreshDeviceLiveness } from "./clone-hosts";
 import { ensureHostedDestination } from "./clone-destination";
+import { listExitNodes } from "./exit-nodes";
 
 import {
   ensureCloneCapability,
@@ -141,6 +142,8 @@ export interface CloneSetupStatus {
   selfIsHost: boolean;
   /** Clone hosts of this account that exist but are offline, by name. */
   offlineHostNames: string[];
+  /** TASK_243 — exit routes configured on this deployment (US/CA/UK). */
+  exitNodes: Array<{ id: string; label: string }>;
 }
 
 function psq(value: string): string {
@@ -781,6 +784,11 @@ export async function cloneSetupStatus(opts: {
     hostBlockReason: hosts.reason,
     selfIsHost: hosts.selfIsHost,
     offlineHostNames: hosts.offlineHostNames,
+    // TASK_243 — the exit routes this deployment actually has configured.
+    exitNodes: listExitNodes().map((n) => ({
+      id: n.id,
+      label: `${n.countryCode === "GB" ? "UK" : n.countryCode} exit`,
+    })),
   };
 }
 
@@ -822,6 +830,42 @@ export async function setupCloneDevice(opts: {
   }
 }
 
+/**
+ * TASK_242 — TRMM's command channel can briefly fail to reach an agent that is
+ * still ONLINE. The agent keeps checking in, so TRMM lists it online and our
+ * snapshot agrees, but the websocket that carries a command blips (a reconnect,
+ * or a burst of setup commands) and TRMM answers "Unable to contact the agent"
+ * — which Vantra relays as 503 "This device is currently offline." That single
+ * blip used to abort setup and claim the machine was offline while it was up.
+ *
+ * The setup commands are idempotent (downloads overwrite, staging is
+ * re-created), so retry a couple of times before believing it. The caller is
+ * only ever here after `requireOnlineOwnedDevice` proved the device online, so
+ * a still-failing transient error is a channel blip — the caller records the
+ * step and stops quietly rather than telling the owner their online PC is
+ * offline (or that "the agent didn't answer", which is noise they don't need).
+ */
+export function isTransientAgentUnreachable(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /vantra_503|currently offline|unable to contact the agent/i.test(msg);
+}
+
+const TRANSIENT_RETRY_DELAYS_MS = [1000, 2000];
+
+export async function runNowWithTransientRetry(
+  opts: Parameters<typeof runCommandNow>[0],
+): Promise<Awaited<ReturnType<typeof runCommandNow>>> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await runCommandNow(opts);
+    } catch (err) {
+      const delay = TRANSIENT_RETRY_DELAYS_MS[attempt];
+      if (!isTransientAgentUnreachable(err) || delay === undefined) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 async function runCloneSetup(opts: {
   userId: string;
   deviceId: string;
@@ -860,7 +904,7 @@ async function runCloneSetup(opts: {
     }));
     const label = chunk.length === 1 ? `fetch:${chunk[0]}` : "fetch";
     const call = () =>
-      runCommandNow({
+      runNowWithTransientRetry({
         userId: opts.userId,
         deviceId: device.id,
         cmd: buildFetchScript(items),
@@ -869,26 +913,43 @@ async function runCloneSetup(opts: {
         runAsUser: false,
         captureOutput: true,
       });
-    let fetched = await call();
-    // A chunk that actually runs always emits STEP: lines, so ZERO output means
-    // the command was killed (or the agent returned nothing). One retry — it is
-    // idempotent, downloads overwrite — then report it honestly.
-    if (parseSteps(fetched.output).length === 0) fetched = await call();
+    let fetched: Awaited<ReturnType<typeof runCommandNow>>;
+    try {
+      fetched = await call();
+      // A chunk that actually runs always emits STEP: lines, so ZERO output means
+      // the command was killed (or the agent returned nothing). One retry — it is
+      // idempotent, downloads overwrite — then report it honestly.
+      if (parseSteps(fetched.output).length === 0) fetched = await call();
+    } catch (err) {
+      // TASK_242 — the device was proven online at the gate; a channel blip that
+      // outlived the retries is recorded on the step and ends setup quietly,
+      // never as a red "offline" headline.
+      if (!isTransientAgentUnreachable(err)) throw err;
+      steps.push({ step: label, ok: false, detail: "did not complete — run setup again" });
+      return bail();
+    }
     steps.push(...parseSteps(fetched.output));
     ensureReported(steps, fetched.output, label);
     if (firstFailure(steps)) return bail();
   }
 
   // 2. quarantine (ENGINE CLI preflight) + install into CloneTool.
-  const staged = await runCommandNow({
-    userId: opts.userId,
-    deviceId: device.id,
-    cmd: buildStageScript(wanted),
-    shell: "powershell",
-    timeoutSeconds: 90,
-    runAsUser: false,
-    captureOutput: true,
-  });
+  let staged: Awaited<ReturnType<typeof runCommandNow>>;
+  try {
+    staged = await runNowWithTransientRetry({
+      userId: opts.userId,
+      deviceId: device.id,
+      cmd: buildStageScript(wanted),
+      shell: "powershell",
+      timeoutSeconds: 90,
+      runAsUser: false,
+      captureOutput: true,
+    });
+  } catch (err) {
+    if (!isTransientAgentUnreachable(err)) throw err;
+    steps.push({ step: "quarantine", ok: false, detail: "did not complete — run setup again" });
+    return bail();
+  }
   steps.push(...parseSteps(staged.output));
   ensureReported(steps, staged.output, "quarantine");
   if (firstFailure(steps)) return bail();
@@ -1031,14 +1092,21 @@ async function runCloneSetup(opts: {
 
       steps.push(await capturePowerIdentity({ userId: opts.userId, deviceId: device.id }));
     } else {
-      const hosted = await runCommandNow({
-        userId: opts.userId,
-        deviceId: device.id,
-        cmd: buildHostedInstallScript(),
-        shell: "powershell",
-        timeoutSeconds: 90,
-        runAsUser: false,
-      });
+      let hosted: Awaited<ReturnType<typeof runCommandNow>>;
+      try {
+        hosted = await runNowWithTransientRetry({
+          userId: opts.userId,
+          deviceId: device.id,
+          cmd: buildHostedInstallScript(),
+          shell: "powershell",
+          timeoutSeconds: 90,
+          runAsUser: false,
+        });
+      } catch (err) {
+        if (!isTransientAgentUnreachable(err)) throw err;
+        steps.push({ step: "hosted-install", ok: false, detail: "did not complete — run setup again" });
+        return await bail();
+      }
       steps.push(...parseSteps(hosted.output));
       ensureReported(steps, hosted.output, "hosted-install");
       if (firstFailure(steps)) return await bail();

@@ -14,6 +14,12 @@ import { checkIpThroughProxy } from "./browser-proxy";
 import { injectLiveCapture } from "./clone-live-capture";
 import { resolveCloneBrowserPin } from "./clone-browser-pin";
 import { materializeCloneState } from "./clone-state-restore";
+import { getExitNode } from "./exit-nodes";
+import type { CloneEgress } from "./clone-transport";
+
+// TASK_242/243 — the relay tunnel probe lives in its own module; re-exported
+// here for callers that already import from this surface.
+export { relayTunnelState, isRelayTunnelUp } from "./clone-relay-state";
 
 // TASK_118 B8-2 — hosted launch: a clone whose destination is OUR OWN browser
 // (Device.deviceKind = "hosted", provisioned by clone-destination.ts), driven
@@ -32,7 +38,7 @@ import { materializeCloneState } from "./clone-state-restore";
 
 export interface HostedLaunchResult {
   ok: boolean;
-  egressMode: "relay" | "direct";
+  egressMode: CloneEgress;
   exitCode: number | null;
   error?: string;
   viewUrl?: string;
@@ -204,7 +210,7 @@ export async function runHostedLaunch(opts: {
   userId: string;
   cloneJobId: string;
   sourceDeviceId: string;
-  egress: "relay" | "direct";
+  egress: CloneEgress;
 }): Promise<HostedLaunchResult> {
   const sessionId = opts.cloneJobId;
   const source = await db.device.findUnique({
@@ -258,6 +264,16 @@ export async function runHostedLaunch(opts: {
     // No close-handle needed here: browser-server's own stopInternal() closes
     // this session's device listener automatically (keyed by sessionId) the
     // moment /sessions/stop is called — see stopHostedLaunch below.
+  } else if (opts.egress.startsWith("exit:")) {
+    // TASK_243 — a configured exit node (US/CA/UK): the same socks5 route the
+    // private browser uses. Needs no agent and no relay, so it keeps working
+    // with the source PC offline.
+    const nodeId = opts.egress.slice("exit:".length);
+    const node = getExitNode(nodeId);
+    if (!node) {
+      return { ok: false, egressMode: opts.egress, exitCode: null, error: `exit_node_unavailable: ${nodeId}` };
+    }
+    proxyServerValue = `${node.scheme}://${node.host}:${node.port}`;
   }
   // Direct egress: proxyServerValue stays "" — browser-runtime.start()'s own
   // contract documents empty as valid ("direct connection, no exit node").
@@ -398,6 +414,26 @@ export async function runHostedLaunch(opts: {
         egressMode: "relay",
         exitCode: null,
         error: `relay_egress_unverified: ${e instanceof Error ? e.message : "unknown"}`,
+      };
+    }
+  } else if (opts.egress.startsWith("exit:")) {
+    const nodeId = opts.egress.slice("exit:".length);
+    const node = getExitNode(nodeId);
+    if (!node) {
+      await browserRuntime.stop(sessionId).catch(() => {});
+      await deleteProfileDir(profileDirPath(sessionId)).catch(() => {});
+      return { ok: false, egressMode: opts.egress, exitCode: null, error: `exit_node_unavailable: ${nodeId}` };
+    }
+    try {
+      egressIp = await checkIpThroughProxy({ scheme: node.scheme, host: node.host, port: node.port });
+    } catch (e) {
+      await browserRuntime.stop(sessionId).catch(() => {});
+      await deleteProfileDir(profileDirPath(sessionId)).catch(() => {});
+      return {
+        ok: false,
+        egressMode: opts.egress,
+        exitCode: null,
+        error: `exit_egress_unverified: ${e instanceof Error ? e.message : "unknown"}`,
       };
     }
   }

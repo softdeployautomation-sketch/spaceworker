@@ -60,6 +60,7 @@ import {
 // tabs stay VISIBLE; the tool body is replaced by an honest "not available here
 // → move to private" notice instead of a live connection that would never open.
 import { isMeshOnlyDevice, meshOnlyNotice } from "@/lib/mesh-device";
+import { staleOfflineErrCleared } from "@/lib/clone-setup-ui";
 
 // Task 95 — the per-device console, ScreenConnect-style session window:
 // a bordered pane with dot-triangle window furniture, a live status lamp,
@@ -187,9 +188,16 @@ type CloneSetupStatus = {
   hostBlockReason: "ok" | "no_host" | "self_only" | "offline";
   selfIsHost: boolean;
   offlineHostNames: string[];
+  // TASK_243 — configured exit routes (US/CA/UK) available to this clone.
+  exitNodes?: Array<{ id: string; label: string }>;
 };
 
 type CloneSetupStep = { step: string; ok: boolean; detail: string | null };
+
+// TASK_243 — relay (same IP), direct (SpaceWorker's IP), or a configured exit
+// route (US/CA/UK — the same socks5 nodes the private browser uses). Exit
+// routes need no agent, so they work with the source PC offline.
+type CloneEgressChoice = "relay" | "direct" | `exit:${string}`;
 
 // Task 111 (bit B5) — the console's Browser Clone model. Mirrors the shape
 // lib/clone.ts `CloneView` hands the routes (evidence fields only — ids are
@@ -308,14 +316,21 @@ function cloneStepLabel(status: string): string {
 // `cloneBrowserLabel` deliberately comes from `@/lib/clone-browsers` — the console's
 // own copy is what let Brave be pickable-looking in one place and refused in another.
 
+function exitNodeLabel(egressMode: string): string | null {
+  if (!egressMode.startsWith("exit:")) return null;
+  return `${egressMode.slice("exit:".length).toUpperCase()} exit route`;
+}
+
 function cloneEgressLabel(egressMode: string): string {
-  return egressMode === "direct"
-    ? "SpaceWorker's IP — sites may ask you to sign in again"
-    : "Same IP as your PC";
+  if (egressMode === "direct") return "SpaceWorker's IP — sites may ask you to sign in again";
+  const exit = exitNodeLabel(egressMode);
+  if (exit) return `${exit} — sites may ask you to sign in again`;
+  return "Same IP as your PC";
 }
 
 function cloneEgressShort(egressMode: string): string {
-  return egressMode === "direct" ? "SpaceWorker's IP" : "Same IP as your PC";
+  if (egressMode === "direct") return "SpaceWorker's IP";
+  return exitNodeLabel(egressMode) ?? "Same IP as your PC";
 }
 
 const CLONE_ACTIVE_STATES = new Set(["requested", "awaiting_source", "capturing"]);
@@ -665,7 +680,7 @@ export function DeviceConsole({
   const [stateSyncResult, setStateSyncResult] = useState<{ ok: boolean; text: string } | null>(null);
   const [cloneBrowser, setCloneBrowser] = useState<CloneBrowser>("chrome");
   const [cloneProfile, setCloneProfile] = useState("");
-  const [cloneEgress, setCloneEgress] = useState<"relay" | "direct">("relay");
+  const [cloneEgress, setCloneEgress] = useState<CloneEgressChoice>("relay");
   // TASK_119A (owner 2026-09-25): the clone flow the owner asked for — one
   // browser on OUR side, its own profile per clone job. `fresh` starts clean;
   // `live` asks this PC's extension to hand over the session it is already
@@ -818,7 +833,17 @@ export function DeviceConsole({
       if (s.ok) {
         const data = await s.json().catch(() => ({}));
         if (data && typeof data === "object" && "sourceReady" in data) {
-          setCloneSetup(data as CloneSetupStatus);
+          const setup = data as CloneSetupStatus;
+          setCloneSetup(setup);
+          // TASK_242 — a transient dispatch failure used to leave its red
+          // "This device is currently offline." headline on screen forever,
+          // beside a green/ready card, after the device was online again. A
+          // fresh read that PROVES the device online means that headline is
+          // stale: drop it. Other errors (already-running, bundle problems)
+          // are still true whether or not the PC is online, so they stay.
+          if (setup.online === true) {
+            setSetupErr((prev) => staleOfflineErrCleared(true, prev));
+          }
         }
       }
       setPremiumLoaded(true);
@@ -2174,8 +2199,12 @@ function SummaryTab({
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button
             onClick={() => liveClone && openCloneSession(liveClone.id)}
-            disabled={!liveClone || cloneBusy === (liveClone ? `open-${liveClone.id}` : "open")}
-            title={liveClone ? "Open the cloned browser in a new tab" : "No live session — start a clone below"}
+            disabled={
+              !liveClone ||
+              !canOpenClone(liveClone.status) ||
+              cloneBusy === (liveClone ? `open-${liveClone.id}` : "open")
+            }
+            title={liveClone ? cloneOpenTitle(liveClone.status) : "No live session — start a clone below"}
             className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-brand-700 disabled:pointer-events-none disabled:opacity-50"
           >
             {liveClone && cloneBusy === `open-${liveClone.id}` ? "Opening…" : "Open cloned browser"}
@@ -2552,7 +2581,7 @@ function ScreenMonitoringCard({
   );
 }
 
-function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
+function CloneTab(props: { clones: CloneRow[]; loaded: boolean; err: string; msg: string; busy: string; browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; egress: CloneEgressChoice; setEgress: (e: CloneEgressChoice) => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; setup: CloneSetupStatus | null; setupBusy: string; setupErr: string; setupSteps: CloneSetupStep[]; onSetup: (role: "source" | "hosted") => Promise<void>; onStart: () => Promise<void>; onStateSync: () => Promise<void>; stateSync: { ok: boolean; text: string } | null; onRevoke: (id: string) => Promise<void>; onDelete: (id: string) => Promise<void>; onOpen: (id: string) => Promise<void> }) {
   const live = props.clones.find((r) => r.status === "active") ?? props.clones.find((r) => isCloneLiveStatus(r.status)) ?? null;
   // TASK_204 S4 — the user's OWN saved browser profiles, derived from their
   // clone history. `profileName` is per-job here (lib/clone.ts launches each
@@ -2922,7 +2951,7 @@ function CloneSetupCard(props: {
   );
 }
 
-function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; profileOptions: string[]; egress: "relay" | "direct"; setEgress: (e: "relay" | "direct") => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
+function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBrowser) => void; profile: string; setProfile: (v: string) => void; profileOptions: string[]; egress: CloneEgressChoice; setEgress: (e: CloneEgressChoice) => void; sessionMode: "fresh" | "live"; setSessionMode: (m: "fresh" | "live") => void; premium: boolean; premiumLoaded: boolean; busy: string; onStart: () => Promise<void>; setup: CloneSetupStatus | null }) {
   const { browser, setBrowser, profile, setProfile, profileOptions, egress, setEgress, sessionMode, setSessionMode, premium, premiumLoaded, busy, onStart, setup } = props;
   // Owner 2026-09-24: "no option to start with egress even when i am on
   // premium". Root cause: `premium` starts false and only flips when
@@ -3032,6 +3061,25 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
               SpaceWorker&apos;s IP{!directSelectable ? " · Premium" : ""}
             </button>
           </span>
+          )}
+          {premiumLoaded && setup?.exitNodes && setup.exitNodes.length > 0 && (
+            <span className="mt-1 flex overflow-hidden rounded-lg border border-border">
+              {setup.exitNodes.map((n) => (
+                <button
+                  key={n.id}
+                  onClick={() => setEgress(`exit:${n.id}`)}
+                  title={`${n.label} — a different country's IP; sites may ask you to sign in again`}
+                  className={cn(
+                    "flex-1 px-2 py-1.5 text-xs transition-colors",
+                    egress === `exit:${n.id}`
+                      ? "bg-black/10 font-medium text-fg dark:bg-white/10"
+                      : "text-fg-muted hover:text-fg",
+                  )}
+                >
+                  {n.label}
+                </button>
+              ))}
+            </span>
           )}
         </span>
       </div>
