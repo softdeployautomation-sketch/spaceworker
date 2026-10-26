@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { cn } from "@/lib/cn";
+import { shouldDriveSession } from "@/lib/clone-open";
 
 type SessionPayload = {
   ok: boolean;
@@ -17,7 +18,7 @@ type SessionPayload = {
     lastUsedAt: string | null;
     stoppedAt: string | null;
     expiresAt: string | null;
-  };
+  } | null;
   display: {
     browser: string;
     profileName: string | null;
@@ -85,24 +86,57 @@ export function CloneSessionView({ cloneId }: { cloneId: string }) {
   const [revoking, setRevoking] = useState(false);
   const [revoked, setRevoked] = useState(false);
 
+  const loadingRef = useRef(false);
+
   const load = useCallback(async () => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     try {
-      const res = await fetch(`/api/clones/${cloneId}/session`);
-      const body = await res.json().catch(() => ({}));
+      const read = async () => {
+        const res = await fetch(`/api/clones/${cloneId}/session`, { cache: "no-store" });
+        const body = await res.json().catch(() => ({}));
+        return { res, body };
+      };
+
+      const { res, body } = await read();
       if (!res.ok) {
         setError(cleanSessionErr(body.reason ?? body.error, "The session is not ready yet — try again in a moment."));
         return;
       }
-      const payload = body as SessionPayload;
+      let payload = body as SessionPayload;
       setData(payload);
       setError("");
       if (payload.status === "revoked") setRevoked(true);
+
+      // TASK_244 — the session window owns the drive. Open used to await this
+      // in the console, which is exactly why browsers blocked the tab. Here it
+      // is after the page is already open: `requested` (a clone created while
+      // the PC was away), `ready` (launch), and `launching` (watch it land)
+      // all advance themselves. Same bounded shape as the console's 12-step
+      // loop, stopping on active/terminal/queued/no-progress.
+      if (shouldDriveSession(payload.status) && !payload.openUrl) {
+        for (let i = 0; i < 12; i++) {
+          const adv = await fetch(`/api/clones/${cloneId}/advance`, { method: "POST" }).catch(() => null);
+          if (!adv || adv.status === 202 || !adv.ok) break;
+          const advBody = await adv.json().catch(() => ({}));
+          if (advBody.advanced !== true) break;
+          const next = await read();
+          if (!next.res.ok) break;
+          payload = next.body as SessionPayload;
+          setData(payload);
+          if (payload.status === "revoked") setRevoked(true);
+          if (payload.status === "active" || !shouldDriveSession(payload.status)) break;
+        }
+      }
     } catch {
       setError("The session is not ready yet — try again in a moment.");
+    } finally {
+      loadingRef.current = false;
     }
   }, [cloneId]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- `load` is async; it sets state after the fetch, not synchronously
     void load();
     const t = setInterval(() => {
       if (typeof document !== "undefined" && document.hidden) return;
@@ -145,6 +179,11 @@ export function CloneSessionView({ cloneId }: { cloneId: string }) {
         : "Same IP as your PC";
   const ready = data !== null && data.status === "active" && !!data.openUrl && !revoked;
   const headline = revoked ? "Revoked" : data ? stepLabel(data.status) : "Loading…";
+  const waitingOnPc =
+    data !== null &&
+    data.display.egressMode === "relay" &&
+    data.display.source !== null &&
+    data.display.source.online === false;
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-fg">
@@ -197,7 +236,11 @@ export function CloneSessionView({ cloneId }: { cloneId: string }) {
             <div>
               <p className="text-base font-medium">{headline}</p>
               <p className="mt-1 text-sm text-fg-muted">
-                {data ? "The hosted browser is getting ready — this page updates itself." : "Loading the session…"}
+                {data
+                  ? waitingOnPc
+                    ? "Your PC is offline, so this relay clone is waiting for it. This page updates itself — or close it and start again with a different route."
+                    : "The hosted browser is getting ready — this page updates itself."
+                  : "Loading the session…"}
               </p>
             </div>
           </div>
