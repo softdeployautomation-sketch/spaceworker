@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import { canOpenClone, cloneOpenTitle } from "@/lib/clone-open";
+import { canOpenClone, cloneOpenTitle, isCloneEgressChoice } from "@/lib/clone-open";
 import {
   CLONE_BROWSERS,
   cloneBrowserCarryRefusal,
@@ -1514,11 +1514,14 @@ export function DeviceConsole({
     }
   }
 
-  async function startClone(egressOverride?: CloneEgressChoice, opts?: { forceFresh?: boolean }) {
+  async function startClone(egressOverride?: unknown, opts?: { forceFresh?: boolean }) {
     setCloneBusy("start");
     setCloneError("");
     setCloneNotice("");
-    const egress = egressOverride ?? cloneEgress;
+    // Never let a DOM event (React passes one when a handler is wired directly)
+    // become the egress value — JSON.stringify would choke on its circular
+    // React fiber. Only a real egress choice overrides the picker.
+    const egress = isCloneEgressChoice(egressOverride) ? egressOverride : cloneEgress;
     try {
       const res = await fetch(`/api/devices/${deviceId}/clones`, {
         method: "POST",
@@ -3251,7 +3254,7 @@ function CloneStartCard(props: { browser: CloneBrowser; setBrowser: (b: CloneBro
         </ul>
       )}
       <button
-        onClick={onStart}
+        onClick={() => onStart()}
         disabled={busy === "start"}
         className="mt-2 rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-brand-700 disabled:opacity-60"
       >
