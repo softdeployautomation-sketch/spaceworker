@@ -117,3 +117,32 @@ Status: implemented + verified locally. **Not deployed.**
   is never logged (counts only).
 - Fail-closed runs on the existing 5-min sweep; the proxy listener already
   blocks new traffic the moment the tunnel drops, so the window is bounded.
+
+## HANDOFF → VERIFICATION AGENT
+
+- **Repo:** `softdeployautomation-sketch/spaceworker`
+- **Branch:** `agent/task-242-clone-setup-offline` (contains TASK_242 `fe8b0fb` + TASK_243 `9695215`)
+- **Base:** `705768b` (main after TASK_241)
+- **Ship commit:** `9695215` (+ the UK-label/docs follow-up commit on top)
+- **Migration:** none — `CloneJob.egressMode` / `HostedBrowserSession.egressMode` are existing `String` columns; `exit:*` fits.
+- **Cross-repo order:** SpaceWorker only. No Vantra change; no new Vantra route.
+- **Files:**
+  - `lib/clone-cookie-jar.ts` (new), `lib/clone-relay-state.ts` (new)
+  - `lib/clone.ts`, `lib/clone-hosted-launch.ts`, `lib/clone-live-capture.ts`,
+    `lib/clone-setup.ts`, `lib/clone-transport.ts`
+  - `app/api/clones/[cloneId]/session/route.ts`,
+    `app/api/devices/[deviceId]/clones/route.ts`,
+    `app/api/devices/clone-capture/route.ts`,
+    `app/api/internal/clone-sweep/route.ts`
+  - `components/device-console.tsx`, `components/clone-session-view.tsx`
+  - `tests/task-243-clone-anytime.test.ts` (new)
+- **Post-deploy checks:**
+  1. `BUILD_ID` changed; `spaceworker`, `spaceworker-browser` active.
+  2. Built chunks contain `cookie-jar.enc`, `no_saved_session`, `relay_lost`,
+     `exit_node_unavailable` (source-unique markers).
+  3. `GET /api/internal/clone-sweep` (bearer) returns `relayFailClosed` key.
+  4. `cloneSetupStatus` (device console load) returns `exitNodes` for configured nodes.
+  5. `journalctl -u spaceworker -u spaceworker-browser --since "-15min"` clean.
+- **Risks:** exit routes only appear when `EXIT_NODE_US`/`EXIT_NODE_CA`(/`UK`) are set;
+  relay fail-closed runs on the 5-min clone-sweep; the jar lives under
+  `BROWSER_PROFILE_BASE_DIR` and is purged with the target.

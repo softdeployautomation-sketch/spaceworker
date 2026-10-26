@@ -785,7 +785,10 @@ export async function cloneSetupStatus(opts: {
     selfIsHost: hosts.selfIsHost,
     offlineHostNames: hosts.offlineHostNames,
     // TASK_243 — the exit routes this deployment actually has configured.
-    exitNodes: listExitNodes().map((n) => ({ id: n.id, label: `${n.countryCode} exit` })),
+    exitNodes: listExitNodes().map((n) => ({
+      id: n.id,
+      label: `${n.countryCode === "GB" ? "UK" : n.countryCode} exit`,
+    })),
   };
 }
 
