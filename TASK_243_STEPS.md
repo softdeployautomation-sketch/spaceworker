@@ -146,3 +146,31 @@ Status: implemented + verified locally. **Not deployed.**
 - **Risks:** exit routes only appear when `EXIT_NODE_US`/`EXIT_NODE_CA`(/`UK`) are set;
   relay fail-closed runs on the 5-min clone-sweep; the jar lives under
   `BROWSER_PROFILE_BASE_DIR` and is purged with the target.
+
+## DEPLOYED — 2026-10-26 (verification agent)
+
+- **Main merge:** `0141a3c` (merge of `aff62bf`), pushed to `origin/main`.
+- **Runs:** push `40285799325` → build+typecheck success, deploy skipped (by design);
+  dispatch `40285807043` → **success**.
+- **BUILD_ID:** `fQhNfH93X59lxPimdkioy` → `gqylG8bLAmqRnP3YTFTYF`.
+- **Services:** `spaceworker`, `spaceworker-browser`, `vantra` active; maintenance **OFF**;
+  local `127.0.0.1:3500` 200; public `https://spaceworker.top/` 200.
+- **Built chunks:** `cookie-jar.enc`=4, `no_saved_session`=4, `relay_lost`=4,
+  `exit_node_unavailable`=4, `idleRemainingMs`=9; removed `agent_not_responding`=0.
+- **Functional (source PC offline):** `POST clones {egress:"exit:us",fresh}` →
+  advance 1 = `ready`, advance 2 = `active`; session `openUrl` present, egress
+  `exit:us`, idle ≈ 60 min; revoke → `revoked`. DB row `revoked | exit:us | fresh`;
+  session `stopped | exit:us`.
+- **Setup API:** `GET /api/devices/<id>/clone-setup` → `exitNodes: [US, CA]`
+  (`EXIT_NODE_US`/`CA` set; UK unset, correctly not offered).
+- **Sweep API:** `POST /api/internal/clone-sweep` → `{..., "relayFailClosed":0}`, 200.
+- **DB non-regression:** `Device.onlineConfirmedAt` present.
+- **Branch audit:** 238/239/240/241 are ancestors of `main`; 242+243 merged here.
+  Unmerged `task-205` (no-deploy), `task-206` (retired by TASK_228), `task-209`
+  (superseded on main), and `task-234`'s `958cf0d` (superseded by TASK_236) do
+  **not** belong in this deploy; `self-hosted-build` / `mailer-exe` / `cyberlab-scope`
+  / `xdevice-monitor` are separate product lanes.
+- **Known follow-up (non-blocking):** the offline banner still reads "This PC is
+  offline … its profile is captured live each time" for direct/exit egress. Start
+  stays enabled and the server path works (proven above); copy should be made
+  egress-aware in a follow-up.
