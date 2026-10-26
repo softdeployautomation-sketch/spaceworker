@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { canOpenClone, cloneOpenTitle, shouldDriveSession } from "../lib/clone-open";
+import { canOpenClone, cloneOpenTitle, isCloneEgressChoice, shouldDriveSession } from "../lib/clone-open";
 
 // TASK_204/TASK_244 — "Open session" was both unclickable (a `requested`
 // clone never advanced) and, when it was clickable, silently blocked: the
@@ -121,5 +121,36 @@ test("TASK_204: profile picker offers the account's own profiles and keeps free 
   assert.ok(
     SRC.includes("props.clones.map((r) => r.profileName)"),
     "profile options must be derived from this user's own clone rows",
+  );
+});
+
+// TASK_245 — clicking "Start clone" threw "Converting circular structure to
+// JSON". `onStart` is `startClone`, which takes an optional egress override;
+// `onClick={onStart}` made React pass the click event as that override, so the
+// POST body tried to serialise the event's React fiber. Pin both halves: the
+// click must call the handler with no argument, and the handler must validate
+// the override before using it.
+test("TASK_245: only a real egress string may override the picker", () => {
+  for (const v of ["relay", "direct", "exit:us", "exit:ca"]) {
+    assert.equal(isCloneEgressChoice(v), true, `${String(v)} is a real egress choice`);
+  }
+  const eventLike = { constructor: { name: "HTMLButtonElement" }, __reactFiber$jj18kubgwag: {} };
+  for (const v of [undefined, null, "", "exit:", "exit", 42, {}, eventLike]) {
+    assert.equal(isCloneEgressChoice(v), false, `${String(v)} must not be used as egress`);
+  }
+});
+
+test("TASK_245: the Start button never hands React's event to startClone", () => {
+  assert.ok(
+    !SRC.includes("onClick={onStart}"),
+    "onClick={onStart} passes the click event into startClone — wrap it",
+  );
+  assert.ok(
+    SRC.includes("onClick={() => onStart()}"),
+    "the Start button must call onStart with no arguments",
+  );
+  assert.ok(
+    SRC.includes("isCloneEgressChoice(egressOverride) ? egressOverride : cloneEgress"),
+    "startClone must reject non-egress overrides (DOM events) before POSTing",
   );
 });

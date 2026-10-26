@@ -34,3 +34,20 @@ export function cloneOpenTitle(status: string): string {
   if (status === "requested") return "Open the session window — it starts as soon as your PC is ready";
   return "The session opens once the browser is ready";
 }
+
+/**
+ * TASK_245 — a real egress choice, never a DOM event.
+ *
+ * `startClone` takes an optional egress override, and React passes the click
+ * event when a handler is wired directly (`onClick={onStart}`). The event then
+ * became the POST body's `egress`, and `JSON.stringify` died on its circular
+ * React fiber ("Converting circular structure to JSON"). Validate the value
+ * instead of trusting the caller.
+ */
+export function isCloneEgressChoice(v: unknown): v is "relay" | "direct" | `exit:${string}` {
+  return (
+    v === "relay" ||
+    v === "direct" ||
+    (typeof v === "string" && v.startsWith("exit:") && v.length > "exit:".length)
+  );
+}
